@@ -9,6 +9,7 @@ from PIL import Image, ImageOps
 from automation.config import AutomationConfig
 from automation.discovery import CaseRecord, detect_existing_outputs
 from automation.manifest import AutomationManifest
+from automation.oldcam import run_oldcam
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
@@ -64,6 +65,30 @@ class AutoPipelineRunner:
         if self.progress_cb:
             self.progress_cb(message, level)
 
+    def _effective_reprocess_mode(self) -> str:
+        if not self.automation.get("automation_allow_reprocess", False):
+            return "skip"
+        mode = str(self.automation.get("automation_reprocess_mode", "skip")).lower()
+        return mode if mode in {"skip", "overwrite", "increment"} else "skip"
+
+    @staticmethod
+    def _next_increment_path(path: Path) -> Path:
+        if not path.exists():
+            return path
+        idx = 1
+        while True:
+            candidate = path.with_name(f"{path.stem}_v{idx}{path.suffix}")
+            if not candidate.exists():
+                return candidate
+            idx += 1
+
+    def _policy_meta(self, step_name: str, reused_existing: bool, mode: str) -> Dict[str, Any]:
+        return {
+            "reprocess_mode": mode,
+            "reused_existing": reused_existing,
+            "step": step_name,
+        }
+
     @staticmethod
     def _percent_expand_pixels(image_path: str, pct: int, max_per_side: int = 700) -> Dict[str, int]:
         with Image.open(image_path) as img:
@@ -114,23 +139,47 @@ class AutoPipelineRunner:
 
         outpaint = self.deps.outpaint_factory()
         outpaint.set_progress_callback(self.progress_cb)
+        reprocess_mode = self._effective_reprocess_mode()
+        case_entry["policy"] = {"reprocess_mode": reprocess_mode}
+        self.manifest.save_atomic()
 
         # Step 1: front expand
         front_expanded = existing.front_expanded or (case_dir / self.automation.get("automation_front_output_name", "front-expanded.png"))
         if self.automation.get("automation_front_expand_enabled", True):
             current_step = self.manifest.get_step(case_key, "front_expand")
             existing_front_step_output = current_step.get("output")
-            if current_step.get("status") == "complete" and existing_front_step_output and Path(existing_front_step_output).exists():
+            if (
+                reprocess_mode == "skip"
+                and current_step.get("status") == "complete"
+                and existing_front_step_output
+                and Path(existing_front_step_output).exists()
+            ):
                 front_expanded = Path(existing_front_step_output)
-            elif front_expanded and Path(front_expanded).exists():
-                self.manifest.update_step(case_key, "front_expand", "complete", output=str(front_expanded))
+                self.manifest.update_step(
+                    case_key,
+                    "front_expand",
+                    "complete",
+                    output=str(front_expanded),
+                    meta=self._policy_meta("front_expand", True, reprocess_mode),
+                )
+            elif reprocess_mode == "skip" and front_expanded and Path(front_expanded).exists():
+                self.manifest.update_step(
+                    case_key,
+                    "front_expand",
+                    "complete",
+                    output=str(front_expanded),
+                    meta=self._policy_meta("front_expand", True, reprocess_mode),
+                )
             else:
+                target_output = Path(front_expanded)
+                if reprocess_mode == "increment":
+                    target_output = self._next_increment_path(target_output)
                 case_entry["active_step"] = "front_expand"
                 self.manifest.update_step(case_key, "front_expand", "running")
                 result = outpaint.outpaint(
                     image_path=str(case.front_path),
                     output_folder=str(case_dir),
-                    output_path=str(front_expanded),
+                    output_path=str(target_output),
                     provider=self.automation.get("automation_front_expand_provider", "auto").replace("auto", ""),
                     document_mode=self.automation.get("automation_front_expand_mode") == "document_3x4",
                     edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
@@ -142,35 +191,75 @@ class AutoPipelineRunner:
                     case_entry["status"] = "failed"
                     self.manifest.save_atomic()
                     return "failed"
-                self.manifest.update_step(case_key, "front_expand", "complete", output=str(result))
+                self.manifest.update_step(
+                    case_key,
+                    "front_expand",
+                    "complete",
+                    output=str(result),
+                    meta=self._policy_meta("front_expand", False, reprocess_mode),
+                )
                 front_expanded = Path(result)
         else:
             self.manifest.update_step(case_key, "front_expand", "skipped", output=str(front_expanded))
 
         # Step 2: extract portrait from original front
         extracted_path = case_dir / self.automation.get("automation_extract_output_name", "extracted.png")
+        extract_meta: Dict[str, Any]
         extract_step = self.manifest.get_step(case_key, "extract_portrait")
         existing_extract_output = extract_step.get("output")
-        if extract_step.get("status") == "complete" and existing_extract_output and Path(existing_extract_output).exists():
+        if (
+            not self.automation.get("automation_extract_enabled", True)
+        ):
+            self.manifest.update_step(case_key, "extract_portrait", "skipped", output=str(extracted_path))
+            extract_meta = {}
+        elif (
+            reprocess_mode == "skip"
+            and extract_step.get("status") == "complete"
+            and existing_extract_output
+            and Path(existing_extract_output).exists()
+        ):
             extracted_path = Path(existing_extract_output)
             extract_meta = extract_step.get("meta") or {}
-        elif extracted_path.exists():
+            self.manifest.update_step(
+                case_key,
+                "extract_portrait",
+                "complete",
+                output=str(extracted_path),
+                meta={**extract_meta, **self._policy_meta("extract_portrait", True, reprocess_mode)},
+            )
+        elif reprocess_mode == "skip" and extracted_path.exists():
             extract_meta = extract_step.get("meta") or {}
+            self.manifest.update_step(
+                case_key,
+                "extract_portrait",
+                "complete",
+                output=str(extracted_path),
+                meta={**extract_meta, **self._policy_meta("extract_portrait", True, reprocess_mode)},
+            )
         else:
+            target_extract_path = extracted_path
+            if reprocess_mode == "increment":
+                target_extract_path = self._next_increment_path(extracted_path)
             case_entry["active_step"] = "extract_portrait"
             self.manifest.update_step(case_key, "extract_portrait", "running")
             extract_meta = extract_portrait_crop(
                 input_path=str(case.front_path),
-                output_path=str(extracted_path),
+                output_path=str(target_extract_path),
                 crop_multiplier=float(self.automation.get("automation_crop_multiplier", 1.5)),
                 progress_cb=self.progress_cb,
             )
+            extracted_path = target_extract_path
         self.manifest.update_step(
             case_key,
             "extract_portrait",
             "complete",
             output=str(extracted_path),
-            meta={"confidence": extract_meta.get("confidence"), "crop_box": extract_meta.get("crop_box"), "extractor": extract_meta.get("extractor")},
+            meta={
+                "confidence": extract_meta.get("confidence"),
+                "crop_box": extract_meta.get("crop_box"),
+                "extractor": extract_meta.get("extractor"),
+                **self._policy_meta("extract_portrait", False, reprocess_mode),
+            },
         )
 
         # Step 3/4: selfie + similarity gate
@@ -182,7 +271,9 @@ class AutoPipelineRunner:
         threshold = int(self.automation.get("automation_similarity_threshold", 80))
 
         best_path: Optional[str] = str(existing.selfie_candidate) if (
-            existing.selfie_candidate and self.automation.get("automation_skip_if_selfie_exists", True)
+            reprocess_mode == "skip"
+            and existing.selfie_candidate
+            and self.automation.get("automation_skip_if_selfie_exists", True)
         ) else None
         best_score = -1
         self.manifest.update_step(case_key, "selfie_generate", "running")
@@ -213,7 +304,13 @@ class AutoPipelineRunner:
             case_entry["status"] = "failed"
             self.manifest.save_atomic()
             return "failed"
-        self.manifest.update_step(case_key, "selfie_generate", "complete", output=best_path, meta={"best_score": best_score})
+        self.manifest.update_step(
+            case_key,
+            "selfie_generate",
+            "complete",
+            output=best_path,
+            meta={"best_score": best_score, **self._policy_meta("selfie_generate", bool(existing.selfie_candidate and best_path == str(existing.selfie_candidate)), reprocess_mode)},
+        )
         if best_score < threshold:
             self.manifest.update_step(
                 case_key,
@@ -241,6 +338,8 @@ class AutoPipelineRunner:
             margins = self._percent_expand_pixels(best_path, pct)
             self.manifest.update_step(case_key, "selfie_expand", "running")
             expanded_output = case_dir / "gen-images" / f"{Path(best_path).stem}-expanded.png"
+            if reprocess_mode == "increment":
+                expanded_output = self._next_increment_path(expanded_output)
             expanded_result = outpaint.outpaint(
                 image_path=best_path,
                 output_folder=str(case_dir / "gen-images"),
@@ -255,7 +354,13 @@ class AutoPipelineRunner:
             )
             if expanded_result:
                 final_still = expanded_result
-                self.manifest.update_step(case_key, "selfie_expand", "complete", output=expanded_result)
+                self.manifest.update_step(
+                    case_key,
+                    "selfie_expand",
+                    "complete",
+                    output=expanded_result,
+                    meta=self._policy_meta("selfie_expand", False, reprocess_mode),
+                )
             else:
                 self.manifest.update_step(case_key, "selfie_expand", "failed", error="selfie expand failed")
         else:
@@ -263,8 +368,18 @@ class AutoPipelineRunner:
 
         # Step 6: video generation
         if self.automation.get("automation_video_enabled", True):
-            if self.automation.get("automation_skip_if_video_exists", True) and existing.video_candidate:
-                self.manifest.update_step(case_key, "video_generate", "skipped", output=str(existing.video_candidate))
+            if (
+                reprocess_mode == "skip"
+                and self.automation.get("automation_skip_if_video_exists", True)
+                and existing.video_candidate
+            ):
+                self.manifest.update_step(
+                    case_key,
+                    "video_generate",
+                    "skipped",
+                    output=str(existing.video_candidate),
+                    meta=self._policy_meta("video_generate", True, reprocess_mode),
+                )
                 case_entry["status"] = "complete"
                 self.manifest.save_atomic()
                 return "completed"
@@ -272,9 +387,11 @@ class AutoPipelineRunner:
             video = self.deps.video_factory()
             video.set_progress_callback(self.progress_cb)
             self.manifest.update_step(case_key, "video_generate", "running")
+            video_output_dir = case_dir / "gen-videos"
+            video_output_dir.mkdir(exist_ok=True)
             output_video = video.create_kling_generation(
                 character_image_path=final_still,
-                output_folder=str(case_dir / "gen-videos"),
+                output_folder=str(video_output_dir),
                 custom_prompt=self.config.get("saved_prompts", {}).get(str(self.config.get("current_prompt_slot", 1)))
                 if self.automation.get("automation_video_use_existing_prompt", True)
                 else None,
@@ -291,17 +408,63 @@ class AutoPipelineRunner:
                 case_entry["status"] = "failed"
                 self.manifest.save_atomic()
                 return "failed"
-            self.manifest.update_step(case_key, "video_generate", "complete", output=output_video)
+            if reprocess_mode == "increment":
+                out_video_path = Path(output_video)
+                inc_video_path = self._next_increment_path(out_video_path)
+                if inc_video_path != out_video_path:
+                    out_video_path.replace(inc_video_path)
+                    output_video = str(inc_video_path)
+            self.manifest.update_step(
+                case_key,
+                "video_generate",
+                "complete",
+                output=output_video,
+                meta=self._policy_meta("video_generate", False, reprocess_mode),
+            )
         else:
             self.manifest.update_step(case_key, "video_generate", "skipped", output=final_still)
 
-        # Step 7: oldcam - intentionally deferred for safety.
-        self.manifest.update_step(
-            case_key,
-            "oldcam",
-            "pending_not_implemented",
-            error="TODO: headless oldcam integration",
-        )
+        # Step 7: optional oldcam pass
+        if self.automation.get("automation_oldcam_enabled", True):
+            selected_video = (
+                self.manifest.get_step(case_key, "video_generate").get("output")
+                or existing.video_candidate
+            )
+            if selected_video:
+                case_entry["active_step"] = "oldcam"
+                self.manifest.update_step(case_key, "oldcam", "running")
+                oldcam_output = run_oldcam(
+                    video_path=Path(selected_video),
+                    version_setting=str(self.automation.get("automation_oldcam_version", "v8")),
+                    repo_root=Path(__file__).resolve().parent.parent,
+                    progress_cb=self.progress_cb,
+                )
+                if oldcam_output:
+                    self.manifest.update_step(
+                        case_key,
+                        "oldcam",
+                        "complete",
+                        output=str(oldcam_output),
+                        meta=self._policy_meta("oldcam", False, reprocess_mode),
+                    )
+                else:
+                    required = bool(self.automation.get("automation_oldcam_required", False))
+                    fail_status = "failed" if required else "skipped"
+                    self.manifest.update_step(
+                        case_key,
+                        "oldcam",
+                        fail_status,
+                        error="oldcam failed or unavailable",
+                        meta={**self._policy_meta("oldcam", False, reprocess_mode), "required": required},
+                    )
+                    if required:
+                        case_entry["status"] = "failed"
+                        self.manifest.save_atomic()
+                        return "failed"
+            else:
+                self.manifest.update_step(case_key, "oldcam", "skipped", error="no video for oldcam")
+        else:
+            self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
 
         case_entry["active_step"] = None
         case_entry["status"] = "complete"

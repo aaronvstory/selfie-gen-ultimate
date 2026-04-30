@@ -38,6 +38,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_video_use_existing_prompt": True,
     "automation_oldcam_enabled": True,
     "automation_oldcam_version": "v8",
+    "automation_oldcam_required": False,
 }
 
 
@@ -68,4 +69,3 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
 
 def from_app_config(config: Dict[str, Any]) -> AutomationConfig:
     return AutomationConfig(values=merge_automation_defaults(config))
-
