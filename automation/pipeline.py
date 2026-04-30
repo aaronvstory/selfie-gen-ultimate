@@ -107,19 +107,6 @@ class AutoPipelineRunner:
             issues.append("automation_oldcam_required=true requires automation_oldcam_enabled=true.")
         return issues
 
-    @staticmethod
-    def _percent_expand_pixels(image_path: str, pct: int, max_per_side: int = 700) -> Dict[str, int]:
-        with Image.open(image_path) as img:
-            img = ImageOps.exif_transpose(img)
-            width, height = img.size
-        ratio = max(0, pct) / 100.0
-        return {
-            "left": min(max_per_side, int(width * ratio)),
-            "right": min(max_per_side, int(width * ratio)),
-            "top": min(max_per_side, int(height * ratio)),
-            "bottom": min(max_per_side, int(height * ratio)),
-        }
-
     def run(self, cases: List[CaseRecord]) -> Dict[str, int]:
         validation_issues = self.validate_configuration()
         if validation_issues:
@@ -311,12 +298,33 @@ class AutoPipelineRunner:
         )
 
         # Step 3/4: selfie + similarity gate
+        selfie_enabled = bool(self.automation.get("automation_selfie_enabled", True))
+        if not selfie_enabled:
+            self.manifest.update_step(
+                case_key,
+                "selfie_generate",
+                "manual_review",
+                error="selfie generation disabled by automation_selfie_enabled=false",
+                meta=self._policy_meta("selfie_generate", False, reprocess_mode),
+            )
+            self.manifest.update_step(
+                case_key,
+                "similarity_gate",
+                "manual_review",
+                error="similarity gate skipped because selfie generation is disabled",
+                meta={"threshold": int(self.automation.get("automation_similarity_threshold", 80))},
+            )
+            case_entry["status"] = "manual_review"
+            self.manifest.save_atomic()
+            return "manual_review"
+
         selfie = self.deps.selfie_factory()
         selfie.set_progress_callback(self.progress_cb)
         selfie_folder = case_dir / "gen-images"
         selfie_folder.mkdir(exist_ok=True)
         model_endpoints = list(self.automation.get("automation_selfie_models", ["openai/gpt-image-2/edit"]))
         threshold = int(self.automation.get("automation_similarity_threshold", 80))
+        max_attempts = max(1, int(self.automation.get("automation_selfie_max_attempts_per_model", 1)))
 
         best_path: Optional[str] = str(existing.selfie_candidate) if (
             reprocess_mode == "skip"
@@ -331,20 +339,23 @@ class AutoPipelineRunner:
             self._report(f"[{case_key}] Reused existing selfie: {Path(best_path).name}", "info")
         else:
             for endpoint in model_endpoints:
-                generated = selfie.generate(
-                    image_path=str(extracted_path),
-                    prompt=self.config.get("selfie_prompt_template", "portrait selfie"),
-                    output_folder=str(selfie_folder),
-                    model_endpoint=endpoint,
-                )
-                if not generated:
-                    continue
-                score_info = compute_face_similarity_details(str(extracted_path), generated, report_cb=self.progress_cb)
-                score = int(score_info.get("score", 0))
-                if score > best_score:
-                    best_score = score
-                    best_path = generated
-                if self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass" and score >= threshold:
+                for _attempt in range(max_attempts):
+                    generated = selfie.generate(
+                        image_path=str(extracted_path),
+                        prompt=self.config.get("selfie_prompt_template", "portrait selfie"),
+                        output_folder=str(selfie_folder),
+                        model_endpoint=endpoint,
+                    )
+                    if not generated:
+                        continue
+                    score_info = compute_face_similarity_details(str(extracted_path), generated, report_cb=self.progress_cb)
+                    score = int(score_info.get("score", 0))
+                    if score > best_score:
+                        best_score = score
+                        best_path = generated
+                    if self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass" and score >= threshold:
+                        break
+                if self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass" and best_score >= threshold:
                     break
 
         if not best_path:
@@ -429,11 +440,13 @@ class AutoPipelineRunner:
 
         # Step 6: video generation
         if self.automation.get("automation_video_enabled", True):
+            skipped_existing_video = False
             if (
                 reprocess_mode == "skip"
                 and self.automation.get("automation_skip_if_video_exists", True)
                 and existing.video_candidate
             ):
+                skipped_existing_video = True
                 self.manifest.update_step(
                     case_key,
                     "video_generate",
@@ -441,47 +454,49 @@ class AutoPipelineRunner:
                     output=str(existing.video_candidate),
                     meta=self._policy_meta("video_generate", True, reprocess_mode),
                 )
-                case_entry["status"] = "complete"
-                self.manifest.save_atomic()
-                return "completed"
-
-            video = self.deps.video_factory()
-            video.set_progress_callback(self.progress_cb)
-            self.manifest.update_step(case_key, "video_generate", "running")
-            video_output_dir = case_dir / "gen-videos"
-            video_output_dir.mkdir(exist_ok=True)
-            output_video = video.create_kling_generation(
-                character_image_path=final_still,
-                output_folder=str(video_output_dir),
-                custom_prompt=self.config.get("saved_prompts", {}).get(str(self.config.get("current_prompt_slot", 1)))
-                if self.automation.get("automation_video_use_existing_prompt", True)
-                else None,
-                duration=int(self.config.get("video_duration", 10)),
-                aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
-                resolution=self.config.get("resolution", "720p"),
-                seed=int(self.config.get("seed", -1)),
-                camera_fixed=bool(self.config.get("camera_fixed", False)),
-                generate_audio=bool(self.config.get("generate_audio", False)),
-                use_source_folder=False,
-            )
-            if not output_video:
-                self.manifest.update_step(case_key, "video_generate", "failed", error="video generation failed")
-                case_entry["status"] = "failed"
-                self.manifest.save_atomic()
-                return "failed"
-            if reprocess_mode == "increment":
-                out_video_path = Path(output_video)
-                inc_video_path = self._next_increment_path(out_video_path)
-                if inc_video_path != out_video_path:
-                    out_video_path.replace(inc_video_path)
-                    output_video = str(inc_video_path)
-            self.manifest.update_step(
-                case_key,
-                "video_generate",
-                "complete",
-                output=output_video,
-                meta=self._policy_meta("video_generate", False, reprocess_mode),
-            )
+                if not self.automation.get("automation_oldcam_enabled", True):
+                    self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
+                    case_entry["status"] = "complete"
+                    self.manifest.save_atomic()
+                    return "completed"
+            if not skipped_existing_video:
+                video = self.deps.video_factory()
+                video.set_progress_callback(self.progress_cb)
+                self.manifest.update_step(case_key, "video_generate", "running")
+                video_output_dir = case_dir / "gen-videos"
+                video_output_dir.mkdir(exist_ok=True)
+                output_video = video.create_kling_generation(
+                    character_image_path=final_still,
+                    output_folder=str(video_output_dir),
+                    custom_prompt=self.config.get("saved_prompts", {}).get(str(self.config.get("current_prompt_slot", 1)))
+                    if self.automation.get("automation_video_use_existing_prompt", True)
+                    else None,
+                    duration=int(self.config.get("video_duration", 10)),
+                    aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
+                    resolution=self.config.get("resolution", "720p"),
+                    seed=int(self.config.get("seed", -1)),
+                    camera_fixed=bool(self.config.get("camera_fixed", False)),
+                    generate_audio=bool(self.config.get("generate_audio", False)),
+                    use_source_folder=False,
+                )
+                if not output_video:
+                    self.manifest.update_step(case_key, "video_generate", "failed", error="video generation failed")
+                    case_entry["status"] = "failed"
+                    self.manifest.save_atomic()
+                    return "failed"
+                if reprocess_mode == "increment":
+                    out_video_path = Path(output_video)
+                    inc_video_path = self._next_increment_path(out_video_path)
+                    if inc_video_path != out_video_path:
+                        out_video_path.replace(inc_video_path)
+                        output_video = str(inc_video_path)
+                self.manifest.update_step(
+                    case_key,
+                    "video_generate",
+                    "complete",
+                    output=output_video,
+                    meta=self._policy_meta("video_generate", False, reprocess_mode),
+                )
         else:
             self.manifest.update_step(case_key, "video_generate", "skipped", output=final_still)
 

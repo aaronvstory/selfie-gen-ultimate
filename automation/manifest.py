@@ -64,7 +64,8 @@ class AutomationManifest:
                     loaded = json.load(handle)
                 if isinstance(loaded, dict) and loaded.get("schema_version") == SCHEMA_VERSION:
                     return cls(manifest_path=manifest_path, data=loaded)
-                reason = f"schema_version mismatch: got {loaded.get('schema_version')!r}, expected {SCHEMA_VERSION}"
+                got_version = loaded.get("schema_version") if isinstance(loaded, dict) else type(loaded).__name__
+                reason = f"schema_version mismatch: got {got_version!r}, expected {SCHEMA_VERSION}"
                 cls._backup_invalid_manifest(manifest_path, reason)
             except JSONDecodeError as exc:
                 cls._backup_invalid_manifest(manifest_path, f"invalid json: {exc}")
@@ -109,9 +110,10 @@ class AutomationManifest:
         except OSError:
             return None
         if not isinstance(loaded, dict) or loaded.get("schema_version") != SCHEMA_VERSION:
+            got_version = loaded.get("schema_version") if isinstance(loaded, dict) else type(loaded).__name__
             cls._backup_invalid_manifest_no_raise(
                 manifest_path,
-                f"schema_version mismatch: got {loaded.get('schema_version')!r}, expected {SCHEMA_VERSION}",
+                f"schema_version mismatch: got {got_version!r}, expected {SCHEMA_VERSION}",
             )
             return None
         return cls(manifest_path=manifest_path, data=loaded)

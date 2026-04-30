@@ -21,11 +21,15 @@ class FakeOutpaint:
 
 
 class FakeSelfie:
+    def __init__(self):
+        self.calls = 0
+
     def set_progress_callback(self, _cb):
         return None
 
     def generate(self, image_path, prompt, output_folder, model_endpoint="", **kwargs):
         del prompt, model_endpoint, kwargs
+        self.calls += 1
         out = Path(output_folder) / f"{Path(image_path).stem}_sim85_001.png"
         out.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (64, 64), (110, 110, 110)).save(out)
@@ -284,3 +288,115 @@ def test_pipeline_validation_fails_on_oldcam_required_without_enable(tmp_path: P
     )
     issues = runner.validate_configuration()
     assert any("requires" in issue for issue in issues)
+
+
+def test_pipeline_manual_review_when_selfie_disabled(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-g"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    front.write_bytes(b"front")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-g")
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "automation_selfie_enabled": False,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["manual_review"] == 1
+    assert manifest.data["cases"]["case-g"]["steps"]["selfie_generate"]["status"] == "manual_review"
+
+
+def test_pipeline_honors_selfie_max_attempts(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-h"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    front.write_bytes(b"front")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-h")
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "saved_prompts": {"1": "prompt"},
+            "current_prompt_slot": 1,
+            "automation_selfie_models": ["m1", "m2"],
+            "automation_selfie_max_attempts_per_model": 2,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 10, "pass": False, "error": None, "match": False})
+
+    selfie = FakeSelfie()
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: selfie,
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    runner.run([record])
+    assert selfie.calls == 4
+
+
+def test_pipeline_existing_video_still_runs_oldcam_when_enabled(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-i"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    front.write_bytes(b"front")
+    (case_dir / "gen-videos").mkdir()
+    existing_video = case_dir / "gen-videos" / "existing.mp4"
+    existing_video.write_bytes(b"video")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-i")
+
+    config = merge_automation_defaults({"falai_api_key": "x"})
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+
+    oldcam_called = {"value": False}
+
+    def _run_oldcam(**kwargs):
+        oldcam_called["value"] = True
+        return None
+
+    monkeypatch.setattr("automation.pipeline.run_oldcam", _run_oldcam)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert oldcam_called["value"] is True

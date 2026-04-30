@@ -66,3 +66,21 @@ def test_manifest_load_if_exists_returns_none_for_bad_json(tmp_path: Path):
     manifest_path.write_text("{ bad json", encoding="utf-8")
     loaded = AutomationManifest.load_if_exists(manifest_path)
     assert loaded is None
+
+
+def test_manifest_load_if_exists_backs_up_non_dict_payload(tmp_path: Path):
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest_path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+    loaded = AutomationManifest.load_if_exists(manifest_path)
+    assert loaded is None
+    backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
+    assert backups
+
+
+def test_manifest_load_if_exists_backs_up_wrong_schema(tmp_path: Path):
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest_path.write_text(json.dumps({"schema_version": 999, "cases": {}}), encoding="utf-8")
+    loaded = AutomationManifest.load_if_exists(manifest_path)
+    assert loaded is None
+    backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
+    assert backups
