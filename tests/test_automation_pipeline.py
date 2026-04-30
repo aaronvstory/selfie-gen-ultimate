@@ -26,13 +26,15 @@ class FakeOutpaint:
 class FakeSelfie:
     def __init__(self):
         self.calls = 0
+        self.last_prompt = None
 
     def set_progress_callback(self, _cb):
         return None
 
     def generate(self, image_path, prompt, output_folder, model_endpoint="", **kwargs):
-        del prompt, model_endpoint, kwargs
+        del model_endpoint, kwargs
         self.calls += 1
+        self.last_prompt = prompt
         out = Path(output_folder) / f"{Path(image_path).stem}_sim85_001.png"
         out.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (64, 64), (110, 110, 110)).save(out)
@@ -55,7 +57,7 @@ def test_pipeline_success_case(tmp_path: Path, monkeypatch):
     case_dir = tmp_path / "case-a"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-a")
 
     config = merge_automation_defaults({"falai_api_key": "x", "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1})
@@ -86,7 +88,7 @@ def test_pipeline_similarity_manual_review(tmp_path: Path, monkeypatch):
     case_dir = tmp_path / "case-b"
     case_dir.mkdir()
     front = case_dir / "front.jpeg"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-b")
 
     config = merge_automation_defaults({"falai_api_key": "x", "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1})
@@ -117,7 +119,7 @@ def test_pipeline_skips_video_when_existing(tmp_path: Path, monkeypatch):
     case_dir = tmp_path / "case-c"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     (case_dir / "gen-videos").mkdir()
     existing_video = case_dir / "gen-videos" / "existing.mp4"
     existing_video.write_bytes(b"video")
@@ -153,7 +155,7 @@ def test_pipeline_oldcam_required_failure_marks_case_failed(tmp_path: Path, monk
     case_dir = tmp_path / "case-d"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-d")
 
     config = merge_automation_defaults(
@@ -190,7 +192,7 @@ def test_pipeline_increment_mode_generates_incremented_files(tmp_path: Path, mon
     case_dir = tmp_path / "case-e"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-e")
 
     config = merge_automation_defaults(
@@ -235,7 +237,7 @@ def test_pipeline_overwrite_mode_reuses_base_output_name(tmp_path: Path, monkeyp
     case_dir = tmp_path / "case-f"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-f")
 
     config = merge_automation_defaults(
@@ -297,7 +299,7 @@ def test_pipeline_manual_review_when_selfie_disabled(tmp_path: Path, monkeypatch
     case_dir = tmp_path / "case-g"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-g")
 
     config = merge_automation_defaults(
@@ -331,7 +333,7 @@ def test_pipeline_honors_selfie_max_attempts(tmp_path: Path, monkeypatch):
     case_dir = tmp_path / "case-h"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-h")
 
     config = merge_automation_defaults(
@@ -369,7 +371,7 @@ def test_pipeline_existing_video_still_runs_oldcam_when_enabled(tmp_path: Path, 
     case_dir = tmp_path / "case-i"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     (case_dir / "gen-videos").mkdir()
     existing_video = case_dir / "gen-videos" / "existing.mp4"
     existing_video.write_bytes(b"video")
@@ -409,7 +411,7 @@ def test_pipeline_extract_disabled_stays_skipped_when_file_exists(tmp_path: Path
     case_dir = tmp_path / "case-j"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     extracted = case_dir / "extracted.png"
     Image.new("RGB", (32, 32), (10, 10, 10)).save(extracted)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-j")
@@ -445,7 +447,7 @@ def test_pipeline_extract_disabled_missing_file_marks_manual_review(tmp_path: Pa
     case_dir = tmp_path / "case-k"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-k")
 
     config = merge_automation_defaults(
@@ -478,7 +480,7 @@ def test_pipeline_video_disabled_skips_oldcam_without_video(tmp_path: Path, monk
     case_dir = tmp_path / "case-l"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-l")
 
     config = merge_automation_defaults(
@@ -522,7 +524,7 @@ def test_pipeline_video_disabled_oldcam_required_fails(tmp_path: Path, monkeypat
     case_dir = tmp_path / "case-m"
     case_dir.mkdir()
     front = case_dir / "front.png"
-    front.write_bytes(b"front")
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-m")
 
     config = merge_automation_defaults(
@@ -665,6 +667,79 @@ def test_pipeline_marks_active_selfie_step_failed_on_exception(tmp_path: Path, m
     assert manifest.data["cases"][record.relative_key].get("active_step") is None
 
 
+def test_pipeline_similarity_backend_error_marks_manual_review_unavailable(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-sim-error"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-sim-error")
+
+    config = merge_automation_defaults({"falai_api_key": "x"})
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr(
+        "automation.pipeline.compute_face_similarity_details",
+        lambda *args, **kwargs: {"score": 0, "pass": False, "error": "backend unavailable", "match": False},
+    )
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["manual_review"] == 1
+    gate = manifest.data["cases"][record.relative_key]["steps"]["similarity_gate"]
+    assert gate["status"] == "manual_review"
+    assert "similarity unavailable: backend unavailable" == gate["error"]
+    assert gate["meta"]["error"] == "backend unavailable"
+
+
+def test_pipeline_passes_selected_selfie_prompt_slot(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-selfie-slot"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-selfie-slot")
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "automation_selfie_prompt_slot": 2,
+            "automation_selfie_prompts": {"1": "slot1", "2": "slot2 prompt identity preserve"},
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    selfie = FakeSelfie()
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: selfie,
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert selfie.last_prompt == "slot2 prompt identity preserve"
+
+
 def test_pipeline_missing_manifest_video_skips_optional_oldcam_without_call(tmp_path: Path, monkeypatch):
     case_dir = tmp_path / "case-q"
     case_dir.mkdir()
@@ -774,7 +849,7 @@ def test_pipeline_selfie_expand_failure_is_terminal(tmp_path: Path, monkeypatch)
 
     class FailingSelfieExpand(FakeOutpaint):
         def outpaint(self, image_path, output_folder, output_path=None, **kwargs):
-            if "expand_left" in kwargs:
+            if "expand_left" in kwargs and "extracted_sim85" in str(image_path):
                 return None
             return super().outpaint(image_path, output_folder, output_path=output_path, **kwargs)
 

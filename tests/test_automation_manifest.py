@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from automation.manifest import AutomationManifest
+from automation.config import merge_automation_defaults
 
 
 def test_manifest_create_update_and_resume(tmp_path: Path):
@@ -168,3 +169,12 @@ def test_manifest_create_or_load_invalid_utf8_backs_up_and_raises(tmp_path: Path
 
     backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
     assert len(backups) == 1
+
+
+def test_automation_defaults_use_percent_and_nano_model():
+    merged = merge_automation_defaults({})
+    assert merged["automation_front_expand_mode"] == "percent"
+    assert merged["automation_front_expand_percent"] == 30
+    assert merged["automation_selfie_expand_mode"] == "percent"
+    assert merged["automation_selfie_expand_percent"] == 30
+    assert merged["automation_selfie_models"] == ["fal-ai/nano-banana-2/edit"]

@@ -27,8 +27,11 @@ from path_utils import (
 from kling_generator_falai import FalAIKlingGenerator
 from automation.config import merge_automation_defaults, from_app_config
 from automation.discovery import discover_case_folders, detect_existing_outputs
+from automation.logger import key_status, resolve_automation_log_path
 from automation.manifest import AutomationManifest
 from automation.pipeline import AutoPipelineRunner
+from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies
+from selfie_generator import SelfieGenerator
 
 
 class KlingAutomationUI:
@@ -447,6 +450,8 @@ class KlingAutomationUI:
         print()
         root_value = self.automation_root_folder or "(not set)"
         print(f"  Automation root: \033[97m{root_value}\033[0m")
+        for line in self._automation_status_lines():
+            print(f"  {line}")
         print()
         print("  \033[93m1\033[0m   End-to-End Auto Pipeline")
         print("  \033[93m2\033[0m   Scan automation root / preview cases")
@@ -1326,6 +1331,68 @@ class KlingAutomationUI:
             safe_manifest_name = "automation_manifest.json"
         return Path(self.automation_root_folder) / safe_manifest_name
 
+    def _resolve_provider(self, configured_provider: str) -> str:
+        normalized = str(configured_provider or "auto").strip().lower()
+        if normalized in {"bfl", "fal"}:
+            return normalized
+        if str(self.config.get("bfl_api_key", "")).strip():
+            return "bfl"
+        return "fal"
+
+    def _selfie_model_label_map(self) -> Dict[str, str]:
+        return {item.get("endpoint", ""): item.get("label", item.get("endpoint", "")) for item in SelfieGenerator.get_available_models()}
+
+    def _ensure_selfie_prompt_slots(self) -> None:
+        prompts = self.config.get("automation_selfie_prompts")
+        if not isinstance(prompts, dict):
+            prompts = {}
+        for i in range(1, 11):
+            prompts.setdefault(str(i), "")
+        if not prompts.get("1"):
+            prompts["1"] = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+        self.config["automation_selfie_prompts"] = prompts
+        slot = int(self.config.get("automation_selfie_prompt_slot", 1))
+        if slot < 1 or slot > 10:
+            slot = 1
+        self.config["automation_selfie_prompt_slot"] = slot
+
+    def _get_selected_selfie_prompt(self) -> Tuple[str, str, str]:
+        self._ensure_selfie_prompt_slots()
+        slot = str(self.config.get("automation_selfie_prompt_slot", 1))
+        prompt = str(self.config.get("automation_selfie_prompts", {}).get(slot, "") or "").strip()
+        if prompt:
+            return slot, prompt, f"slot:{slot}"
+        default_prompt = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+        return slot, default_prompt, "default_seeded_prompt"
+
+    def _oldcam_readiness_status(self) -> str:
+        repo_root = Path(__file__).resolve().parent
+        versions = discover_oldcam_versions(repo_root)
+        deps_ok, _deps_err = ensure_oldcam_dependencies()
+        if not versions:
+            return "unavailable(no version)"
+        if not deps_ok:
+            return "unavailable(deps)"
+        return f"ready({','.join(versions)})"
+
+    def _automation_status_lines(self) -> List[str]:
+        model_labels = self._selfie_model_label_map()
+        selfie_models = [model_labels.get(x, x) for x in list(self.config.get("automation_selfie_models", []))]
+        selfie_slot, _selfie_prompt, selfie_prompt_source = self._get_selected_selfie_prompt()
+        front_configured = str(self.config.get("automation_front_expand_provider", "auto"))
+        selfie_configured = str(self.config.get("automation_selfie_expand_provider", "auto"))
+        lines = [
+            f"root={self.automation_root_folder or '(not set)'} max_cases={self._read_max_cases_setting()}",
+            f"keys fal={key_status(self.config.get('falai_api_key'))} bfl={key_status(self.config.get('bfl_api_key'))}",
+            f"front mode={self.config.get('automation_front_expand_mode')} pct={self.config.get('automation_front_expand_percent', 30)} provider={front_configured}->{self._resolve_provider(front_configured)}",
+            f"selfie expand mode={self.config.get('automation_selfie_expand_mode')} pct={self.config.get('automation_selfie_expand_percent', 30)} provider={selfie_configured}->{self._resolve_provider(selfie_configured)}",
+            f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
+            f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', 1)}",
+            f"oldcam version={self.config.get('automation_oldcam_version', 'v8')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
+            f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
+        ]
+        return lines
+
     def _display_automation_menu(self):
         self.display_header()
         self.print_magenta("═" * 79)
@@ -1334,6 +1401,8 @@ class KlingAutomationUI:
         print()
         current_root = self.automation_root_folder or "(not set)"
         print(f"  Root folder: \033[97m{current_root}\033[0m")
+        for line in self._automation_status_lines():
+            print(f"  {line}")
         print()
         print("  \033[93m1\033[0m   Select automation root folder")
         print("  \033[93m2\033[0m   Scan / preview cases")
@@ -1605,16 +1674,44 @@ class KlingAutomationUI:
         _ask("Extract output name", "automation_extract_output_name", str, lambda v: len(v) > 0)
         _ask("Crop multiplier", "automation_crop_multiplier", float, lambda v: v > 0)
         _ask_bool("Selfie generation enabled", "automation_selfie_enabled")
-        models_raw = input(
-            f"Selfie model endpoints comma-separated (current: {self.config.get('automation_selfie_models')}) [Enter keep]: "
-        ).strip()
-        if models_raw:
+        current_models = list(self.config.get("automation_selfie_models", []))
+        print("Selfie model selection:")
+        print("  1) Nano Banana 2 Edit")
+        print("  2) GPT Image 2 Edit")
+        print("  3) Both")
+        print("  4) Custom endpoints")
+        model_choice = input(f"Choose model set (current: {current_models}) [Enter keep]: ").strip()
+        if model_choice == "1":
+            self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
+        elif model_choice == "2":
+            self.config["automation_selfie_models"] = ["openai/gpt-image-2/edit"]
+        elif model_choice == "3":
+            self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit", "openai/gpt-image-2/edit"]
+        elif model_choice == "4":
+            models_raw = input("Custom selfie model endpoints comma-separated: ").strip()
             models = [m.strip() for m in models_raw.split(",") if m.strip()]
             if models:
                 self.config["automation_selfie_models"] = models
         _ask_choice("Selfie model policy", "automation_selfie_model_policy", ["first_pass", "all"])
         _ask("Max attempts per model", "automation_selfie_max_attempts_per_model", int, lambda v: v > 0)
         _ask("Similarity threshold", "automation_similarity_threshold", int, lambda v: 0 <= v <= 100)
+        self._ensure_selfie_prompt_slots()
+        current_slot = int(self.config.get("automation_selfie_prompt_slot", 1))
+        current_prompt = str(self.config.get("automation_selfie_prompts", {}).get(str(current_slot), "") or "")
+        print(f"Selfie prompt slot: {current_slot}")
+        print(f"Current selfie prompt preview: {(current_prompt[:120] + '...') if len(current_prompt) > 120 else current_prompt}")
+        slot_raw = input("Switch selfie prompt slot [1-10, Enter keep]: ").strip()
+        if slot_raw.isdigit() and 1 <= int(slot_raw) <= 10:
+            self.config["automation_selfie_prompt_slot"] = int(slot_raw)
+            current_slot = int(slot_raw)
+        edit_current = input("Edit active selfie prompt now? [y/N]: ").strip().lower()
+        if edit_current in {"y", "yes"}:
+            new_prompt = input("Enter selfie prompt text: ").strip()
+            if new_prompt:
+                self.config["automation_selfie_prompts"][str(current_slot)] = new_prompt
+        reset_current = input("Reset active selfie slot to default prompt? [y/N]: ").strip().lower()
+        if reset_current in {"y", "yes"}:
+            self.config["automation_selfie_prompts"][str(current_slot)] = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
 
         print("\n[Selfie Expansion / Video / Loop-Oldcam]")
         _ask_bool("Selfie expansion enabled", "automation_selfie_expand_enabled")
@@ -1627,6 +1724,9 @@ class KlingAutomationUI:
         _ask_bool("Oldcam enabled", "automation_oldcam_enabled")
         _ask_choice("Oldcam version", "automation_oldcam_version", ["v7", "v8", "all"])
         _ask_bool("Oldcam required", "automation_oldcam_required")
+        _ask_bool("Automation verbose logging", "automation_verbose_logging")
+        _ask("Automation log max bytes", "automation_log_max_bytes", int, lambda v: v > 0)
+        _ask("Automation log backup count", "automation_log_backup_count", int, lambda v: v >= 1)
 
         self.save_config()
         input("Settings saved. Press Enter to continue...")
@@ -1729,6 +1829,7 @@ class KlingAutomationUI:
             input("Press Enter to continue...")
             return
 
+        self.config["automation_root_folder"] = self.automation_root_folder
         runner = AutoPipelineRunner(
             config=self.config,
             automation_config=from_app_config(self.config),
@@ -1748,6 +1849,12 @@ class KlingAutomationUI:
         print(f"  running this batch: {len(runnable_cases)}")
         print(f"  reprocess mode: {self.config.get('automation_reprocess_mode', 'skip')}")
         print(f"  skip selfie/video existing: {self.config.get('automation_skip_if_selfie_exists', True)} / {self.config.get('automation_skip_if_video_exists', True)}")
+        for line in self._automation_status_lines():
+            print(f"  {line}")
+        selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
+        prompt_preview = selfie_prompt if len(selfie_prompt) <= 160 else f"{selfie_prompt[:160]}..."
+        print(f"  selfie prompt slot/source: {selfie_slot} / {selfie_source}")
+        print(f"  selfie prompt preview: {prompt_preview}")
         stats, run_error = self._run_with_live_dashboard(runner, runnable_cases, manifest)
         if run_error:
             self.print_red(f"Automation run failed: {run_error}")
@@ -1803,13 +1910,7 @@ class KlingAutomationUI:
         worker = threading.Thread(target=_worker, daemon=True)
         worker.start()
 
-        progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[bold cyan]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-        )
-        task_id = progress.add_task("Automation batch", total=len(run_cases))
+        total_cases = len(run_cases)
         steps = {
             "front_expand": "1 front expand",
             "extract_portrait": "2 extract portrait",
@@ -1819,7 +1920,8 @@ class KlingAutomationUI:
             "video_generate": "6 kling video",
             "oldcam": "7 loop/oldcam",
         }
-        with Live(console=Console(), refresh_per_second=5) as live:
+
+        with Live(console=Console(), refresh_per_second=4, transient=True) as live:
             while worker.is_alive():
                 cases = manifest.data.get("cases", {})
                 completed = 0
@@ -1846,15 +1948,15 @@ class KlingAutomationUI:
                         if sim is not None:
                             state["similarity"] = str(sim)
                 done = completed + failed + manual_review + skipped
-                progress.update(task_id, completed=done)
                 state["current_case"] = active_case
                 state["current_step"] = active_step
                 remaining = max(0, len(run_cases) - done)
                 if state["level"] in {"error", "warning"}:
                     state["error_reason"] = state["message"]
-                panel = Panel(
-                    Group(
-                        progress,
+                progress_pct = int((done / total_cases) * 100) if total_cases else 100
+                dashboard = "\n".join(
+                    [
+                        f"Progress: {done}/{total_cases} ({progress_pct}%)",
                         f"Current case: {state['current_case']}",
                         f"Current step: {state['current_step']}",
                         f"Similarity: {state['similarity']}",
@@ -1862,9 +1964,9 @@ class KlingAutomationUI:
                         f"Errors/manual review reason: {state['error_reason']}",
                         f"completed={completed} failed={failed} manual_review={manual_review} skipped={skipped} remaining={remaining}",
                         f"Event: [{state['level']}] {state['message']}",
-                    ),
-                    title="Automation Live Progress",
+                    ]
                 )
+                panel = Panel(dashboard, title="Automation Live Progress")
                 live.update(panel)
                 time.sleep(0.2)
             worker.join()

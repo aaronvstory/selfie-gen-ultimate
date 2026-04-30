@@ -6,8 +6,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from PIL import Image, ImageOps
 
-from automation.config import AutomationConfig
+from automation.config import AutomationConfig, DEFAULT_SELFIE_PROMPT
 from automation.discovery import CaseRecord, detect_existing_outputs
+from automation.logger import build_safe_config_snapshot, create_automation_logger
 from automation.manifest import AutomationManifest
 from automation.oldcam import run_oldcam
 from face_crop_service import extract_portrait_crop
@@ -62,10 +63,19 @@ class AutoPipelineRunner:
             ),
         )
         self.last_case_results: Dict[str, Dict[str, Any]] = {}
+        self.logger, self.log_path = create_automation_logger(self.config, self.config.get("automation_root_folder"))
+        self.verbose_logging = bool(self.config.get("automation_verbose_logging", self.config.get("verbose_logging", True)))
 
     def _report(self, message: str, level: str = "info") -> None:
         if self.progress_cb:
             self.progress_cb(message, level)
+        if self.verbose_logging:
+            if level == "error":
+                self.logger.error(message)
+            elif level == "warning":
+                self.logger.warning(message)
+            else:
+                self.logger.info(message)
 
     def _effective_reprocess_mode(self) -> str:
         if not self.automation.get("automation_allow_reprocess", False):
@@ -103,6 +113,27 @@ class AutoPipelineRunner:
             return "bfl"
         return "fal"
 
+    def resolve_provider_summary(self) -> Dict[str, str]:
+        front_configured = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
+        selfie_configured = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
+        return {
+            "front_configured": front_configured,
+            "front_resolved": self._resolve_outpaint_provider(front_configured),
+            "selfie_configured": selfie_configured,
+            "selfie_resolved": self._resolve_outpaint_provider(selfie_configured),
+        }
+
+    def resolve_selfie_prompt(self) -> Dict[str, Any]:
+        slot = str(self.automation.get("automation_selfie_prompt_slot", 1))
+        prompts = self.automation.get("automation_selfie_prompts", {}) or {}
+        prompt = str(prompts.get(slot, "") or "").strip()
+        if prompt:
+            source = f"slot:{slot}"
+        else:
+            prompt = DEFAULT_SELFIE_PROMPT
+            source = "default_seeded_prompt"
+        return {"slot": slot, "prompt": prompt, "source": source}
+
     def _finalize_case(self, case_entry: Dict[str, Any], final_status: str) -> str:
         status_value = "complete" if final_status == "completed" else final_status
         case_entry["status"] = status_value
@@ -117,8 +148,9 @@ class AutoPipelineRunner:
         video_enabled = bool(self.automation.get("automation_video_enabled", True))
         front_expand_enabled = bool(self.automation.get("automation_front_expand_enabled", True))
         selfie_expand_enabled = bool(self.automation.get("automation_selfie_expand_enabled", True))
-        front_provider = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
-        selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
+        provider_summary = self.resolve_provider_summary()
+        front_provider = provider_summary["front_configured"]
+        selfie_provider = provider_summary["selfie_configured"]
 
         if video_enabled and not fal_key:
             issues.append("Missing falai_api_key in config (required for Kling video step).")
@@ -148,21 +180,35 @@ class AutoPipelineRunner:
         return issues
 
     def run(self, cases: List[CaseRecord]) -> Dict[str, int]:
+        self.logger.info("automation run start")
+        self.logger.info("automation config snapshot: %s", build_safe_config_snapshot(self.config, self.config.get("automation_root_folder")))
+        self.logger.info("provider summary: %s", self.resolve_provider_summary())
+        self.logger.info(
+            "selection summary: selfie_models=%s selfie_prompt_slot=%s video_model=%s kling_prompt_slot=%s",
+            self.automation.get("automation_selfie_models"),
+            self.automation.get("automation_selfie_prompt_slot", 1),
+            self.config.get("model_display_name") or self.config.get("current_model"),
+            self.config.get("current_prompt_slot", 1),
+        )
         validation_issues = self.validate_configuration()
         if validation_issues:
+            self.logger.error("automation validation failed: %s", validation_issues)
             raise ValueError("Configuration validation failed: " + "; ".join(validation_issues))
 
         stats = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
         for case in cases:
+            self.logger.info("case start: %s", case.relative_key)
             self.manifest.ensure_case(case.relative_key, case.case_dir, case.front_path)
             if self.automation.get("automation_skip_completed", True) and self.manifest.case_is_complete_and_valid(case.relative_key):
                 stats["skipped"] += 1
                 self.last_case_results[case.relative_key] = {"status": "skipped", "reason": "already complete"}
+                self.logger.info("case skipped complete: %s", case.relative_key)
                 continue
             try:
                 final_status = self._run_case(case)
             except Exception as exc:
                 self._report(f"[{case.relative_key}] case failed: {exc}", "error")
+                self.logger.exception("case failed with exception: %s", case.relative_key)
                 active_step = self.manifest.data.get("cases", {}).get(case.relative_key, {}).get("active_step")
                 if active_step:
                     try:
@@ -177,7 +223,13 @@ class AutoPipelineRunner:
                 continue
 
             stats[final_status] = stats.get(final_status, 0) + 1
-            self.last_case_results[case.relative_key] = {"status": final_status, "reason": ""}
+            existing_result = self.last_case_results.get(case.relative_key, {})
+            self.last_case_results[case.relative_key] = {
+                "status": final_status,
+                "reason": str(existing_result.get("reason", "")),
+            }
+            self.logger.info("case end: %s status=%s", case.relative_key, final_status)
+        self.logger.info("automation run complete stats=%s", stats)
         return stats
 
     def _run_case(self, case: CaseRecord) -> str:
@@ -196,8 +248,22 @@ class AutoPipelineRunner:
         selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
         resolved_front_provider = self._resolve_outpaint_provider(front_provider)
         resolved_selfie_provider = self._resolve_outpaint_provider(selfie_provider)
-        case_entry["policy"] = {"reprocess_mode": reprocess_mode}
+        case_entry["policy"] = {
+            "reprocess_mode": reprocess_mode,
+            "front_provider_configured": front_provider,
+            "front_provider_resolved": resolved_front_provider,
+            "selfie_provider_configured": selfie_provider,
+            "selfie_provider_resolved": resolved_selfie_provider,
+        }
         self.manifest.save_atomic()
+        self.logger.info(
+            "case %s providers front=%s->%s selfie=%s->%s",
+            case_key,
+            front_provider,
+            resolved_front_provider,
+            selfie_provider,
+            resolved_selfie_provider,
+        )
 
         # Step 1: front expand
         front_expanded = existing.front_expanded or (case_dir / self.automation.get("automation_front_output_name", "front-expanded.png"))
@@ -248,6 +314,7 @@ class AutoPipelineRunner:
                         "expand_top": int(plan["top"]),
                         "expand_bottom": int(plan["bottom"]),
                     }
+                    self.logger.info("case %s front expand geometry width=%s height=%s pct=%s plan=%s", case_key, width, height, pct, plan)
                 self._set_active_step(case_entry, "front_expand")
                 self.manifest.update_step(case_key, "front_expand", "running")
                 result = outpaint.outpaint(
@@ -374,9 +441,18 @@ class AutoPipelineRunner:
         selfie.set_progress_callback(self.progress_cb)
         selfie_folder = case_dir / "gen-images"
         selfie_folder.mkdir(exist_ok=True)
-        model_endpoints = list(self.automation.get("automation_selfie_models", ["openai/gpt-image-2/edit"]))
+        model_endpoints = list(self.automation.get("automation_selfie_models", ["fal-ai/nano-banana-2/edit"]))
+        selfie_prompt_ctx = self.resolve_selfie_prompt()
         threshold = int(self.automation.get("automation_similarity_threshold", 80))
         max_attempts = max(1, int(self.automation.get("automation_selfie_max_attempts_per_model", 1)))
+        self.logger.info(
+            "case %s selfie config models=%s prompt_slot=%s prompt_source=%s threshold=%s",
+            case_key,
+            model_endpoints,
+            selfie_prompt_ctx["slot"],
+            selfie_prompt_ctx["source"],
+            threshold,
+        )
 
         best_path: Optional[str] = str(existing.selfie_candidate) if (
             reprocess_mode == "skip"
@@ -384,18 +460,25 @@ class AutoPipelineRunner:
             and self.automation.get("automation_skip_if_selfie_exists", True)
         ) else None
         best_score = -1
+        best_similarity_meta: Dict[str, Any] = {"score": None, "threshold": threshold, "match": None, "error": None}
         self._set_active_step(case_entry, "selfie_generate")
         self.manifest.update_step(case_key, "selfie_generate", "running")
         if best_path:
             score_info = compute_face_similarity_details(str(extracted_path), best_path, report_cb=self.progress_cb)
             best_score = int(score_info.get("score", 0))
+            best_similarity_meta = {
+                "score": score_info.get("score"),
+                "threshold": threshold,
+                "match": score_info.get("match"),
+                "error": score_info.get("error"),
+            }
             self._report(f"[{case_key}] Reused existing selfie: {Path(best_path).name}", "info")
         else:
             for endpoint in model_endpoints:
                 for _attempt in range(max_attempts):
                     generated = selfie.generate(
                         image_path=str(extracted_path),
-                        prompt=self.config.get("selfie_prompt_template", "portrait selfie"),
+                        prompt=selfie_prompt_ctx["prompt"],
                         output_folder=str(selfie_folder),
                         model_endpoint=endpoint,
                     )
@@ -406,6 +489,12 @@ class AutoPipelineRunner:
                     if score > best_score:
                         best_score = score
                         best_path = generated
+                        best_similarity_meta = {
+                            "score": score_info.get("score"),
+                            "threshold": threshold,
+                            "match": score_info.get("match"),
+                            "error": score_info.get("error"),
+                        }
                     if self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass" and score >= threshold:
                         break
                 if self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass" and best_score >= threshold:
@@ -419,8 +508,27 @@ class AutoPipelineRunner:
             "selfie_generate",
             "complete",
             output=best_path,
-            meta={"best_score": best_score, **self._policy_meta("selfie_generate", bool(existing.selfie_candidate and best_path == str(existing.selfie_candidate)), reprocess_mode)},
+            meta={
+                "best_score": best_score,
+                "selfie_prompt_slot": selfie_prompt_ctx["slot"],
+                "selfie_prompt_source": selfie_prompt_ctx["source"],
+                **self._policy_meta("selfie_generate", bool(existing.selfie_candidate and best_path == str(existing.selfie_candidate)), reprocess_mode),
+            },
         )
+        self.logger.info("case %s similarity details=%s", case_key, best_similarity_meta)
+        if best_similarity_meta.get("error"):
+            similarity_error = str(best_similarity_meta.get("error"))
+            self.manifest.update_step(
+                case_key,
+                "similarity_gate",
+                "manual_review",
+                output=best_path,
+                error=f"similarity unavailable: {similarity_error}",
+                meta=best_similarity_meta,
+            )
+            self.last_case_results[case_key] = {"status": "manual_review", "reason": f"similarity unavailable: {similarity_error}"}
+            self.logger.warning("case %s similarity unavailable: %s", case_key, similarity_error)
+            return self._finalize_case(case_entry, "manual_review")
         if best_score < threshold:
             self.manifest.update_step(
                 case_key,
@@ -428,15 +536,16 @@ class AutoPipelineRunner:
                 "manual_review",
                 output=best_path,
                 error=f"similarity {best_score} below threshold {threshold}",
-                meta={"score": best_score, "threshold": threshold},
+                meta=best_similarity_meta,
             )
+            self.last_case_results[case_key] = {"status": "manual_review", "reason": f"similarity {best_score} below threshold {threshold}"}
             return self._finalize_case(case_entry, "manual_review")
         self.manifest.update_step(
             case_key,
             "similarity_gate",
             "complete",
             output=best_path,
-            meta={"score": best_score, "threshold": threshold},
+            meta=best_similarity_meta,
         )
 
         # Step 5: selfie expand
@@ -474,6 +583,7 @@ class AutoPipelineRunner:
                     "top": int(plan["top"]),
                     "bottom": int(plan["bottom"]),
                 }
+                self.logger.info("case %s selfie expand geometry width=%s height=%s pct=%s plan=%s", case_key, width, height, pct, plan)
                 self._set_active_step(case_entry, "selfie_expand")
                 self.manifest.update_step(case_key, "selfie_expand", "running")
                 expanded_output = case_dir / "gen-images" / f"{Path(best_path).stem}-expanded.png"
@@ -573,6 +683,7 @@ class AutoPipelineRunner:
             )
             selected_video_path = Path(selected_video) if selected_video else None
             if selected_video_path and selected_video_path.exists() and selected_video_path.suffix.lower() == ".mp4":
+                self.logger.info("case %s oldcam readiness=ready version=%s required=%s", case_key, self.automation.get("automation_oldcam_version", "v8"), bool(self.automation.get("automation_oldcam_required", False)))
                 case_entry["active_step"] = "oldcam"
                 self._set_active_step(case_entry, "oldcam")
                 self.manifest.update_step(case_key, "oldcam", "running")
@@ -583,6 +694,7 @@ class AutoPipelineRunner:
                     progress_cb=self.progress_cb,
                 )
                 if oldcam_output:
+                    self.logger.info("case %s oldcam output=%s", case_key, oldcam_output)
                     self.manifest.update_step(
                         case_key,
                         "oldcam",
@@ -592,6 +704,7 @@ class AutoPipelineRunner:
                     )
                 else:
                     required = bool(self.automation.get("automation_oldcam_required", False))
+                    self.logger.warning("case %s oldcam failed required=%s", case_key, required)
                     fail_status = "failed" if required else "skipped"
                     self.manifest.update_step(
                         case_key,
@@ -604,6 +717,7 @@ class AutoPipelineRunner:
                         return self._finalize_case(case_entry, "failed")
             else:
                 required = bool(self.automation.get("automation_oldcam_required", False))
+                self.logger.warning("case %s oldcam readiness=not-ready required=%s", case_key, required)
                 reason = "missing or non-mp4 video for oldcam"
                 self.manifest.update_step(
                     case_key,
