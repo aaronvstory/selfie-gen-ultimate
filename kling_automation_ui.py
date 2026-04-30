@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import logging
 import tkinter as tk
 from tkinter import filedialog
-from rich.console import Console
+from rich.console import Console, Group
 from rich.table import Table
 from rich.live import Live
 from rich.panel import Panel
@@ -1825,14 +1825,16 @@ class KlingAutomationUI:
                 if state["level"] in {"error", "warning"}:
                     state["error_reason"] = state["message"]
                 panel = Panel(
-                    f"{progress}\n"
-                    f"Current case: {state['current_case']}\n"
-                    f"Current step: {state['current_step']}\n"
-                    f"Similarity: {state['similarity']}\n"
-                    f"Last output: {state['last_output']}\n"
-                    f"Errors/manual review reason: {state['error_reason']}\n"
-                    f"completed={completed} failed={failed} manual_review={manual_review} skipped={skipped} remaining={remaining}\n"
-                    f"Event: [{state['level']}] {state['message']}",
+                    Group(
+                        progress,
+                        f"Current case: {state['current_case']}",
+                        f"Current step: {state['current_step']}",
+                        f"Similarity: {state['similarity']}",
+                        f"Last output: {state['last_output']}",
+                        f"Errors/manual review reason: {state['error_reason']}",
+                        f"completed={completed} failed={failed} manual_review={manual_review} skipped={skipped} remaining={remaining}",
+                        f"Event: [{state['level']}] {state['message']}",
+                    ),
                     title="Automation Live Progress",
                 )
                 live.update(panel)
