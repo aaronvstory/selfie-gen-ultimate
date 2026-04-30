@@ -20,9 +20,10 @@ from path_utils import (
 
 # Import the fal.ai KlingBatchGenerator
 from kling_generator_falai import FalAIKlingGenerator
-from automation.config import merge_automation_defaults
+from automation.config import merge_automation_defaults, from_app_config
 from automation.discovery import discover_case_folders, detect_existing_outputs
 from automation.manifest import AutomationManifest
+from automation.pipeline import AutoPipelineRunner
 
 
 class KlingAutomationUI:
@@ -1522,8 +1523,35 @@ class KlingAutomationUI:
         input("\nPress Enter to continue...")
 
     def _run_resume_automation(self):
-        print("\nRunner implementation checkpoint in progress.")
-        print("Current state: foundation complete; orchestration wiring next.")
+        if not self.automation_root_folder:
+            self.print_red("Set automation root folder first.")
+            input("Press Enter to continue...")
+            return
+
+        root = Path(self.automation_root_folder)
+        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        if not records:
+            self.print_yellow("No case folders found.")
+            input("Press Enter to continue...")
+            return
+
+        manifest = AutomationManifest.create_or_load(
+            manifest_path=self._automation_manifest_path(),
+            root_dir=root,
+            config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
+        )
+        runner = AutoPipelineRunner(
+            config=self.config,
+            automation_config=from_app_config(self.config),
+            manifest=manifest,
+            progress_cb=lambda msg, level="info": print(f"[{level}] {msg}"),
+        )
+        stats = runner.run(records)
+        print("\nAutomation run complete.")
+        print(f"  completed: {stats.get('completed', 0)}")
+        print(f"  failed: {stats.get('failed', 0)}")
+        print(f"  manual_review: {stats.get('manual_review', 0)}")
+        print(f"  skipped: {stats.get('skipped', 0)}")
         input("\nPress Enter to continue...")
 
     def run_automation_menu(self):

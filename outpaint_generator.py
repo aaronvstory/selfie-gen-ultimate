@@ -5,10 +5,15 @@ import math
 import time
 import base64
 import logging
+import tempfile
 from io import BytesIO
 from typing import Optional, Callable, Tuple
 from pathlib import Path
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw
+from outpaint_geometry import (
+    compute_centered_aspect_expand_plan,
+    compute_provider_caps,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +139,31 @@ class OutpaintGenerator:
         if self._progress_callback:
             self._progress_callback(msg, level)
 
+    @staticmethod
+    def _prepare_processed_image(image_path: str, max_size: int) -> Image.Image:
+        with Image.open(image_path) as img:
+            img = ImageOps.exif_transpose(img)
+            if img.width > max_size or img.height > max_size:
+                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            if img.mode in ("RGBA", "P", "LA"):
+                img = img.convert("RGB")
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+            return img.copy()
+
+    @staticmethod
+    def _edge_seal_copy(src_img: Image.Image, edge_seal_px: int, color: Tuple[int, int, int]) -> Image.Image:
+        sealed = src_img.copy().convert("RGB")
+        if edge_seal_px <= 0:
+            return sealed
+        width, height = sealed.size
+        if width <= 2 or height <= 2:
+            return sealed
+        seal_px = min(edge_seal_px, max(1, min(width, height) // 3))
+        draw = ImageDraw.Draw(sealed)
+        draw.rectangle([0, 0, width - 1, height - 1], outline=color, width=seal_px)
+        return sealed
+
     def outpaint(
         self,
         image_path: str,
@@ -146,6 +176,10 @@ class OutpaintGenerator:
         output_format: str = "png",
         composite_mode: str = "feathered",
         output_path: Optional[str] = None,
+        provider: Optional[str] = None,
+        document_mode: bool = False,
+        edge_seal_px: int = 0,
+        edge_seal_color: Tuple[int, int, int] = (220, 220, 220),
     ) -> Optional[str]:
         """Outpaint (expand) an image.
 
@@ -165,16 +199,50 @@ class OutpaintGenerator:
         Returns:
             Absolute path to expanded image, or None on failure.
         """
+        selected_provider = (provider or "auto").strip().lower()
+        if selected_provider not in {"auto", "bfl", "fal"}:
+            self._report(f"Invalid provider override: {provider}", "error")
+            return None
+
+        use_bfl = selected_provider == "bfl" or (selected_provider == "auto" and bool(self._bfl_api_key))
+        if selected_provider == "bfl" and not self._bfl_api_key:
+            self._report("Provider override set to bfl but no BFL key configured.", "error")
+            return None
+
+        if document_mode:
+            try:
+                with Image.open(image_path) as src_img:
+                    src_w, src_h = ImageOps.exif_transpose(src_img).size
+                caps = compute_provider_caps("bfl" if use_bfl else "fal")
+                plan = compute_centered_aspect_expand_plan(
+                    orig_w=src_w,
+                    orig_h=src_h,
+                    target_aspect=(3, 4),
+                    caps=caps,
+                )
+                expand_left = int(plan["left"])
+                expand_right = int(plan["right"])
+                expand_top = int(plan["top"])
+                expand_bottom = int(plan["bottom"])
+                self._report(
+                    f"Document mode plan -> L={expand_left} R={expand_right} T={expand_top} B={expand_bottom}",
+                    "debug",
+                )
+            except Exception as exc:
+                self._report(f"Document mode planning failed: {exc}", "warning")
+
         # Auto-select provider: BFL Expand if key available, else fal.ai
-        if self._bfl_api_key:
+        if use_bfl:
             self._report("Using BFL Expand (FLUX Pro 1.0)", "info")
             return self._bfl_outpaint(
                 image_path, output_folder,
                 expand_left, expand_right, expand_top, expand_bottom,
                 prompt, output_format, composite_mode,
                 output_path=output_path,
+                edge_seal_px=edge_seal_px,
+                edge_seal_color=edge_seal_color,
             )
-        self._report("Using fal.ai outpaint (no BFL key)", "info")
+        self._report("Using fal.ai outpaint", "info")
 
         from fal_utils import (
             upload_reference_image,
@@ -205,20 +273,41 @@ class OutpaintGenerator:
                 "progress",
             )
 
-        # Upload with pre-flight max_size
+        # Upload with pre-flight max_size.
+        # Edge seal, when enabled, is only applied to upload copy.
         self._report("Uploading image for outpainting...", "upload")
-        image_url, processed_img, provider = upload_reference_image(
-            image_path=image_path,
-            fal_api_key=self.api_key,
-            max_size=max_upload_size,
-            progress_cb=self._progress_callback,
-            freeimage_api_key=self._freeimage_key,
-        )
+        processed_img = self._prepare_processed_image(image_path=image_path, max_size=max_upload_size)
+        upload_path = image_path
+        temp_upload_path = None
+        if edge_seal_px > 0:
+            sealed_upload = self._edge_seal_copy(processed_img, edge_seal_px, edge_seal_color)
+            fd, temp_upload_path = tempfile.mkstemp(suffix=".jpg")
+            os.close(fd)
+            sealed_upload.save(temp_upload_path, format="JPEG", quality=90)
+            upload_path = temp_upload_path
+            self._report(f"Applied upload-only edge seal ({edge_seal_px}px).", "debug")
+
+        image_url = None
+        uploaded_provider = None
+        try:
+            image_url, _uploaded_processed_img, uploaded_provider = upload_reference_image(
+                image_path=upload_path,
+                fal_api_key=self.api_key,
+                max_size=max_upload_size,
+                progress_cb=self._progress_callback,
+                freeimage_api_key=self._freeimage_key,
+            )
+        finally:
+            if temp_upload_path and os.path.exists(temp_upload_path):
+                try:
+                    os.remove(temp_upload_path)
+                except OSError:
+                    pass
         if not image_url:
             self._report("Failed to upload image", "error")
             return None
-        if provider:
-            self._report(f"Reference upload provider: {provider}", "upload")
+        if uploaded_provider:
+            self._report(f"Reference upload provider: {uploaded_provider}", "upload")
 
         # Build payload — zoom_out_percentage=0 prevents hidden 20% default shrink
         payload = {
@@ -464,6 +553,8 @@ class OutpaintGenerator:
         output_format: str,
         composite_mode: str,
         output_path: Optional[str] = None,
+        edge_seal_px: int = 0,
+        edge_seal_color: Tuple[int, int, int] = (220, 220, 220),
     ) -> Optional[str]:
         """Outpaint via BFL Expand (FLUX Pro 1.0). Returns output path or None."""
         import requests
@@ -533,8 +624,13 @@ class OutpaintGenerator:
             expected_w = img_w + adj_l + adj_r
             expected_h = img_h + adj_t + adj_b
 
+            upload_img = img
+            if edge_seal_px > 0:
+                upload_img = self._edge_seal_copy(img, edge_seal_px, edge_seal_color)
+                self._report(f"Applied upload-only edge seal ({edge_seal_px}px).", "debug")
+
             buf = BytesIO()
-            img.save(buf, format="JPEG", quality=90)
+            upload_img.save(buf, format="JPEG", quality=90)
             image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         except Exception as exc:
             self._report(f"Failed to encode image: {exc}", "error")

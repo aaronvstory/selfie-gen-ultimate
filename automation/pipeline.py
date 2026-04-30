@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+from PIL import Image, ImageOps
+
+from automation.config import AutomationConfig
+from automation.discovery import CaseRecord, detect_existing_outputs
+from automation.manifest import AutomationManifest
+from face_crop_service import extract_portrait_crop
+from face_similarity import compute_face_similarity_details
+from kling_generator_falai import FalAIKlingGenerator
+from outpaint_generator import OutpaintGenerator
+from selfie_generator import SelfieGenerator
+
+
+ProgressCB = Optional[Callable[[str, str], None]]
+
+
+@dataclass
+class PipelineDeps:
+    outpaint_factory: Callable[[], OutpaintGenerator]
+    selfie_factory: Callable[[], SelfieGenerator]
+    video_factory: Callable[[], FalAIKlingGenerator]
+
+
+class AutoPipelineRunner:
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        automation_config: AutomationConfig,
+        manifest: AutomationManifest,
+        progress_cb: ProgressCB = None,
+        deps: Optional[PipelineDeps] = None,
+    ):
+        self.config = config
+        self.automation = automation_config
+        self.manifest = manifest
+        self.progress_cb = progress_cb
+        self.deps = deps or PipelineDeps(
+            outpaint_factory=lambda: OutpaintGenerator(
+                api_key=self.config.get("falai_api_key", ""),
+                freeimage_key=self.config.get("freeimage_api_key"),
+                bfl_api_key=self.config.get("bfl_api_key"),
+            ),
+            selfie_factory=lambda: SelfieGenerator(
+                api_key=self.config.get("falai_api_key", ""),
+                freeimage_key=self.config.get("freeimage_api_key"),
+                bfl_api_key=self.config.get("bfl_api_key"),
+            ),
+            video_factory=lambda: FalAIKlingGenerator(
+                api_key=self.config.get("falai_api_key", ""),
+                verbose=self.config.get("verbose_logging", False),
+                model_endpoint=self.config.get("current_model"),
+                model_display_name=self.config.get("model_display_name"),
+                prompt_slot=int(self.config.get("current_prompt_slot", 1)),
+                freeimage_key=self.config.get("freeimage_api_key"),
+            ),
+        )
+
+    def _report(self, message: str, level: str = "info") -> None:
+        if self.progress_cb:
+            self.progress_cb(message, level)
+
+    @staticmethod
+    def _percent_expand_pixels(image_path: str, pct: int, max_per_side: int = 700) -> Dict[str, int]:
+        with Image.open(image_path) as img:
+            img = ImageOps.exif_transpose(img)
+            width, height = img.size
+        ratio = max(0, pct) / 100.0
+        return {
+            "left": min(max_per_side, int(width * ratio)),
+            "right": min(max_per_side, int(width * ratio)),
+            "top": min(max_per_side, int(height * ratio)),
+            "bottom": min(max_per_side, int(height * ratio)),
+        }
+
+    def run(self, cases: List[CaseRecord]) -> Dict[str, int]:
+        stats = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
+        for case in cases:
+            self.manifest.ensure_case(case.relative_key, case.case_dir, case.front_path)
+            if self.automation.get("automation_skip_completed", True) and self.manifest.case_is_complete_and_valid(case.relative_key):
+                stats["skipped"] += 1
+                continue
+            try:
+                final_status = self._run_case(case)
+            except Exception as exc:
+                self._report(f"[{case.relative_key}] case failed: {exc}", "error")
+                self.manifest.data["cases"][case.relative_key]["status"] = "failed"
+                self.manifest.save_atomic()
+                stats["failed"] += 1
+                continue
+
+            stats[final_status] = stats.get(final_status, 0) + 1
+        return stats
+
+    def _run_case(self, case: CaseRecord) -> str:
+        case_dir = case.case_dir
+        case_key = case.relative_key
+        existing = detect_existing_outputs(case_dir)
+        case_entry = self.manifest.data["cases"][case_key]
+        case_entry["status"] = "running"
+        self.manifest.save_atomic()
+
+        outpaint = self.deps.outpaint_factory()
+        outpaint.set_progress_callback(self.progress_cb)
+
+        # Step 1: front expand
+        front_expanded = existing.front_expanded or (case_dir / self.automation.get("automation_front_output_name", "front-expanded.png"))
+        if self.automation.get("automation_front_expand_enabled", True):
+            self.manifest.update_step(case_key, "front_expand", "running")
+            result = outpaint.outpaint(
+                image_path=str(case.front_path),
+                output_folder=str(case_dir),
+                output_path=str(front_expanded),
+                provider=self.automation.get("automation_front_expand_provider", "auto").replace("auto", ""),
+                document_mode=self.automation.get("automation_front_expand_mode") == "document_3x4",
+                edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
+                if self.automation.get("automation_front_edge_seal_enabled", True)
+                else 0,
+            )
+            if not result:
+                self.manifest.update_step(case_key, "front_expand", "failed", error="front expansion failed")
+                case_entry["status"] = "failed"
+                self.manifest.save_atomic()
+                return "failed"
+            self.manifest.update_step(case_key, "front_expand", "complete", output=str(result))
+            front_expanded = Path(result)
+        else:
+            self.manifest.update_step(case_key, "front_expand", "skipped", output=str(front_expanded))
+
+        # Step 2: extract portrait from original front
+        extracted_path = case_dir / self.automation.get("automation_extract_output_name", "extracted.png")
+        self.manifest.update_step(case_key, "extract_portrait", "running")
+        extract_meta = extract_portrait_crop(
+            input_path=str(case.front_path),
+            output_path=str(extracted_path),
+            crop_multiplier=float(self.automation.get("automation_crop_multiplier", 1.5)),
+            progress_cb=self.progress_cb,
+        )
+        self.manifest.update_step(
+            case_key,
+            "extract_portrait",
+            "complete",
+            output=str(extracted_path),
+            meta={"confidence": extract_meta.get("confidence"), "crop_box": extract_meta.get("crop_box"), "extractor": extract_meta.get("extractor")},
+        )
+
+        # Step 3/4: selfie + similarity gate
+        selfie = self.deps.selfie_factory()
+        selfie.set_progress_callback(self.progress_cb)
+        selfie_folder = case_dir / "gen-images"
+        selfie_folder.mkdir(exist_ok=True)
+        model_endpoints = list(self.automation.get("automation_selfie_models", ["openai/gpt-image-2/edit"]))
+        threshold = int(self.automation.get("automation_similarity_threshold", 80))
+
+        best_path: Optional[str] = str(existing.selfie_candidate) if (
+            existing.selfie_candidate and self.automation.get("automation_skip_if_selfie_exists", True)
+        ) else None
+        best_score = -1
+        self.manifest.update_step(case_key, "selfie_generate", "running")
+        if best_path:
+            score_info = compute_face_similarity_details(str(extracted_path), best_path, report_cb=self.progress_cb)
+            best_score = int(score_info.get("score", 0))
+            self._report(f"[{case_key}] Reused existing selfie: {Path(best_path).name}", "info")
+        else:
+            for endpoint in model_endpoints:
+                generated = selfie.generate(
+                    image_path=str(extracted_path),
+                    prompt=self.config.get("selfie_prompt_template", "portrait selfie"),
+                    output_folder=str(selfie_folder),
+                    model_endpoint=endpoint,
+                )
+                if not generated:
+                    continue
+                score_info = compute_face_similarity_details(str(extracted_path), generated, report_cb=self.progress_cb)
+                score = int(score_info.get("score", 0))
+                if score > best_score:
+                    best_score = score
+                    best_path = generated
+                if self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass" and score >= threshold:
+                    break
+
+        if not best_path:
+            self.manifest.update_step(case_key, "selfie_generate", "failed", error="selfie generation failed")
+            case_entry["status"] = "failed"
+            self.manifest.save_atomic()
+            return "failed"
+        self.manifest.update_step(case_key, "selfie_generate", "complete", output=best_path, meta={"best_score": best_score})
+        if best_score < threshold:
+            self.manifest.update_step(
+                case_key,
+                "similarity_gate",
+                "manual_review",
+                output=best_path,
+                error=f"similarity {best_score} below threshold {threshold}",
+                meta={"score": best_score, "threshold": threshold},
+            )
+            case_entry["status"] = "manual_review"
+            self.manifest.save_atomic()
+            return "manual_review"
+        self.manifest.update_step(
+            case_key,
+            "similarity_gate",
+            "complete",
+            output=best_path,
+            meta={"score": best_score, "threshold": threshold},
+        )
+
+        # Step 5: selfie expand
+        final_still = best_path
+        if self.automation.get("automation_selfie_expand_enabled", True):
+            pct = int(self.automation.get("automation_selfie_expand_percent", 30))
+            margins = self._percent_expand_pixels(best_path, pct)
+            self.manifest.update_step(case_key, "selfie_expand", "running")
+            expanded_output = case_dir / "gen-images" / f"{Path(best_path).stem}-expanded.png"
+            expanded_result = outpaint.outpaint(
+                image_path=best_path,
+                output_folder=str(case_dir / "gen-images"),
+                output_path=str(expanded_output),
+                provider=self.automation.get("automation_selfie_expand_provider", "auto").replace("auto", ""),
+                document_mode=self.automation.get("automation_selfie_expand_mode") == "centered_3x4",
+                expand_left=margins["left"],
+                expand_right=margins["right"],
+                expand_top=margins["top"],
+                expand_bottom=margins["bottom"],
+                edge_seal_px=0,
+            )
+            if expanded_result:
+                final_still = expanded_result
+                self.manifest.update_step(case_key, "selfie_expand", "complete", output=expanded_result)
+            else:
+                self.manifest.update_step(case_key, "selfie_expand", "failed", error="selfie expand failed")
+        else:
+            self.manifest.update_step(case_key, "selfie_expand", "skipped", output=best_path)
+
+        # Step 6: video generation
+        if self.automation.get("automation_video_enabled", True):
+            if self.automation.get("automation_skip_if_video_exists", True) and existing.video_candidate:
+                self.manifest.update_step(case_key, "video_generate", "skipped", output=str(existing.video_candidate))
+                case_entry["status"] = "complete"
+                self.manifest.save_atomic()
+                return "completed"
+
+            video = self.deps.video_factory()
+            video.set_progress_callback(self.progress_cb)
+            self.manifest.update_step(case_key, "video_generate", "running")
+            output_video = video.create_kling_generation(
+                character_image_path=final_still,
+                output_folder=str(case_dir / "gen-videos"),
+                custom_prompt=self.config.get("saved_prompts", {}).get(str(self.config.get("current_prompt_slot", 1)))
+                if self.automation.get("automation_video_use_existing_prompt", True)
+                else None,
+                duration=int(self.config.get("video_duration", 10)),
+                aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
+                resolution=self.config.get("resolution", "720p"),
+                seed=int(self.config.get("seed", -1)),
+                camera_fixed=bool(self.config.get("camera_fixed", False)),
+                generate_audio=bool(self.config.get("generate_audio", False)),
+                use_source_folder=False,
+            )
+            if not output_video:
+                self.manifest.update_step(case_key, "video_generate", "failed", error="video generation failed")
+                case_entry["status"] = "failed"
+                self.manifest.save_atomic()
+                return "failed"
+            self.manifest.update_step(case_key, "video_generate", "complete", output=output_video)
+        else:
+            self.manifest.update_step(case_key, "video_generate", "skipped", output=final_still)
+
+        # Step 7: oldcam - intentionally deferred for safety.
+        self.manifest.update_step(
+            case_key,
+            "oldcam",
+            "pending_not_implemented",
+            error="TODO: headless oldcam integration",
+        )
+
+        case_entry["status"] = "complete"
+        self.manifest.save_atomic()
+        return "completed"
