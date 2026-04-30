@@ -94,8 +94,11 @@ class AutomationManifest:
     def load_if_exists(cls, manifest_path: Path) -> Optional["AutomationManifest"]:
         if not manifest_path.exists():
             return None
-        with open(manifest_path, "r", encoding="utf-8") as handle:
-            loaded = json.load(handle)
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+        except Exception:
+            return None
         if not isinstance(loaded, dict) or loaded.get("schema_version") != SCHEMA_VERSION:
             return None
         return cls(manifest_path=manifest_path, data=loaded)

@@ -1490,6 +1490,9 @@ class KlingAutomationUI:
         records = discover_case_folders(root, self.config.get("automation_front_names", []))
         manifest_path = self._automation_manifest_path()
         manifest = AutomationManifest.load_if_exists(manifest_path)
+        manifest_warning = ""
+        if manifest is None and manifest_path.exists():
+            manifest_warning = "Warning: existing manifest unreadable or schema-mismatched; dry-run ignoring manifest state."
 
         skipped = 0
         pending = 0
@@ -1513,6 +1516,8 @@ class KlingAutomationUI:
                 pending += 1
 
         print("\nDry run summary")
+        if manifest_warning:
+            print(f"  {manifest_warning}")
         print(f"  discovered cases: {len(records)}")
         print(f"  skipped: {skipped}")
         print(f"  pending: {pending}")

@@ -59,3 +59,10 @@ def test_manifest_corrupt_file_is_backed_up_and_raises(tmp_path: Path):
 
     backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
     assert backups, "Expected corrupt manifest backup file."
+
+
+def test_manifest_load_if_exists_returns_none_for_bad_json(tmp_path: Path):
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest_path.write_text("{ bad json", encoding="utf-8")
+    loaded = AutomationManifest.load_if_exists(manifest_path)
+    assert loaded is None
