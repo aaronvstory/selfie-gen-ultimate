@@ -84,3 +84,45 @@ def test_manifest_load_if_exists_backs_up_wrong_schema(tmp_path: Path):
     assert loaded is None
     backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
     assert backups
+
+
+def test_manifest_create_or_load_raises_on_root_mismatch(tmp_path: Path):
+    manifest_path = tmp_path / "automation_manifest.json"
+    root_a = tmp_path / "root-a"
+    root_b = tmp_path / "root-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    snapshot = {"automation_manifest_name": "automation_manifest.json"}
+    AutomationManifest.create_or_load(manifest_path, root_a, snapshot)
+
+    with pytest.raises(ValueError, match="Manifest root mismatch"):
+        AutomationManifest.create_or_load(manifest_path, root_b, snapshot)
+
+
+def test_manifest_create_or_load_raises_on_fingerprint_mismatch(tmp_path: Path):
+    manifest_path = tmp_path / "automation_manifest.json"
+    root = tmp_path / "root"
+    root.mkdir()
+    snap_a = {
+        "automation_manifest_name": "automation_manifest.json",
+        "automation_front_expand_mode": "document_3x4",
+    }
+    snap_b = {
+        "automation_manifest_name": "automation_manifest.json",
+        "automation_front_expand_mode": "percent",
+    }
+    AutomationManifest.create_or_load(manifest_path, root, snap_a)
+
+    with pytest.raises(ValueError, match="config fingerprint mismatch"):
+        AutomationManifest.create_or_load(manifest_path, root, snap_b)
+
+
+def test_manifest_create_or_load_non_dict_payload_backs_up_once(tmp_path: Path):
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest_path.write_text(json.dumps(["bad-root"]), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Manifest invalid"):
+        AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+
+    backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
+    assert len(backups) == 1

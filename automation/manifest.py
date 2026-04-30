@@ -20,6 +20,15 @@ STEP_NAMES = [
     "oldcam",
 ]
 STEP_STATUSES = {"pending", "running", "complete", "failed", "manual_review", "skipped", "pending_not_implemented"}
+MANIFEST_CONFIG_FINGERPRINT_KEYS = (
+    "automation_front_names",
+    "automation_manifest_name",
+    "automation_reprocess_mode",
+    "automation_front_expand_mode",
+    "automation_front_expand_provider",
+    "automation_selfie_expand_mode",
+    "automation_selfie_expand_provider",
+)
 
 
 def now_iso() -> str:
@@ -51,6 +60,10 @@ def _new_case_state(case_dir: str, front_path: str) -> Dict[str, Any]:
     }
 
 
+def _build_config_fingerprint(config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: config_snapshot.get(key) for key in MANIFEST_CONFIG_FINGERPRINT_KEYS if key in config_snapshot}
+
+
 @dataclass
 class AutomationManifest:
     manifest_path: Path
@@ -58,23 +71,43 @@ class AutomationManifest:
 
     @classmethod
     def create_or_load(cls, manifest_path: Path, root_dir: Path, config_snapshot: Dict[str, Any]) -> "AutomationManifest":
+        resolved_root = str(root_dir.resolve())
+        desired_fingerprint = _build_config_fingerprint(config_snapshot)
         if manifest_path.exists():
             try:
                 with open(manifest_path, "r", encoding="utf-8") as handle:
                     loaded = json.load(handle)
-                if isinstance(loaded, dict) and loaded.get("schema_version") == SCHEMA_VERSION:
-                    return cls(manifest_path=manifest_path, data=loaded)
-                got_version = loaded.get("schema_version") if isinstance(loaded, dict) else type(loaded).__name__
-                reason = f"schema_version mismatch: got {got_version!r}, expected {SCHEMA_VERSION}"
-                cls._backup_invalid_manifest(manifest_path, reason)
             except JSONDecodeError as exc:
                 cls._backup_invalid_manifest(manifest_path, f"invalid json: {exc}")
-            except Exception as exc:
-                cls._backup_invalid_manifest(manifest_path, f"load failure: {exc}")
+            except OSError as exc:
+                raise ValueError(f"Manifest load failed at {manifest_path}: {exc}") from exc
+
+            if not isinstance(loaded, dict):
+                cls._backup_invalid_manifest(manifest_path, f"manifest root type invalid: {type(loaded).__name__}")
+            if loaded.get("schema_version") != SCHEMA_VERSION:
+                got_version = loaded.get("schema_version")
+                cls._backup_invalid_manifest(
+                    manifest_path,
+                    f"schema_version mismatch: got {got_version!r}, expected {SCHEMA_VERSION}",
+                )
+
+            loaded_root = str(Path(loaded.get("root_dir", "")).resolve())
+            if loaded_root != resolved_root:
+                raise ValueError(
+                    f"Manifest root mismatch at {manifest_path}: manifest={loaded_root!r}, requested={resolved_root!r}"
+                )
+
+            loaded_fingerprint = _build_config_fingerprint(loaded.get("config_snapshot", {}))
+            if loaded_fingerprint != desired_fingerprint:
+                raise ValueError(
+                    f"Manifest config fingerprint mismatch at {manifest_path}: "
+                    f"manifest={loaded_fingerprint!r}, requested={desired_fingerprint!r}"
+                )
+            return cls(manifest_path=manifest_path, data=loaded)
 
         created = {
             "schema_version": SCHEMA_VERSION,
-            "root_dir": str(root_dir.resolve()),
+            "root_dir": resolved_root,
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "config_snapshot": config_snapshot,

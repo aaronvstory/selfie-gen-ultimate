@@ -139,17 +139,29 @@ class OutpaintGenerator:
         if self._progress_callback:
             self._progress_callback(msg, level)
 
-    @staticmethod
-    def _prepare_processed_image(image_path: str, max_size: int) -> Image.Image:
+    def _normalize_image_for_upload(
+        self,
+        image_path: str,
+        max_size: int,
+    ) -> Image.Image:
         with Image.open(image_path) as img:
             img = ImageOps.exif_transpose(img)
             if img.width > max_size or img.height > max_size:
                 img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-            if img.mode in ("RGBA", "P", "LA"):
-                img = img.convert("RGB")
+            if img.mode in ("RGBA", "LA"):
+                rgba = img.convert("RGBA")
+                matte = Image.new("RGBA", rgba.size, self._ALPHA_MATTE_RGB + (255,))
+                img = Image.alpha_composite(matte, rgba).convert("RGB")
+            elif img.mode == "P":
+                rgba = img.convert("RGBA")
+                matte = Image.new("RGBA", rgba.size, self._ALPHA_MATTE_RGB + (255,))
+                img = Image.alpha_composite(matte, rgba).convert("RGB")
             elif img.mode != "RGB":
                 img = img.convert("RGB")
             return img.copy()
+
+    def _prepare_processed_image(self, image_path: str, max_size: int) -> Image.Image:
+        return self._normalize_image_for_upload(image_path, max_size)
 
     @staticmethod
     def _edge_seal_copy(src_img: Image.Image, edge_seal_px: int, color: Tuple[int, int, int]) -> Image.Image:
@@ -593,12 +605,7 @@ class OutpaintGenerator:
         # 2. Encode: EXIF transpose → RGB → thumbnail(max_upload) → JPEG q=90 → base64
         self._report("Encoding image for BFL Expand...", "upload")
         try:
-            img = Image.open(image_path)
-            img = ImageOps.exif_transpose(img)
-            if img.mode in ("RGBA", "P", "LA"):
-                img = img.convert("RGB")
-            _lanczos = getattr(Image, "Resampling", Image).LANCZOS
-            img.thumbnail((max_upload, max_upload), _lanczos)
+            img = self._prepare_processed_image(image_path=image_path, max_size=max_upload)
             processed_img = img.copy()  # Sacred pixels for composite
             img_w, img_h = img.size
 
@@ -820,3 +827,4 @@ class OutpaintGenerator:
             output_format, composite_mode,
         )
         return output_path
+    _ALPHA_MATTE_RGB = (255, 255, 255)

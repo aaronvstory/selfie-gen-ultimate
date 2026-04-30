@@ -43,3 +43,31 @@ def test_provider_override_bfl_requires_key(tmp_path: Path):
 def test_document_mode_geometry_plan_is_portrait():
     plan = compute_centered_aspect_expand_plan(1200, 700, (3, 4), BFL_CAPS)
     assert plan["canvas_h"] > plan["canvas_w"]
+
+
+def test_prepare_processed_image_flattens_alpha_with_white_matte(tmp_path: Path):
+    src = Image.new("RGBA", (2, 1), (0, 0, 0, 0))
+    src.putpixel((1, 0), (10, 20, 30, 255))
+    src_path = tmp_path / "rgba.png"
+    src.save(src_path)
+
+    generator = OutpaintGenerator(api_key="x")
+    processed = generator._prepare_processed_image(str(src_path), max_size=1200)
+
+    # Transparent pixel should flatten to white matte, not black.
+    assert processed.getpixel((0, 0)) == (255, 255, 255)
+    # Opaque pixel preserved.
+    assert processed.getpixel((1, 0)) == (10, 20, 30)
+
+
+def test_prepare_processed_image_is_provider_path_consistent(tmp_path: Path):
+    src = Image.new("RGBA", (32, 16), (200, 100, 50, 128))
+    src_path = tmp_path / "rgba2.png"
+    src.save(src_path)
+
+    generator = OutpaintGenerator(api_key="x")
+    fal_prep = generator._prepare_processed_image(str(src_path), max_size=1200)
+    bfl_prep = generator._prepare_processed_image(str(src_path), max_size=1200)
+
+    assert fal_prep.size == bfl_prep.size
+    assert fal_prep.tobytes() == bfl_prep.tobytes()
