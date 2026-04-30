@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Dict, Iterable, List, Optional, Set
 
 
@@ -67,7 +68,6 @@ def discover_case_folders(root_dir: Path, front_names: Iterable[str]) -> List[Ca
             rel = front_match.parent.relative_to(root)
             rel_key = "." if str(rel) == "." else str(rel).replace("\\", "/")
             cases.append(CaseRecord(case_dir=front_match.parent, front_path=front_match, relative_key=rel_key))
-            continue
 
         for child in reversed(children):
             if child.is_dir() and not is_ignored_dir(child):
@@ -87,6 +87,7 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
 
     selfie_candidates = []
     video_candidates = []
+    sim_token_re = re.compile(r"(^|[_\-. ])sim($|[_\-. ])")
     for base in (top, gen_images, gen_videos):
         if not base.exists() or not base.is_dir():
             continue
@@ -95,7 +96,8 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
                 continue
             suffix = item.suffix.lower()
             lname = item.name.lower()
-            if suffix in {".png", ".jpg", ".jpeg", ".webp"} and ("selfie" in lname or "sim" in lname):
+            sim_token = bool(sim_token_re.search(lname))
+            if suffix in {".png", ".jpg", ".jpeg", ".webp"} and ("selfie" in lname or sim_token):
                 selfie_candidates.append(item)
             if suffix == ".mp4":
                 video_candidates.append(item)
@@ -125,4 +127,3 @@ def summarize_cases(root_dir: Path, front_names: Iterable[str]) -> List[Dict[str
             }
         )
     return summary
-

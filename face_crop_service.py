@@ -104,7 +104,9 @@ def extract_portrait_crop(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if cv2 is None:
         raise RuntimeError("OpenCV unavailable for crop write")
-    cv2.imwrite(str(out_path), crop)
+    write_ok = cv2.imwrite(str(out_path), crop)
+    if not write_ok:
+        raise RuntimeError(f"Failed to write portrait crop: {output_path}")
 
     confidence = min(1.0, max(0.0, float(fw * fh) / float(max(1, w_img * h_img)) * 10.0))
     _report(progress_cb, f"Portrait extracted: {out_path.name}", "success")

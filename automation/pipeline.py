@@ -88,7 +88,14 @@ class AutoPipelineRunner:
                 final_status = self._run_case(case)
             except Exception as exc:
                 self._report(f"[{case.relative_key}] case failed: {exc}", "error")
+                active_step = self.manifest.data.get("cases", {}).get(case.relative_key, {}).get("active_step")
+                if active_step:
+                    try:
+                        self.manifest.update_step(case.relative_key, active_step, "failed", error=str(exc))
+                    except Exception:
+                        pass
                 self.manifest.data["cases"][case.relative_key]["status"] = "failed"
+                self.manifest.data["cases"][case.relative_key]["active_step"] = None
                 self.manifest.save_atomic()
                 stats["failed"] += 1
                 continue
@@ -102,6 +109,7 @@ class AutoPipelineRunner:
         existing = detect_existing_outputs(case_dir)
         case_entry = self.manifest.data["cases"][case_key]
         case_entry["status"] = "running"
+        case_entry["active_step"] = None
         self.manifest.save_atomic()
 
         outpaint = self.deps.outpaint_factory()
@@ -110,36 +118,53 @@ class AutoPipelineRunner:
         # Step 1: front expand
         front_expanded = existing.front_expanded or (case_dir / self.automation.get("automation_front_output_name", "front-expanded.png"))
         if self.automation.get("automation_front_expand_enabled", True):
-            self.manifest.update_step(case_key, "front_expand", "running")
-            result = outpaint.outpaint(
-                image_path=str(case.front_path),
-                output_folder=str(case_dir),
-                output_path=str(front_expanded),
-                provider=self.automation.get("automation_front_expand_provider", "auto").replace("auto", ""),
-                document_mode=self.automation.get("automation_front_expand_mode") == "document_3x4",
-                edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
-                if self.automation.get("automation_front_edge_seal_enabled", True)
-                else 0,
-            )
-            if not result:
-                self.manifest.update_step(case_key, "front_expand", "failed", error="front expansion failed")
-                case_entry["status"] = "failed"
-                self.manifest.save_atomic()
-                return "failed"
-            self.manifest.update_step(case_key, "front_expand", "complete", output=str(result))
-            front_expanded = Path(result)
+            current_step = self.manifest.get_step(case_key, "front_expand")
+            existing_front_step_output = current_step.get("output")
+            if current_step.get("status") == "complete" and existing_front_step_output and Path(existing_front_step_output).exists():
+                front_expanded = Path(existing_front_step_output)
+            elif front_expanded and Path(front_expanded).exists():
+                self.manifest.update_step(case_key, "front_expand", "complete", output=str(front_expanded))
+            else:
+                case_entry["active_step"] = "front_expand"
+                self.manifest.update_step(case_key, "front_expand", "running")
+                result = outpaint.outpaint(
+                    image_path=str(case.front_path),
+                    output_folder=str(case_dir),
+                    output_path=str(front_expanded),
+                    provider=self.automation.get("automation_front_expand_provider", "auto").replace("auto", ""),
+                    document_mode=self.automation.get("automation_front_expand_mode") == "document_3x4",
+                    edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
+                    if self.automation.get("automation_front_edge_seal_enabled", True)
+                    else 0,
+                )
+                if not result:
+                    self.manifest.update_step(case_key, "front_expand", "failed", error="front expansion failed")
+                    case_entry["status"] = "failed"
+                    self.manifest.save_atomic()
+                    return "failed"
+                self.manifest.update_step(case_key, "front_expand", "complete", output=str(result))
+                front_expanded = Path(result)
         else:
             self.manifest.update_step(case_key, "front_expand", "skipped", output=str(front_expanded))
 
         # Step 2: extract portrait from original front
         extracted_path = case_dir / self.automation.get("automation_extract_output_name", "extracted.png")
-        self.manifest.update_step(case_key, "extract_portrait", "running")
-        extract_meta = extract_portrait_crop(
-            input_path=str(case.front_path),
-            output_path=str(extracted_path),
-            crop_multiplier=float(self.automation.get("automation_crop_multiplier", 1.5)),
-            progress_cb=self.progress_cb,
-        )
+        extract_step = self.manifest.get_step(case_key, "extract_portrait")
+        existing_extract_output = extract_step.get("output")
+        if extract_step.get("status") == "complete" and existing_extract_output and Path(existing_extract_output).exists():
+            extracted_path = Path(existing_extract_output)
+            extract_meta = extract_step.get("meta") or {}
+        elif extracted_path.exists():
+            extract_meta = extract_step.get("meta") or {}
+        else:
+            case_entry["active_step"] = "extract_portrait"
+            self.manifest.update_step(case_key, "extract_portrait", "running")
+            extract_meta = extract_portrait_crop(
+                input_path=str(case.front_path),
+                output_path=str(extracted_path),
+                crop_multiplier=float(self.automation.get("automation_crop_multiplier", 1.5)),
+                progress_cb=self.progress_cb,
+            )
         self.manifest.update_step(
             case_key,
             "extract_portrait",
@@ -278,6 +303,7 @@ class AutoPipelineRunner:
             error="TODO: headless oldcam integration",
         )
 
+        case_entry["active_step"] = None
         case_entry["status"] = "complete"
         self.manifest.save_atomic()
         return "completed"

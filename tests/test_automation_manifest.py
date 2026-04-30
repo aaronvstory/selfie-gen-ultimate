@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from automation.manifest import AutomationManifest
 
 
@@ -47,3 +49,13 @@ def test_manifest_complete_requires_existing_final_output(tmp_path: Path):
     manifest.save_atomic()
     assert manifest.case_is_complete_and_valid("case/a") is True
 
+
+def test_manifest_corrupt_file_is_backed_up_and_raises(tmp_path: Path):
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest_path.write_text("{ bad json", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+
+    backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
+    assert backups, "Expected corrupt manifest backup file."

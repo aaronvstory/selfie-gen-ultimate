@@ -48,6 +48,4 @@ if !EXIT_CODE! neq 0 (
     pause
 )
 
-endlocal
-exit /b %EXIT_CODE%
-
+endlocal & exit /b %EXIT_CODE%

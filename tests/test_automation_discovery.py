@@ -41,3 +41,14 @@ def test_existing_output_detection_scans_only_expected_dirs(tmp_path: Path):
     assert found.video_candidate is not None
     assert found.selfie_candidate is not None
 
+
+def test_existing_output_detection_avoids_sim_substring_false_positive(tmp_path: Path):
+    case_dir = tmp_path / "case2"
+    case_dir.mkdir()
+    (case_dir / "simple.png").write_bytes(b"x")
+    (case_dir / "simone.jpg").write_bytes(b"x")
+    (case_dir / "portrait_sim_001.png").write_bytes(b"x")
+
+    found = detect_existing_outputs(case_dir)
+    assert found.selfie_candidate is not None
+    assert found.selfie_candidate.name == "portrait_sim_001.png"

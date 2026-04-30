@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -63,8 +64,12 @@ class AutomationManifest:
                     loaded = json.load(handle)
                 if isinstance(loaded, dict) and loaded.get("schema_version") == SCHEMA_VERSION:
                     return cls(manifest_path=manifest_path, data=loaded)
-            except Exception:
-                pass
+                reason = f"schema_version mismatch: got {loaded.get('schema_version')!r}, expected {SCHEMA_VERSION}"
+                cls._backup_invalid_manifest(manifest_path, reason)
+            except JSONDecodeError as exc:
+                cls._backup_invalid_manifest(manifest_path, f"invalid json: {exc}")
+            except Exception as exc:
+                cls._backup_invalid_manifest(manifest_path, f"load failure: {exc}")
 
         created = {
             "schema_version": SCHEMA_VERSION,
@@ -77,6 +82,26 @@ class AutomationManifest:
         inst = cls(manifest_path=manifest_path, data=created)
         inst.save_atomic()
         return inst
+
+    @staticmethod
+    def _backup_invalid_manifest(manifest_path: Path, reason: str) -> None:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = manifest_path.with_suffix(manifest_path.suffix + f".corrupt.{timestamp}")
+        os.replace(manifest_path, backup_path)
+        raise ValueError(f"Manifest invalid at {manifest_path}: {reason}. Backed up to {backup_path}.")
+
+    @classmethod
+    def load_if_exists(cls, manifest_path: Path) -> Optional["AutomationManifest"]:
+        if not manifest_path.exists():
+            return None
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        if not isinstance(loaded, dict) or loaded.get("schema_version") != SCHEMA_VERSION:
+            return None
+        return cls(manifest_path=manifest_path, data=loaded)
+
+    def get_step(self, relative_key: str, step_name: str) -> Dict[str, Any]:
+        return self.data.get("cases", {}).get(relative_key, {}).get("steps", {}).get(step_name, {})
 
     def save_atomic(self) -> None:
         self.data["updated_at"] = now_iso()
@@ -153,4 +178,3 @@ class AutomationManifest:
         if not final_output:
             return False
         return Path(final_output).exists()
-

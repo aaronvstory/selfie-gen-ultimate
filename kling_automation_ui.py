@@ -504,7 +504,7 @@ class KlingAutomationUI:
         print(f"  \033[93m7\033[0m   Check Dependencies")
         print(f"  \033[93m8\033[0m   Advanced Video Settings")
         print(f"  \033[93m9\033[0m   Inspect Model Capabilities")
-        print(f"  \033[93m10\033[0m  End-to-End Auto Pipeline")
+        print("  \033[93m10\033[0m  End-to-End Auto Pipeline")
         print()
         print(f"  \033[96me\033[0m   Quick edit prompt")
         print(f"  \033[96mm\033[0m   Change model (\033[95m{model_name}\033[0m)")
@@ -1489,11 +1489,7 @@ class KlingAutomationUI:
         root = Path(self.automation_root_folder)
         records = discover_case_folders(root, self.config.get("automation_front_names", []))
         manifest_path = self._automation_manifest_path()
-        manifest = AutomationManifest.create_or_load(
-            manifest_path=manifest_path,
-            root_dir=root,
-            config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
-        )
+        manifest = AutomationManifest.load_if_exists(manifest_path)
 
         skipped = 0
         pending = 0
@@ -1501,9 +1497,13 @@ class KlingAutomationUI:
         manual_review_or_failed = 0
 
         for record in records:
-            case_entry = manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+            case_entry = (
+                manifest.data.get("cases", {}).get(record.relative_key, {})
+                if manifest is not None
+                else {}
+            )
             status = case_entry.get("status", "pending")
-            if status == "complete" and manifest.case_is_complete_and_valid(record.relative_key):
+            if manifest is not None and status == "complete" and manifest.case_is_complete_and_valid(record.relative_key):
                 completed += 1
                 skipped += 1
                 continue
@@ -1511,7 +1511,6 @@ class KlingAutomationUI:
                 manual_review_or_failed += 1
             else:
                 pending += 1
-        manifest.save_atomic()
 
         print("\nDry run summary")
         print(f"  discovered cases: {len(records)}")

@@ -12,7 +12,7 @@ class ProviderCaps:
     max_per_side: int
 
 
-FAL_CAPS = ProviderCaps(max_canvas_dim=4096, max_canvas_mp=16.0, max_per_side=700)
+FAL_CAPS = ProviderCaps(max_canvas_dim=1536, max_canvas_mp=2.0, max_per_side=700)
 BFL_CAPS = ProviderCaps(max_canvas_dim=2048, max_canvas_mp=1.5, max_per_side=2048)
 
 
@@ -115,4 +115,3 @@ def compute_centered_aspect_expand_plan(
         "canvas_h": canvas_h,
         "scale_pct": int(round(canvas_scale * 100)),
     }
-
