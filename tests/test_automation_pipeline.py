@@ -60,7 +60,9 @@ def test_pipeline_success_case(tmp_path: Path, monkeypatch):
     Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-a")
 
-    config = merge_automation_defaults({"falai_api_key": "x", "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1})
+    config = merge_automation_defaults({"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False, "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
 
@@ -91,7 +93,9 @@ def test_pipeline_similarity_manual_review(tmp_path: Path, monkeypatch):
     Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-b")
 
-    config = merge_automation_defaults({"falai_api_key": "x", "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1})
+    config = merge_automation_defaults({"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False, "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
 
@@ -125,7 +129,9 @@ def test_pipeline_skips_video_when_existing(tmp_path: Path, monkeypatch):
     existing_video.write_bytes(b"video")
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-c")
 
-    config = merge_automation_defaults({"falai_api_key": "x", "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1})
+    config = merge_automation_defaults({"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False, "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
 
@@ -161,6 +167,9 @@ def test_pipeline_oldcam_required_failure_marks_case_failed(tmp_path: Path, monk
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "saved_prompts": {"1": "prompt"},
             "current_prompt_slot": 1,
             "automation_oldcam_required": True,
@@ -198,6 +207,9 @@ def test_pipeline_increment_mode_generates_incremented_files(tmp_path: Path, mon
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "saved_prompts": {"1": "prompt"},
             "current_prompt_slot": 1,
             "automation_allow_reprocess": True,
@@ -243,6 +255,9 @@ def test_pipeline_overwrite_mode_reuses_base_output_name(tmp_path: Path, monkeyp
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "saved_prompts": {"1": "prompt"},
             "current_prompt_slot": 1,
             "automation_allow_reprocess": True,
@@ -276,6 +291,9 @@ def test_pipeline_validation_fails_on_oldcam_required_without_enable(tmp_path: P
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "automation_oldcam_enabled": False,
             "automation_oldcam_required": True,
         }
@@ -299,6 +317,9 @@ def test_pipeline_validation_fails_when_bfl_provider_missing_bfl_key(tmp_path: P
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "bfl_api_key": "",
             "automation_front_expand_provider": "bfl",
             "automation_selfie_expand_provider": "bfl",
@@ -326,6 +347,9 @@ def test_pipeline_validation_passes_when_bfl_provider_has_bfl_key(tmp_path: Path
         {
             "falai_api_key": "x",
             "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
+            "bfl_api_key": "bfl-token",
             "automation_front_expand_provider": "bfl",
             "automation_selfie_expand_provider": "bfl",
             "automation_oldcam_required": False,
@@ -350,6 +374,9 @@ def test_pipeline_validation_fails_when_oldcam_required_and_not_ready(tmp_path: 
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "bfl_api_key": "bfl-token",
             "automation_oldcam_required": True,
             "automation_oldcam_enabled": True,
@@ -384,6 +411,9 @@ def test_pipeline_manual_review_when_selfie_disabled(tmp_path: Path, monkeypatch
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "automation_selfie_enabled": False,
         }
     )
@@ -418,6 +448,9 @@ def test_pipeline_honors_selfie_max_attempts(tmp_path: Path, monkeypatch):
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "saved_prompts": {"1": "prompt"},
             "current_prompt_slot": 1,
             "automation_selfie_models": ["m1", "m2"],
@@ -456,7 +489,9 @@ def test_pipeline_existing_video_still_runs_oldcam_when_enabled(tmp_path: Path, 
     existing_video.write_bytes(b"video")
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-i")
 
-    config = merge_automation_defaults({"falai_api_key": "x"})
+    config = merge_automation_defaults({"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
@@ -498,6 +533,9 @@ def test_pipeline_extract_disabled_stays_skipped_when_file_exists(tmp_path: Path
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "automation_extract_enabled": False,
         }
     )
@@ -532,6 +570,9 @@ def test_pipeline_extract_disabled_missing_file_marks_manual_review(tmp_path: Pa
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "automation_extract_enabled": False,
         }
     )
@@ -565,6 +606,9 @@ def test_pipeline_video_disabled_skips_oldcam_without_video(tmp_path: Path, monk
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "automation_video_enabled": False,
             "automation_oldcam_enabled": True,
         }
@@ -609,6 +653,9 @@ def test_pipeline_video_disabled_oldcam_required_fails(tmp_path: Path, monkeypat
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "automation_video_enabled": False,
             "automation_oldcam_enabled": True,
             "automation_oldcam_required": True,
@@ -643,7 +690,9 @@ def test_pipeline_resolves_auto_provider_to_bfl_for_caps_and_outpaint(tmp_path: 
     Image.new("RGB", (1000, 1000), (1, 2, 3)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-n")
 
-    config = merge_automation_defaults({"falai_api_key": "x", "bfl_api_key": "bfl-token"})
+    config = merge_automation_defaults({"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False, "bfl_api_key": "bfl-token"})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
@@ -678,7 +727,9 @@ def test_pipeline_selfie_expand_reuse_skips_outpaint_call(tmp_path: Path, monkey
     Image.new("RGB", (128, 128), (22, 22, 22)).save(existing_expanded)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-o")
 
-    config = merge_automation_defaults({"falai_api_key": "x"})
+    config = merge_automation_defaults({"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     manifest.update_step(record.relative_key, "selfie_expand", "complete", output=str(existing_expanded))
@@ -717,7 +768,9 @@ def test_pipeline_marks_active_selfie_step_failed_on_exception(tmp_path: Path, m
     Image.new("RGB", (64, 64), (2, 2, 2)).save(existing_selfie)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-p")
 
-    config = merge_automation_defaults({"falai_api_key": "x"})
+    config = merge_automation_defaults({"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
@@ -753,7 +806,9 @@ def test_pipeline_similarity_backend_error_marks_manual_review_unavailable(tmp_p
     Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-sim-error")
 
-    config = merge_automation_defaults({"falai_api_key": "x"})
+    config = merge_automation_defaults({"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
@@ -792,6 +847,9 @@ def test_pipeline_passes_selected_selfie_prompt_slot(tmp_path: Path, monkeypatch
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "automation_selfie_prompt_slot": 2,
             "automation_selfie_prompts": {"1": "slot1", "2": "slot2 prompt identity preserve"},
         }
@@ -827,7 +885,9 @@ def test_pipeline_missing_manifest_video_skips_optional_oldcam_without_call(tmp_
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-q")
 
     config = merge_automation_defaults(
-        {"falai_api_key": "x", "automation_skip_if_video_exists": False, "automation_video_enabled": False}
+        {"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False, "automation_skip_if_video_exists": False, "automation_video_enabled": False}
     )
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
@@ -873,6 +933,9 @@ def test_pipeline_missing_manifest_video_fails_required_oldcam_without_call(tmp_
     config = merge_automation_defaults(
         {
             "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "bfl_api_key": "bfl-token",
             "automation_oldcam_required": True,
             "automation_skip_if_video_exists": False,
             "automation_video_enabled": False,
@@ -919,7 +982,9 @@ def test_pipeline_selfie_expand_failure_is_terminal(tmp_path: Path, monkeypatch)
     Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-s")
 
-    config = merge_automation_defaults({"falai_api_key": "x", "automation_selfie_expand_enabled": True})
+    config = merge_automation_defaults({"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False, "automation_selfie_expand_enabled": True})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
@@ -965,7 +1030,9 @@ def test_pipeline_extract_reuse_meta_keeps_reused_existing_true(tmp_path: Path, 
     Image.new("RGB", (64, 64), (3, 3, 3)).save(extracted)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-t")
 
-    config = merge_automation_defaults({"falai_api_key": "x"})
+    config = merge_automation_defaults({"falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     manifest.update_step(record.relative_key, "extract_portrait", "complete", output=str(extracted), meta={"extractor": "cached"})
@@ -987,3 +1054,4 @@ def test_pipeline_extract_reuse_meta_keeps_reused_existing_true(tmp_path: Path, 
     assert stats["completed"] == 1
     meta = manifest.data["cases"][record.relative_key]["steps"]["extract_portrait"]["meta"]
     assert meta["reused_existing"] is True
+
