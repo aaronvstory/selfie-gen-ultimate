@@ -77,7 +77,7 @@ class AutomationManifest:
             try:
                 with open(manifest_path, "r", encoding="utf-8") as handle:
                     loaded = json.load(handle)
-            except JSONDecodeError as exc:
+            except (JSONDecodeError, UnicodeDecodeError) as exc:
                 cls._backup_invalid_manifest(manifest_path, f"invalid json: {exc}")
             except OSError as exc:
                 raise ValueError(f"Manifest load failed at {manifest_path}: {exc}") from exc

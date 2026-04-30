@@ -242,9 +242,11 @@ class AutoPipelineRunner:
         extract_meta: Dict[str, Any]
         extract_step = self.manifest.get_step(case_key, "extract_portrait")
         existing_extract_output = extract_step.get("output")
+        extraction_skipped = False
         if (
             not self.automation.get("automation_extract_enabled", True)
         ):
+            extraction_skipped = True
             self.manifest.update_step(case_key, "extract_portrait", "skipped", output=str(extracted_path))
             extract_meta = {}
         elif (
@@ -284,18 +286,31 @@ class AutoPipelineRunner:
                 progress_cb=self.progress_cb,
             )
             extracted_path = target_extract_path
-        self.manifest.update_step(
-            case_key,
-            "extract_portrait",
-            "complete",
-            output=str(extracted_path),
-            meta={
-                "confidence": extract_meta.get("confidence"),
-                "crop_box": extract_meta.get("crop_box"),
-                "extractor": extract_meta.get("extractor"),
-                **self._policy_meta("extract_portrait", False, reprocess_mode),
-            },
-        )
+        if extraction_skipped:
+            if not extracted_path.exists():
+                self.manifest.update_step(
+                    case_key,
+                    "similarity_gate",
+                    "manual_review",
+                    error="portrait extraction disabled and extracted image missing",
+                    meta={"extracted_path": str(extracted_path)},
+                )
+                case_entry["status"] = "manual_review"
+                self.manifest.save_atomic()
+                return "manual_review"
+        else:
+            self.manifest.update_step(
+                case_key,
+                "extract_portrait",
+                "complete",
+                output=str(extracted_path),
+                meta={
+                    "confidence": extract_meta.get("confidence"),
+                    "crop_box": extract_meta.get("crop_box"),
+                    "extractor": extract_meta.get("extractor"),
+                    **self._policy_meta("extract_portrait", False, reprocess_mode),
+                },
+            )
 
         # Step 3/4: selfie + similarity gate
         selfie_enabled = bool(self.automation.get("automation_selfie_enabled", True))
@@ -498,7 +513,7 @@ class AutoPipelineRunner:
                     meta=self._policy_meta("video_generate", False, reprocess_mode),
                 )
         else:
-            self.manifest.update_step(case_key, "video_generate", "skipped", output=final_still)
+            self.manifest.update_step(case_key, "video_generate", "skipped", output=None)
 
         # Step 7: optional oldcam pass
         if self.automation.get("automation_oldcam_enabled", True):
@@ -506,12 +521,13 @@ class AutoPipelineRunner:
                 self.manifest.get_step(case_key, "video_generate").get("output")
                 or existing.video_candidate
             )
-            if selected_video:
+            selected_video_path = Path(selected_video) if selected_video else None
+            if selected_video_path and selected_video_path.suffix.lower() == ".mp4":
                 case_entry["active_step"] = "oldcam"
                 self._set_active_step(case_entry, "oldcam")
                 self.manifest.update_step(case_key, "oldcam", "running")
                 oldcam_output = run_oldcam(
-                    video_path=Path(selected_video),
+                    video_path=selected_video_path,
                     version_setting=str(self.automation.get("automation_oldcam_version", "v8")),
                     repo_root=Path(__file__).resolve().parent.parent,
                     progress_cb=self.progress_cb,
@@ -539,7 +555,18 @@ class AutoPipelineRunner:
                         self.manifest.save_atomic()
                         return "failed"
             else:
-                self.manifest.update_step(case_key, "oldcam", "skipped", error="no video for oldcam")
+                required = bool(self.automation.get("automation_oldcam_required", False))
+                self.manifest.update_step(
+                    case_key,
+                    "oldcam",
+                    "failed" if required else "skipped",
+                    error="no video for oldcam",
+                    meta={"required": required},
+                )
+                if required:
+                    case_entry["status"] = "failed"
+                    self.manifest.save_atomic()
+                    return "failed"
         else:
             self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
 

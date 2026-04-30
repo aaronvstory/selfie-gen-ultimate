@@ -126,3 +126,14 @@ def test_manifest_create_or_load_non_dict_payload_backs_up_once(tmp_path: Path):
 
     backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
     assert len(backups) == 1
+
+
+def test_manifest_create_or_load_invalid_utf8_backs_up_and_raises(tmp_path: Path):
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest_path.write_bytes(b"\xff\xfe\xfa")
+
+    with pytest.raises(ValueError, match="Manifest invalid"):
+        AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+
+    backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
+    assert len(backups) == 1
