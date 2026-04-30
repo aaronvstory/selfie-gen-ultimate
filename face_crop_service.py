@@ -8,12 +8,24 @@ try:
 except Exception:  # pragma: no cover - runtime fallback
     cv2 = None
 
-from similarity_engine import FaceEngine
-
 
 def _report(progress_cb: Optional[Callable[[str, str], None]], message: str, level: str = "info") -> None:
     if progress_cb:
         progress_cb(message, level)
+
+
+def _fallback_extract(input_path: str, output_path: str) -> Dict[str, object]:
+    # Lazy import keeps optional similarity/deepface dependency out of CLI startup path.
+    from similarity_engine import FaceEngine
+
+    engine = FaceEngine()
+    confidence = engine.extract_face(input_path, output_path, padding=0.175)
+    return {
+        "output_path": output_path,
+        "confidence": float(confidence),
+        "crop_box": None,
+        "extractor": "face_engine_padding_fallback",
+    }
 
 
 def _detect_face_box_opencv(image_bgr):
@@ -45,27 +57,13 @@ def extract_portrait_crop(
         image = cv2.imread(str(input_path))
     if image is None:
         # If cv2 unavailable or file unreadable, use fallback engine extraction.
-        engine = FaceEngine()
-        confidence = engine.extract_face(input_path, output_path, padding=0.175)
-        return {
-            "output_path": output_path,
-            "confidence": float(confidence),
-            "crop_box": None,
-            "extractor": "face_engine_padding_fallback",
-        }
+        return _fallback_extract(input_path, output_path)
 
     _report(progress_cb, f"Extract portrait from {Path(input_path).name}", "task")
     detected = _detect_face_box_opencv(image)
     if detected is None:
         _report(progress_cb, "OpenCV face detect miss; fallback to similarity engine extraction.", "warning")
-        engine = FaceEngine()
-        confidence = engine.extract_face(input_path, output_path, padding=0.175)
-        return {
-            "output_path": output_path,
-            "confidence": float(confidence),
-            "crop_box": None,
-            "extractor": "face_engine_padding_fallback",
-        }
+        return _fallback_extract(input_path, output_path)
 
     fx, fy, fw, fh = detected
     h_img, w_img = image.shape[:2]
@@ -106,7 +104,7 @@ def extract_portrait_crop(
         raise RuntimeError("OpenCV unavailable for crop write")
     write_ok = cv2.imwrite(str(out_path), crop)
     if not write_ok:
-        raise RuntimeError(f"Failed to write portrait crop: {output_path}")
+        raise RuntimeError(f"Failed to write portrait crop: {out_path}")
 
     confidence = min(1.0, max(0.0, float(fw * fh) / float(max(1, w_img * h_img)) * 10.0))
     _report(progress_cb, f"Portrait extracted: {out_path.name}", "success")

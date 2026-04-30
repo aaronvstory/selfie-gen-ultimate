@@ -13,6 +13,7 @@ from automation.oldcam import run_oldcam
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
+from outpaint_geometry import compute_percent_expand_plan, compute_provider_caps
 from outpaint_generator import OutpaintGenerator
 from selfie_generator import SelfieGenerator
 
@@ -164,6 +165,10 @@ class AutoPipelineRunner:
         outpaint = self.deps.outpaint_factory()
         outpaint.set_progress_callback(self.progress_cb)
         reprocess_mode = self._effective_reprocess_mode()
+        front_provider = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
+        selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
+        resolved_front_provider = "bfl" if front_provider == "bfl" else "fal"
+        resolved_selfie_provider = "bfl" if selfie_provider == "bfl" else "fal"
         case_entry["policy"] = {"reprocess_mode": reprocess_mode}
         self.manifest.save_atomic()
 
@@ -198,6 +203,24 @@ class AutoPipelineRunner:
                 target_output = Path(front_expanded)
                 if reprocess_mode == "increment":
                     target_output = self._next_increment_path(target_output)
+                front_is_document = self.automation.get("automation_front_expand_mode") == "document_3x4"
+                front_expand_kwargs: Dict[str, Any] = {}
+                if not front_is_document:
+                    pct = int(self.automation.get("automation_front_expand_percent", 30))
+                    with Image.open(case.front_path) as _img:
+                        width, height = ImageOps.exif_transpose(_img).size
+                    plan = compute_percent_expand_plan(
+                        width,
+                        height,
+                        pct,
+                        compute_provider_caps(resolved_front_provider),
+                    )
+                    front_expand_kwargs = {
+                        "expand_left": int(plan["left"]),
+                        "expand_right": int(plan["right"]),
+                        "expand_top": int(plan["top"]),
+                        "expand_bottom": int(plan["bottom"]),
+                    }
                 self._set_active_step(case_entry, "front_expand")
                 self.manifest.update_step(case_key, "front_expand", "running")
                 result = outpaint.outpaint(
@@ -205,10 +228,11 @@ class AutoPipelineRunner:
                     output_folder=str(case_dir),
                     output_path=str(target_output),
                     provider=self.automation.get("automation_front_expand_provider", "auto").replace("auto", ""),
-                    document_mode=self.automation.get("automation_front_expand_mode") == "document_3x4",
+                    document_mode=front_is_document,
                     edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
                     if self.automation.get("automation_front_edge_seal_enabled", True)
                     else 0,
+                    **front_expand_kwargs,
                 )
                 if not result:
                     self.manifest.update_step(case_key, "front_expand", "failed", error="front expansion failed")
@@ -359,7 +383,20 @@ class AutoPipelineRunner:
         final_still = best_path
         if self.automation.get("automation_selfie_expand_enabled", True):
             pct = int(self.automation.get("automation_selfie_expand_percent", 30))
-            margins = self._percent_expand_pixels(best_path, pct)
+            with Image.open(best_path) as _img:
+                width, height = ImageOps.exif_transpose(_img).size
+            plan = compute_percent_expand_plan(
+                width,
+                height,
+                pct,
+                compute_provider_caps(resolved_selfie_provider),
+            )
+            margins = {
+                "left": int(plan["left"]),
+                "right": int(plan["right"]),
+                "top": int(plan["top"]),
+                "bottom": int(plan["bottom"]),
+            }
             self.manifest.update_step(case_key, "selfie_expand", "running")
             expanded_output = case_dir / "gen-images" / f"{Path(best_path).stem}-expanded.png"
             if reprocess_mode == "increment":

@@ -1615,11 +1615,16 @@ class KlingAutomationUI:
             input("Press Enter to continue...")
             return
 
-        manifest = AutomationManifest.create_or_load(
-            manifest_path=self._automation_manifest_path(),
-            root_dir=root,
-            config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
-        )
+        try:
+            manifest = AutomationManifest.create_or_load(
+                manifest_path=self._automation_manifest_path(),
+                root_dir=root,
+                config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
+            )
+        except Exception as exc:
+            self.print_red(f"Failed to load manifest: {exc}")
+            input("Press Enter to continue...")
+            return
         runner = AutoPipelineRunner(
             config=self.config,
             automation_config=from_app_config(self.config),

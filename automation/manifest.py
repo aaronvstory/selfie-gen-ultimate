@@ -90,6 +90,12 @@ class AutomationManifest:
         os.replace(manifest_path, backup_path)
         raise ValueError(f"Manifest invalid at {manifest_path}: {reason}. Backed up to {backup_path}.")
 
+    @staticmethod
+    def _backup_invalid_manifest_no_raise(manifest_path: Path, reason: str) -> None:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = manifest_path.with_suffix(manifest_path.suffix + f".corrupt.{timestamp}")
+        os.replace(manifest_path, backup_path)
+
     @classmethod
     def load_if_exists(cls, manifest_path: Path) -> Optional["AutomationManifest"]:
         if not manifest_path.exists():
@@ -97,9 +103,16 @@ class AutomationManifest:
         try:
             with open(manifest_path, "r", encoding="utf-8") as handle:
                 loaded = json.load(handle)
-        except Exception:
+        except (JSONDecodeError, UnicodeDecodeError) as exc:
+            cls._backup_invalid_manifest_no_raise(manifest_path, f"invalid json: {exc}")
+            return None
+        except OSError:
             return None
         if not isinstance(loaded, dict) or loaded.get("schema_version") != SCHEMA_VERSION:
+            cls._backup_invalid_manifest_no_raise(
+                manifest_path,
+                f"schema_version mismatch: got {loaded.get('schema_version')!r}, expected {SCHEMA_VERSION}",
+            )
             return None
         return cls(manifest_path=manifest_path, data=loaded)
 
