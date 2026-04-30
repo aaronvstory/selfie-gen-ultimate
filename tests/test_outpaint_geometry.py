@@ -45,3 +45,18 @@ def test_percent_expand_rejects_non_positive_dimensions():
 def test_centered_plan_rejects_non_positive_dimensions():
     with pytest.raises(ValueError):
         compute_centered_aspect_expand_plan(100, -1, (3, 4), BFL_CAPS)
+
+
+def test_centered_plan_fal_caps_preserve_aspect_and_limits():
+    plan = compute_centered_aspect_expand_plan(1400, 2000, (3, 4), FAL_CAPS)
+    ratio = plan["canvas_w"] / plan["canvas_h"]
+    assert abs(ratio - (3 / 4)) <= 0.02
+    assert plan["left"] <= FAL_CAPS.max_per_side
+    assert plan["right"] <= FAL_CAPS.max_per_side
+    assert plan["top"] <= FAL_CAPS.max_per_side
+    assert plan["bottom"] <= FAL_CAPS.max_per_side
+    assert plan["canvas_w"] <= FAL_CAPS.max_canvas_dim
+    assert plan["canvas_h"] <= FAL_CAPS.max_canvas_dim
+    assert (plan["canvas_w"] * plan["canvas_h"]) <= int(FAL_CAPS.max_canvas_mp * 1_000_000)
+    assert abs(plan["left"] - plan["right"]) <= 1
+    assert abs(plan["top"] - plan["bottom"]) <= 1

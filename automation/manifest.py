@@ -20,16 +20,6 @@ STEP_NAMES = [
     "oldcam",
 ]
 STEP_STATUSES = {"pending", "running", "complete", "failed", "manual_review", "skipped", "pending_not_implemented"}
-MANIFEST_CONFIG_FINGERPRINT_KEYS = (
-    "automation_front_names",
-    "automation_manifest_name",
-    "automation_reprocess_mode",
-    "automation_front_expand_mode",
-    "automation_front_expand_provider",
-    "automation_selfie_expand_mode",
-    "automation_selfie_expand_provider",
-)
-
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -61,7 +51,8 @@ def _new_case_state(case_dir: str, front_path: str) -> Dict[str, Any]:
 
 
 def _build_config_fingerprint(config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: config_snapshot.get(key) for key in MANIFEST_CONFIG_FINGERPRINT_KEYS if key in config_snapshot}
+    automation_keys = sorted(key for key in config_snapshot if key.startswith("automation_"))
+    return {key: config_snapshot.get(key) for key in automation_keys}
 
 
 @dataclass

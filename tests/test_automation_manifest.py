@@ -117,6 +117,37 @@ def test_manifest_create_or_load_raises_on_fingerprint_mismatch(tmp_path: Path):
         AutomationManifest.create_or_load(manifest_path, root, snap_b)
 
 
+@pytest.mark.parametrize(
+    "changed_key,old_value,new_value",
+    [
+        ("automation_front_expand_percent", 30, 40),
+        ("automation_crop_multiplier", 1.5, 1.8),
+        ("automation_similarity_threshold", 80, 81),
+        ("automation_selfie_models", ["m1"], ["m1", "m2"]),
+        ("automation_oldcam_required", False, True),
+    ],
+)
+def test_manifest_fingerprint_captures_all_automation_keys(tmp_path: Path, changed_key: str, old_value, new_value):
+    manifest_path = tmp_path / "automation_manifest.json"
+    root = tmp_path / "root"
+    root.mkdir()
+    snap_a = {
+        "automation_manifest_name": "automation_manifest.json",
+        "automation_front_expand_percent": 30,
+        "automation_crop_multiplier": 1.5,
+        "automation_similarity_threshold": 80,
+        "automation_selfie_models": ["m1"],
+        "automation_oldcam_required": False,
+    }
+    snap_b = dict(snap_a)
+    snap_b[changed_key] = new_value
+    snap_a[changed_key] = old_value
+
+    AutomationManifest.create_or_load(manifest_path, root, snap_a)
+    with pytest.raises(ValueError, match="config fingerprint mismatch"):
+        AutomationManifest.create_or_load(manifest_path, root, snap_b)
+
+
 def test_manifest_create_or_load_non_dict_payload_backs_up_once(tmp_path: Path):
     manifest_path = tmp_path / "automation_manifest.json"
     manifest_path.write_text(json.dumps(["bad-root"]), encoding="utf-8")

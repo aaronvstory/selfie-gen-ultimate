@@ -95,6 +95,21 @@ class AutoPipelineRunner:
         case_entry["active_step"] = step_name
         self.manifest.save_atomic()
 
+    def _resolve_outpaint_provider(self, configured_provider: str) -> str:
+        normalized = str(configured_provider or "auto").strip().lower()
+        if normalized in {"bfl", "fal"}:
+            return normalized
+        if self.config.get("bfl_api_key"):
+            return "bfl"
+        return "fal"
+
+    def _finalize_case(self, case_entry: Dict[str, Any], final_status: str) -> str:
+        status_value = "complete" if final_status == "completed" else final_status
+        case_entry["status"] = status_value
+        self._set_active_step(case_entry, None)
+        self.manifest.save_atomic()
+        return final_status
+
     def validate_configuration(self) -> List[str]:
         issues: List[str] = []
         if not self.config.get("falai_api_key"):
@@ -154,8 +169,8 @@ class AutoPipelineRunner:
         reprocess_mode = self._effective_reprocess_mode()
         front_provider = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
         selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
-        resolved_front_provider = "bfl" if front_provider == "bfl" else "fal"
-        resolved_selfie_provider = "bfl" if selfie_provider == "bfl" else "fal"
+        resolved_front_provider = self._resolve_outpaint_provider(front_provider)
+        resolved_selfie_provider = self._resolve_outpaint_provider(selfie_provider)
         case_entry["policy"] = {"reprocess_mode": reprocess_mode}
         self.manifest.save_atomic()
 
@@ -214,7 +229,7 @@ class AutoPipelineRunner:
                     image_path=str(case.front_path),
                     output_folder=str(case_dir),
                     output_path=str(target_output),
-                    provider=self.automation.get("automation_front_expand_provider", "auto").replace("auto", ""),
+                    provider=resolved_front_provider,
                     document_mode=front_is_document,
                     edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
                     if self.automation.get("automation_front_edge_seal_enabled", True)
@@ -223,9 +238,7 @@ class AutoPipelineRunner:
                 )
                 if not result:
                     self.manifest.update_step(case_key, "front_expand", "failed", error="front expansion failed")
-                    case_entry["status"] = "failed"
-                    self.manifest.save_atomic()
-                    return "failed"
+                    return self._finalize_case(case_entry, "failed")
                 self.manifest.update_step(
                     case_key,
                     "front_expand",
@@ -295,9 +308,7 @@ class AutoPipelineRunner:
                     error="portrait extraction disabled and extracted image missing",
                     meta={"extracted_path": str(extracted_path)},
                 )
-                case_entry["status"] = "manual_review"
-                self.manifest.save_atomic()
-                return "manual_review"
+                return self._finalize_case(case_entry, "manual_review")
         else:
             self.manifest.update_step(
                 case_key,
@@ -329,9 +340,7 @@ class AutoPipelineRunner:
                 error="similarity gate skipped because selfie generation is disabled",
                 meta={"threshold": int(self.automation.get("automation_similarity_threshold", 80))},
             )
-            case_entry["status"] = "manual_review"
-            self.manifest.save_atomic()
-            return "manual_review"
+            return self._finalize_case(case_entry, "manual_review")
 
         selfie = self.deps.selfie_factory()
         selfie.set_progress_callback(self.progress_cb)
@@ -347,6 +356,7 @@ class AutoPipelineRunner:
             and self.automation.get("automation_skip_if_selfie_exists", True)
         ) else None
         best_score = -1
+        self._set_active_step(case_entry, "selfie_generate")
         self.manifest.update_step(case_key, "selfie_generate", "running")
         if best_path:
             score_info = compute_face_similarity_details(str(extracted_path), best_path, report_cb=self.progress_cb)
@@ -375,9 +385,7 @@ class AutoPipelineRunner:
 
         if not best_path:
             self.manifest.update_step(case_key, "selfie_generate", "failed", error="selfie generation failed")
-            case_entry["status"] = "failed"
-            self.manifest.save_atomic()
-            return "failed"
+            return self._finalize_case(case_entry, "failed")
         self.manifest.update_step(
             case_key,
             "selfie_generate",
@@ -394,9 +402,7 @@ class AutoPipelineRunner:
                 error=f"similarity {best_score} below threshold {threshold}",
                 meta={"score": best_score, "threshold": threshold},
             )
-            case_entry["status"] = "manual_review"
-            self.manifest.save_atomic()
-            return "manual_review"
+            return self._finalize_case(case_entry, "manual_review")
         self.manifest.update_step(
             case_key,
             "similarity_gate",
@@ -408,48 +414,66 @@ class AutoPipelineRunner:
         # Step 5: selfie expand
         final_still = best_path
         if self.automation.get("automation_selfie_expand_enabled", True):
-            pct = int(self.automation.get("automation_selfie_expand_percent", 30))
-            with Image.open(best_path) as _img:
-                width, height = ImageOps.exif_transpose(_img).size
-            plan = compute_percent_expand_plan(
-                width,
-                height,
-                pct,
-                compute_provider_caps(resolved_selfie_provider),
-            )
-            margins = {
-                "left": int(plan["left"]),
-                "right": int(plan["right"]),
-                "top": int(plan["top"]),
-                "bottom": int(plan["bottom"]),
-            }
-            self.manifest.update_step(case_key, "selfie_expand", "running")
-            expanded_output = case_dir / "gen-images" / f"{Path(best_path).stem}-expanded.png"
-            if reprocess_mode == "increment":
-                expanded_output = self._next_increment_path(expanded_output)
-            expanded_result = outpaint.outpaint(
-                image_path=best_path,
-                output_folder=str(case_dir / "gen-images"),
-                output_path=str(expanded_output),
-                provider=self.automation.get("automation_selfie_expand_provider", "auto").replace("auto", ""),
-                document_mode=self.automation.get("automation_selfie_expand_mode") == "centered_3x4",
-                expand_left=margins["left"],
-                expand_right=margins["right"],
-                expand_top=margins["top"],
-                expand_bottom=margins["bottom"],
-                edge_seal_px=0,
-            )
-            if expanded_result:
-                final_still = expanded_result
+            selfie_expand_step = self.manifest.get_step(case_key, "selfie_expand")
+            selfie_expand_output = selfie_expand_step.get("output")
+            if (
+                reprocess_mode == "skip"
+                and selfie_expand_step.get("status") == "complete"
+                and selfie_expand_output
+                and Path(selfie_expand_output).exists()
+            ):
+                final_still = selfie_expand_output
                 self.manifest.update_step(
                     case_key,
                     "selfie_expand",
                     "complete",
-                    output=expanded_result,
-                    meta=self._policy_meta("selfie_expand", False, reprocess_mode),
+                    output=selfie_expand_output,
+                    meta=self._policy_meta("selfie_expand", True, reprocess_mode),
                 )
             else:
-                self.manifest.update_step(case_key, "selfie_expand", "failed", error="selfie expand failed")
+                pct = int(self.automation.get("automation_selfie_expand_percent", 30))
+                with Image.open(best_path) as _img:
+                    width, height = ImageOps.exif_transpose(_img).size
+                plan = compute_percent_expand_plan(
+                    width,
+                    height,
+                    pct,
+                    compute_provider_caps(resolved_selfie_provider),
+                )
+                margins = {
+                    "left": int(plan["left"]),
+                    "right": int(plan["right"]),
+                    "top": int(plan["top"]),
+                    "bottom": int(plan["bottom"]),
+                }
+                self._set_active_step(case_entry, "selfie_expand")
+                self.manifest.update_step(case_key, "selfie_expand", "running")
+                expanded_output = case_dir / "gen-images" / f"{Path(best_path).stem}-expanded.png"
+                if reprocess_mode == "increment":
+                    expanded_output = self._next_increment_path(expanded_output)
+                expanded_result = outpaint.outpaint(
+                    image_path=best_path,
+                    output_folder=str(case_dir / "gen-images"),
+                    output_path=str(expanded_output),
+                    provider=resolved_selfie_provider,
+                    document_mode=self.automation.get("automation_selfie_expand_mode") == "centered_3x4",
+                    expand_left=margins["left"],
+                    expand_right=margins["right"],
+                    expand_top=margins["top"],
+                    expand_bottom=margins["bottom"],
+                    edge_seal_px=0,
+                )
+                if expanded_result:
+                    final_still = expanded_result
+                    self.manifest.update_step(
+                        case_key,
+                        "selfie_expand",
+                        "complete",
+                        output=expanded_result,
+                        meta=self._policy_meta("selfie_expand", False, reprocess_mode),
+                    )
+                else:
+                    self.manifest.update_step(case_key, "selfie_expand", "failed", error="selfie expand failed")
         else:
             self.manifest.update_step(case_key, "selfie_expand", "skipped", output=best_path)
 
@@ -471,12 +495,11 @@ class AutoPipelineRunner:
                 )
                 if not self.automation.get("automation_oldcam_enabled", True):
                     self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
-                    case_entry["status"] = "complete"
-                    self.manifest.save_atomic()
-                    return "completed"
+                    return self._finalize_case(case_entry, "completed")
             if not skipped_existing_video:
                 video = self.deps.video_factory()
                 video.set_progress_callback(self.progress_cb)
+                self._set_active_step(case_entry, "video_generate")
                 self.manifest.update_step(case_key, "video_generate", "running")
                 video_output_dir = case_dir / "gen-videos"
                 video_output_dir.mkdir(exist_ok=True)
@@ -496,9 +519,7 @@ class AutoPipelineRunner:
                 )
                 if not output_video:
                     self.manifest.update_step(case_key, "video_generate", "failed", error="video generation failed")
-                    case_entry["status"] = "failed"
-                    self.manifest.save_atomic()
-                    return "failed"
+                    return self._finalize_case(case_entry, "failed")
                 if reprocess_mode == "increment":
                     out_video_path = Path(output_video)
                     inc_video_path = self._next_increment_path(out_video_path)
@@ -551,9 +572,7 @@ class AutoPipelineRunner:
                         meta={**self._policy_meta("oldcam", False, reprocess_mode), "required": required},
                     )
                     if required:
-                        case_entry["status"] = "failed"
-                        self.manifest.save_atomic()
-                        return "failed"
+                        return self._finalize_case(case_entry, "failed")
             else:
                 required = bool(self.automation.get("automation_oldcam_required", False))
                 self.manifest.update_step(
@@ -564,13 +583,8 @@ class AutoPipelineRunner:
                     meta={"required": required},
                 )
                 if required:
-                    case_entry["status"] = "failed"
-                    self.manifest.save_atomic()
-                    return "failed"
+                    return self._finalize_case(case_entry, "failed")
         else:
             self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
 
-        self._set_active_step(case_entry, None)
-        case_entry["status"] = "complete"
-        self.manifest.save_atomic()
-        return "completed"
+        return self._finalize_case(case_entry, "completed")

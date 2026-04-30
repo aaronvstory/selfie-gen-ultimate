@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -80,42 +80,68 @@ def compute_centered_aspect_expand_plan(
         raise ValueError("Invalid target aspect ratio.")
 
     max_mp_px = int(caps.max_canvas_mp * 1_000_000)
-    canvas_w = caps.max_canvas_dim
-    canvas_h = int(canvas_w * target_h_ratio / target_w_ratio)
-    if canvas_h > caps.max_canvas_dim:
-        canvas_h = caps.max_canvas_dim
-        canvas_w = int(canvas_h * target_w_ratio / target_h_ratio)
+    best: Optional[Dict[str, int]] = None
 
-    if canvas_w * canvas_h > max_mp_px:
-        mp_scale = math.sqrt(max_mp_px / float(canvas_w * canvas_h))
-        canvas_w = max(1, int(canvas_w * mp_scale))
-        canvas_h = max(1, int(canvas_h * mp_scale))
+    for canvas_h in range(caps.max_canvas_dim, 0, -1):
+        canvas_w = max(1, int(round(canvas_h * target_w_ratio / target_h_ratio)))
+        if canvas_w > caps.max_canvas_dim:
+            continue
+        if canvas_w * canvas_h > max_mp_px:
+            continue
 
-    canvas_scale = min(canvas_w / max(orig_w, 1), canvas_h / max(orig_h, 1), 1.0)
-    upload_w = max(1, int(orig_w * canvas_scale))
-    upload_h = max(1, int(orig_h * canvas_scale))
+        upload_scale = min(1.0, canvas_w / max(orig_w, 1), canvas_h / max(orig_h, 1))
+        upload_w = max(1, int(math.floor(orig_w * upload_scale)))
+        upload_h = max(1, int(math.floor(orig_h * upload_scale)))
+        if upload_w > canvas_w or upload_h > canvas_h:
+            continue
 
-    left = max(0, (canvas_w - upload_w) // 2)
-    right = max(0, canvas_w - upload_w - left)
-    top = max(0, (canvas_h - upload_h) // 2)
-    bottom = max(0, canvas_h - upload_h - top)
+        left = max(0, (canvas_w - upload_w) // 2)
+        right = max(0, canvas_w - upload_w - left)
+        top = max(0, (canvas_h - upload_h) // 2)
+        bottom = max(0, canvas_h - upload_h - top)
+        if any(margin > caps.max_per_side for margin in (left, right, top, bottom)):
+            continue
 
-    if caps.max_per_side > 0:
-        left = min(left, caps.max_per_side)
-        right = min(right, caps.max_per_side)
-        top = min(top, caps.max_per_side)
-        bottom = min(bottom, caps.max_per_side)
-        canvas_w = upload_w + left + right
-        canvas_h = upload_h + top + bottom
+        candidate = {
+            "upload_w": upload_w,
+            "upload_h": upload_h,
+            "left": left,
+            "right": right,
+            "top": top,
+            "bottom": bottom,
+            "canvas_w": canvas_w,
+            "canvas_h": canvas_h,
+            "_area": canvas_w * canvas_h,
+        }
+        if best is None or int(candidate["_area"]) > int(best["_area"]):
+            best = candidate
+
+    if best is None:
+        upload_w = max(1, min(orig_w, caps.max_canvas_dim))
+        upload_h = max(1, min(orig_h, caps.max_canvas_dim))
+        canvas_scale = min(upload_w / max(orig_w, 1), upload_h / max(orig_h, 1), 1.0)
+        return {
+            "upload_w": upload_w,
+            "upload_h": upload_h,
+            "left": 0,
+            "right": 0,
+            "top": 0,
+            "bottom": 0,
+            "canvas_w": upload_w,
+            "canvas_h": upload_h,
+            "scale_pct": int(round(canvas_scale * 100)),
+        }
+
+    canvas_scale = min(best["upload_w"] / max(orig_w, 1), best["upload_h"] / max(orig_h, 1), 1.0)
 
     return {
-        "upload_w": upload_w,
-        "upload_h": upload_h,
-        "left": left,
-        "right": right,
-        "top": top,
-        "bottom": bottom,
-        "canvas_w": canvas_w,
-        "canvas_h": canvas_h,
+        "upload_w": int(best["upload_w"]),
+        "upload_h": int(best["upload_h"]),
+        "left": int(best["left"]),
+        "right": int(best["right"]),
+        "top": int(best["top"]),
+        "bottom": int(best["bottom"]),
+        "canvas_w": int(best["canvas_w"]),
+        "canvas_h": int(best["canvas_h"]),
         "scale_pct": int(round(canvas_scale * 100)),
     }
