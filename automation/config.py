@@ -10,6 +10,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_skip_completed": True,
     "automation_skip_if_selfie_exists": True,
     "automation_skip_if_video_exists": True,
+    "automation_max_cases_per_run": "5",  # 1 | 5 | 10 | all
     "automation_allow_reprocess": False,
     "automation_reprocess_mode": "skip",  # skip | overwrite | increment
     "automation_front_expand_enabled": True,

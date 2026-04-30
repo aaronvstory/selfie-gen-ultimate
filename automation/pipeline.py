@@ -112,8 +112,33 @@ class AutoPipelineRunner:
 
     def validate_configuration(self) -> List[str]:
         issues: List[str] = []
-        if not self.config.get("falai_api_key"):
-            issues.append("Missing falai_api_key in config.")
+        fal_key = str(self.config.get("falai_api_key", "")).strip()
+        bfl_key = str(self.config.get("bfl_api_key", "")).strip()
+        video_enabled = bool(self.automation.get("automation_video_enabled", True))
+        front_expand_enabled = bool(self.automation.get("automation_front_expand_enabled", True))
+        selfie_expand_enabled = bool(self.automation.get("automation_selfie_expand_enabled", True))
+        front_provider = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
+        selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
+
+        if video_enabled and not fal_key:
+            issues.append("Missing falai_api_key in config (required for Kling video step).")
+
+        if front_expand_enabled:
+            if front_provider == "fal" and not fal_key:
+                issues.append("Missing falai_api_key for front expand provider=fal.")
+            if front_provider == "bfl" and not bfl_key:
+                issues.append("Missing bfl_api_key for front expand provider=bfl.")
+            if front_provider == "auto" and not fal_key and not bfl_key:
+                issues.append("Missing falai_api_key/bfl_api_key for front expand provider=auto.")
+
+        if selfie_expand_enabled:
+            if selfie_provider == "fal" and not fal_key:
+                issues.append("Missing falai_api_key for selfie expand provider=fal.")
+            if selfie_provider == "bfl" and not bfl_key:
+                issues.append("Missing bfl_api_key for selfie expand provider=bfl.")
+            if selfie_provider == "auto" and not fal_key and not bfl_key:
+                issues.append("Missing falai_api_key/bfl_api_key for selfie expand provider=auto.")
+
         if self.automation.get("automation_similarity_threshold", 80) < 0 or self.automation.get("automation_similarity_threshold", 80) > 100:
             issues.append("automation_similarity_threshold must be 0..100.")
         if self.automation.get("automation_front_expand_mode") == "percent" and int(self.automation.get("automation_front_expand_percent", 0)) < 0:

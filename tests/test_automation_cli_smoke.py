@@ -1,9 +1,19 @@
+import pytest
+from pathlib import Path
+
 from kling_automation_ui import KlingAutomationUI
 
 
 def test_cli_has_automation_menu():
     assert hasattr(KlingAutomationUI, "run_automation_menu")
     assert hasattr(KlingAutomationUI, "_edit_automation_settings_quick")
+    assert hasattr(KlingAutomationUI, "_edit_automation_settings")
+
+
+def test_cli_branding_text_updated():
+    src = Path("kling_automation_ui.py").read_text(encoding="utf-8")
+    assert "SELFIE GEN ULTIMATE" in src
+    assert "FAL.AI VIDEO GENERATOR" not in src
 
 
 def test_dry_run_ignores_corrupt_manifest(tmp_path, monkeypatch):
@@ -67,6 +77,7 @@ def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):
         [
             str(tmp_path),  # root
             "",  # manifest
+            "5",  # max cases
             "", "", "",  # skip toggles
             "y",  # allow reprocess
             "increment",  # mode
@@ -93,6 +104,7 @@ def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):
     ui._edit_automation_settings_quick()
     assert ui.config["automation_reprocess_mode"] == "increment"
     assert ui.config["automation_front_expand_percent"] == 40
+    assert ui.config["automation_max_cases_per_run"] == "5"
 
 
 def test_manifest_path_sanitizes_name(tmp_path):
@@ -110,3 +122,95 @@ def test_dry_run_handles_missing_root(monkeypatch):
     ui.print_red = lambda _x: None
     monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
     ui._dry_run_automation()
+
+
+def test_settings_editor_rejects_invalid_max_cases(tmp_path, monkeypatch):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_manifest_name": "automation_manifest.json",
+        "automation_max_cases_per_run": "5",
+        "automation_skip_completed": True,
+        "automation_skip_if_selfie_exists": True,
+        "automation_skip_if_video_exists": True,
+        "automation_allow_reprocess": False,
+        "automation_reprocess_mode": "skip",
+        "automation_front_expand_enabled": True,
+        "automation_front_expand_provider": "auto",
+        "automation_front_expand_mode": "document_3x4",
+        "automation_front_expand_percent": 30,
+        "automation_front_edge_seal_enabled": True,
+        "automation_front_edge_seal_px": 12,
+        "automation_front_output_name": "front-expanded.png",
+        "automation_extract_enabled": True,
+        "automation_extract_output_name": "extracted.png",
+        "automation_crop_multiplier": 1.5,
+        "automation_selfie_enabled": True,
+        "automation_selfie_models": ["openai/gpt-image-2/edit"],
+        "automation_selfie_model_policy": "first_pass",
+        "automation_selfie_max_attempts_per_model": 1,
+        "automation_similarity_threshold": 80,
+        "automation_selfie_expand_enabled": True,
+        "automation_selfie_expand_provider": "auto",
+        "automation_selfie_expand_mode": "percent",
+        "automation_selfie_expand_percent": 30,
+        "automation_video_enabled": True,
+        "automation_video_aspect_ratio": "3:4",
+        "automation_video_use_existing_prompt": True,
+        "automation_oldcam_enabled": True,
+        "automation_oldcam_version": "v8",
+        "automation_oldcam_required": False,
+    }
+    ui.automation_root_folder = str(tmp_path)
+    ui.print_red = lambda _x: None
+    ui.save_config = lambda: None
+    responses = iter([str(tmp_path), "", "8"] + [""] * 40)
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(responses, ""))
+    ui._edit_automation_settings()
+    assert ui.config["automation_max_cases_per_run"] == "5"
+
+
+def test_collect_case_snapshot_applies_max_cases_after_filters(tmp_path):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_front_names": ["front.png"],
+        "automation_skip_if_selfie_exists": True,
+        "automation_skip_if_video_exists": True,
+        "automation_max_cases_per_run": "1",
+    }
+    ui._read_max_cases_setting = lambda: "1"
+    root = tmp_path
+    for name in ("a", "b", "c"):
+        case_dir = root / name
+        case_dir.mkdir(parents=True)
+        (case_dir / "front.png").write_bytes(b"x")
+    (root / "a" / "gen-videos").mkdir()
+    (root / "a" / "gen-videos" / "x.mp4").write_bytes(b"x")
+    records = [
+        type("Rec", (), {"relative_key": "a", "front_path": root / "a" / "front.png", "case_dir": root / "a"}),
+        type("Rec", (), {"relative_key": "b", "front_path": root / "b" / "front.png", "case_dir": root / "b"}),
+        type("Rec", (), {"relative_key": "c", "front_path": root / "c" / "front.png", "case_dir": root / "c"}),
+    ]
+    rows, counts, runnable = ui._collect_case_snapshot(records, manifest=None)
+    assert len(rows) == 3
+    assert counts["pending"] == 2
+    assert counts["will_run"] == 1
+    assert len(runnable) == 1
+
+
+def test_main_menu_path_input_sets_root_and_scans(tmp_path, monkeypatch):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {}
+    ui.automation_root_folder = ""
+    ui.save_config = lambda: None
+    ui.display_header = lambda: None
+    ui.display_configuration_menu = lambda: None
+    ui.print_red = lambda _x: None
+    ui.print_yellow = lambda _x: None
+    called = {"scan": False}
+    ui._scan_automation_cases = lambda: called.__setitem__("scan", True)
+    responses = iter([str(tmp_path), "q"])
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(responses))
+    with pytest.raises(SystemExit):
+        ui.run_configuration_menu()
+    assert called["scan"] is True
+    assert ui.automation_root_folder == str(tmp_path)
