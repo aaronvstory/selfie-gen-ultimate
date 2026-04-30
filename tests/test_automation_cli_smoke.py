@@ -93,3 +93,20 @@ def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):
     ui._edit_automation_settings_quick()
     assert ui.config["automation_reprocess_mode"] == "increment"
     assert ui.config["automation_front_expand_percent"] == 40
+
+
+def test_manifest_path_sanitizes_name(tmp_path):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.automation_root_folder = str(tmp_path)
+    ui.config = {"automation_manifest_name": "../escape.json"}
+    manifest_path = ui._automation_manifest_path()
+    assert manifest_path == tmp_path / "escape.json"
+
+
+def test_dry_run_handles_missing_root(monkeypatch):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {"automation_front_names": ["front.png"]}
+    ui.automation_root_folder = "Z:/definitely_missing_path_for_test"
+    ui.print_red = lambda _x: None
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
+    ui._dry_run_automation()

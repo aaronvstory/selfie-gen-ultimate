@@ -4,6 +4,7 @@ from outpaint_geometry import (
     compute_centered_aspect_expand_plan,
     compute_percent_expand_plan,
 )
+import pytest
 
 
 def test_percent_expand_30():
@@ -35,3 +36,12 @@ def test_fal_per_side_cap_applied():
     assert plan["left"] <= FAL_CAPS.max_per_side
     assert plan["top"] <= FAL_CAPS.max_per_side
 
+
+def test_percent_expand_rejects_non_positive_dimensions():
+    with pytest.raises(ValueError):
+        compute_percent_expand_plan(0, 100, 30, FAL_CAPS)
+
+
+def test_centered_plan_rejects_non_positive_dimensions():
+    with pytest.raises(ValueError):
+        compute_centered_aspect_expand_plan(100, -1, (3, 4), BFL_CAPS)

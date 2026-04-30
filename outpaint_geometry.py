@@ -42,6 +42,8 @@ def compute_percent_expand_plan(
     expand_percent: float,
     caps: ProviderCaps,
 ) -> Dict[str, int]:
+    if orig_w <= 0 or orig_h <= 0:
+        raise ValueError("orig_w and orig_h must be positive integers")
     p = max(0.0, float(expand_percent) / 100.0)
     scale = _safe_scale_for_percent_expand(orig_w=orig_w, orig_h=orig_h, p=p, caps=caps)
     upload_w = max(1, math.floor(orig_w * scale))
@@ -71,6 +73,8 @@ def compute_centered_aspect_expand_plan(
     target_aspect: Tuple[int, int],
     caps: ProviderCaps,
 ) -> Dict[str, int]:
+    if orig_w <= 0 or orig_h <= 0:
+        raise ValueError("orig_w and orig_h must be positive integers")
     target_w_ratio, target_h_ratio = target_aspect
     if target_w_ratio <= 0 or target_h_ratio <= 0:
         raise ValueError("Invalid target aspect ratio.")

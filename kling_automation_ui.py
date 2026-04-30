@@ -1395,7 +1395,11 @@ class KlingAutomationUI:
     def _automation_manifest_path(self) -> Optional[Path]:
         if not self.automation_root_folder:
             return None
-        return Path(self.automation_root_folder) / self.config.get("automation_manifest_name", "automation_manifest.json")
+        raw_manifest_name = str(self.config.get("automation_manifest_name", "automation_manifest.json") or "").strip()
+        safe_manifest_name = Path(raw_manifest_name).name if raw_manifest_name else "automation_manifest.json"
+        if not safe_manifest_name.endswith(".json"):
+            safe_manifest_name = "automation_manifest.json"
+        return Path(self.automation_root_folder) / safe_manifest_name
 
     def _display_automation_menu(self):
         self.display_header()
@@ -1508,7 +1512,12 @@ class KlingAutomationUI:
                 self.config["automation_root_folder"] = self.automation_root_folder
             else:
                 self.print_red("Root path invalid; keeping previous value.")
-        _ask("Manifest filename", "automation_manifest_name", str, lambda v: len(v) > 0 and v.endswith(".json"))
+        _ask(
+            "Manifest filename",
+            "automation_manifest_name",
+            str,
+            lambda v: len(v) > 0 and v.endswith(".json") and Path(v).name == v,
+        )
 
         # Discovery/skip/reprocess
         _ask_bool("Skip completed", "automation_skip_completed")
@@ -1563,6 +1572,10 @@ class KlingAutomationUI:
             input("Press Enter to continue...")
             return
         root = Path(self.automation_root_folder)
+        if not root.exists():
+            self.print_red("Automation root path does not exist.")
+            input("Press Enter to continue...")
+            return
         records = discover_case_folders(root, self.config.get("automation_front_names", []))
         manifest_path = self._automation_manifest_path()
         manifest = AutomationManifest.load_if_exists(manifest_path)
@@ -1609,6 +1622,10 @@ class KlingAutomationUI:
             return
 
         root = Path(self.automation_root_folder)
+        if not root.exists():
+            self.print_red("Automation root path does not exist.")
+            input("Press Enter to continue...")
+            return
         records = discover_case_folders(root, self.config.get("automation_front_names", []))
         if not records:
             self.print_yellow("No case folders found.")
