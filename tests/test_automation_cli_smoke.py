@@ -223,11 +223,14 @@ def test_select_automation_root_browse_primary(tmp_path, monkeypatch):
     ui.save_config = lambda: None
     ui.print_red = lambda _x: None
     ui.print_yellow = lambda _x: None
-    responses = iter(["", ""])
+    called = {"scan": False}
+    ui._scan_automation_cases = lambda: called.__setitem__("scan", True)
+    responses = iter([""])
     monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(responses))
     monkeypatch.setattr("kling_automation_ui.filedialog.askdirectory", lambda **kwargs: str(tmp_path))
     ui._select_automation_root()
     assert ui.automation_root_folder == str(tmp_path)
+    assert called["scan"] is True
 
 
 def test_select_automation_root_typed_quotes(tmp_path, monkeypatch):

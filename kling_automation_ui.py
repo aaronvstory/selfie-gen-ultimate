@@ -1386,7 +1386,7 @@ class KlingAutomationUI:
         self.config["automation_root_folder"] = self.automation_root_folder
         self.save_config()
         self.print_yellow(f"Automation root set: {self.automation_root_folder}")
-        input("Press Enter to continue...")
+        self._scan_automation_cases()
 
     def _normalize_max_cases(self, value: Any) -> Optional[int]:
         raw = str(value).strip().lower()
