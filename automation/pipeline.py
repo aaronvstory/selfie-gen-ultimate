@@ -543,7 +543,7 @@ class AutoPipelineRunner:
                 or existing.video_candidate
             )
             selected_video_path = Path(selected_video) if selected_video else None
-            if selected_video_path and selected_video_path.suffix.lower() == ".mp4":
+            if selected_video_path and selected_video_path.exists() and selected_video_path.suffix.lower() == ".mp4":
                 case_entry["active_step"] = "oldcam"
                 self._set_active_step(case_entry, "oldcam")
                 self.manifest.update_step(case_key, "oldcam", "running")
@@ -575,11 +575,12 @@ class AutoPipelineRunner:
                         return self._finalize_case(case_entry, "failed")
             else:
                 required = bool(self.automation.get("automation_oldcam_required", False))
+                reason = "missing or non-mp4 video for oldcam"
                 self.manifest.update_step(
                     case_key,
                     "oldcam",
                     "failed" if required else "skipped",
-                    error="no video for oldcam",
+                    error=reason,
                     meta={"required": required},
                 )
                 if required:

@@ -663,3 +663,96 @@ def test_pipeline_marks_active_selfie_step_failed_on_exception(tmp_path: Path, m
     assert step["status"] == "failed"
     assert "score boom" in (step.get("error") or "")
     assert manifest.data["cases"][record.relative_key].get("active_step") is None
+
+
+def test_pipeline_missing_manifest_video_skips_optional_oldcam_without_call(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-q"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (8, 8, 8)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-q")
+
+    config = merge_automation_defaults(
+        {"falai_api_key": "x", "automation_skip_if_video_exists": False, "automation_video_enabled": False}
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    missing_video = case_dir / "gen-videos" / "missing.mp4"
+    manifest.update_step(record.relative_key, "video_generate", "complete", output=str(missing_video))
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+
+    oldcam_called = {"value": False}
+
+    def _run_oldcam(**kwargs):
+        oldcam_called["value"] = True
+        return None
+
+    monkeypatch.setattr("automation.pipeline.run_oldcam", _run_oldcam)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert oldcam_called["value"] is False
+    oldcam_step = manifest.data["cases"][record.relative_key]["steps"]["oldcam"]
+    assert oldcam_step["status"] == "skipped"
+    assert "missing or non-mp4" in (oldcam_step.get("error") or "")
+
+
+def test_pipeline_missing_manifest_video_fails_required_oldcam_without_call(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-r"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (9, 9, 9)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-r")
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "automation_oldcam_required": True,
+            "automation_skip_if_video_exists": False,
+            "automation_video_enabled": False,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    missing_video = case_dir / "gen-videos" / "missing.mp4"
+    manifest.update_step(record.relative_key, "video_generate", "complete", output=str(missing_video))
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+
+    oldcam_called = {"value": False}
+
+    def _run_oldcam(**kwargs):
+        oldcam_called["value"] = True
+        return None
+
+    monkeypatch.setattr("automation.pipeline.run_oldcam", _run_oldcam)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["failed"] == 1
+    assert oldcam_called["value"] is False
+    oldcam_step = manifest.data["cases"][record.relative_key]["steps"]["oldcam"]
+    assert oldcam_step["status"] == "failed"
+    assert "missing or non-mp4" in (oldcam_step.get("error") or "")
