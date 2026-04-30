@@ -56,3 +56,20 @@ def test_run_oldcam_version_failure(monkeypatch, tmp_path: Path):
     )
     result = oldcam.run_oldcam_version(video_path=input_video, version="v8", repo_root=tmp_path)
     assert result is None
+
+
+def test_run_oldcam_version_timeout_returns_none(monkeypatch, tmp_path: Path):
+    oldcam_dir = tmp_path / "oldcam-v8"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "launcher.py").write_text("print('ok')", encoding="utf-8")
+    input_video = tmp_path / "in.mp4"
+    input_video.write_bytes(b"mp4")
+
+    monkeypatch.setattr(oldcam, "ensure_oldcam_dependencies", lambda: (True, None))
+
+    def fake_timeout(*args, **kwargs):
+        raise oldcam.subprocess.TimeoutExpired(cmd="python launcher.py", timeout=5)
+
+    monkeypatch.setattr(oldcam.subprocess, "run", fake_timeout)
+    result = oldcam.run_oldcam_version(video_path=input_video, version="v8", repo_root=tmp_path, timeout_seconds=5)
+    assert result is None

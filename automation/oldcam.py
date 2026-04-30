@@ -70,14 +70,21 @@ def run_oldcam_version(
         return None
 
     cmd = [sys.executable, "-u", str(launcher), str(video_path)]
-    completed = subprocess.run(
-        cmd,
-        cwd=str(oldcam_dir),
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(oldcam_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _report(progress_cb, f"Oldcam {version} timed out after {timeout_seconds}s", "warning")
+        return None
+    except Exception as exc:
+        _report(progress_cb, f"Oldcam {version} launcher error: {exc}", "warning")
+        return None
     if completed.returncode != 0:
         err = (completed.stderr or completed.stdout or "").strip()
         _report(progress_cb, f"Oldcam {version} failed ({completed.returncode}): {err}", "warning")
