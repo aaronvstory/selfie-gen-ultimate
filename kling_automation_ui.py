@@ -7,6 +7,8 @@ from typing import Dict, Any, Optional
 import logging
 import tkinter as tk
 from tkinter import filedialog
+from rich.console import Console
+from rich.table import Table
 
 # Import path utilities for frozen exe compatibility
 from path_utils import (
@@ -18,12 +20,16 @@ from path_utils import (
 
 # Import the fal.ai KlingBatchGenerator
 from kling_generator_falai import FalAIKlingGenerator
+from automation.config import merge_automation_defaults
+from automation.discovery import discover_case_folders, detect_existing_outputs
+from automation.manifest import AutomationManifest
 
 
 class KlingAutomationUI:
     def __init__(self):
         self.config_file = get_config_path("kling_config.json")
-        self.config = self.load_config()
+        self.config = merge_automation_defaults(self.load_config())
+        self.automation_root_folder = self.config.get("automation_root_folder", "")
         self.verbose_logging = self.config.get("verbose_logging", False)
         self.setup_logging()
         self.check_first_run_api_key()
@@ -497,6 +503,7 @@ class KlingAutomationUI:
         print(f"  \033[93m7\033[0m   Check Dependencies")
         print(f"  \033[93m8\033[0m   Advanced Video Settings")
         print(f"  \033[93m9\033[0m   Inspect Model Capabilities")
+        print(f"  \033[93m10\033[0m  End-to-End Auto Pipeline")
         print()
         print(f"  \033[96me\033[0m   Quick edit prompt")
         print(f"  \033[96mm\033[0m   Change model (\033[95m{model_name}\033[0m)")
@@ -1363,6 +1370,9 @@ class KlingAutomationUI:
             elif choice_lower == "9":
                 self.inspect_model_capabilities()
                 continue
+            elif choice_lower == "10":
+                self.run_automation_menu()
+                continue
             elif choice_lower == "e":
                 self.quick_edit_prompt()
                 continue
@@ -1379,6 +1389,165 @@ class KlingAutomationUI:
                 input("Press Enter to continue...")
             else:
                 self.print_yellow("Please enter a valid path or select an option")
+                time.sleep(1)
+
+    def _automation_manifest_path(self) -> Optional[Path]:
+        if not self.automation_root_folder:
+            return None
+        return Path(self.automation_root_folder) / self.config.get("automation_manifest_name", "automation_manifest.json")
+
+    def _display_automation_menu(self):
+        self.display_header()
+        self.print_magenta("═" * 79)
+        self.print_magenta("                     END-TO-END AUTO PIPELINE")
+        self.print_magenta("═" * 79)
+        print()
+        current_root = self.automation_root_folder or "(not set)"
+        print(f"  Root folder: \033[97m{current_root}\033[0m")
+        print()
+        print("  \033[93m1\033[0m   Select automation root folder")
+        print("  \033[93m2\033[0m   Scan / preview cases")
+        print("  \033[93m3\033[0m   Edit automation settings (quick)")
+        print("  \033[93m4\033[0m   Dry run")
+        print("  \033[93m5\033[0m   Run / resume automation")
+        print("  \033[93m6\033[0m   Print manifest path")
+        print("  \033[93m0\033[0m   Back")
+        print()
+        print("\033[92m➤ Select option:\033[0m ", end="", flush=True)
+
+    def _select_automation_root(self):
+        selected = self.select_folder_gui()
+        if selected:
+            self.automation_root_folder = str(Path(selected))
+            self.config["automation_root_folder"] = self.automation_root_folder
+            self.save_config()
+            self.print_yellow(f"Automation root set: {self.automation_root_folder}")
+            input("Press Enter to continue...")
+
+    def _scan_automation_cases(self):
+        if not self.automation_root_folder:
+            self.print_red("Set automation root folder first.")
+            input("Press Enter to continue...")
+            return
+        root = Path(self.automation_root_folder)
+        if not root.exists():
+            self.print_red("Automation root path does not exist.")
+            input("Press Enter to continue...")
+            return
+        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        table = Table(title="Case Discovery")
+        table.add_column("Case")
+        table.add_column("Front")
+        table.add_column("Existing")
+        for record in records[:30]:
+            existing = detect_existing_outputs(record.case_dir)
+            flags = []
+            if existing.front_expanded:
+                flags.append("front-expanded")
+            if existing.extracted:
+                flags.append("extracted")
+            if existing.selfie_candidate:
+                flags.append("selfie")
+            if existing.video_candidate:
+                flags.append("video")
+            table.add_row(record.relative_key, record.front_path.name, ", ".join(flags) if flags else "-")
+        console = Console()
+        console.print(table)
+        if len(records) > 30:
+            print(f"\nShowing first 30/{len(records)} cases.")
+        else:
+            print(f"\nDiscovered {len(records)} case folders.")
+        input("\nPress Enter to continue...")
+
+    def _edit_automation_settings_quick(self):
+        print("\nQuick settings:")
+        print(f"Current similarity threshold: {self.config.get('automation_similarity_threshold', 80)}")
+        value = input("New threshold 0-100 (Enter keep): ").strip()
+        if value:
+            try:
+                threshold = max(0, min(100, int(value)))
+                self.config["automation_similarity_threshold"] = threshold
+            except ValueError:
+                self.print_red("Invalid threshold. Keeping old value.")
+
+        print(f"Current front expand percent: {self.config.get('automation_front_expand_percent', 30)}")
+        value = input("New front expand percent (Enter keep): ").strip()
+        if value:
+            try:
+                self.config["automation_front_expand_percent"] = max(0, int(value))
+            except ValueError:
+                self.print_red("Invalid percent. Keeping old value.")
+        self.save_config()
+        input("Saved. Press Enter to continue...")
+
+    def _dry_run_automation(self):
+        if not self.automation_root_folder:
+            self.print_red("Set automation root folder first.")
+            input("Press Enter to continue...")
+            return
+        root = Path(self.automation_root_folder)
+        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        manifest_path = self._automation_manifest_path()
+        manifest = AutomationManifest.create_or_load(
+            manifest_path=manifest_path,
+            root_dir=root,
+            config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
+        )
+
+        skipped = 0
+        pending = 0
+        completed = 0
+        manual_review_or_failed = 0
+
+        for record in records:
+            case_entry = manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+            status = case_entry.get("status", "pending")
+            if status == "complete" and manifest.case_is_complete_and_valid(record.relative_key):
+                completed += 1
+                skipped += 1
+                continue
+            if status in {"failed", "manual_review"}:
+                manual_review_or_failed += 1
+            else:
+                pending += 1
+        manifest.save_atomic()
+
+        print("\nDry run summary")
+        print(f"  discovered cases: {len(records)}")
+        print(f"  skipped: {skipped}")
+        print(f"  pending: {pending}")
+        print(f"  completed: {completed}")
+        print(f"  failed/manual_review: {manual_review_or_failed}")
+        print("  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video -> oldcam")
+        input("\nPress Enter to continue...")
+
+    def _run_resume_automation(self):
+        print("\nRunner implementation checkpoint in progress.")
+        print("Current state: foundation complete; orchestration wiring next.")
+        input("\nPress Enter to continue...")
+
+    def run_automation_menu(self):
+        while True:
+            self._display_automation_menu()
+            choice = input().strip().lower()
+            if choice == "0":
+                return
+            if choice == "1":
+                self._select_automation_root()
+            elif choice == "2":
+                self._scan_automation_cases()
+            elif choice == "3":
+                self._edit_automation_settings_quick()
+            elif choice == "4":
+                self._dry_run_automation()
+            elif choice == "5":
+                self._run_resume_automation()
+            elif choice == "6":
+                manifest_path = self._automation_manifest_path()
+                print(f"\nManifest path: {manifest_path if manifest_path else '(set root first)'}")
+                input("\nPress Enter to continue...")
+            else:
+                self.print_red("Unknown option.")
                 time.sleep(1)
 
     def count_genx_files(self, root_directory: str) -> int:
