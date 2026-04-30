@@ -10,7 +10,7 @@ from automation.config import AutomationConfig, DEFAULT_SELFIE_PROMPT
 from automation.discovery import CaseRecord, detect_existing_outputs
 from automation.logger import build_safe_config_snapshot, create_automation_logger
 from automation.manifest import AutomationManifest
-from automation.oldcam import run_oldcam
+from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies, run_oldcam
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
@@ -177,6 +177,23 @@ class AutoPipelineRunner:
             issues.append("automation_front_expand_percent must be >= 0.")
         if self.automation.get("automation_oldcam_required", False) and not self.automation.get("automation_oldcam_enabled", True):
             issues.append("automation_oldcam_required=true requires automation_oldcam_enabled=true.")
+        if self.automation.get("automation_oldcam_required", False):
+            repo_root = Path(__file__).resolve().parent.parent
+            versions = discover_oldcam_versions(repo_root)
+            deps_ok, deps_error = ensure_oldcam_dependencies()
+            configured_version = str(self.automation.get("automation_oldcam_version", "all")).lower()
+            if configured_version == "all":
+                expected_versions = {"v7", "v8"}
+            else:
+                expected_versions = {configured_version}
+            available_versions = {str(v).lower() for v in versions}
+            missing_versions = sorted(expected_versions.difference(available_versions))
+            if missing_versions:
+                issues.append(
+                    f"Oldcam required but missing version(s): {', '.join(missing_versions)}. Available: {', '.join(sorted(available_versions)) or '(none)'}."
+                )
+            if not deps_ok:
+                issues.append(f"Oldcam required but dependencies are not ready: {deps_error or 'unknown dependency error'}.")
         return issues
 
     def run(self, cases: List[CaseRecord]) -> Dict[str, int]:

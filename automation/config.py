@@ -5,11 +5,27 @@ from typing import Any, Dict, List
 
 
 DEFAULT_SELFIE_PROMPT = (
-    "Create a realistic passport-style portrait selfie of the same person in the reference image. "
-    "Preserve identity exactly: same face, facial structure, age, and gender presentation. "
-    "Keep neutral expression, natural skin texture, and natural lighting. "
-    "No stylization, no beauty filter, no cartoon/anime look, no face reshaping, no ethnicity change, no age change. "
-    "Output must be a realistic portrait selfie suitable for face comparison."
+    "Generate an ultra-realistic, front-facing selfie taken inside a parked car from the driver’s seat perspective. "
+    "Camera held at arm’s length, centered framing with head-and-shoulders composition, eye-level angle, slightly wide "
+    "perspective typical of a smartphone front camera (24–28mm equivalent focal length).\n\n"
+    "Strong natural sunlight entering from the right side (passenger side window), creating a sharp vertical band of "
+    "light across the center of the face and torso, with the opposite side in softer shadow. High contrast lighting with "
+    "crisp highlight falloff and defined shadow edges. Subtle catchlights and reflections visible in the eyes (or eyewear, "
+    "if present) from bright outdoor light.\n\n"
+    "Interior shows a clean, modern car cabin with beige upholstery, visible headrests, and soft-touch surfaces. "
+    "Background includes rear seats and side windows. Through the windows: bright sunny environment with clear blue sky, "
+    "palm trees, and landscaped roadside or parking area. The entire scene, including the background, is in sharp focus.\n\n"
+    "Color temperature is warm and natural daylight. Image has standard smartphone exposure characteristics, preserving "
+    "highlight and shadow detail without looking overprocessed. Deep depth of field with both the subject and the background "
+    "remaining sharp. Slight lens distortion at edges consistent with a wide-angle front-facing camera.\n\n"
+    "Captured as an unedited, raw smartphone photo with realistic detail rendering. Natural tonal variation and imperfect "
+    "exposure balance, absolutely not studio-lit.\n\n"
+    "Realism and Identity instructions: Strictly preserve the exact facial structure, identity, age, and features of the "
+    "input subject. Maintain natural skin texture with visible pores and micro-imperfections, subtle uneven tones, and no "
+    "skin smoothing or airbrushing. Avoid overly clean or sterile rendering.\n\n"
+    "Do not apply any beauty filters, AI smoothing, waxy or plastic appearance, hyper-polished or CGI look, unrealistically "
+    "perfect lighting or textures, excessive sharpening, artificial skin softening, portrait mode blur, artificial bokeh, "
+    "or shallow depth of field. ONLY PUT GLASSES IF THE ORIGINAL IMAGE HAS GLASSES ON, OTHERWISE, DO NOT ADD ANY EYEWEAR."
 )
 
 AUTOMATION_DEFAULTS: Dict[str, Any] = {
@@ -22,7 +38,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_allow_reprocess": False,
     "automation_reprocess_mode": "skip",  # skip | overwrite | increment
     "automation_front_expand_enabled": True,
-    "automation_front_expand_provider": "auto",  # auto | bfl | fal
+    "automation_front_expand_provider": "bfl",  # auto | bfl | fal
     "automation_front_expand_mode": "percent",  # document_3x4 | percent
     "automation_front_expand_percent": 30,
     "automation_front_edge_seal_enabled": False,
@@ -51,7 +67,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_selfie_max_attempts_per_model": 1,
     "automation_similarity_threshold": 80,
     "automation_selfie_expand_enabled": True,
-    "automation_selfie_expand_provider": "auto",
+    "automation_selfie_expand_provider": "bfl",
     "automation_selfie_expand_mode": "percent",  # percent | centered_3x4
     "automation_selfie_expand_percent": 30,
     "automation_selfie_expand_edge_seal_enabled": False,
@@ -59,8 +75,9 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_video_aspect_ratio": "3:4",
     "automation_video_use_existing_prompt": True,
     "automation_oldcam_enabled": True,
-    "automation_oldcam_version": "v8",
-    "automation_oldcam_required": False,
+    "automation_oldcam_version": "all",
+    "automation_oldcam_required": True,
+    "automation_recommended_defaults_version": 1,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
     "automation_log_backup_count": 5,

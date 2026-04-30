@@ -173,8 +173,13 @@ def test_manifest_create_or_load_invalid_utf8_backs_up_and_raises(tmp_path: Path
 
 def test_automation_defaults_use_percent_and_nano_model():
     merged = merge_automation_defaults({})
+    assert merged["automation_front_expand_provider"] == "bfl"
     assert merged["automation_front_expand_mode"] == "percent"
     assert merged["automation_front_expand_percent"] == 30
+    assert merged["automation_selfie_expand_provider"] == "bfl"
     assert merged["automation_selfie_expand_mode"] == "percent"
     assert merged["automation_selfie_expand_percent"] == 30
     assert merged["automation_selfie_models"] == ["fal-ai/nano-banana-2/edit"]
+    assert merged["automation_oldcam_version"] == "all"
+    assert merged["automation_oldcam_required"] is True
+    assert "parked car" in merged["automation_selfie_prompts"]["1"].lower()

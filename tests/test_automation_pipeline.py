@@ -295,6 +295,85 @@ def test_pipeline_validation_fails_on_oldcam_required_without_enable(tmp_path: P
     assert any("requires" in issue for issue in issues)
 
 
+def test_pipeline_validation_fails_when_bfl_provider_missing_bfl_key(tmp_path: Path):
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "",
+            "automation_front_expand_provider": "bfl",
+            "automation_selfie_expand_provider": "bfl",
+            "automation_oldcam_required": False,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    issues = runner.validate_configuration()
+    assert any("front expand provider=bfl" in issue for issue in issues)
+    assert any("selfie expand provider=bfl" in issue for issue in issues)
+
+
+def test_pipeline_validation_passes_when_bfl_provider_has_bfl_key(tmp_path: Path, monkeypatch):
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_front_expand_provider": "bfl",
+            "automation_selfie_expand_provider": "bfl",
+            "automation_oldcam_required": False,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    issues = runner.validate_configuration()
+    assert not any("provider=bfl" in issue for issue in issues)
+
+
+def test_pipeline_validation_fails_when_oldcam_required_and_not_ready(tmp_path: Path, monkeypatch):
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": True,
+            "automation_oldcam_enabled": True,
+            "automation_oldcam_version": "all",
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    monkeypatch.setattr("automation.pipeline.discover_oldcam_versions", lambda _repo_root: ["v8"])
+    monkeypatch.setattr("automation.pipeline.ensure_oldcam_dependencies", lambda: (False, "missing deps"))
+    issues = runner.validate_configuration()
+    assert any("missing version(s)" in issue for issue in issues)
+    assert any("dependencies are not ready" in issue for issue in issues)
+
+
 def test_pipeline_manual_review_when_selfie_disabled(tmp_path: Path, monkeypatch):
     case_dir = tmp_path / "case-g"
     case_dir.mkdir()

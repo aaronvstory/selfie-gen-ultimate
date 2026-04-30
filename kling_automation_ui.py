@@ -33,6 +33,19 @@ from automation.pipeline import AutoPipelineRunner
 from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies
 from selfie_generator import SelfieGenerator
 
+RECOMMENDED_DEFAULTS_VERSION = 1
+RECOMMENDED_KLING_PROMPT_SLOT_1 = (
+    "Generate a lifelike video animation from the provided image. The subject must rotate only their head in an exceptionally "
+    "slow, smooth, and biologically realistic motion: start by gently turning the head left, up to 30 degrees from center, with "
+    "absolutely no movement in the shoulders, neck, or upper body, which must stay perfectly upright and still. Hold a brief, "
+    "natural pause at the leftmost 30 degree position, then gently turn the head all the way to the right 30 degree facing side , "
+    "maintaining the same extremely slow and continuous, lifelike pace. Head motion must appear completely natural, never robotic, "
+    "mechanical, stiff, or artificial—mimic genuine human motion with soft micro-adjustments. Eyes stay focused on the camera lens "
+    "through both turns. Facial expression remains strictly neutral and relaxed throughout. Lighting on the face and background "
+    "must stay natural, matching the original image, with no added highlights, shadows, flicker, or artificial lighting. The "
+    "camera is fixed and stationary. Only the head moves; the rest of the body remains motionless."
+)
+
 
 class KlingAutomationUI:
     def __init__(self):
@@ -55,18 +68,6 @@ class KlingAutomationUI:
             "Generate in maximum resolution and professional quality with no blur, pixelation, or quality degradation."
         )
 
-        # Default prompt slot 2 - enhanced lifelike animation (recommended)
-        prompt_slot_2 = (
-            "Generate a lifelike video animation from the provided image. The subject must rotate only their head in an exceptionally slow, "
-            "smooth, and biologically realistic motion: start by gently turning the head left, up to 70 degrees from center, with absolutely "
-            "no movement in the shoulders, neck, or upper body, which must stay perfectly upright and still. Hold a brief, natural pause at "
-            "the leftmost position, then gently turn the head all the way to the right, maintaining the same extremely slow and continuous, "
-            "lifelike pace. Head motion must appear completely natural, never robotic, mechanical, stiff, or artificial—mimic genuine human "
-            "motion with soft micro-adjustments. Eyes stay focused on the camera lens through both turns. Facial expression remains strictly "
-            "neutral and relaxed throughout. Lighting on the face and background must stay natural, matching the original image, with no added "
-            "highlights, shadows, flicker, or artificial lighting. The camera is fixed and stationary. Only the head moves; the rest of the body remains motionless."
-        )
-
         default_config = {
             "output_folder": "",  # Empty by default - user picks their own
             "use_source_folder": True,  # Default: save videos alongside source images
@@ -74,11 +75,11 @@ class KlingAutomationUI:
             "verbose_logging": True,
             "duplicate_detection": True,
             "delay_between_generations": 1,
-            # Prompt slot system - default to slot 2 (enhanced prompt)
-            "current_prompt_slot": 2,
+            # Prompt slot system - recommended defaults use slot 1
+            "current_prompt_slot": 1,
             "saved_prompts": {
-                "1": prompt_slot_1,
-                "2": prompt_slot_2,
+                "1": RECOMMENDED_KLING_PROMPT_SLOT_1,
+                "2": prompt_slot_1,
                 "3": None,
                 "4": None,
                 "5": None,
@@ -100,9 +101,9 @@ class KlingAutomationUI:
                 "9": None,
                 "10": None,
             },
-            # Model configuration - Kling 2.5 Turbo Pro
-            "current_model": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
-            "model_display_name": "Kling 2.5 Turbo Pro",
+            # Model configuration - Kling 2.5 Turbo Standard
+            "current_model": "fal-ai/kling-video/v2.5-turbo/standard/image-to-video",
+            "model_display_name": "Kling 2.5 Turbo Standard",
             # Generation parameters
             "video_duration": 10,
             "aspect_ratio": "9:16",
@@ -110,6 +111,7 @@ class KlingAutomationUI:
             "seed": -1,  # -1 = random
             "camera_fixed": False,
             "generate_audio": False,
+            "automation_recommended_defaults_version": RECOMMENDED_DEFAULTS_VERSION,
         }
 
         try:
@@ -1388,10 +1390,88 @@ class KlingAutomationUI:
             f"selfie expand mode={self.config.get('automation_selfie_expand_mode')} pct={self.config.get('automation_selfie_expand_percent', 30)} provider={selfie_configured}->{self._resolve_provider(selfie_configured)}",
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
             f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', 1)}",
-            f"oldcam version={self.config.get('automation_oldcam_version', 'v8')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
+            f"oldcam version={self.config.get('automation_oldcam_version', 'all')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
+            f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
             f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
         ]
         return lines
+
+    def _apply_recommended_automation_defaults(self) -> None:
+        before = {
+            "front": (
+                self.config.get("automation_front_expand_provider"),
+                self.config.get("automation_front_expand_mode"),
+                self.config.get("automation_front_expand_percent"),
+            ),
+            "selfie_expand": (
+                self.config.get("automation_selfie_expand_provider"),
+                self.config.get("automation_selfie_expand_mode"),
+                self.config.get("automation_selfie_expand_percent"),
+            ),
+            "selfie_models": list(self.config.get("automation_selfie_models", [])),
+            "video_model": self.config.get("model_display_name") or self.config.get("current_model"),
+            "selfie_prompt_slot": self.config.get("automation_selfie_prompt_slot", 1),
+            "kling_prompt_slot": self.config.get("current_prompt_slot", 1),
+            "oldcam": (self.config.get("automation_oldcam_version", "v8"), self.config.get("automation_oldcam_required", False)),
+            "max_cases": self._read_max_cases_setting(),
+        }
+
+        valid_max_cases = {"1", "5", "10", "all"}
+        current_max_cases = str(self.config.get("automation_max_cases_per_run", "")).strip().lower()
+        if current_max_cases in valid_max_cases:
+            max_cases_status = f"preserved ({current_max_cases})"
+        else:
+            self.config["automation_max_cases_per_run"] = "1"
+            max_cases_status = "set to 1 (invalid/missing previous value)"
+
+        self.config["automation_front_expand_provider"] = "bfl"
+        self.config["automation_front_expand_mode"] = "percent"
+        self.config["automation_front_expand_percent"] = 30
+        self.config["automation_front_edge_seal_enabled"] = False
+        self.config["automation_selfie_expand_provider"] = "bfl"
+        self.config["automation_selfie_expand_mode"] = "percent"
+        self.config["automation_selfie_expand_percent"] = 30
+        self.config["automation_selfie_expand_edge_seal_enabled"] = False
+        self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
+        self.config["automation_selfie_prompt_slot"] = 1
+        self._ensure_selfie_prompt_slots()
+        self.config["automation_selfie_prompts"]["1"] = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+        self.config["current_model"] = "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+        self.config["model_display_name"] = "Kling 2.5 Turbo Standard"
+        self.config["current_prompt_slot"] = 1
+        saved_prompts = self.config.get("saved_prompts")
+        if not isinstance(saved_prompts, dict):
+            saved_prompts = {}
+        saved_prompts["1"] = RECOMMENDED_KLING_PROMPT_SLOT_1
+        self.config["saved_prompts"] = saved_prompts
+        self.config["automation_similarity_threshold"] = 80
+        self.config["automation_video_enabled"] = True
+        self.config["automation_oldcam_enabled"] = True
+        self.config["automation_oldcam_version"] = "all"
+        self.config["automation_oldcam_required"] = True
+        self.config["automation_recommended_defaults_version"] = RECOMMENDED_DEFAULTS_VERSION
+        self.save_config()
+
+        print("\nApplied recommended automation defaults.")
+        print("Before -> After")
+        print(f"  front expand: {before['front'][0]} / {before['front'][1]} / {before['front'][2]} -> bfl / percent / 30")
+        print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} -> bfl / percent / 30")
+        print(f"  selfie model: {before['selfie_models']} -> Nano Banana 2 Edit")
+        print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
+        print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 1")
+        print(f"  Kling prompt slot: {before['kling_prompt_slot']} -> 1")
+        print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> all / required")
+        print(f"  max cases per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
+        print("\nCurrent recommended state:")
+        print("  front expand: bfl / percent / 30")
+        print("  selfie expand: bfl / percent / 30")
+        print("  selfie model: Nano Banana 2 Edit")
+        print("  video model: Kling 2.5 Turbo Standard")
+        print("  selfie prompt slot: 1")
+        print("  Kling prompt slot: 1")
+        print("  oldcam: all / required")
+        print(f"  max cases per run: {self._read_max_cases_setting()}")
+        input("\nPress Enter to continue...")
 
     def _display_automation_menu(self):
         self.display_header()
@@ -1403,13 +1483,17 @@ class KlingAutomationUI:
         print(f"  Root folder: \033[97m{current_root}\033[0m")
         for line in self._automation_status_lines():
             print(f"  {line}")
+        current_version = int(self.config.get("automation_recommended_defaults_version", 0) or 0)
+        if current_version < RECOMMENDED_DEFAULTS_VERSION:
+            print(f"  \033[93mRecommendation:\033[0m apply recommended defaults (target version {RECOMMENDED_DEFAULTS_VERSION}).")
         print()
         print("  \033[93m1\033[0m   Select automation root folder")
         print("  \033[93m2\033[0m   Scan / preview cases")
-        print("  \033[93m3\033[0m   Edit automation settings")
-        print("  \033[93m4\033[0m   Dry run")
-        print("  \033[93m5\033[0m   Run / resume automation")
-        print("  \033[93m6\033[0m   Print manifest path")
+        print("  \033[93m3\033[0m   Apply recommended automation defaults")
+        print("  \033[93m4\033[0m   Edit automation settings")
+        print("  \033[93m5\033[0m   Dry run")
+        print("  \033[93m6\033[0m   Run / resume automation")
+        print("  \033[93m7\033[0m   Print manifest path")
         print("  \033[93m0\033[0m   Back")
         print()
         print("\033[92m➤ Select option:\033[0m ", end="", flush=True)
@@ -2012,12 +2096,14 @@ class KlingAutomationUI:
             elif choice == "2":
                 self._scan_automation_cases()
             elif choice == "3":
-                self._edit_automation_settings()
+                self._apply_recommended_automation_defaults()
             elif choice == "4":
-                self._dry_run_automation()
+                self._edit_automation_settings()
             elif choice == "5":
-                self._run_resume_automation()
+                self._dry_run_automation()
             elif choice == "6":
+                self._run_resume_automation()
+            elif choice == "7":
                 manifest_path = self._automation_manifest_path()
                 print(f"\nManifest path: {manifest_path if manifest_path else '(set root first)'}")
                 input("\nPress Enter to continue...")
