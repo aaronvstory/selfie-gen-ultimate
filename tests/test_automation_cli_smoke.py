@@ -214,3 +214,77 @@ def test_main_menu_path_input_sets_root_and_scans(tmp_path, monkeypatch):
         ui.run_configuration_menu()
     assert called["scan"] is True
     assert ui.automation_root_folder == str(tmp_path)
+
+
+def test_select_automation_root_browse_primary(tmp_path, monkeypatch):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {}
+    ui.automation_root_folder = ""
+    ui.save_config = lambda: None
+    ui.print_red = lambda _x: None
+    ui.print_yellow = lambda _x: None
+    responses = iter(["", ""])
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr("kling_automation_ui.filedialog.askdirectory", lambda **kwargs: str(tmp_path))
+    ui._select_automation_root()
+    assert ui.automation_root_folder == str(tmp_path)
+
+
+def test_select_automation_root_typed_quotes(tmp_path, monkeypatch):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {}
+    ui.automation_root_folder = ""
+    ui.save_config = lambda: None
+    ui.print_red = lambda _x: None
+    ui.print_yellow = lambda _x: None
+    responses = iter(["2", f"\"{tmp_path}\"", ""])
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(responses))
+    ui._select_automation_root()
+    assert ui.automation_root_folder == str(tmp_path)
+
+
+def test_select_automation_root_browse_fallback_to_typed(tmp_path, monkeypatch):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {}
+    ui.automation_root_folder = ""
+    ui.save_config = lambda: None
+    ui.print_red = lambda _x: None
+    ui.print_yellow = lambda _x: None
+    responses = iter(["", str(tmp_path), ""])
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(responses))
+
+    def _raise(**kwargs):
+        raise RuntimeError("tk unavailable")
+
+    monkeypatch.setattr("kling_automation_ui.filedialog.askdirectory", _raise)
+    ui._select_automation_root()
+    assert ui.automation_root_folder == str(tmp_path)
+
+
+def test_collect_case_snapshot_respects_skip_completed_false(tmp_path):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_front_names": ["front.png"],
+        "automation_skip_completed": False,
+        "automation_skip_if_selfie_exists": False,
+        "automation_skip_if_video_exists": False,
+        "automation_max_cases_per_run": "all",
+    }
+    ui._read_max_cases_setting = lambda: "all"
+    root = tmp_path
+    case_dir = root / "a"
+    case_dir.mkdir(parents=True)
+    (case_dir / "front.png").write_bytes(b"x")
+    record = type("Rec", (), {"relative_key": "a", "front_path": case_dir / "front.png", "case_dir": case_dir})
+    manifest = type(
+        "M",
+        (),
+        {
+            "data": {"cases": {"a": {"status": "complete"}}},
+            "case_is_complete_and_valid": lambda self, _k: True,
+        },
+    )()
+    _rows, counts, runnable = ui._collect_case_snapshot([record], manifest=manifest)
+    assert counts["skipped_complete"] == 0
+    assert counts["pending"] == 1
+    assert len(runnable) == 1

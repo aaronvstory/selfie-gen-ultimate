@@ -281,6 +281,7 @@ class AutoPipelineRunner:
         extract_step = self.manifest.get_step(case_key, "extract_portrait")
         existing_extract_output = extract_step.get("output")
         extraction_skipped = False
+        extraction_reused = False
         if (
             not self.automation.get("automation_extract_enabled", True)
         ):
@@ -302,6 +303,7 @@ class AutoPipelineRunner:
                 output=str(extracted_path),
                 meta={**extract_meta, **self._policy_meta("extract_portrait", True, reprocess_mode)},
             )
+            extraction_reused = True
         elif reprocess_mode == "skip" and extracted_path.exists():
             extract_meta = extract_step.get("meta") or {}
             self.manifest.update_step(
@@ -311,6 +313,7 @@ class AutoPipelineRunner:
                 output=str(extracted_path),
                 meta={**extract_meta, **self._policy_meta("extract_portrait", True, reprocess_mode)},
             )
+            extraction_reused = True
         else:
             target_extract_path = extracted_path
             if reprocess_mode == "increment":
@@ -344,7 +347,7 @@ class AutoPipelineRunner:
                     "confidence": extract_meta.get("confidence"),
                     "crop_box": extract_meta.get("crop_box"),
                     "extractor": extract_meta.get("extractor"),
-                    **self._policy_meta("extract_portrait", False, reprocess_mode),
+                    **self._policy_meta("extract_portrait", extraction_reused, reprocess_mode),
                 },
             )
 
@@ -499,6 +502,7 @@ class AutoPipelineRunner:
                     )
                 else:
                     self.manifest.update_step(case_key, "selfie_expand", "failed", error="selfie expand failed")
+                    return self._finalize_case(case_entry, "failed")
         else:
             self.manifest.update_step(case_key, "selfie_expand", "skipped", output=best_path)
 

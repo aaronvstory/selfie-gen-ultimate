@@ -1346,10 +1346,38 @@ class KlingAutomationUI:
         print("\033[92m➤ Select option:\033[0m ", end="", flush=True)
 
     def _select_automation_root(self):
-        raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
-        if not raw:
-            return
-        selected = Path(raw)
+        print("\nSelect automation root:")
+        print("  1) Browse for folder (recommended)")
+        print("  2) Type folder path")
+        choice = input("Choose option [1/2, default 1]: ").strip()
+        selected_path: Optional[str] = None
+        use_browse = choice in {"", "1"}
+        if use_browse:
+            try:
+                selected_path = filedialog.askdirectory(title="Select Automation Root Folder")
+            except Exception as exc:
+                self.print_yellow(f"Folder picker unavailable ({exc}). Falling back to typed path.")
+                selected_path = None
+            if not selected_path:
+                raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
+                if not raw:
+                    return
+                if raw.startswith('"') and raw.endswith('"'):
+                    raw = raw[1:-1]
+                elif raw.startswith("'") and raw.endswith("'"):
+                    raw = raw[1:-1]
+                selected_path = raw
+        else:
+            raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
+            if not raw:
+                return
+            if raw.startswith('"') and raw.endswith('"'):
+                raw = raw[1:-1]
+            elif raw.startswith("'") and raw.endswith("'"):
+                raw = raw[1:-1]
+            selected_path = raw
+
+        selected = Path(selected_path)
         if not selected.exists() or not selected.is_dir():
             self.print_red("Invalid folder path.")
             input("Press Enter to continue...")
@@ -1378,7 +1406,7 @@ class KlingAutomationUI:
 
     def _planned_action_for_case(self, case_entry: Dict[str, Any], existing: Any, is_complete: bool) -> str:
         status = str(case_entry.get("status", "pending"))
-        if is_complete:
+        if is_complete and self.config.get("automation_skip_completed", True):
             return "skip_complete"
         if status == "manual_review":
             return "manual_review"

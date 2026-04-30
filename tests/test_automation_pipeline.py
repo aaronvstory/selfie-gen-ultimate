@@ -756,3 +756,80 @@ def test_pipeline_missing_manifest_video_fails_required_oldcam_without_call(tmp_
     oldcam_step = manifest.data["cases"][record.relative_key]["steps"]["oldcam"]
     assert oldcam_step["status"] == "failed"
     assert "missing or non-mp4" in (oldcam_step.get("error") or "")
+
+
+def test_pipeline_selfie_expand_failure_is_terminal(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-s"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-s")
+
+    config = merge_automation_defaults({"falai_api_key": "x", "automation_selfie_expand_enabled": True})
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 99, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    class FailingSelfieExpand(FakeOutpaint):
+        def outpaint(self, image_path, output_folder, output_path=None, **kwargs):
+            if "expand_left" in kwargs:
+                return None
+            return super().outpaint(image_path, output_folder, output_path=output_path, **kwargs)
+
+    video_called = {"value": False}
+
+    class SpyVideo(FakeVideo):
+        def create_kling_generation(self, *args, **kwargs):
+            video_called["value"] = True
+            return super().create_kling_generation(*args, **kwargs)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FailingSelfieExpand(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: SpyVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["failed"] == 1
+    assert video_called["value"] is False
+    assert manifest.data["cases"][record.relative_key]["steps"]["selfie_expand"]["status"] == "failed"
+
+
+def test_pipeline_extract_reuse_meta_keeps_reused_existing_true(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-t"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (2, 2, 2)).save(front)
+    extracted = case_dir / "extracted.png"
+    Image.new("RGB", (64, 64), (3, 3, 3)).save(extracted)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-t")
+
+    config = merge_automation_defaults({"falai_api_key": "x"})
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    manifest.update_step(record.relative_key, "extract_portrait", "complete", output=str(extracted), meta={"extractor": "cached"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 99, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    meta = manifest.data["cases"][record.relative_key]["steps"]["extract_portrait"]["meta"]
+    assert meta["reused_existing"] is True

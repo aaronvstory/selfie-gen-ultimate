@@ -48,10 +48,14 @@ def compute_percent_expand_plan(
     scale = _safe_scale_for_percent_expand(orig_w=orig_w, orig_h=orig_h, p=p, caps=caps)
     upload_w = max(1, math.floor(orig_w * scale))
     upload_h = max(1, math.floor(orig_h * scale))
-    left = min(caps.max_per_side, max(0, round(upload_w * p)))
-    right = min(caps.max_per_side, max(0, round(upload_w * p)))
-    top = min(caps.max_per_side, max(0, round(upload_h * p)))
-    bottom = min(caps.max_per_side, max(0, round(upload_h * p)))
+    target_canvas_w = int(round(upload_w * (1.0 + 2.0 * p)))
+    target_canvas_h = int(round(upload_h * (1.0 + 2.0 * p)))
+    target_expand_w = max(0, target_canvas_w - upload_w)
+    target_expand_h = max(0, target_canvas_h - upload_h)
+    left = min(caps.max_per_side, target_expand_w // 2)
+    right = min(caps.max_per_side, target_expand_w - left)
+    top = min(caps.max_per_side, target_expand_h // 2)
+    bottom = min(caps.max_per_side, target_expand_h - top)
     canvas_w = upload_w + left + right
     canvas_h = upload_h + top + bottom
     return {

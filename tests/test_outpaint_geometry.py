@@ -37,6 +37,14 @@ def test_fal_per_side_cap_applied():
     assert plan["top"] <= FAL_CAPS.max_per_side
 
 
+def test_percent_expand_uses_deterministic_envelope_rounding():
+    plan = compute_percent_expand_plan(1234, 987, 33, FAL_CAPS)
+    expected_canvas_w = int(round(plan["upload_w"] * (1.0 + 2.0 * 0.33)))
+    expected_canvas_h = int(round(plan["upload_h"] * (1.0 + 2.0 * 0.33)))
+    assert plan["left"] + plan["right"] == max(0, expected_canvas_w - plan["upload_w"])
+    assert plan["top"] + plan["bottom"] == max(0, expected_canvas_h - plan["upload_h"])
+
+
 def test_percent_expand_rejects_non_positive_dimensions():
     with pytest.raises(ValueError):
         compute_percent_expand_plan(0, 100, 30, FAL_CAPS)
