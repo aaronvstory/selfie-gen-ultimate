@@ -60,6 +60,7 @@ class AutoPipelineRunner:
                 freeimage_key=self.config.get("freeimage_api_key"),
             ),
         )
+        self.last_case_results: Dict[str, Dict[str, Any]] = {}
 
     def _report(self, message: str, level: str = "info") -> None:
         if self.progress_cb:
@@ -89,6 +90,22 @@ class AutoPipelineRunner:
             "step": step_name,
         }
 
+    def _set_active_step(self, case_entry: Dict[str, Any], step_name: Optional[str]) -> None:
+        case_entry["active_step"] = step_name
+        self.manifest.save_atomic()
+
+    def validate_configuration(self) -> List[str]:
+        issues: List[str] = []
+        if not self.config.get("falai_api_key"):
+            issues.append("Missing falai_api_key in config.")
+        if self.automation.get("automation_similarity_threshold", 80) < 0 or self.automation.get("automation_similarity_threshold", 80) > 100:
+            issues.append("automation_similarity_threshold must be 0..100.")
+        if self.automation.get("automation_front_expand_mode") == "percent" and int(self.automation.get("automation_front_expand_percent", 0)) < 0:
+            issues.append("automation_front_expand_percent must be >= 0.")
+        if self.automation.get("automation_oldcam_required", False) and not self.automation.get("automation_oldcam_enabled", True):
+            issues.append("automation_oldcam_required=true requires automation_oldcam_enabled=true.")
+        return issues
+
     @staticmethod
     def _percent_expand_pixels(image_path: str, pct: int, max_per_side: int = 700) -> Dict[str, int]:
         with Image.open(image_path) as img:
@@ -103,11 +120,16 @@ class AutoPipelineRunner:
         }
 
     def run(self, cases: List[CaseRecord]) -> Dict[str, int]:
+        validation_issues = self.validate_configuration()
+        if validation_issues:
+            raise ValueError("Configuration validation failed: " + "; ".join(validation_issues))
+
         stats = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
         for case in cases:
             self.manifest.ensure_case(case.relative_key, case.case_dir, case.front_path)
             if self.automation.get("automation_skip_completed", True) and self.manifest.case_is_complete_and_valid(case.relative_key):
                 stats["skipped"] += 1
+                self.last_case_results[case.relative_key] = {"status": "skipped", "reason": "already complete"}
                 continue
             try:
                 final_status = self._run_case(case)
@@ -123,9 +145,11 @@ class AutoPipelineRunner:
                 self.manifest.data["cases"][case.relative_key]["active_step"] = None
                 self.manifest.save_atomic()
                 stats["failed"] += 1
+                self.last_case_results[case.relative_key] = {"status": "failed", "reason": str(exc)}
                 continue
 
             stats[final_status] = stats.get(final_status, 0) + 1
+            self.last_case_results[case.relative_key] = {"status": final_status, "reason": ""}
         return stats
 
     def _run_case(self, case: CaseRecord) -> str:
@@ -134,7 +158,7 @@ class AutoPipelineRunner:
         existing = detect_existing_outputs(case_dir)
         case_entry = self.manifest.data["cases"][case_key]
         case_entry["status"] = "running"
-        case_entry["active_step"] = None
+        self._set_active_step(case_entry, None)
         self.manifest.save_atomic()
 
         outpaint = self.deps.outpaint_factory()
@@ -174,7 +198,7 @@ class AutoPipelineRunner:
                 target_output = Path(front_expanded)
                 if reprocess_mode == "increment":
                     target_output = self._next_increment_path(target_output)
-                case_entry["active_step"] = "front_expand"
+                self._set_active_step(case_entry, "front_expand")
                 self.manifest.update_step(case_key, "front_expand", "running")
                 result = outpaint.outpaint(
                     image_path=str(case.front_path),
@@ -240,7 +264,7 @@ class AutoPipelineRunner:
             target_extract_path = extracted_path
             if reprocess_mode == "increment":
                 target_extract_path = self._next_increment_path(extracted_path)
-            case_entry["active_step"] = "extract_portrait"
+            self._set_active_step(case_entry, "extract_portrait")
             self.manifest.update_step(case_key, "extract_portrait", "running")
             extract_meta = extract_portrait_crop(
                 input_path=str(case.front_path),
@@ -432,6 +456,7 @@ class AutoPipelineRunner:
             )
             if selected_video:
                 case_entry["active_step"] = "oldcam"
+                self._set_active_step(case_entry, "oldcam")
                 self.manifest.update_step(case_key, "oldcam", "running")
                 oldcam_output = run_oldcam(
                     video_path=Path(selected_video),
@@ -466,7 +491,7 @@ class AutoPipelineRunner:
         else:
             self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
 
-        case_entry["active_step"] = None
+        self._set_active_step(case_entry, None)
         case_entry["status"] = "complete"
         self.manifest.save_atomic()
         return "completed"

@@ -222,3 +222,65 @@ def test_pipeline_increment_mode_generates_incremented_files(tmp_path: Path, mon
     assert stats["completed"] == 1
     front_out = Path(manifest.data["cases"]["case-e"]["steps"]["front_expand"]["output"])
     assert "_v" in front_out.stem
+
+
+def test_pipeline_overwrite_mode_reuses_base_output_name(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-f"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    front.write_bytes(b"front")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-f")
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "saved_prompts": {"1": "prompt"},
+            "current_prompt_slot": 1,
+            "automation_allow_reprocess": True,
+            "automation_reprocess_mode": "overwrite",
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    front_out = Path(manifest.data["cases"]["case-f"]["steps"]["front_expand"]["output"])
+    assert "_v" not in front_out.stem
+
+
+def test_pipeline_validation_fails_on_oldcam_required_without_enable(tmp_path: Path):
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "automation_oldcam_enabled": False,
+            "automation_oldcam_required": True,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    issues = runner.validate_configuration()
+    assert any("requires" in issue for issue in issues)
