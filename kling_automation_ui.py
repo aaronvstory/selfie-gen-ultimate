@@ -1461,25 +1461,101 @@ class KlingAutomationUI:
         input("\nPress Enter to continue...")
 
     def _edit_automation_settings_quick(self):
-        print("\nQuick settings:")
-        print(f"Current similarity threshold: {self.config.get('automation_similarity_threshold', 80)}")
-        value = input("New threshold 0-100 (Enter keep): ").strip()
-        if value:
+        def _ask(prompt: str, key: str, cast_fn, validator=None):
+            current = self.config.get(key)
+            raw = input(f"{prompt} (current: {current}) [Enter keep]: ").strip()
+            if not raw:
+                return
             try:
-                threshold = max(0, min(100, int(value)))
-                self.config["automation_similarity_threshold"] = threshold
-            except ValueError:
-                self.print_red("Invalid threshold. Keeping old value.")
+                value = cast_fn(raw)
+                if validator and not validator(value):
+                    raise ValueError("validation failed")
+                self.config[key] = value
+            except Exception:
+                self.print_red(f"Invalid value for {key}. Keeping previous value.")
 
-        print(f"Current front expand percent: {self.config.get('automation_front_expand_percent', 30)}")
-        value = input("New front expand percent (Enter keep): ").strip()
-        if value:
-            try:
-                self.config["automation_front_expand_percent"] = max(0, int(value))
-            except ValueError:
-                self.print_red("Invalid percent. Keeping old value.")
+        def _ask_choice(prompt: str, key: str, choices: list):
+            current = str(self.config.get(key))
+            raw = input(f"{prompt} {choices} (current: {current}) [Enter keep]: ").strip().lower()
+            if not raw:
+                return
+            if raw not in choices:
+                self.print_red(f"Invalid choice for {key}.")
+                return
+            self.config[key] = raw
+
+        def _ask_bool(prompt: str, key: str):
+            current = bool(self.config.get(key, False))
+            raw = input(f"{prompt} [y/n] (current: {'y' if current else 'n'}) [Enter keep]: ").strip().lower()
+            if not raw:
+                return
+            if raw in {"y", "yes", "1", "true"}:
+                self.config[key] = True
+            elif raw in {"n", "no", "0", "false"}:
+                self.config[key] = False
+            else:
+                self.print_red(f"Invalid boolean for {key}.")
+
+        print("\nAutomation Settings Editor")
+        print("Press Enter on any prompt to keep current value.\n")
+
+        # Paths and manifest
+        raw_root = input(f"Automation root path (current: {self.automation_root_folder or '(not set)'}) [Enter keep]: ").strip()
+        if raw_root:
+            root_path = Path(raw_root)
+            if root_path.exists() and root_path.is_dir():
+                self.automation_root_folder = str(root_path)
+                self.config["automation_root_folder"] = self.automation_root_folder
+            else:
+                self.print_red("Root path invalid; keeping previous value.")
+        _ask("Manifest filename", "automation_manifest_name", str, lambda v: len(v) > 0 and v.endswith(".json"))
+
+        # Discovery/skip/reprocess
+        _ask_bool("Skip completed", "automation_skip_completed")
+        _ask_bool("Skip if selfie exists", "automation_skip_if_selfie_exists")
+        _ask_bool("Skip if video exists", "automation_skip_if_video_exists")
+        _ask_bool("Allow reprocess", "automation_allow_reprocess")
+        _ask_choice("Reprocess mode", "automation_reprocess_mode", ["skip", "overwrite", "increment"])
+
+        # Front expansion
+        _ask_bool("Front expand enabled", "automation_front_expand_enabled")
+        _ask_choice("Front expand provider", "automation_front_expand_provider", ["auto", "bfl", "fal"])
+        _ask_choice("Front expand mode", "automation_front_expand_mode", ["document_3x4", "percent"])
+        _ask("Front expand percent", "automation_front_expand_percent", int, lambda v: v >= 0)
+        _ask_bool("Front edge seal enabled", "automation_front_edge_seal_enabled")
+        _ask("Front edge seal px", "automation_front_edge_seal_px", int, lambda v: v >= 0)
+        _ask("Front output name", "automation_front_output_name", str, lambda v: len(v) > 0)
+
+        # Extraction/selfie/similarity
+        _ask_bool("Portrait extraction enabled", "automation_extract_enabled")
+        _ask("Extract output name", "automation_extract_output_name", str, lambda v: len(v) > 0)
+        _ask("Crop multiplier", "automation_crop_multiplier", float, lambda v: v > 0)
+        _ask_bool("Selfie generation enabled", "automation_selfie_enabled")
+        models_raw = input(
+            f"Selfie model endpoints comma-separated (current: {self.config.get('automation_selfie_models')}) [Enter keep]: "
+        ).strip()
+        if models_raw:
+            models = [m.strip() for m in models_raw.split(",") if m.strip()]
+            if models:
+                self.config["automation_selfie_models"] = models
+        _ask_choice("Selfie model policy", "automation_selfie_model_policy", ["first_pass", "all"])
+        _ask("Max attempts per model", "automation_selfie_max_attempts_per_model", int, lambda v: v > 0)
+        _ask("Similarity threshold", "automation_similarity_threshold", int, lambda v: 0 <= v <= 100)
+
+        # Selfie expansion + video + oldcam
+        _ask_bool("Selfie expansion enabled", "automation_selfie_expand_enabled")
+        _ask_choice("Selfie expand provider", "automation_selfie_expand_provider", ["auto", "bfl", "fal"])
+        _ask_choice("Selfie expand mode", "automation_selfie_expand_mode", ["percent", "centered_3x4"])
+        _ask("Selfie expand percent", "automation_selfie_expand_percent", int, lambda v: v >= 0)
+        _ask_bool("Video generation enabled", "automation_video_enabled")
+        _ask("Video aspect ratio", "automation_video_aspect_ratio", str, lambda v: ":" in v)
+        _ask_bool("Use existing video prompt", "automation_video_use_existing_prompt")
+        _ask_bool("Oldcam enabled", "automation_oldcam_enabled")
+        _ask_choice("Oldcam version", "automation_oldcam_version", ["v7", "v8", "all"])
+        _ask_bool("Oldcam required", "automation_oldcam_required")
+
         self.save_config()
-        input("Saved. Press Enter to continue...")
+        input("Settings saved. Press Enter to continue...")
 
     def _dry_run_automation(self):
         if not self.automation_root_folder:
@@ -1550,12 +1626,31 @@ class KlingAutomationUI:
             manifest=manifest,
             progress_cb=lambda msg, level="info": print(f"[{level}] {msg}"),
         )
+        issues = runner.validate_configuration()
+        if issues:
+            print("\nAutomation preflight failed:")
+            for issue in issues:
+                print(f"  - {issue}")
+            input("\nPress Enter to continue...")
+            return
+
+        print("\nAutomation preflight:")
+        print(f"  cases discovered: {len(records)}")
+        print(f"  reprocess mode: {self.config.get('automation_reprocess_mode', 'skip')}")
+        print(f"  skip selfie/video existing: {self.config.get('automation_skip_if_selfie_exists', True)} / {self.config.get('automation_skip_if_video_exists', True)}")
         stats = runner.run(records)
         print("\nAutomation run complete.")
         print(f"  completed: {stats.get('completed', 0)}")
         print(f"  failed: {stats.get('failed', 0)}")
         print(f"  manual_review: {stats.get('manual_review', 0)}")
         print(f"  skipped: {stats.get('skipped', 0)}")
+        table = Table(title="Per-Case Summary")
+        table.add_column("Case")
+        table.add_column("Status")
+        table.add_column("Reason")
+        for key, result in sorted(runner.last_case_results.items(), key=lambda item: item[0].lower()):
+            table.add_row(key, str(result.get("status", "")), str(result.get("reason", "")))
+        Console().print(table)
         input("\nPress Enter to continue...")
 
     def run_automation_menu(self):
