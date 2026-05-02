@@ -226,7 +226,8 @@ class AutoPipelineRunner:
             except Exception as exc:
                 self._report(f"[{case.relative_key}] case failed: {exc}", "error")
                 self.logger.exception("case failed with exception: %s", case.relative_key)
-                case_state = self.manifest.data.get("cases", {}).get(case.relative_key, {})
+                cases_map = self.manifest.data.setdefault("cases", {})
+                case_state = cases_map.setdefault(case.relative_key, {})
                 active_step = case_state.get("active_step")
                 if active_step:
                     try:
