@@ -70,17 +70,20 @@ class AutomationManifest:
                     loaded = json.load(handle)
             except (JSONDecodeError, UnicodeDecodeError) as exc:
                 cls._backup_invalid_manifest(manifest_path, f"invalid json: {exc}")
+                return cls.create_or_load(manifest_path, root_dir, config_snapshot)
             except OSError as exc:
                 raise ValueError(f"Manifest load failed at {manifest_path}: {exc}") from exc
 
             if not isinstance(loaded, dict):
                 cls._backup_invalid_manifest(manifest_path, f"manifest root type invalid: {type(loaded).__name__}")
+                return cls.create_or_load(manifest_path, root_dir, config_snapshot)
             if loaded.get("schema_version") != SCHEMA_VERSION:
                 got_version = loaded.get("schema_version")
                 cls._backup_invalid_manifest(
                     manifest_path,
                     f"schema_version mismatch: got {got_version!r}, expected {SCHEMA_VERSION}",
                 )
+                return cls.create_or_load(manifest_path, root_dir, config_snapshot)
 
             loaded_root = str(Path(loaded.get("root_dir", "")).resolve())
             if loaded_root != resolved_root:
