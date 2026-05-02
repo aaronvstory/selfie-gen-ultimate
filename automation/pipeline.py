@@ -9,7 +9,7 @@ from PIL import Image, ImageOps
 from automation.config import AutomationConfig, DEFAULT_SELFIE_PROMPT
 from automation.discovery import CaseRecord, detect_existing_outputs
 from automation.logger import build_safe_config_snapshot, create_automation_logger
-from automation.manifest import AutomationManifest
+from automation.manifest import AutomationManifest, now_iso
 from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies, run_oldcam
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
@@ -226,14 +226,20 @@ class AutoPipelineRunner:
             except Exception as exc:
                 self._report(f"[{case.relative_key}] case failed: {exc}", "error")
                 self.logger.exception("case failed with exception: %s", case.relative_key)
-                active_step = self.manifest.data.get("cases", {}).get(case.relative_key, {}).get("active_step")
+                case_state = self.manifest.data.get("cases", {}).get(case.relative_key, {})
+                active_step = case_state.get("active_step")
                 if active_step:
                     try:
                         self.manifest.update_step(case.relative_key, active_step, "failed", error=str(exc))
                     except Exception:
                         pass
-                self.manifest.data["cases"][case.relative_key]["status"] = "failed"
-                self.manifest.data["cases"][case.relative_key]["active_step"] = None
+                else:
+                    case_state.setdefault("errors", []).append(
+                        {"step": "run", "error": str(exc), "at": now_iso()}
+                    )
+                case_state["status"] = "failed"
+                case_state["active_step"] = None
+                case_state["updated_at"] = now_iso()
                 self.manifest.save_atomic()
                 stats["failed"] += 1
                 self.last_case_results[case.relative_key] = {"status": "failed", "reason": str(exc)}
