@@ -123,6 +123,11 @@ def compute_centered_aspect_expand_plan(
     if best is None:
         upload_w = max(1, min(orig_w, caps.max_canvas_dim))
         upload_h = max(1, min(orig_h, caps.max_canvas_dim))
+        max_pixels = int(caps.max_canvas_mp * 1_000_000)
+        if upload_w * upload_h > max_pixels:
+            factor = math.sqrt(max_pixels / float(upload_w * upload_h))
+            upload_w = max(1, int(math.floor(upload_w * factor)))
+            upload_h = max(1, int(math.floor(upload_h * factor)))
         canvas_scale = min(upload_w / max(orig_w, 1), upload_h / max(orig_h, 1), 1.0)
         return {
             "upload_w": upload_w,

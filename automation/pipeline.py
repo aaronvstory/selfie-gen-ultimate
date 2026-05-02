@@ -694,11 +694,18 @@ class AutoPipelineRunner:
 
         # Step 7: optional oldcam pass
         if self.automation.get("automation_oldcam_enabled", True):
-            selected_video = (
-                self.manifest.get_step(case_key, "video_generate").get("output")
-                or existing.video_candidate
-            )
-            selected_video_path = Path(selected_video) if selected_video else None
+            manifest_video = self.manifest.get_step(case_key, "video_generate").get("output")
+            manifest_video_path = Path(manifest_video) if manifest_video else None
+            if (
+                manifest_video_path
+                and manifest_video_path.exists()
+                and manifest_video_path.suffix.lower() == ".mp4"
+            ):
+                selected_video_path = manifest_video_path
+            elif existing.video_candidate:
+                selected_video_path = Path(existing.video_candidate)
+            else:
+                selected_video_path = None
             if selected_video_path and selected_video_path.exists() and selected_video_path.suffix.lower() == ".mp4":
                 self.logger.info("case %s oldcam readiness=ready version=%s required=%s", case_key, self.automation.get("automation_oldcam_version", "v8"), bool(self.automation.get("automation_oldcam_required", False)))
                 case_entry["active_step"] = "oldcam"

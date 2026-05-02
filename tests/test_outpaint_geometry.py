@@ -68,3 +68,10 @@ def test_centered_plan_fal_caps_preserve_aspect_and_limits():
     assert (plan["canvas_w"] * plan["canvas_h"]) <= int(FAL_CAPS.max_canvas_mp * 1_000_000)
     assert abs(plan["left"] - plan["right"]) <= 1
     assert abs(plan["top"] - plan["bottom"]) <= 1
+
+
+def test_centered_plan_fallback_still_respects_mp_limit():
+    plan = compute_centered_aspect_expand_plan(2048, 2048, (3, 4), BFL_CAPS)
+    assert plan["canvas_w"] <= BFL_CAPS.max_canvas_dim
+    assert plan["canvas_h"] <= BFL_CAPS.max_canvas_dim
+    assert (plan["canvas_w"] * plan["canvas_h"]) <= int(BFL_CAPS.max_canvas_mp * 1_000_000)

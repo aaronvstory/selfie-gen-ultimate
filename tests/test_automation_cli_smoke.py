@@ -28,7 +28,7 @@ def test_load_config_defaults_to_kling_standard_and_slot1(tmp_path):
     assert "30 degrees" in cfg["saved_prompts"]["1"].lower()
 
 
-def test_dry_run_ignores_corrupt_manifest(tmp_path, monkeypatch):
+def test_dry_run_ignores_corrupt_manifest(tmp_path, monkeypatch, capsys):
     ui = KlingAutomationUI.__new__(KlingAutomationUI)
     ui.config = {"automation_front_names": ["front.png"]}
     ui.automation_root_folder = str(tmp_path)
@@ -44,6 +44,8 @@ def test_dry_run_ignores_corrupt_manifest(tmp_path, monkeypatch):
 
     monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
     ui._dry_run_automation()
+    output = capsys.readouterr().out
+    assert "Warning: existing manifest unreadable or schema-mismatched" in output
 
 
 def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):

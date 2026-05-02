@@ -1055,3 +1055,56 @@ def test_pipeline_extract_reuse_meta_keeps_reused_existing_true(tmp_path: Path, 
     meta = manifest.data["cases"][record.relative_key]["steps"]["extract_portrait"]["meta"]
     assert meta["reused_existing"] is True
 
+
+def test_pipeline_oldcam_falls_back_to_existing_video_when_manifest_video_is_stale(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-u"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (4, 4, 4)).save(front)
+    video_dir = case_dir / "gen-videos"
+    video_dir.mkdir()
+    existing_video = video_dir / "existing.mp4"
+    existing_video.write_bytes(b"video")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-u")
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "automation_video_enabled": False,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    manifest.update_step(
+        record.relative_key,
+        "video_generate",
+        "complete",
+        output=str(video_dir / "stale.mp4"),
+    )
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 95, "pass": True, "error": None, "match": True})
+
+    called = {"video": None}
+
+    def _run_oldcam(**kwargs):
+        called["video"] = str(kwargs.get("video_path"))
+        return None
+
+    monkeypatch.setattr("automation.pipeline.run_oldcam", _run_oldcam)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert called["video"] == str(existing_video)
