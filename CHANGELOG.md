@@ -15,6 +15,9 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Automation defaults:
+  - Front expansion recommended/default percent changed from `30` to `70`.
+  - Selfie expansion remains `30`.
 - Similarity/runtime hardening:
   - Added fallback path in `similarity_engine.py` for TensorFlow/Keras runtime mismatch during face extraction.
   - Early ML backend environment bootstrap added for CLI path.

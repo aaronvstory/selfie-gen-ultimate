@@ -1395,7 +1395,7 @@ class KlingAutomationUI:
         lines = [
             f"root={self.automation_root_folder or '(not set)'} max_cases={self._read_max_cases_setting()}",
             f"keys fal={key_status(self.config.get('falai_api_key'))} bfl={key_status(self.config.get('bfl_api_key'))}",
-            f"front mode={self.config.get('automation_front_expand_mode')} pct={self.config.get('automation_front_expand_percent', 30)} provider={front_configured}->{self._resolve_provider(front_configured)}",
+            f"front mode={self.config.get('automation_front_expand_mode')} pct={self.config.get('automation_front_expand_percent', 70)} provider={front_configured}->{self._resolve_provider(front_configured)}",
             f"selfie expand mode={self.config.get('automation_selfie_expand_mode')} pct={self.config.get('automation_selfie_expand_percent', 30)} provider={selfie_configured}->{self._resolve_provider(selfie_configured)}",
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
             f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', 1)}",
@@ -1435,7 +1435,7 @@ class KlingAutomationUI:
 
         self.config["automation_front_expand_provider"] = "bfl"
         self.config["automation_front_expand_mode"] = "percent"
-        self.config["automation_front_expand_percent"] = 30
+        self.config["automation_front_expand_percent"] = 70
         self.config["automation_front_edge_seal_enabled"] = False
         self.config["automation_selfie_expand_provider"] = "bfl"
         self.config["automation_selfie_expand_mode"] = "percent"
@@ -1463,7 +1463,7 @@ class KlingAutomationUI:
 
         print("\nApplied recommended automation defaults.")
         print("Before -> After")
-        print(f"  front expand: {before['front'][0]} / {before['front'][1]} / {before['front'][2]} -> bfl / percent / 30")
+        print(f"  front expand: {before['front'][0]} / {before['front'][1]} / {before['front'][2]} -> bfl / percent / 70")
         print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} -> bfl / percent / 30")
         print(f"  selfie model: {before['selfie_models']} -> Nano Banana 2 Edit")
         print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
@@ -1472,7 +1472,7 @@ class KlingAutomationUI:
         print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> all / required")
         print(f"  max cases per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
         print("\nCurrent recommended state:")
-        print("  front expand: bfl / percent / 30")
+        print("  front expand: bfl / percent / 70")
         print("  selfie expand: bfl / percent / 30")
         print("  selfie model: Nano Banana 2 Edit")
         print("  video model: Kling 2.5 Turbo Standard")

@@ -40,6 +40,7 @@ Resume behavior:
 - Completed valid cases are skipped when `automation_skip_completed=true`.
 - Cases marked `manual_review` due to `similarity unavailable` are retryable in later runs.
 - Manifest stores per-step status, output path, error, and metadata.
+- Recommended expansion defaults: front expand `70%`, selfie expand `30%`.
 
 ## Reusable Test Folders (Repeatable Batch Testing)
 

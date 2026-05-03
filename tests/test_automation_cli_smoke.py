@@ -493,7 +493,7 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert saved["count"] == 1
     assert ui.config["automation_front_expand_provider"] == "bfl"
     assert ui.config["automation_front_expand_mode"] == "percent"
-    assert ui.config["automation_front_expand_percent"] == 30
+    assert ui.config["automation_front_expand_percent"] == 70
     assert ui.config["automation_selfie_expand_provider"] == "bfl"
     assert ui.config["automation_selfie_expand_mode"] == "percent"
     assert ui.config["automation_selfie_expand_percent"] == 30

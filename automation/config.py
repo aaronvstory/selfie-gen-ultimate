@@ -40,7 +40,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_front_expand_enabled": True,
     "automation_front_expand_provider": "bfl",  # auto | bfl | fal
     "automation_front_expand_mode": "percent",  # document_3x4 | percent
-    "automation_front_expand_percent": 30,
+    "automation_front_expand_percent": 70,
     "automation_front_edge_seal_enabled": False,
     "automation_front_edge_seal_px": 12,
     "automation_front_output_name": "front-expanded.png",
