@@ -15,6 +15,15 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
+try:
+    from kling_gui.ml_backend_env import ensure_ml_backend_env
+except Exception:
+    def ensure_ml_backend_env() -> None:
+        os.environ["TF_USE_LEGACY_KERAS"] = "1"
+        os.environ["KERAS_BACKEND"] = "tensorflow"
+
+ensure_ml_backend_env()
+
 # Import path utilities for frozen exe compatibility
 from path_utils import (
     get_config_path,
@@ -1562,6 +1571,9 @@ class KlingAutomationUI:
         if is_complete and self.config.get("automation_skip_completed", True):
             return "skip_complete"
         if status == "manual_review":
+            gate_error = str(case_entry.get("steps", {}).get("similarity_gate", {}).get("error", "") or "")
+            if "similarity unavailable" in gate_error.lower():
+                return "run_pending"
             return "manual_review"
         if status == "failed":
             return "failed"

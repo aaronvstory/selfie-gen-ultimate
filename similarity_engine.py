@@ -179,6 +179,15 @@ class FaceEngine:
             raise ValueError(f"No face detected in {image_label}.")
         return max(faces, key=self._face_area)
 
+    @staticmethod
+    def _is_backend_runtime_error(exc: Exception) -> bool:
+        lowered = str(exc).lower()
+        return (
+            "kerastensor" in lowered
+            or "tensorflow function" in lowered
+            or "symbolic placeholder" in lowered
+        )
+
     def _represent_faces(self, faces: Any, image_label: str) -> list:
         """Represent all valid extracted faces; raises if none can be embedded."""
         vectors = []
@@ -207,6 +216,30 @@ class FaceEngine:
             raise ValueError("DeepFace did not return an embedding.")
         return np.asarray(embedding, dtype=float)
 
+    def _compare_with_opencv_fallback(
+        self, img1_path: str, img2_path: str
+    ) -> Dict[str, Union[bool, float, str]]:
+        fallback1 = os.path.join(self.models_dir, "_fallback_source_face.png")
+        fallback2 = os.path.join(self.models_dir, "_fallback_target_face.png")
+        self.extract_face(img1_path, fallback1)
+        self.extract_face(img2_path, fallback2)
+        embedding1 = self._represent_face(fallback1)
+        embedding2 = self._represent_face(fallback2)
+        distance = self._cosine_distance(embedding1, embedding2)
+        threshold = 0.68
+
+        distance = max(0.0, min(1.0, distance))
+        if distance <= threshold:
+            similarity_score = 100.0 - ((distance / threshold) * 20.0)
+            is_match = True
+        else:
+            similarity_score = max(
+                0.0,
+                79.0 - (((distance - threshold) / (1.0 - threshold)) * 79.0),
+            )
+            is_match = False
+        return {"match": is_match, "score": round(similarity_score, 2), "error": None}
+
     @staticmethod
     def _cosine_distance(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
         norm1 = float(np.linalg.norm(embedding1))
@@ -223,16 +256,26 @@ class FaceEngine:
             self.validate_image_file(img1_path)
             self.validate_image_file(img2_path)
 
-            faces1 = DeepFace.extract_faces(
-                img_path=img1_path,
-                detector_backend=self.detector_backend,
-                enforce_detection=True,
-            )
-            faces2 = DeepFace.extract_faces(
-                img_path=img2_path,
-                detector_backend=self.detector_backend,
-                enforce_detection=True,
-            )
+            try:
+                faces1 = DeepFace.extract_faces(
+                    img_path=img1_path,
+                    detector_backend=self.detector_backend,
+                    enforce_detection=True,
+                )
+                faces2 = DeepFace.extract_faces(
+                    img_path=img2_path,
+                    detector_backend=self.detector_backend,
+                    enforce_detection=True,
+                )
+            except Exception as exc:
+                if not self._is_backend_runtime_error(exc):
+                    raise
+                logger.warning(
+                    "DeepFace extraction backend error; retrying compare with OpenCV fallback: %s",
+                    exc,
+                )
+                return self._compare_with_opencv_fallback(img1_path, img2_path)
+
             logger.debug(
                 "Similarity compare faces: source=%d target=%d", len(faces1 or []), len(faces2 or [])
             )

@@ -307,6 +307,76 @@ def test_collect_case_snapshot_respects_skip_completed_false(tmp_path):
     assert len(runnable) == 1
 
 
+def test_collect_case_snapshot_manual_review_similarity_unavailable_is_retryable(tmp_path):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_front_names": ["front.png"],
+        "automation_skip_completed": True,
+        "automation_skip_if_selfie_exists": True,
+        "automation_skip_if_video_exists": True,
+        "automation_max_cases_per_run": "all",
+    }
+    ui._read_max_cases_setting = lambda: "all"
+    case_dir = tmp_path / "a"
+    case_dir.mkdir(parents=True)
+    (case_dir / "front.png").write_bytes(b"x")
+    record = type("Rec", (), {"relative_key": "a", "front_path": case_dir / "front.png", "case_dir": case_dir})
+    manifest = type(
+        "M",
+        (),
+        {
+            "data": {
+                "cases": {
+                    "a": {
+                        "status": "manual_review",
+                        "steps": {"similarity_gate": {"error": "similarity unavailable: backend error"}},
+                    }
+                }
+            },
+            "case_is_complete_and_valid": lambda self, _k: False,
+        },
+    )()
+    _rows, counts, runnable = ui._collect_case_snapshot([record], manifest=manifest)
+    assert counts["pending"] == 1
+    assert counts["manual_review"] == 0
+    assert len(runnable) == 1
+
+
+def test_collect_case_snapshot_manual_review_low_similarity_stays_manual_review(tmp_path):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_front_names": ["front.png"],
+        "automation_skip_completed": True,
+        "automation_skip_if_selfie_exists": True,
+        "automation_skip_if_video_exists": True,
+        "automation_max_cases_per_run": "all",
+    }
+    ui._read_max_cases_setting = lambda: "all"
+    case_dir = tmp_path / "a"
+    case_dir.mkdir(parents=True)
+    (case_dir / "front.png").write_bytes(b"x")
+    record = type("Rec", (), {"relative_key": "a", "front_path": case_dir / "front.png", "case_dir": case_dir})
+    manifest = type(
+        "M",
+        (),
+        {
+            "data": {
+                "cases": {
+                    "a": {
+                        "status": "manual_review",
+                        "steps": {"similarity_gate": {"error": "similarity 72 below threshold 80"}},
+                    }
+                }
+            },
+            "case_is_complete_and_valid": lambda self, _k: False,
+        },
+    )()
+    _rows, counts, runnable = ui._collect_case_snapshot([record], manifest=manifest)
+    assert counts["pending"] == 0
+    assert counts["manual_review"] == 1
+    assert len(runnable) == 0
+
+
 def test_settings_editor_selfie_model_menu_maps_to_both(tmp_path, monkeypatch):
     ui = KlingAutomationUI.__new__(KlingAutomationUI)
     ui.config = {
