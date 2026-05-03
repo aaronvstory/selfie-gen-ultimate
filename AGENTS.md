@@ -1,6 +1,6 @@
 # AGENTS.md - Kling UI Codebase Guide
 
-> For AI coding agents working in this repository. Last updated: 2026-01-15
+> For AI coding agents working in this repository. Last updated: 2026-05-04
 
 ## Quick Reference
 
@@ -28,24 +28,23 @@ pip install requests pillow rich selenium webdriver-manager tkinterdnd2
 
 ### Testing
 
-**No automated test framework is configured.** Testing is manual:
+Pytest suites are present and should be used for regression checks:
+
+```bash
+pytest tests/
+pytest tests/test_automation_pipeline.py -q
+pytest tests/test_automation_manifest.py -q
+pytest tests/test_automation_cli_smoke.py -q
+```
+
+Manual checks still matter for end-to-end provider behavior:
 
 ```bash
 # Manual CLI testing
 python kling_automation_ui.py
-# Navigate menu options, process test images
 
-# Manual GUI testing  
+# Manual GUI testing
 python -c "from kling_gui import KlingGUIWindow; KlingGUIWindow().run()"
-# Drag-and-drop images, verify queue processing
-```
-
-If adding tests, use pytest:
-```bash
-pip install pytest pytest-mock pytest-cov
-pytest tests/                    # Run all tests
-pytest tests/test_generator.py   # Run single test file
-pytest tests/test_generator.py::test_upload -v  # Run single test
 ```
 
 ---
@@ -210,6 +209,27 @@ except Exception as e:
 | Log Display | `kling_gui/log_display.py` | Color-coded scrolling log |
 | Path Utils | `path_utils.py` | Path helpers, PyInstaller compat |
 
+### Automation Pipeline Components
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| Defaults / config merge | `automation/config.py` | Normalize `automation_*` settings from app config |
+| Case discovery | `automation/discovery.py` | Find case folders with `front.jpg/png` and existing outputs |
+| Manifest | `automation/manifest.py` | Atomic per-case/per-step state for resume/retry |
+| Runner | `automation/pipeline.py` | Orchestrates full 7-step automated flow |
+| Face extraction service | `face_crop_service.py` | Headless portrait crop for CLI pipeline |
+
+### Automation Manifest Semantics
+
+- Fixed step keys:
+  - `front_expand`, `extract_portrait`, `selfie_generate`, `similarity_gate`, `selfie_expand`, `video_generate`, `oldcam`
+- Step fields:
+  - `status`, `output`, `error`, `meta`, timestamps
+- Statuses:
+  - `pending`, `running`, `complete`, `manual_review`, `failed`, `skipped`
+- Resume behavior depends on manifest state plus config fingerprint compatibility.
+- Corrupt/invalid manifests are quarantined and recreated by loader logic.
+
 ### Threading Model
 
 ```python
@@ -312,8 +332,37 @@ VALID_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tiff', '
 4. **API Timeouts:** Always set timeout on requests (30s for API, 120s for downloads)
 5. **Duplicate Detection:** Check both base and `_looped` variants when checking for existing videos
 6. **Distribution Sync:** Files in `distribution/` must be manually synced with root
+7. **Resume Expectations:** Existing case folders are reusable test fixtures, not one-time-only runs.
+8. **Platform Drift:** Avoid Windows-only assumptions in shared automation code paths.
 
 ---
+
+## Reusable Test Folder Pattern
+
+Use stable repeatable automation roots:
+
+```text
+test_root/
+  case_a/front.jpg|front.png
+  case_b/front.jpg|front.png
+```
+
+Guidance:
+
+- Re-run these folders across multiple test cycles.
+- Use run/resume for manifest continuation validation.
+- Use fresh root or cleaned outputs/manifest for strict clean-path retests.
+
+---
+
+## macOS Guardrails For Agents
+
+- Keep launcher/documentation parity for:
+  - `setup_macos.sh`
+  - `run_gui.sh` / `run_gui.command`
+  - `run_cli.sh` / `run_cli.command`
+- Preserve Tk requirements in docs and troubleshooting.
+- Do not prescribe Windows-only fix commands for shared macOS workflows.
 
 ## Adding New Features
 

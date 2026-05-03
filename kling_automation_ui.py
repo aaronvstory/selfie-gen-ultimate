@@ -1,12 +1,28 @@
+import argparse
 import os
 import sys
 import json
 import time
+import threading
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 import logging
 import tkinter as tk
 from tkinter import filedialog
+from rich.console import Console, Group
+from rich.table import Table
+from rich.live import Live
+from rich.panel import Panel
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+
+try:
+    from kling_gui.ml_backend_env import ensure_ml_backend_env
+except ModuleNotFoundError:
+    def ensure_ml_backend_env() -> None:
+        os.environ["TF_USE_LEGACY_KERAS"] = "1"
+        os.environ["KERAS_BACKEND"] = "tensorflow"
+
+ensure_ml_backend_env()
 
 # Import path utilities for frozen exe compatibility
 from path_utils import (
@@ -18,15 +34,36 @@ from path_utils import (
 
 # Import the fal.ai KlingBatchGenerator
 from kling_generator_falai import FalAIKlingGenerator
+from automation.config import merge_automation_defaults, from_app_config
+from automation.discovery import discover_case_folders, detect_existing_outputs
+from automation.logger import key_status, resolve_automation_log_path
+from automation.manifest import AutomationManifest
+from automation.pipeline import AutoPipelineRunner
+from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies
+from selfie_generator import SelfieGenerator
+
+RECOMMENDED_DEFAULTS_VERSION = 1
+RECOMMENDED_KLING_PROMPT_SLOT_1 = (
+    "Generate a lifelike video animation from the provided image. The subject must rotate only their head in an exceptionally "
+    "slow, smooth, and biologically realistic motion: start by gently turning the head left, up to 30 degrees from center, with "
+    "absolutely no movement in the shoulders, neck, or upper body, which must stay perfectly upright and still. Hold a brief, "
+    "natural pause at the leftmost 30 degree position, then gently turn the head all the way to the right 30 degree facing side , "
+    "maintaining the same extremely slow and continuous, lifelike pace. Head motion must appear completely natural, never robotic, "
+    "mechanical, stiff, or artificial—mimic genuine human motion with soft micro-adjustments. Eyes stay focused on the camera lens "
+    "through both turns. Facial expression remains strictly neutral and relaxed throughout. Lighting on the face and background "
+    "must stay natural, matching the original image, with no added highlights, shadows, flicker, or artificial lighting. The "
+    "camera is fixed and stationary. Only the head moves; the rest of the body remains motionless."
+)
 
 
 class KlingAutomationUI:
     def __init__(self):
         self.config_file = get_config_path("kling_config.json")
-        self.config = self.load_config()
+        self.config = merge_automation_defaults(self.load_config())
+        self.automation_root_folder = self.config.get("automation_root_folder", "")
         self.verbose_logging = self.config.get("verbose_logging", False)
+        self._last_scan_records: List[Any] = []
         self.setup_logging()
-        self.check_first_run_api_key()
 
     def load_config(self) -> Dict[str, Any]:
         """Load configuration from file or create default"""
@@ -40,18 +77,6 @@ class KlingAutomationUI:
             "Generate in maximum resolution and professional quality with no blur, pixelation, or quality degradation."
         )
 
-        # Default prompt slot 2 - enhanced lifelike animation (recommended)
-        prompt_slot_2 = (
-            "Generate a lifelike video animation from the provided image. The subject must rotate only their head in an exceptionally slow, "
-            "smooth, and biologically realistic motion: start by gently turning the head left, up to 70 degrees from center, with absolutely "
-            "no movement in the shoulders, neck, or upper body, which must stay perfectly upright and still. Hold a brief, natural pause at "
-            "the leftmost position, then gently turn the head all the way to the right, maintaining the same extremely slow and continuous, "
-            "lifelike pace. Head motion must appear completely natural, never robotic, mechanical, stiff, or artificial—mimic genuine human "
-            "motion with soft micro-adjustments. Eyes stay focused on the camera lens through both turns. Facial expression remains strictly "
-            "neutral and relaxed throughout. Lighting on the face and background must stay natural, matching the original image, with no added "
-            "highlights, shadows, flicker, or artificial lighting. The camera is fixed and stationary. Only the head moves; the rest of the body remains motionless."
-        )
-
         default_config = {
             "output_folder": "",  # Empty by default - user picks their own
             "use_source_folder": True,  # Default: save videos alongside source images
@@ -59,11 +84,11 @@ class KlingAutomationUI:
             "verbose_logging": True,
             "duplicate_detection": True,
             "delay_between_generations": 1,
-            # Prompt slot system - default to slot 2 (enhanced prompt)
-            "current_prompt_slot": 2,
+            # Prompt slot system - recommended defaults use slot 1
+            "current_prompt_slot": 1,
             "saved_prompts": {
-                "1": prompt_slot_1,
-                "2": prompt_slot_2,
+                "1": RECOMMENDED_KLING_PROMPT_SLOT_1,
+                "2": prompt_slot_1,
                 "3": None,
                 "4": None,
                 "5": None,
@@ -85,9 +110,9 @@ class KlingAutomationUI:
                 "9": None,
                 "10": None,
             },
-            # Model configuration - Kling 2.5 Turbo Pro
-            "current_model": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
-            "model_display_name": "Kling 2.5 Turbo Pro",
+            # Model configuration - Kling 2.5 Turbo Standard
+            "current_model": "fal-ai/kling-video/v2.5-turbo/standard/image-to-video",
+            "model_display_name": "Kling 2.5 Turbo Standard",
             # Generation parameters
             "video_duration": 10,
             "aspect_ratio": "9:16",
@@ -95,6 +120,7 @@ class KlingAutomationUI:
             "seed": -1,  # -1 = random
             "camera_fixed": False,
             "generate_audio": False,
+            "automation_recommended_defaults_version": RECOMMENDED_DEFAULTS_VERSION,
         }
 
         try:
@@ -308,32 +334,49 @@ class KlingAutomationUI:
             )
             logging.getLogger().setLevel(logging.CRITICAL)
 
-    def check_first_run_api_key(self):
-        """Check if API key is configured, prompt user on first run"""
-        if not self.config.get("falai_api_key", "").strip():
-            self.clear_screen_simple()
-            print("\n" + "=" * 60)
-            print("  KLING UI - First Time Setup")
-            print("=" * 60)
-            print("\nWelcome! To use this tool, you need a fal.ai API key.")
-            print("\nTo get your API key:")
-            print("  1. Go to https://fal.ai")
-            print("  2. Create an account or sign in")
-            print("  3. Navigate to your API keys section")
-            print("  4. Create and copy your API key")
-            print("\n" + "-" * 60)
-
-            while True:
-                api_key = input("\nEnter your fal.ai API key: ").strip()
-                if api_key:
-                    self.config["falai_api_key"] = api_key
-                    self.save_config()
-                    print("\n✓ API key saved successfully!")
-                    print("  Your settings are stored in kling_config.json")
-                    input("\nPress Enter to continue...")
-                    break
-                else:
-                    print("API key cannot be empty. Please try again.")
+    def configure_api_provider_settings(self):
+        """Provider-aware API key/editor for automation and manual tools."""
+        self.clear_screen_simple()
+        print("\n" + "=" * 72)
+        print("  API SETUP / PROVIDER SETTINGS")
+        print("=" * 72)
+        print("\nFal.ai key: required for Kling video and fal-backed image/selfie providers.")
+        print("BFL key: optional, used for outpainting when BFL is selected or auto-resolved.")
+        print("Other providers: configured through existing app/provider settings.")
+        print("\nCurrent key status:")
+        fal_status = "set" if str(self.config.get("falai_api_key", "")).strip() else "missing"
+        bfl_status = "set" if str(self.config.get("bfl_api_key", "")).strip() else "missing"
+        print(f"  - falai_api_key: {fal_status}")
+        print(f"  - bfl_api_key: {bfl_status}")
+        print("\nOptions:")
+        print("  1) Set/update falai_api_key")
+        print("  2) Set/update bfl_api_key")
+        print("  3) Clear falai_api_key")
+        print("  4) Clear bfl_api_key")
+        print("  0) Back")
+        print()
+        choice = input("Select option: ").strip()
+        if choice == "1":
+            value = input("Enter fal.ai API key: ").strip()
+            if value:
+                self.config["falai_api_key"] = value
+                self.save_config()
+                print("Saved falai_api_key.")
+        elif choice == "2":
+            value = input("Enter BFL API key: ").strip()
+            if value:
+                self.config["bfl_api_key"] = value
+                self.save_config()
+                print("Saved bfl_api_key.")
+        elif choice == "3":
+            self.config["falai_api_key"] = ""
+            self.save_config()
+            print("Cleared falai_api_key.")
+        elif choice == "4":
+            self.config["bfl_api_key"] = ""
+            self.save_config()
+            print("Cleared bfl_api_key.")
+        input("\nPress Enter to continue...")
 
     def clear_screen_simple(self):
         """Clear screen without dependencies"""
@@ -368,7 +411,7 @@ class KlingAutomationUI:
         print(f"\033[91m{text}\033[0m")
 
     def display_header(self):
-        """Display the main header with dynamic model info"""
+        """Display the primary Selfie Gen Ultimate header."""
         self.clear_screen()
 
         model_name = self.config.get("model_display_name", "Kling 2.1 Professional")
@@ -387,9 +430,12 @@ class KlingAutomationUI:
         print()
 
         # ASCII art title
-        title_art = "🎬  FAL.AI VIDEO GENERATOR  🎬"
+        title_art = "SELFIE GEN ULTIMATE"
         padding = (79 - len(title_art)) // 2
         print(f"\033[1;97m{' ' * padding}{title_art}\033[0m")
+        subtitle = "Front DL -> Selfie -> Similarity -> Video -> Oldcam"
+        subtitle_padding = (79 - len(subtitle)) // 2
+        print(f"\033[90m{' ' * subtitle_padding}{subtitle}\033[0m")
 
         print()
         print("\033[38;5;27m" + "─" * 79 + "\033[0m")
@@ -398,117 +444,40 @@ class KlingAutomationUI:
         print(f"  Model: \033[95m{model_name}\033[0m")
 
         # Config row
-        print(
-            f"  Duration: \033[92m{duration}s\033[0m   ·   Price: \033[93m{price_str}\033[0m   ·   Workers: \033[96m5\033[0m"
-        )
+        print(f"  Duration: \033[92m{duration}s\033[0m   ·   Price: \033[93m{price_str}\033[0m")
 
         # Balance link row
-        print(f"  💰 Balance: \033[90mhttps://fal.ai/dashboard\033[0m")
+        print("  Workflow: \033[96mAutomation first, manual Kling tools available\033[0m")
 
         print()
         print("\033[38;5;27m" + "═" * 79 + "\033[0m")
         print()
 
     def display_configuration_menu(self):
-        """Display configuration setup menu with full prompt display"""
+        """Display top-level Selfie Gen Ultimate menu."""
         self.print_magenta("═" * 79)
-        self.print_magenta(
-            "                           CONFIGURATION SETUP                                "
-        )
+        self.print_magenta("                         SELFIE GEN ULTIMATE")
         self.print_magenta("═" * 79)
         print()
-
-        self.print_cyan("─" * 79)
-        self.print_cyan(" INPUT CONFIGURATION")
-        self.print_cyan("─" * 79)
+        root_value = self.automation_root_folder or "(not set)"
+        print(f"  Automation root: \033[97m{root_value}\033[0m")
+        for line in self._automation_status_lines():
+            print(f"  {line}")
         print()
-
-        # Show output mode with clear indication
-        use_source = self.config.get("use_source_folder", True)
-        if use_source:
-            print(f"  \033[92m📂 Output Mode: SAME FOLDER AS SOURCE IMAGES\033[0m")
-            print(f"     \033[90m(Videos saved alongside each input image)\033[0m")
-        else:
-            print(f"  \033[93m📂 Output Mode: CUSTOM FOLDER\033[0m")
-            print(f"     \033[97m{self.config['output_folder']}\033[0m")
+        print("  \033[93m1\033[0m   End-to-End Auto Pipeline")
+        print("  \033[93m2\033[0m   Scan automation root / preview cases")
+        print("  \033[93m3\033[0m   Run/resume automation batch")
+        print("  \033[93m4\033[0m   Automation settings")
+        print("  \033[93m5\033[0m   Manual Kling video tools")
+        print("  \033[93m6\033[0m   Launch GUI manual lab")
+        print("  \033[93m7\033[0m   API keys / provider settings")
+        print("  \033[93m8\033[0m   Dependency check")
+        print("  \033[93m9\033[0m   Advanced video/model settings")
         print()
-
-        # Show full prompt with wrapping
-        current_slot = self.config.get("current_prompt_slot", 1)
-        current_prompt = self.get_current_prompt()
-        slot_label = f"Slot {current_slot}"
-        if not self.config.get("saved_prompts", {}).get(str(current_slot)):
-            slot_label += " (default)"
-
-        print(f"  \033[95mCurrent prompt ({slot_label}):\033[0m")
-        print("  \033[90m" + "─" * 73 + "\033[0m")
-
-        # Wrap prompt text at 70 chars
-        words = current_prompt.split()
-        line = "  "
-        for word in words:
-            if len(line) + len(word) + 1 <= 73:
-                line += word + " "
-            else:
-                print(f"\033[97m{line}\033[0m")
-                line = "  " + word + " "
-        if line.strip():
-            print(f"\033[97m{line}\033[0m")
-
-        print("  \033[90m" + "─" * 73 + "\033[0m")
-        print()
-
-        self.print_cyan("─" * 79)
-        self.print_cyan(" AVAILABLE OPTIONS")
-        self.print_cyan("─" * 79)
-        print()
-
-        verbose_status = (
-            "\033[92mON\033[0m" if self.verbose_logging else "\033[91mOFF\033[0m"
-        )
-        model_name = self.config.get("model_display_name", "Kling 2.1 Professional")
-
-        # Show prompt slots status (10 slots)
-        saved_prompts = self.config.get("saved_prompts", {})
-        slots_status = []
-        for i in range(1, 11):
-            slot_key = str(i)
-            if saved_prompts.get(slot_key):
-                slots_status.append(f"\033[92m{i}\033[0m")
-            else:
-                slots_status.append(f"\033[90m{i}\033[0m")
-
-        # Show current output mode status in menu
-        output_mode_status = (
-            "\033[92mSource Folder\033[0m"
-            if self.config.get("use_source_folder", True)
-            else "\033[93mCustom\033[0m"
-        )
-        print(
-            f"  \033[93m1\033[0m   Change output mode (currently: {output_mode_status})"
-        )
-        print(f"  \033[93m2\033[0m   Edit/view Kling prompt (full editor)")
-        print(
-            f"  \033[93m3\033[0m   Toggle verbose logging (currently: {verbose_status})"
-        )
-        print(f"  \033[93m4\033[0m   Select Input Folder (GUI)")
-        print(f"  \033[93m5\033[0m   Select Single Image (GUI)")
-        print(f"  \033[93m6\033[0m   Launch GUI (Drag & Drop mode)")
-        print(f"  \033[93m7\033[0m   Check Dependencies")
-        print(f"  \033[93m8\033[0m   Advanced Video Settings")
-        print(f"  \033[93m9\033[0m   Inspect Model Capabilities")
-        print()
-        print(f"  \033[96me\033[0m   Quick edit prompt")
-        print(f"  \033[96mm\033[0m   Change model (\033[95m{model_name}\033[0m)")
-        print(
-            f"  \033[96mp\033[0m   Swap prompt slot (current: \033[95m{current_slot}\033[0m) [{'/'.join(slots_status)}]"
-        )
-        print()
-        print(f"  \033[91mq\033[0m   Quit")
-
+        print("  \033[91mq\033[0m   Quit")
         print()
         print(
-            "\033[92m➤ Enter path to your GenX images input folder (or select an option above):\033[0m ",
+            "\033[92m➤ Select workflow, or enter an automation root folder containing case folders with front.png/front.jpg/front.jpeg:\033[0m ",
             end="",
             flush=True,
         )
@@ -517,7 +486,7 @@ class KlingAutomationUI:
         """Open GUI folder selection dialog"""
         root = tk.Tk()
         root.withdraw()  # Hide the main window
-        folder_path = filedialog.askdirectory(title="Select GenX Images Input Folder")
+        folder_path = filedialog.askdirectory(title="Select Input Folder")
         root.destroy()
         return folder_path
 
@@ -526,7 +495,7 @@ class KlingAutomationUI:
         root = tk.Tk()
         root.withdraw()
         file_path = filedialog.askopenfilename(
-            title="Select Single GenX Image",
+            title="Select Single Input Image",
             filetypes=[
                 ("Image files", "*.jpg *.jpeg *.png *.bmp *.gif *.webp *.tiff *.tif"),
                 ("All files", "*.*"),
@@ -1314,71 +1283,892 @@ class KlingAutomationUI:
             time.sleep(1.5)
 
     def run_configuration_menu(self):
-        """Main configuration menu loop"""
+        """Main top-level menu loop."""
         while True:
             self.display_header()
             self.display_configuration_menu()
-
-            # Use empty input prompt so text appears right after the green prompt
             choice = input().strip()
-
             if choice.startswith('"') and choice.endswith('"'):
                 choice = choice[1:-1]
             elif choice.startswith("'") and choice.endswith("'"):
                 choice = choice[1:-1]
-
             choice_lower = choice.lower()
-
             if choice_lower == "q":
                 print("\nGoodbye!")
                 sys.exit(0)
-            elif choice_lower == "1":
-                self.change_output_mode()
-                continue
+            if choice_lower == "1":
+                self.run_automation_menu()
             elif choice_lower == "2":
-                self.edit_prompt()
-                continue
+                self._scan_automation_cases()
             elif choice_lower == "3":
-                self.toggle_verbose_logging()
-                continue
+                self._run_resume_automation()
             elif choice_lower == "4":
-                selected_path = self.select_folder_gui()
-                if selected_path:
-                    return selected_path
-                continue
+                self._edit_automation_settings()
             elif choice_lower == "5":
-                selected_path = self.select_file_gui()
+                selected_path = self._run_manual_kling_menu()
                 if selected_path:
                     return selected_path
-                continue
             elif choice_lower == "6":
                 self.launch_gui()
-                continue
             elif choice_lower == "7":
-                self.check_dependencies()
-                continue
+                self.configure_api_provider_settings()
             elif choice_lower == "8":
-                self.configure_advanced_video_settings()
-                continue
+                self.check_dependencies()
             elif choice_lower == "9":
-                self.inspect_model_capabilities()
-                continue
-            elif choice_lower == "e":
-                self.quick_edit_prompt()
-                continue
-            elif choice_lower == "m":
-                self.select_model()
-                continue
-            elif choice_lower == "p":
-                self.swap_prompt_slot()
-                continue
+                self.configure_advanced_video_settings()
             elif choice and Path(choice).exists():
-                return choice
+                selected_root = Path(choice)
+                if selected_root.is_dir():
+                    self.automation_root_folder = str(selected_root)
+                    self.config["automation_root_folder"] = self.automation_root_folder
+                    self.save_config()
+                    self._scan_automation_cases()
+                else:
+                    self.print_red(f"Path is not a folder: {choice}")
+                    input("Press Enter to continue...")
             elif choice:
                 self.print_red(f"Path not found: {choice}")
                 input("Press Enter to continue...")
             else:
                 self.print_yellow("Please enter a valid path or select an option")
+                time.sleep(1)
+
+    def _automation_manifest_path(self) -> Optional[Path]:
+        if not self.automation_root_folder:
+            return None
+        raw_manifest_name = str(self.config.get("automation_manifest_name", "automation_manifest.json") or "").strip()
+        safe_manifest_name = Path(raw_manifest_name).name if raw_manifest_name else "automation_manifest.json"
+        if not safe_manifest_name.endswith(".json"):
+            safe_manifest_name = "automation_manifest.json"
+        return Path(self.automation_root_folder) / safe_manifest_name
+
+    def _resolve_provider(self, configured_provider: str) -> str:
+        normalized = str(configured_provider or "auto").strip().lower()
+        if normalized in {"bfl", "fal"}:
+            return normalized
+        if str(self.config.get("bfl_api_key", "")).strip():
+            return "bfl"
+        return "fal"
+
+    def _selfie_model_label_map(self) -> Dict[str, str]:
+        return {item.get("endpoint", ""): item.get("label", item.get("endpoint", "")) for item in SelfieGenerator.get_available_models()}
+
+    def _ensure_selfie_prompt_slots(self) -> None:
+        prompts = self.config.get("automation_selfie_prompts")
+        if not isinstance(prompts, dict):
+            prompts = {}
+        for i in range(1, 11):
+            prompts.setdefault(str(i), "")
+        if not prompts.get("1"):
+            prompts["1"] = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+        self.config["automation_selfie_prompts"] = prompts
+        slot = int(self.config.get("automation_selfie_prompt_slot", 1))
+        if slot < 1 or slot > 10:
+            slot = 1
+        self.config["automation_selfie_prompt_slot"] = slot
+
+    def _get_selected_selfie_prompt(self) -> Tuple[str, str, str]:
+        self._ensure_selfie_prompt_slots()
+        slot = str(self.config.get("automation_selfie_prompt_slot", 1))
+        prompt = str(self.config.get("automation_selfie_prompts", {}).get(slot, "") or "").strip()
+        if prompt:
+            return slot, prompt, f"slot:{slot}"
+        default_prompt = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+        return slot, default_prompt, "default_seeded_prompt"
+
+    def _oldcam_readiness_status(self) -> str:
+        repo_root = Path(__file__).resolve().parent
+        versions = discover_oldcam_versions(repo_root)
+        deps_ok, _deps_err = ensure_oldcam_dependencies()
+        if not versions:
+            return "unavailable(no version)"
+        if not deps_ok:
+            return "unavailable(deps)"
+        return f"ready({','.join(versions)})"
+
+    def _automation_status_lines(self) -> List[str]:
+        model_labels = self._selfie_model_label_map()
+        selfie_models = [model_labels.get(x, x) for x in list(self.config.get("automation_selfie_models", []))]
+        selfie_slot, _selfie_prompt, selfie_prompt_source = self._get_selected_selfie_prompt()
+        front_configured = str(self.config.get("automation_front_expand_provider", "auto"))
+        selfie_configured = str(self.config.get("automation_selfie_expand_provider", "auto"))
+        lines = [
+            f"root={self.automation_root_folder or '(not set)'} max_cases={self._read_max_cases_setting()}",
+            f"keys fal={key_status(self.config.get('falai_api_key'))} bfl={key_status(self.config.get('bfl_api_key'))}",
+            f"front mode={self.config.get('automation_front_expand_mode')} pct={self.config.get('automation_front_expand_percent', 70)} passes={self.config.get('automation_front_expand_passes', 2)} provider={front_configured}->{self._resolve_provider(front_configured)}",
+            f"selfie expand mode={self.config.get('automation_selfie_expand_mode')} pct={self.config.get('automation_selfie_expand_percent', 30)} provider={selfie_configured}->{self._resolve_provider(selfie_configured)}",
+            f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
+            f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', 1)}",
+            f"oldcam version={self.config.get('automation_oldcam_version', 'all')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
+            f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
+            f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
+        ]
+        return lines
+
+    def _apply_recommended_automation_defaults(self) -> None:
+        before = {
+            "front": (
+                self.config.get("automation_front_expand_provider"),
+                self.config.get("automation_front_expand_mode"),
+                self.config.get("automation_front_expand_percent"),
+                self.config.get("automation_front_expand_passes"),
+            ),
+            "selfie_expand": (
+                self.config.get("automation_selfie_expand_provider"),
+                self.config.get("automation_selfie_expand_mode"),
+                self.config.get("automation_selfie_expand_percent"),
+            ),
+            "selfie_models": list(self.config.get("automation_selfie_models", [])),
+            "video_model": self.config.get("model_display_name") or self.config.get("current_model"),
+            "selfie_prompt_slot": self.config.get("automation_selfie_prompt_slot", 1),
+            "kling_prompt_slot": self.config.get("current_prompt_slot", 1),
+            "oldcam": (self.config.get("automation_oldcam_version", "v8"), self.config.get("automation_oldcam_required", False)),
+            "max_cases": self._read_max_cases_setting(),
+        }
+
+        valid_max_cases = {"1", "5", "10", "all"}
+        current_max_cases = str(self.config.get("automation_max_cases_per_run", "")).strip().lower()
+        if current_max_cases in valid_max_cases:
+            max_cases_status = f"preserved ({current_max_cases})"
+        else:
+            self.config["automation_max_cases_per_run"] = "1"
+            max_cases_status = "set to 1 (invalid/missing previous value)"
+
+        self.config["automation_front_expand_provider"] = "bfl"
+        self.config["automation_front_expand_mode"] = "percent"
+        self.config["automation_front_expand_percent"] = 70
+        self.config["automation_front_expand_passes"] = 2
+        self.config["automation_front_edge_seal_enabled"] = False
+        self.config["automation_selfie_expand_provider"] = "bfl"
+        self.config["automation_selfie_expand_mode"] = "percent"
+        self.config["automation_selfie_expand_percent"] = 30
+        self.config["automation_selfie_expand_edge_seal_enabled"] = False
+        self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
+        self.config["automation_selfie_prompt_slot"] = 1
+        self._ensure_selfie_prompt_slots()
+        self.config["automation_selfie_prompts"]["1"] = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+        self.config["current_model"] = "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+        self.config["model_display_name"] = "Kling 2.5 Turbo Standard"
+        self.config["current_prompt_slot"] = 1
+        saved_prompts = self.config.get("saved_prompts")
+        if not isinstance(saved_prompts, dict):
+            saved_prompts = {}
+        saved_prompts["1"] = RECOMMENDED_KLING_PROMPT_SLOT_1
+        self.config["saved_prompts"] = saved_prompts
+        self.config["automation_similarity_threshold"] = 80
+        self.config["automation_video_enabled"] = True
+        self.config["automation_oldcam_enabled"] = True
+        self.config["automation_oldcam_version"] = "all"
+        self.config["automation_oldcam_required"] = True
+        self.config["automation_recommended_defaults_version"] = RECOMMENDED_DEFAULTS_VERSION
+        self.save_config()
+
+        print("\nApplied recommended automation defaults.")
+        print("Before -> After")
+        print(f"  front expand: {before['front'][0]} / {before['front'][1]} / {before['front'][2]} -> bfl / percent / 70")
+        print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} -> bfl / percent / 30")
+        print(f"  selfie model: {before['selfie_models']} -> Nano Banana 2 Edit")
+        print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
+        print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 1")
+        print(f"  Kling prompt slot: {before['kling_prompt_slot']} -> 1")
+        print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> all / required")
+        print(f"  max cases per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
+        print("\nCurrent recommended state:")
+        print("  front expand: bfl / percent / 70")
+        print("  selfie expand: bfl / percent / 30")
+        print("  selfie model: Nano Banana 2 Edit")
+        print("  video model: Kling 2.5 Turbo Standard")
+        print("  selfie prompt slot: 1")
+        print("  Kling prompt slot: 1")
+        print("  oldcam: all / required")
+        print(f"  max cases per run: {self._read_max_cases_setting()}")
+        input("\nPress Enter to continue...")
+
+    def _display_automation_menu(self):
+        self.display_header()
+        self.print_magenta("═" * 79)
+        self.print_magenta("                     END-TO-END AUTO PIPELINE")
+        self.print_magenta("═" * 79)
+        print()
+        current_root = self.automation_root_folder or "(not set)"
+        print(f"  Root folder: \033[97m{current_root}\033[0m")
+        for line in self._automation_status_lines():
+            print(f"  {line}")
+        current_version = int(self.config.get("automation_recommended_defaults_version", 0) or 0)
+        if current_version < RECOMMENDED_DEFAULTS_VERSION:
+            print(f"  \033[93mRecommendation:\033[0m apply recommended defaults (target version {RECOMMENDED_DEFAULTS_VERSION}).")
+        print()
+        print("  \033[93m1\033[0m   Select automation root folder")
+        print("  \033[93m2\033[0m   Scan / preview cases")
+        print("  \033[93m3\033[0m   Apply recommended automation defaults")
+        print("  \033[93m4\033[0m   Edit automation settings")
+        print("  \033[93m5\033[0m   Dry run")
+        print("  \033[93m6\033[0m   Run / resume automation")
+        print("  \033[93m7\033[0m   Print manifest path")
+        print("  \033[93m0\033[0m   Back")
+        print()
+        print("\033[92m➤ Select option:\033[0m ", end="", flush=True)
+
+    def _select_automation_root(self):
+        print("\nSelect automation root:")
+        print("  1) Browse for folder (recommended)")
+        print("  2) Type folder path")
+        choice = input("Choose option [1/2, default 1]: ").strip()
+        selected_path: Optional[str] = None
+        use_browse = choice in {"", "1"}
+        if use_browse:
+            try:
+                selected_path = filedialog.askdirectory(title="Select Automation Root Folder")
+            except Exception as exc:
+                self.print_yellow(f"Folder picker unavailable ({exc}). Falling back to typed path.")
+                selected_path = None
+            if not selected_path:
+                raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
+                if not raw:
+                    return
+                if raw.startswith('"') and raw.endswith('"'):
+                    raw = raw[1:-1]
+                elif raw.startswith("'") and raw.endswith("'"):
+                    raw = raw[1:-1]
+                selected_path = raw
+        else:
+            raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
+            if not raw:
+                return
+            if raw.startswith('"') and raw.endswith('"'):
+                raw = raw[1:-1]
+            elif raw.startswith("'") and raw.endswith("'"):
+                raw = raw[1:-1]
+            selected_path = raw
+
+        selected = Path(selected_path)
+        if not selected.exists() or not selected.is_dir():
+            self.print_red("Invalid folder path.")
+            input("Press Enter to continue...")
+            return
+        self.automation_root_folder = str(selected)
+        self.config["automation_root_folder"] = self.automation_root_folder
+        self.save_config()
+        self.print_yellow(f"Automation root set: {self.automation_root_folder}")
+        self._scan_automation_cases()
+
+    def _normalize_max_cases(self, value: Any) -> Optional[int]:
+        raw = str(value).strip().lower()
+        if raw == "all":
+            return None
+        if raw.isdigit():
+            parsed = int(raw)
+            if parsed in {1, 5, 10}:
+                return parsed
+        return 5
+
+    def _read_max_cases_setting(self) -> str:
+        raw = str(self.config.get("automation_max_cases_per_run", 5)).strip().lower()
+        if raw in {"1", "5", "10", "all"}:
+            return raw
+        return "5"
+
+    def _planned_action_for_case(self, case_entry: Dict[str, Any], existing: Any, is_complete: bool) -> str:
+        status = str(case_entry.get("status", "pending"))
+        if is_complete and self.config.get("automation_skip_completed", True):
+            return "skip_complete"
+        if status == "manual_review":
+            gate_error = str(case_entry.get("steps", {}).get("similarity_gate", {}).get("error", "") or "")
+            if "similarity unavailable" in gate_error.lower():
+                return "run_pending"
+            return "manual_review"
+        if status == "failed":
+            return "failed"
+        if self.config.get("automation_skip_if_video_exists", True) and existing.video_candidate:
+            return "skip_video_exists"
+        if self.config.get("automation_skip_if_selfie_exists", True) and existing.selfie_candidate:
+            return "skip_selfie_exists"
+        return "run_pending"
+
+    def _collect_case_snapshot(
+        self,
+        records: List[Any],
+        manifest: Optional[AutomationManifest],
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, int], List[Any]]:
+        rows: List[Dict[str, Any]] = []
+        counts = {
+            "discovered": len(records),
+            "skipped_complete": 0,
+            "pending": 0,
+            "manual_review": 0,
+            "failed": 0,
+            "existing_videos_selfies": 0,
+            "will_run": 0,
+        }
+        runnable: List[Any] = []
+        for record in records:
+            case_entry = manifest.data.get("cases", {}).get(record.relative_key, {}) if manifest else {}
+            existing = detect_existing_outputs(record.case_dir)
+            is_complete = bool(
+                manifest
+                and case_entry.get("status") == "complete"
+                and manifest.case_is_complete_and_valid(record.relative_key)
+            )
+            if existing.video_candidate or existing.selfie_candidate:
+                counts["existing_videos_selfies"] += 1
+            planned = self._planned_action_for_case(case_entry, existing, is_complete)
+            if planned == "skip_complete":
+                counts["skipped_complete"] += 1
+            elif planned == "manual_review":
+                counts["manual_review"] += 1
+            elif planned == "failed":
+                counts["failed"] += 1
+            elif planned in {"run_pending", "skip_video_exists", "skip_selfie_exists"}:
+                counts["pending"] += 1
+                runnable.append(record)
+            row = {
+                "case": record.relative_key,
+                "front": record.front_path.name,
+                "front_expanded": "yes" if existing.front_expanded else "-",
+                "extracted": "yes" if existing.extracted else "-",
+                "selfie": "yes" if existing.selfie_candidate else "-",
+                "video": "yes" if existing.video_candidate else "-",
+                "manifest_status": str(case_entry.get("status", "pending")),
+                "planned": planned,
+            }
+            rows.append(row)
+
+        max_cases = self._normalize_max_cases(self._read_max_cases_setting())
+        capped = runnable[:max_cases] if max_cases is not None else runnable
+        counts["will_run"] = len(capped)
+        return rows, counts, capped
+
+    def _scan_automation_cases(self):
+        if not self.automation_root_folder:
+            self.print_red("Set automation root folder first.")
+            input("Press Enter to continue...")
+            return
+        root = Path(self.automation_root_folder)
+        if not root.exists():
+            self.print_red("Automation root path does not exist.")
+            input("Press Enter to continue...")
+            return
+        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        manifest = AutomationManifest.load_if_exists(self._automation_manifest_path())
+        rows, counts, _ = self._collect_case_snapshot(records, manifest)
+        table = Table(title="Automation Scan Preview")
+        table.add_column("Case")
+        table.add_column("Front")
+        table.add_column("front-expanded")
+        table.add_column("extracted")
+        table.add_column("selfie")
+        table.add_column("video")
+        table.add_column("manifest status")
+        table.add_column("planned action")
+        for row in rows[:60]:
+            table.add_row(
+                row["case"],
+                row["front"],
+                row["front_expanded"],
+                row["extracted"],
+                row["selfie"],
+                row["video"],
+                row["manifest_status"],
+                row["planned"],
+            )
+        console = Console()
+        console.print(table)
+        if len(records) > 60:
+            print(f"\nShowing first 60/{len(records)} cases.")
+        else:
+            print(f"\nDiscovered {len(records)} case folders.")
+        print("\nTotals:")
+        print(f"  discovered: {counts['discovered']}")
+        print(f"  skipped complete: {counts['skipped_complete']}")
+        print(f"  pending/runnable: {counts['pending']}")
+        print(f"  will run this batch: {counts['will_run']}")
+        print(f"  manual review: {counts['manual_review']}")
+        print(f"  failed: {counts['failed']}")
+        print(f"  existing videos/selfies: {counts['existing_videos_selfies']}")
+        print(f"  max cases per run: {self._read_max_cases_setting()}")
+        input("\nPress Enter to continue...")
+
+    def _edit_automation_settings(self):
+        def _ask(prompt: str, key: str, cast_fn, validator=None):
+            current = self.config.get(key)
+            raw = input(f"{prompt} (current: {current}) [Enter keep]: ").strip()
+            if not raw:
+                return
+            try:
+                value = cast_fn(raw)
+                if validator and not validator(value):
+                    raise ValueError("validation failed")
+                self.config[key] = value
+            except Exception:
+                self.print_red(f"Invalid value for {key}. Keeping previous value.")
+
+        def _ask_choice(prompt: str, key: str, choices: list):
+            current = str(self.config.get(key))
+            raw = input(f"{prompt} {choices} (current: {current}) [Enter keep]: ").strip().lower()
+            if not raw:
+                return
+            if raw not in choices:
+                self.print_red(f"Invalid choice for {key}.")
+                return
+            self.config[key] = raw
+
+        def _ask_bool(prompt: str, key: str):
+            current = bool(self.config.get(key, False))
+            raw = input(f"{prompt} [y/n] (current: {'y' if current else 'n'}) [Enter keep]: ").strip().lower()
+            if not raw:
+                return
+            if raw in {"y", "yes", "1", "true"}:
+                self.config[key] = True
+            elif raw in {"n", "no", "0", "false"}:
+                self.config[key] = False
+            else:
+                self.print_red(f"Invalid boolean for {key}.")
+
+        print("\nAutomation Settings Editor (Grouped)")
+        print("Press Enter on any prompt to keep current value.\n")
+
+        print("[Discovery]")
+        raw_root = input(f"Automation root path (current: {self.automation_root_folder or '(not set)'}) [Enter keep]: ").strip()
+        if raw_root:
+            root_path = Path(raw_root)
+            if root_path.exists() and root_path.is_dir():
+                self.automation_root_folder = str(root_path)
+                self.config["automation_root_folder"] = self.automation_root_folder
+            else:
+                self.print_red("Root path invalid; keeping previous value.")
+        _ask(
+            "Manifest filename",
+            "automation_manifest_name",
+            str,
+            lambda v: len(v) > 0 and v.endswith(".json") and Path(v).name == v,
+        )
+        max_cases_raw = input(
+            f"Max cases per run [1/5/10/all] (current: {self._read_max_cases_setting()}) [Enter keep]: "
+        ).strip().lower()
+        if max_cases_raw:
+            if max_cases_raw in {"1", "5", "10", "all"}:
+                self.config["automation_max_cases_per_run"] = max_cases_raw
+            else:
+                self.print_red("Invalid max cases value. Keeping previous value.")
+
+        print("\n[Discovery Flags]")
+        _ask_bool("Skip completed", "automation_skip_completed")
+        _ask_bool("Skip if selfie exists", "automation_skip_if_selfie_exists")
+        _ask_bool("Skip if video exists", "automation_skip_if_video_exists")
+        _ask_bool("Allow reprocess", "automation_allow_reprocess")
+        _ask_choice("Reprocess mode", "automation_reprocess_mode", ["skip", "overwrite", "increment"])
+
+        print("\n[Front Expansion]")
+        _ask_bool("Front expand enabled", "automation_front_expand_enabled")
+        _ask_choice("Front expand provider", "automation_front_expand_provider", ["auto", "bfl", "fal"])
+        _ask_choice("Front expand mode", "automation_front_expand_mode", ["document_3x4", "percent"])
+        _ask("Front expand percent", "automation_front_expand_percent", int, lambda v: v >= 0)
+        _ask("Front expand passes [1|2]", "automation_front_expand_passes", int, lambda v: v in {1, 2})
+        _ask_bool("Front edge seal enabled", "automation_front_edge_seal_enabled")
+        _ask("Front edge seal px", "automation_front_edge_seal_px", int, lambda v: v >= 0)
+        _ask("Front output name", "automation_front_output_name", str, lambda v: len(v) > 0)
+
+        print("\n[Portrait Extraction / Selfie / Similarity]")
+        _ask_bool("Portrait extraction enabled", "automation_extract_enabled")
+        _ask("Extract output name", "automation_extract_output_name", str, lambda v: len(v) > 0)
+        _ask("Crop multiplier", "automation_crop_multiplier", float, lambda v: v > 0)
+        _ask_bool("Selfie generation enabled", "automation_selfie_enabled")
+        current_models = list(self.config.get("automation_selfie_models", []))
+        print("Selfie model selection:")
+        print("  1) Nano Banana 2 Edit")
+        print("  2) GPT Image 2 Edit")
+        print("  3) Both")
+        print("  4) Custom endpoints")
+        model_choice = input(f"Choose model set (current: {current_models}) [Enter keep]: ").strip()
+        if model_choice == "1":
+            self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
+        elif model_choice == "2":
+            self.config["automation_selfie_models"] = ["openai/gpt-image-2/edit"]
+        elif model_choice == "3":
+            self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit", "openai/gpt-image-2/edit"]
+        elif model_choice == "4":
+            models_raw = input("Custom selfie model endpoints comma-separated: ").strip()
+            models = [m.strip() for m in models_raw.split(",") if m.strip()]
+            if models:
+                self.config["automation_selfie_models"] = models
+        _ask_choice("Selfie model policy", "automation_selfie_model_policy", ["first_pass", "all"])
+        _ask("Max attempts per model", "automation_selfie_max_attempts_per_model", int, lambda v: v > 0)
+        _ask("Similarity threshold", "automation_similarity_threshold", int, lambda v: 0 <= v <= 100)
+        self._ensure_selfie_prompt_slots()
+        current_slot = int(self.config.get("automation_selfie_prompt_slot", 1))
+        current_prompt = str(self.config.get("automation_selfie_prompts", {}).get(str(current_slot), "") or "")
+        print(f"Selfie prompt slot: {current_slot}")
+        print(f"Current selfie prompt preview: {(current_prompt[:120] + '...') if len(current_prompt) > 120 else current_prompt}")
+        slot_raw = input("Switch selfie prompt slot [1-10, Enter keep]: ").strip()
+        if slot_raw.isdigit() and 1 <= int(slot_raw) <= 10:
+            self.config["automation_selfie_prompt_slot"] = int(slot_raw)
+            current_slot = int(slot_raw)
+        edit_current = input("Edit active selfie prompt now? [y/N]: ").strip().lower()
+        if edit_current in {"y", "yes"}:
+            new_prompt = input("Enter selfie prompt text: ").strip()
+            if new_prompt:
+                self.config["automation_selfie_prompts"][str(current_slot)] = new_prompt
+        reset_current = input("Reset active selfie slot to default prompt? [y/N]: ").strip().lower()
+        if reset_current in {"y", "yes"}:
+            self.config["automation_selfie_prompts"][str(current_slot)] = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+
+        print("\n[Selfie Expansion / Video / Loop-Oldcam]")
+        _ask_bool("Selfie expansion enabled", "automation_selfie_expand_enabled")
+        _ask_choice("Selfie expand provider", "automation_selfie_expand_provider", ["auto", "bfl", "fal"])
+        _ask_choice("Selfie expand mode", "automation_selfie_expand_mode", ["percent", "centered_3x4"])
+        _ask("Selfie expand percent", "automation_selfie_expand_percent", int, lambda v: v >= 0)
+        _ask_bool("Video generation enabled", "automation_video_enabled")
+        _ask("Video aspect ratio", "automation_video_aspect_ratio", str, lambda v: ":" in v)
+        _ask_bool("Use existing video prompt", "automation_video_use_existing_prompt")
+        _ask_bool("Oldcam enabled", "automation_oldcam_enabled")
+        _ask_choice("Oldcam version", "automation_oldcam_version", ["v7", "v8", "all"])
+        _ask_bool("Oldcam required", "automation_oldcam_required")
+        _ask_bool("Automation verbose logging", "automation_verbose_logging")
+        _ask("Automation log max bytes", "automation_log_max_bytes", int, lambda v: v > 0)
+        _ask("Automation log backup count", "automation_log_backup_count", int, lambda v: v >= 1)
+
+        self.save_config()
+        input("Settings saved. Press Enter to continue...")
+
+    def _edit_automation_settings_quick(self):
+        """Backwards-compatible alias for older tests/callers."""
+        self._edit_automation_settings()
+
+    def _dry_run_automation(self):
+        if not self.automation_root_folder:
+            self.print_red("Set automation root folder first.")
+            input("Press Enter to continue...")
+            return
+        root = Path(self.automation_root_folder)
+        if not root.exists():
+            self.print_red("Automation root path does not exist.")
+            input("Press Enter to continue...")
+            return
+        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        manifest_path = self._automation_manifest_path()
+        had_manifest = manifest_path.exists()
+        manifest = AutomationManifest.load_if_exists(manifest_path)
+        manifest_warning = ""
+        if manifest is None and had_manifest:
+            manifest_warning = "Warning: existing manifest unreadable or schema-mismatched; dry-run ignoring manifest state."
+
+        skipped = 0
+        pending = 0
+        completed = 0
+        manual_review_or_failed = 0
+
+        for record in records:
+            case_entry = (
+                manifest.data.get("cases", {}).get(record.relative_key, {})
+                if manifest is not None
+                else {}
+            )
+            status = case_entry.get("status", "pending")
+            if manifest is not None and status == "complete" and manifest.case_is_complete_and_valid(record.relative_key):
+                completed += 1
+                skipped += 1
+                continue
+            if status in {"failed", "manual_review"}:
+                manual_review_or_failed += 1
+            else:
+                pending += 1
+
+        print("\nDry run summary")
+        if manifest_warning:
+            print(f"  {manifest_warning}")
+        print(f"  discovered cases: {len(records)}")
+        print(f"  skipped: {skipped}")
+        print(f"  pending: {pending}")
+        print(f"  completed: {completed}")
+        print(f"  failed/manual_review: {manual_review_or_failed}")
+        print("  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video -> oldcam")
+        input("\nPress Enter to continue...")
+
+    def _run_resume_automation(self):
+        if not self.automation_root_folder:
+            self.print_red("Set automation root folder first.")
+            input("Press Enter to continue...")
+            return
+
+        root = Path(self.automation_root_folder)
+        if not root.exists():
+            self.print_red("Automation root path does not exist.")
+            input("Press Enter to continue...")
+            return
+        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        if not records:
+            self.print_yellow("No case folders found.")
+            input("Press Enter to continue...")
+            return
+
+        try:
+            manifest = AutomationManifest.create_or_load(
+                manifest_path=self._automation_manifest_path(),
+                root_dir=root,
+                config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
+            )
+        except Exception as exc:
+            self.print_red(f"Failed to load manifest: {exc}")
+            input("Press Enter to continue...")
+            return
+        rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
+        print("\nRun preview:")
+        print(f"  discovered: {counts['discovered']}")
+        print(f"  skipped complete: {counts['skipped_complete']}")
+        print(f"  pending/runnable: {counts['pending']}")
+        print(f"  will run this batch: {counts['will_run']}")
+        print(f"  manual review: {counts['manual_review']}")
+        print(f"  failed: {counts['failed']}")
+        if not runnable_cases:
+            self.print_yellow("No runnable cases for this batch.")
+            input("Press Enter to continue...")
+            return
+        approve = input("Approve batch run? [y/N]: ").strip().lower()
+        if approve not in {"y", "yes"}:
+            print("Run cancelled.")
+            input("Press Enter to continue...")
+            return
+
+        self.config["automation_root_folder"] = self.automation_root_folder
+        runner = AutoPipelineRunner(
+            config=self.config,
+            automation_config=from_app_config(self.config),
+            manifest=manifest,
+            progress_cb=None,
+        )
+        issues = runner.validate_configuration()
+        if issues:
+            print("\nAutomation preflight failed:")
+            for issue in issues:
+                print(f"  - {issue}")
+            input("\nPress Enter to continue...")
+            return
+
+        print("\nAutomation preflight:")
+        print(f"  cases discovered: {len(records)}")
+        print(f"  running this batch: {len(runnable_cases)}")
+        print(f"  reprocess mode: {self.config.get('automation_reprocess_mode', 'skip')}")
+        print(f"  skip selfie/video existing: {self.config.get('automation_skip_if_selfie_exists', True)} / {self.config.get('automation_skip_if_video_exists', True)}")
+        for line in self._automation_status_lines():
+            print(f"  {line}")
+        selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
+        prompt_preview = selfie_prompt if len(selfie_prompt) <= 160 else f"{selfie_prompt[:160]}..."
+        print(f"  selfie prompt slot/source: {selfie_slot} / {selfie_source}")
+        print(f"  selfie prompt preview: {prompt_preview}")
+        stats, run_error = self._run_with_live_dashboard(runner, runnable_cases, manifest)
+        if run_error:
+            self.print_red(f"Automation run failed: {run_error}")
+            input("\nPress Enter to continue...")
+            return
+        print("\nAutomation run complete.")
+        print(f"  completed: {stats.get('completed', 0)}")
+        print(f"  failed: {stats.get('failed', 0)}")
+        print(f"  manual_review: {stats.get('manual_review', 0)}")
+        print(f"  skipped: {stats.get('skipped', 0)}")
+        table = Table(title="Per-Case Summary")
+        table.add_column("Case")
+        table.add_column("Status")
+        table.add_column("Reason")
+        for key, result in sorted(runner.last_case_results.items(), key=lambda item: item[0].lower()):
+            table.add_row(key, str(result.get("status", "")), str(result.get("reason", "")))
+        Console().print(table)
+        self._write_automation_summary(manifest, runner.last_case_results, stats)
+        input("\nPress Enter to continue...")
+
+    def _run_with_live_dashboard(
+        self,
+        runner: AutoPipelineRunner,
+        run_cases: List[Any],
+        manifest: AutomationManifest,
+    ) -> Tuple[Dict[str, int], Optional[str]]:
+        state: Dict[str, Any] = {
+            "message": "",
+            "level": "info",
+            "last_output": "-",
+            "error_reason": "-",
+            "similarity": "-",
+            "current_case": "-",
+            "current_step": "-",
+        }
+        run_result: Dict[str, Any] = {"stats": None, "error": None}
+
+        def _cb(message: str, level: str = "info"):
+            state["message"] = message
+            state["level"] = level
+            lowered = message.lower()
+            if ".mp4" in lowered or "output:" in lowered:
+                state["last_output"] = message
+
+        runner.progress_cb = _cb
+
+        def _worker():
+            try:
+                run_result["stats"] = runner.run(run_cases)
+            except Exception as exc:
+                run_result["error"] = str(exc)
+
+        worker = threading.Thread(target=_worker, daemon=True)
+        worker.start()
+
+        total_cases = len(run_cases)
+        steps = {
+            "front_expand": "1 front expand",
+            "extract_portrait": "2 extract portrait",
+            "selfie_generate": "3 generate selfie",
+            "similarity_gate": "4 similarity gate",
+            "selfie_expand": "5 selfie expand",
+            "video_generate": "6 kling video",
+            "oldcam": "7 loop/oldcam",
+        }
+
+        with Live(console=Console(), refresh_per_second=4, transient=True) as live:
+            while worker.is_alive():
+                cases = manifest.data.get("cases", {})
+                completed = 0
+                failed = 0
+                manual_review = 0
+                skipped = 0
+                active_step = "-"
+                active_case = "-"
+                for case_key in [case.relative_key for case in run_cases]:
+                    status = str(cases.get(case_key, {}).get("status", "pending"))
+                    if status == "complete":
+                        completed += 1
+                    elif status == "failed":
+                        failed += 1
+                    elif status == "manual_review":
+                        manual_review += 1
+                    elif status == "skipped":
+                        skipped += 1
+                    if status == "running":
+                        active_case = case_key
+                        step_name = str(cases.get(case_key, {}).get("active_step", "") or "")
+                        active_step = steps.get(step_name, step_name or "-")
+                        sim = cases.get(case_key, {}).get("steps", {}).get("similarity_gate", {}).get("meta", {}).get("score")
+                        if sim is not None:
+                            state["similarity"] = str(sim)
+                done = completed + failed + manual_review + skipped
+                state["current_case"] = active_case
+                state["current_step"] = active_step
+                remaining = max(0, len(run_cases) - done)
+                if state["level"] in {"error", "warning"}:
+                    state["error_reason"] = state["message"]
+                progress_pct = int((done / total_cases) * 100) if total_cases else 100
+                dashboard = "\n".join(
+                    [
+                        f"Progress: {done}/{total_cases} ({progress_pct}%)",
+                        f"Current case: {state['current_case']}",
+                        f"Current step: {state['current_step']}",
+                        f"Similarity: {state['similarity']}",
+                        f"Last output: {state['last_output']}",
+                        f"Errors/manual review reason: {state['error_reason']}",
+                        f"completed={completed} failed={failed} manual_review={manual_review} skipped={skipped} remaining={remaining}",
+                        f"Event: [{state['level']}] {state['message']}",
+                    ]
+                )
+                panel = Panel(dashboard, title="Automation Live Progress")
+                live.update(panel)
+                time.sleep(0.2)
+            worker.join()
+
+        return run_result.get("stats") or {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}, run_result.get("error")
+
+    def _write_automation_summary(
+        self,
+        manifest: AutomationManifest,
+        last_case_results: Dict[str, Dict[str, str]],
+        stats: Dict[str, int],
+    ) -> None:
+        summary_lines = [
+            "# Automation Run Summary",
+            "",
+            f"- completed: {stats.get('completed', 0)}",
+            f"- failed: {stats.get('failed', 0)}",
+            f"- manual_review: {stats.get('manual_review', 0)}",
+            f"- skipped: {stats.get('skipped', 0)}",
+            f"- manifest: {manifest.manifest_path}",
+            "",
+            "## Per-case outputs",
+        ]
+        for case_key, result in sorted(last_case_results.items(), key=lambda item: item[0].lower()):
+            case_entry = manifest.data.get("cases", {}).get(case_key, {})
+            video_out = case_entry.get("steps", {}).get("video_generate", {}).get("output") or "-"
+            oldcam_out = case_entry.get("steps", {}).get("oldcam", {}).get("output") or "-"
+            summary_lines.append(
+                f"- `{case_key}`: status={result.get('status', '')}, video={video_out}, oldcam={oldcam_out}, reason={result.get('reason', '')}"
+            )
+        summary_path = manifest.manifest_path.parent / "automation_run_summary.md"
+        summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+        print(f"\nSummary written: {summary_path}")
+
+    def run_automation_menu(self):
+        while True:
+            self._display_automation_menu()
+            choice = input().strip().lower()
+            if choice == "0":
+                return
+            if choice == "1":
+                self._select_automation_root()
+            elif choice == "2":
+                self._scan_automation_cases()
+            elif choice == "3":
+                self._apply_recommended_automation_defaults()
+            elif choice == "4":
+                self._edit_automation_settings()
+            elif choice == "5":
+                self._dry_run_automation()
+            elif choice == "6":
+                self._run_resume_automation()
+            elif choice == "7":
+                manifest_path = self._automation_manifest_path()
+                print(f"\nManifest path: {manifest_path if manifest_path else '(set root first)'}")
+                input("\nPress Enter to continue...")
+            else:
+                self.print_red("Unknown option.")
+                time.sleep(1)
+
+    def _run_manual_kling_menu(self) -> Optional[str]:
+        """Legacy Kling-first tools grouped under a manual menu."""
+        while True:
+            self.display_header()
+            print("Manual Kling Video Tools")
+            print("  1) Change output mode")
+            print("  2) Edit/view Kling prompt")
+            print("  3) Toggle verbose logging")
+            print("  4) Select input folder (GUI)")
+            print("  5) Select single image (GUI)")
+            print("  6) Inspect model capabilities")
+            print("  7) Change model")
+            print("  8) Swap prompt slot")
+            print("  e) Quick edit prompt")
+            print("  0) Back")
+            choice = input("\nSelect option: ").strip().lower()
+            if choice == "0":
+                return None
+            if choice == "1":
+                self.change_output_mode()
+            elif choice == "2":
+                self.edit_prompt()
+            elif choice == "3":
+                self.toggle_verbose_logging()
+            elif choice == "4":
+                selected_path = self.select_folder_gui()
+                if selected_path:
+                    return selected_path
+            elif choice == "5":
+                selected_path = self.select_file_gui()
+                if selected_path:
+                    return selected_path
+            elif choice == "6":
+                self.inspect_model_capabilities()
+            elif choice == "7":
+                self.select_model()
+            elif choice == "8":
+                self.swap_prompt_slot()
+            elif choice == "e":
+                self.quick_edit_prompt()
+            else:
+                self.print_red("Unknown option.")
                 time.sleep(1)
 
     def count_genx_files(self, root_directory: str) -> int:
@@ -1831,12 +2621,32 @@ class KlingAutomationUI:
         """Main application loop"""
         while True:
             input_folder = self.run_configuration_menu()
-            self.start_processing(input_folder)
+            if input_folder:
+                self.start_processing(input_folder)
+
+    def run_auto_mode(self):
+        """Direct launch into automation flow."""
+        self.run_automation_menu()
+
+    def run_manual_video_mode(self):
+        """Direct launch into legacy manual Kling tools."""
+        while True:
+            selected = self._run_manual_kling_menu()
+            if selected:
+                self.start_processing(selected)
+            else:
+                return
 
 
-def main():
+def main(argv=None):
     """Entry point"""
     try:
+        parser = argparse.ArgumentParser(add_help=True)
+        parser.add_argument("--auto", action="store_true", help="Launch directly into automation workflow")
+        parser.add_argument("--manual-video", action="store_true", help="Launch legacy manual Kling tools")
+        parser.add_argument("--gui", action="store_true", help="Launch GUI manual lab directly")
+        args = parser.parse_args(argv)
+
         if os.name == "nt":
             os.system("color")
 
@@ -1860,6 +2670,15 @@ def main():
                 pass
 
         app = KlingAutomationUI()
+        if args.gui:
+            app.launch_gui()
+            return
+        if args.auto:
+            app.run_auto_mode()
+            return
+        if args.manual_video:
+            app.run_manual_video_mode()
+            return
         app.run()
     except KeyboardInterrupt:
         print("\n\nGoodbye!")

@@ -1,7 +1,7 @@
 @echo off
 setlocal
 set "ROOT_DIR=%~dp0"
-set "TARGET=%ROOT_DIR%launchers\run_gui.bat"
+set "TARGET=%ROOT_DIR%launchers\run_cli.bat"
 
 if not exist "%TARGET%" (
     echo.

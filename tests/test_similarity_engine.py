@@ -42,6 +42,29 @@ class SimilarityEngineTests(unittest.TestCase):
         self.assertEqual(result["score"], 0.0)
         self.assertFalse(result["match"])
 
+    def test_compare_images_backend_runtime_error_falls_back_to_opencv(self):
+        engine = se.FaceEngine()
+        with mock.patch.object(engine, "validate_image_file", return_value=None), \
+            mock.patch.object(
+                se.DeepFace,
+                "extract_faces",
+                side_effect=ValueError("A KerasTensor cannot be used as input to a TensorFlow function"),
+            ), \
+            mock.patch.object(engine, "extract_face", return_value=0.9), \
+            mock.patch.object(
+                engine,
+                "_represent_face",
+                side_effect=[
+                    np.asarray([1.0, 0.0], dtype=float),
+                    np.asarray([1.0, 0.0], dtype=float),
+                ],
+            ):
+            result = engine.compare_images("source.png", "target.png")
+
+        self.assertIsNone(result["error"])
+        self.assertTrue(result["match"])
+        self.assertGreaterEqual(result["score"], 99.0)
+
 
 if __name__ == "__main__":
     unittest.main()

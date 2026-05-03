@@ -2,29 +2,16 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
-cd "${ROOT_DIR}"
+TARGET="${ROOT_DIR}/launchers/run_cli.command"
 
-if [[ ! -x "${ROOT_DIR}/run_cli.sh" ]]; then
-  chmod +x "${ROOT_DIR}/run_cli.sh" || true
-fi
-
-if [[ -x "${ROOT_DIR}/setup_macos.sh" ]]; then
-  "${ROOT_DIR}/setup_macos.sh" || true
-fi
-
-if [[ -x "${ROOT_DIR}/.venv-macos/bin/python" && -f "${ROOT_DIR}/dependency_checker.py" ]]; then
-  "${ROOT_DIR}/.venv-macos/bin/python" "${ROOT_DIR}/dependency_checker.py" --auto || true
-fi
-
-set +e
-"${ROOT_DIR}/run_cli.sh"
-status=$?
-set -e
-
-if [[ ${status} -ne 0 ]]; then
-  printf '\nCLI launcher failed with exit code %d.\n' "${status}" >&2
+if [[ ! -f "${TARGET}" ]]; then
+  printf 'Missing launcher: %s\n' "${TARGET}" >&2
   read -r -p "Press Enter to close..."
+  exit 1
 fi
 
-exit "${status}"
+if [[ ! -x "${TARGET}" ]]; then
+  chmod +x "${TARGET}" || true
+fi
+
+exec "${TARGET}"
