@@ -51,12 +51,12 @@ def test_manifest_complete_requires_existing_final_output(tmp_path: Path):
     assert manifest.case_is_complete_and_valid("case/a") is True
 
 
-def test_manifest_corrupt_file_is_backed_up_and_raises(tmp_path: Path):
+def test_manifest_corrupt_file_is_backed_up_and_recreated(tmp_path: Path):
     manifest_path = tmp_path / "automation_manifest.json"
     manifest_path.write_text("{ bad json", encoding="utf-8")
 
-    with pytest.raises(ValueError):
-        AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+    manifest = AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+    assert manifest.data["schema_version"] == 1
 
     backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
     assert backups, "Expected corrupt manifest backup file."
@@ -153,19 +153,19 @@ def test_manifest_create_or_load_non_dict_payload_backs_up_once(tmp_path: Path):
     manifest_path = tmp_path / "automation_manifest.json"
     manifest_path.write_text(json.dumps(["bad-root"]), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Manifest invalid"):
-        AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+    manifest = AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+    assert manifest.data["schema_version"] == 1
 
     backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
     assert len(backups) == 1
 
 
-def test_manifest_create_or_load_invalid_utf8_backs_up_and_raises(tmp_path: Path):
+def test_manifest_create_or_load_invalid_utf8_backs_up_and_recreates(tmp_path: Path):
     manifest_path = tmp_path / "automation_manifest.json"
     manifest_path.write_bytes(b"\xff\xfe\xfa")
 
-    with pytest.raises(ValueError, match="Manifest invalid"):
-        AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+    manifest = AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+    assert manifest.data["schema_version"] == 1
 
     backups = list(tmp_path.glob("automation_manifest.json.corrupt.*"))
     assert len(backups) == 1

@@ -55,6 +55,17 @@ def _build_config_fingerprint(config_snapshot: Dict[str, Any]) -> Dict[str, Any]
     return {key: config_snapshot.get(key) for key in automation_keys}
 
 
+def _new_manifest_payload(root_dir: Path, config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "root_dir": str(root_dir.resolve()),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "config_snapshot": config_snapshot,
+        "cases": {},
+    }
+
+
 @dataclass
 class AutomationManifest:
     manifest_path: Path
@@ -69,21 +80,32 @@ class AutomationManifest:
                 with open(manifest_path, "r", encoding="utf-8") as handle:
                     loaded = json.load(handle)
             except (JSONDecodeError, UnicodeDecodeError) as exc:
-                cls._backup_invalid_manifest(manifest_path, f"invalid json: {exc}")
-                return cls.create_or_load(manifest_path, root_dir, config_snapshot)
+                cls._backup_invalid_manifest_no_raise(manifest_path, f"invalid json: {exc}")
+                created = _new_manifest_payload(root_dir, config_snapshot)
+                inst = cls(manifest_path=manifest_path, data=created)
+                inst.save_atomic()
+                return inst
             except OSError as exc:
                 raise ValueError(f"Manifest load failed at {manifest_path}: {exc}") from exc
 
             if not isinstance(loaded, dict):
-                cls._backup_invalid_manifest(manifest_path, f"manifest root type invalid: {type(loaded).__name__}")
-                return cls.create_or_load(manifest_path, root_dir, config_snapshot)
+                cls._backup_invalid_manifest_no_raise(
+                    manifest_path, f"manifest root type invalid: {type(loaded).__name__}"
+                )
+                created = _new_manifest_payload(root_dir, config_snapshot)
+                inst = cls(manifest_path=manifest_path, data=created)
+                inst.save_atomic()
+                return inst
             if loaded.get("schema_version") != SCHEMA_VERSION:
                 got_version = loaded.get("schema_version")
-                cls._backup_invalid_manifest(
+                cls._backup_invalid_manifest_no_raise(
                     manifest_path,
                     f"schema_version mismatch: got {got_version!r}, expected {SCHEMA_VERSION}",
                 )
-                return cls.create_or_load(manifest_path, root_dir, config_snapshot)
+                created = _new_manifest_payload(root_dir, config_snapshot)
+                inst = cls(manifest_path=manifest_path, data=created)
+                inst.save_atomic()
+                return inst
 
             loaded_root = str(Path(loaded.get("root_dir", "")).resolve())
             if loaded_root != resolved_root:
@@ -99,14 +121,7 @@ class AutomationManifest:
                 )
             return cls(manifest_path=manifest_path, data=loaded)
 
-        created = {
-            "schema_version": SCHEMA_VERSION,
-            "root_dir": resolved_root,
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-            "config_snapshot": config_snapshot,
-            "cases": {},
-        }
+        created = _new_manifest_payload(root_dir, config_snapshot)
         inst = cls(manifest_path=manifest_path, data=created)
         inst.save_atomic()
         return inst

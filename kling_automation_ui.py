@@ -1616,7 +1616,7 @@ class KlingAutomationUI:
                 counts["manual_review"] += 1
             elif planned == "failed":
                 counts["failed"] += 1
-            elif planned == "run_pending":
+            elif planned in {"run_pending", "skip_video_exists", "skip_selfie_exists"}:
                 counts["pending"] += 1
                 runnable.append(record)
             row = {

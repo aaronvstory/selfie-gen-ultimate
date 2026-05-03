@@ -206,8 +206,29 @@ def test_collect_case_snapshot_applies_max_cases_after_filters(tmp_path):
     ]
     rows, counts, runnable = ui._collect_case_snapshot(records, manifest=None)
     assert len(rows) == 3
-    assert counts["pending"] == 2
+    assert counts["pending"] == 3
     assert counts["will_run"] == 1
+    assert len(runnable) == 1
+
+
+def test_collect_case_snapshot_existing_video_still_runnable(tmp_path):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_front_names": ["front.png"],
+        "automation_skip_if_selfie_exists": True,
+        "automation_skip_if_video_exists": True,
+        "automation_max_cases_per_run": "all",
+    }
+    ui._read_max_cases_setting = lambda: "all"
+    root = tmp_path
+    case_dir = root / "a"
+    (case_dir / "gen-videos").mkdir(parents=True)
+    (case_dir / "front.png").write_bytes(b"x")
+    (case_dir / "gen-videos" / "x.mp4").write_bytes(b"x")
+    record = type("Rec", (), {"relative_key": "a", "front_path": case_dir / "front.png", "case_dir": case_dir})
+
+    _rows, counts, runnable = ui._collect_case_snapshot([record], manifest=None)
+    assert counts["pending"] == 1
     assert len(runnable) == 1
 
 
