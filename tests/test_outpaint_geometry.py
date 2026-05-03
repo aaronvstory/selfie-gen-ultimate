@@ -22,6 +22,20 @@ def test_percent_expand_70_downscales_for_bfl():
     assert plan["canvas_h"] <= BFL_CAPS.max_canvas_dim
 
 
+@pytest.mark.parametrize(
+    "caps,orig_w,orig_h",
+    [
+        (BFL_CAPS, 2600, 2200),
+        (FAL_CAPS, 2200, 1800),
+    ],
+)
+def test_percent_expand_70_respects_provider_canvas_and_mp_caps(caps, orig_w, orig_h):
+    plan = compute_percent_expand_plan(orig_w, orig_h, 70, caps)
+    assert plan["canvas_w"] <= caps.max_canvas_dim
+    assert plan["canvas_h"] <= caps.max_canvas_dim
+    assert (plan["canvas_w"] * plan["canvas_h"]) <= int(caps.max_canvas_mp * 1_000_000)
+
+
 def test_centered_document_3x4():
     plan = compute_centered_aspect_expand_plan(1600, 1000, (3, 4), BFL_CAPS)
     assert plan["canvas_h"] > plan["canvas_w"]
