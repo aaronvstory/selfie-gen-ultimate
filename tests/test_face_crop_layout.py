@@ -38,6 +38,14 @@ class _FakeVar:
         self.value = value
 
 
+class _FakeGetVar:
+    def __init__(self, value):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+
 class FaceCropLayoutTests(unittest.TestCase):
     def test_browse_row_reflow_noop_without_secondary_button(self):
         tab = FaceCropTab.__new__(FaceCropTab)
@@ -122,6 +130,33 @@ class FaceCropLayoutTests(unittest.TestCase):
 
         tab._detect_face_with_opencv_fallback.assert_called_once_with(fake_img)
         tab._after_detect.assert_called_once_with(fake_img, (1, 2, 30, 40), None)
+
+    def test_get_config_updates_includes_outpaint_double_expand(self):
+        tab = FaceCropTab.__new__(FaceCropTab)
+        tab._multiplier_var = _FakeGetVar(1.5)
+        tab._auto_switch_var = _FakeGetVar(True)
+        tab._polish_provider_var = _FakeGetVar("provider")
+        tab._polish_strength_var = _FakeGetVar(0.2)
+        tab._upscale_provider_var = _FakeGetVar("Crystal (Portraits)")
+        tab._upscale_scale_var = _FakeGetVar("2x")
+        tab._upscale_creativity_var = _FakeGetVar(0.0)
+        tab._upscale_resemblance_var = _FakeGetVar(0.9)
+        tab._expand_mode_var = _FakeGetVar("percentage")
+        tab._pct_var = _FakeGetVar(30)
+        tab._expand_left_var = _FakeGetVar(100)
+        tab._expand_right_var = _FakeGetVar(100)
+        tab._expand_top_var = _FakeGetVar(120)
+        tab._expand_bottom_var = _FakeGetVar(120)
+        tab._outpaint_format_var = _FakeGetVar("png")
+        tab._outpaint_composite_var = _FakeGetVar("feathered")
+        tab._outpaint_provider_var = _FakeGetVar("bfl")
+        tab._outpaint_double_expand_var = _FakeGetVar(True)
+        tab._expanded_sections = []
+        tab._outpaint_prompt_str = "prompt"
+        tab.config = {"face_crop_polish_prompt": "x"}
+
+        updates = tab.get_config_updates()
+        self.assertTrue(updates["outpaint_double_expand"])
 
 
 if __name__ == "__main__":

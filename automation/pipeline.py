@@ -291,6 +291,8 @@ class AutoPipelineRunner:
 
         # Step 1: front expand
         front_expanded = existing.front_expanded or (case_dir / self.automation.get("automation_front_output_name", "front-expanded.png"))
+        configured_front_passes = int(self.automation.get("automation_front_expand_passes", 2))
+        front_passes = configured_front_passes if configured_front_passes in {1, 2} else 2
         if self.automation.get("automation_front_expand_enabled", True):
             current_step = self.manifest.get_step(case_key, "front_expand")
             existing_front_step_output = current_step.get("output")
@@ -306,7 +308,11 @@ class AutoPipelineRunner:
                     "front_expand",
                     "complete",
                     output=str(front_expanded),
-                    meta=self._policy_meta("front_expand", True, reprocess_mode),
+                    meta={
+                        **self._policy_meta("front_expand", True, reprocess_mode),
+                        "configured_passes": front_passes,
+                        "executed_passes": 0,
+                    },
                 )
             elif reprocess_mode == "skip" and front_expanded and Path(front_expanded).exists():
                 self.manifest.update_step(
@@ -314,7 +320,11 @@ class AutoPipelineRunner:
                     "front_expand",
                     "complete",
                     output=str(front_expanded),
-                    meta=self._policy_meta("front_expand", True, reprocess_mode),
+                    meta={
+                        **self._policy_meta("front_expand", True, reprocess_mode),
+                        "configured_passes": front_passes,
+                        "executed_passes": 0,
+                    },
                 )
             else:
                 target_output = Path(front_expanded)
@@ -341,26 +351,46 @@ class AutoPipelineRunner:
                     self.logger.info("case %s front expand geometry width=%s height=%s pct=%s plan=%s", case_key, width, height, pct, plan)
                 self._set_active_step(case_entry, "front_expand")
                 self.manifest.update_step(case_key, "front_expand", "running")
-                result = outpaint.outpaint(
-                    image_path=str(case.front_path),
-                    output_folder=str(case_dir),
-                    output_path=str(target_output),
-                    provider=resolved_front_provider,
-                    document_mode=front_is_document,
-                    edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
-                    if self.automation.get("automation_front_edge_seal_enabled", True)
-                    else 0,
-                    **front_expand_kwargs,
-                )
-                if not result:
-                    self.manifest.update_step(case_key, "front_expand", "failed", error="front expansion failed")
-                    return self._finalize_case(case_entry, "failed")
+                result = None
+                front_input_path = str(case.front_path)
+                executed_passes = 0
+                for pass_index in range(front_passes):
+                    pass_output = str(target_output) if pass_index == front_passes - 1 else None
+                    result = outpaint.outpaint(
+                        image_path=front_input_path,
+                        output_folder=str(case_dir),
+                        output_path=pass_output,
+                        provider=resolved_front_provider,
+                        document_mode=front_is_document,
+                        edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
+                        if self.automation.get("automation_front_edge_seal_enabled", True)
+                        else 0,
+                        **front_expand_kwargs,
+                    )
+                    if not result:
+                        self.manifest.update_step(
+                            case_key,
+                            "front_expand",
+                            "failed",
+                            error=f"front expansion failed on pass {pass_index + 1}",
+                            meta={
+                                "configured_passes": front_passes,
+                                "executed_passes": executed_passes,
+                            },
+                        )
+                        return self._finalize_case(case_entry, "failed")
+                    front_input_path = result
+                    executed_passes += 1
                 self.manifest.update_step(
                     case_key,
                     "front_expand",
                     "complete",
                     output=str(result),
-                    meta=self._policy_meta("front_expand", False, reprocess_mode),
+                    meta={
+                        **self._policy_meta("front_expand", False, reprocess_mode),
+                        "configured_passes": front_passes,
+                        "executed_passes": executed_passes,
+                    },
                 )
                 front_expanded = Path(result)
         else:

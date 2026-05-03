@@ -61,6 +61,7 @@ def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):
         "automation_front_expand_provider": "bfl",
         "automation_front_expand_mode": "percent",
         "automation_front_expand_percent": 30,
+        "automation_front_expand_passes": 1,
         "automation_front_edge_seal_enabled": False,
         "automation_front_edge_seal_px": 12,
         "automation_front_output_name": "front-expanded.png",
@@ -97,6 +98,7 @@ def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):
             "increment",  # mode
             "", "", "",  # front enabled/provider/mode
             "40",  # front pct
+            "2",  # front passes
             "", "", "",  # edge + output
             "", "", "", "",  # extract/crop/selfie enabled/models
             "", "",  # model policy/attempts
@@ -118,6 +120,7 @@ def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):
     ui._edit_automation_settings_quick()
     assert ui.config["automation_reprocess_mode"] == "increment"
     assert ui.config["automation_front_expand_percent"] == 40
+    assert ui.config["automation_front_expand_passes"] == 2
     assert ui.config["automation_max_cases_per_run"] == "5"
 
 
@@ -152,6 +155,7 @@ def test_settings_editor_rejects_invalid_max_cases(tmp_path, monkeypatch):
         "automation_front_expand_provider": "bfl",
         "automation_front_expand_mode": "percent",
         "automation_front_expand_percent": 30,
+        "automation_front_expand_passes": 2,
         "automation_front_edge_seal_enabled": False,
         "automation_front_edge_seal_px": 12,
         "automation_front_output_name": "front-expanded.png",
@@ -412,6 +416,7 @@ def test_settings_editor_selfie_model_menu_maps_to_both(tmp_path, monkeypatch):
         "automation_front_expand_provider": "bfl",
         "automation_front_expand_mode": "percent",
         "automation_front_expand_percent": 30,
+        "automation_front_expand_passes": 2,
         "automation_front_edge_seal_enabled": False,
         "automation_front_edge_seal_px": 12,
         "automation_front_output_name": "front-expanded.png",
@@ -460,6 +465,7 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
         "automation_front_expand_provider": "fal",
         "automation_front_expand_mode": "document_3x4",
         "automation_front_expand_percent": 22,
+        "automation_front_expand_passes": 1,
         "automation_front_edge_seal_enabled": True,
         "automation_selfie_expand_provider": "fal",
         "automation_selfie_expand_mode": "centered_3x4",
@@ -494,6 +500,7 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_front_expand_provider"] == "bfl"
     assert ui.config["automation_front_expand_mode"] == "percent"
     assert ui.config["automation_front_expand_percent"] == 70
+    assert ui.config["automation_front_expand_passes"] == 2
     assert ui.config["automation_selfie_expand_provider"] == "bfl"
     assert ui.config["automation_selfie_expand_mode"] == "percent"
     assert ui.config["automation_selfie_expand_percent"] == 30
@@ -529,3 +536,37 @@ def test_apply_recommended_automation_defaults_sets_max_cases_to_1_if_invalid(tm
     monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
     ui._apply_recommended_automation_defaults()
     assert ui.config["automation_max_cases_per_run"] == "1"
+
+
+def test_automation_status_lines_include_front_passes(tmp_path):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_max_cases_per_run": "5",
+        "falai_api_key": "x",
+        "bfl_api_key": "y",
+        "automation_front_expand_mode": "percent",
+        "automation_front_expand_percent": 70,
+        "automation_front_expand_passes": 2,
+        "automation_front_expand_provider": "bfl",
+        "automation_selfie_expand_mode": "percent",
+        "automation_selfie_expand_percent": 30,
+        "automation_selfie_expand_provider": "bfl",
+        "automation_selfie_models": ["fal-ai/nano-banana-2/edit"],
+        "automation_selfie_prompt_slot": 1,
+        "automation_selfie_prompts": {"1": "x"},
+        "automation_similarity_threshold": 80,
+        "current_model": "m",
+        "current_prompt_slot": 1,
+        "automation_oldcam_version": "all",
+        "automation_oldcam_required": False,
+        "automation_recommended_defaults_version": 1,
+        "automation_verbose_logging": True,
+    }
+    ui.automation_root_folder = str(tmp_path)
+    ui._read_max_cases_setting = lambda: "5"
+    ui._resolve_provider = lambda _x: "bfl"
+    ui._oldcam_readiness_status = lambda: "ready(v7,v8)"
+    ui._selfie_model_label_map = lambda: {}
+    ui._ensure_selfie_prompt_slots = lambda: None
+    lines = ui._automation_status_lines()
+    assert any("passes=2" in line for line in lines)

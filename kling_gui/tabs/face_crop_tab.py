@@ -207,6 +207,9 @@ class FaceCropTab(tk.Frame):
             value=config.get("outpaint_provider",
                              "bfl" if config.get("bfl_api_key") else "fal")
         )
+        self._outpaint_double_expand_var = tk.BooleanVar(
+            value=bool(config.get("outpaint_double_expand", True))
+        )
 
         # PhotoImage references (prevent GC)
         self._source_photo = None
@@ -661,6 +664,16 @@ class FaceCropTab(tk.Frame):
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 8),
         ).pack(side=tk.LEFT, padx=(4, 0))
+        tk.Checkbutton(
+            btn_row,
+            text="Run 2x",
+            variable=self._outpaint_double_expand_var,
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            font=(FONT_FAMILY, 8),
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         self._outpaint_status = tk.Label(
             expand_parent, text="", font=(FONT_FAMILY, 8),
@@ -1887,6 +1900,7 @@ class FaceCropTab(tk.Frame):
         self._outpaint_status.config(text="Processing...", fg=COLORS["progress"])
 
         bfl_key = cfg.get("bfl_api_key") if use_bfl else None
+        outpaint_passes = 2 if self._outpaint_double_expand_var.get() else 1
 
         def _worker():
             try:
@@ -1901,18 +1915,25 @@ class FaceCropTab(tk.Frame):
                         0, lambda m=msg, l=lvl: self.log(m, l)
                     )
                 )
-                result = gen.outpaint(
-                    image_path=image_path,
-                    output_folder=str(gen_dir),
-                    expand_left=expand_left,
-                    expand_right=expand_right,
-                    expand_top=expand_top,
-                    expand_bottom=expand_bottom,
-                    prompt=prompt,
-                    output_format=output_format,
-                    composite_mode=self._outpaint_composite_var.get(),
-                    output_path=outpaint_output_path,
-                )
+                current_input = image_path
+                result = None
+                for pass_index in range(outpaint_passes):
+                    pass_output_path = outpaint_output_path if pass_index == outpaint_passes - 1 else None
+                    result = gen.outpaint(
+                        image_path=current_input,
+                        output_folder=str(gen_dir),
+                        expand_left=expand_left,
+                        expand_right=expand_right,
+                        expand_top=expand_top,
+                        expand_bottom=expand_bottom,
+                        prompt=prompt,
+                        output_format=output_format,
+                        composite_mode=self._outpaint_composite_var.get(),
+                        output_path=pass_output_path,
+                    )
+                    if not result:
+                        break
+                    current_input = result
 
                 similarity = None
                 if ref_path and result:
@@ -1977,6 +1998,7 @@ class FaceCropTab(tk.Frame):
             "outpaint_format": self._outpaint_format_var.get(),
             "outpaint_composite_mode": self._outpaint_composite_var.get(),
             "outpaint_provider": self._outpaint_provider_var.get(),
+            "outpaint_double_expand": self._outpaint_double_expand_var.get(),
             "accordion_expanded": self._expanded_sections,
         }
         # Persist outpaint prompt

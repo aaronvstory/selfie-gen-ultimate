@@ -717,6 +717,78 @@ def test_pipeline_resolves_auto_provider_to_bfl_for_caps_and_outpaint(tmp_path: 
     assert all(call.get("provider") == "bfl" for call in outpaint.calls)
 
 
+def test_pipeline_front_expand_runs_two_passes_when_configured(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-n2"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (800, 600), (1, 2, 3)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-n2")
+
+    config = merge_automation_defaults(
+        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 2}
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    outpaint = FakeOutpaint()
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: outpaint,
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert len(outpaint.calls) == 3
+    front_step = manifest.get_step(record.relative_key, "front_expand")
+    assert front_step["meta"]["configured_passes"] == 2
+    assert front_step["meta"]["executed_passes"] == 2
+
+
+def test_pipeline_front_expand_runs_single_pass_when_configured(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-n3"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (800, 600), (1, 2, 3)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-n3")
+
+    config = merge_automation_defaults(
+        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 1}
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    outpaint = FakeOutpaint()
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: outpaint,
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert len(outpaint.calls) == 2
+    front_step = manifest.get_step(record.relative_key, "front_expand")
+    assert front_step["meta"]["configured_passes"] == 1
+    assert front_step["meta"]["executed_passes"] == 1
+
+
 def test_pipeline_selfie_expand_reuse_skips_outpaint_call(tmp_path: Path, monkeypatch):
     case_dir = tmp_path / "case-o"
     case_dir.mkdir()
@@ -755,7 +827,7 @@ def test_pipeline_selfie_expand_reuse_skips_outpaint_call(tmp_path: Path, monkey
     assert selfie_expand_step["status"] == "complete"
     assert selfie_expand_step["output"] == str(existing_expanded)
     assert selfie_expand_step["meta"]["reused_existing"] is True
-    assert len(outpaint.calls) == 1
+    assert len(outpaint.calls) == 2
 
 
 def test_pipeline_marks_active_selfie_step_failed_on_exception(tmp_path: Path, monkeypatch):

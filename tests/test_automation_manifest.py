@@ -176,6 +176,7 @@ def test_automation_defaults_use_percent_and_nano_model():
     assert merged["automation_front_expand_provider"] == "bfl"
     assert merged["automation_front_expand_mode"] == "percent"
     assert merged["automation_front_expand_percent"] == 70
+    assert merged["automation_front_expand_passes"] == 2
     assert merged["automation_selfie_expand_provider"] == "bfl"
     assert merged["automation_selfie_expand_mode"] == "percent"
     assert merged["automation_selfie_expand_percent"] == 30

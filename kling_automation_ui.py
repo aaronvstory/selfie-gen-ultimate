@@ -1395,7 +1395,7 @@ class KlingAutomationUI:
         lines = [
             f"root={self.automation_root_folder or '(not set)'} max_cases={self._read_max_cases_setting()}",
             f"keys fal={key_status(self.config.get('falai_api_key'))} bfl={key_status(self.config.get('bfl_api_key'))}",
-            f"front mode={self.config.get('automation_front_expand_mode')} pct={self.config.get('automation_front_expand_percent', 70)} provider={front_configured}->{self._resolve_provider(front_configured)}",
+            f"front mode={self.config.get('automation_front_expand_mode')} pct={self.config.get('automation_front_expand_percent', 70)} passes={self.config.get('automation_front_expand_passes', 2)} provider={front_configured}->{self._resolve_provider(front_configured)}",
             f"selfie expand mode={self.config.get('automation_selfie_expand_mode')} pct={self.config.get('automation_selfie_expand_percent', 30)} provider={selfie_configured}->{self._resolve_provider(selfie_configured)}",
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
             f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', 1)}",
@@ -1411,6 +1411,7 @@ class KlingAutomationUI:
                 self.config.get("automation_front_expand_provider"),
                 self.config.get("automation_front_expand_mode"),
                 self.config.get("automation_front_expand_percent"),
+                self.config.get("automation_front_expand_passes"),
             ),
             "selfie_expand": (
                 self.config.get("automation_selfie_expand_provider"),
@@ -1436,6 +1437,7 @@ class KlingAutomationUI:
         self.config["automation_front_expand_provider"] = "bfl"
         self.config["automation_front_expand_mode"] = "percent"
         self.config["automation_front_expand_percent"] = 70
+        self.config["automation_front_expand_passes"] = 2
         self.config["automation_front_edge_seal_enabled"] = False
         self.config["automation_selfie_expand_provider"] = "bfl"
         self.config["automation_selfie_expand_mode"] = "percent"
@@ -1761,6 +1763,7 @@ class KlingAutomationUI:
         _ask_choice("Front expand provider", "automation_front_expand_provider", ["auto", "bfl", "fal"])
         _ask_choice("Front expand mode", "automation_front_expand_mode", ["document_3x4", "percent"])
         _ask("Front expand percent", "automation_front_expand_percent", int, lambda v: v >= 0)
+        _ask("Front expand passes [1|2]", "automation_front_expand_passes", int, lambda v: v in {1, 2})
         _ask_bool("Front edge seal enabled", "automation_front_edge_seal_enabled")
         _ask("Front edge seal px", "automation_front_edge_seal_px", int, lambda v: v >= 0)
         _ask("Front output name", "automation_front_output_name", str, lambda v: len(v) > 0)
