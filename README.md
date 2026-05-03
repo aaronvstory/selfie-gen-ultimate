@@ -16,6 +16,67 @@ AI media generation toolkit for face cropping, portrait analysis, selfie generat
 
 Images move through the pipeline: input -> crop -> prep -> selfie -> expand/outpaint -> video.
 
+## CLI Automated Pipeline (End-to-End)
+
+The CLI includes a manifest-driven automation flow in `kling_automation_ui.py`:
+
+`front_expand -> extract_portrait -> selfie_generate -> similarity_gate -> selfie_expand -> video_generate -> oldcam`
+
+Open CLI:
+
+```powershell
+python kling_automation_ui.py
+```
+
+Use **End-to-End Auto Pipeline** menu to:
+
+1. select root folder
+2. scan/preview cases
+3. dry run
+4. run/resume automation
+
+Resume behavior:
+
+- Completed valid cases are skipped when `automation_skip_completed=true`.
+- Cases marked `manual_review` due to `similarity unavailable` are retryable in later runs.
+- Manifest stores per-step status, output path, error, and metadata.
+
+## Reusable Test Folders (Repeatable Batch Testing)
+
+Use a stable test root with reusable case folders:
+
+```text
+test_root/
+  case_a/
+    front.jpg  (or front.png)
+  case_b/
+    front.jpg  (or front.png)
+```
+
+Retest policy:
+
+- You can rerun one case or both cases repeatedly across future validation cycles.
+- Use **Run / resume** to continue from previous manifest state.
+- To force clean-path retests:
+  - use a fresh root folder, or
+  - remove/reset `automation_manifest.json` and generated outputs for selected cases, then rerun.
+- To test reuse logic specifically, keep previous outputs and rerun with skip/reuse settings enabled.
+
+## Cross-Platform Launch Matrix
+
+| Mode | Windows | macOS |
+| --- | --- | --- |
+| GUI | `run_gui.bat` | `./run_gui.sh` or `run_gui.command` |
+| CLI | `python kling_automation_ui.py` | `./run_cli.sh` or `run_cli.command` |
+| Setup | `python -m venv venv` + `pip install -r requirements.txt` | `./setup_macos.sh` |
+
+macOS compatibility constraints:
+
+- Python 3.11+ recommended.
+- Tk must be available (`python -c "import tkinter"` must pass in `.venv-macos`).
+- `.command` launchers may require one-time Gatekeeper approval.
+- Shared pipeline behavior is intended to remain platform-consistent; avoid Windows-only assumptions in automation logic.
+
 ## Quick Start: Windows
 
 1. Install Python 3.10+ from [python.org](https://python.org) and enable **Add Python to PATH**.
@@ -148,6 +209,18 @@ This uses PyInstaller to produce a portable `dist/KlingUI/` folder. `tkinterdnd2
 - Model list fails: check fal.ai key, account status, and rate limits. Cached metadata remains usable when available.
 - Face crop/prep fails: run `python dependency_health_check.py --mode check` to find broken TensorFlow/RetinaFace imports.
 - API generation fails: verify provider credits and API keys in settings.
+
+## GitHub Review Loop (No Auto-Merge)
+
+Recommended PR loop:
+
+1. push branch updates
+2. trigger bot reviews (`@codoki review`, `@coderabbitai review`, `@codex review`)
+3. fix only fresh actionable findings on latest commit range
+4. rerun targeted tests
+5. push again and re-check comments/checks
+
+This repository workflow keeps PRs open for iterative validation; do not merge automatically after first green run.
 
 ## License
 

@@ -12,7 +12,7 @@ Kling UI is an AI media generation toolkit using fal.ai and BFL APIs. It provide
 # Setup
 python -m venv venv && venv/Scripts/pip install -r requirements.txt
 
-# Run CLI (menu-driven, option 6 launches GUI)
+# Run CLI (menu-driven)
 python kling_automation_ui.py
 
 # Launch GUI directly
@@ -28,7 +28,15 @@ build_gui_exe.bat
 npx pyright  # uses pyrightconfig.json (basic mode, Python 3.10)
 ```
 
-There are no tests. Verify changes by running the GUI and testing the relevant tab.
+Pytest suites are present and should be used for targeted regression checks:
+
+```bash
+pytest tests/test_automation_pipeline.py -q
+pytest tests/test_automation_manifest.py -q
+pytest tests/test_automation_cli_smoke.py -q
+```
+
+Manual GUI and live provider validation are still required for full end-to-end confidence.
 
 ## Architecture
 
@@ -38,6 +46,24 @@ There are no tests. Verify changes by running the GUI and testing the relevant t
 - `kling_gui/main_window.py` — GUI entry. Creates `ttk.Notebook` with 5 tabs + `ImageCarousel` + `ComparePanel`.
 - `gui_launcher.py` — PyInstaller-compatible GUI bootstrap.
 - `run_gui.bat` — Windows launcher with auto-venv.
+- `run_cli.sh` / `run_cli.command` — macOS CLI launchers.
+- `run_gui.sh` / `run_gui.command` — macOS GUI launchers.
+- `setup_macos.sh` — macOS environment bootstrap for Tk-capable runtime.
+
+### CLI Automated Pipeline
+
+The CLI includes a manifest-driven automated pipeline:
+
+`front_expand -> extract_portrait -> selfie_generate -> similarity_gate -> selfie_expand -> video_generate -> oldcam`
+
+Core pipeline modules:
+
+- `automation/config.py`
+- `automation/discovery.py`
+- `automation/manifest.py`
+- `automation/pipeline.py`
+
+Manifest behavior supports repeated reruns on the same test folders and run/resume continuation.
 
 ### GUI Tab Architecture (`kling_gui/tabs/`)
 
@@ -151,3 +177,12 @@ Output naming: `{imagename}_kling_{model_short}_{pN}.mp4` (model short names der
 - `path_utils.py` ensures correct paths whether running as script or frozen exe
 - `create_icon.py` generates `kling_ui.ico` from scratch
 - Output goes to `dist/KlingUI/`
+
+## PR Bot Triage (Latest Commit Range)
+
+When processing PR review bots:
+
+1. Trigger fresh runs on current head (`@codoki review`, `@coderabbitai review`, `@codex review`).
+2. Collect fresh actionable findings tied to the latest commit range.
+3. Ignore stale historical findings already superseded by newer commits.
+4. Run targeted pytest suites before pushing fix commits.
