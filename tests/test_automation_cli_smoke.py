@@ -11,7 +11,7 @@ def test_cli_has_automation_menu():
 
 
 def test_cli_branding_text_updated():
-    src = Path("kling_automation_ui.py").read_text(encoding="utf-8")
+    src = (Path(__file__).resolve().parent.parent / "kling_automation_ui.py").read_text(encoding="utf-8")
     assert "SELFIE GEN ULTIMATE" in src
     assert "FAL.AI VIDEO GENERATOR" not in src
     assert "keys fal=" in src

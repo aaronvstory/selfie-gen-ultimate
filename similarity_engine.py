@@ -3,6 +3,7 @@
 import math
 import os
 import threading
+import tempfile
 import urllib.request
 import logging
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -219,12 +220,22 @@ class FaceEngine:
     def _compare_with_opencv_fallback(
         self, img1_path: str, img2_path: str
     ) -> Dict[str, Union[bool, float, str]]:
-        fallback1 = os.path.join(self.models_dir, "_fallback_source_face.png")
-        fallback2 = os.path.join(self.models_dir, "_fallback_target_face.png")
-        self.extract_face(img1_path, fallback1)
-        self.extract_face(img2_path, fallback2)
-        embedding1 = self._represent_face(fallback1)
-        embedding2 = self._represent_face(fallback2)
+        fd1, fallback1 = tempfile.mkstemp(suffix=".png", prefix="_fallback_source_")
+        fd2, fallback2 = tempfile.mkstemp(suffix=".png", prefix="_fallback_target_")
+        os.close(fd1)
+        os.close(fd2)
+        try:
+            self.extract_face(img1_path, fallback1)
+            self.extract_face(img2_path, fallback2)
+            embedding1 = self._represent_face(fallback1)
+            embedding2 = self._represent_face(fallback2)
+        finally:
+            for tmp_path in (fallback1, fallback2):
+                try:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except OSError:
+                    logger.debug("Could not remove temporary fallback file: %s", tmp_path)
         distance = self._cosine_distance(embedding1, embedding2)
         threshold = 0.68
 

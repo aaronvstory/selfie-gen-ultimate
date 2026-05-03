@@ -17,7 +17,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 try:
     from kling_gui.ml_backend_env import ensure_ml_backend_env
-except Exception:
+except ModuleNotFoundError:
     def ensure_ml_backend_env() -> None:
         os.environ["TF_USE_LEGACY_KERAS"] = "1"
         os.environ["KERAS_BACKEND"] = "tensorflow"

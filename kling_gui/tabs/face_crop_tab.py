@@ -1901,6 +1901,7 @@ class FaceCropTab(tk.Frame):
 
         bfl_key = cfg.get("bfl_api_key") if use_bfl else None
         outpaint_passes = 2 if self._outpaint_double_expand_var.get() else 1
+        composite_mode = self._outpaint_composite_var.get()
 
         def _worker():
             try:
@@ -1928,7 +1929,7 @@ class FaceCropTab(tk.Frame):
                         expand_bottom=expand_bottom,
                         prompt=prompt,
                         output_format=output_format,
-                        composite_mode=self._outpaint_composite_var.get(),
+                        composite_mode=composite_mode,
                         output_path=pass_output_path,
                     )
                     if not result:

@@ -42,8 +42,14 @@ def create_automation_logger(config: Dict[str, Any], automation_root_folder: Opt
     if logger.handlers:
         return logger, log_path
 
-    max_bytes = int(config.get("automation_log_max_bytes", 2097152))
-    backup_count = int(config.get("automation_log_backup_count", 5))
+    try:
+        max_bytes = int(config.get("automation_log_max_bytes", 2097152))
+    except (ValueError, TypeError):
+        max_bytes = 2097152
+    try:
+        backup_count = int(config.get("automation_log_backup_count", 5))
+    except (ValueError, TypeError):
+        backup_count = 5
     handler = RotatingFileHandler(str(log_path), maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(handler)

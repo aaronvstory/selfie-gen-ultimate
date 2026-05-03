@@ -146,6 +146,7 @@ class AutoPipelineRunner:
         fal_key = str(self.config.get("falai_api_key", "")).strip()
         bfl_key = str(self.config.get("bfl_api_key", "")).strip()
         video_enabled = bool(self.automation.get("automation_video_enabled", True))
+        selfie_enabled = bool(self.automation.get("automation_selfie_enabled", True))
         front_expand_enabled = bool(self.automation.get("automation_front_expand_enabled", True))
         selfie_expand_enabled = bool(self.automation.get("automation_selfie_expand_enabled", True))
         provider_summary = self.resolve_provider_summary()
@@ -154,6 +155,8 @@ class AutoPipelineRunner:
 
         if video_enabled and not fal_key:
             issues.append("Missing falai_api_key in config (required for Kling video step).")
+        if selfie_enabled and not fal_key:
+            issues.append("Missing falai_api_key in config (required for selfie generation).")
 
         if front_expand_enabled:
             if front_provider == "fal" and not fal_key:
@@ -232,8 +235,13 @@ class AutoPipelineRunner:
                 if active_step:
                     try:
                         self.manifest.update_step(case.relative_key, active_step, "failed", error=str(exc))
-                    except Exception:
-                        pass
+                    except (OSError, IOError) as update_error:
+                        self.logger.exception(
+                            "failed to mark step as failed for case=%s step=%s: %s",
+                            case.relative_key,
+                            active_step,
+                            update_error,
+                        )
                 else:
                     case_state.setdefault("errors", []).append(
                         {"step": "run", "error": str(exc), "at": now_iso()}
@@ -745,7 +753,6 @@ class AutoPipelineRunner:
                 selected_video_path = None
             if selected_video_path and selected_video_path.exists() and selected_video_path.suffix.lower() == ".mp4":
                 self.logger.info("case %s oldcam readiness=ready version=%s required=%s", case_key, self.automation.get("automation_oldcam_version", "v8"), bool(self.automation.get("automation_oldcam_required", False)))
-                case_entry["active_step"] = "oldcam"
                 self._set_active_step(case_entry, "oldcam")
                 self.manifest.update_step(case_key, "oldcam", "running")
                 oldcam_output = run_oldcam(

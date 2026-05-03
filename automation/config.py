@@ -118,7 +118,7 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     slot = merged.get("automation_selfie_prompt_slot", 1)
     try:
         slot_int = int(slot)
-    except Exception:
+    except (ValueError, TypeError):
         slot_int = 1
     if slot_int < 1 or slot_int > 10:
         slot_int = 1
