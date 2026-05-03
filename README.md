@@ -67,8 +67,8 @@ Retest policy:
 
 | Mode | Windows | macOS |
 | --- | --- | --- |
-| GUI | `run_gui.bat` | `./run_gui.sh` or `run_gui.command` |
-| CLI | `python kling_automation_ui.py` | `./run_cli.sh` or `run_cli.command` |
+| GUI | `launchers/run_gui.bat` | `launchers/run_gui.command` (or `./run_gui.sh`) |
+| CLI | `launchers/run_cli.bat` | `launchers/run_cli.command` (or `./run_cli.sh`) |
 | Setup | `python -m venv venv` + `pip install -r requirements.txt` | `./setup_macos.sh` |
 
 macOS compatibility constraints:
@@ -81,7 +81,7 @@ macOS compatibility constraints:
 ## Quick Start: Windows
 
 1. Install Python 3.10+ from [python.org](https://python.org) and enable **Add Python to PATH**.
-2. Double-click `run_gui.bat`.
+2. Double-click `launchers/run_gui.bat`.
 3. Enter API keys in GUI settings.
 
 Manual launch:
@@ -122,9 +122,13 @@ Launch CLI from Terminal:
 
 Finder-friendly launchers:
 
-- `run_gui.command`: opens the GUI
+- `launchers/run_gui.command`: opens the GUI
 - `run_kling_ui.command`: GUI alias for users expecting the app name
-- `run_cli.command`: opens the CLI menu
+- `launchers/run_cli.command`: opens the CLI menu
+
+Compatibility wrappers remain at repo root:
+- `run_gui.bat`, `run_cli.bat`
+- `run_gui.command`, `run_cli.command`
 
 If macOS Gatekeeper blocks a `.command` file, right-click it, choose **Open**, then confirm once.
 

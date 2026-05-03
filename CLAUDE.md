@@ -45,9 +45,10 @@ Manual GUI and live provider validation are still required for full end-to-end c
 - `kling_automation_ui.py` — CLI menu system (Rich UI). Option 6 launches GUI.
 - `kling_gui/main_window.py` — GUI entry. Creates `ttk.Notebook` with 5 tabs + `ImageCarousel` + `ComparePanel`.
 - `gui_launcher.py` — PyInstaller-compatible GUI bootstrap.
-- `run_gui.bat` — Windows launcher with auto-venv.
-- `run_cli.sh` / `run_cli.command` — macOS CLI launchers.
-- `run_gui.sh` / `run_gui.command` — macOS GUI launchers.
+- `launchers/run_gui.bat` and `launchers/run_cli.bat` — canonical Windows launchers.
+- `launchers/run_gui.command` and `launchers/run_cli.command` — canonical macOS launchers.
+- root `run_gui.bat`, `run_cli.bat`, `run_gui.command`, `run_cli.command` are compatibility wrappers.
+- `run_cli.sh` / `run_gui.sh` — macOS shell launchers used by `.command` entrypoints.
 - `setup_macos.sh` — macOS environment bootstrap for Tk-capable runtime.
 
 ### CLI Automated Pipeline
