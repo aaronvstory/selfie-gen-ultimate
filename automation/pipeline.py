@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -107,6 +108,10 @@ class AutoPipelineRunner:
         except (TypeError, ValueError):
             if issues is not None:
                 issues.append(f"{key} must be a number.")
+            return default
+        if not math.isfinite(value):
+            if issues is not None:
+                issues.append(f"{key} must be a finite number.")
             return default
         if min_value is not None and value < min_value:
             if issues is not None:
@@ -227,7 +232,12 @@ class AutoPipelineRunner:
                 issues.append("Missing falai_api_key/bfl_api_key for selfie expand provider=auto.")
 
         similarity_threshold = self._read_int("automation_similarity_threshold", 80, issues, min_value=0, max_value=100)
-        front_expand_percent = self._read_int("automation_front_expand_percent", 30, issues, min_value=0)
+        front_mode = str(self.automation.get("automation_front_expand_mode", "percent")).lower()
+        front_expand_percent = (
+            self._read_int("automation_front_expand_percent", 30, issues, min_value=0)
+            if front_mode == "percent"
+            else 30
+        )
         selfie_expand_percent = self._read_int("automation_selfie_expand_percent", 30, issues, min_value=0)
         crop_multiplier = self._read_float("automation_crop_multiplier", 1.5, issues, min_value=0.01)
         selfie_attempts = self._read_int("automation_selfie_max_attempts_per_model", 1, issues, min_value=1)
@@ -496,11 +506,11 @@ class AutoPipelineRunner:
             manifest_extract_path = Path(existing_extract_output) if existing_extract_output else None
             discovered_extract_path = existing.extracted if existing.extracted and existing.extracted.exists() else None
             default_extract_path = extracted_path if extracted_path.exists() else None
-            resolved_extract = manifest_extract_path if manifest_extract_path and manifest_extract_path.exists() else None
-            if resolved_extract is None:
-                resolved_extract = discovered_extract_path
-            if resolved_extract is None:
-                resolved_extract = default_extract_path
+            resolved_extract = (
+                (manifest_extract_path if manifest_extract_path and manifest_extract_path.exists() else None)
+                or discovered_extract_path
+                or default_extract_path
+            )
             if resolved_extract is not None:
                 extracted_path = resolved_extract
             self.manifest.update_step(case_key, "extract_portrait", "skipped", output=str(extracted_path))

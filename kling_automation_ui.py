@@ -1607,6 +1607,7 @@ class KlingAutomationUI:
         rows: List[Dict[str, Any]] = []
         counts = {
             "discovered": len(records),
+            "completed_total": 0,
             "skipped_complete": 0,
             "pending": 0,
             "manual_review": 0,
@@ -1626,6 +1627,8 @@ class KlingAutomationUI:
             if existing.video_candidate or existing.selfie_candidate:
                 counts["existing_videos_selfies"] += 1
             planned = self._planned_action_for_case(case_entry, existing, is_complete)
+            if is_complete:
+                counts["completed_total"] += 1
             if planned == "skip_complete":
                 counts["skipped_complete"] += 1
             elif planned == "manual_review":
@@ -1693,6 +1696,7 @@ class KlingAutomationUI:
             print(f"\nDiscovered {len(records)} case folders.")
         print("\nTotals:")
         print(f"  discovered: {counts['discovered']}")
+        print(f"  completed total: {counts['completed_total']}")
         print(f"  skipped complete: {counts['skipped_complete']}")
         print(f"  pending/runnable: {counts['pending']}")
         print(f"  will run this batch: {counts['will_run']}")
@@ -1871,9 +1875,9 @@ class KlingAutomationUI:
         if manifest_warning:
             print(f"  {manifest_warning}")
         print(f"  discovered cases: {counts['discovered']}")
-        print(f"  skipped: {counts['skipped_complete']}")
+        print(f"  completed total: {counts['completed_total']}")
+        print(f"  skipped complete: {counts['skipped_complete']}")
         print(f"  pending: {counts['pending']}")
-        print(f"  completed: {counts['skipped_complete']}")
         print(f"  failed/manual_review: {counts['failed'] + counts['manual_review']}")
         print(f"  will run this batch: {len(runnable_cases)}")
         print("  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video -> oldcam")
@@ -1909,6 +1913,7 @@ class KlingAutomationUI:
         rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
         print("\nRun preview:")
         print(f"  discovered: {counts['discovered']}")
+        print(f"  completed total: {counts['completed_total']}")
         print(f"  skipped complete: {counts['skipped_complete']}")
         print(f"  pending/runnable: {counts['pending']}")
         print(f"  will run this batch: {counts['will_run']}")

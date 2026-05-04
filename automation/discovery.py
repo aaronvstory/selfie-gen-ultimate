@@ -122,7 +122,7 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
         ranked = sorted(
             candidates,
             key=lambda p: (
-                1 if "gen-images" in str(p.parent).replace("\\", "/").lower() else 0,
+                1 if p.parent == gen_images else 0,
                 1 if "selfie" in p.name.lower() else 0,
                 p.stat().st_mtime if p.exists() else now,
                 p.name.lower(),
@@ -132,6 +132,15 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
         return ranked[0] if ranked else None
 
     best_selfie = _best_selfie_candidate(selfie_candidates)
+    video_candidates = sorted(
+        video_candidates,
+        key=lambda p: (
+            1 if p.parent == gen_videos else 0,
+            p.stat().st_mtime if p.exists() else 0.0,
+            p.name.lower(),
+        ),
+        reverse=True,
+    )
 
     return ExistingOutputs(
         front_expanded=front_expanded,

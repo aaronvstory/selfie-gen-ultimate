@@ -87,10 +87,11 @@ def test_dry_run_uses_collect_case_snapshot_counts(tmp_path, monkeypatch, capsys
         "_collect_case_snapshot",
         lambda records, manifest: (
             [],
-            {
-                "discovered": len(records),
-                "skipped_complete": 1,
-                "pending": 2,
+                {
+                    "discovered": len(records),
+                    "completed_total": 1,
+                    "skipped_complete": 1,
+                    "pending": 2,
                 "manual_review": 3,
                 "failed": 4,
                 "existing_videos_selfies": 0,
@@ -102,7 +103,8 @@ def test_dry_run_uses_collect_case_snapshot_counts(tmp_path, monkeypatch, capsys
     monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
     ui._dry_run_automation()
     output = capsys.readouterr().out
-    assert "skipped: 1" in output
+    assert "completed total: 1" in output
+    assert "skipped complete: 1" in output
     assert "pending: 2" in output
     assert "failed/manual_review: 7" in output
 

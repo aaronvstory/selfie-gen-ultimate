@@ -459,6 +459,55 @@ def test_pipeline_validation_collects_numeric_coercion_issues(tmp_path: Path):
     assert any("automation_front_expand_passes must be 1 or 2." in issue for issue in issues)
 
 
+def test_pipeline_validation_rejects_non_finite_crop_multiplier(tmp_path: Path):
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_crop_multiplier": "nan",
+            "automation_oldcam_required": False,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    issues = runner.validate_configuration()
+    assert any("automation_crop_multiplier must be a finite number." in issue for issue in issues)
+
+
+def test_pipeline_validation_skips_front_percent_check_in_document_mode(tmp_path: Path):
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_front_expand_mode": "document_3x4",
+            "automation_front_expand_percent": "not-a-number",
+            "automation_oldcam_required": False,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    issues = runner.validate_configuration()
+    assert not any("automation_front_expand_percent must be an integer." in issue for issue in issues)
+
+
 def test_pipeline_manual_review_when_selfie_disabled(tmp_path: Path, monkeypatch):
     case_dir = tmp_path / "case-g"
     case_dir.mkdir()

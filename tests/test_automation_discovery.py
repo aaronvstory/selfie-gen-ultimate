@@ -78,6 +78,22 @@ def test_existing_output_detection_ignores_oldcam_outputs_as_primary(tmp_path: P
     assert found.video_candidate.name == "clip_kling.mp4"
 
 
+def test_existing_output_detection_prefers_newest_gen_videos_candidate(tmp_path: Path):
+    case_dir = tmp_path / "case4b"
+    case_dir.mkdir()
+    (case_dir / "gen-videos").mkdir()
+    older = case_dir / "gen-videos" / "a_kling_video.mp4"
+    newer = case_dir / "gen-videos" / "b_kling_video.mp4"
+    older.write_bytes(b"x")
+    newer.write_bytes(b"x")
+    older.touch()
+    newer.touch()
+
+    found = detect_existing_outputs(case_dir)
+    assert found.video_candidate is not None
+    assert found.video_candidate.name == "b_kling_video.mp4"
+
+
 def test_existing_output_detection_prefers_generated_or_newer_selfie(tmp_path: Path):
     case_dir = tmp_path / "case5"
     case_dir.mkdir()
