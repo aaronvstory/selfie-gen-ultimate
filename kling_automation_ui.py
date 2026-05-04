@@ -59,6 +59,8 @@ RECOMMENDED_KLING_PROMPT_SLOT_1 = (
 
 
 class KlingAutomationUI:
+    legacy_pauses: bool = False
+
     def __init__(self, legacy_pauses: bool = False):
         self.config_file = get_config_path("kling_config.json")
         self.config = merge_automation_defaults(self.load_config())
@@ -70,7 +72,7 @@ class KlingAutomationUI:
 
     def pause_continue(self, message: str = "Press Enter to continue..."):
         """Pause only when legacy pause mode is enabled."""
-        if getattr(self, "legacy_pauses", False):
+        if self.legacy_pauses:
             input(message)
 
     def pause_review(self, message: str = "Press Enter to continue..."):
@@ -527,10 +529,10 @@ class KlingAutomationUI:
         except ImportError as e:
             self.print_red(f"\nGUI module not found: {e}")
             self.print_yellow("Make sure kling_gui package is in the same directory.")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
         except Exception as e:
             self.print_red(f"\nError launching GUI: {e}")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
 
     def check_dependencies(self):
         """Check and optionally install all required dependencies."""
@@ -540,16 +542,16 @@ class KlingAutomationUI:
             print()
             run_dependency_check(auto_mode=False)
             print()
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
         except ImportError as e:
             self.print_red(f"\nDependency checker module not found: {e}")
             self.print_yellow(
                 "Make sure dependency_checker.py is in the same directory."
             )
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
         except Exception as e:
             self.print_red(f"\nError running dependency check: {e}")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
 
     def toggle_verbose_logging(self):
         """Toggle verbose logging on/off"""
@@ -2674,13 +2676,14 @@ def main(argv=None):
                 if verbose_startup:
                     ok = run_dependency_check(auto_mode=True, enforce_all=True)
                 else:
+                    print("Checking startup dependencies...")
                     dep_buffer = io.StringIO()
                     with contextlib.redirect_stdout(dep_buffer), contextlib.redirect_stderr(dep_buffer):
                         ok = run_dependency_check(auto_mode=True, enforce_all=True)
                     if ok:
                         print("Startup dependency check: OK")
                     else:
-                        print("Startup dependency check failed. Re-run with --verbose-startup for details.")
+                        print("Startup dependency check failed. Details below.")
                         print(dep_buffer.getvalue())
                 if not ok:
                     sys.exit(1)

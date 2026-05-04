@@ -183,7 +183,8 @@ if [[ -f "${ROOT_DIR}/dependency_checker.py" ]]; then
       printf 'Runtime dependency check: OK\n'
       rm -f "${DEP_LOG}" || true
     else
-      printf 'Runtime dependency check failed. Re-run with KLING_VERBOSE_STARTUP=1 for details.\n' >&2
+      printf 'Runtime dependency check failed. Details below.\n' >&2
+      printf 'Tip: use KLING_VERBOSE_STARTUP=1 for live diagnostic output.\n' >&2
       cat "${DEP_LOG}" >&2 || true
       rm -f "${DEP_LOG}" || true
       exit 1

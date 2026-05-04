@@ -488,9 +488,12 @@ def run_dependency_check(
 
     Args:
         auto_mode: If True, automatically install without prompting
+        install_external_tools: If True, try to install missing external tools
+        enforce_all: If True, treat optional Python package dependencies as required
 
     Returns:
-        True if dependencies required by the selected mode are satisfied
+        True if required dependencies are satisfied, plus optional Python packages
+        when enforce_all=True. External tools are reported/handled separately.
     """
     checker = DependencyChecker()
 
@@ -503,6 +506,8 @@ def run_dependency_check(
     # Display summary
     all_required_ok = checker.display_summary(req_ok, req_missing, opt_ok, opt_missing)
     all_optional_ok = opt_missing == 0
+    # Strict mode applies to Python dependency categories (required + optional).
+    # External tools are still tracked and handled by install_external_tools logic below.
     all_ok = all_required_ok and (all_optional_ok if enforce_all else True)
 
     # If nothing missing, we're done

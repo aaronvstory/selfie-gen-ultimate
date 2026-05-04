@@ -22,6 +22,15 @@ def test_pause_continue_respects_legacy_flag(monkeypatch):
     assert called["count"] == 1
 
 
+def test_pause_review_always_prompts(monkeypatch):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+    called = {"count": 0}
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: called.__setitem__("count", called["count"] + 1))
+    ui.pause_review()
+    assert called["count"] == 1
+
+
 def test_cli_branding_text_updated():
     src = (Path(__file__).resolve().parent.parent / "kling_automation_ui.py").read_text(encoding="utf-8")
     assert "SELFIE GEN ULTIMATE" in src
