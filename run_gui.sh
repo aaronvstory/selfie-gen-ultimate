@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${ROOT_DIR}/.venv-macos/bin/python"
 
 "${ROOT_DIR}/setup_macos.sh"
+export KLING_SKIP_PY_STARTUP_DEP_CHECK=1
 
 if ! "${PYTHON_BIN}" -c 'import tkinter' >/dev/null 2>&1; then
   VERSION="$("${PYTHON_BIN}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"

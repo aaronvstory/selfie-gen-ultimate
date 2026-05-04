@@ -6,6 +6,7 @@ VENV_DIR="${ROOT_DIR}/.venv-macos"
 REQUIREMENTS_FILE="${ROOT_DIR}/requirements.txt"
 REQUIREMENTS_STAMP="${VENV_DIR}/.requirements.sha256"
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+VERBOSE_STARTUP="${KLING_VERBOSE_STARTUP:-0}"
 
 is_supported_python() {
   local python_bin="$1"
@@ -170,6 +171,25 @@ if [[ "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --upgrade pip
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check -r "${REQUIREMENTS_FILE}"
   printf '%s\n' "${CURRENT_REQUIREMENTS_HASH}" > "${REQUIREMENTS_STAMP}"
+fi
+
+if [[ -f "${ROOT_DIR}/dependency_checker.py" ]]; then
+  if [[ "${VERBOSE_STARTUP}" == "1" ]]; then
+    printf 'Verifying runtime dependency stack (strict mode)\n'
+    "${VENV_DIR}/bin/python" "${ROOT_DIR}/dependency_checker.py" --auto --enforce-all
+  else
+    DEP_LOG="$(mktemp -t kling_depcheck.XXXXXX.log)"
+    if "${VENV_DIR}/bin/python" "${ROOT_DIR}/dependency_checker.py" --auto --enforce-all >"${DEP_LOG}" 2>&1; then
+      printf 'Runtime dependency check: OK\n'
+      rm -f "${DEP_LOG}" || true
+    else
+      printf 'Runtime dependency check failed. Details below.\n' >&2
+      printf 'Tip: use KLING_VERBOSE_STARTUP=1 for live diagnostic output.\n' >&2
+      cat "${DEP_LOG}" >&2 || true
+      rm -f "${DEP_LOG}" || true
+      exit 1
+    fi
+  fi
 fi
 
 printf '\nEnvironment ready:\n'

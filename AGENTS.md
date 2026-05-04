@@ -2,6 +2,12 @@
 
 > For AI coding agents working in this repository. Last updated: 2026-05-04
 
+## GitHub Workflow Requirement
+
+- For all GitHub operations (PR creation, PR updates, issue triage, review handling, CI investigation), use the GitHub app/plugin workflow first.
+- Treat end-to-end GitHub handling as expected default behavior for agents in this repo.
+- Use `gh` CLI only as a fallback when app coverage is unavailable for a specific action.
+
 ## Quick Reference
 
 ### Build/Run Commands

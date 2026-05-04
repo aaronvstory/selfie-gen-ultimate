@@ -64,6 +64,8 @@ CLI_ERROR_MODE = os.getenv("KLING_GUI_CLI_ERRORS", "").strip() == "1"
 
 def _run_dependency_bootstrap() -> bool:
     """Auto-install missing dependencies before GUI import."""
+    if os.getenv("KLING_SKIP_PY_STARTUP_DEP_CHECK", "0") == "1":
+        return True
     try:
         from dependency_checker import run_dependency_check
 

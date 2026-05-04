@@ -18,6 +18,7 @@ env/
 
 # Runtime / config (user-specific)
 kling_config.json
+ui_config.json
 kling_history.json
 chrome_profile/
 *.log

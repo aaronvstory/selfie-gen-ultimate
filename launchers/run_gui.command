@@ -19,16 +19,6 @@ if [[ ! -x "${ROOT_DIR}/run_gui.sh" ]]; then
   chmod +x "${ROOT_DIR}/run_gui.sh" || true
 fi
 
-if [[ -x "${ROOT_DIR}/setup_macos.sh" ]]; then
-  printf '[%s] Running setup_macos.sh preflight\n' "$(date '+%Y-%m-%d %H:%M:%S')"
-  "${ROOT_DIR}/setup_macos.sh" || true
-fi
-
-if [[ -x "${ROOT_DIR}/.venv-macos/bin/python" && -f "${ROOT_DIR}/dependency_checker.py" ]]; then
-  printf '[%s] Running dependency bootstrap preflight\n' "$(date '+%Y-%m-%d %H:%M:%S')"
-  "${ROOT_DIR}/.venv-macos/bin/python" "${ROOT_DIR}/dependency_checker.py" --auto || true
-fi
-
 set +e
 "${ROOT_DIR}/run_gui.sh"
 status=$?
@@ -37,10 +27,11 @@ set -e
 LAUNCH_ELAPSED="$(( $(date +%s) - LAUNCH_STARTED_AT ))"
 if [[ ${status} -ne 0 || ${LAUNCH_ELAPSED} -lt 5 ]]; then
   if [[ ${status} -ne 0 ]]; then
-    printf '\nGUI launcher failed with exit code %d.\n' "${status}" >&2
+    printf '\nGUI startup failed (exit %d).\n' "${status}" >&2
   else
     printf '\nGUI launcher exited in %ss, which usually means startup failed before the window opened.\n' "${LAUNCH_ELAPSED}" >&2
   fi
+  printf 'Set KLING_VERBOSE_STARTUP=1 and retry for full startup diagnostics.\n' >&2
   printf 'Review this log for details: %s\n' "${LOG_FILE}" >&2
   read -r -p "Press Enter to close..."
 fi
