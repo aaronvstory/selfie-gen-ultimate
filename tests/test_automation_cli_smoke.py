@@ -69,6 +69,46 @@ def test_dry_run_ignores_corrupt_manifest(tmp_path, monkeypatch, capsys):
     assert "Warning: existing manifest unreadable or schema-mismatched" in output
 
 
+def test_dry_run_uses_collect_case_snapshot_counts(tmp_path, monkeypatch, capsys):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {"automation_front_names": ["front.png"]}
+    ui.automation_root_folder = str(tmp_path)
+    ui._automation_manifest_path = lambda: tmp_path / "automation_manifest.json"
+    ui.print_red = lambda _x: None
+    ui.print_yellow = lambda _x: None
+    ui.display_header = lambda: None
+
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    (case_dir / "front.png").write_bytes(b"x")
+
+    monkeypatch.setattr(
+        ui,
+        "_collect_case_snapshot",
+        lambda records, manifest: (
+            [],
+                {
+                    "discovered": len(records),
+                    "completed_total": 1,
+                    "skipped_complete": 1,
+                    "pending": 2,
+                "manual_review": 3,
+                "failed": 4,
+                "existing_videos_selfies": 0,
+                "will_run": 2,
+            },
+            records[:1],
+        ),
+    )
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
+    ui._dry_run_automation()
+    output = capsys.readouterr().out
+    assert "completed total: 1" in output
+    assert "skipped complete: 1" in output
+    assert "pending: 2" in output
+    assert "failed/manual_review: 7" in output
+
+
 def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):
     ui = KlingAutomationUI.__new__(KlingAutomationUI)
     ui.config = {
