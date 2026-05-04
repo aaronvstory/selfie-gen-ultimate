@@ -478,7 +478,11 @@ class DependencyChecker:
         return success, failed
 
 
-def run_dependency_check(auto_mode: bool = False, install_external_tools: bool = True) -> bool:
+def run_dependency_check(
+    auto_mode: bool = False,
+    install_external_tools: bool = True,
+    enforce_all: bool = False,
+) -> bool:
     """
     Run the full dependency check workflow.
 
@@ -486,7 +490,7 @@ def run_dependency_check(auto_mode: bool = False, install_external_tools: bool =
         auto_mode: If True, automatically install without prompting
 
     Returns:
-        True if all required dependencies are satisfied
+        True if dependencies required by the selected mode are satisfied
     """
     checker = DependencyChecker()
 
@@ -498,6 +502,8 @@ def run_dependency_check(auto_mode: bool = False, install_external_tools: bool =
 
     # Display summary
     all_required_ok = checker.display_summary(req_ok, req_missing, opt_ok, opt_missing)
+    all_optional_ok = opt_missing == 0
+    all_ok = all_required_ok and (all_optional_ok if enforce_all else True)
 
     # If nothing missing, we're done
     missing_pip = checker.get_missing_pip_packages()
@@ -507,7 +513,7 @@ def run_dependency_check(auto_mode: bool = False, install_external_tools: bool =
         if missing_tools:
             print(f"\n{checker.YELLOW}Note: Some external tools are not installed.{checker.RESET}")
             print(f"{checker.GRAY}These must be installed manually (see instructions above).{checker.RESET}")
-        return all_required_ok
+        return all_ok
 
     # Offer to install missing Python packages
     if missing_pip:
@@ -541,7 +547,7 @@ def run_dependency_check(auto_mode: bool = False, install_external_tools: bool =
             checker.install_all_missing(include_optional=False)
         else:
             print(f"\n  {checker.YELLOW}Installation skipped.{checker.RESET}")
-            return all_required_ok
+            return all_ok
 
     if install_external_tools:
         missing_tools = [tool for tool in checker.external_tools if not tool.installed]
@@ -571,14 +577,20 @@ def run_dependency_check(auto_mode: bool = False, install_external_tools: bool =
     req_ok, req_missing, opt_ok, opt_missing = checker.check_all()
     checker.display_status()
     all_required_ok = checker.display_summary(req_ok, req_missing, opt_ok, opt_missing)
+    all_optional_ok = opt_missing == 0
+    all_ok = all_required_ok and (all_optional_ok if enforce_all else True)
 
-    if all_required_ok:
-        print(f"\n{checker.GREEN}✓ All required dependencies are now installed!{checker.RESET}")
+    if all_ok:
+        print(f"\n{checker.GREEN}✓ All dependencies are now installed!{checker.RESET}")
     else:
-        print(f"\n{checker.RED}✗ Some required dependencies are still missing.{checker.RESET}")
-        print(f"{checker.YELLOW}Please install them manually and try again.{checker.RESET}")
+        if enforce_all and all_required_ok and not all_optional_ok:
+            print(f"\n{checker.RED}✗ Some runtime dependencies marked optional are still missing.{checker.RESET}")
+            print(f"{checker.YELLOW}Launcher strict mode requires them. Install and retry.{checker.RESET}")
+        else:
+            print(f"\n{checker.RED}✗ Some required dependencies are still missing.{checker.RESET}")
+            print(f"{checker.YELLOW}Please install them manually and try again.{checker.RESET}")
 
-    return all_required_ok
+    return all_ok
 
 
 # Allow running directly
@@ -586,5 +598,10 @@ if __name__ == "__main__":
     import sys
     auto = "--auto" in sys.argv
     skip_external = "--skip-external-tools" in sys.argv
-    success = run_dependency_check(auto_mode=auto, install_external_tools=not skip_external)
+    enforce_all = "--enforce-all" in sys.argv
+    success = run_dependency_check(
+        auto_mode=auto,
+        install_external_tools=not skip_external,
+        enforce_all=enforce_all,
+    )
     sys.exit(0 if success else 1)

@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import io
 import os
 import sys
 import json
@@ -57,13 +59,23 @@ RECOMMENDED_KLING_PROMPT_SLOT_1 = (
 
 
 class KlingAutomationUI:
-    def __init__(self):
+    def __init__(self, legacy_pauses: bool = False):
         self.config_file = get_config_path("kling_config.json")
         self.config = merge_automation_defaults(self.load_config())
         self.automation_root_folder = self.config.get("automation_root_folder", "")
         self.verbose_logging = self.config.get("verbose_logging", False)
+        self.legacy_pauses = legacy_pauses
         self._last_scan_records: List[Any] = []
         self.setup_logging()
+
+    def pause_continue(self, message: str = "Press Enter to continue..."):
+        """Pause only when legacy pause mode is enabled."""
+        if getattr(self, "legacy_pauses", False):
+            input(message)
+
+    def pause_review(self, message: str = "Press Enter to continue..."):
+        """Pause for explicit review screens or actionable error surfaces."""
+        input(message)
 
     def load_config(self) -> Dict[str, Any]:
         """Load configuration from file or create default"""
@@ -376,7 +388,7 @@ class KlingAutomationUI:
             self.config["bfl_api_key"] = ""
             self.save_config()
             print("Cleared bfl_api_key.")
-        input("\nPress Enter to continue...")
+        self.pause_continue("\nPress Enter to continue...")
 
     def clear_screen_simple(self):
         """Clear screen without dependencies"""
@@ -477,7 +489,7 @@ class KlingAutomationUI:
         print("  \033[91mq\033[0m   Quit")
         print()
         print(
-            "\033[92m➤ Select workflow, or enter an automation root folder containing case folders with front.png/front.jpg/front.jpeg:\033[0m ",
+            "\033[92m➤ Choose a workflow or paste automation root folder path (case folders need front.png/front.jpg/front.jpeg):\033[0m ",
             end="",
             flush=True,
         )
@@ -515,10 +527,10 @@ class KlingAutomationUI:
         except ImportError as e:
             self.print_red(f"\nGUI module not found: {e}")
             self.print_yellow("Make sure kling_gui package is in the same directory.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
         except Exception as e:
             self.print_red(f"\nError launching GUI: {e}")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
 
     def check_dependencies(self):
         """Check and optionally install all required dependencies."""
@@ -528,16 +540,16 @@ class KlingAutomationUI:
             print()
             run_dependency_check(auto_mode=False)
             print()
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
         except ImportError as e:
             self.print_red(f"\nDependency checker module not found: {e}")
             self.print_yellow(
                 "Make sure dependency_checker.py is in the same directory."
             )
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
         except Exception as e:
             self.print_red(f"\nError running dependency check: {e}")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
 
     def toggle_verbose_logging(self):
         """Toggle verbose logging on/off"""
@@ -774,7 +786,7 @@ class KlingAutomationUI:
         api_key = os.getenv("FAL_KEY")
         if not api_key:
             self.print_red("FAL_KEY environment variable not set")
-            input("\nPress Enter to continue...")
+            self.pause_continue("\nPress Enter to continue...")
             return
 
         # Available models to inspect
@@ -830,7 +842,7 @@ class KlingAutomationUI:
                 self.print_yellow(
                     "This model may not be available or the API returned no data."
                 )
-                input("\nPress Enter to continue...")
+                self.pause_continue("\nPress Enter to continue...")
                 return
 
             # schema is Dict[str, ModelParameter]
@@ -907,7 +919,7 @@ class KlingAutomationUI:
         except Exception as e:
             self.print_red(f"Error fetching schema: {e}")
 
-        input("\nPress Enter to continue...")
+        self.pause_continue("\nPress Enter to continue...")
 
     def edit_prompt(self):
         """Edit or view the Kling generation prompt (full editor with slot support)"""
@@ -1325,10 +1337,10 @@ class KlingAutomationUI:
                     self._scan_automation_cases()
                 else:
                     self.print_red(f"Path is not a folder: {choice}")
-                    input("Press Enter to continue...")
+                    self.pause_continue("Press Enter to continue...")
             elif choice:
                 self.print_red(f"Path not found: {choice}")
-                input("Press Enter to continue...")
+                self.pause_continue("Press Enter to continue...")
             else:
                 self.print_yellow("Please enter a valid path or select an option")
                 time.sleep(1)
@@ -1482,7 +1494,7 @@ class KlingAutomationUI:
         print("  Kling prompt slot: 1")
         print("  oldcam: all / required")
         print(f"  max cases per run: {self._read_max_cases_setting()}")
-        input("\nPress Enter to continue...")
+        self.pause_continue("\nPress Enter to continue...")
 
     def _display_automation_menu(self):
         self.display_header()
@@ -1544,7 +1556,7 @@ class KlingAutomationUI:
         selected = Path(selected_path)
         if not selected.exists() or not selected.is_dir():
             self.print_red("Invalid folder path.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
         self.automation_root_folder = str(selected)
         self.config["automation_root_folder"] = self.automation_root_folder
@@ -1641,12 +1653,12 @@ class KlingAutomationUI:
     def _scan_automation_cases(self):
         if not self.automation_root_folder:
             self.print_red("Set automation root folder first.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
         root = Path(self.automation_root_folder)
         if not root.exists():
             self.print_red("Automation root path does not exist.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
         records = discover_case_folders(root, self.config.get("automation_front_names", []))
         manifest = AutomationManifest.load_if_exists(self._automation_manifest_path())
@@ -1686,7 +1698,7 @@ class KlingAutomationUI:
         print(f"  failed: {counts['failed']}")
         print(f"  existing videos/selfies: {counts['existing_videos_selfies']}")
         print(f"  max cases per run: {self._read_max_cases_setting()}")
-        input("\nPress Enter to continue...")
+        self.pause_continue("\nPress Enter to continue...")
 
     def _edit_automation_settings(self):
         def _ask(prompt: str, key: str, cast_fn, validator=None):
@@ -1828,7 +1840,7 @@ class KlingAutomationUI:
         _ask("Automation log backup count", "automation_log_backup_count", int, lambda v: v >= 1)
 
         self.save_config()
-        input("Settings saved. Press Enter to continue...")
+        self.pause_review("Settings saved. Press Enter to continue...")
 
     def _edit_automation_settings_quick(self):
         """Backwards-compatible alias for older tests/callers."""
@@ -1837,12 +1849,12 @@ class KlingAutomationUI:
     def _dry_run_automation(self):
         if not self.automation_root_folder:
             self.print_red("Set automation root folder first.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
         root = Path(self.automation_root_folder)
         if not root.exists():
             self.print_red("Automation root path does not exist.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
         records = discover_case_folders(root, self.config.get("automation_front_names", []))
         manifest_path = self._automation_manifest_path()
@@ -1882,23 +1894,23 @@ class KlingAutomationUI:
         print(f"  completed: {completed}")
         print(f"  failed/manual_review: {manual_review_or_failed}")
         print("  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video -> oldcam")
-        input("\nPress Enter to continue...")
+        self.pause_continue("\nPress Enter to continue...")
 
     def _run_resume_automation(self):
         if not self.automation_root_folder:
             self.print_red("Set automation root folder first.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
 
         root = Path(self.automation_root_folder)
         if not root.exists():
             self.print_red("Automation root path does not exist.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
         records = discover_case_folders(root, self.config.get("automation_front_names", []))
         if not records:
             self.print_yellow("No case folders found.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
 
         try:
@@ -1909,7 +1921,7 @@ class KlingAutomationUI:
             )
         except Exception as exc:
             self.print_red(f"Failed to load manifest: {exc}")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
         rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
         print("\nRun preview:")
@@ -1921,12 +1933,12 @@ class KlingAutomationUI:
         print(f"  failed: {counts['failed']}")
         if not runnable_cases:
             self.print_yellow("No runnable cases for this batch.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
         approve = input("Approve batch run? [y/N]: ").strip().lower()
         if approve not in {"y", "yes"}:
             print("Run cancelled.")
-            input("Press Enter to continue...")
+            self.pause_continue("Press Enter to continue...")
             return
 
         self.config["automation_root_folder"] = self.automation_root_folder
@@ -1941,7 +1953,7 @@ class KlingAutomationUI:
             print("\nAutomation preflight failed:")
             for issue in issues:
                 print(f"  - {issue}")
-            input("\nPress Enter to continue...")
+            self.pause_continue("\nPress Enter to continue...")
             return
 
         print("\nAutomation preflight:")
@@ -1958,7 +1970,7 @@ class KlingAutomationUI:
         stats, run_error = self._run_with_live_dashboard(runner, runnable_cases, manifest)
         if run_error:
             self.print_red(f"Automation run failed: {run_error}")
-            input("\nPress Enter to continue...")
+            self.pause_continue("\nPress Enter to continue...")
             return
         print("\nAutomation run complete.")
         print(f"  completed: {stats.get('completed', 0)}")
@@ -1973,7 +1985,7 @@ class KlingAutomationUI:
             table.add_row(key, str(result.get("status", "")), str(result.get("reason", "")))
         Console().print(table)
         self._write_automation_summary(manifest, runner.last_case_results, stats)
-        input("\nPress Enter to continue...")
+        self.pause_continue("\nPress Enter to continue...")
 
     def _run_with_live_dashboard(
         self,
@@ -2122,7 +2134,7 @@ class KlingAutomationUI:
             elif choice == "7":
                 manifest_path = self._automation_manifest_path()
                 print(f"\nManifest path: {manifest_path if manifest_path else '(set root first)'}")
-                input("\nPress Enter to continue...")
+                self.pause_continue("\nPress Enter to continue...")
             else:
                 self.print_red("Unknown option.")
                 time.sleep(1)
@@ -2615,7 +2627,7 @@ class KlingAutomationUI:
             print("Videos saved alongside source images in their respective folders")
         else:
             print(f"Check your videos in: {self.config['output_folder']}")
-        input("\nPress Enter to return to main menu...")
+        self.pause_review("\nPress Enter to return to main menu...")
 
     def run(self):
         """Main application loop"""
@@ -2645,20 +2657,35 @@ def main(argv=None):
         parser.add_argument("--auto", action="store_true", help="Launch directly into automation workflow")
         parser.add_argument("--manual-video", action="store_true", help="Launch legacy manual Kling tools")
         parser.add_argument("--gui", action="store_true", help="Launch GUI manual lab directly")
+        parser.add_argument("--verbose-startup", action="store_true", help="Show full startup dependency diagnostics")
+        parser.add_argument("--legacy-pauses", action="store_true", help="Restore legacy 'Press Enter to continue' pauses")
         args = parser.parse_args(argv)
+        verbose_startup = args.verbose_startup or os.getenv("KLING_VERBOSE_STARTUP", "0") == "1"
+        legacy_pauses = args.legacy_pauses or os.getenv("KLING_LEGACY_PAUSES", "0") == "1"
 
         if os.name == "nt":
             os.system("color")
 
-        # Check dependencies before starting
-        try:
-            from dependency_checker import run_dependency_check
+        # Optional Python-side dependency check for direct python launches.
+        if os.getenv("KLING_SKIP_PY_STARTUP_DEP_CHECK", "0") != "1":
+            try:
+                from dependency_checker import run_dependency_check
 
-            # Run in auto mode to install missing without manual prompt if possible
-            # but False here to let user see what's happening if something fails
-            run_dependency_check(auto_mode=True)
-        except Exception as e:
-            print(f"Warning: Dependency check failed: {e}")
+                if verbose_startup:
+                    ok = run_dependency_check(auto_mode=True, enforce_all=True)
+                else:
+                    dep_buffer = io.StringIO()
+                    with contextlib.redirect_stdout(dep_buffer), contextlib.redirect_stderr(dep_buffer):
+                        ok = run_dependency_check(auto_mode=True, enforce_all=True)
+                    if ok:
+                        print("Startup dependency check: OK")
+                    else:
+                        print("Startup dependency check failed. Re-run with --verbose-startup for details.")
+                        print(dep_buffer.getvalue())
+                if not ok:
+                    sys.exit(1)
+            except Exception as e:
+                print(f"Warning: Startup dependency check failed: {e}")
 
         if sys.platform == "win32":
             try:
@@ -2669,7 +2696,7 @@ def main(argv=None):
             except:
                 pass
 
-        app = KlingAutomationUI()
+        app = KlingAutomationUI(legacy_pauses=legacy_pauses)
         if args.gui:
             app.launch_gui()
             return
