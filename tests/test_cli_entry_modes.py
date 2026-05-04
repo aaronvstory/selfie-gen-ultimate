@@ -137,7 +137,9 @@ def test_main_verbose_startup_enforces_all(monkeypatch):
     monkeypatch.setattr(kling_automation_ui, "KlingAutomationUI", DummyApp)
     kling_automation_ui.main(["--auto", "--verbose-startup"])
     assert called["kwargs"] is not None
+    assert called["kwargs"].get("auto_mode") is True
     assert called["kwargs"].get("enforce_all") is True
+    assert called["kwargs"].get("install_external_tools") is False
 
 
 def test_main_dependency_check_failure_exits(monkeypatch):

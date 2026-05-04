@@ -2674,12 +2674,12 @@ def main(argv=None):
                 from dependency_checker import run_dependency_check
 
                 if verbose_startup:
-                    ok = run_dependency_check(auto_mode=True, enforce_all=True)
+                    ok = run_dependency_check(auto_mode=True, enforce_all=True, install_external_tools=False)
                 else:
                     print("Checking startup dependencies...")
                     dep_buffer = io.StringIO()
                     with contextlib.redirect_stdout(dep_buffer), contextlib.redirect_stderr(dep_buffer):
-                        ok = run_dependency_check(auto_mode=True, enforce_all=True)
+                        ok = run_dependency_check(auto_mode=True, enforce_all=True, install_external_tools=False)
                     if ok:
                         print("Startup dependency check: OK")
                     else:
