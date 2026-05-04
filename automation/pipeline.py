@@ -66,6 +66,58 @@ class AutoPipelineRunner:
         self.logger, self.log_path = create_automation_logger(self.config, self.config.get("automation_root_folder"))
         self.verbose_logging = bool(self.config.get("automation_verbose_logging", self.config.get("verbose_logging", True)))
 
+    def _read_int(
+        self,
+        key: str,
+        default: int,
+        issues: Optional[List[str]] = None,
+        *,
+        min_value: Optional[int] = None,
+        max_value: Optional[int] = None,
+    ) -> int:
+        raw = self.automation.get(key, default)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            if issues is not None:
+                issues.append(f"{key} must be an integer.")
+            return default
+        if min_value is not None and value < min_value:
+            if issues is not None:
+                issues.append(f"{key} must be >= {min_value}.")
+            return default
+        if max_value is not None and value > max_value:
+            if issues is not None:
+                issues.append(f"{key} must be <= {max_value}.")
+            return default
+        return value
+
+    def _read_float(
+        self,
+        key: str,
+        default: float,
+        issues: Optional[List[str]] = None,
+        *,
+        min_value: Optional[float] = None,
+        max_value: Optional[float] = None,
+    ) -> float:
+        raw = self.automation.get(key, default)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            if issues is not None:
+                issues.append(f"{key} must be a number.")
+            return default
+        if min_value is not None and value < min_value:
+            if issues is not None:
+                issues.append(f"{key} must be >= {min_value}.")
+            return default
+        if max_value is not None and value > max_value:
+            if issues is not None:
+                issues.append(f"{key} must be <= {max_value}.")
+            return default
+        return value
+
     def _report(self, message: str, level: str = "info") -> None:
         if self.progress_cb:
             self.progress_cb(message, level)
@@ -174,10 +226,16 @@ class AutoPipelineRunner:
             if selfie_provider == "auto" and not fal_key and not bfl_key:
                 issues.append("Missing falai_api_key/bfl_api_key for selfie expand provider=auto.")
 
-        if self.automation.get("automation_similarity_threshold", 80) < 0 or self.automation.get("automation_similarity_threshold", 80) > 100:
-            issues.append("automation_similarity_threshold must be 0..100.")
-        if self.automation.get("automation_front_expand_mode") == "percent" and int(self.automation.get("automation_front_expand_percent", 0)) < 0:
-            issues.append("automation_front_expand_percent must be >= 0.")
+        similarity_threshold = self._read_int("automation_similarity_threshold", 80, issues, min_value=0, max_value=100)
+        front_expand_percent = self._read_int("automation_front_expand_percent", 30, issues, min_value=0)
+        selfie_expand_percent = self._read_int("automation_selfie_expand_percent", 30, issues, min_value=0)
+        crop_multiplier = self._read_float("automation_crop_multiplier", 1.5, issues, min_value=0.01)
+        selfie_attempts = self._read_int("automation_selfie_max_attempts_per_model", 1, issues, min_value=1)
+        front_passes = self._read_int("automation_front_expand_passes", 2, issues)
+        if front_passes not in {1, 2}:
+            issues.append("automation_front_expand_passes must be 1 or 2.")
+        # Keep variables consumed so validation checks stay explicit and deterministic.
+        _ = (similarity_threshold, front_expand_percent, selfie_expand_percent, crop_multiplier, selfie_attempts)
         if self.automation.get("automation_oldcam_required", False) and not self.automation.get("automation_oldcam_enabled", True):
             issues.append("automation_oldcam_required=true requires automation_oldcam_enabled=true.")
         if self.automation.get("automation_oldcam_required", False):
@@ -185,15 +243,14 @@ class AutoPipelineRunner:
             versions = discover_oldcam_versions(repo_root)
             deps_ok, deps_error = ensure_oldcam_dependencies()
             configured_version = str(self.automation.get("automation_oldcam_version", "all")).lower()
-            if configured_version == "all":
-                expected_versions = {"v7", "v8"}
-            else:
-                expected_versions = {configured_version}
             available_versions = {str(v).lower() for v in versions}
-            missing_versions = sorted(expected_versions.difference(available_versions))
-            if missing_versions:
+            if configured_version == "all":
+                if not available_versions:
+                    issues.append("Oldcam required with version=all but no usable oldcam versions were discovered.")
+            elif configured_version not in available_versions:
                 issues.append(
-                    f"Oldcam required but missing version(s): {', '.join(missing_versions)}. Available: {', '.join(sorted(available_versions)) or '(none)'}."
+                    f"Oldcam required but configured version {configured_version} is unavailable. "
+                    f"Available: {', '.join(sorted(available_versions)) or '(none)'}."
                 )
             if not deps_ok:
                 issues.append(f"Oldcam required but dependencies are not ready: {deps_error or 'unknown dependency error'}.")
@@ -269,6 +326,27 @@ class AutoPipelineRunner:
         case_key = case.relative_key
         existing = detect_existing_outputs(case_dir)
         case_entry = self.manifest.data["cases"][case_key]
+        manifest_steps = case_entry.get("steps", {}) if isinstance(case_entry.get("steps"), dict) else {}
+        manifest_selfie_output = manifest_steps.get("selfie_generate", {}).get("output")
+        if manifest_selfie_output:
+            manifest_selfie_path = Path(manifest_selfie_output)
+            if manifest_selfie_path.exists() and manifest_selfie_path.is_file():
+                existing = existing.__class__(
+                    front_expanded=existing.front_expanded,
+                    extracted=existing.extracted,
+                    selfie_candidate=manifest_selfie_path,
+                    video_candidate=existing.video_candidate,
+                )
+        manifest_video_output = manifest_steps.get("video_generate", {}).get("output")
+        if manifest_video_output:
+            manifest_video_path = Path(manifest_video_output)
+            if manifest_video_path.exists() and manifest_video_path.is_file() and manifest_video_path.suffix.lower() == ".mp4":
+                existing = existing.__class__(
+                    front_expanded=existing.front_expanded,
+                    extracted=existing.extracted,
+                    selfie_candidate=existing.selfie_candidate,
+                    video_candidate=manifest_video_path,
+                )
         case_entry["status"] = "running"
         self._set_active_step(case_entry, None)
         self.manifest.save_atomic()
@@ -299,7 +377,7 @@ class AutoPipelineRunner:
 
         # Step 1: front expand
         front_expanded = existing.front_expanded or (case_dir / self.automation.get("automation_front_output_name", "front-expanded.png"))
-        configured_front_passes = int(self.automation.get("automation_front_expand_passes", 2))
+        configured_front_passes = self._read_int("automation_front_expand_passes", 2)
         front_passes = configured_front_passes if configured_front_passes in {1, 2} else 2
         if self.automation.get("automation_front_expand_enabled", True):
             current_step = self.manifest.get_step(case_key, "front_expand")
@@ -341,7 +419,7 @@ class AutoPipelineRunner:
                 front_is_document = self.automation.get("automation_front_expand_mode") == "document_3x4"
                 front_expand_kwargs: Dict[str, Any] = {}
                 if not front_is_document:
-                    pct = int(self.automation.get("automation_front_expand_percent", 30))
+                    pct = self._read_int("automation_front_expand_percent", 30)
                     with Image.open(case.front_path) as _img:
                         width, height = ImageOps.exif_transpose(_img).size
                     plan = compute_percent_expand_plan(
@@ -415,6 +493,16 @@ class AutoPipelineRunner:
             not self.automation.get("automation_extract_enabled", True)
         ):
             extraction_skipped = True
+            manifest_extract_path = Path(existing_extract_output) if existing_extract_output else None
+            discovered_extract_path = existing.extracted if existing.extracted and existing.extracted.exists() else None
+            default_extract_path = extracted_path if extracted_path.exists() else None
+            resolved_extract = manifest_extract_path if manifest_extract_path and manifest_extract_path.exists() else None
+            if resolved_extract is None:
+                resolved_extract = discovered_extract_path
+            if resolved_extract is None:
+                resolved_extract = default_extract_path
+            if resolved_extract is not None:
+                extracted_path = resolved_extract
             self.manifest.update_step(case_key, "extract_portrait", "skipped", output=str(extracted_path))
             extract_meta = {}
         elif (
@@ -452,7 +540,7 @@ class AutoPipelineRunner:
             extract_meta = extract_portrait_crop(
                 input_path=str(case.front_path),
                 output_path=str(target_extract_path),
-                crop_multiplier=float(self.automation.get("automation_crop_multiplier", 1.5)),
+                crop_multiplier=self._read_float("automation_crop_multiplier", 1.5),
                 progress_cb=self.progress_cb,
             )
             extracted_path = target_extract_path
@@ -495,7 +583,7 @@ class AutoPipelineRunner:
                 "similarity_gate",
                 "manual_review",
                 error="similarity gate skipped because selfie generation is disabled",
-                meta={"threshold": int(self.automation.get("automation_similarity_threshold", 80))},
+                meta={"threshold": self._read_int("automation_similarity_threshold", 80)},
             )
             return self._finalize_case(case_entry, "manual_review")
 
@@ -505,8 +593,8 @@ class AutoPipelineRunner:
         selfie_folder.mkdir(exist_ok=True)
         model_endpoints = list(self.automation.get("automation_selfie_models", ["fal-ai/nano-banana-2/edit"]))
         selfie_prompt_ctx = self.resolve_selfie_prompt()
-        threshold = int(self.automation.get("automation_similarity_threshold", 80))
-        max_attempts = max(1, int(self.automation.get("automation_selfie_max_attempts_per_model", 1)))
+        threshold = self._read_int("automation_similarity_threshold", 80)
+        max_attempts = max(1, self._read_int("automation_selfie_max_attempts_per_model", 1))
         self.logger.info(
             "case %s selfie config models=%s prompt_slot=%s prompt_source=%s threshold=%s",
             case_key,
@@ -630,7 +718,7 @@ class AutoPipelineRunner:
                     meta=self._policy_meta("selfie_expand", True, reprocess_mode),
                 )
             else:
-                pct = int(self.automation.get("automation_selfie_expand_percent", 30))
+                pct = self._read_int("automation_selfie_expand_percent", 30)
                 with Image.open(best_path) as _img:
                     width, height = ImageOps.exif_transpose(_img).size
                 plan = compute_percent_expand_plan(

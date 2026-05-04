@@ -1865,36 +1865,17 @@ class KlingAutomationUI:
         manifest_warning = ""
         if manifest is None and had_manifest:
             manifest_warning = "Warning: existing manifest unreadable or schema-mismatched; dry-run ignoring manifest state."
-
-        skipped = 0
-        pending = 0
-        completed = 0
-        manual_review_or_failed = 0
-
-        for record in records:
-            case_entry = (
-                manifest.data.get("cases", {}).get(record.relative_key, {})
-                if manifest is not None
-                else {}
-            )
-            status = case_entry.get("status", "pending")
-            if manifest is not None and status == "complete" and manifest.case_is_complete_and_valid(record.relative_key):
-                completed += 1
-                skipped += 1
-                continue
-            if status in {"failed", "manual_review"}:
-                manual_review_or_failed += 1
-            else:
-                pending += 1
+        _rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
 
         print("\nDry run summary")
         if manifest_warning:
             print(f"  {manifest_warning}")
-        print(f"  discovered cases: {len(records)}")
-        print(f"  skipped: {skipped}")
-        print(f"  pending: {pending}")
-        print(f"  completed: {completed}")
-        print(f"  failed/manual_review: {manual_review_or_failed}")
+        print(f"  discovered cases: {counts['discovered']}")
+        print(f"  skipped: {counts['skipped_complete']}")
+        print(f"  pending: {counts['pending']}")
+        print(f"  completed: {counts['skipped_complete']}")
+        print(f"  failed/manual_review: {counts['failed'] + counts['manual_review']}")
+        print(f"  will run this batch: {len(runnable_cases)}")
         print("  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video -> oldcam")
         self.pause_continue("\nPress Enter to continue...")
 

@@ -85,10 +85,10 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
     front_expanded = _find_first_existing([top / "front-expanded.png", gen_images / "front-expanded.png"])
     extracted = _find_first_existing([top / "extracted.png", gen_images / "extracted.png"])
 
-    selfie_candidates = []
-    video_candidates = []
+    selfie_candidates: List[Path] = []
+    video_candidates: List[Path] = []
     sim_token_re = re.compile(r"(^|[_\-. ])sim($|[_\-. ])")
-    for base in (top, gen_images, gen_videos):
+    for base in (gen_images, top):
         if not base.exists() or not base.is_dir():
             continue
         for item in sorted(base.iterdir(), key=lambda p: p.name.lower()):
@@ -99,13 +99,44 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
             sim_token = bool(sim_token_re.search(lname))
             if suffix in {".png", ".jpg", ".jpeg", ".webp"} and ("selfie" in lname or sim_token):
                 selfie_candidates.append(item)
-            if suffix == ".mp4":
-                video_candidates.append(item)
+    # Prefer generated videos under gen-videos, and avoid oldcam artifacts.
+    oldcam_token_re = re.compile(r"(^|[_\-. ])oldcam([_\-. ]|$)|([_\-. ])v(7|8)([_\-. ]|$)")
+    generated_video_hint_re = re.compile(r"(^|[_\-. ])(kling|video|generated)([_\-. ]|$)")
+    for base in (gen_videos, top):
+        if not base.exists() or not base.is_dir():
+            continue
+        for item in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+            if not item.is_file() or item.suffix.lower() != ".mp4":
+                continue
+            lname = item.name.lower()
+            if oldcam_token_re.search(lname):
+                continue
+            if base == top and not generated_video_hint_re.search(lname):
+                continue
+            video_candidates.append(item)
+
+    def _best_selfie_candidate(candidates: List[Path]) -> Optional[Path]:
+        if not candidates:
+            return None
+        now = max((c.stat().st_mtime for c in candidates if c.exists()), default=0.0)
+        ranked = sorted(
+            candidates,
+            key=lambda p: (
+                1 if "gen-images" in str(p.parent).replace("\\", "/").lower() else 0,
+                1 if "selfie" in p.name.lower() else 0,
+                p.stat().st_mtime if p.exists() else now,
+                p.name.lower(),
+            ),
+            reverse=True,
+        )
+        return ranked[0] if ranked else None
+
+    best_selfie = _best_selfie_candidate(selfie_candidates)
 
     return ExistingOutputs(
         front_expanded=front_expanded,
         extracted=extracted,
-        selfie_candidate=selfie_candidates[0] if selfie_candidates else None,
+        selfie_candidate=best_selfie,
         video_candidate=video_candidates[0] if video_candidates else None,
     )
 

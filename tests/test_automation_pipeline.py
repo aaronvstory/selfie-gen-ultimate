@@ -397,8 +397,66 @@ def test_pipeline_validation_fails_when_oldcam_required_and_not_ready(tmp_path: 
     monkeypatch.setattr("automation.pipeline.discover_oldcam_versions", lambda _repo_root: ["v8"])
     monkeypatch.setattr("automation.pipeline.ensure_oldcam_dependencies", lambda: (False, "missing deps"))
     issues = runner.validate_configuration()
-    assert any("missing version(s)" in issue for issue in issues)
     assert any("dependencies are not ready" in issue for issue in issues)
+
+
+def test_pipeline_validation_oldcam_all_required_accepts_single_discovered_version(tmp_path: Path, monkeypatch):
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": True,
+            "automation_oldcam_enabled": True,
+            "automation_oldcam_version": "all",
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    monkeypatch.setattr("automation.pipeline.discover_oldcam_versions", lambda _repo_root: ["v8"])
+    monkeypatch.setattr("automation.pipeline.ensure_oldcam_dependencies", lambda: (True, ""))
+    issues = runner.validate_configuration()
+    assert not any("Oldcam required with version=all" in issue for issue in issues)
+
+
+def test_pipeline_validation_collects_numeric_coercion_issues(tmp_path: Path):
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_similarity_threshold": "abc",
+            "automation_front_expand_percent": "bad",
+            "automation_selfie_expand_percent": "-1",
+            "automation_crop_multiplier": "nanx",
+            "automation_selfie_max_attempts_per_model": "0",
+            "automation_front_expand_passes": "3",
+            "automation_oldcam_required": False,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    issues = runner.validate_configuration()
+    assert any("automation_similarity_threshold must be an integer." in issue for issue in issues)
+    assert any("automation_front_expand_percent must be an integer." in issue for issue in issues)
+    assert any("automation_crop_multiplier must be a number." in issue for issue in issues)
+    assert any("automation_front_expand_passes must be 1 or 2." in issue for issue in issues)
 
 
 def test_pipeline_manual_review_when_selfie_disabled(tmp_path: Path, monkeypatch):
@@ -594,6 +652,45 @@ def test_pipeline_extract_disabled_missing_file_marks_manual_review(tmp_path: Pa
     stats = runner.run([record])
     assert stats["manual_review"] == 1
     assert manifest.data["cases"]["case-k"]["status"] == "manual_review"
+
+
+def test_pipeline_extract_disabled_reuses_manifest_output(tmp_path: Path, monkeypatch):
+    case_dir = tmp_path / "case-k2"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    extracted = case_dir / "custom-extracted.png"
+    Image.new("RGB", (32, 32), (10, 10, 10)).save(extracted)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-k2")
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "automation_extract_enabled": False,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    manifest.update_step(record.relative_key, "extract_portrait", "complete", output=str(extracted))
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert manifest.data["cases"]["case-k2"]["steps"]["extract_portrait"]["output"] == str(extracted)
 
 
 def test_pipeline_video_disabled_skips_oldcam_without_video(tmp_path: Path, monkeypatch):

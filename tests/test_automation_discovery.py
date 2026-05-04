@@ -31,9 +31,9 @@ def test_existing_output_detection_scans_only_expected_dirs(tmp_path: Path):
     (case_dir / "front-expanded.png").write_bytes(b"x")
     (case_dir / "gen-images").mkdir()
     (case_dir / "gen-images" / "extracted.png").write_bytes(b"x")
+    (case_dir / "gen-images" / "selfie_sim81_001.png").write_bytes(b"x")
     (case_dir / "gen-videos").mkdir()
     (case_dir / "gen-videos" / "clip.mp4").write_bytes(b"x")
-    (case_dir / "gen-videos" / "selfie_sim81_001.png").write_bytes(b"x")
 
     found = detect_existing_outputs(case_dir)
     assert found.front_expanded is not None
@@ -52,3 +52,43 @@ def test_existing_output_detection_avoids_sim_substring_false_positive(tmp_path:
     found = detect_existing_outputs(case_dir)
     assert found.selfie_candidate is not None
     assert found.selfie_candidate.name == "portrait_sim_001.png"
+
+
+def test_existing_output_detection_ignores_unrelated_root_mp4(tmp_path: Path):
+    case_dir = tmp_path / "case3"
+    case_dir.mkdir()
+    (case_dir / "reference_clip.mp4").write_bytes(b"x")
+    (case_dir / "gen-videos").mkdir()
+    (case_dir / "gen-videos" / "my_kling_video.mp4").write_bytes(b"x")
+
+    found = detect_existing_outputs(case_dir)
+    assert found.video_candidate is not None
+    assert found.video_candidate.name == "my_kling_video.mp4"
+
+
+def test_existing_output_detection_ignores_oldcam_outputs_as_primary(tmp_path: Path):
+    case_dir = tmp_path / "case4"
+    case_dir.mkdir()
+    (case_dir / "gen-videos").mkdir()
+    (case_dir / "gen-videos" / "clip-oldcam-v8.mp4").write_bytes(b"x")
+    (case_dir / "gen-videos" / "clip_kling.mp4").write_bytes(b"x")
+
+    found = detect_existing_outputs(case_dir)
+    assert found.video_candidate is not None
+    assert found.video_candidate.name == "clip_kling.mp4"
+
+
+def test_existing_output_detection_prefers_generated_or_newer_selfie(tmp_path: Path):
+    case_dir = tmp_path / "case5"
+    case_dir.mkdir()
+    (case_dir / "gen-images").mkdir()
+    older = case_dir / "selfie_bad_old.png"
+    newer = case_dir / "gen-images" / "selfie_good_new.png"
+    older.write_bytes(b"x")
+    newer.write_bytes(b"x")
+    older.touch()
+    newer.touch()
+
+    found = detect_existing_outputs(case_dir)
+    assert found.selfie_candidate is not None
+    assert found.selfie_candidate.name == "selfie_good_new.png"
