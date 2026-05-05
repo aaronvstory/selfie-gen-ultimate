@@ -74,8 +74,6 @@ def test_ephemeral_root_destroyed_on_dialog_exception(monkeypatch):
         raise RuntimeError("dialog failed")
 
     monkeypatch.setattr(tk_dialogs.filedialog, "askdirectory", _boom)
-    try:
-        tk_dialogs.select_directory(title="Pick")
-    except RuntimeError:
-        pass
+    out = tk_dialogs.select_directory(title="Pick")
+    assert out is None
     assert root.destroyed is True
