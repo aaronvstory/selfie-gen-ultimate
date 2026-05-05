@@ -1,11 +1,14 @@
 import argparse
 import contextlib
+import faulthandler
 import io
 import os
+import signal
 import sys
 import json
 import time
 import threading
+import traceback
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import logging
@@ -41,7 +44,7 @@ from automation.manifest import AutomationManifest
 from automation.pipeline import AutoPipelineRunner
 from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies
 from selfie_generator import SelfieGenerator
-from tk_dialogs import select_directory, select_open_file
+from tk_dialogs import select_directory, select_directory_cli_safe, select_open_file
 
 RECOMMENDED_DEFAULTS_VERSION = 1
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
@@ -55,6 +58,32 @@ RECOMMENDED_KLING_PROMPT_SLOT_1 = (
     "must stay natural, matching the original image, with no added highlights, shadows, flicker, or artificial lighting. The "
     "camera is fixed and stationary. Only the head moves; the rest of the body remains motionless."
 )
+
+
+def _enable_cli_crash_capture() -> Optional[str]:
+    """Enable faulthandler logging for fatal native crashes."""
+    crash_path = Path(get_app_dir()) / "kling_automation_crash.log"
+    crash_file = None
+    try:
+        crash_file = open(crash_path, "a", encoding="utf-8")
+        crash_file.write(f"\n\n=== Crash capture initialized at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+        crash_file.flush()
+        faulthandler.enable(file=crash_file, all_threads=True)
+        for sig_name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL"):
+            sig = getattr(signal, sig_name, None)
+            if sig is not None:
+                try:
+                    faulthandler.register(sig, file=crash_file, all_threads=True)
+                except Exception:
+                    pass
+        return str(crash_path)
+    except Exception:
+        if crash_file is not None:
+            try:
+                crash_file.close()
+            except Exception:
+                pass
+        return None
 
 
 class KlingAutomationUI:
@@ -1515,21 +1544,35 @@ class KlingAutomationUI:
         print("\033[92m➤ Select option:\033[0m ", end="", flush=True)
 
     def _select_automation_root(self):
+        logging.info("automation_root_select_start")
         print("\nSelect automation root:")
         print("  1) Browse for folder (recommended)")
         print("  2) Type folder path")
         choice = input("Choose option [1/2, default 1]: ").strip()
         selected_path: Optional[str] = None
         use_browse = choice in {"", "1"}
+        logging.info("automation_root_select_mode use_browse=%s choice=%s", use_browse, choice or "<default>")
         if use_browse:
+            logging.info("automation_root_picker_browse_attempt")
             try:
-                selected_path = select_directory(title="Select Automation Root Folder")
+                logging.info(
+                    "automation_root_picker_backend backend=%s",
+                    "osascript" if sys.platform == "darwin" else "tk",
+                )
+                selected_path = select_directory_cli_safe(title="Select Automation Root Folder")
             except Exception as exc:
                 self.print_yellow(f"Folder picker unavailable ({exc}). Falling back to typed path.")
+                logging.warning("automation_root_picker_browse_error error=%s", exc, exc_info=True)
                 selected_path = None
+            if selected_path is None:
+                self.print_yellow("Folder picker canceled or unavailable. Enter a path manually.")
+                logging.info("automation_root_picker_browse_canceled_or_unavailable")
             if not selected_path:
+                logging.info("automation_root_typed_fallback_prompt")
                 raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
                 if not raw:
+                    self.print_yellow("Automation root selection canceled.")
+                    logging.info("automation_root_select_canceled")
                     return
                 if raw.startswith('"') and raw.endswith('"'):
                     raw = raw[1:-1]
@@ -1537,8 +1580,11 @@ class KlingAutomationUI:
                     raw = raw[1:-1]
                 selected_path = raw
         else:
+            logging.info("automation_root_typed_primary_prompt")
             raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
             if not raw:
+                self.print_yellow("Automation root selection canceled.")
+                logging.info("automation_root_select_canceled")
                 return
             if raw.startswith('"') and raw.endswith('"'):
                 raw = raw[1:-1]
@@ -1549,9 +1595,11 @@ class KlingAutomationUI:
         selected = Path(selected_path)
         if not selected.exists() or not selected.is_dir():
             self.print_red("Invalid folder path.")
+            logging.warning("automation_root_select_invalid path=%s", selected)
             self.pause_continue("Press Enter to continue...")
             return
         self.automation_root_folder = str(selected)
+        logging.info("automation_root_select_success path=%s", self.automation_root_folder)
         self.config["automation_root_folder"] = self.automation_root_folder
         self.save_config()
         self.print_yellow(f"Automation root set: {self.automation_root_folder}")
@@ -2632,6 +2680,10 @@ class KlingAutomationUI:
 def main(argv=None):
     """Entry point"""
     try:
+        crash_log_path = _enable_cli_crash_capture()
+        if crash_log_path:
+            print(f"Native crash capture enabled: {crash_log_path}")
+
         parser = argparse.ArgumentParser(add_help=True)
         parser.add_argument("--auto", action="store_true", help="Launch directly into automation workflow")
         parser.add_argument("--manual-video", action="store_true", help="Launch legacy manual Kling tools")
@@ -2691,6 +2743,8 @@ def main(argv=None):
         print("\n\nGoodbye!")
         sys.exit(0)
     except Exception as e:
+        logging.error("Fatal error: %s", e)
+        logging.error("Fatal traceback:\n%s", traceback.format_exc())
         print(f"Fatal error: {e}")
         sys.exit(1)
 
