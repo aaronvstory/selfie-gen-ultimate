@@ -50,8 +50,8 @@ def _run_dialog(
     finally:
         try:
             temp_root.destroy()
-        except Exception:
-            pass
+        except tk.TclError as exc:
+            _debug(f"root destroy failed ({type(exc).__name__}): {exc}")
 
 
 def select_directory(*, parent: Optional[tk.Misc] = None, **kwargs: Any) -> Optional[str]:

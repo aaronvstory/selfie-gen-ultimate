@@ -29,17 +29,17 @@ class DummyRoot:
         self.destroyed = True
 
 
-def test_select_directory_parent_path(monkeypatch):
+def test_select_directory_parent_path(monkeypatch, tmp_path):
     called = {"kwargs": None}
 
     def fake_dialog(**kwargs):
         called["kwargs"] = kwargs
-        return "/tmp/example"
+        return str(tmp_path / "example")
 
     parent = object()
     monkeypatch.setattr(tk_dialogs.filedialog, "askdirectory", fake_dialog)
     out = tk_dialogs.select_directory(parent=parent, title="Pick")
-    assert out == "/tmp/example"
+    assert out == str(tmp_path / "example")
     assert called["kwargs"]["parent"] is parent
 
 
@@ -58,11 +58,11 @@ def test_select_save_file_cancel_normalized(monkeypatch):
     assert tk_dialogs.select_save_file(title="Save") is None
 
 
-def test_ephemeral_root_destroyed_on_success(monkeypatch):
+def test_ephemeral_root_destroyed_on_success(monkeypatch, tmp_path):
     root = DummyRoot()
     monkeypatch.setattr(tk_dialogs.tk, "Tk", lambda: root)
-    monkeypatch.setattr(tk_dialogs.filedialog, "askdirectory", lambda **_kwargs: "/tmp/folder")
-    assert tk_dialogs.select_directory(title="Pick") == "/tmp/folder"
+    monkeypatch.setattr(tk_dialogs.filedialog, "askdirectory", lambda **_kwargs: str(tmp_path / "folder"))
+    assert tk_dialogs.select_directory(title="Pick") == str(tmp_path / "folder")
     assert root.destroyed is True
 
 
