@@ -4,7 +4,7 @@ With dynamic model fetching from fal.ai API.
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk
 from typing import Callable, Optional, List, Dict
 import threading
 import time
@@ -12,6 +12,7 @@ import os
 import re
 import logging
 import sys
+from tk_dialogs import select_directory, select_open_files
 
 try:
     from tkinterdnd2 import DND_FILES as _DND_FILES
@@ -962,7 +963,11 @@ class ConfigPanel(tk.Frame):
             ("Image files", "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tiff *.tif"),
             ("All files", "*.*"),
         ]
-        paths = filedialog.askopenfilenames(title="Select Images", filetypes=filetypes)
+        paths = select_open_files(
+            parent=self.winfo_toplevel(),
+            title="Select Images",
+            filetypes=filetypes,
+        )
         if paths:
             self._mini_dz_deliver(list(paths))
 
@@ -1502,8 +1507,10 @@ class ConfigPanel(tk.Frame):
 
     def _browse_output_folder(self):
         """Open folder browser for output path."""
-        folder = filedialog.askdirectory(
-            title="Select Output Folder", initialdir=self.output_path_var.get() or "."
+        folder = select_directory(
+            parent=self.winfo_toplevel(),
+            title="Select Output Folder",
+            initialdir=self.output_path_var.get() or ".",
         )
         if folder:
             self.output_path_var.set(folder)

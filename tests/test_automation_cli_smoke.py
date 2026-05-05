@@ -327,7 +327,7 @@ def test_select_automation_root_browse_primary(tmp_path, monkeypatch):
     ui._scan_automation_cases = lambda: called.__setitem__("scan", True)
     responses = iter([""])
     monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(responses))
-    monkeypatch.setattr("kling_automation_ui.filedialog.askdirectory", lambda **kwargs: str(tmp_path))
+    monkeypatch.setattr("kling_automation_ui.select_directory", lambda **kwargs: str(tmp_path))
     ui._select_automation_root()
     assert ui.automation_root_folder == str(tmp_path)
     assert called["scan"] is True
@@ -359,7 +359,7 @@ def test_select_automation_root_browse_fallback_to_typed(tmp_path, monkeypatch):
     def _raise(**kwargs):
         raise RuntimeError("tk unavailable")
 
-    monkeypatch.setattr("kling_automation_ui.filedialog.askdirectory", _raise)
+    monkeypatch.setattr("kling_automation_ui.select_directory", _raise)
     ui._select_automation_root()
     assert ui.automation_root_folder == str(tmp_path)
 

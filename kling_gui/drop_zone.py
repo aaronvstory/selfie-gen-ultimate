@@ -3,12 +3,12 @@ Drop Zone Widget - Drag-and-drop area for image files with visual feedback.
 """
 
 import tkinter as tk
-from tkinter import filedialog
 from typing import Callable, Dict, List, Optional
 import os
 import sys
 
 from path_utils import VALID_EXTENSIONS
+from tk_dialogs import select_directory, select_open_files
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -314,8 +314,10 @@ class DropZone(tk.Frame):
         ]
 
         # Open file dialog - allow multiple file selection
-        file_paths = filedialog.askopenfilenames(
-            title="Select Images to Process", filetypes=filetypes
+        file_paths = select_open_files(
+            parent=self.winfo_toplevel(),
+            title="Select Images to Process",
+            filetypes=filetypes,
         )
 
         if file_paths:
@@ -348,7 +350,10 @@ class DropZone(tk.Frame):
 
     def _browse_folder(self):
         """Open folder browser dialog."""
-        folder_path = filedialog.askdirectory(title="Select Folder to Process")
+        folder_path = select_directory(
+            parent=self.winfo_toplevel(),
+            title="Select Folder to Process",
+        )
 
         if folder_path and self.on_folder_dropped:
             self.status_label.config(

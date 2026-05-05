@@ -4,7 +4,7 @@ import os
 import platform
 import tempfile
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -22,6 +22,7 @@ from ..theme import (
 from ..image_state import ImageSession
 from ..ml_backend_env import ensure_ml_backend_env
 from path_utils import get_gen_images_folder
+from tk_dialogs import select_open_file
 
 # Optional heavy dependencies — tab degrades gracefully if missing/broken
 cv2 = None
@@ -1015,7 +1016,8 @@ class FaceCropTab(tk.Frame):
 
     def _browse_image(self):
         ftypes = [("Images", " ".join(f"*{e}" for e in VALID_EXTENSIONS))]
-        path = filedialog.askopenfilename(
+        path = select_open_file(
+            parent=self.winfo_toplevel(),
             title="Select ID card / passport photo",
             filetypes=ftypes,
         )

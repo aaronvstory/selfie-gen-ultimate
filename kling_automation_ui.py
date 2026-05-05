@@ -9,8 +9,6 @@ import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import logging
-import tkinter as tk
-from tkinter import filedialog
 from rich.console import Console, Group
 from rich.table import Table
 from rich.live import Live
@@ -43,6 +41,7 @@ from automation.manifest import AutomationManifest
 from automation.pipeline import AutoPipelineRunner
 from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies
 from selfie_generator import SelfieGenerator
+from tk_dialogs import select_directory, select_open_file
 
 RECOMMENDED_DEFAULTS_VERSION = 1
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
@@ -498,25 +497,17 @@ class KlingAutomationUI:
 
     def select_folder_gui(self):
         """Open GUI folder selection dialog"""
-        root = tk.Tk()
-        root.withdraw()  # Hide the main window
-        folder_path = filedialog.askdirectory(title="Select Input Folder")
-        root.destroy()
-        return folder_path
+        return select_directory(title="Select Input Folder")
 
     def select_file_gui(self):
         """Open GUI file selection dialog"""
-        root = tk.Tk()
-        root.withdraw()
-        file_path = filedialog.askopenfilename(
+        return select_open_file(
             title="Select Single Input Image",
             filetypes=[
                 ("Image files", "*.jpg *.jpeg *.png *.bmp *.gif *.webp *.tiff *.tif"),
                 ("All files", "*.*"),
             ],
         )
-        root.destroy()
-        return file_path
 
     def launch_gui(self):
         """Launch the Tkinter GUI mode for drag-and-drop processing."""
@@ -1532,7 +1523,7 @@ class KlingAutomationUI:
         use_browse = choice in {"", "1"}
         if use_browse:
             try:
-                selected_path = filedialog.askdirectory(title="Select Automation Root Folder")
+                selected_path = select_directory(title="Select Automation Root Folder")
             except Exception as exc:
                 self.print_yellow(f"Folder picker unavailable ({exc}). Falling back to typed path.")
                 selected_path = None

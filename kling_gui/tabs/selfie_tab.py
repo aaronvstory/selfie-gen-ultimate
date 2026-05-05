@@ -1,7 +1,7 @@
 """Selfie Tab — Generate selfie-style portraits using FLUX PuLID."""
 
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk
 import threading
 import os
 import shutil
@@ -26,6 +26,7 @@ from ..theme import (
 )
 from ..image_state import ImageSession
 from path_utils import get_gen_images_folder
+from tk_dialogs import select_directory, select_save_file
 
 try:
     from selfie_prompt_composer import DEFAULT_GENDER
@@ -1524,7 +1525,8 @@ class SelfieTab(tk.Frame):
 
     def _browse_output_folder(self):
         initial_dir = self.output_path_var.get().strip() or os.path.expanduser("~")
-        folder = filedialog.askdirectory(
+        folder = select_directory(
+            parent=self.winfo_toplevel(),
             title="Select Selfie Output Folder",
             initialdir=initial_dir,
         )
@@ -1618,7 +1620,8 @@ class SelfieTab(tk.Frame):
             return
         initial_dir = os.path.dirname(self._last_result_path)
         initial_file = os.path.basename(self._last_result_path)
-        target_path = filedialog.asksaveasfilename(
+        target_path = select_save_file(
+            parent=self.winfo_toplevel(),
             title="Save Selfie As",
             initialdir=initial_dir,
             initialfile=initial_file,

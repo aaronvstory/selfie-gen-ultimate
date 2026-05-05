@@ -2,7 +2,6 @@
 
 import tkinter as tk
 from tkinter import ttk
-from tkinter import filedialog
 from typing import Callable, Optional
 import os
 import platform
@@ -23,6 +22,7 @@ from .theme import (
 )
 from .image_state import ImageSession
 from .tag_utils import derive_display_tag
+from tk_dialogs import select_open_files
 
 
 def _format_image_info(path: str) -> str:
@@ -556,7 +556,8 @@ class ImageCarousel(tk.Frame):
             ),
             ("All files", "*.*"),
         ]
-        paths = filedialog.askopenfilenames(
+        paths = select_open_files(
+            parent=self.winfo_toplevel(),
             title="Select Images", filetypes=filetypes
         )
         for p in paths:

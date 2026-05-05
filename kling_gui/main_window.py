@@ -3,7 +3,7 @@ Main Window - Primary GUI window that assembles all components.
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkinter import ttk, messagebox, simpledialog
 import json
 import os
 import sys
@@ -28,6 +28,7 @@ from path_utils import (
     sanitize_path_name,
     sanitize_tree_names_report,
 )
+from tk_dialogs import select_directory, select_open_files
 
 from .drop_zone import DropZone, create_dnd_root, HAS_DND, DND_FILES, parse_dnd_paths
 from .log_display import LogDisplay
@@ -1764,7 +1765,8 @@ class KlingGUIWindow:
 
     def _browse_and_add_images(self):
         """Open file dialog and add selected images to carousel."""
-        files = filedialog.askopenfilenames(
+        files = select_open_files(
+            parent=self.root,
             title="Select Images to Add",
             filetypes=[
                 ("Image files", "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tiff *.tif"),
@@ -3148,7 +3150,7 @@ class KlingGUIWindow:
 
     def _on_sanitize_folder_clicked(self):
         """Manually sanitize a folder tree and show a concise report."""
-        folder = filedialog.askdirectory(title="Select Folder to Sanitize")
+        folder = select_directory(parent=self.root, title="Select Folder to Sanitize")
         if not folder:
             return
         try:
@@ -3488,12 +3490,13 @@ class KlingGUIWindow:
             return
 
         if choice:
-            folder = filedialog.askdirectory(title="Select Folder to Process")
+            folder = select_directory(parent=self.root, title="Select Folder to Process")
             if folder:
                 self._on_folder_dropped(folder)
             return
 
-        files = filedialog.askopenfilenames(
+        files = select_open_files(
+            parent=self.root,
             title="Select Images",
             filetypes=[
                 ("Image files", "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tiff *.tif"),
