@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class SelfieGenerator:
     """Generate selfie images using fal.ai image-to-image identity models."""
 
-    DEFAULT_ENDPOINT = "openai/gpt-image-2/edit"
+    DEFAULT_ENDPOINT = "fal-ai/nano-banana-2/edit"
     HANDOFF_JSON_KEYS = (
         "hair",
         "skin",

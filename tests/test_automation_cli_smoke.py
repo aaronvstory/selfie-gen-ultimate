@@ -327,7 +327,7 @@ def test_select_automation_root_browse_primary(tmp_path, monkeypatch):
     ui._scan_automation_cases = lambda: called.__setitem__("scan", True)
     responses = iter([""])
     monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(responses))
-    monkeypatch.setattr("kling_automation_ui.filedialog.askdirectory", lambda **kwargs: str(tmp_path))
+    monkeypatch.setattr("kling_automation_ui.select_directory_cli_safe", lambda **kwargs: str(tmp_path))
     ui._select_automation_root()
     assert ui.automation_root_folder == str(tmp_path)
     assert called["scan"] is True
@@ -359,9 +359,36 @@ def test_select_automation_root_browse_fallback_to_typed(tmp_path, monkeypatch):
     def _raise(**kwargs):
         raise RuntimeError("tk unavailable")
 
-    monkeypatch.setattr("kling_automation_ui.filedialog.askdirectory", _raise)
+    monkeypatch.setattr("kling_automation_ui.select_directory_cli_safe", _raise)
     ui._select_automation_root()
     assert ui.automation_root_folder == str(tmp_path)
+
+
+def test_select_automation_root_logs_browse_fallback(tmp_path, monkeypatch):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {}
+    ui.automation_root_folder = ""
+    ui.save_config = lambda: None
+    ui.print_red = lambda _x: None
+    ui.print_yellow = lambda _x: None
+    ui._scan_automation_cases = lambda: None
+    responses = iter(["", str(tmp_path)])
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(responses))
+
+    info_logs = []
+    warning_logs = []
+    monkeypatch.setattr("kling_automation_ui.logging.info", lambda message, *args, **kwargs: info_logs.append(message))
+    monkeypatch.setattr("kling_automation_ui.logging.warning", lambda message, *args, **kwargs: warning_logs.append(message))
+
+    def _raise(**kwargs):
+        raise RuntimeError("tk unavailable")
+
+    monkeypatch.setattr("kling_automation_ui.select_directory_cli_safe", _raise)
+    ui._select_automation_root()
+
+    assert any("automation_root_picker_browse_attempt" in entry for entry in info_logs)
+    assert any("automation_root_typed_fallback_prompt" in entry for entry in info_logs)
+    assert any("automation_root_picker_browse_error" in entry for entry in warning_logs)
 
 
 def test_collect_case_snapshot_respects_skip_completed_false(tmp_path):
@@ -575,7 +602,7 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_similarity_threshold"] == 80
     assert ui.config["automation_video_enabled"] is True
     assert ui.config["automation_oldcam_enabled"] is True
-    assert ui.config["automation_oldcam_version"] == "all"
+    assert ui.config["automation_oldcam_version"] == "v8"
     assert ui.config["automation_oldcam_required"] is True
     assert ui.config["automation_max_cases_per_run"] == "all"
     assert ui.config["falai_api_key"] == "keep-fal-key"

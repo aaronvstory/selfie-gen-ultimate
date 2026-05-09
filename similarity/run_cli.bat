@@ -4,14 +4,28 @@ setlocal enabledelayedexpansion
 :: Change to the directory of this script
 cd /d "%~dp0"
 
-:: Select a supported Python interpreter for TensorFlow/DeepFace CLI mode
+:: Select a supported Python interpreter for TensorFlow/DeepFace CLI mode.
+:: Probe order: existing venv -> py launcher versions -> python fallback.
 set "PYTHON_BIN="
-for %%P in (python3.12 python3.11 python3.10 python3.9 python3 python) do (
-    %%P -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] <= (3,12)) else 1)" >nul 2>&1
+if exist ".venv\Scripts\python.exe" (
+    .venv\Scripts\python.exe -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] <= (3,12)) else 1)" >nul 2>&1
     if not errorlevel 1 (
-        set "PYTHON_BIN=%%P"
+        set "PYTHON_BIN=.venv\Scripts\python.exe"
         goto :python_found
     )
+)
+
+for %%V in (3.12 3.11 3.10 3.9) do (
+    py -%%V -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] <= (3,12)) else 1)" >nul 2>&1
+    if not errorlevel 1 (
+        set "PYTHON_BIN=py -%%V"
+        goto :python_found
+    )
+)
+
+python -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] <= (3,12)) else 1)" >nul 2>&1
+if not errorlevel 1 (
+    set "PYTHON_BIN=python"
 )
 
 :python_found

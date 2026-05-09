@@ -1,3 +1,9 @@
+## Runtime Priority (Codex App)
+
+- Follow global Codex hooks policy first.
+- Serena activation/use is expected each task.
+- Caveman concise communication style is required.
+- Prefer canonical repo path handling (`F:\claude\...` as source of truth).
 # AGENTS.md - Kling UI Codebase Guide
 
 > For AI coding agents working in this repository. Last updated: 2026-05-04
@@ -389,3 +395,4 @@ Guidance:
 1. Add method to `KlingAutomationUI` class in `kling_automation_ui.py`
 2. Add menu option in `display_configuration_menu()`
 3. Handle in `run_configuration_menu()` switch
+

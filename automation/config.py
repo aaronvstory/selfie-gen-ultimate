@@ -64,7 +64,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
         "10": "",
     },
     "automation_selfie_model_policy": "first_pass",  # first_pass | all
-    "automation_selfie_prompt_mode": "existing_config",
+    "automation_selfie_prompt_mode": "wildcards",
     "automation_selfie_max_attempts_per_model": 1,
     "automation_similarity_threshold": 80,
     "automation_selfie_expand_enabled": True,
@@ -76,7 +76,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_video_aspect_ratio": "3:4",
     "automation_video_use_existing_prompt": True,
     "automation_oldcam_enabled": True,
-    "automation_oldcam_version": "all",
+    "automation_oldcam_version": "v8",
     "automation_oldcam_required": True,
     "automation_recommended_defaults_version": 1,
     "automation_verbose_logging": True,

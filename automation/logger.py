@@ -5,6 +5,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from api_keys import API_KEY_SPECS
 from path_utils import get_app_dir
 
 
@@ -21,12 +22,12 @@ def key_status(value: Any) -> str:
 def build_safe_config_snapshot(config: Dict[str, Any], automation_root_folder: Optional[str]) -> Dict[str, Any]:
     snapshot: Dict[str, Any] = {
         "automation_root_folder": automation_root_folder or "",
-        "falai_api_key": key_status(config.get("falai_api_key")),
-        "bfl_api_key": key_status(config.get("bfl_api_key")),
         "current_model": config.get("current_model"),
         "model_display_name": config.get("model_display_name"),
         "current_prompt_slot": config.get("current_prompt_slot"),
     }
+    for spec in API_KEY_SPECS:
+        snapshot[spec.config_key] = key_status(config.get(spec.config_key))
     for key, value in config.items():
         if str(key).startswith("automation_"):
             snapshot[key] = value

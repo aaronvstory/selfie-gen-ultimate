@@ -35,6 +35,32 @@ This runs the GUI launcher as a Python script to verify it works before building
 build_gui_exe.bat
 ```
 
+### Keep distribution mirror synced with current root code
+
+```batch
+sync_from_root.bat
+```
+
+### Build sanitized shareable bundle (universal)
+
+From the repository root, run:
+
+```batch
+python distribution/build_release.py
+```
+
+**What it does:**
+1. Stages one sanitized universal bundle under a temporary staging folder
+2. Writes blank-key `kling_config.json` into the staged bundle
+3. Produces `SelfieGenUltimate.zip`
+4. Cleans staging artifacts automatically
+
+**Output location:** `dist\SelfieGenUltimate.zip`
+
+Deprecated historical outputs: `windows_gui.zip`, `windows_cli.zip`, `macos_portable.zip`.
+
+### `build_gui_exe.bat` behavior (direct GUI .exe build)
+
 **What it does:**
 1. Checks/installs PyInstaller
 2. Installs required dependencies

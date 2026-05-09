@@ -1,21 +1,24 @@
 import argparse
 import contextlib
+import faulthandler
 import io
 import os
+import signal
 import sys
 import json
 import time
 import threading
+import traceback
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import logging
-import tkinter as tk
-from tkinter import filedialog
 from rich.console import Console, Group
 from rich.table import Table
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+
+from api_keys import API_KEY_SPECS, ApiKeySpec, ensure_key_fields, key_status, non_required_missing_specs, status_lines
 
 try:
     from kling_gui.ml_backend_env import ensure_ml_backend_env
@@ -38,11 +41,12 @@ from path_utils import (
 from kling_generator_falai import FalAIKlingGenerator
 from automation.config import merge_automation_defaults, from_app_config
 from automation.discovery import discover_case_folders, detect_existing_outputs
-from automation.logger import key_status, resolve_automation_log_path
+from automation.logger import resolve_automation_log_path
 from automation.manifest import AutomationManifest
 from automation.pipeline import AutoPipelineRunner
 from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies
 from selfie_generator import SelfieGenerator
+from tk_dialogs import select_directory, select_directory_cli_safe, select_open_file
 
 RECOMMENDED_DEFAULTS_VERSION = 1
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
@@ -57,6 +61,37 @@ RECOMMENDED_KLING_PROMPT_SLOT_1 = (
     "camera is fixed and stationary. Only the head moves; the rest of the body remains motionless."
 )
 
+_CRASH_CAPTURE_FILE: Optional[io.TextIOWrapper] = None
+
+
+def _enable_cli_crash_capture() -> Optional[str]:
+    """Enable faulthandler logging for fatal native crashes."""
+    global _CRASH_CAPTURE_FILE
+    crash_path = Path(get_app_dir()) / "kling_automation_crash.log"
+    try:
+        if _CRASH_CAPTURE_FILE is not None and not _CRASH_CAPTURE_FILE.closed:
+            _CRASH_CAPTURE_FILE.close()
+        _CRASH_CAPTURE_FILE = open(crash_path, "a", encoding="utf-8")
+        _CRASH_CAPTURE_FILE.write(f"\n\n=== Crash capture initialized at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+        _CRASH_CAPTURE_FILE.flush()
+        faulthandler.enable(file=_CRASH_CAPTURE_FILE, all_threads=True)
+        for sig_name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL"):
+            sig = getattr(signal, sig_name, None)
+            if sig is not None:
+                try:
+                    faulthandler.register(sig, file=_CRASH_CAPTURE_FILE, all_threads=True)
+                except Exception:
+                    pass
+        return str(crash_path)
+    except Exception:
+        if _CRASH_CAPTURE_FILE is not None:
+            try:
+                _CRASH_CAPTURE_FILE.close()
+            except Exception:
+                pass
+            _CRASH_CAPTURE_FILE = None
+        return None
+
 
 class KlingAutomationUI:
     legacy_pauses: bool = False
@@ -64,10 +99,13 @@ class KlingAutomationUI:
     def __init__(self, legacy_pauses: bool = False):
         self.config_file = get_config_path("kling_config.json")
         self.config = merge_automation_defaults(self.load_config())
+        if ensure_key_fields(self.config):
+            self.save_config()
         self.automation_root_folder = self.config.get("automation_root_folder", "")
         self.verbose_logging = self.config.get("verbose_logging", False)
         self.legacy_pauses = legacy_pauses
         self._last_scan_records: List[Any] = []
+        self._startup_key_onboarding_done = False
         self.setup_logging()
 
     def pause_continue(self, message: str = "Press Enter to continue..."):
@@ -95,6 +133,9 @@ class KlingAutomationUI:
             "output_folder": "",  # Empty by default - user picks their own
             "use_source_folder": True,  # Default: save videos alongside source images
             "falai_api_key": "",  # Will prompt user on first run
+            "bfl_api_key": "",
+            "openrouter_api_key": "",
+            "freeimage_api_key": "",
             "verbose_logging": True,
             "duplicate_detection": True,
             "delay_between_generations": 1,
@@ -354,43 +395,130 @@ class KlingAutomationUI:
         print("\n" + "=" * 72)
         print("  API SETUP / PROVIDER SETTINGS")
         print("=" * 72)
-        print("\nFal.ai key: required for Kling video and fal-backed image/selfie providers.")
-        print("BFL key: optional, used for outpainting when BFL is selected or auto-resolved.")
-        print("Other providers: configured through existing app/provider settings.")
+        print("\nProvider key status:")
+        for line in status_lines(self.config):
+            print(f"  - {line}")
+        required_now = {spec.config_key for spec, _reason in self._startup_required_key_specs()}
+        if required_now:
+            print("\nCurrently required at startup (from active config):")
+            for spec in API_KEY_SPECS:
+                if spec.config_key in required_now:
+                    print(f"  - {spec.label}")
+        print("\nProvider quick setup:")
+        for idx, spec in enumerate(API_KEY_SPECS, start=1):
+            print(f"  {idx}) Set/update {spec.label} key")
+        clear_base = len(API_KEY_SPECS)
+        for idx, spec in enumerate(API_KEY_SPECS, start=1):
+            print(f"  {clear_base + idx}) Clear {spec.label} key")
         print("\nCurrent key status:")
-        fal_status = "set" if str(self.config.get("falai_api_key", "")).strip() else "missing"
-        bfl_status = "set" if str(self.config.get("bfl_api_key", "")).strip() else "missing"
-        print(f"  - falai_api_key: {fal_status}")
-        print(f"  - bfl_api_key: {bfl_status}")
-        print("\nOptions:")
-        print("  1) Set/update falai_api_key")
-        print("  2) Set/update bfl_api_key")
-        print("  3) Clear falai_api_key")
-        print("  4) Clear bfl_api_key")
+        for spec in API_KEY_SPECS:
+            print(f"  - {spec.config_key}: {key_status(self.config, spec.config_key)}")
         print("  0) Back")
         print()
         choice = input("Select option: ").strip()
-        if choice == "1":
-            value = input("Enter fal.ai API key: ").strip()
+        if choice == "0":
+            self.pause_continue("\nPress Enter to continue...")
+            return
+        try:
+            selected = int(choice)
+        except ValueError:
+            self.pause_continue("\nInvalid selection. Press Enter to continue...")
+            return
+
+        if 1 <= selected <= len(API_KEY_SPECS):
+            spec = API_KEY_SPECS[selected - 1]
+            print(f"\n{spec.label}: {spec.instruction}")
+            print(f"Get key: {spec.url}")
+            value = input(f"Enter {spec.label} API key: ").strip()
             if value:
-                self.config["falai_api_key"] = value
+                self.config[spec.config_key] = value
                 self.save_config()
-                print("Saved falai_api_key.")
-        elif choice == "2":
-            value = input("Enter BFL API key: ").strip()
-            if value:
-                self.config["bfl_api_key"] = value
-                self.save_config()
-                print("Saved bfl_api_key.")
-        elif choice == "3":
-            self.config["falai_api_key"] = ""
+                print(f"Saved {spec.config_key}.")
+        elif len(API_KEY_SPECS) < selected <= len(API_KEY_SPECS) * 2:
+            spec = API_KEY_SPECS[selected - len(API_KEY_SPECS) - 1]
+            self.config[spec.config_key] = ""
             self.save_config()
-            print("Cleared falai_api_key.")
-        elif choice == "4":
-            self.config["bfl_api_key"] = ""
-            self.save_config()
-            print("Cleared bfl_api_key.")
+            print(f"Cleared {spec.config_key}.")
         self.pause_continue("\nPress Enter to continue...")
+
+    def _run_startup_key_onboarding(self) -> None:
+        if self._startup_key_onboarding_done:
+            return
+        self._startup_key_onboarding_done = True
+        required_specs = self._startup_required_key_specs()
+        missing_required = [spec for spec, _reason in required_specs if not str(self.config.get(spec.config_key, "")).strip()]
+        if not sys.stdin.isatty():
+            if missing_required:
+                print("\nStartup-required API keys are missing for non-interactive mode.")
+                for spec in missing_required:
+                    print(f"  - {spec.label}: {spec.url}")
+                print("Set the missing keys in kling_config.json or via interactive setup, then retry.")
+                raise SystemExit(1)
+            return
+
+        print("\n" + "=" * 79)
+        print("FIRST LAUNCH KEY CHECK")
+        print("=" * 79)
+        for line in status_lines(self.config):
+            print(f"  - {line}")
+        print("\nStartup-required keys based on current config:")
+        for spec, reason in required_specs:
+            print(f"  - {spec.label}: required ({reason})")
+        print("\nQuick setup links:")
+        for spec in API_KEY_SPECS:
+            print(f"  - {spec.label}: {spec.url}")
+
+        if missing_required:
+            print("\nRequired keys must be set before continuing.")
+        while missing_required:
+            spec = missing_required[0]
+            print(f"\n{spec.label}: {spec.instruction}")
+            value = input("Enter key now (or q to quit): ").strip()
+            if value.lower() == "q":
+                print("Cannot continue without required key. Exiting.")
+                raise SystemExit(1)
+            if value:
+                self.config[spec.config_key] = value
+                self.save_config()
+            missing_required = [item for item in missing_required if not str(self.config.get(item.config_key, "")).strip()]
+
+        missing_optional = list(non_required_missing_specs(self.config))
+        if missing_optional:
+            print("\nOptional keys are missing. Features may be limited until added:")
+            for spec in missing_optional:
+                print(f"  - {spec.label}: {spec.url}")
+            print("You can add these later via menu option 7.")
+
+    def _startup_required_key_specs(self) -> List[Tuple[ApiKeySpec, str]]:
+        specs_by_key = {spec.config_key: spec for spec in API_KEY_SPECS}
+        required = []
+        fal_spec = specs_by_key.get("falai_api_key")
+        if fal_spec:
+            required.append((fal_spec, "core generation pipeline"))
+        if self._is_bfl_required_on_startup():
+            bfl_spec = specs_by_key.get("bfl_api_key")
+            if bfl_spec:
+                required.append((bfl_spec, "current automation/manual settings select BFL"))
+        return required
+
+    def _is_bfl_required_on_startup(self) -> bool:
+        front_enabled = bool(self.config.get("automation_front_expand_enabled", True))
+        if front_enabled and str(self.config.get("automation_front_expand_provider", "auto")).strip().lower() == "bfl":
+            return True
+
+        selfie_expand_enabled = bool(self.config.get("automation_selfie_expand_enabled", True))
+        if selfie_expand_enabled and str(self.config.get("automation_selfie_expand_provider", "auto")).strip().lower() == "bfl":
+            return True
+
+        selfie_enabled = bool(self.config.get("automation_selfie_enabled", True))
+        selfie_models = list(self.config.get("automation_selfie_models", []))
+        if selfie_enabled and any(str(model).strip().lower().startswith("bfl/") for model in selfie_models):
+            return True
+
+        if str(self.config.get("outpaint_provider", "")).strip().lower() == "bfl":
+            return True
+
+        return False
 
     def clear_screen_simple(self):
         """Clear screen without dependencies"""
@@ -498,25 +626,17 @@ class KlingAutomationUI:
 
     def select_folder_gui(self):
         """Open GUI folder selection dialog"""
-        root = tk.Tk()
-        root.withdraw()  # Hide the main window
-        folder_path = filedialog.askdirectory(title="Select Input Folder")
-        root.destroy()
-        return folder_path
+        return select_directory(title="Select Input Folder")
 
     def select_file_gui(self):
         """Open GUI file selection dialog"""
-        root = tk.Tk()
-        root.withdraw()
-        file_path = filedialog.askopenfilename(
+        return select_open_file(
             title="Select Single Input Image",
             filetypes=[
                 ("Image files", "*.jpg *.jpeg *.png *.bmp *.gif *.webp *.tiff *.tif"),
                 ("All files", "*.*"),
             ],
         )
-        root.destroy()
-        return file_path
 
     def launch_gui(self):
         """Launch the Tkinter GUI mode for drag-and-drop processing."""
@@ -1408,12 +1528,12 @@ class KlingAutomationUI:
         selfie_configured = str(self.config.get("automation_selfie_expand_provider", "auto"))
         lines = [
             f"root={self.automation_root_folder or '(not set)'} max_cases={self._read_max_cases_setting()}",
-            f"keys fal={key_status(self.config.get('falai_api_key'))} bfl={key_status(self.config.get('bfl_api_key'))}",
+            f"keys fal={key_status(self.config, 'falai_api_key')} bfl={key_status(self.config, 'bfl_api_key')}",
             f"front mode={self.config.get('automation_front_expand_mode')} pct={self.config.get('automation_front_expand_percent', 70)} passes={self.config.get('automation_front_expand_passes', 2)} provider={front_configured}->{self._resolve_provider(front_configured)}",
             f"selfie expand mode={self.config.get('automation_selfie_expand_mode')} pct={self.config.get('automation_selfie_expand_percent', 30)} provider={selfie_configured}->{self._resolve_provider(selfie_configured)}",
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
             f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', 1)}",
-            f"oldcam version={self.config.get('automation_oldcam_version', 'all')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
+            f"oldcam version={self.config.get('automation_oldcam_version', 'v8')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
             f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
             f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
         ]
@@ -1472,7 +1592,7 @@ class KlingAutomationUI:
         self.config["automation_similarity_threshold"] = 80
         self.config["automation_video_enabled"] = True
         self.config["automation_oldcam_enabled"] = True
-        self.config["automation_oldcam_version"] = "all"
+        self.config["automation_oldcam_version"] = "v8"
         self.config["automation_oldcam_required"] = True
         self.config["automation_recommended_defaults_version"] = RECOMMENDED_DEFAULTS_VERSION
         self.save_config()
@@ -1485,7 +1605,7 @@ class KlingAutomationUI:
         print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
         print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 1")
         print(f"  Kling prompt slot: {before['kling_prompt_slot']} -> 1")
-        print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> all / required")
+        print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> v8 / required")
         print(f"  max cases per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
         print("\nCurrent recommended state:")
         print("  front expand: bfl / percent / 70")
@@ -1494,7 +1614,7 @@ class KlingAutomationUI:
         print("  video model: Kling 2.5 Turbo Standard")
         print("  selfie prompt slot: 1")
         print("  Kling prompt slot: 1")
-        print("  oldcam: all / required")
+        print("  oldcam: v8 / required")
         print(f"  max cases per run: {self._read_max_cases_setting()}")
         self.pause_continue("\nPress Enter to continue...")
 
@@ -1524,21 +1644,35 @@ class KlingAutomationUI:
         print("\033[92m➤ Select option:\033[0m ", end="", flush=True)
 
     def _select_automation_root(self):
+        logging.info("automation_root_select_start")
         print("\nSelect automation root:")
         print("  1) Browse for folder (recommended)")
         print("  2) Type folder path")
         choice = input("Choose option [1/2, default 1]: ").strip()
         selected_path: Optional[str] = None
         use_browse = choice in {"", "1"}
+        logging.info("automation_root_select_mode use_browse=%s choice=%s", use_browse, choice or "<default>")
         if use_browse:
+            logging.info("automation_root_picker_browse_attempt")
             try:
-                selected_path = filedialog.askdirectory(title="Select Automation Root Folder")
+                logging.info(
+                    "automation_root_picker_backend backend=%s",
+                    "osascript" if sys.platform == "darwin" else "tk",
+                )
+                selected_path = select_directory_cli_safe(title="Select Automation Root Folder")
             except Exception as exc:
                 self.print_yellow(f"Folder picker unavailable ({exc}). Falling back to typed path.")
+                logging.warning("automation_root_picker_browse_error error=%s", exc, exc_info=True)
                 selected_path = None
+            if selected_path is None:
+                self.print_yellow("Folder picker canceled or unavailable. Enter a path manually.")
+                logging.info("automation_root_picker_browse_canceled_or_unavailable")
             if not selected_path:
+                logging.info("automation_root_typed_fallback_prompt")
                 raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
                 if not raw:
+                    self.print_yellow("Automation root selection canceled.")
+                    logging.info("automation_root_select_canceled")
                     return
                 if raw.startswith('"') and raw.endswith('"'):
                     raw = raw[1:-1]
@@ -1546,8 +1680,11 @@ class KlingAutomationUI:
                     raw = raw[1:-1]
                 selected_path = raw
         else:
+            logging.info("automation_root_typed_primary_prompt")
             raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
             if not raw:
+                self.print_yellow("Automation root selection canceled.")
+                logging.info("automation_root_select_canceled")
                 return
             if raw.startswith('"') and raw.endswith('"'):
                 raw = raw[1:-1]
@@ -1558,9 +1695,11 @@ class KlingAutomationUI:
         selected = Path(selected_path)
         if not selected.exists() or not selected.is_dir():
             self.print_red("Invalid folder path.")
+            logging.warning("automation_root_select_invalid path=%s", selected)
             self.pause_continue("Press Enter to continue...")
             return
         self.automation_root_folder = str(selected)
+        logging.info("automation_root_select_success path=%s", self.automation_root_folder)
         self.config["automation_root_folder"] = self.automation_root_folder
         self.save_config()
         self.print_yellow(f"Automation root set: {self.automation_root_folder}")
@@ -1658,12 +1797,12 @@ class KlingAutomationUI:
     def _scan_automation_cases(self):
         if not self.automation_root_folder:
             self.print_red("Set automation root folder first.")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
             return
         root = Path(self.automation_root_folder)
         if not root.exists():
             self.print_red("Automation root path does not exist.")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
             return
         records = discover_case_folders(root, self.config.get("automation_front_names", []))
         manifest = AutomationManifest.load_if_exists(self._automation_manifest_path())
@@ -1704,7 +1843,7 @@ class KlingAutomationUI:
         print(f"  failed: {counts['failed']}")
         print(f"  existing videos/selfies: {counts['existing_videos_selfies']}")
         print(f"  max cases per run: {self._read_max_cases_setting()}")
-        self.pause_continue("\nPress Enter to continue...")
+        self.pause_review("\nPress Enter to continue...")
 
     def _edit_automation_settings(self):
         def _ask(prompt: str, key: str, cast_fn, validator=None):
@@ -1855,12 +1994,12 @@ class KlingAutomationUI:
     def _dry_run_automation(self):
         if not self.automation_root_folder:
             self.print_red("Set automation root folder first.")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
             return
         root = Path(self.automation_root_folder)
         if not root.exists():
             self.print_red("Automation root path does not exist.")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
             return
         records = discover_case_folders(root, self.config.get("automation_front_names", []))
         manifest_path = self._automation_manifest_path()
@@ -1881,23 +2020,23 @@ class KlingAutomationUI:
         print(f"  failed/manual_review: {counts['failed'] + counts['manual_review']}")
         print(f"  will run this batch: {len(runnable_cases)}")
         print("  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video -> oldcam")
-        self.pause_continue("\nPress Enter to continue...")
+        self.pause_review("\nPress Enter to continue...")
 
     def _run_resume_automation(self):
         if not self.automation_root_folder:
             self.print_red("Set automation root folder first.")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
             return
 
         root = Path(self.automation_root_folder)
         if not root.exists():
             self.print_red("Automation root path does not exist.")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
             return
         records = discover_case_folders(root, self.config.get("automation_front_names", []))
         if not records:
             self.print_yellow("No case folders found.")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
             return
 
         try:
@@ -1908,7 +2047,7 @@ class KlingAutomationUI:
             )
         except Exception as exc:
             self.print_red(f"Failed to load manifest: {exc}")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
             return
         rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
         print("\nRun preview:")
@@ -1921,12 +2060,12 @@ class KlingAutomationUI:
         print(f"  failed: {counts['failed']}")
         if not runnable_cases:
             self.print_yellow("No runnable cases for this batch.")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
             return
         approve = input("Approve batch run? [y/N]: ").strip().lower()
         if approve not in {"y", "yes"}:
             print("Run cancelled.")
-            self.pause_continue("Press Enter to continue...")
+            self.pause_review("Press Enter to continue...")
             return
 
         self.config["automation_root_folder"] = self.automation_root_folder
@@ -1941,7 +2080,7 @@ class KlingAutomationUI:
             print("\nAutomation preflight failed:")
             for issue in issues:
                 print(f"  - {issue}")
-            self.pause_continue("\nPress Enter to continue...")
+            self.pause_review("\nPress Enter to continue...")
             return
 
         print("\nAutomation preflight:")
@@ -1958,7 +2097,7 @@ class KlingAutomationUI:
         stats, run_error = self._run_with_live_dashboard(runner, runnable_cases, manifest)
         if run_error:
             self.print_red(f"Automation run failed: {run_error}")
-            self.pause_continue("\nPress Enter to continue...")
+            self.pause_review("\nPress Enter to continue...")
             return
         print("\nAutomation run complete.")
         print(f"  completed: {stats.get('completed', 0)}")
@@ -1973,7 +2112,7 @@ class KlingAutomationUI:
             table.add_row(key, str(result.get("status", "")), str(result.get("reason", "")))
         Console().print(table)
         self._write_automation_summary(manifest, runner.last_case_results, stats)
-        self.pause_continue("\nPress Enter to continue...")
+        self.pause_review("\nPress Enter to continue...")
 
     def _run_with_live_dashboard(
         self,
@@ -2122,7 +2261,7 @@ class KlingAutomationUI:
             elif choice == "7":
                 manifest_path = self._automation_manifest_path()
                 print(f"\nManifest path: {manifest_path if manifest_path else '(set root first)'}")
-                self.pause_continue("\nPress Enter to continue...")
+                self.pause_review("\nPress Enter to continue...")
             else:
                 self.print_red("Unknown option.")
                 time.sleep(1)
@@ -2619,6 +2758,7 @@ class KlingAutomationUI:
 
     def run(self):
         """Main application loop"""
+        self._run_startup_key_onboarding()
         while True:
             input_folder = self.run_configuration_menu()
             if input_folder:
@@ -2626,10 +2766,12 @@ class KlingAutomationUI:
 
     def run_auto_mode(self):
         """Direct launch into automation flow."""
+        self._run_startup_key_onboarding()
         self.run_automation_menu()
 
     def run_manual_video_mode(self):
         """Direct launch into legacy manual Kling tools."""
+        self._run_startup_key_onboarding()
         while True:
             selected = self._run_manual_kling_menu()
             if selected:
@@ -2650,6 +2792,9 @@ def main(argv=None):
         args = parser.parse_args(argv)
         verbose_startup = args.verbose_startup or os.getenv("KLING_VERBOSE_STARTUP", "0") == "1"
         legacy_pauses = args.legacy_pauses or os.getenv("KLING_LEGACY_PAUSES", "0") == "1"
+        crash_log_path = _enable_cli_crash_capture()
+        if verbose_startup and crash_log_path:
+            print(f"Native crash capture enabled: {crash_log_path}")
 
         if os.name == "nt":
             os.system("color")
@@ -2700,6 +2845,8 @@ def main(argv=None):
         print("\n\nGoodbye!")
         sys.exit(0)
     except Exception as e:
+        logging.error("Fatal error: %s", e)
+        logging.error("Fatal traceback:\n%s", traceback.format_exc())
         print(f"Fatal error: {e}")
         sys.exit(1)
 

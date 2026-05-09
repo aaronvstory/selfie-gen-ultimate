@@ -3,12 +3,12 @@ Drop Zone Widget - Drag-and-drop area for image files with visual feedback.
 """
 
 import tkinter as tk
-from tkinter import filedialog
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 import os
 import sys
 
 from path_utils import VALID_EXTENSIONS
+from tk_dialogs import select_directory, select_open_files
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -23,7 +23,11 @@ if os.getenv("SELFIEGEN_MAC_DISABLE_DND", "0") == "1":
     HAS_DND = False
 
 
-def parse_dnd_paths(data: str, splitlist_fn=None, require_exists: bool = True) -> List[str]:
+def parse_dnd_paths(
+    data: str,
+    splitlist_fn: Optional[Callable[[str], Iterable[str]]] = None,
+    require_exists: bool = True,
+) -> List[str]:
     """Parse TkDND payload into normalized file paths."""
     if not data:
         return []
@@ -61,7 +65,7 @@ def parse_dnd_paths(data: str, splitlist_fn=None, require_exists: bool = True) -
     return cleaned
 
 
-def create_dnd_root():
+def create_dnd_root() -> tk.Tk:
     """Create a TkinterDnD root window if available, otherwise regular Tk.
 
     This is a module-level function for easy import by main_window.py.
@@ -314,8 +318,10 @@ class DropZone(tk.Frame):
         ]
 
         # Open file dialog - allow multiple file selection
-        file_paths = filedialog.askopenfilenames(
-            title="Select Images to Process", filetypes=filetypes
+        file_paths = select_open_files(
+            parent=self.winfo_toplevel(),
+            title="Select Images to Process",
+            filetypes=filetypes,
         )
 
         if file_paths:
@@ -348,7 +354,10 @@ class DropZone(tk.Frame):
 
     def _browse_folder(self):
         """Open folder browser dialog."""
-        folder_path = filedialog.askdirectory(title="Select Folder to Process")
+        folder_path = select_directory(
+            parent=self.winfo_toplevel(),
+            title="Select Folder to Process",
+        )
 
         if folder_path and self.on_folder_dropped:
             self.status_label.config(
@@ -397,12 +406,7 @@ class DropZone(tk.Frame):
         self.status_label.config(text="")
 
         # Parse dropped files/folders
-        splitlist_fn = None
-        try:
-            splitlist_fn = self.winfo_toplevel().tk.splitlist
-        except Exception:
-            splitlist_fn = None
-        items = parse_dnd_paths(event.data, splitlist_fn=splitlist_fn, require_exists=True)
+        items = self._parse_drop_data(event.data)
 
         # Separate files and folders
         valid_files = []
