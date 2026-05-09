@@ -18,6 +18,7 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 
 from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs
+from automation.config import get_outpaint_fal_timeout_seconds
 from tk_dialogs import select_directory, select_open_files
 
 # Import path utilities
@@ -818,11 +819,7 @@ class KlingGUIWindow:
         except Exception:
             kling_slot = 4
         default_config["current_prompt_slot"] = min(10, max(1, kling_slot))
-        try:
-            outpaint_fal_timeout = int(default_config.get("outpaint_fal_timeout_seconds", 150))
-        except Exception:
-            outpaint_fal_timeout = 150
-        default_config["outpaint_fal_timeout_seconds"] = max(30, outpaint_fal_timeout)
+        default_config["outpaint_fal_timeout_seconds"] = get_outpaint_fal_timeout_seconds(default_config)
 
         # Layer 4: migrate known broken endpoint paths
         self._migrate_endpoints(default_config)

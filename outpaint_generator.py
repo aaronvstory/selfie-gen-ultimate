@@ -15,6 +15,7 @@ from outpaint_geometry import (
     compute_centered_aspect_expand_plan,
     compute_provider_caps,
 )
+from automation.config import get_outpaint_fal_timeout_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,8 @@ class OutpaintGenerator:
             composite_mode: "feathered" (3-6px blend), "hard" (pixel-perfect),
                 or "none" (raw AI output)
             output_path: If provided, use this exact path instead of generating one
+            poll_timeout_seconds: Maximum seconds to wait for async poll completion.
+            cancel_event: Optional event to abort waiting and return early.
 
         Returns:
             Absolute path to expanded image, or None on failure.
@@ -359,8 +362,11 @@ class OutpaintGenerator:
             return None
         request_id = str(result.get("request_id", "") or "")
         safe_request = request_id[-8:] if request_id else "unknown"
+        timeout_seconds = get_outpaint_fal_timeout_seconds(
+            {"outpaint_fal_timeout_seconds": poll_timeout_seconds}
+        )
         self._report(
-            f"Queue watch: provider=fal endpoint={self.ENDPOINT} req=*{safe_request} timeout={max(30, int(poll_timeout_seconds))}s",
+            f"Queue watch: provider=fal endpoint={self.ENDPOINT} req=*{safe_request} timeout={timeout_seconds}s",
             "debug",
         )
 
@@ -369,13 +375,16 @@ class OutpaintGenerator:
             self.api_key,
             status_url,
             self._progress_callback,
-            max_wait_seconds=max(30, int(poll_timeout_seconds)),
+            max_wait_seconds=timeout_seconds,
             cancel_event=cancel_event,
             provider="fal",
             endpoint=self.ENDPOINT,
             request_id=request_id,
+            operation_name="Outpaint",
         )
         if not final:
+            if cancel_event is not None and cancel_event.is_set():
+                return None
             self._report("Outpaint failed or timed out", "error")
             return None
 

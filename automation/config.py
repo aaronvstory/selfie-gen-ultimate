@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 
 DEFAULT_SELFIE_PROMPT = (
@@ -54,7 +54,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_selfie_prompts": {
         "1": DEFAULT_SELFIE_PROMPT,
         "2": "",
-        "3": "",
+        "3": DEFAULT_SELFIE_PROMPT,
         "4": "",
         "5": "",
         "6": "",
@@ -86,6 +86,21 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
 }
 
 
+def get_outpaint_fal_timeout_seconds(
+    config_or_mapping: Mapping[str, Any],
+    default: int = 150,
+    min_seconds: int = 30,
+    max_seconds: int = 300,
+) -> int:
+    """Normalize outpaint timeout seconds from config-like mappings."""
+    try:
+        raw = config_or_mapping.get("outpaint_fal_timeout_seconds", default)
+        value = int(raw)
+    except (ValueError, TypeError, AttributeError):
+        value = default
+    return max(min_seconds, min(max_seconds, value))
+
+
 @dataclass(frozen=True)
 class AutomationConfig:
     values: Dict[str, Any]
@@ -113,9 +128,11 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
         merged["automation_selfie_prompts"] = dict(AUTOMATION_DEFAULTS["automation_selfie_prompts"])
     else:
         for slot, default_prompt in AUTOMATION_DEFAULTS["automation_selfie_prompts"].items():
-            prompts.setdefault(slot, default_prompt if slot == "1" else "")
+            prompts.setdefault(slot, default_prompt if slot in {"1", "3"} else "")
         if not str(prompts.get("1", "")).strip():
             prompts["1"] = AUTOMATION_DEFAULTS["automation_selfie_prompts"]["1"]
+        if not str(prompts.get("3", "")).strip():
+            prompts["3"] = AUTOMATION_DEFAULTS["automation_selfie_prompts"]["3"]
     slot = merged.get("automation_selfie_prompt_slot", 3)
     try:
         slot_int = int(slot)
@@ -124,6 +141,7 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     if slot_int < 1 or slot_int > 10:
         slot_int = 3
     merged["automation_selfie_prompt_slot"] = slot_int
+    merged["outpaint_fal_timeout_seconds"] = get_outpaint_fal_timeout_seconds(merged)
     return merged
 
 

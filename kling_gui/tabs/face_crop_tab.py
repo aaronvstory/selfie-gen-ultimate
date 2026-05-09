@@ -24,6 +24,7 @@ from ..image_state import ImageSession
 from ..ml_backend_env import ensure_ml_backend_env
 from path_utils import get_gen_images_folder
 from tk_dialogs import select_open_file
+from automation.config import get_outpaint_fal_timeout_seconds
 
 # Optional heavy dependencies — tab degrades gracefully if missing/broken
 cv2 = None
@@ -1948,7 +1949,7 @@ class FaceCropTab(tk.Frame):
                         output_format=output_format,
                         composite_mode=composite_mode,
                         output_path=pass_output_path,
-                        poll_timeout_seconds=int(cfg.get("outpaint_fal_timeout_seconds", 150) or 150),
+                        poll_timeout_seconds=get_outpaint_fal_timeout_seconds(cfg),
                         cancel_event=self._outpaint_cancel_event,
                     )
                     if not result:

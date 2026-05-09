@@ -7,7 +7,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 from PIL import Image, ImageOps
 
-from automation.config import AutomationConfig, DEFAULT_SELFIE_PROMPT
+from automation.config import (
+    AutomationConfig,
+    DEFAULT_SELFIE_PROMPT,
+    get_outpaint_fal_timeout_seconds,
+)
 from automation.discovery import CaseRecord, detect_existing_outputs
 from automation.logger import build_safe_config_snapshot, create_automation_logger
 from automation.manifest import AutomationManifest, now_iso
@@ -461,7 +465,7 @@ class AutoPipelineRunner:
                         edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
                         if self.automation.get("automation_front_edge_seal_enabled", True)
                         else 0,
-                        poll_timeout_seconds=int(self.config.get("outpaint_fal_timeout_seconds", 150) or 150),
+                        poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
                         **front_expand_kwargs,
                     )
                     if not result:
@@ -761,7 +765,7 @@ class AutoPipelineRunner:
                     expand_top=margins["top"],
                     expand_bottom=margins["bottom"],
                     edge_seal_px=0,
-                    poll_timeout_seconds=int(self.config.get("outpaint_fal_timeout_seconds", 150) or 150),
+                    poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
                 )
                 if expanded_result:
                     final_still = expanded_result

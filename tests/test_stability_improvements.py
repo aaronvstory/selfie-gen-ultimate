@@ -12,6 +12,7 @@ from PIL import Image
 
 from fal_utils import fal_queue_poll, fal_queue_submit, upload_to_freeimage, upload_reference_image
 from selfie_generator import SelfieGenerator
+from outpaint_generator import OutpaintGenerator
 from kling_generator_falai import FalAIKlingGenerator
 from kling_gui.main_window import KlingGUIWindow
 from kling_gui import theme
@@ -63,12 +64,39 @@ class FalPollCancellationTests(unittest.TestCase):
             provider="fal",
             endpoint="fal-ai/image-apps-v2/outpaint",
             request_id="12345678-abcdef00",
+            operation_name="Outpaint",
         )
         self.assertIsNone(result)
         timeout_msgs = [m for m, lvl in logs if lvl == "error"]
         self.assertTrue(any("reason=provider_timeout" in m for m in timeout_msgs))
+        self.assertTrue(any("Outpaint timeout" in m for m in timeout_msgs))
         self.assertTrue(any("endpoint=fal-ai/image-apps-v2/outpaint" in m for m in timeout_msgs))
         self.assertTrue(any("req=*abcdef00" in m for m in timeout_msgs))
+
+    def test_cancel_reports_reason_endpoint_request_fragment(self):
+        logs = []
+
+        def _cb(message, level):
+            logs.append((message, level))
+
+        cancel_event = threading.Event()
+        cancel_event.set()
+        result = fal_queue_poll(
+            api_key="dummy",
+            status_url="https://example.com/status",
+            progress_cb=_cb,
+            max_wait_seconds=30,
+            cancel_event=cancel_event,
+            provider="fal",
+            endpoint="fal-ai/image-apps-v2/outpaint",
+            request_id="12345678-abcdef00",
+            operation_name="Outpaint",
+        )
+        self.assertIsNone(result)
+        warn_msgs = [m for m, lvl in logs if lvl == "warning"]
+        self.assertTrue(any("reason=user_aborted" in m for m in warn_msgs))
+        self.assertTrue(any("endpoint=fal-ai/image-apps-v2/outpaint" in m for m in warn_msgs))
+        self.assertTrue(any("req=*abcdef00" in m for m in warn_msgs))
 
 
 class UploadHandleTests(unittest.TestCase):
@@ -382,6 +410,95 @@ class SelfieSlotStateTests(unittest.TestCase):
         self.assertTrue(merged["fal-ai/nano-banana-2/edit"])
         self.assertFalse(merged["openai/gpt-image-2/edit"])
         self.assertFalse(merged["fal-ai/flux-pulid"])
+
+    def test_legacy_list_selection_migrates_to_dict(self):
+        tab = SelfieTab.__new__(SelfieTab)
+        tab.DEFAULT_MODEL_ENDPOINT = "fal-ai/nano-banana-2/edit"
+        tab._supported_model_endpoints = {
+            "fal-ai/nano-banana-2/edit",
+            "openai/gpt-image-2/edit",
+            "fal-ai/flux-pulid",
+        }
+        tab.config = {"selfie_selected_models": ["fal-ai/flux-pulid"]}
+        tab._migrate_selected_models_config()
+        merged = tab.config["selfie_selected_models"]
+        self.assertTrue(merged["fal-ai/flux-pulid"])
+        self.assertFalse(merged["openai/gpt-image-2/edit"])
+
+    def test_valid_multi_model_selection_is_preserved(self):
+        tab = SelfieTab.__new__(SelfieTab)
+        tab.DEFAULT_MODEL_ENDPOINT = "fal-ai/nano-banana-2/edit"
+        tab._supported_model_endpoints = {
+            "fal-ai/nano-banana-2/edit",
+            "openai/gpt-image-2/edit",
+            "fal-ai/flux-pulid",
+        }
+        tab.config = {
+            "selfie_selected_models": {
+                "fal-ai/nano-banana-2/edit": True,
+                "fal-ai/flux-pulid": True,
+            }
+        }
+        tab._migrate_selected_models_config()
+        merged = tab.config["selfie_selected_models"]
+        self.assertTrue(merged["fal-ai/nano-banana-2/edit"])
+        self.assertTrue(merged["fal-ai/flux-pulid"])
+
+
+class OutpaintAbortLoggingTests(unittest.TestCase):
+    class _FakeVar:
+        def __init__(self, value=None):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    class _FakeText:
+        def __init__(self, text):
+            self.text = text
+
+        def get(self, _start, _end):
+            return self.text
+
+        def config(self, **_kwargs):
+            return None
+
+    class _FakeEntry:
+        def __init__(self):
+            self.state = None
+
+        def config(self, **kwargs):
+            if "state" in kwargs:
+                self.state = kwargs["state"]
+
+    class _FakeButton:
+        def config(self, **_kwargs):
+            return None
+
+    def test_user_abort_does_not_emit_failed_or_timed_out_error(self):
+        generator = OutpaintGenerator(api_key="x")
+        logs = []
+        generator.set_progress_callback(lambda msg, lvl: logs.append((msg, lvl)))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = str(Path(tmpdir) / "input.png")
+            Image.new("RGB", (64, 64), (20, 30, 40)).save(image_path)
+            with mock.patch("fal_utils.fal_queue_submit", return_value={"request_id": "req-1234", "status_url": "https://example/status"}), \
+                mock.patch("fal_utils.upload_reference_image", return_value=("https://img", Image.new("RGB", (16, 16)), "fal_cdn")), \
+                mock.patch("fal_utils.fal_queue_poll", return_value=None), \
+                mock.patch("outpaint_generator.os.path.exists", return_value=False):
+                cancel = threading.Event()
+                cancel.set()
+                result = generator.outpaint(
+                    image_path=image_path,
+                    output_folder=tmpdir,
+                    cancel_event=cancel,
+                )
+        self.assertIsNone(result)
+        self.assertFalse(any("Outpaint failed or timed out" in m for m, lvl in logs if lvl == "error"))
 
     def test_persist_does_not_overwrite_custom_title_without_explicit_title_save(self):
         tab = SelfieTab.__new__(SelfieTab)
