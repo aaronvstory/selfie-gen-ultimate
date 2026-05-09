@@ -1,5 +1,6 @@
 import kling_automation_ui
 import types
+import builtins
 import pytest
 
 
@@ -194,7 +195,7 @@ def test_main_skips_dependency_check_when_env_set(monkeypatch):
     assert called["count"] == 0
 
 
-def test_non_interactive_startup_onboarding_exits_when_required_keys_missing(monkeypatch, capsys):
+def test_non_interactive_startup_onboarding_warns_and_continues_when_keys_missing(monkeypatch, capsys):
     ui = kling_automation_ui.KlingAutomationUI.__new__(kling_automation_ui.KlingAutomationUI)
     ui._startup_key_onboarding_done = False
     ui.config = {
@@ -209,14 +210,23 @@ def test_non_interactive_startup_onboarding_exits_when_required_keys_missing(mon
         "outpaint_provider": "fal",
     }
     monkeypatch.setattr(kling_automation_ui.sys.stdin, "isatty", lambda: False)
-
-    with pytest.raises(SystemExit) as exc:
-        ui._run_startup_key_onboarding()
-
-    assert exc.value.code == 1
+    ui._run_startup_key_onboarding()
     output = capsys.readouterr().out
-    assert "Startup-required API keys are missing for non-interactive mode." in output
+    assert "Startup API keys missing in non-interactive mode (continuing)." in output
     assert "Fal.ai" in output
     assert "https://fal.ai/dashboard/keys" in output
     assert "BFL" in output
     assert "https://api.bfl.ai/" in output
+
+
+def test_interactive_startup_onboarding_allows_skip(monkeypatch):
+    ui = kling_automation_ui.KlingAutomationUI.__new__(kling_automation_ui.KlingAutomationUI)
+    ui._startup_key_onboarding_done = False
+    ui.config = {"falai_api_key": "", "bfl_api_key": ""}
+    ui.save_config = lambda: None
+    monkeypatch.setattr(kling_automation_ui.sys.stdin, "isatty", lambda: True)
+    inputs = iter(["q", ""])
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": next(inputs))
+    ui._run_startup_key_onboarding()
+    assert ui.config["falai_api_key"] == ""
+    assert ui.config["bfl_api_key"] == ""

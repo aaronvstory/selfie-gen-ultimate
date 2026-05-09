@@ -17,6 +17,7 @@ RuntimeProbeFn = Callable[[], tuple[object | None, str]]
 
 REPAIR_PACKAGES = [
     "tensorflow==2.16.2",
+    "protobuf==4.25.3",
     "tf-keras==2.16.0",
     "retina-face==0.0.17",
     "deepface==0.0.92",

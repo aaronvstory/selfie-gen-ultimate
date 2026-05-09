@@ -174,12 +174,16 @@ if [[ "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
 fi
 
 if [[ -f "${ROOT_DIR}/dependency_checker.py" ]]; then
+  run_dep_check() {
+    "${VENV_DIR}/bin/python" "${ROOT_DIR}/dependency_checker.py" --auto --enforce-all
+  }
+
   if [[ "${VERBOSE_STARTUP}" == "1" ]]; then
     printf 'Verifying runtime dependency stack (strict mode)\n'
-    "${VENV_DIR}/bin/python" "${ROOT_DIR}/dependency_checker.py" --auto --enforce-all
+    run_dep_check
   else
     DEP_LOG="$(mktemp -t kling_depcheck.XXXXXX.log)"
-    if "${VENV_DIR}/bin/python" "${ROOT_DIR}/dependency_checker.py" --auto --enforce-all >"${DEP_LOG}" 2>&1; then
+    if run_dep_check >"${DEP_LOG}" 2>&1; then
       printf 'Runtime dependency check: OK\n'
       rm -f "${DEP_LOG}" || true
     else

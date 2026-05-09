@@ -132,5 +132,51 @@ class GuiLauncherBatchModeTests(unittest.TestCase):
             self.assertIn("Kling UI Initialization Failure", content)
 
 
+class GuiStartupKeyPromptTests(unittest.TestCase):
+    def test_key_prompt_cancel_does_not_close_app(self):
+        module = importlib.import_module("kling_gui.main_window")
+        window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)
+        window.config = {"falai_api_key": "", "bfl_api_key": ""}
+        window.root = object()
+        logs = []
+        saved = {"count": 0}
+        window._log = lambda message, level="info": logs.append((message, level))
+        window._save_config = lambda: saved.__setitem__("count", saved["count"] + 1)
+        window._update_api_badge = lambda _key: None
+        window._on_close = mock.Mock()
+
+        with mock.patch.object(module.messagebox, "showinfo"), mock.patch.object(
+            module.simpledialog, "askstring", side_effect=[None, None]
+        ):
+            window._prompt_startup_provider_keys_on_first_run()
+
+        window._on_close.assert_not_called()
+        self.assertEqual(saved["count"], 0)
+        self.assertTrue(any("skipped" in message.lower() for message, _ in logs))
+
+    def test_key_prompt_saves_fal_and_skips_bfl(self):
+        module = importlib.import_module("kling_gui.main_window")
+        window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)
+        window.config = {"falai_api_key": "", "bfl_api_key": ""}
+        window.root = object()
+        window._log = lambda *_args, **_kwargs: None
+        window._on_close = mock.Mock()
+        saved = {"count": 0}
+        updated = []
+        window._save_config = lambda: saved.__setitem__("count", saved["count"] + 1)
+        window._update_api_badge = lambda key: updated.append(key)
+
+        with mock.patch.object(module.messagebox, "showinfo"), mock.patch.object(
+            module.simpledialog, "askstring", side_effect=["fal-key", ""]
+        ):
+            window._prompt_startup_provider_keys_on_first_run()
+
+        self.assertEqual(window.config["falai_api_key"], "fal-key")
+        self.assertEqual(window.config["bfl_api_key"], "")
+        self.assertEqual(saved["count"], 1)
+        self.assertIn("falai_api_key", updated)
+        window._on_close.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

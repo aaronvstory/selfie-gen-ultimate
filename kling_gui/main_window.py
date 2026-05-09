@@ -19,6 +19,7 @@ from datetime import datetime
 
 from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs
 from automation.config import get_outpaint_fal_timeout_seconds
+from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 from tk_dialogs import select_directory, select_open_files
 
 # Import path utilities
@@ -654,7 +655,7 @@ class KlingGUIWindow:
         self._setup_debug_hotkeys()
 
         # First-run key prompt (Fal.ai required for generation)
-        self._prompt_fal_key_on_first_run()
+        self._prompt_startup_provider_keys_on_first_run()
 
         # Initialize generator and queue manager
         self._init_generator()
@@ -2646,44 +2647,45 @@ class KlingGUIWindow:
         except Exception as e:
             self._log(f"Failed to initialize generator: {e}", "error")
 
-    def _prompt_fal_key_on_first_run(self):
-        """First-launch key onboarding with status and provider links."""
-        existing = str(self.config.get("falai_api_key", "")).strip()
-        if existing:
+    def _prompt_startup_provider_keys_on_first_run(self):
+        """First-launch key onboarding (Fal.ai + BFL), never exits app."""
+        prompt_specs = startup_prompt_specs()
+        missing = missing_startup_specs(self.config)
+        if not missing:
             return
         status_text = "\n".join(
-            f"- {spec.label}: {key_status(self.config, spec.config_key)}"
-            for spec in API_KEY_SPECS
+            f"- {line}"
+            for line in startup_status_lines(self.config)
         )
-        links_text = "\n".join(f"- {spec.label}: {spec.url}" for spec in API_KEY_SPECS)
+        links_text = "\n".join(f"- {spec.label}: {spec.url}" for spec in prompt_specs)
         messagebox.showinfo(
             "First Launch: API Key Setup",
             "Key status:\n"
             f"{status_text}\n\n"
-            "Fal.ai is required at startup. Other keys are optional and can be added later.\n\n"
+            "Fal.ai and BFL keys can be added now or later.\n"
+            "If skipped, key-required features will show targeted errors when used.\n\n"
             "Where to get keys:\n"
             f"{links_text}",
             parent=self.root,
         )
 
-        while not str(self.config.get("falai_api_key", "")).strip():
+        for spec in missing:
             new_key = simpledialog.askstring(
-                "Fal.ai API Key Required",
-                "Enter your fal.ai API key:\nhttps://fal.ai/dashboard/keys\n\nCancel to exit app.",
+                f"{spec.label} API Key",
+                f"Enter your {spec.label} API key:\n{spec.url}\n\nCancel or leave blank to skip for now.",
                 parent=self.root,
             )
             if new_key is None:
-                self._log("Fal.ai API key setup canceled. Closing app.", "error")
-                self.root.after(100, self._on_close)
-                return
+                self._log(f"{spec.label} API key setup skipped.", "warning")
+                continue
             new_key = new_key.strip()
             if not new_key:
-                messagebox.showwarning("Missing Key", "Fal.ai API key cannot be empty.", parent=self.root)
+                self._log(f"{spec.label} API key setup skipped.", "warning")
                 continue
-            self.config["falai_api_key"] = new_key
+            self.config[spec.config_key] = new_key
             self._save_config()
-            self._update_api_badge("falai_api_key")
-            self._log("Fal.ai API key saved.", "success")
+            self._update_api_badge(spec.config_key)
+            self._log(f"{spec.label} API key saved.", "success")
 
         optional_missing = list(non_required_missing_specs(self.config))
         if optional_missing:

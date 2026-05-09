@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from api_keys import API_KEY_SPECS, ApiKeySpec, ensure_key_fields, key_status, non_required_missing_specs, status_lines
+from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 
 try:
     from kling_gui.ml_backend_env import ensure_ml_backend_env
@@ -448,42 +449,33 @@ class KlingAutomationUI:
         if self._startup_key_onboarding_done:
             return
         self._startup_key_onboarding_done = True
-        required_specs = self._startup_required_key_specs()
-        missing_required = [spec for spec, _reason in required_specs if not str(self.config.get(spec.config_key, "")).strip()]
+        prompt_specs = startup_prompt_specs()
         if not sys.stdin.isatty():
-            if missing_required:
-                print("\nStartup-required API keys are missing for non-interactive mode.")
-                for spec in missing_required:
+            missing_any = missing_startup_specs(self.config)
+            if missing_any:
+                print("\nStartup API keys missing in non-interactive mode (continuing).")
+                for spec in missing_any:
                     print(f"  - {spec.label}: {spec.url}")
-                print("Set the missing keys in kling_config.json or via interactive setup, then retry.")
-                raise SystemExit(1)
+                print("Key-required features will show an error when used until keys are configured.")
             return
 
         print("\n" + "=" * 79)
         print("FIRST LAUNCH KEY CHECK")
         print("=" * 79)
-        for line in status_lines(self.config):
+        for line in startup_status_lines(self.config):
             print(f"  - {line}")
-        print("\nStartup-required keys based on current config:")
-        for spec, reason in required_specs:
-            print(f"  - {spec.label}: required ({reason})")
         print("\nQuick setup links:")
-        for spec in API_KEY_SPECS:
+        for spec in prompt_specs:
             print(f"  - {spec.label}: {spec.url}")
-
-        if missing_required:
-            print("\nRequired keys must be set before continuing.")
-        while missing_required:
-            spec = missing_required[0]
+        print("\nPress Enter to skip any key for now.")
+        for spec in missing_startup_specs(self.config):
             print(f"\n{spec.label}: {spec.instruction}")
-            value = input("Enter key now (or q to quit): ").strip()
+            value = input("Enter key now (or q to skip): ").strip()
             if value.lower() == "q":
-                print("Cannot continue without required key. Exiting.")
-                raise SystemExit(1)
+                continue
             if value:
                 self.config[spec.config_key] = value
                 self.save_config()
-            missing_required = [item for item in missing_required if not str(self.config.get(item.config_key, "")).strip()]
 
         missing_optional = list(non_required_missing_specs(self.config))
         if missing_optional:
