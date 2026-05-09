@@ -3,7 +3,7 @@ Main Window - Primary GUI window that assembles all components.
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkinter import ttk, messagebox, simpledialog
 import json
 import os
 import sys
@@ -18,6 +18,7 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 
 from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs
+from tk_dialogs import select_directory, select_open_files
 
 # Import path utilities
 from path_utils import (
@@ -1768,7 +1769,7 @@ class KlingGUIWindow:
 
     def _browse_and_add_images(self):
         """Open file dialog and add selected images to carousel."""
-        files = filedialog.askopenfilenames(
+        files = select_open_files(
             title="Select Images to Add",
             filetypes=[
                 ("Image files", "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tiff *.tif"),
@@ -1776,7 +1777,7 @@ class KlingGUIWindow:
             ],
         )
         if files:
-            self._add_input_images_to_session(list(files))
+            self._add_input_images_to_session(files)
 
     def _apply_ui_config(self):
         """Apply UI layout configuration to existing widgets."""
@@ -3179,7 +3180,7 @@ class KlingGUIWindow:
 
     def _on_sanitize_folder_clicked(self):
         """Manually sanitize a folder tree and show a concise report."""
-        folder = filedialog.askdirectory(title="Select Folder to Sanitize")
+        folder = select_directory(title="Select Folder to Sanitize")
         if not folder:
             return
         try:
@@ -3519,12 +3520,12 @@ class KlingGUIWindow:
             return
 
         if choice:
-            folder = filedialog.askdirectory(title="Select Folder to Process")
+            folder = select_directory(title="Select Folder to Process")
             if folder:
                 self._on_folder_dropped(folder)
             return
 
-        files = filedialog.askopenfilenames(
+        files = select_open_files(
             title="Select Images",
             filetypes=[
                 ("Image files", "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tiff *.tif"),
@@ -3532,7 +3533,7 @@ class KlingGUIWindow:
             ],
         )
         if files:
-            self._on_files_dropped(list(files))
+            self._on_files_dropped(files)
 
     def _restore_sash_positions(self):
         """Restore saved sash positions for all PanedWindows."""
