@@ -152,6 +152,18 @@ def write_bundle_readme(bundle_root: Path) -> None:
 
 
 def _write_top_level_launchers(bundle_root: Path) -> None:
+    """Write top-level Windows/macOS launcher scripts for the bundle.
+
+    Args:
+        bundle_root: Root folder of the assembled distributable bundle.
+
+    Returns:
+        None.
+
+    Side Effects:
+        Creates `Start GUI/CLI` launcher files and applies execute permission
+        to generated `.command` scripts.
+    """
     (bundle_root / "Start GUI.bat").write_text(
         "@echo off\n"
         "setlocal\n"
