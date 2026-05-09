@@ -158,7 +158,7 @@ def select_directory_cli_safe(*, title: str = "Select Folder") -> Optional[str]:
     try:
         result = subprocess.run(
             [
-                "osascript",
+                "/usr/bin/osascript",
                 "-e",
                 f'POSIX path of (choose folder with prompt "{title.replace(chr(34), chr(39))}")',
             ],

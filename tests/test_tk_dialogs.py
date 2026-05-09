@@ -152,13 +152,20 @@ def test_run_dialog_logs_picker_error(monkeypatch):
 
 def test_select_directory_cli_safe_uses_osascript_on_darwin(monkeypatch):
     monkeypatch.setattr(tk_dialogs.sys, "platform", "darwin")
+    captured = {"cmd": None}
+
+    def _run(*args, **kwargs):
+        captured["cmd"] = args[0]
+        return SimpleNamespace(returncode=0, stdout="/tmp/folder\n", stderr="")
+
     monkeypatch.setattr(
         tk_dialogs.subprocess,
         "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="/tmp/folder\n", stderr=""),
+        _run,
     )
     out = tk_dialogs.select_directory_cli_safe(title="Pick Folder")
     assert out == "/tmp/folder"
+    assert captured["cmd"][0] == "/usr/bin/osascript"
 
 
 def test_select_directory_cli_safe_cancel_on_darwin(monkeypatch):
