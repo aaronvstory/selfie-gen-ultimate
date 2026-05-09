@@ -10,8 +10,8 @@ def main() -> int:
         sys.path.insert(0, str(repo_root))
     from distribution.release_prep import bundle_release
 
-    release_root = repo_root / "release"
-    created = list(bundle_release(repo_root, release_root))
+    dist_root = repo_root / "dist"
+    created = list(bundle_release(repo_root, dist_root))
     print("Created release bundles:")
     for path in created:
         print(f"- {path}")

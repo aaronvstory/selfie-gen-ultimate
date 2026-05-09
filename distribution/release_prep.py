@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, Set
 
@@ -20,18 +19,27 @@ except ModuleNotFoundError:
 
 EXCLUDED_DIRS: Set[str] = {
     ".git",
+    ".venv",
     ".venv-macos",
+    "build",
+    "dist",
     "venv",
     "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
     ".claude",
+    ".dual-graph",
+    ".gsd",
     ".serena",
     ".planning",
     ".tmp",
+    "handoffs",
+    "reviews",
     "sessions",
     "release",
+    "tests",
+    "tests_tmp",
 }
 
 EXCLUDED_FILES: Set[str] = {
@@ -41,6 +49,7 @@ EXCLUDED_FILES: Set[str] = {
     "kling_automation.log",
     "kling_history.json",
     "crash_log.txt",
+    "ui_config.json",
 }
 
 
@@ -55,9 +64,17 @@ def _should_skip(path: Path) -> bool:
     """
     if any(part in EXCLUDED_DIRS for part in path.parts):
         return True
+    if any(part.startswith("kling_ui_shareable_") for part in path.parts):
+        return True
     if path.name in EXCLUDED_FILES:
         return True
+    if path.name.startswith("session-ses_") and path.suffix.lower() == ".md":
+        return True
+    if path.name.startswith("map-codebase-session-") and path.suffix.lower() == ".md":
+        return True
     if path.suffix.lower() in {".pyc", ".pyo", ".log"}:
+        return True
+    if path.suffix.lower() == ".bak":
         return True
     return False
 
@@ -119,14 +136,20 @@ def write_bundle_readme(bundle_root: Path, flavor: str) -> None:
         bundle_root: Bundle directory root.
         flavor: One of windows_gui, windows_cli, macos_portable.
     """
-    instructions = {
-        "windows_gui": "Start with launchers\\run_gui.bat",
-        "windows_cli": "Start with launchers\\run_cli.bat",
-        "macos_portable": "Run ./setup_macos.sh once, then ./run_gui.sh or ./run_cli.sh",
-    }
+    if flavor == "windows":
+        launch_text = (
+            "Windows:\n"
+            '- double-click "Start GUI.bat" or "Start CLI.bat"\n'
+        )
+    else:
+        launch_text = (
+            "macOS:\n"
+            '- double-click "Start GUI.command" or "Start CLI.command"\n'
+            "- if macOS blocks it, right-click Open once\n"
+        )
     text = (
         "Selfie Gen Ultimate - Shareable Bundle\n\n"
-        f"Launch: {instructions[flavor]}\n\n"
+        f"{launch_text}\n"
         "First launch key setup:\n"
         "- Fal.ai key is required at startup: https://fal.ai/dashboard/keys\n"
         "- Optional keys: BFL (https://api.bfl.ai/), OpenRouter (https://openrouter.ai/keys), "
@@ -135,30 +158,80 @@ def write_bundle_readme(bundle_root: Path, flavor: str) -> None:
     (bundle_root / "README_FIRST_RUN.txt").write_text(text, encoding="utf-8")
 
 
-def bundle_release(repo_root: Path, release_root: Path) -> Iterable[Path]:
-    """Create all platform release bundles and return generated zip paths.
+def _write_top_level_launchers(bundle_root: Path, flavor: str) -> None:
+    if flavor == "windows":
+        (bundle_root / "Start GUI.bat").write_text(
+            "@echo off\n"
+            "setlocal\n"
+            "cd /d \"%~dp0\"\n"
+            "call launchers\\run_gui.bat\n",
+            encoding="utf-8",
+        )
+        (bundle_root / "Start CLI.bat").write_text(
+            "@echo off\n"
+            "setlocal\n"
+            "cd /d \"%~dp0\"\n"
+            "call launchers\\run_cli.bat\n",
+            encoding="utf-8",
+        )
+        return
+
+    (bundle_root / "Start GUI.command").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "cd \"$(dirname \"$0\")\"\n"
+        "if [[ -x ./run_gui.command ]]; then\n"
+        "  exec ./run_gui.command\n"
+        "fi\n"
+        "exec ./run_gui.sh\n",
+        encoding="utf-8",
+    )
+    (bundle_root / "Start CLI.command").write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "cd \"$(dirname \"$0\")\"\n"
+        "if [[ -x ./run_cli.command ]]; then\n"
+        "  exec ./run_cli.command\n"
+        "fi\n"
+        "exec ./run_cli.sh\n",
+        encoding="utf-8",
+    )
+    for name in ("Start GUI.command", "Start CLI.command"):
+        os.chmod(bundle_root / name, 0o755)
+
+
+def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
+    """Create two platform release bundles and return generated zip paths.
 
     Args:
         repo_root: Source repository root.
-        release_root: Output root for timestamped release folders.
+        dist_root: Output root for distributable zip files.
 
     Returns:
         Iterable of created zip archive paths.
     """
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    version_root = release_root / f"release_{stamp}"
-    version_root.mkdir(parents=True, exist_ok=True)
+    dist_root.mkdir(parents=True, exist_ok=True)
 
-    bundles = ["windows_gui", "windows_cli", "macos_portable"]
+    bundle_defs = [
+        ("windows", "SelfieGenUltimate-Windows"),
+        ("macos", "SelfieGenUltimate-macOS"),
+    ]
     created = []
-    for name in bundles:
-        bundle_dir = version_root / name / "selfie-gen-ultimate"
+    for flavor, zip_name in bundle_defs:
+        staging_root = dist_root / "_staging" / flavor
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
+        bundle_dir = staging_root / "selfie-gen-ultimate"
         bundle_dir.mkdir(parents=True, exist_ok=True)
         copy_sanitized_tree(repo_root, bundle_dir)
         config = build_sanitized_config(bundle_dir / "default_config_template.json")
         (bundle_dir / "kling_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
-        write_bundle_readme(bundle_dir, name)
-        zip_base = version_root / name
-        archive_path = shutil.make_archive(str(zip_base), "zip", root_dir=(version_root / name))
+        _write_top_level_launchers(bundle_dir, flavor)
+        write_bundle_readme(bundle_dir, flavor)
+        zip_path = dist_root / f"{zip_name}.zip"
+        if zip_path.exists():
+            zip_path.unlink()
+        archive_path = shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=staging_root)
         created.append(Path(archive_path))
+    shutil.rmtree(dist_root / "_staging", ignore_errors=True)
     return created
