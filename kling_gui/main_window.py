@@ -1453,6 +1453,35 @@ class KlingGUIWindow:
         except Exception:
             pass
 
+    def _check_similarity_early_exit(
+        self,
+        process,
+        launcher_name: str,
+        runtime_log_path: str,
+        crash_log_path: str,
+        show_dialog: bool,
+    ) -> None:
+        """Check whether launcher exited immediately without blocking the UI thread."""
+        try:
+            exit_code = process.poll()
+        except Exception as exc:
+            self._log(f"Similarity early-exit probe failed: {exc}", "warning")
+            return
+
+        if exit_code is None:
+            return
+
+        msg = (
+            f"Similarity launcher '{launcher_name}' exited immediately "
+            f"(code={exit_code}). See logs: {runtime_log_path} / {crash_log_path}"
+        )
+        self._log(msg, "error")
+        if show_dialog:
+            try:
+                messagebox.showerror("Similarity Launch Failed", msg, parent=self.root)
+            except Exception:
+                pass
+
     def _launch_similarity_gui(self, show_dialog: bool = True) -> bool:
         """Launch the standalone similarity GUI in a non-blocking subprocess."""
         import platform
@@ -1511,17 +1540,12 @@ class KlingGUIWindow:
             )
 
             if system in {"Windows", "Darwin"} and process is not None:
-                time.sleep(0.8)
-                exit_code = process.poll()
-                if exit_code is not None:
-                    msg = (
-                        "Similarity launcher exited immediately "
-                        f"(code={exit_code}). See logs: {runtime_log_path} / {crash_log_path}"
-                    )
-                    self._log(msg, "error")
-                    if show_dialog:
-                        messagebox.showerror("Similarity Launch Failed", msg, parent=self.root)
-                    return False
+                self.root.after(
+                    800,
+                    lambda p=process, ln=launcher_name, rl=runtime_log_path, cl=crash_log_path, sd=show_dialog: self._check_similarity_early_exit(
+                        p, ln, rl, cl, sd
+                    ),
+                )
 
             self._log(f"Launched Similarity app via {launcher_name} (runtime log: {runtime_log_path})", "success")
             return True

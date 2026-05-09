@@ -92,7 +92,11 @@ if errorlevel 1 (
 
 echo [INFO] Launching Face Similarity CLI...
 >> "%LOG_FILE%" echo [INFO] Launching Face Similarity CLI...
-python main.py --cli >> "%LOG_FILE%" 2>&1
+if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" (
+    python main.py --cli
+) else (
+    python main.py --cli >> "%LOG_FILE%" 2>&1
+)
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
