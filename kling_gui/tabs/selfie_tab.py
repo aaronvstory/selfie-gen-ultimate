@@ -37,7 +37,7 @@ except Exception:
 class SelfieTab(tk.Frame):
     """Tab 2: Generate selfie from identity reference."""
 
-    DEFAULT_MODEL_ENDPOINT = "openai/gpt-image-2/edit"
+    DEFAULT_MODEL_ENDPOINT = "fal-ai/nano-banana-2/edit"
     DEFAULT_PROMPT_TEMPLATE = (
         "Transform this passport photo into a natural selfie: A {json.gender} with "
         "{json.hair}, {json.skin}, {json.eyes}, and a {json.face_shape}, wearing "
@@ -153,16 +153,20 @@ class SelfieTab(tk.Frame):
 
     def _migrate_selected_models_config(self) -> None:
         """Limit saved model map to supported endpoints and force new defaults."""
-        saved_models = self.config.get("selfie_selected_models", {})
-        if not isinstance(saved_models, dict):
-            saved_models = {}
+        saved_models_raw = self.config.get("selfie_selected_models", {})
+        saved_models: Dict[str, bool] = {}
+        if isinstance(saved_models_raw, list):
+            saved_models = {str(endpoint): True for endpoint in saved_models_raw if isinstance(endpoint, str)}
+        elif isinstance(saved_models_raw, dict):
+            saved_models = {str(k): bool(v) for k, v in saved_models_raw.items()}
 
-        migrated = {}
-        for endpoint in self._supported_model_endpoints:
-            if endpoint == self.DEFAULT_MODEL_ENDPOINT:
-                migrated[endpoint] = True
-            else:
-                migrated[endpoint] = bool(saved_models.get(endpoint, False))
+        enabled = {endpoint for endpoint, is_enabled in saved_models.items() if is_enabled}
+        stale_old_default = enabled == {"openai/gpt-image-2/edit"}
+
+        migrated = {endpoint: bool(saved_models.get(endpoint, False)) for endpoint in self._supported_model_endpoints}
+        if stale_old_default or not any(migrated.values()):
+            for endpoint in migrated.keys():
+                migrated[endpoint] = endpoint == self.DEFAULT_MODEL_ENDPOINT
 
         self.config["selfie_selected_models"] = migrated
 
@@ -206,13 +210,13 @@ class SelfieTab(tk.Frame):
             if legacy_wildcard:
                 normalized_wildcards["1"] = legacy_wildcard
 
-        current_slot = self.config.get("selfie_current_prompt_slot", 1)
+        current_slot = self.config.get("selfie_current_prompt_slot", 3)
         try:
             current_slot = int(current_slot)
         except Exception:
-            current_slot = 1
+            current_slot = 3
         if current_slot < 1 or current_slot > self.SLOT_COUNT:
-            current_slot = 1
+            current_slot = 3
 
         self.config["selfie_saved_prompts"] = normalized_prompts
         self.config["selfie_wildcard_saved_prompts"] = normalized_wildcards

@@ -13,6 +13,7 @@ from ..theme import (
     COLORS,
     FONT_FAMILY,
     TTK_BTN_COMPACT,
+    TTK_BTN_DANGER,
     TTK_BTN_PRIMARY,
     TTK_BTN_SECONDARY,
     TTK_BTN_SUCCESS,
@@ -186,6 +187,8 @@ class FaceCropTab(tk.Frame):
 
         # Outpaint state
         self._outpaint_busy = False
+        self._outpaint_cancel_event: Optional[threading.Event] = None
+        self._outpaint_run_token = 0
         self._expand_mode_var = tk.StringVar(
             value=config.get("outpaint_expand_mode", "percentage")
         )
@@ -633,6 +636,14 @@ class FaceCropTab(tk.Frame):
             command=debounce_command(self._outpaint_image, key="facecrop_expand"),
         )
         self._expand_btn.pack(side=tk.LEFT)
+        self._expand_abort_btn = ttk.Button(
+            btn_row,
+            text="Abort",
+            style=TTK_BTN_DANGER,
+            command=debounce_command(self._abort_outpaint, key="facecrop_abort_expand"),
+            state=tk.DISABLED,
+        )
+        self._expand_abort_btn.pack(side=tk.LEFT, padx=(6, 0))
 
         ttk.Button(
             btn_row,
@@ -1898,7 +1909,11 @@ class FaceCropTab(tk.Frame):
         self.log(f"[SIM] outpaint input={Path(image_path).name} ref={Path(ref_path).name if ref_path else 'none'}", "debug")
 
         self._outpaint_busy = True
+        self._outpaint_run_token += 1
+        run_token = self._outpaint_run_token
+        self._outpaint_cancel_event = threading.Event()
         self._expand_btn.config(state=tk.DISABLED, text="Expanding...")
+        self._expand_abort_btn.config(state=tk.NORMAL)
         self._outpaint_status.config(text="Processing...", fg=COLORS["progress"])
 
         bfl_key = cfg.get("bfl_api_key") if use_bfl else None
@@ -1933,6 +1948,8 @@ class FaceCropTab(tk.Frame):
                         output_format=output_format,
                         composite_mode=composite_mode,
                         output_path=pass_output_path,
+                        poll_timeout_seconds=int(cfg.get("outpaint_fal_timeout_seconds", 150) or 150),
+                        cancel_event=self._outpaint_cancel_event,
                     )
                     if not result:
                         break
@@ -1950,20 +1967,36 @@ class FaceCropTab(tk.Frame):
                             0, lambda e=exc: self.log(f"Sim: {type(e).__name__}: {e!r}", "warning")
                         )
 
-                self.winfo_toplevel().after(
-                    0, lambda: self._on_outpaint_done(result, similarity, new_ops)
-                )
+                self.winfo_toplevel().after(0, lambda: self._on_outpaint_done(result, similarity, new_ops, run_token))
             except Exception as e:
                 err = str(e)
-                self.winfo_toplevel().after(
-                    0, lambda: self._on_outpaint_error(err)
-                )
+                self.winfo_toplevel().after(0, lambda: self._on_outpaint_error(err, run_token))
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_outpaint_done(self, result, similarity=None, ops=None):
+    def _abort_outpaint(self):
+        if not self._outpaint_busy or self._outpaint_cancel_event is None:
+            return
+        self._outpaint_cancel_event.set()
+        self.log("Expand abort requested by user", "warning")
+        self._outpaint_status.config(text="Aborting...", fg=COLORS["warning"])
+        self._expand_abort_btn.config(state=tk.DISABLED, text="Aborting...")
+
+    def _on_outpaint_done(self, result, similarity=None, ops=None, run_token=None):
+        if run_token is not None and run_token != self._outpaint_run_token:
+            return
+        if self._outpaint_cancel_event is not None and self._outpaint_cancel_event.is_set():
+            self._outpaint_busy = False
+            self._outpaint_cancel_event = None
+            self._expand_btn.config(text="Expand Image", state=tk.NORMAL)
+            self._expand_abort_btn.config(text="Abort", state=tk.DISABLED)
+            self._outpaint_status.config(text="Aborted by user", fg=COLORS["warning"])
+            self.log("Expand aborted by user", "warning")
+            return
         self._outpaint_busy = False
+        self._outpaint_cancel_event = None
         self._expand_btn.config(text="Expand Image", state=tk.NORMAL)
+        self._expand_abort_btn.config(text="Abort", state=tk.DISABLED)
         if result:
             basename = os.path.basename(result)
             self._outpaint_status.config(text=f"Done: {basename}", fg=COLORS["success"])
@@ -1974,9 +2007,13 @@ class FaceCropTab(tk.Frame):
             self._outpaint_status.config(text="Failed", fg=COLORS["error"])
             self.log("Outpaint failed", "error")
 
-    def _on_outpaint_error(self, error):
+    def _on_outpaint_error(self, error, run_token=None):
+        if run_token is not None and run_token != self._outpaint_run_token:
+            return
         self._outpaint_busy = False
+        self._outpaint_cancel_event = None
         self._expand_btn.config(text="Expand Image", state=tk.NORMAL)
+        self._expand_abort_btn.config(text="Abort", state=tk.DISABLED)
         self._outpaint_status.config(text=error, fg=COLORS["error"])
         self.log(f"Outpaint error: {error}", "error")
 

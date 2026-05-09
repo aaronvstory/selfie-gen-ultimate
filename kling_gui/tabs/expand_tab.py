@@ -714,6 +714,7 @@ class ExpandTab(tk.Frame):
                         output_format=output_format,
                         composite_mode=composite_mode,
                         output_path=output_path,
+                        poll_timeout_seconds=int(cfg.get("outpaint_fal_timeout_seconds", 150) or 150),
                     )
                 except Exception as exc:
                     self.winfo_toplevel().after(

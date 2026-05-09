@@ -461,6 +461,7 @@ class AutoPipelineRunner:
                         edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
                         if self.automation.get("automation_front_edge_seal_enabled", True)
                         else 0,
+                        poll_timeout_seconds=int(self.config.get("outpaint_fal_timeout_seconds", 150) or 150),
                         **front_expand_kwargs,
                     )
                     if not result:
@@ -760,6 +761,7 @@ class AutoPipelineRunner:
                     expand_top=margins["top"],
                     expand_bottom=margins["bottom"],
                     edge_seal_px=0,
+                    poll_timeout_seconds=int(self.config.get("outpaint_fal_timeout_seconds", 150) or 150),
                 )
                 if expanded_result:
                     final_still = expanded_result

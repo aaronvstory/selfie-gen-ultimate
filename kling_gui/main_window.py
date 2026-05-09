@@ -711,7 +711,7 @@ class KlingGUIWindow:
             "log_max_mb": 5,
             "log_backups": 3,
             "duplicate_detection": True,
-            "current_prompt_slot": 1,
+            "current_prompt_slot": 4,
             "saved_prompts": {str(i): "" for i in range(1, 11)},
             "negative_prompts": {str(i): "" for i in range(1, 11)},
             "model_capabilities": {},
@@ -732,7 +732,8 @@ class KlingGUIWindow:
             "selfie_output_mode": "source",
             "selfie_output_folder": "",
             "selfie_poll_timeout_seconds": 300,
-            "selfie_current_prompt_slot": 1,
+            "selfie_current_prompt_slot": 3,
+            "outpaint_fal_timeout_seconds": 150,
             "selfie_saved_prompts": {str(i): "" for i in range(1, 11)},
             "selfie_prompt_titles": {str(i): f"Prompt {i}" for i in range(1, 11)},
             "selfie_selected_models": {
@@ -808,10 +809,20 @@ class KlingGUIWindow:
                     bucket[slot] = ""
 
         try:
-            selfie_slot = int(default_config.get("selfie_current_prompt_slot", 1))
+            selfie_slot = int(default_config.get("selfie_current_prompt_slot", 3))
         except Exception:
-            selfie_slot = 1
+            selfie_slot = 3
         default_config["selfie_current_prompt_slot"] = min(10, max(1, selfie_slot))
+        try:
+            kling_slot = int(default_config.get("current_prompt_slot", 4))
+        except Exception:
+            kling_slot = 4
+        default_config["current_prompt_slot"] = min(10, max(1, kling_slot))
+        try:
+            outpaint_fal_timeout = int(default_config.get("outpaint_fal_timeout_seconds", 150))
+        except Exception:
+            outpaint_fal_timeout = 150
+        default_config["outpaint_fal_timeout_seconds"] = max(30, outpaint_fal_timeout)
 
         # Layer 4: migrate known broken endpoint paths
         self._migrate_endpoints(default_config)

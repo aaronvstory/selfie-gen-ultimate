@@ -48,6 +48,28 @@ class FalPollCancellationTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertLess(elapsed, 1.0)
 
+    def test_timeout_reports_provider_endpoint_request_reason(self):
+        logs = []
+
+        def _cb(message, level):
+            logs.append((message, level))
+
+        result = fal_queue_poll(
+            api_key="dummy",
+            status_url="https://example.com/status",
+            progress_cb=_cb,
+            max_wait_seconds=0,
+            cancel_event=None,
+            provider="fal",
+            endpoint="fal-ai/image-apps-v2/outpaint",
+            request_id="12345678-abcdef00",
+        )
+        self.assertIsNone(result)
+        timeout_msgs = [m for m, lvl in logs if lvl == "error"]
+        self.assertTrue(any("reason=provider_timeout" in m for m in timeout_msgs))
+        self.assertTrue(any("endpoint=fal-ai/image-apps-v2/outpaint" in m for m in timeout_msgs))
+        self.assertTrue(any("req=*abcdef00" in m for m in timeout_msgs))
+
 
 class UploadHandleTests(unittest.TestCase):
     def test_upload_error_releases_source_file_handle(self):
@@ -332,10 +354,10 @@ class SelfieSlotStateTests(unittest.TestCase):
         tab._selfie_slot_var = self._FakeVar()
         tab._init_selfie_prompt_slots()
 
-        self.assertEqual(tab.config["selfie_current_prompt_slot"], 1)
+        self.assertEqual(tab.config["selfie_current_prompt_slot"], 3)
         self.assertEqual(tab.config["selfie_saved_prompts"]["1"], "LEGACY TEMPLATE")
         self.assertEqual(tab.config["selfie_prompt_titles"]["1"], "")
-        self.assertEqual(tab._selfie_slot_var.get(), 1)
+        self.assertEqual(tab._selfie_slot_var.get(), 3)
 
     def test_slot_current_clamped(self):
         tab = SelfieTab.__new__(SelfieTab)
@@ -344,7 +366,22 @@ class SelfieSlotStateTests(unittest.TestCase):
         tab.config = {"selfie_current_prompt_slot": 99, "selfie_saved_prompts": {}, "selfie_prompt_titles": {}}
         tab._selfie_slot_var = self._FakeVar()
         tab._init_selfie_prompt_slots()
-        self.assertEqual(tab.config["selfie_current_prompt_slot"], 1)
+        self.assertEqual(tab.config["selfie_current_prompt_slot"], 3)
+
+    def test_stale_gpt_only_selection_migrates_to_nano_banana_only(self):
+        tab = SelfieTab.__new__(SelfieTab)
+        tab.DEFAULT_MODEL_ENDPOINT = "fal-ai/nano-banana-2/edit"
+        tab._supported_model_endpoints = {
+            "fal-ai/nano-banana-2/edit",
+            "openai/gpt-image-2/edit",
+            "fal-ai/flux-pulid",
+        }
+        tab.config = {"selfie_selected_models": {"openai/gpt-image-2/edit": True}}
+        tab._migrate_selected_models_config()
+        merged = tab.config["selfie_selected_models"]
+        self.assertTrue(merged["fal-ai/nano-banana-2/edit"])
+        self.assertFalse(merged["openai/gpt-image-2/edit"])
+        self.assertFalse(merged["fal-ai/flux-pulid"])
 
     def test_persist_does_not_overwrite_custom_title_without_explicit_title_save(self):
         tab = SelfieTab.__new__(SelfieTab)

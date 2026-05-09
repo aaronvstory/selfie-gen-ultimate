@@ -50,7 +50,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_crop_multiplier": 1.5,
     "automation_selfie_enabled": True,
     "automation_selfie_models": ["fal-ai/nano-banana-2/edit"],
-    "automation_selfie_prompt_slot": 1,
+    "automation_selfie_prompt_slot": 3,
     "automation_selfie_prompts": {
         "1": DEFAULT_SELFIE_PROMPT,
         "2": "",
@@ -82,6 +82,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
     "automation_log_backup_count": 5,
+    "outpaint_fal_timeout_seconds": 150,
 }
 
 
@@ -115,13 +116,13 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
             prompts.setdefault(slot, default_prompt if slot == "1" else "")
         if not str(prompts.get("1", "")).strip():
             prompts["1"] = AUTOMATION_DEFAULTS["automation_selfie_prompts"]["1"]
-    slot = merged.get("automation_selfie_prompt_slot", 1)
+    slot = merged.get("automation_selfie_prompt_slot", 3)
     try:
         slot_int = int(slot)
     except (ValueError, TypeError):
-        slot_int = 1
+        slot_int = 3
     if slot_int < 1 or slot_int > 10:
-        slot_int = 1
+        slot_int = 3
     merged["automation_selfie_prompt_slot"] = slot_int
     return merged
 

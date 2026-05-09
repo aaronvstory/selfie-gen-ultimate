@@ -424,6 +424,7 @@ class OutpaintTab(tk.Frame):
                     expand_bottom=expand_bottom,
                     prompt=prompt,
                     output_format=output_format,
+                    poll_timeout_seconds=int(self.get_config().get("outpaint_fal_timeout_seconds", 150) or 150),
                 )
 
                 # Compute face similarity against original portrait
