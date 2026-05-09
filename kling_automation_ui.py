@@ -18,6 +18,8 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
+from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs, required_missing_specs, status_lines
+
 try:
     from kling_gui.ml_backend_env import ensure_ml_backend_env
 except ModuleNotFoundError:
@@ -39,7 +41,7 @@ from path_utils import (
 from kling_generator_falai import FalAIKlingGenerator
 from automation.config import merge_automation_defaults, from_app_config
 from automation.discovery import discover_case_folders, detect_existing_outputs
-from automation.logger import key_status, resolve_automation_log_path
+from automation.logger import resolve_automation_log_path
 from automation.manifest import AutomationManifest
 from automation.pipeline import AutoPipelineRunner
 from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies
@@ -92,10 +94,13 @@ class KlingAutomationUI:
     def __init__(self, legacy_pauses: bool = False):
         self.config_file = get_config_path("kling_config.json")
         self.config = merge_automation_defaults(self.load_config())
+        if ensure_key_fields(self.config):
+            self.save_config()
         self.automation_root_folder = self.config.get("automation_root_folder", "")
         self.verbose_logging = self.config.get("verbose_logging", False)
         self.legacy_pauses = legacy_pauses
         self._last_scan_records: List[Any] = []
+        self._startup_key_onboarding_done = False
         self.setup_logging()
 
     def pause_continue(self, message: str = "Press Enter to continue..."):
@@ -123,6 +128,9 @@ class KlingAutomationUI:
             "output_folder": "",  # Empty by default - user picks their own
             "use_source_folder": True,  # Default: save videos alongside source images
             "falai_api_key": "",  # Will prompt user on first run
+            "bfl_api_key": "",
+            "openrouter_api_key": "",
+            "freeimage_api_key": "",
             "verbose_logging": True,
             "duplicate_detection": True,
             "delay_between_generations": 1,
@@ -382,43 +390,83 @@ class KlingAutomationUI:
         print("\n" + "=" * 72)
         print("  API SETUP / PROVIDER SETTINGS")
         print("=" * 72)
-        print("\nFal.ai key: required for Kling video and fal-backed image/selfie providers.")
-        print("BFL key: optional, used for outpainting when BFL is selected or auto-resolved.")
-        print("Other providers: configured through existing app/provider settings.")
+        print("\nProvider key status:")
+        for line in status_lines(self.config):
+            print(f"  - {line}")
+        print("\nProvider quick setup:")
+        for idx, spec in enumerate(API_KEY_SPECS, start=1):
+            print(f"  {idx}) Set/update {spec.label} key")
+        clear_base = len(API_KEY_SPECS)
+        for idx, spec in enumerate(API_KEY_SPECS, start=1):
+            print(f"  {clear_base + idx}) Clear {spec.label} key")
         print("\nCurrent key status:")
-        fal_status = "set" if str(self.config.get("falai_api_key", "")).strip() else "missing"
-        bfl_status = "set" if str(self.config.get("bfl_api_key", "")).strip() else "missing"
-        print(f"  - falai_api_key: {fal_status}")
-        print(f"  - bfl_api_key: {bfl_status}")
-        print("\nOptions:")
-        print("  1) Set/update falai_api_key")
-        print("  2) Set/update bfl_api_key")
-        print("  3) Clear falai_api_key")
-        print("  4) Clear bfl_api_key")
+        for spec in API_KEY_SPECS:
+            print(f"  - {spec.config_key}: {key_status(self.config, spec.config_key)}")
         print("  0) Back")
         print()
         choice = input("Select option: ").strip()
-        if choice == "1":
-            value = input("Enter fal.ai API key: ").strip()
+        if choice == "0":
+            self.pause_continue("\nPress Enter to continue...")
+            return
+        try:
+            selected = int(choice)
+        except ValueError:
+            self.pause_continue("\nInvalid selection. Press Enter to continue...")
+            return
+
+        if 1 <= selected <= len(API_KEY_SPECS):
+            spec = API_KEY_SPECS[selected - 1]
+            print(f"\n{spec.label}: {spec.instruction}")
+            print(f"Get key: {spec.url}")
+            value = input(f"Enter {spec.label} API key: ").strip()
             if value:
-                self.config["falai_api_key"] = value
+                self.config[spec.config_key] = value
                 self.save_config()
-                print("Saved falai_api_key.")
-        elif choice == "2":
-            value = input("Enter BFL API key: ").strip()
-            if value:
-                self.config["bfl_api_key"] = value
-                self.save_config()
-                print("Saved bfl_api_key.")
-        elif choice == "3":
-            self.config["falai_api_key"] = ""
+                print(f"Saved {spec.config_key}.")
+        elif len(API_KEY_SPECS) < selected <= len(API_KEY_SPECS) * 2:
+            spec = API_KEY_SPECS[selected - len(API_KEY_SPECS) - 1]
+            self.config[spec.config_key] = ""
             self.save_config()
-            print("Cleared falai_api_key.")
-        elif choice == "4":
-            self.config["bfl_api_key"] = ""
-            self.save_config()
-            print("Cleared bfl_api_key.")
+            print(f"Cleared {spec.config_key}.")
         self.pause_continue("\nPress Enter to continue...")
+
+    def _run_startup_key_onboarding(self) -> None:
+        if self._startup_key_onboarding_done:
+            return
+        self._startup_key_onboarding_done = True
+        if not sys.stdin.isatty():
+            return
+
+        print("\n" + "=" * 79)
+        print("FIRST LAUNCH KEY CHECK")
+        print("=" * 79)
+        for line in status_lines(self.config):
+            print(f"  - {line}")
+        print("\nQuick setup links:")
+        for spec in API_KEY_SPECS:
+            print(f"  - {spec.label}: {spec.url}")
+
+        missing_required = required_missing_specs(self.config)
+        if missing_required:
+            print("\nFal.ai key is required before continuing.")
+        while missing_required:
+            spec = missing_required[0]
+            print(f"\n{spec.label}: {spec.instruction}")
+            value = input("Enter key now (or q to quit): ").strip()
+            if value.lower() == "q":
+                print("Cannot continue without required key. Exiting.")
+                raise SystemExit(1)
+            if value:
+                self.config[spec.config_key] = value
+                self.save_config()
+            missing_required = required_missing_specs(self.config)
+
+        missing_optional = list(non_required_missing_specs(self.config))
+        if missing_optional:
+            print("\nOptional keys are missing. Features may be limited until added:")
+            for spec in missing_optional:
+                print(f"  - {spec.label}: {spec.url}")
+            print("You can add these later via menu option 7.")
 
     def clear_screen_simple(self):
         """Clear screen without dependencies"""
@@ -2658,6 +2706,7 @@ class KlingAutomationUI:
 
     def run(self):
         """Main application loop"""
+        self._run_startup_key_onboarding()
         while True:
             input_folder = self.run_configuration_menu()
             if input_folder:
@@ -2665,10 +2714,12 @@ class KlingAutomationUI:
 
     def run_auto_mode(self):
         """Direct launch into automation flow."""
+        self._run_startup_key_onboarding()
         self.run_automation_menu()
 
     def run_manual_video_mode(self):
         """Direct launch into legacy manual Kling tools."""
+        self._run_startup_key_onboarding()
         while True:
             selected = self._run_manual_kling_menu()
             if selected:
