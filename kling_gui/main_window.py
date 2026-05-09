@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 
+from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs
+
 # Import path utilities
 from path_utils import (
     get_config_path,
@@ -541,6 +543,8 @@ class KlingGUIWindow:
         self.data_dir = get_user_data_dir() if sys.platform == "darwin" else get_app_dir()
 
         self.config = self._load_config()
+        if ensure_key_fields(self.config):
+            self._save_config()
         self.ui_config_path = (
             get_config_path("ui_config.json")
             if sys.platform == "darwin"
@@ -2353,8 +2357,7 @@ class KlingGUIWindow:
 
     def _create_api_badge(self, parent, config_key: str, label: str, prompt_text: str):
         """Create a single API key badge with colored border, stored in _api_badges."""
-        value = self.config.get(config_key, "")
-        is_set = bool(value and value.strip())
+        is_set = key_status(self.config, config_key) == "added"
         border_color = COLORS["success"] if is_set else COLORS["error"]
 
         frame = tk.Frame(parent, bg=border_color, padx=2, pady=2)
@@ -2362,7 +2365,7 @@ class KlingGUIWindow:
 
         indicator = tk.Label(
             frame,
-            text=f"{label}: Set" if is_set else f"{label}: Not Set",
+            text=f"{label}: Added" if is_set else f"{label}: Missing",
             font=(FONT_FAMILY, 7, "bold"),
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
@@ -2414,7 +2417,7 @@ class KlingGUIWindow:
         badge["frame"].config(bg=border_color)
         lbl = badge["label"]
         badge["label_widget"].config(
-            text=f"{lbl}: Set" if is_set else f"{lbl}: Not Set",
+            text=f"{lbl}: Added" if is_set else f"{lbl}: Missing",
         )
 
     def _setup_queue_panel_content(self, queue_frame):
@@ -2536,14 +2539,12 @@ class KlingGUIWindow:
         # Left side: Unified API key badges — click to set each key
         self._api_badges = {}
         keys_config = [
-            ("falai_api_key", "Fal.ai",
-             "Enter your fal.ai API key:\n(https://fal.ai/dashboard/keys)"),
-            ("bfl_api_key", "BFL",
-             "Enter your BFL API key:\n(https://api.bfl.ai/)"),
-            ("openrouter_api_key", "OpenRouter",
-             "Enter your OpenRouter API key:\n(https://openrouter.ai/keys)"),
-            ("freeimage_api_key", "Freeimage",
-             "Enter Freeimage API key\n(leave blank to clear key):"),
+            (
+                spec.config_key,
+                spec.label,
+                f"{spec.instruction}\n{spec.url}\n(leave blank to clear key)",
+            )
+            for spec in API_KEY_SPECS
         ]
         for config_key, label, prompt_text in keys_config:
             self._create_api_badge(control_frame, config_key, label, prompt_text)
@@ -2637,25 +2638,55 @@ class KlingGUIWindow:
             self._log(f"Failed to initialize generator: {e}", "error")
 
     def _prompt_fal_key_on_first_run(self):
-        """Prompt for fal.ai key on first launch if not configured."""
+        """First-launch key onboarding with status and provider links."""
         existing = str(self.config.get("falai_api_key", "")).strip()
         if existing:
             return
-        new_key = simpledialog.askstring(
-            "Fal.ai API Key Required",
-            "Enter your fal.ai API key to enable generation:\nhttps://fal.ai/dashboard/keys",
+        status_text = "\n".join(
+            f"- {spec.label}: {key_status(self.config, spec.config_key)}"
+            for spec in API_KEY_SPECS
+        )
+        links_text = "\n".join(f"- {spec.label}: {spec.url}" for spec in API_KEY_SPECS)
+        messagebox.showinfo(
+            "First Launch: API Key Setup",
+            "Key status:\n"
+            f"{status_text}\n\n"
+            "Fal.ai is required at startup. Other keys are optional and can be added later.\n\n"
+            "Where to get keys:\n"
+            f"{links_text}",
             parent=self.root,
         )
-        if new_key is None:
-            self._log("Fal.ai API key not set yet. You can add it from key badges below.", "warning")
-            return
-        new_key = new_key.strip()
-        if not new_key:
-            self._log("Fal.ai API key left empty. Generation remains disabled.", "warning")
-            return
-        self.config["falai_api_key"] = new_key
-        self._save_config()
-        self._log("Fal.ai API key saved.", "success")
+
+        while not str(self.config.get("falai_api_key", "")).strip():
+            new_key = simpledialog.askstring(
+                "Fal.ai API Key Required",
+                "Enter your fal.ai API key:\nhttps://fal.ai/dashboard/keys\n\nCancel to exit app.",
+                parent=self.root,
+            )
+            if new_key is None:
+                self._log("Fal.ai API key setup canceled. Closing app.", "error")
+                self.root.after(100, self._on_close)
+                return
+            new_key = new_key.strip()
+            if not new_key:
+                messagebox.showwarning("Missing Key", "Fal.ai API key cannot be empty.", parent=self.root)
+                continue
+            self.config["falai_api_key"] = new_key
+            self._save_config()
+            self._update_api_badge("falai_api_key")
+            self._log("Fal.ai API key saved.", "success")
+
+        optional_missing = list(non_required_missing_specs(self.config))
+        if optional_missing:
+            optional_text = "\n".join(f"- {spec.label}: {spec.url}" for spec in optional_missing)
+            self._log("Optional provider keys are missing; related features will remain disabled.", "warning")
+            messagebox.showinfo(
+                "Optional Keys Missing",
+                "You can still use core flows.\n\nMissing optional keys:\n"
+                f"{optional_text}\n\n"
+                "Click key badges at the bottom bar to add them anytime.",
+                parent=self.root,
+            )
 
     def _log(self, message: str, level: str = "info"):
         """Log a message to the log display."""
