@@ -13,6 +13,7 @@ import shutil
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 import importlib.metadata
+from pathlib import Path
 
 
 @dataclass
@@ -119,6 +120,8 @@ EXTERNAL_TOOLS = [
         install_hint="Install via your package manager (macOS: brew install ffmpeg, Windows: winget install FFmpeg) or download from https://ffmpeg.org/download.html"
     ),
 ]
+
+REPAIRABLE_RUNTIME_IMPORTS = {"tensorflow", "tf_keras", "deepface", "retinaface"}
 
 
 class DependencyChecker:
@@ -535,6 +538,29 @@ def run_dependency_check(
     # Initial check
     req_ok, req_missing, opt_ok, opt_missing = checker.check_all()
 
+    def _repairable_runtime_deps() -> List[Dependency]:
+        repairable: List[Dependency] = []
+        for dep in checker.python_deps:
+            if dep.runtime_issue and dep.import_name in REPAIRABLE_RUNTIME_IMPORTS:
+                repairable.append(dep)
+        return repairable
+
+    def _run_runtime_repair() -> bool:
+        health_script = Path(__file__).resolve().with_name("dependency_health_check.py")
+        if not health_script.exists():
+            return False
+        print(f"\n{checker.CYAN}{'─' * 79}{checker.RESET}")
+        print(f"  {checker.YELLOW}Runtime import issues detected; running deterministic repair...{checker.RESET}")
+        cmd = [sys.executable, str(health_script), "--mode", "repair"]
+        repaired = subprocess.run(cmd, capture_output=False, text=True, check=False)
+        return repaired.returncode == 0
+
+    repaired_runtime_stack = False
+    if enforce_all and _repairable_runtime_deps():
+        repaired_runtime_stack = _run_runtime_repair()
+        checker = DependencyChecker()
+        req_ok, req_missing, opt_ok, opt_missing = checker.check_all()
+
     # Display status
     checker.display_status()
 
@@ -635,6 +661,8 @@ def run_dependency_check(
         else:
             print(f"\n{checker.RED}✗ Some required dependencies are still missing.{checker.RESET}")
             print(f"{checker.YELLOW}Please install them manually and try again.{checker.RESET}")
+        if enforce_all and not all_ok and not repaired_runtime_stack and _repairable_runtime_deps():
+            print(f"{checker.YELLOW}Hint: runtime stack repair is available via dependency_health_check.py --mode repair{checker.RESET}")
 
     return all_ok
 
