@@ -35,6 +35,18 @@ This runs the GUI launcher as a Python script to verify it works before building
 build_gui_exe.bat
 ```
 
+### Keep distribution mirror synced with current root code
+
+```batch
+sync_from_root.bat
+```
+
+### Build sanitized shareable bundles (GUI/CLI/macOS)
+
+```batch
+build_release.bat
+```
+
 **What it does:**
 1. Checks/installs PyInstaller
 2. Installs required dependencies
