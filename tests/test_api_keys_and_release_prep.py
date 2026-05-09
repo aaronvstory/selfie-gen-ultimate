@@ -3,6 +3,7 @@ from pathlib import Path
 
 from api_keys import API_KEY_SPECS, ensure_key_fields, required_missing_specs
 from distribution.release_prep import build_sanitized_config, copy_sanitized_tree
+from kling_automation_ui import KlingAutomationUI
 
 
 def test_ensure_key_fields_adds_all_keys():
@@ -57,3 +58,49 @@ def test_copy_sanitized_tree_skips_personal_files(tmp_path: Path):
     assert not (dst / "kling_gui.log").exists()
     assert (dst / "run_gui.sh").exists()
     assert (dst / "launchers" / "run_gui.command").exists()
+
+
+def test_copy_sanitized_tree_prunes_excluded_directories(tmp_path: Path):
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    (src / ".git" / "nested").mkdir(parents=True)
+    (src / ".git" / "nested" / "secret.txt").write_text("secret", encoding="utf-8")
+    (src / "normal").mkdir(parents=True)
+    (src / "normal" / "file.txt").write_text("ok", encoding="utf-8")
+
+    copy_sanitized_tree(src, dst)
+
+    assert not (dst / ".git").exists()
+    assert (dst / "normal" / "file.txt").exists()
+
+
+def test_cli_startup_requires_fal_and_bfl_for_default_automation():
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_front_expand_enabled": True,
+        "automation_front_expand_provider": "bfl",
+        "automation_selfie_expand_enabled": True,
+        "automation_selfie_expand_provider": "bfl",
+        "automation_selfie_enabled": True,
+        "automation_selfie_models": ["fal-ai/nano-banana-2/edit"],
+        "outpaint_provider": "fal",
+    }
+    required_keys = {spec.config_key for spec, _reason in ui._startup_required_key_specs()}
+    assert "falai_api_key" in required_keys
+    assert "bfl_api_key" in required_keys
+
+
+def test_cli_startup_requires_only_fal_when_bfl_not_selected():
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_front_expand_enabled": True,
+        "automation_front_expand_provider": "fal",
+        "automation_selfie_expand_enabled": True,
+        "automation_selfie_expand_provider": "fal",
+        "automation_selfie_enabled": True,
+        "automation_selfie_models": ["fal-ai/nano-banana-2/edit"],
+        "outpaint_provider": "fal",
+    }
+    required_keys = {spec.config_key for spec, _reason in ui._startup_required_key_specs()}
+    assert "falai_api_key" in required_keys
+    assert "bfl_api_key" not in required_keys
