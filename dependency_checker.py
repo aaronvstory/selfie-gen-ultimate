@@ -81,6 +81,13 @@ PYTHON_DEPENDENCIES = [
         description="TensorFlow compatibility backend required by DeepFace"
     ),
     Dependency(
+        name="TensorFlow",
+        import_name="tensorflow",
+        pip_name="tensorflow",
+        required=False,
+        description="Core runtime backend for DeepFace/RetinaFace stack"
+    ),
+    Dependency(
         name="RetinaFace",
         import_name="retinaface",
         pip_name="retina-face",
@@ -546,7 +553,15 @@ def run_dependency_check(
         return repairable
 
     def _run_runtime_repair() -> bool:
-        health_script = Path(__file__).resolve().with_name("dependency_health_check.py")
+        try:
+            from path_utils import get_app_dir, is_frozen
+        except Exception:
+            get_app_dir = None
+            is_frozen = None
+        if callable(is_frozen) and is_frozen() and callable(get_app_dir):
+            health_script = Path(get_app_dir()) / "dependency_health_check.py"
+        else:
+            health_script = Path(__file__).resolve().with_name("dependency_health_check.py")
         if not health_script.exists():
             return False
         print(f"\n{checker.CYAN}{'─' * 79}{checker.RESET}")
@@ -557,7 +572,12 @@ def run_dependency_check(
 
     repaired_runtime_stack = False
     if enforce_all and _repairable_runtime_deps():
-        repaired_runtime_stack = _run_runtime_repair()
+        should_repair = auto_mode
+        if not auto_mode:
+            answer = input(f"  {checker.GREEN}Run runtime stack repair now? (y/N): {checker.RESET}").strip().lower()
+            should_repair = answer == "y"
+        if should_repair:
+            repaired_runtime_stack = _run_runtime_repair()
         checker = DependencyChecker()
         req_ok, req_missing, opt_ok, opt_missing = checker.check_all()
 

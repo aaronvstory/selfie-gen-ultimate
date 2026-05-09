@@ -180,47 +180,18 @@ if [[ -f "${ROOT_DIR}/dependency_checker.py" ]]; then
 
   if [[ "${VERBOSE_STARTUP}" == "1" ]]; then
     printf 'Verifying runtime dependency stack (strict mode)\n'
-    if ! run_dep_check; then
-      if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
-        printf 'Strict check failed. Attempting runtime dependency auto-repair...\n'
-        "${VENV_DIR}/bin/python" "${ROOT_DIR}/dependency_health_check.py" --mode repair
-        printf 'Re-running strict dependency check...\n'
-        run_dep_check
-      else
-        exit 1
-      fi
-    fi
+    run_dep_check
   else
     DEP_LOG="$(mktemp -t kling_depcheck.XXXXXX.log)"
     if run_dep_check >"${DEP_LOG}" 2>&1; then
       printf 'Runtime dependency check: OK\n'
       rm -f "${DEP_LOG}" || true
     else
-      if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
-        printf 'Runtime dependency check failed. Attempting auto-repair...\n' >&2
-        "${VENV_DIR}/bin/python" "${ROOT_DIR}/dependency_health_check.py" --mode repair || {
-          printf 'Runtime dependency check failed. Details below.\n' >&2
-          printf 'Tip: use KLING_VERBOSE_STARTUP=1 for live diagnostic output.\n' >&2
-          cat "${DEP_LOG}" >&2 || true
-          rm -f "${DEP_LOG}" || true
-          exit 1
-        }
-        if run_dep_check >"${DEP_LOG}" 2>&1; then
-          printf 'Runtime dependency check: OK (after repair)\n'
-          rm -f "${DEP_LOG}" || true
-        else
-          printf 'Runtime dependency check failed after repair. Details below.\n' >&2
-          cat "${DEP_LOG}" >&2 || true
-          rm -f "${DEP_LOG}" || true
-          exit 1
-        fi
-      else
-        printf 'Runtime dependency check failed. Details below.\n' >&2
-        printf 'Tip: use KLING_VERBOSE_STARTUP=1 for live diagnostic output.\n' >&2
-        cat "${DEP_LOG}" >&2 || true
-        rm -f "${DEP_LOG}" || true
-        exit 1
-      fi
+      printf 'Runtime dependency check failed. Details below.\n' >&2
+      printf 'Tip: use KLING_VERBOSE_STARTUP=1 for live diagnostic output.\n' >&2
+      cat "${DEP_LOG}" >&2 || true
+      rm -f "${DEP_LOG}" || true
+      exit 1
     fi
   fi
 fi

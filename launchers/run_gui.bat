@@ -66,25 +66,10 @@ if exist "%DEP_HEALTH_SCRIPT%" (
         "%VENV_PYTHON%" "%DEP_CHECKER%" --auto --enforce-all
         if !errorlevel! neq 0 (
             echo.
-            echo  Strict bootstrap failed. Attempting runtime dependency auto-repair...
-            "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode repair
-            if !errorlevel! neq 0 (
-                echo.
-                echo  ERROR: Automatic dependency repair failed.
-                echo.
-                pause
-                exit /b 1
-            )
+            echo  ERROR: Strict dependency bootstrap failed.
             echo.
-            echo  Re-running strict dependency bootstrap...
-            "%VENV_PYTHON%" "%DEP_CHECKER%" --auto --enforce-all
-            if !errorlevel! neq 0 (
-                echo.
-                echo  ERROR: Strict dependency bootstrap failed.
-                echo.
-                pause
-                exit /b 1
-            )
+            pause
+            exit /b 1
         )
     )
 

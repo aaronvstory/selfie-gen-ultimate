@@ -19,7 +19,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from api_keys import API_KEY_SPECS, ApiKeySpec, ensure_key_fields, key_status, non_required_missing_specs, status_lines
-from startup_key_onboarding import startup_prompt_specs, startup_status_lines
+from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 
 try:
     from kling_gui.ml_backend_env import ensure_ml_backend_env
@@ -451,7 +451,7 @@ class KlingAutomationUI:
         self._startup_key_onboarding_done = True
         prompt_specs = startup_prompt_specs()
         if not sys.stdin.isatty():
-            missing_any = [spec for spec in prompt_specs if not str(self.config.get(spec.config_key, "")).strip()]
+            missing_any = missing_startup_specs(self.config)
             if missing_any:
                 print("\nStartup API keys missing in non-interactive mode (continuing).")
                 for spec in missing_any:
@@ -468,9 +468,7 @@ class KlingAutomationUI:
         for spec in prompt_specs:
             print(f"  - {spec.label}: {spec.url}")
         print("\nPress Enter to skip any key for now.")
-        for spec in prompt_specs:
-            if str(self.config.get(spec.config_key, "")).strip():
-                continue
+        for spec in missing_startup_specs(self.config):
             print(f"\n{spec.label}: {spec.instruction}")
             value = input("Enter key now (or q to skip): ").strip()
             if value.lower() == "q":

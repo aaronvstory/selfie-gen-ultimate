@@ -19,7 +19,7 @@ from datetime import datetime
 
 from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs
 from automation.config import get_outpaint_fal_timeout_seconds
-from startup_key_onboarding import startup_prompt_specs, startup_status_lines
+from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 from tk_dialogs import select_directory, select_open_files
 
 # Import path utilities
@@ -655,7 +655,7 @@ class KlingGUIWindow:
         self._setup_debug_hotkeys()
 
         # First-run key prompt (Fal.ai required for generation)
-        self._prompt_fal_key_on_first_run()
+        self._prompt_startup_provider_keys_on_first_run()
 
         # Initialize generator and queue manager
         self._init_generator()
@@ -2647,10 +2647,10 @@ class KlingGUIWindow:
         except Exception as e:
             self._log(f"Failed to initialize generator: {e}", "error")
 
-    def _prompt_fal_key_on_first_run(self):
+    def _prompt_startup_provider_keys_on_first_run(self):
         """First-launch key onboarding (Fal.ai + BFL), never exits app."""
         prompt_specs = startup_prompt_specs()
-        missing = [spec for spec in prompt_specs if not str(self.config.get(spec.config_key, "")).strip()]
+        missing = missing_startup_specs(self.config)
         if not missing:
             return
         status_text = "\n".join(

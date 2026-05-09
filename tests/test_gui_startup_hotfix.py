@@ -148,7 +148,7 @@ class GuiStartupKeyPromptTests(unittest.TestCase):
         with mock.patch.object(module.messagebox, "showinfo"), mock.patch.object(
             module.simpledialog, "askstring", side_effect=[None, None]
         ):
-            window._prompt_fal_key_on_first_run()
+            window._prompt_startup_provider_keys_on_first_run()
 
         window._on_close.assert_not_called()
         self.assertEqual(saved["count"], 0)
@@ -169,7 +169,7 @@ class GuiStartupKeyPromptTests(unittest.TestCase):
         with mock.patch.object(module.messagebox, "showinfo"), mock.patch.object(
             module.simpledialog, "askstring", side_effect=["fal-key", ""]
         ):
-            window._prompt_fal_key_on_first_run()
+            window._prompt_startup_provider_keys_on_first_run()
 
         self.assertEqual(window.config["falai_api_key"], "fal-key")
         self.assertEqual(window.config["bfl_api_key"], "")

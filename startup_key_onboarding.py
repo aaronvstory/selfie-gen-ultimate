@@ -19,3 +19,11 @@ def startup_status_lines(config: Dict[str, Any]) -> List[str]:
         lines.append(f"{spec.label}: {key_status(config, spec.config_key)}")
     return lines
 
+
+def missing_startup_specs(config: Dict[str, Any]) -> List[ApiKeySpec]:
+    """Return startup-prompt key specs that are currently missing."""
+    return [
+        spec
+        for spec in startup_prompt_specs()
+        if not str(config.get(spec.config_key, "")).strip()
+    ]
