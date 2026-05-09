@@ -445,7 +445,15 @@ class KlingAutomationUI:
         if self._startup_key_onboarding_done:
             return
         self._startup_key_onboarding_done = True
+        required_specs = self._startup_required_key_specs()
+        missing_required = [spec for spec, _reason in required_specs if not str(self.config.get(spec.config_key, "")).strip()]
         if not sys.stdin.isatty():
+            if missing_required:
+                print("\nStartup-required API keys are missing for non-interactive mode.")
+                for spec in missing_required:
+                    print(f"  - {spec.label}: {spec.url}")
+                print("Set the missing keys in kling_config.json or via interactive setup, then retry.")
+                raise SystemExit(1)
             return
 
         print("\n" + "=" * 79)
@@ -453,7 +461,6 @@ class KlingAutomationUI:
         print("=" * 79)
         for line in status_lines(self.config):
             print(f"  - {line}")
-        required_specs = self._startup_required_key_specs()
         print("\nStartup-required keys based on current config:")
         for spec, reason in required_specs:
             print(f"  - {spec.label}: required ({reason})")
@@ -461,7 +468,6 @@ class KlingAutomationUI:
         for spec in API_KEY_SPECS:
             print(f"  - {spec.label}: {spec.url}")
 
-        missing_required = [spec for spec, _reason in required_specs if not str(self.config.get(spec.config_key, "")).strip()]
         if missing_required:
             print("\nRequired keys must be set before continuing.")
         while missing_required:

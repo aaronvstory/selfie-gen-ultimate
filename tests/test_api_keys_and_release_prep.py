@@ -187,6 +187,16 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         assert not any(name.endswith("selfie-gen-ultimate/tests/test_x.py") for name in names)
         assert not any(name.endswith("selfie-gen-ultimate/kling_gui.log") for name in names)
         assert not any(name.endswith("selfie-gen-ultimate/distribution/build_release.py") for name in names)
+        gui_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start GUI.command"))
+        gui_launcher = zf.read(gui_launcher_name).decode("utf-8")
+        assert "if [[ -f ./run_gui.command ]]; then" in gui_launcher
+        assert "exec /bin/bash ./run_gui.command" in gui_launcher
+        assert "exec /bin/bash ./run_gui.sh" in gui_launcher
+        cli_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start CLI.command"))
+        cli_launcher = zf.read(cli_launcher_name).decode("utf-8")
+        assert "if [[ -f ./run_cli.command ]]; then" in cli_launcher
+        assert "exec /bin/bash ./run_cli.command" in cli_launcher
+        assert "exec /bin/bash ./run_cli.sh" in cli_launcher
         cfg_name = next(name for name in names if name.endswith("selfie-gen-ultimate/kling_config.json"))
         cfg = json.loads(zf.read(cfg_name).decode("utf-8"))
         for key in ("falai_api_key", "bfl_api_key", "openrouter_api_key", "freeimage_api_key"):

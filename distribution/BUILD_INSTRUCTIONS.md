@@ -43,6 +43,8 @@ sync_from_root.bat
 
 ### Build sanitized shareable bundle (universal)
 
+From the repository root, run:
+
 ```batch
 python distribution/build_release.py
 ```

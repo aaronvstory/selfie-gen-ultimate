@@ -192,3 +192,31 @@ def test_main_skips_dependency_check_when_env_set(monkeypatch):
     monkeypatch.setenv("KLING_SKIP_PY_STARTUP_DEP_CHECK", "1")
     kling_automation_ui.main([])
     assert called["count"] == 0
+
+
+def test_non_interactive_startup_onboarding_exits_when_required_keys_missing(monkeypatch, capsys):
+    ui = kling_automation_ui.KlingAutomationUI.__new__(kling_automation_ui.KlingAutomationUI)
+    ui._startup_key_onboarding_done = False
+    ui.config = {
+        "falai_api_key": "",
+        "bfl_api_key": "",
+        "automation_front_expand_enabled": True,
+        "automation_front_expand_provider": "bfl",
+        "automation_selfie_expand_enabled": True,
+        "automation_selfie_expand_provider": "bfl",
+        "automation_selfie_enabled": True,
+        "automation_selfie_models": ["fal-ai/nano-banana-2/edit"],
+        "outpaint_provider": "fal",
+    }
+    monkeypatch.setattr(kling_automation_ui.sys.stdin, "isatty", lambda: False)
+
+    with pytest.raises(SystemExit) as exc:
+        ui._run_startup_key_onboarding()
+
+    assert exc.value.code == 1
+    output = capsys.readouterr().out
+    assert "Startup-required API keys are missing for non-interactive mode." in output
+    assert "Fal.ai" in output
+    assert "https://fal.ai/dashboard/keys" in output
+    assert "BFL" in output
+    assert "https://api.bfl.ai/" in output

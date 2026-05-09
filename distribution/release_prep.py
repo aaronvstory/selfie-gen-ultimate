@@ -171,20 +171,20 @@ def _write_top_level_launchers(bundle_root: Path) -> None:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "cd \"$(dirname \"$0\")\"\n"
-        "if [[ -x ./run_gui.command ]]; then\n"
-        "  exec ./run_gui.command\n"
+        "if [[ -f ./run_gui.command ]]; then\n"
+        "  exec /bin/bash ./run_gui.command\n"
         "fi\n"
-        "exec ./run_gui.sh\n",
+        "exec /bin/bash ./run_gui.sh\n",
         encoding="utf-8",
     )
     (bundle_root / "Start CLI.command").write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "cd \"$(dirname \"$0\")\"\n"
-        "if [[ -x ./run_cli.command ]]; then\n"
-        "  exec ./run_cli.command\n"
+        "if [[ -f ./run_cli.command ]]; then\n"
+        "  exec /bin/bash ./run_cli.command\n"
         "fi\n"
-        "exec ./run_cli.sh\n",
+        "exec /bin/bash ./run_cli.sh\n",
         encoding="utf-8",
     )
     for name in ("Start GUI.command", "Start CLI.command"):
