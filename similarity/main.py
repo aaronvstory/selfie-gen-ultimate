@@ -7,12 +7,34 @@ import traceback
 def _write_crash_log(exc: Exception) -> str:
     """Persist a fatal crash traceback to similarity/crash.log."""
     crash_path = os.path.join(os.path.dirname(__file__), "crash.log")
-    with open(crash_path, "a", encoding="utf-8") as f:
-        f.write("=" * 80 + "\n")
-        f.write(f"Fatal error: {exc}\n")
-        f.write(traceback.format_exc())
-        f.write("\n")
+    try:
+        with open(crash_path, "a", encoding="utf-8") as f:
+            f.write("=" * 80 + "\n")
+            f.write(f"Fatal error: {exc}\n")
+            f.write(traceback.format_exc())
+            f.write("\n")
+    except Exception as log_exc:
+        raise RuntimeError(f"Could not write crash log at {crash_path}: {log_exc}") from log_exc
     return crash_path
+
+
+def _run_with_crash_logging() -> None:
+    """Run app entrypoint and preserve original failure if crash logging also fails."""
+    try:
+        main()
+    except Exception as exc:
+        try:
+            crash_log_path = _write_crash_log(exc)
+            print(
+                f"[FATAL] Similarity app crashed: {exc}. Traceback saved to: {crash_log_path}",
+                file=sys.stderr,
+            )
+        except Exception as log_exc:
+            print(
+                f"[FATAL] Similarity app crashed: {exc}. Crash logging failed: {log_exc}",
+                file=sys.stderr,
+            )
+        raise
 
 def main():
     """
@@ -132,12 +154,4 @@ def main():
     cli.run()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        crash_log_path = _write_crash_log(exc)
-        print(
-            f"[FATAL] Similarity app crashed: {exc}. Traceback saved to: {crash_log_path}",
-            file=sys.stderr,
-        )
-        raise
+    _run_with_crash_logging()

@@ -8,7 +8,11 @@ LOG_FILE="$(pwd)/launcher_runtime.log"
   echo "==============================================================================="
   echo "[INFO] [$(date '+%Y-%m-%d %H:%M:%S')] Starting run_cli.command in $(pwd)"
 } >> "${LOG_FILE}"
-exec >> "${LOG_FILE}" 2>&1
+if [ -n "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
+    exec >> "${LOG_FILE}" 2>&1
+else
+    exec > >(tee -a "${LOG_FILE}") 2>&1
+fi
 
 export TF_USE_LEGACY_KERAS=1
 export KERAS_BACKEND=tensorflow

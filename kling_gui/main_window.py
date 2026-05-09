@@ -1491,17 +1491,26 @@ class KlingGUIWindow:
                     creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
                 )
             elif system == "Darwin":
-                process = subprocess.Popen(["open", launcher_path], cwd=similarity_dir, env=launch_env)
+                process = subprocess.Popen(
+                    ["/bin/bash", launcher_path],
+                    cwd=similarity_dir,
+                    env=launch_env,
+                )
             else:
                 process = subprocess.Popen([launcher_path], cwd=similarity_dir, env=launch_env)
 
-            launch_cmd = f"{launcher_name}" if system == "Windows" else launcher_path
+            if system == "Windows":
+                launch_cmd = launcher_name
+            elif system == "Darwin":
+                launch_cmd = f"/bin/bash {launcher_path}"
+            else:
+                launch_cmd = launcher_path
             self._log(
                 f"Similarity launch requested: cmd='{launch_cmd}' cwd='{similarity_dir}' pid={process.pid if process else 'n/a'}",
                 "info",
             )
 
-            if system == "Windows" and process is not None:
+            if system in {"Windows", "Darwin"} and process is not None:
                 time.sleep(0.8)
                 exit_code = process.poll()
                 if exit_code is not None:
