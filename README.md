@@ -198,6 +198,22 @@ build_gui_exe.bat
 
 This uses PyInstaller to produce a portable `dist/KlingUI/` folder. `tkinterdnd2` must be available in the build environment.
 
+## Build Shareable Release Zips (Windows GUI/CLI + macOS Portable)
+
+```powershell
+python distribution/build_release.py
+```
+
+This creates versioned bundles in `release/`:
+- `windows_gui.zip`
+- `windows_cli.zip`
+- `macos_portable.zip`
+
+Each bundle is sanitized for sharing:
+- API keys removed from distributable config
+- personal runtime files/logs/history removed
+- first-launch instructions included (`README_FIRST_RUN.txt`)
+
 ## Requirements
 
 - Python 3.10+ on Windows
