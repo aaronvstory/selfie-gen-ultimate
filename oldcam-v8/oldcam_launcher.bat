@@ -7,14 +7,27 @@ pushd "%SCRIPT_DIR%" >nul
 set "PYTHON_CMD="
 set "HAD_ERRORS="
 
-python -c "import cv2, numpy" >nul 2>nul
-if not errorlevel 1 set "PYTHON_CMD=python"
-
-if not defined PYTHON_CMD (
-  py -3 -c "import cv2, numpy" >nul 2>nul
-  if not errorlevel 1 set "PYTHON_CMD=py -3"
+if exist ".venv\Scripts\python.exe" (
+  .venv\Scripts\python.exe -c "import cv2, numpy" >nul 2>nul
+  if not errorlevel 1 set "PYTHON_CMD=.venv\Scripts\python.exe"
 )
 
+if not defined PYTHON_CMD (
+  for %%V in (3.12 3.11 3.10 3.9) do (
+    py -%%V -c "import cv2, numpy" >nul 2>nul
+    if not errorlevel 1 (
+      set "PYTHON_CMD=py -%%V"
+      goto :python_found
+    )
+  )
+)
+
+if not defined PYTHON_CMD (
+  python -c "import cv2, numpy" >nul 2>nul
+  if not errorlevel 1 set "PYTHON_CMD=python"
+)
+
+:python_found
 if not defined PYTHON_CMD (
   echo Could not find a Python interpreter with both cv2 and numpy installed.
   echo Install the dependencies for your active Python and try again.

@@ -125,6 +125,23 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     assert (dst / "normal.py").exists()
 
 
+def test_standalone_windows_launchers_use_stable_python_probes():
+    similarity_gui = Path("similarity/run_gui.bat").read_text(encoding="utf-8")
+    similarity_cli = Path("similarity/run_cli.bat").read_text(encoding="utf-8")
+    oldcam_v8 = Path("oldcam-v8/oldcam_launcher.bat").read_text(encoding="utf-8")
+
+    assert ".venv\\Scripts\\python.exe" in similarity_gui
+    assert "py -%%V" in similarity_gui
+    assert "python3.12 python3.11 python3.10 python3.9" not in similarity_gui
+
+    assert ".venv\\Scripts\\python.exe" in similarity_cli
+    assert "py -%%V" in similarity_cli
+    assert "python3.12 python3.11 python3.10 python3.9" not in similarity_cli
+
+    assert ".venv\\Scripts\\python.exe" in oldcam_v8
+    assert "py -%%V" in oldcam_v8
+
+
 def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path: Path):
     repo = tmp_path / "repo"
     dist = tmp_path / "dist"
@@ -166,6 +183,20 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
     (repo / "launchers").mkdir()
     (repo / "launchers" / "run_gui.bat").write_text("@echo off\r\necho gui\r\n", encoding="utf-8")
     (repo / "launchers" / "run_cli.bat").write_text("@echo off\r\necho cli\r\n", encoding="utf-8")
+    (repo / "similarity").mkdir()
+    (repo / "similarity" / "run_gui.bat").write_text(
+        "@echo off\r\nset PYTHON_BIN=py -3.12\r\nif exist .venv\\Scripts\\python.exe echo ok\r\n",
+        encoding="utf-8",
+    )
+    (repo / "similarity" / "run_cli.bat").write_text(
+        "@echo off\r\nset PYTHON_BIN=py -3.12\r\nif exist .venv\\Scripts\\python.exe echo ok\r\n",
+        encoding="utf-8",
+    )
+    (repo / "oldcam-v8").mkdir()
+    (repo / "oldcam-v8" / "oldcam_launcher.bat").write_text(
+        "@echo off\r\nset PYTHON_CMD=py -3.12\r\nif exist .venv\\Scripts\\python.exe echo ok\r\n",
+        encoding="utf-8",
+    )
     (repo / "kling_gui.log").write_text("private", encoding="utf-8")
     (repo / "kling_config.json").write_text("private", encoding="utf-8")
     (repo / "tests").mkdir()
@@ -184,6 +215,16 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         assert any(name.endswith("selfie-gen-ultimate/Start CLI.bat") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/Start GUI.command") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/Start CLI.command") for name in names)
+        similarity_gui_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_gui.bat"))
+        similarity_gui = zf.read(similarity_gui_name).decode("utf-8")
+        assert "py -3.12" in similarity_gui
+        assert ".venv\\Scripts\\python.exe" in similarity_gui
+        similarity_cli_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_cli.bat"))
+        similarity_cli = zf.read(similarity_cli_name).decode("utf-8")
+        assert "py -3.12" in similarity_cli
+        oldcam_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/oldcam-v8/oldcam_launcher.bat"))
+        oldcam_launcher = zf.read(oldcam_launcher_name).decode("utf-8")
+        assert "py -3.12" in oldcam_launcher
         assert not any(name.endswith("selfie-gen-ultimate/tests/test_x.py") for name in names)
         assert not any(name.endswith("selfie-gen-ultimate/kling_gui.log") for name in names)
         assert not any(name.endswith("selfie-gen-ultimate/distribution/build_release.py") for name in names)
