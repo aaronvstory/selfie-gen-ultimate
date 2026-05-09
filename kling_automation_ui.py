@@ -17,7 +17,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs, required_missing_specs, status_lines
+from api_keys import API_KEY_SPECS, ApiKeySpec, ensure_key_fields, key_status, non_required_missing_specs, status_lines
 
 try:
     from kling_gui.ml_backend_env import ensure_ml_backend_env
@@ -365,6 +365,12 @@ class KlingAutomationUI:
         print("\nProvider key status:")
         for line in status_lines(self.config):
             print(f"  - {line}")
+        required_now = {spec.config_key for spec, _reason in self._startup_required_key_specs()}
+        if required_now:
+            print("\nCurrently required at startup (from active config):")
+            for spec in API_KEY_SPECS:
+                if spec.config_key in required_now:
+                    print(f"  - {spec.label}")
         print("\nProvider quick setup:")
         for idx, spec in enumerate(API_KEY_SPECS, start=1):
             print(f"  {idx}) Set/update {spec.label} key")
@@ -414,13 +420,17 @@ class KlingAutomationUI:
         print("=" * 79)
         for line in status_lines(self.config):
             print(f"  - {line}")
+        required_specs = self._startup_required_key_specs()
+        print("\nStartup-required keys based on current config:")
+        for spec, reason in required_specs:
+            print(f"  - {spec.label}: required ({reason})")
         print("\nQuick setup links:")
         for spec in API_KEY_SPECS:
             print(f"  - {spec.label}: {spec.url}")
 
-        missing_required = required_missing_specs(self.config)
+        missing_required = [spec for spec, _reason in required_specs if not str(self.config.get(spec.config_key, "")).strip()]
         if missing_required:
-            print("\nFal.ai key is required before continuing.")
+            print("\nRequired keys must be set before continuing.")
         while missing_required:
             spec = missing_required[0]
             print(f"\n{spec.label}: {spec.instruction}")
@@ -431,7 +441,7 @@ class KlingAutomationUI:
             if value:
                 self.config[spec.config_key] = value
                 self.save_config()
-            missing_required = required_missing_specs(self.config)
+            missing_required = [item for item in missing_required if not str(self.config.get(item.config_key, "")).strip()]
 
         missing_optional = list(non_required_missing_specs(self.config))
         if missing_optional:
@@ -439,6 +449,37 @@ class KlingAutomationUI:
             for spec in missing_optional:
                 print(f"  - {spec.label}: {spec.url}")
             print("You can add these later via menu option 7.")
+
+    def _startup_required_key_specs(self) -> List[Tuple[ApiKeySpec, str]]:
+        specs_by_key = {spec.config_key: spec for spec in API_KEY_SPECS}
+        required = []
+        fal_spec = specs_by_key.get("falai_api_key")
+        if fal_spec:
+            required.append((fal_spec, "core generation pipeline"))
+        if self._is_bfl_required_on_startup():
+            bfl_spec = specs_by_key.get("bfl_api_key")
+            if bfl_spec:
+                required.append((bfl_spec, "current automation/manual settings select BFL"))
+        return required
+
+    def _is_bfl_required_on_startup(self) -> bool:
+        front_enabled = bool(self.config.get("automation_front_expand_enabled", True))
+        if front_enabled and str(self.config.get("automation_front_expand_provider", "auto")).strip().lower() == "bfl":
+            return True
+
+        selfie_expand_enabled = bool(self.config.get("automation_selfie_expand_enabled", True))
+        if selfie_expand_enabled and str(self.config.get("automation_selfie_expand_provider", "auto")).strip().lower() == "bfl":
+            return True
+
+        selfie_enabled = bool(self.config.get("automation_selfie_enabled", True))
+        selfie_models = list(self.config.get("automation_selfie_models", []))
+        if selfie_enabled and any(str(model).strip().lower().startswith("bfl/") for model in selfie_models):
+            return True
+
+        if str(self.config.get("outpaint_provider", "")).strip().lower() == "bfl":
+            return True
+
+        return False
 
     def clear_screen_simple(self):
         """Clear screen without dependencies"""

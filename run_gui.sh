@@ -7,6 +7,13 @@ PYTHON_BIN="${ROOT_DIR}/.venv-macos/bin/python"
 "${ROOT_DIR}/setup_macos.sh"
 export KLING_SKIP_PY_STARTUP_DEP_CHECK=1
 
+if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
+  "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode check || {
+    echo "Runtime dependency health check failed. Attempting auto-repair..." >&2
+    "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode repair
+  }
+fi
+
 if ! "${PYTHON_BIN}" -c 'import tkinter' >/dev/null 2>&1; then
   VERSION="$("${PYTHON_BIN}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
   printf 'GUI launch blocked: this Python environment does not provide Tk support.\n\n' >&2

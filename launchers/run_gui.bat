@@ -8,6 +8,7 @@ set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "REQUIREMENTS=%ROOT_DIR%\requirements.txt"
 set "OLDCAM_V7_REQUIREMENTS=%ROOT_DIR%\oldcam-v7\requirements.txt"
 set "OLDCAM_V8_REQUIREMENTS=%ROOT_DIR%\oldcam-v8\requirements.txt"
+set "DEP_CHECKER=%ROOT_DIR%\dependency_checker.py"
 set "DEP_HEALTH_SCRIPT=%ROOT_DIR%\dependency_health_check.py"
 
 if not exist "%VENV_PYTHON%" (
@@ -60,6 +61,18 @@ echo  Dependency sync complete.
 echo.
 
 if exist "%DEP_HEALTH_SCRIPT%" (
+    if exist "%DEP_CHECKER%" (
+        echo  Running strict dependency bootstrap...
+        "%VENV_PYTHON%" "%DEP_CHECKER%" --auto --enforce-all
+        if !errorlevel! neq 0 (
+            echo.
+            echo  ERROR: Strict dependency bootstrap failed.
+            echo.
+            pause
+            exit /b 1
+        )
+    )
+
     echo  Validating runtime dependency health...
     "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode check
     if !errorlevel! neq 0 (

@@ -421,41 +421,76 @@ class DependencyChecker:
         """Return True when Homebrew is available on PATH."""
         return shutil.which("brew") is not None
 
+    @staticmethod
+    def _command_available(command: str) -> bool:
+        return shutil.which(command) is not None
+
     def install_external_tool(self, tool: ExternalTool) -> bool:
         """Attempt to install a missing external tool automatically."""
         if tool.name.lower() != "ffmpeg":
             print(f"  {self.YELLOW}Auto-install not implemented for {tool.name}.{self.RESET}")
             return False
 
+        attempted_cmds = []
         if sys.platform == "darwin":
             if not self._brew_is_available():
                 print(
                     f"  {self.YELLOW}Homebrew not found; cannot auto-install FFmpeg on macOS.{self.RESET}"
                 )
                 return False
-            cmd = ["brew", "install", "ffmpeg"]
+            install_cmds = [["brew", "install", "ffmpeg"]]
+        elif sys.platform == "win32":
+            install_cmds = []
+            if self._command_available("winget"):
+                install_cmds.append(
+                    [
+                        "winget",
+                        "install",
+                        "--id",
+                        "Gyan.FFmpeg",
+                        "--exact",
+                        "--silent",
+                        "--accept-source-agreements",
+                        "--accept-package-agreements",
+                    ]
+                )
+            if self._command_available("choco"):
+                install_cmds.append(["choco", "install", "ffmpeg", "-y"])
+            if not install_cmds:
+                print(
+                    f"  {self.YELLOW}Neither winget nor choco was found; cannot auto-install FFmpeg on Windows.{self.RESET}"
+                )
+                print(
+                    f"  {self.YELLOW}Install one package manager, then relaunch to auto-install, or install FFmpeg manually.{self.RESET}"
+                )
+                return False
         else:
             print(
-                f"  {self.YELLOW}Auto-install for FFmpeg currently supported on macOS only.{self.RESET}"
+                f"  {self.YELLOW}Auto-install for FFmpeg is currently supported on macOS and Windows only.{self.RESET}"
             )
             return False
 
-        try:
-            print(f"  {self.CYAN}Installing {tool.name} via {' '.join(cmd)}...{self.RESET}")
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-            if result.returncode == 0:
-                print(f"  {self.GREEN}✓ {tool.name} installed successfully{self.RESET}")
-                return True
-            print(f"  {self.RED}✗ Failed to install {tool.name}{self.RESET}")
-            if result.stderr:
-                print(f"    {self.GRAY}{result.stderr[-400:]}{self.RESET}")
-            return False
-        except subprocess.TimeoutExpired:
-            print(f"  {self.RED}✗ Installation timed out for {tool.name}{self.RESET}")
-            return False
-        except Exception as exc:
-            print(f"  {self.RED}✗ Error installing {tool.name}: {exc}{self.RESET}")
-            return False
+        for cmd in install_cmds:
+            attempted_cmds.append(" ".join(cmd))
+            try:
+                print(f"  {self.CYAN}Installing {tool.name} via {' '.join(cmd)}...{self.RESET}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+                if result.returncode == 0:
+                    print(f"  {self.GREEN}✓ {tool.name} installed successfully{self.RESET}")
+                    return True
+                print(f"  {self.RED}✗ Failed via {' '.join(cmd)}{self.RESET}")
+                if result.stderr:
+                    print(f"    {self.GRAY}{result.stderr[-400:]}{self.RESET}")
+            except subprocess.TimeoutExpired:
+                print(f"  {self.RED}✗ Installation timed out for {' '.join(cmd)}{self.RESET}")
+            except Exception as exc:
+                print(f"  {self.RED}✗ Error installing via {' '.join(cmd)}: {exc}{self.RESET}")
+
+        if attempted_cmds:
+            print(
+                f"  {self.YELLOW}Tried these commands: {', '.join(attempted_cmds)}{self.RESET}"
+            )
+        return False
 
     def install_missing_external_tools(self, include_optional: bool = True) -> Tuple[int, int]:
         """Install all missing external tools when supported."""
@@ -507,8 +542,9 @@ def run_dependency_check(
     all_required_ok = checker.display_summary(req_ok, req_missing, opt_ok, opt_missing)
     all_optional_ok = opt_missing == 0
     # Strict mode applies to Python dependency categories (required + optional).
-    # External tools are still tracked and handled by install_external_tools logic below.
-    all_ok = all_required_ok and (all_optional_ok if enforce_all else True)
+    # In strict mode we also require all external tools to be present.
+    all_tools_ok = all(tool.installed for tool in checker.external_tools)
+    all_ok = all_required_ok and (all_optional_ok if enforce_all else True) and (all_tools_ok if enforce_all else True)
 
     # If nothing missing, we're done
     missing_pip = checker.get_missing_pip_packages()
@@ -583,12 +619,17 @@ def run_dependency_check(
     checker.display_status()
     all_required_ok = checker.display_summary(req_ok, req_missing, opt_ok, opt_missing)
     all_optional_ok = opt_missing == 0
-    all_ok = all_required_ok and (all_optional_ok if enforce_all else True)
+    all_tools_ok = all(tool.installed for tool in checker.external_tools)
+    all_ok = all_required_ok and (all_optional_ok if enforce_all else True) and (all_tools_ok if enforce_all else True)
 
     if all_ok:
         print(f"\n{checker.GREEN}✓ All dependencies are now installed!{checker.RESET}")
     else:
-        if enforce_all and all_required_ok and not all_optional_ok:
+        if enforce_all and all_required_ok and all_optional_ok and not all_tools_ok:
+            missing_names = ", ".join(tool.name for tool in checker.external_tools if not tool.installed) or "external tools"
+            print(f"\n{checker.RED}✗ Missing external runtime tool(s): {missing_names}.{checker.RESET}")
+            print(f"{checker.YELLOW}Launcher strict mode requires these tools. Install and retry.{checker.RESET}")
+        elif enforce_all and all_required_ok and not all_optional_ok:
             print(f"\n{checker.RED}✗ Some runtime dependencies marked optional are still missing.{checker.RESET}")
             print(f"{checker.YELLOW}Launcher strict mode requires them. Install and retry.{checker.RESET}")
         else:

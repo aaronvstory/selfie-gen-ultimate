@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -68,16 +69,25 @@ def build_sanitized_config(template_path: Path) -> Dict[str, object]:
 
 
 def copy_sanitized_tree(repo_root: Path, dest_root: Path) -> None:
-    for src in repo_root.rglob("*"):
-        rel = src.relative_to(repo_root)
-        if _should_skip(rel):
-            continue
-        dest = dest_root / rel
-        if src.is_dir():
-            dest.mkdir(parents=True, exist_ok=True)
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
+    for root, dirnames, filenames in os.walk(repo_root):
+        root_path = Path(root)
+        rel_root = root_path.relative_to(repo_root)
+
+        pruned_dirs = []
+        for dirname in dirnames:
+            rel_dir = rel_root / dirname
+            if not _should_skip(rel_dir):
+                pruned_dirs.append(dirname)
+        dirnames[:] = pruned_dirs
+
+        for filename in filenames:
+            rel_file = rel_root / filename
+            if _should_skip(rel_file):
+                continue
+            src_file = root_path / filename
+            dest = dest_root / rel_file
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dest)
 
 
 def write_bundle_readme(bundle_root: Path, flavor: str) -> None:
