@@ -1460,6 +1460,7 @@ class KlingGUIWindow:
         runtime_log_path: str,
         crash_log_path: str,
         show_dialog: bool,
+        launch_label: Optional[str] = None,
     ) -> None:
         """Check whether launcher exited immediately without blocking the UI thread."""
         try:
@@ -1471,9 +1472,10 @@ class KlingGUIWindow:
         if exit_code is None:
             return
 
+        launch_hint = f" Attempt: {launch_label}." if launch_label else ""
         msg = (
             f"Similarity launcher '{launcher_name}' exited immediately "
-            f"(code={exit_code}). See logs: {runtime_log_path} / {crash_log_path}"
+            f"(code={exit_code}).{launch_hint} See logs: {runtime_log_path} / {crash_log_path}"
         )
         self._log(msg, "error")
         if show_dialog:
@@ -1481,6 +1483,40 @@ class KlingGUIWindow:
                 messagebox.showerror("Similarity Launch Failed", msg, parent=self.root)
             except Exception:
                 pass
+
+    @staticmethod
+    def _similarity_fallback_commands(system: str) -> List[List[str]]:
+        """Return fallback command candidates for launching similarity/main.py."""
+        commands: List[List[str]] = []
+        if system == "Windows":
+            for version in ("3.12", "3.11", "3.10", "3.9"):
+                commands.append(["py", f"-{version}", "main.py"])
+        commands.append(["python", "main.py"])
+        commands.append(["python3", "main.py"])
+        return commands
+
+    def _try_similarity_launch_attempt(
+        self,
+        label: str,
+        args: List[str],
+        similarity_dir: str,
+        launch_env: dict,
+        creationflags: int = 0,
+    ):
+        """Run one similarity launch attempt and return tuple(success, process_or_error)."""
+        import subprocess
+
+        kwargs = {"cwd": similarity_dir, "env": launch_env}
+        if creationflags:
+            kwargs["creationflags"] = creationflags
+        try:
+            process = subprocess.Popen(args, **kwargs)
+            self._log(f"Similarity launch requested: cmd='{label}' cwd='{similarity_dir}' pid={process.pid}", "info")
+            self._log(f"Launched Similarity app via {label}", "success")
+            return True, process
+        except Exception as exc:
+            self._log(f"Similarity launch attempt failed ({label}): {exc}", "warning")
+            return False, exc
 
     def _launch_similarity_gui(self, show_dialog: bool = True) -> bool:
         """Launch the standalone similarity GUI in a non-blocking subprocess."""
@@ -1500,64 +1536,72 @@ class KlingGUIWindow:
                 messagebox.showerror("Similarity Launch Failed", msg, parent=self.root)
             return False
 
-        if not os.path.isfile(launcher_path):
-            msg = f"Similarity launcher missing: {launcher_path}"
-            self._log(msg, "error")
-            if show_dialog:
-                messagebox.showerror("Similarity Launch Failed", msg, parent=self.root)
-            return False
+        system = platform.system()
+        launch_env = os.environ.copy()
+        launch_env["SIMILARITY_LAUNCHED_BY_MAIN"] = "1"
+        launch_env["TF_USE_LEGACY_KERAS"] = "1"
+        launch_env["KERAS_BACKEND"] = "tensorflow"
+        attempts: List[tuple[str, List[str], int]] = []
+        attempt_errors: List[str] = []
 
-        try:
-            system = platform.system()
-            launch_env = os.environ.copy()
-            launch_env["SIMILARITY_LAUNCHED_BY_MAIN"] = "1"
-            process = None
+        if os.path.isfile(launcher_path):
             if system == "Windows":
-                process = subprocess.Popen(
-                    ["cmd", "/c", launcher_name],
-                    cwd=similarity_dir,
-                    env=launch_env,
-                    creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                comspec = os.environ.get("ComSpec")
+                if not comspec:
+                    comspec = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe")
+                attempts.append(
+                    (
+                        f"{launcher_name} (via cmd.exe)",
+                        [comspec, "/c", launcher_path],
+                        getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                    )
                 )
             elif system == "Darwin":
-                process = subprocess.Popen(
-                    ["/bin/bash", launcher_path],
-                    cwd=similarity_dir,
-                    env=launch_env,
-                )
+                attempts.append((f"open {launcher_name}", ["open", launcher_path], 0))
             else:
-                process = subprocess.Popen([launcher_path], cwd=similarity_dir, env=launch_env)
+                attempts.append((launcher_name, [launcher_path], 0))
+        else:
+            missing_msg = f"Similarity launcher missing: {launcher_path}"
+            self._log(missing_msg, "warning")
+            attempt_errors.append(missing_msg)
 
-            if system == "Windows":
-                launch_cmd = launcher_name
-            elif system == "Darwin":
-                launch_cmd = f"/bin/bash {launcher_path}"
-            else:
-                launch_cmd = launcher_path
-            self._log(
-                f"Similarity launch requested: cmd='{launch_cmd}' cwd='{similarity_dir}' pid={process.pid if process else 'n/a'}",
-                "info",
+        for cmd in self._similarity_fallback_commands(system):
+            attempts.append((" ".join(cmd), cmd, 0))
+
+        for label, cmd, creationflags in attempts:
+            success, proc_or_exc = self._try_similarity_launch_attempt(
+                label=label,
+                args=cmd,
+                similarity_dir=similarity_dir,
+                launch_env=launch_env,
+                creationflags=creationflags,
             )
+            if success:
+                process = proc_or_exc
+                if system in {"Windows", "Darwin"} and process is not None:
+                    self.root.after(
+                        800,
+                        lambda p=process, ln=launcher_name, rl=runtime_log_path, cl=crash_log_path, sd=show_dialog, ll=label: self._check_similarity_early_exit(
+                            p, ln, rl, cl, sd, ll
+                        ),
+                    )
+                self._log(f"Launched Similarity app (runtime log: {runtime_log_path})", "success")
+                return True
+            attempt_errors.append(f"{label}: {proc_or_exc}")
 
-            if system in {"Windows", "Darwin"} and process is not None:
-                self.root.after(
-                    800,
-                    lambda p=process, ln=launcher_name, rl=runtime_log_path, cl=crash_log_path, sd=show_dialog: self._check_similarity_early_exit(
-                        p, ln, rl, cl, sd
-                    ),
-                )
-
-            self._log(f"Launched Similarity app via {launcher_name} (runtime log: {runtime_log_path})", "success")
-            return True
-        except Exception as exc:
-            msg = (
-                f"Could not launch Similarity app: {exc}. "
-                f"Expected runtime log: {runtime_log_path}"
-            )
-            self._log(msg, "error")
-            if show_dialog:
-                messagebox.showerror("Similarity Launch Failed", msg, parent=self.root)
-            return False
+        attempts_text = "\n".join(f"- {label}" for label, _, _ in attempts)
+        errors_text = "\n".join(f"- {err}" for err in attempt_errors)
+        msg = (
+            "Could not launch Similarity app.\n"
+            f"Attempts:\n{attempts_text}\n"
+            f"Errors:\n{errors_text}\n"
+            f"Expected runtime log: {runtime_log_path}\n"
+            f"Expected crash log: {crash_log_path}"
+        )
+        self._log(msg, "error")
+        if show_dialog:
+            messagebox.showerror("Similarity Launch Failed", msg, parent=self.root)
+        return False
 
     def _toggle_similarity_launcher(self):
         """Toggle the floating Similarity launcher popup and auto-run app."""

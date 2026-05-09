@@ -34,7 +34,7 @@ def test_darwin_parent_launch_uses_bash_and_schedules_after_probe():
 
     assert launched is True
     args, kwargs = popen_mock.call_args
-    assert args[0] == ["/bin/bash", os.path.join("/tmp/similarity", "run_gui.command")]
+    assert args[0] == ["open", os.path.join("/tmp/similarity", "run_gui.command")]
     assert kwargs["env"]["SIMILARITY_LAUNCHED_BY_MAIN"] == "1"
     window.root.after.assert_called_once()
     after_args = window.root.after.call_args[0]
@@ -63,6 +63,86 @@ def test_similarity_early_exit_helper_logs_and_shows_dialog():
 
     assert any("exited immediately" in msg for msg, _ in logs)
     showerror_mock.assert_called_once()
+
+
+def test_similarity_fallback_commands_windows_prefers_py_versions():
+    module = importlib.import_module("kling_gui.main_window")
+    commands = module.KlingGUIWindow._similarity_fallback_commands("Windows")
+    assert commands[:4] == [
+        ["py", "-3.12", "main.py"],
+        ["py", "-3.11", "main.py"],
+        ["py", "-3.10", "main.py"],
+        ["py", "-3.9", "main.py"],
+    ]
+    assert commands[-2:] == [["python", "main.py"], ["python3", "main.py"]]
+
+
+def test_similarity_fallback_commands_non_windows_uses_python_only():
+    module = importlib.import_module("kling_gui.main_window")
+    commands = module.KlingGUIWindow._similarity_fallback_commands("Darwin")
+    assert commands == [["python", "main.py"], ["python3", "main.py"]]
+
+
+def test_windows_launcher_uses_comspec_then_fallback():
+    module = importlib.import_module("kling_gui.main_window")
+    window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)
+    logs = []
+    window._log = lambda message, level="info": logs.append((message, level))
+    window._resolve_similarity_dir = lambda: r"F:\claude\selfie-gen-ultimate\similarity"
+    window._similarity_launcher_name = lambda: "run_gui.bat"
+    window.root = mock.Mock()
+
+    first_error = OSError("stub fail")
+    fallback_proc = _FakeProc(pid=1001, poll_result=None)
+    with mock.patch("os.path.isdir", return_value=True), mock.patch(
+        "os.path.isfile", return_value=True
+    ), mock.patch("platform.system", return_value="Windows"), mock.patch.dict(
+        os.environ, {"ComSpec": r"C:\Windows\System32\cmd.exe"}, clear=False
+    ), mock.patch(
+        "subprocess.Popen", side_effect=[first_error, fallback_proc]
+    ) as popen_mock, mock.patch.object(module.messagebox, "showerror") as showerror_mock:
+        launched = window._launch_similarity_gui(show_dialog=True)
+
+    assert launched is True
+    assert popen_mock.call_count == 2
+    first_call_args, first_call_kwargs = popen_mock.call_args_list[0]
+    second_call_args, second_call_kwargs = popen_mock.call_args_list[1]
+    assert first_call_args[0] == [
+        r"C:\Windows\System32\cmd.exe",
+        "/c",
+        r"F:\claude\selfie-gen-ultimate\similarity\run_gui.bat",
+    ]
+    assert first_call_kwargs.get("cwd") == r"F:\claude\selfie-gen-ultimate\similarity"
+    assert first_call_kwargs.get("env", {}).get("SIMILARITY_LAUNCHED_BY_MAIN") == "1"
+    assert first_call_kwargs.get("env", {}).get("TF_USE_LEGACY_KERAS") == "1"
+    assert first_call_kwargs.get("env", {}).get("KERAS_BACKEND") == "tensorflow"
+    assert second_call_args[0] == ["py", "-3.12", "main.py"]
+    assert second_call_kwargs.get("cwd") == r"F:\claude\selfie-gen-ultimate\similarity"
+    showerror_mock.assert_not_called()
+
+
+def test_launch_failure_aggregates_attempt_errors_in_dialog():
+    module = importlib.import_module("kling_gui.main_window")
+    window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)
+    window._log = lambda *_args, **_kwargs: None
+    window._resolve_similarity_dir = lambda: r"F:\claude\selfie-gen-ultimate\similarity"
+    window._similarity_launcher_name = lambda: "run_gui.bat"
+    window.root = mock.Mock()
+
+    with mock.patch("os.path.isdir", return_value=True), mock.patch(
+        "os.path.isfile", return_value=False
+    ), mock.patch("platform.system", return_value="Windows"), mock.patch(
+        "subprocess.Popen", side_effect=OSError("all failed")
+    ), mock.patch.object(module.messagebox, "showerror") as showerror_mock:
+        launched = window._launch_similarity_gui(show_dialog=True)
+
+    assert launched is False
+    showerror_mock.assert_called_once()
+    error_message = showerror_mock.call_args.args[1]
+    assert "Attempts:" in error_message
+    assert "Similarity launcher missing" in error_message
+    assert "py -3.12 main.py" in error_message
+    assert "python main.py" in error_message
 
 
 def test_similarity_early_exit_helper_noop_when_still_running():
