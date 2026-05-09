@@ -41,19 +41,21 @@ build_gui_exe.bat
 sync_from_root.bat
 ```
 
-### Build sanitized shareable bundles (GUI/CLI/macOS)
+### Build sanitized shareable bundle (universal)
 
 ```batch
-build_release.bat
+python distribution/build_release.py
 ```
 
 **What it does:**
-1. Creates a timestamped release folder under `release\`
-2. Stages sanitized platform bundles (`windows_gui`, `windows_cli`, `macos_portable`)
-3. Writes blank-key `kling_config.json` into each staged bundle
-4. Produces `windows_gui.zip`, `windows_cli.zip`, and `macos_portable.zip`
+1. Stages one sanitized universal bundle under a temporary staging folder
+2. Writes blank-key `kling_config.json` into the staged bundle
+3. Produces `SelfieGenUltimate.zip`
+4. Cleans staging artifacts automatically
 
-**Output location:** `release\release_YYYYMMDD_HHMMSS\`
+**Output location:** `dist\SelfieGenUltimate.zip`
+
+Deprecated historical outputs: `windows_gui.zip`, `windows_cli.zip`, `macos_portable.zip`.
 
 ### `build_gui_exe.bat` behavior (direct GUI .exe build)
 

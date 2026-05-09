@@ -95,7 +95,7 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     assert (dst / "normal.py").exists()
 
 
-def test_bundle_release_creates_two_zips_with_top_level_launchers(tmp_path: Path):
+def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path: Path):
     repo = tmp_path / "repo"
     dist = tmp_path / "dist"
     repo.mkdir()
@@ -129,33 +129,34 @@ def test_bundle_release_creates_two_zips_with_top_level_launchers(tmp_path: Path
 
     created = list(bundle_release(repo, dist))
     names = sorted(path.name for path in created)
-    assert names == ["SelfieGenUltimate-Windows.zip", "SelfieGenUltimate-macOS.zip"]
+    assert names == ["SelfieGenUltimate.zip"]
 
-    win_zip = dist / "SelfieGenUltimate-Windows.zip"
-    mac_zip = dist / "SelfieGenUltimate-macOS.zip"
-    assert win_zip.exists()
-    assert mac_zip.exists()
+    universal_zip = dist / "SelfieGenUltimate.zip"
+    assert universal_zip.exists()
 
-    with zipfile.ZipFile(win_zip) as zf:
+    with zipfile.ZipFile(universal_zip) as zf:
         names = zf.namelist()
         assert any(name.endswith("selfie-gen-ultimate/Start GUI.bat") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/Start CLI.bat") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/Start GUI.command") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/Start CLI.command") for name in names)
         assert not any(name.endswith("selfie-gen-ultimate/tests/test_x.py") for name in names)
         assert not any(name.endswith("selfie-gen-ultimate/kling_gui.log") for name in names)
+        assert not any(name.endswith("selfie-gen-ultimate/distribution/build_release.py") for name in names)
         cfg_name = next(name for name in names if name.endswith("selfie-gen-ultimate/kling_config.json"))
         cfg = json.loads(zf.read(cfg_name).decode("utf-8"))
         for key in ("falai_api_key", "bfl_api_key", "openrouter_api_key", "freeimage_api_key"):
             assert cfg[key] == ""
         for key in ("output_folder", "automation_root_folder", "selfie_output_folder", "window_geometry"):
             assert cfg[key] == ""
-
-    with zipfile.ZipFile(mac_zip) as zf:
-        names = zf.namelist()
-        assert any(name.endswith("selfie-gen-ultimate/Start GUI.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/Start CLI.command") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/run_cli.command") for name in names)
+        readme_name = next(name for name in names if name.endswith("selfie-gen-ultimate/README_FIRST_RUN.txt"))
+        readme_text = zf.read(readme_name).decode("utf-8")
+        assert 'Windows: double-click "Start GUI.bat" or "Start CLI.bat"' in readme_text
+        assert 'macOS: double-click "Start GUI.command" or "Start CLI.command"' in readme_text
+        assert "right-click -> Open once" in readme_text
 
-    staging_cfg = dist / "_staging" / "windows" / "selfie-gen-ultimate" / "kling_config.json"
+    staging_cfg = dist / "_staging" / "universal" / "selfie-gen-ultimate" / "kling_config.json"
     assert not staging_cfg.exists()
 
 

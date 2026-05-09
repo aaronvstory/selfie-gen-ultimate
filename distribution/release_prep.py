@@ -38,6 +38,7 @@ EXCLUDED_DIRS: Set[str] = {
     "reviews",
     "sessions",
     "release",
+    "distribution",
     "tests",
     "tests_tmp",
 }
@@ -129,52 +130,41 @@ def copy_sanitized_tree(repo_root: Path, dest_root: Path) -> None:
             shutil.copy2(src_file, dest)
 
 
-def write_bundle_readme(bundle_root: Path, flavor: str) -> None:
-    """Write first-run instructions for a specific bundle flavor.
+def write_bundle_readme(bundle_root: Path) -> None:
+    """Write first-run instructions for the universal bundle.
 
     Args:
         bundle_root: Bundle directory root.
-        flavor: One of windows_gui, windows_cli, macos_portable.
     """
-    if flavor == "windows":
-        launch_text = (
-            "Windows:\n"
-            '- double-click "Start GUI.bat" or "Start CLI.bat"\n'
-        )
-    else:
-        launch_text = (
-            "macOS:\n"
-            '- double-click "Start GUI.command" or "Start CLI.command"\n'
-            "- if macOS blocks it, right-click Open once\n"
-        )
     text = (
         "Selfie Gen Ultimate - Shareable Bundle\n\n"
-        f"{launch_text}\n"
-        "First launch key setup:\n"
-        "- Fal.ai key is required at startup: https://fal.ai/dashboard/keys\n"
-        "- Optional keys: BFL (https://api.bfl.ai/), OpenRouter (https://openrouter.ai/keys), "
-        "Freeimage (https://freeimage.host/page/api)\n"
+        "1) Unzip this package.\n"
+        '2) Windows: double-click "Start GUI.bat" or "Start CLI.bat".\n'
+        '3) macOS: double-click "Start GUI.command" or "Start CLI.command".\n'
+        "4) If macOS blocks it, right-click -> Open once.\n"
+        "5) On first launch, enter required API keys.\n"
+        "6) Fal.ai key is required.\n"
+        "7) BFL key may be required by default automation settings.\n"
+        "8) First launch creates a local virtual environment.\n"
     )
     (bundle_root / "README_FIRST_RUN.txt").write_text(text, encoding="utf-8")
 
 
-def _write_top_level_launchers(bundle_root: Path, flavor: str) -> None:
-    if flavor == "windows":
-        (bundle_root / "Start GUI.bat").write_text(
-            "@echo off\n"
-            "setlocal\n"
-            "cd /d \"%~dp0\"\n"
-            "call launchers\\run_gui.bat\n",
-            encoding="utf-8",
-        )
-        (bundle_root / "Start CLI.bat").write_text(
-            "@echo off\n"
-            "setlocal\n"
-            "cd /d \"%~dp0\"\n"
-            "call launchers\\run_cli.bat\n",
-            encoding="utf-8",
-        )
-        return
+def _write_top_level_launchers(bundle_root: Path) -> None:
+    (bundle_root / "Start GUI.bat").write_text(
+        "@echo off\n"
+        "setlocal\n"
+        "cd /d \"%~dp0\"\n"
+        "call launchers\\run_gui.bat\n",
+        encoding="utf-8",
+    )
+    (bundle_root / "Start CLI.bat").write_text(
+        "@echo off\n"
+        "setlocal\n"
+        "cd /d \"%~dp0\"\n"
+        "call launchers\\run_cli.bat\n",
+        encoding="utf-8",
+    )
 
     (bundle_root / "Start GUI.command").write_text(
         "#!/usr/bin/env bash\n"
@@ -201,7 +191,7 @@ def _write_top_level_launchers(bundle_root: Path, flavor: str) -> None:
 
 
 def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
-    """Create two platform release bundles and return generated zip paths.
+    """Create one universal release bundle and return generated zip path.
 
     Args:
         repo_root: Source repository root.
@@ -211,27 +201,23 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
         Iterable of created zip archive paths.
     """
     dist_root.mkdir(parents=True, exist_ok=True)
+    for old_zip in dist_root.glob("SelfieGenUltimate-*.zip"):
+        old_zip.unlink()
 
-    bundle_defs = [
-        ("windows", "SelfieGenUltimate-Windows"),
-        ("macos", "SelfieGenUltimate-macOS"),
-    ]
-    created = []
-    for flavor, zip_name in bundle_defs:
-        staging_root = dist_root / "_staging" / flavor
-        if staging_root.exists():
-            shutil.rmtree(staging_root)
-        bundle_dir = staging_root / "selfie-gen-ultimate"
-        bundle_dir.mkdir(parents=True, exist_ok=True)
-        copy_sanitized_tree(repo_root, bundle_dir)
-        config = build_sanitized_config(bundle_dir / "default_config_template.json")
-        (bundle_dir / "kling_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
-        _write_top_level_launchers(bundle_dir, flavor)
-        write_bundle_readme(bundle_dir, flavor)
-        zip_path = dist_root / f"{zip_name}.zip"
-        if zip_path.exists():
-            zip_path.unlink()
-        archive_path = shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=staging_root)
-        created.append(Path(archive_path))
+    staging_root = dist_root / "_staging" / "universal"
+    if staging_root.exists():
+        shutil.rmtree(staging_root)
+    bundle_dir = staging_root / "selfie-gen-ultimate"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    copy_sanitized_tree(repo_root, bundle_dir)
+    config = build_sanitized_config(bundle_dir / "default_config_template.json")
+    (bundle_dir / "kling_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+    _write_top_level_launchers(bundle_dir)
+    write_bundle_readme(bundle_dir)
+    zip_path = dist_root / "SelfieGenUltimate.zip"
+    if zip_path.exists():
+        zip_path.unlink()
+    archive_path = shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=staging_root)
+    created = [Path(archive_path)]
     shutil.rmtree(dist_root / "_staging", ignore_errors=True)
     return created

@@ -12,7 +12,7 @@ def main() -> int:
 
     dist_root = repo_root / "dist"
     created = list(bundle_release(repo_root, dist_root))
-    print("Created release bundles:")
+    print("Created release bundle:")
     for path in created:
         print(f"- {path}")
     return 0
