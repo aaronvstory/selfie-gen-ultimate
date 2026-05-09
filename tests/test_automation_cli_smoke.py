@@ -1,6 +1,7 @@
 import pytest
 from pathlib import Path
 
+from automation.config import get_outpaint_fal_timeout_seconds, merge_automation_defaults
 from kling_automation_ui import KlingAutomationUI
 
 
@@ -39,14 +40,17 @@ def test_cli_branding_text_updated():
     assert "provider=" in src
 
 
-def test_load_config_defaults_to_kling_standard_and_slot1(tmp_path):
+def test_load_config_defaults_to_kling_standard_and_slot4(tmp_path):
     ui = KlingAutomationUI.__new__(KlingAutomationUI)
     ui.config_file = str(tmp_path / "missing.json")
     cfg = ui.load_config()
     assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
     assert cfg["model_display_name"] == "Kling 2.5 Turbo Standard"
-    assert cfg["current_prompt_slot"] == 1
+    assert cfg["current_prompt_slot"] == 4
     assert "30 degrees" in cfg["saved_prompts"]["1"].lower()
+    merged = merge_automation_defaults(cfg)
+    assert merged["automation_selfie_prompt_slot"] == 3
+    assert str(merged["automation_selfie_prompts"]["3"]).strip()
 
 
 def test_dry_run_ignores_corrupt_manifest(tmp_path, monkeypatch, capsys):
@@ -593,11 +597,12 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_selfie_expand_mode"] == "percent"
     assert ui.config["automation_selfie_expand_percent"] == 30
     assert ui.config["automation_selfie_models"] == ["fal-ai/nano-banana-2/edit"]
-    assert ui.config["automation_selfie_prompt_slot"] == 1
+    assert ui.config["automation_selfie_prompt_slot"] == 3
     assert "parked car" in ui.config["automation_selfie_prompts"]["1"].lower()
+    assert "parked car" in ui.config["automation_selfie_prompts"]["3"].lower()
     assert ui.config["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
     assert ui.config["model_display_name"] == "Kling 2.5 Turbo Standard"
-    assert ui.config["current_prompt_slot"] == 1
+    assert ui.config["current_prompt_slot"] == 4
     assert "30 degrees" in ui.config["saved_prompts"]["1"].lower()
     assert ui.config["automation_similarity_threshold"] == 80
     assert ui.config["automation_video_enabled"] is True
@@ -624,6 +629,14 @@ def test_apply_recommended_automation_defaults_sets_max_cases_to_1_if_invalid(tm
     monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
     ui._apply_recommended_automation_defaults()
     assert ui.config["automation_max_cases_per_run"] == "1"
+
+
+def test_outpaint_timeout_normalization_helper():
+    assert get_outpaint_fal_timeout_seconds({}) == 150
+    assert get_outpaint_fal_timeout_seconds({"outpaint_fal_timeout_seconds": "abc"}) == 150
+    assert get_outpaint_fal_timeout_seconds({"outpaint_fal_timeout_seconds": 5}) == 30
+    assert get_outpaint_fal_timeout_seconds({"outpaint_fal_timeout_seconds": 999}) == 300
+    assert get_outpaint_fal_timeout_seconds({"outpaint_fal_timeout_seconds": "180"}) == 180
 
 
 def test_automation_status_lines_include_front_passes(tmp_path):

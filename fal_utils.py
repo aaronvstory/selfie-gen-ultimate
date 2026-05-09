@@ -391,6 +391,10 @@ def fal_queue_poll(
     progress_cb: ProgressCallback = None,
     max_wait_seconds: int = 600,
     cancel_event: Optional[threading.Event] = None,
+    provider: str = "fal",
+    endpoint: str = "",
+    request_id: str = "",
+    operation_name: str = "Operation",
 ) -> Optional[dict]:
     """Poll fal.ai queue until completion.
 
@@ -400,11 +404,18 @@ def fal_queue_poll(
       - After 5 min: 15 s polls
 
     Args:
+        api_key: fal.ai API key.
+        status_url: Queue status endpoint from initial submit response.
+        progress_cb: Optional callback for user-facing status messages.
         max_wait_seconds: Maximum wall-clock seconds to poll before giving up.
             Default 600 (10 min) for video gen.  Callers doing image gen
             should pass a shorter value (e.g. 120 s).
         cancel_event: Optional threading.Event checked before each sleep.
             If set, polling returns None immediately.
+        provider: Provider label for diagnostics.
+        endpoint: Model endpoint id for diagnostics.
+        request_id: Request id for diagnostics (last 8 chars shown).
+        operation_name: Human-readable operation label used in status text.
 
     Returns the final result dict (output/data/images key) or None on failure.
     """
@@ -414,6 +425,8 @@ def fal_queue_poll(
     consecutive_errors = 0
     max_consecutive_errors = 10
     start_time = time.monotonic()
+    last_status = "UNKNOWN"
+    safe_request = request_id[-8:] if request_id else "unknown"
 
     for attempt in range(1, max_attempts + 1):
         # Hard wall-clock timeout
@@ -423,7 +436,12 @@ def fal_queue_poll(
             logger.error("Polling timed out after %d s (%d min)", int(elapsed_s), elapsed_min)
             if progress_cb:
                 progress_cb(
-                    f"Timed out after {int(elapsed_s)}s — model may be unavailable or overloaded",
+                    (
+                        f"{operation_name} timeout ({provider}) after {int(elapsed_s)}s "
+                        f"(cap={int(max_wait_seconds)}s, status={last_status}, "
+                        f"endpoint={endpoint or 'unknown'}, req=*{safe_request}) "
+                        f"reason=provider_timeout"
+                    ),
                     "error",
                 )
             return None
@@ -431,7 +449,14 @@ def fal_queue_poll(
         # Cancellation check
         if cancel_event is not None and cancel_event.is_set():
             if progress_cb:
-                progress_cb("Generation cancelled", "warning")
+                progress_cb(
+                    (
+                        f"{operation_name} aborted by user ({provider}) "
+                        f"(status={last_status}, endpoint={endpoint or 'unknown'}, req=*{safe_request}) "
+                        f"reason=user_aborted"
+                    ),
+                    "warning",
+                )
             return None
 
         # Backoff schedule
@@ -443,13 +468,30 @@ def fal_queue_poll(
             delay = 15
 
         if _sleep_with_cancel(delay, cancel_event=cancel_event, progress_cb=progress_cb):
+            if progress_cb:
+                progress_cb(
+                    (
+                        f"{operation_name} aborted by user ({provider}) "
+                        f"(status={last_status}, endpoint={endpoint or 'unknown'}, req=*{safe_request}) "
+                        f"reason=user_aborted"
+                    ),
+                    "warning",
+                )
             return None
 
         # Periodic progress update
         if attempt % 12 == 0:
-            elapsed = int((time.monotonic() - start_time) / 60)
+            elapsed_s_full = int(time.monotonic() - start_time)
+            elapsed = int(elapsed_s_full / 60)
             if progress_cb:
-                progress_cb(f"Still waiting... {elapsed} min elapsed", "progress")
+                progress_cb(
+                    (
+                        f"Still waiting... {elapsed} min elapsed "
+                        f"[provider={provider} endpoint={endpoint or 'unknown'} req=*{safe_request} "
+                        f"attempt={attempt} status={last_status} elapsed={elapsed_s_full}s cap={int(max_wait_seconds)}s]"
+                    ),
+                    "progress",
+                )
 
         try:
             resp = _get_with_auth_fallback(status_url, status_headers, timeout=30)
@@ -499,6 +541,8 @@ def fal_queue_poll(
             consecutive_errors = 0
             data = resp.json()
             status = data.get("status")
+            if isinstance(status, str) and status:
+                last_status = status
 
             if status in ("IN_QUEUE", "IN_PROGRESS"):
                 continue

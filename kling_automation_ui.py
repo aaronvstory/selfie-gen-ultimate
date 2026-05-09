@@ -49,6 +49,8 @@ from selfie_generator import SelfieGenerator
 from tk_dialogs import select_directory, select_directory_cli_safe, select_open_file
 
 RECOMMENDED_DEFAULTS_VERSION = 1
+DEFAULT_KLING_PROMPT_SLOT = 4
+DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT = 3
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
     "Generate a lifelike video animation from the provided image. The subject must rotate only their head in an exceptionally "
     "slow, smooth, and biologically realistic motion: start by gently turning the head left, up to 30 degrees from center, with "
@@ -136,16 +138,17 @@ class KlingAutomationUI:
             "bfl_api_key": "",
             "openrouter_api_key": "",
             "freeimage_api_key": "",
+            "outpaint_fal_timeout_seconds": 150,
             "verbose_logging": True,
             "duplicate_detection": True,
             "delay_between_generations": 1,
-            # Prompt slot system - recommended defaults use slot 1
-            "current_prompt_slot": 1,
+            # Prompt slot system - recommended defaults use slot 4 for Kling video
+            "current_prompt_slot": DEFAULT_KLING_PROMPT_SLOT,
             "saved_prompts": {
                 "1": RECOMMENDED_KLING_PROMPT_SLOT_1,
                 "2": prompt_slot_1,
                 "3": None,
-                "4": None,
+                "4": RECOMMENDED_KLING_PROMPT_SLOT_1,
                 "5": None,
                 "6": None,
                 "7": None,
@@ -207,7 +210,7 @@ class KlingAutomationUI:
 
     def get_current_prompt(self) -> str:
         """Get the current prompt from the active slot"""
-        slot = str(self.config.get("current_prompt_slot", 1))
+        slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
         saved = self.config.get("saved_prompts", {})
         prompt = saved.get(slot)
         if prompt:
@@ -217,7 +220,7 @@ class KlingAutomationUI:
 
     def get_current_negative_prompt(self) -> Optional[str]:
         """Get the current negative prompt from the active slot"""
-        slot = str(self.config.get("current_prompt_slot", 1))
+        slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
         saved = self.config.get("negative_prompts", {})
         return saved.get(slot)
 
@@ -1047,7 +1050,7 @@ class KlingAutomationUI:
         """Edit or view the Kling generation prompt (full editor with slot support)"""
         self.clear_screen()
 
-        current_slot = str(self.config.get("current_prompt_slot", 1))
+        current_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
         current_prompt = self.get_current_prompt()
         default_prompt = self.get_default_prompt()
 
@@ -1178,7 +1181,7 @@ class KlingAutomationUI:
         new_prompt = input("\033[92m➤ \033[0m").strip()
 
         if new_prompt:
-            current_slot = str(self.config.get("current_prompt_slot", 1))
+            current_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
             self.config["saved_prompts"][current_slot] = new_prompt
             self.save_config()
             print("\033[92m✓ Prompt saved to Slot {}\033[0m".format(current_slot))
@@ -1188,10 +1191,13 @@ class KlingAutomationUI:
             time.sleep(0.5)
 
     def swap_prompt_slot(self):
-        """Swap between prompt slots 1, 2, 3"""
+        """Swap active Kling video prompt slot across slots 1-10.
+
+        Invalid or missing slot values fall back to slot 4 defaults.
+        """
         print()
         saved_prompts = self.config.get("saved_prompts", {})
-        current_slot = self.config.get("current_prompt_slot", 1)
+        current_slot = self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT)
 
         print("\033[93mSaved Prompts:\033[0m")
         for i in range(1, 11):
@@ -1491,23 +1497,30 @@ class KlingAutomationUI:
         prompts = self.config.get("automation_selfie_prompts")
         if not isinstance(prompts, dict):
             prompts = {}
+        defaults = merge_automation_defaults({}).get("automation_selfie_prompts", {})
         for i in range(1, 11):
             prompts.setdefault(str(i), "")
         if not prompts.get("1"):
-            prompts["1"] = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+            prompts["1"] = defaults.get("1", "")
+        if not prompts.get("3"):
+            prompts["3"] = defaults.get("3", defaults.get("1", ""))
         self.config["automation_selfie_prompts"] = prompts
-        slot = int(self.config.get("automation_selfie_prompt_slot", 1))
+        slot = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
         if slot < 1 or slot > 10:
-            slot = 1
+            slot = DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT
         self.config["automation_selfie_prompt_slot"] = slot
 
     def _get_selected_selfie_prompt(self) -> Tuple[str, str, str]:
         self._ensure_selfie_prompt_slots()
-        slot = str(self.config.get("automation_selfie_prompt_slot", 1))
+        slot = str(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
         prompt = str(self.config.get("automation_selfie_prompts", {}).get(slot, "") or "").strip()
         if prompt:
             return slot, prompt, f"slot:{slot}"
-        default_prompt = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+        defaults = merge_automation_defaults({}).get("automation_selfie_prompts", {})
+        slot_default = str(defaults.get(slot, "") or "").strip()
+        if slot_default:
+            return slot, slot_default, f"default_seeded_slot:{slot}"
+        default_prompt = defaults.get("1", "")
         return slot, default_prompt, "default_seeded_prompt"
 
     def _oldcam_readiness_status(self) -> str:
@@ -1532,7 +1545,7 @@ class KlingAutomationUI:
             f"front mode={self.config.get('automation_front_expand_mode')} pct={self.config.get('automation_front_expand_percent', 70)} passes={self.config.get('automation_front_expand_passes', 2)} provider={front_configured}->{self._resolve_provider(front_configured)}",
             f"selfie expand mode={self.config.get('automation_selfie_expand_mode')} pct={self.config.get('automation_selfie_expand_percent', 30)} provider={selfie_configured}->{self._resolve_provider(selfie_configured)}",
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
-            f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', 1)}",
+            f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', DEFAULT_KLING_PROMPT_SLOT)}",
             f"oldcam version={self.config.get('automation_oldcam_version', 'v8')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
             f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
             f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
@@ -1554,8 +1567,8 @@ class KlingAutomationUI:
             ),
             "selfie_models": list(self.config.get("automation_selfie_models", [])),
             "video_model": self.config.get("model_display_name") or self.config.get("current_model"),
-            "selfie_prompt_slot": self.config.get("automation_selfie_prompt_slot", 1),
-            "kling_prompt_slot": self.config.get("current_prompt_slot", 1),
+            "selfie_prompt_slot": self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT),
+            "kling_prompt_slot": self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT),
             "oldcam": (self.config.get("automation_oldcam_version", "v8"), self.config.get("automation_oldcam_required", False)),
             "max_cases": self._read_max_cases_setting(),
         }
@@ -1578,16 +1591,19 @@ class KlingAutomationUI:
         self.config["automation_selfie_expand_percent"] = 30
         self.config["automation_selfie_expand_edge_seal_enabled"] = False
         self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
-        self.config["automation_selfie_prompt_slot"] = 1
+        self.config["automation_selfie_prompt_slot"] = DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT
         self._ensure_selfie_prompt_slots()
-        self.config["automation_selfie_prompts"]["1"] = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+        defaults = merge_automation_defaults({}).get("automation_selfie_prompts", {})
+        self.config["automation_selfie_prompts"]["1"] = defaults.get("1", "")
+        self.config["automation_selfie_prompts"]["3"] = defaults.get("3", defaults.get("1", ""))
         self.config["current_model"] = "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
         self.config["model_display_name"] = "Kling 2.5 Turbo Standard"
-        self.config["current_prompt_slot"] = 1
+        self.config["current_prompt_slot"] = DEFAULT_KLING_PROMPT_SLOT
         saved_prompts = self.config.get("saved_prompts")
         if not isinstance(saved_prompts, dict):
             saved_prompts = {}
         saved_prompts["1"] = RECOMMENDED_KLING_PROMPT_SLOT_1
+        saved_prompts["4"] = RECOMMENDED_KLING_PROMPT_SLOT_1
         self.config["saved_prompts"] = saved_prompts
         self.config["automation_similarity_threshold"] = 80
         self.config["automation_video_enabled"] = True
@@ -1603,8 +1619,8 @@ class KlingAutomationUI:
         print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} -> bfl / percent / 30")
         print(f"  selfie model: {before['selfie_models']} -> Nano Banana 2 Edit")
         print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
-        print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 1")
-        print(f"  Kling prompt slot: {before['kling_prompt_slot']} -> 1")
+        print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 3")
+        print(f"  Kling prompt slot: {before['kling_prompt_slot']} -> 4")
         print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> v8 / required")
         print(f"  max cases per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
         print("\nCurrent recommended state:")
@@ -1612,8 +1628,8 @@ class KlingAutomationUI:
         print("  selfie expand: bfl / percent / 30")
         print("  selfie model: Nano Banana 2 Edit")
         print("  video model: Kling 2.5 Turbo Standard")
-        print("  selfie prompt slot: 1")
-        print("  Kling prompt slot: 1")
+        print("  selfie prompt slot: 3")
+        print("  Kling prompt slot: 4")
         print("  oldcam: v8 / required")
         print(f"  max cases per run: {self._read_max_cases_setting()}")
         self.pause_continue("\nPress Enter to continue...")
@@ -1952,7 +1968,7 @@ class KlingAutomationUI:
         _ask("Max attempts per model", "automation_selfie_max_attempts_per_model", int, lambda v: v > 0)
         _ask("Similarity threshold", "automation_similarity_threshold", int, lambda v: 0 <= v <= 100)
         self._ensure_selfie_prompt_slots()
-        current_slot = int(self.config.get("automation_selfie_prompt_slot", 1))
+        current_slot = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
         current_prompt = str(self.config.get("automation_selfie_prompts", {}).get(str(current_slot), "") or "")
         print(f"Selfie prompt slot: {current_slot}")
         print(f"Current selfie prompt preview: {(current_prompt[:120] + '...') if len(current_prompt) > 120 else current_prompt}")
@@ -1967,7 +1983,10 @@ class KlingAutomationUI:
                 self.config["automation_selfie_prompts"][str(current_slot)] = new_prompt
         reset_current = input("Reset active selfie slot to default prompt? [y/N]: ").strip().lower()
         if reset_current in {"y", "yes"}:
-            self.config["automation_selfie_prompts"][str(current_slot)] = merge_automation_defaults({}).get("automation_selfie_prompts", {}).get("1", "")
+            defaults = merge_automation_defaults({}).get("automation_selfie_prompts", {})
+            self.config["automation_selfie_prompts"][str(current_slot)] = defaults.get(
+                str(current_slot), defaults.get("1", "")
+            )
 
         print("\n[Selfie Expansion / Video / Loop-Oldcam]")
         _ask_bool("Selfie expansion enabled", "automation_selfie_expand_enabled")
@@ -2409,7 +2428,7 @@ class KlingAutomationUI:
                 verbose=self.verbose_logging,
                 model_endpoint=self.config.get("current_model"),
                 model_display_name=self.config.get("model_display_name"),
-                prompt_slot=self.config.get("current_prompt_slot", 1),
+                prompt_slot=self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT),
             )
 
             # Gate negative_prompt by model capability (like GUI does)

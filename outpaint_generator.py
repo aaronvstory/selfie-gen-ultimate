@@ -6,6 +6,7 @@ import time
 import base64
 import logging
 import tempfile
+import threading
 from io import BytesIO
 from typing import Optional, Callable, Tuple
 from pathlib import Path
@@ -14,6 +15,7 @@ from outpaint_geometry import (
     compute_centered_aspect_expand_plan,
     compute_provider_caps,
 )
+from automation.config import get_outpaint_fal_timeout_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +194,8 @@ class OutpaintGenerator:
         document_mode: bool = False,
         edge_seal_px: int = 0,
         edge_seal_color: Tuple[int, int, int] = (220, 220, 220),
+        poll_timeout_seconds: int = 150,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
         """Outpaint (expand) an image.
 
@@ -207,6 +211,8 @@ class OutpaintGenerator:
             composite_mode: "feathered" (3-6px blend), "hard" (pixel-perfect),
                 or "none" (raw AI output)
             output_path: If provided, use this exact path instead of generating one
+            poll_timeout_seconds: Maximum seconds to wait for async poll completion.
+            cancel_event: Optional event to abort waiting and return early.
 
         Returns:
             Absolute path to expanded image, or None on failure.
@@ -253,6 +259,7 @@ class OutpaintGenerator:
                 output_path=output_path,
                 edge_seal_px=edge_seal_px,
                 edge_seal_color=edge_seal_color,
+                cancel_event=cancel_event,
             )
         self._report("Using fal.ai outpaint", "info")
 
@@ -353,10 +360,31 @@ class OutpaintGenerator:
         if not status_url:
             self._report("No status URL in response", "error")
             return None
+        request_id = str(result.get("request_id", "") or "")
+        safe_request = request_id[-8:] if request_id else "unknown"
+        timeout_seconds = get_outpaint_fal_timeout_seconds(
+            {"outpaint_fal_timeout_seconds": poll_timeout_seconds}
+        )
+        self._report(
+            f"Queue watch: provider=fal endpoint={self.ENDPOINT} req=*{safe_request} timeout={timeout_seconds}s",
+            "debug",
+        )
 
         self._report("Waiting for outpaint...", "progress")
-        final = fal_queue_poll(self.api_key, status_url, self._progress_callback)
+        final = fal_queue_poll(
+            self.api_key,
+            status_url,
+            self._progress_callback,
+            max_wait_seconds=timeout_seconds,
+            cancel_event=cancel_event,
+            provider="fal",
+            endpoint=self.ENDPOINT,
+            request_id=request_id,
+            operation_name="Outpaint",
+        )
         if not final:
+            if cancel_event is not None and cancel_event.is_set():
+                return None
             self._report("Outpaint failed or timed out", "error")
             return None
 
@@ -567,6 +595,7 @@ class OutpaintGenerator:
         output_path: Optional[str] = None,
         edge_seal_px: int = 0,
         edge_seal_color: Tuple[int, int, int] = (220, 220, 220),
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
         """Outpaint via BFL Expand (FLUX Pro 1.0). Returns output path or None."""
         import requests
@@ -718,6 +747,9 @@ class OutpaintGenerator:
             consecutive_errors = 0
 
             while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    self._report("Expand aborted by user (provider=bfl) reason=user_aborted", "warning")
+                    return None
                 elapsed_s = int(time.monotonic() - poll_start)
 
                 if elapsed_s >= _BFL_MAX_WAIT_SECONDS:
@@ -726,7 +758,11 @@ class OutpaintGenerator:
                     )
                     return None
 
-                time.sleep(_BFL_POLL_INTERVAL)
+                if cancel_event is not None and cancel_event.wait(timeout=_BFL_POLL_INTERVAL):
+                    self._report("Expand aborted by user (provider=bfl) reason=user_aborted", "warning")
+                    return None
+                if cancel_event is None:
+                    time.sleep(_BFL_POLL_INTERVAL)
                 poll_num += 1
 
                 try:

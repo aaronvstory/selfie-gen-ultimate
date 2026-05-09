@@ -9,6 +9,7 @@ from typing import Callable
 from ..theme import COLORS, FONT_FAMILY
 from ..image_state import ImageSession
 from path_utils import get_gen_images_folder
+from automation.config import get_outpaint_fal_timeout_seconds
 
 
 class OutpaintTab(tk.Frame):
@@ -424,6 +425,7 @@ class OutpaintTab(tk.Frame):
                     expand_bottom=expand_bottom,
                     prompt=prompt,
                     output_format=output_format,
+                    poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.get_config()),
                 )
 
                 # Compute face similarity against original portrait

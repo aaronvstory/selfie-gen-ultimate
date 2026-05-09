@@ -18,6 +18,7 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 
 from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs
+from automation.config import get_outpaint_fal_timeout_seconds
 from tk_dialogs import select_directory, select_open_files
 
 # Import path utilities
@@ -711,7 +712,7 @@ class KlingGUIWindow:
             "log_max_mb": 5,
             "log_backups": 3,
             "duplicate_detection": True,
-            "current_prompt_slot": 1,
+            "current_prompt_slot": 4,
             "saved_prompts": {str(i): "" for i in range(1, 11)},
             "negative_prompts": {str(i): "" for i in range(1, 11)},
             "model_capabilities": {},
@@ -732,7 +733,8 @@ class KlingGUIWindow:
             "selfie_output_mode": "source",
             "selfie_output_folder": "",
             "selfie_poll_timeout_seconds": 300,
-            "selfie_current_prompt_slot": 1,
+            "selfie_current_prompt_slot": 3,
+            "outpaint_fal_timeout_seconds": 150,
             "selfie_saved_prompts": {str(i): "" for i in range(1, 11)},
             "selfie_prompt_titles": {str(i): f"Prompt {i}" for i in range(1, 11)},
             "selfie_selected_models": {
@@ -808,10 +810,16 @@ class KlingGUIWindow:
                     bucket[slot] = ""
 
         try:
-            selfie_slot = int(default_config.get("selfie_current_prompt_slot", 1))
+            selfie_slot = int(default_config.get("selfie_current_prompt_slot", 3))
         except Exception:
-            selfie_slot = 1
+            selfie_slot = 3
         default_config["selfie_current_prompt_slot"] = min(10, max(1, selfie_slot))
+        try:
+            kling_slot = int(default_config.get("current_prompt_slot", 4))
+        except Exception:
+            kling_slot = 4
+        default_config["current_prompt_slot"] = min(10, max(1, kling_slot))
+        default_config["outpaint_fal_timeout_seconds"] = get_outpaint_fal_timeout_seconds(default_config)
 
         # Layer 4: migrate known broken endpoint paths
         self._migrate_endpoints(default_config)

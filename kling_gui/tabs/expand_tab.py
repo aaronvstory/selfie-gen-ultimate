@@ -8,6 +8,7 @@ from tkinter import messagebox, ttk
 from typing import Callable, List, Optional
 
 from path_utils import get_gen_images_folder
+from automation.config import get_outpaint_fal_timeout_seconds
 
 from ..image_state import ImageSession, SIMILARITY_PASS_THRESHOLD, parse_similarity_score
 from ..theme import (
@@ -714,6 +715,7 @@ class ExpandTab(tk.Frame):
                         output_format=output_format,
                         composite_mode=composite_mode,
                         output_path=output_path,
+                        poll_timeout_seconds=get_outpaint_fal_timeout_seconds(cfg),
                     )
                 except Exception as exc:
                     self.winfo_toplevel().after(
