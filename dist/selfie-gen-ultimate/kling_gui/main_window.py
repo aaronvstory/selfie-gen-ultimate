@@ -1461,6 +1461,7 @@ class KlingGUIWindow:
         crash_log_path: str,
         show_dialog: bool,
         launch_label: Optional[str] = None,
+        final_check: bool = False,
     ) -> None:
         """Check whether launcher exited immediately without blocking the UI thread."""
         try:
@@ -1472,10 +1473,29 @@ class KlingGUIWindow:
         if exit_code is None:
             return
 
+        status = self._classify_similarity_runtime_log(runtime_log_path)
+        if status == "success":
+            self._log(
+                f"Similarity launcher process ended (code={exit_code}) but app startup markers were detected. "
+                f"Attempt: {launch_label or launcher_name}. Runtime log: {runtime_log_path}",
+                "success",
+            )
+            return
+
+        if not final_check:
+            self.root.after(
+                3000,
+                lambda p=process, ln=launcher_name, rl=runtime_log_path, cl=crash_log_path, sd=show_dialog, ll=launch_label: self._check_similarity_early_exit(
+                    p, ln, rl, cl, sd, ll, True
+                ),
+            )
+            return
+
         launch_hint = f" Attempt: {launch_label}." if launch_label else ""
+        status_hint = f" Runtime status: {status}." if status else ""
         msg = (
             f"Similarity launcher '{launcher_name}' exited immediately "
-            f"(code={exit_code}).{launch_hint} See logs: {runtime_log_path} / {crash_log_path}"
+            f"(code={exit_code}).{launch_hint}{status_hint} See logs: {runtime_log_path} / {crash_log_path}"
         )
         self._log(msg, "error")
         if show_dialog:
@@ -1483,6 +1503,43 @@ class KlingGUIWindow:
                 messagebox.showerror("Similarity Launch Failed", msg, parent=self.root)
             except Exception:
                 pass
+
+    @staticmethod
+    def _read_similarity_runtime_log_tail(runtime_log_path: str, max_chars: int = 8000) -> str:
+        """Read a tail slice of the runtime log file for status classification."""
+        try:
+            with open(runtime_log_path, "r", encoding="utf-8", errors="ignore") as f:
+                data = f.read()
+            return data[-max_chars:]
+        except Exception:
+            return ""
+
+    @classmethod
+    def _classify_similarity_runtime_log(cls, runtime_log_path: str) -> str:
+        """Classify runtime log as success/failure/unknown."""
+        tail = cls._read_similarity_runtime_log_tail(runtime_log_path)
+        if not tail:
+            return "unknown"
+
+        success_markers = (
+            "[INFO] Launching Face Similarity GUI...",
+            "[INFO] Launching Face Similarity CLI...",
+            "tensorflow/core",
+        )
+        failure_markers = (
+            "[ERROR]",
+            "Traceback",
+            "No Python interpreter found",
+            "Failed to",
+        )
+
+        has_success = any(marker in tail for marker in success_markers)
+        has_failure = any(marker in tail for marker in failure_markers)
+        if has_success and not has_failure:
+            return "success"
+        if has_failure:
+            return "failure"
+        return "unknown"
 
     @staticmethod
     def _similarity_fallback_commands(system: str) -> List[List[str]]:
@@ -1580,9 +1637,9 @@ class KlingGUIWindow:
                 process = proc_or_exc
                 if system in {"Windows", "Darwin"} and process is not None:
                     self.root.after(
-                        800,
+                        2500,
                         lambda p=process, ln=launcher_name, rl=runtime_log_path, cl=crash_log_path, sd=show_dialog, ll=label: self._check_similarity_early_exit(
-                            p, ln, rl, cl, sd, ll
+                            p, ln, rl, cl, sd, ll, False
                         ),
                     )
                 self._log(

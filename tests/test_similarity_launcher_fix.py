@@ -38,7 +38,7 @@ def test_darwin_parent_launch_uses_bash_and_schedules_after_probe():
     assert kwargs["env"]["SIMILARITY_LAUNCHED_BY_MAIN"] == "1"
     window.root.after.assert_called_once()
     after_args = window.root.after.call_args[0]
-    assert after_args[0] == 800
+    assert after_args[0] == 2500
     assert callable(after_args[1])
     assert not any("exited immediately" in msg for msg, _ in logs)
     showerror_mock.assert_not_called()
@@ -52,17 +52,71 @@ def test_similarity_early_exit_helper_logs_and_shows_dialog():
     window.root = object()
 
     proc = _FakeProc(poll_result=3)
-    with mock.patch.object(module.messagebox, "showerror") as showerror_mock:
+    with mock.patch.object(module.KlingGUIWindow, "_classify_similarity_runtime_log", return_value="failure"), mock.patch.object(
+        module.messagebox, "showerror"
+    ) as showerror_mock:
         window._check_similarity_early_exit(
             process=proc,
             launcher_name="run_gui.command",
             runtime_log_path="/tmp/sim/launcher_runtime.log",
             crash_log_path="/tmp/sim/crash.log",
             show_dialog=True,
+            final_check=True,
         )
 
     assert any("exited immediately" in msg for msg, _ in logs)
     showerror_mock.assert_called_once()
+
+
+def test_similarity_early_exit_helper_suppresses_false_failure_on_success_markers():
+    module = importlib.import_module("kling_gui.main_window")
+    window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)
+    logs = []
+    window._log = lambda message, level="info": logs.append((message, level))
+    window.root = mock.Mock()
+
+    proc = _FakeProc(poll_result=255)
+    with mock.patch.object(module.KlingGUIWindow, "_classify_similarity_runtime_log", return_value="success"), mock.patch.object(
+        module.messagebox, "showerror"
+    ) as showerror_mock:
+        window._check_similarity_early_exit(
+            process=proc,
+            launcher_name="run_gui.bat",
+            runtime_log_path="/tmp/sim/launcher_runtime.log",
+            crash_log_path="/tmp/sim/crash.log",
+            show_dialog=True,
+            launch_label="run_gui.bat (via cmd.exe)",
+        )
+
+    assert any("startup markers were detected" in msg for msg, _ in logs)
+    assert not any("exited immediately" in msg for msg, _ in logs)
+    showerror_mock.assert_not_called()
+
+
+def test_similarity_early_exit_helper_stages_retry_before_final_failure():
+    module = importlib.import_module("kling_gui.main_window")
+    window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)
+    window._log = lambda *_args, **_kwargs: None
+    window.root = mock.Mock()
+
+    proc = _FakeProc(poll_result=255)
+    with mock.patch.object(module.KlingGUIWindow, "_classify_similarity_runtime_log", return_value="unknown"), mock.patch.object(
+        module.messagebox, "showerror"
+    ) as showerror_mock:
+        window._check_similarity_early_exit(
+            process=proc,
+            launcher_name="run_gui.bat",
+            runtime_log_path="/tmp/sim/launcher_runtime.log",
+            crash_log_path="/tmp/sim/crash.log",
+            show_dialog=True,
+            launch_label="run_gui.bat (via cmd.exe)",
+            final_check=False,
+        )
+
+    window.root.after.assert_called_once()
+    retry_args = window.root.after.call_args[0]
+    assert retry_args[0] == 3000
+    showerror_mock.assert_not_called()
 
 
 def test_similarity_fallback_commands_windows_prefers_py_versions():
