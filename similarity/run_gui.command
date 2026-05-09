@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 
-# Ensure we are in the directory where the script is located
 cd "$(dirname "$0")" || exit 1
+
+LOG_FILE="$(pwd)/launcher_runtime.log"
+{
+  echo
+  echo "==============================================================================="
+  echo "[INFO] [$(date '+%Y-%m-%d %H:%M:%S')] Starting run_gui.command in $(pwd)"
+} >> "${LOG_FILE}"
+exec >> "${LOG_FILE}" 2>&1
+
 export TF_USE_LEGACY_KERAS=1
 export KERAS_BACKEND=tensorflow
 export PYTHONNOUSERSITE=1
@@ -60,21 +68,24 @@ PYTHON_BIN="$(pick_supported_python 1)"
 if [ -z "$PYTHON_BIN" ]; then
     echo "[ERROR] No supported Python found with Tk support (requires 3.9-3.12 + tkinter)."
     echo "Install a Tk-enabled Python 3.12 and retry (macOS Homebrew: brew install python@3.12 python-tk@3.12)."
-    read -p "Press Enter to exit..."
+    if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
+        read -r -p "Press Enter to exit..."
+    fi
     exit 1
 fi
 
 echo "[INFO] Using Python interpreter: $PYTHON_BIN"
 sanitize_known_bad_pth "$PYTHON_BIN"
 
-# Check if .venv exists
 if [ ! -f ".venv/bin/activate" ]; then
     echo "[INFO] Virtual environment not found. Creating one..."
     sanitize_known_bad_pth "$PYTHON_BIN"
     "$PYTHON_BIN" -m venv .venv
     if [ $? -ne 0 ]; then
         echo "[ERROR] Failed to create virtual environment."
-        read -p "Press Enter to exit..."
+        if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
+            read -r -p "Press Enter to exit..."
+        fi
         exit 1
     fi
 else
@@ -85,7 +96,9 @@ else
         "$PYTHON_BIN" -m venv .venv
         if [ $? -ne 0 ]; then
             echo "[ERROR] Failed to recreate virtual environment."
-            read -p "Press Enter to exit..."
+            if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
+                read -r -p "Press Enter to exit..."
+            fi
             exit 1
         fi
     fi
@@ -96,7 +109,9 @@ echo "[INFO] Activating virtual environment..."
 source .venv/bin/activate
 if [ $? -ne 0 ]; then
     echo "[ERROR] Failed to activate virtual environment."
-    read -p "Press Enter to exit..."
+    if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
+        read -r -p "Press Enter to exit..."
+    fi
     exit 1
 fi
 
@@ -104,14 +119,21 @@ echo "[INFO] Synchronizing dependencies from requirements.txt..."
 python -m pip install -r requirements.txt
 if [ $? -ne 0 ]; then
     echo "[ERROR] Failed to synchronize dependencies from requirements.txt."
-    read -p "Press Enter to exit..."
+    if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
+        read -r -p "Press Enter to exit..."
+    fi
     exit 1
 fi
 
-# Run the application
 echo "[INFO] Launching Face Similarity GUI..."
 python main.py
-if [ $? -ne 0 ]; then
-    echo "[ERROR] Application exited with an error."
-    read -p "Press Enter to exit..."
+EXIT_CODE=$?
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "[ERROR] Application exited with an error (code=$EXIT_CODE)."
+    if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
+        read -r -p "Press Enter to exit..."
+    fi
 fi
+
+echo "[INFO] run_gui.command exiting with code $EXIT_CODE"
+exit $EXIT_CODE

@@ -1461,6 +1461,8 @@ class KlingGUIWindow:
         similarity_dir = self._resolve_similarity_dir()
         launcher_name = self._similarity_launcher_name()
         launcher_path = os.path.join(similarity_dir, launcher_name)
+        runtime_log_path = os.path.join(similarity_dir, "launcher_runtime.log")
+        crash_log_path = os.path.join(similarity_dir, "crash.log")
 
         if not os.path.isdir(similarity_dir):
             msg = f"Similarity folder not found: {similarity_dir}"
@@ -1478,21 +1480,47 @@ class KlingGUIWindow:
 
         try:
             system = platform.system()
+            launch_env = os.environ.copy()
+            launch_env["SIMILARITY_LAUNCHED_BY_MAIN"] = "1"
+            process = None
             if system == "Windows":
-                subprocess.Popen(
+                process = subprocess.Popen(
                     ["cmd", "/c", launcher_name],
                     cwd=similarity_dir,
+                    env=launch_env,
                     creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
                 )
             elif system == "Darwin":
-                subprocess.Popen(["open", launcher_path], cwd=similarity_dir)
+                process = subprocess.Popen(["open", launcher_path], cwd=similarity_dir, env=launch_env)
             else:
-                subprocess.Popen([launcher_path], cwd=similarity_dir)
+                process = subprocess.Popen([launcher_path], cwd=similarity_dir, env=launch_env)
 
-            self._log(f"Launched Similarity app via {launcher_name}", "success")
+            launch_cmd = f"{launcher_name}" if system == "Windows" else launcher_path
+            self._log(
+                f"Similarity launch requested: cmd='{launch_cmd}' cwd='{similarity_dir}' pid={process.pid if process else 'n/a'}",
+                "info",
+            )
+
+            if system == "Windows" and process is not None:
+                time.sleep(0.8)
+                exit_code = process.poll()
+                if exit_code is not None:
+                    msg = (
+                        "Similarity launcher exited immediately "
+                        f"(code={exit_code}). See logs: {runtime_log_path} / {crash_log_path}"
+                    )
+                    self._log(msg, "error")
+                    if show_dialog:
+                        messagebox.showerror("Similarity Launch Failed", msg, parent=self.root)
+                    return False
+
+            self._log(f"Launched Similarity app via {launcher_name} (runtime log: {runtime_log_path})", "success")
             return True
         except Exception as exc:
-            msg = f"Could not launch Similarity app: {exc}"
+            msg = (
+                f"Could not launch Similarity app: {exc}. "
+                f"Expected runtime log: {runtime_log_path}"
+            )
             self._log(msg, "error")
             if show_dialog:
                 messagebox.showerror("Similarity Launch Failed", msg, parent=self.root)
