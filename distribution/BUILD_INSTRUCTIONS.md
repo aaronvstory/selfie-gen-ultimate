@@ -48,6 +48,16 @@ build_release.bat
 ```
 
 **What it does:**
+1. Creates a timestamped release folder under `release\`
+2. Stages sanitized platform bundles (`windows_gui`, `windows_cli`, `macos_portable`)
+3. Writes blank-key `kling_config.json` into each staged bundle
+4. Produces `windows_gui.zip`, `windows_cli.zip`, and `macos_portable.zip`
+
+**Output location:** `release\release_YYYYMMDD_HHMMSS\`
+
+### `build_gui_exe.bat` behavior (direct GUI .exe build)
+
+**What it does:**
 1. Checks/installs PyInstaller
 2. Installs required dependencies
 3. Cleans previous builds

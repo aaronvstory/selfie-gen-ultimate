@@ -31,6 +31,12 @@ if !errorlevel! neq 0 (
     echo.
     echo  Retrying base dependencies without binary constraint...
     "%VENV_PYTHON%" -m pip install -r "%REQUIREMENTS%"
+    if !errorlevel! neq 0 (
+        echo.
+        echo  ERROR: Base dependencies failed to install.
+        pause
+        exit /b 1
+    )
 )
 
 for %%R in ("%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%") do if exist "%%~R" (

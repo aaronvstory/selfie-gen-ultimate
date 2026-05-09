@@ -45,6 +45,14 @@ EXCLUDED_FILES: Set[str] = {
 
 
 def _should_skip(path: Path) -> bool:
+    """Decide whether a path should be excluded from release bundles.
+
+    Args:
+        path: Path relative to the repo root.
+
+    Returns:
+        True if the path matches excluded directories/files/extensions.
+    """
     if any(part in EXCLUDED_DIRS for part in path.parts):
         return True
     if path.name in EXCLUDED_FILES:
@@ -55,6 +63,14 @@ def _should_skip(path: Path) -> bool:
 
 
 def build_sanitized_config(template_path: Path) -> Dict[str, object]:
+    """Build a sanitized runtime config for distributable bundles.
+
+    Args:
+        template_path: Path to default config template JSON.
+
+    Returns:
+        Config dictionary with keys/path-like runtime fields blanked.
+    """
     config: Dict[str, object] = {}
     if template_path.exists():
         loaded = json.loads(template_path.read_text(encoding="utf-8"))
@@ -69,6 +85,12 @@ def build_sanitized_config(template_path: Path) -> Dict[str, object]:
 
 
 def copy_sanitized_tree(repo_root: Path, dest_root: Path) -> None:
+    """Copy repo content to bundle staging while excluding unsafe artifacts.
+
+    Args:
+        repo_root: Source repository root.
+        dest_root: Destination staging root.
+    """
     for root, dirnames, filenames in os.walk(repo_root):
         root_path = Path(root)
         rel_root = root_path.relative_to(repo_root)
@@ -91,6 +113,12 @@ def copy_sanitized_tree(repo_root: Path, dest_root: Path) -> None:
 
 
 def write_bundle_readme(bundle_root: Path, flavor: str) -> None:
+    """Write first-run instructions for a specific bundle flavor.
+
+    Args:
+        bundle_root: Bundle directory root.
+        flavor: One of windows_gui, windows_cli, macos_portable.
+    """
     instructions = {
         "windows_gui": "Start with launchers\\run_gui.bat",
         "windows_cli": "Start with launchers\\run_cli.bat",
@@ -108,6 +136,15 @@ def write_bundle_readme(bundle_root: Path, flavor: str) -> None:
 
 
 def bundle_release(repo_root: Path, release_root: Path) -> Iterable[Path]:
+    """Create all platform release bundles and return generated zip paths.
+
+    Args:
+        repo_root: Source repository root.
+        release_root: Output root for timestamped release folders.
+
+    Returns:
+        Iterable of created zip archive paths.
+    """
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     version_root = release_root / f"release_{stamp}"
     version_root.mkdir(parents=True, exist_ok=True)

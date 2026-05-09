@@ -61,30 +61,35 @@ RECOMMENDED_KLING_PROMPT_SLOT_1 = (
     "camera is fixed and stationary. Only the head moves; the rest of the body remains motionless."
 )
 
+_CRASH_CAPTURE_FILE: Optional[io.TextIOWrapper] = None
+
 
 def _enable_cli_crash_capture() -> Optional[str]:
     """Enable faulthandler logging for fatal native crashes."""
+    global _CRASH_CAPTURE_FILE
     crash_path = Path(get_app_dir()) / "kling_automation_crash.log"
-    crash_file = None
     try:
-        crash_file = open(crash_path, "a", encoding="utf-8")
-        crash_file.write(f"\n\n=== Crash capture initialized at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
-        crash_file.flush()
-        faulthandler.enable(file=crash_file, all_threads=True)
+        if _CRASH_CAPTURE_FILE is not None and not _CRASH_CAPTURE_FILE.closed:
+            _CRASH_CAPTURE_FILE.close()
+        _CRASH_CAPTURE_FILE = open(crash_path, "a", encoding="utf-8")
+        _CRASH_CAPTURE_FILE.write(f"\n\n=== Crash capture initialized at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+        _CRASH_CAPTURE_FILE.flush()
+        faulthandler.enable(file=_CRASH_CAPTURE_FILE, all_threads=True)
         for sig_name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL"):
             sig = getattr(signal, sig_name, None)
             if sig is not None:
                 try:
-                    faulthandler.register(sig, file=crash_file, all_threads=True)
+                    faulthandler.register(sig, file=_CRASH_CAPTURE_FILE, all_threads=True)
                 except Exception:
                     pass
         return str(crash_path)
     except Exception:
-        if crash_file is not None:
+        if _CRASH_CAPTURE_FILE is not None:
             try:
-                crash_file.close()
+                _CRASH_CAPTURE_FILE.close()
             except Exception:
                 pass
+            _CRASH_CAPTURE_FILE = None
         return None
 
 
@@ -1517,7 +1522,7 @@ class KlingAutomationUI:
         selfie_configured = str(self.config.get("automation_selfie_expand_provider", "auto"))
         lines = [
             f"root={self.automation_root_folder or '(not set)'} max_cases={self._read_max_cases_setting()}",
-            f"keys fal={key_status(self.config.get('falai_api_key'))} bfl={key_status(self.config.get('bfl_api_key'))}",
+            f"keys fal={key_status(self.config, 'falai_api_key')} bfl={key_status(self.config, 'bfl_api_key')}",
             f"front mode={self.config.get('automation_front_expand_mode')} pct={self.config.get('automation_front_expand_percent', 70)} passes={self.config.get('automation_front_expand_passes', 2)} provider={front_configured}->{self._resolve_provider(front_configured)}",
             f"selfie expand mode={self.config.get('automation_selfie_expand_mode')} pct={self.config.get('automation_selfie_expand_percent', 30)} provider={selfie_configured}->{self._resolve_provider(selfie_configured)}",
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
