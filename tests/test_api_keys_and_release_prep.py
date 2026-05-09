@@ -6,6 +6,23 @@ from api_keys import API_KEY_SPECS, ensure_key_fields, required_missing_specs
 from distribution.release_prep import build_sanitized_config, bundle_release, copy_sanitized_tree
 from kling_automation_ui import KlingAutomationUI
 
+EXPECTED_PROMPT_KEYS = {
+    "saved_prompts",
+    "negative_prompts",
+    "prompt_titles",
+    "automation_selfie_prompts",
+    "automation_selfie_prompt_slot",
+    "automation_selfie_prompt_mode",
+    "selfie_saved_prompts",
+    "selfie_prompt_titles",
+    "selfie_prompt_template",
+    "selfie_wildcard_saved_prompts",
+    "selfie_wildcard_template",
+    "outpaint_prompt",
+    "face_crop_polish_prompt",
+    "openrouter_vision_system_prompt",
+}
+
 
 def test_ensure_key_fields_adds_all_keys():
     config = {}
@@ -34,6 +51,9 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
                 "freeimage_api_key": "secret",
                 "output_folder": "C:/private",
                 "automation_root_folder": "C:/private/root",
+                "selfie_prompt_template": "keep me",
+                "outpaint_prompt": "expand bg",
+                "saved_prompts": {"1": "prompt one"},
             }
         ),
         encoding="utf-8",
@@ -43,6 +63,16 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
         assert sanitized[spec.config_key] == ""
     assert sanitized["output_folder"] == ""
     assert sanitized["automation_root_folder"] == ""
+    assert sanitized["selfie_prompt_template"] == "keep me"
+    assert sanitized["outpaint_prompt"] == "expand bg"
+    assert sanitized["saved_prompts"]["1"] == "prompt one"
+
+
+def test_default_config_template_contains_prompt_families():
+    template = Path("default_config_template.json")
+    loaded = json.loads(template.read_text(encoding="utf-8"))
+    for key in EXPECTED_PROMPT_KEYS:
+        assert key in loaded
 
 
 def test_copy_sanitized_tree_skips_personal_files(tmp_path: Path):
@@ -110,6 +140,20 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
                 "automation_root_folder": "C:/private/root",
                 "selfie_output_folder": "C:/private/selfie",
                 "window_geometry": "100x100+0+0",
+                "saved_prompts": {"1": "kling prompt"},
+                "negative_prompts": {"1": "bad prompt"},
+                "prompt_titles": {"1": "title one"},
+                "automation_selfie_prompts": {"1": "selfie auto prompt"},
+                "automation_selfie_prompt_slot": 1,
+                "automation_selfie_prompt_mode": "existing_config",
+                "selfie_saved_prompts": {"1": "selfie prompt"},
+                "selfie_prompt_titles": {"1": "selfie title"},
+                "selfie_prompt_template": "selfie template",
+                "selfie_wildcard_saved_prompts": {"1": "wildcard prompt"},
+                "selfie_wildcard_template": "wildcard template",
+                "outpaint_prompt": "outpaint it",
+                "face_crop_polish_prompt": "polish it",
+                "openrouter_vision_system_prompt": "vision system",
             }
         ),
         encoding="utf-8",
@@ -149,12 +193,21 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
             assert cfg[key] == ""
         for key in ("output_folder", "automation_root_folder", "selfie_output_folder", "window_geometry"):
             assert cfg[key] == ""
+        for key in EXPECTED_PROMPT_KEYS:
+            assert key in cfg
+        assert cfg["saved_prompts"]["1"] == "kling prompt"
+        assert cfg["automation_selfie_prompts"]["1"] == "selfie auto prompt"
+        assert cfg["selfie_prompt_template"] == "selfie template"
+        assert cfg["outpaint_prompt"] == "outpaint it"
+        assert cfg["face_crop_polish_prompt"] == "polish it"
+        assert cfg["openrouter_vision_system_prompt"] == "vision system"
         assert any(name.endswith("selfie-gen-ultimate/run_cli.command") for name in names)
         readme_name = next(name for name in names if name.endswith("selfie-gen-ultimate/README_FIRST_RUN.txt"))
         readme_text = zf.read(readme_name).decode("utf-8")
         assert 'Windows: double-click "Start GUI.bat" or "Start CLI.bat"' in readme_text
         assert 'macOS: double-click "Start GUI.command" or "Start CLI.command"' in readme_text
         assert "right-click -> Open once" in readme_text
+        assert "All prompts are stored in kling_config.json" in readme_text
 
     staging_cfg = dist / "_staging" / "universal" / "selfie-gen-ultimate" / "kling_config.json"
     assert not staging_cfg.exists()

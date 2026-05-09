@@ -146,6 +146,7 @@ def write_bundle_readme(bundle_root: Path) -> None:
         "6) Fal.ai key is required.\n"
         "7) BFL key may be required by default automation settings.\n"
         "8) First launch creates a local virtual environment.\n"
+        "9) All prompts are stored in kling_config.json (editable by GUI/CLI or manual edit).\n"
     )
     (bundle_root / "README_FIRST_RUN.txt").write_text(text, encoding="utf-8")
 
