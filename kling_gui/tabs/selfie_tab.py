@@ -69,6 +69,7 @@ class SelfieTab(tk.Frame):
     )
     DISABLED_BY_DEFAULT_ENDPOINTS = set()
     SLOT_COUNT = 10
+    DEFAULT_SELFIE_PROMPT_SLOT = 3
 
     # Known fields for auto-migrating old {field} syntax → {json.field}
     _KNOWN_JSON_FIELDS = {
@@ -210,13 +211,13 @@ class SelfieTab(tk.Frame):
             if legacy_wildcard:
                 normalized_wildcards["1"] = legacy_wildcard
 
-        current_slot = self.config.get("selfie_current_prompt_slot", 3)
+        current_slot = self.config.get("selfie_current_prompt_slot", self.DEFAULT_SELFIE_PROMPT_SLOT)
         try:
             current_slot = int(current_slot)
         except Exception:
-            current_slot = 3
+            current_slot = self.DEFAULT_SELFIE_PROMPT_SLOT
         if current_slot < 1 or current_slot > self.SLOT_COUNT:
-            current_slot = 3
+            current_slot = self.DEFAULT_SELFIE_PROMPT_SLOT
 
         self.config["selfie_saved_prompts"] = normalized_prompts
         self.config["selfie_wildcard_saved_prompts"] = normalized_wildcards

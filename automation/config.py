@@ -133,13 +133,14 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
             prompts["1"] = AUTOMATION_DEFAULTS["automation_selfie_prompts"]["1"]
         if not str(prompts.get("3", "")).strip():
             prompts["3"] = AUTOMATION_DEFAULTS["automation_selfie_prompts"]["3"]
-    slot = merged.get("automation_selfie_prompt_slot", 3)
+    default_slot = int(AUTOMATION_DEFAULTS["automation_selfie_prompt_slot"])
+    slot = merged.get("automation_selfie_prompt_slot", default_slot)
     try:
         slot_int = int(slot)
     except (ValueError, TypeError):
-        slot_int = 3
+        slot_int = default_slot
     if slot_int < 1 or slot_int > 10:
-        slot_int = 3
+        slot_int = default_slot
     merged["automation_selfie_prompt_slot"] = slot_int
     merged["outpaint_fal_timeout_seconds"] = get_outpaint_fal_timeout_seconds(merged)
     return merged
