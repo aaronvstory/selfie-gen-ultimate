@@ -2,6 +2,19 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import shutil
+import zipfile
+
+
+def refresh_extracted_bundle(zip_path: Path, extract_root: Path) -> Path:
+    """Refresh extracted shareable bundle folder from a release zip."""
+    target = extract_root / "SelfieGenUltimate"
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(target)
+    return target
 
 
 def main() -> int:
@@ -12,9 +25,20 @@ def main() -> int:
 
     dist_root = repo_root / "dist"
     created = list(bundle_release(repo_root, dist_root))
+    extracted_root = None
+    for path in created:
+        if path.name == "SelfieGenUltimate.zip":
+            extracted_root = refresh_extracted_bundle(path, dist_root)
+            break
     print("Created release bundle:")
     for path in created:
         print(f"- {path}")
+    if extracted_root is not None:
+        print(f"Refreshed extracted bundle folder: {extracted_root}")
+    print(
+        "Safety: Use freshly recreated dist/SelfieGenUltimate/... or unzip latest zip; "
+        "old extracted folders can contain stale launchers."
+    )
     return 0
 
 

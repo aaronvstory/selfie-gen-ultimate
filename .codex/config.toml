@@ -1,0 +1,6 @@
+# Project-local Codex config
+
+[shell_environment_policy]
+inherit = 'all'
+
+# Keep local config minimal and secret-free.

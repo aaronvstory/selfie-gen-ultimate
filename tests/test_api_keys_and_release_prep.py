@@ -3,6 +3,7 @@ import zipfile
 from pathlib import Path
 
 from api_keys import API_KEY_SPECS, ensure_key_fields, required_missing_specs
+from distribution.build_release import refresh_extracted_bundle
 from distribution.release_prep import build_sanitized_config, bundle_release, copy_sanitized_tree
 from kling_automation_ui import KlingAutomationUI
 
@@ -140,6 +141,34 @@ def test_standalone_windows_launchers_use_stable_python_probes():
 
     assert ".venv\\Scripts\\python.exe" in oldcam_v8
     assert "py -%%V" in oldcam_v8
+
+
+def test_refresh_extracted_bundle_replaces_stale_files(tmp_path: Path):
+    dist = tmp_path / "dist"
+    stale = dist / "SelfieGenUltimate" / "selfie-gen-ultimate" / "similarity"
+    stale.mkdir(parents=True, exist_ok=True)
+    (stale / "run_gui.bat").write_text("@echo off\r\npython3.12 -V\r\n", encoding="utf-8")
+    (stale / "old.txt").write_text("stale", encoding="utf-8")
+
+    zip_path = dist / "SelfieGenUltimate.zip"
+    src = tmp_path / "zip_src" / "selfie-gen-ultimate" / "similarity"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "run_gui.bat").write_text("@echo off\r\nfor %%V in (3.12 3.11) do py -%%V -V\r\n", encoding="utf-8")
+    (src / "run_cli.bat").write_text("@echo off\r\nfor %%V in (3.12 3.11) do py -%%V -V\r\n", encoding="utf-8")
+    oldcam = tmp_path / "zip_src" / "selfie-gen-ultimate" / "oldcam-v8"
+    oldcam.mkdir(parents=True, exist_ok=True)
+    (oldcam / "oldcam_launcher.bat").write_text("@echo off\r\nfor %%V in (3.12 3.11) do py -%%V -V\r\n", encoding="utf-8")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.write(src / "run_gui.bat", arcname="selfie-gen-ultimate/similarity/run_gui.bat")
+        zf.write(src / "run_cli.bat", arcname="selfie-gen-ultimate/similarity/run_cli.bat")
+        zf.write(oldcam / "oldcam_launcher.bat", arcname="selfie-gen-ultimate/oldcam-v8/oldcam_launcher.bat")
+
+    extracted_root = refresh_extracted_bundle(zip_path, dist)
+    assert extracted_root == dist / "SelfieGenUltimate"
+    refreshed_gui = (extracted_root / "selfie-gen-ultimate" / "similarity" / "run_gui.bat").read_text(encoding="utf-8")
+    assert "py -%%V" in refreshed_gui
+    assert "python3.12 -V" not in refreshed_gui
+    assert not (extracted_root / "selfie-gen-ultimate" / "similarity" / "old.txt").exists()
 
 
 def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path: Path):
