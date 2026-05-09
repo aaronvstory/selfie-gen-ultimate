@@ -195,3 +195,17 @@ def test_run_cli_bat_has_conditional_parent_and_direct_invocation():
     assert "if \"%SIMILARITY_LAUNCHED_BY_MAIN%\"==\"\" (" in cli_bat
     assert "python main.py --cli" in cli_bat
     assert "python main.py --cli >> \"%LOG_FILE%\" 2>&1" in cli_bat
+
+
+def test_similarity_launcher_scripts_avoid_inline_tuple_version_check_in_blocks():
+    root = Path(__file__).resolve().parents[1]
+    scripts = [
+        root / "similarity" / "run_gui.bat",
+        root / "similarity" / "run_cli.bat",
+        root / "dist" / "selfie-gen-ultimate" / "similarity" / "run_gui.bat",
+        root / "dist" / "selfie-gen-ultimate" / "similarity" / "run_cli.bat",
+    ]
+    for script in scripts:
+        text = script.read_text(encoding="utf-8")
+        assert "((3,9)" not in text
+        assert "py -3.12 -V" in text
