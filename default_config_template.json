@@ -26,7 +26,7 @@
   "current_prompt_slot": 3,
   "current_model": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
   "model_display_name": "Kling 2.5 Turbo Pro",
-  "oldcam_version": "v7",
+  "oldcam_version": "v8",
   "prompt_titles": {
     "1": "",
     "2": "",
@@ -52,7 +52,15 @@
     "10": ""
   },
   "automation_selfie_prompt_slot": 1,
-  "automation_selfie_prompt_mode": "existing_config",
+  "automation_selfie_prompt_mode": "wildcards",
+  "automation_selfie_models": [
+    "fal-ai/nano-banana-2/edit"
+  ],
+  "selfie_selected_models": [
+    "fal-ai/nano-banana-2/edit"
+  ],
+  "selfie_prompt_mode": "wildcards",
+  "automation_oldcam_version": "v8",
   "selfie_saved_prompts": {
     "1": "She is now taking a casual selfie in a naturally lit living room. \nWide-angle front-facing perspective, full torso visible with space \naround the subject. Candid expression, natural skin texture, amateur \nsmartphone camera quality. Maintain exact facial features and identity.",
     "2": "Transform this passport photo into a natural selfie: A {json.gender} with {json.hair}, {json.skin}, {json.eyes}, and a {json.face_shape}, wearing {json.clothing}, taking a front-facing camera selfie with one arm FULLY extended but phone not visible in frame, looking directly at camera with {json.expression}. Shot in portrait orientation zoomed out to show head SLIGHTLY OFF-CENTER, with extensive space around all sides. Full torso visible with significant background space above and around subject. Background: {sunny backyard patio|cozy kitchen|home office|living room couch|coffee shop window}. Lighting: natural lighting. Authentic front-facing iPhone X camera quality, natural skin imperfections, uneven lighting, slightly off-center composition. Include realistic flaws: minor focus issues, natural skin texture with EVIDENT pores and minimal makeup, casual messy hair, wrinkled clothing, candid expression. Other arm relaxed at side, natural one-handed selfie pose. Maintain EXACT facial features, bone structure, and identity from reference image. Raw unfiltered AMATEUR smartphone selfie aesthetic with imperfect framing and natural shadows.",

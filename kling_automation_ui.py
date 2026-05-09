@@ -1533,7 +1533,7 @@ class KlingAutomationUI:
             f"selfie expand mode={self.config.get('automation_selfie_expand_mode')} pct={self.config.get('automation_selfie_expand_percent', 30)} provider={selfie_configured}->{self._resolve_provider(selfie_configured)}",
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
             f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', 1)}",
-            f"oldcam version={self.config.get('automation_oldcam_version', 'all')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
+            f"oldcam version={self.config.get('automation_oldcam_version', 'v8')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
             f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
             f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
         ]
@@ -1592,7 +1592,7 @@ class KlingAutomationUI:
         self.config["automation_similarity_threshold"] = 80
         self.config["automation_video_enabled"] = True
         self.config["automation_oldcam_enabled"] = True
-        self.config["automation_oldcam_version"] = "all"
+        self.config["automation_oldcam_version"] = "v8"
         self.config["automation_oldcam_required"] = True
         self.config["automation_recommended_defaults_version"] = RECOMMENDED_DEFAULTS_VERSION
         self.save_config()
@@ -1605,7 +1605,7 @@ class KlingAutomationUI:
         print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
         print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 1")
         print(f"  Kling prompt slot: {before['kling_prompt_slot']} -> 1")
-        print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> all / required")
+        print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> v8 / required")
         print(f"  max cases per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
         print("\nCurrent recommended state:")
         print("  front expand: bfl / percent / 70")
@@ -1614,7 +1614,7 @@ class KlingAutomationUI:
         print("  video model: Kling 2.5 Turbo Standard")
         print("  selfie prompt slot: 1")
         print("  Kling prompt slot: 1")
-        print("  oldcam: all / required")
+        print("  oldcam: v8 / required")
         print(f"  max cases per run: {self._read_max_cases_setting()}")
         self.pause_continue("\nPress Enter to continue...")
 

@@ -191,7 +191,7 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
                 "prompt_titles": {"1": "title one"},
                 "automation_selfie_prompts": {"1": "selfie auto prompt"},
                 "automation_selfie_prompt_slot": 1,
-                "automation_selfie_prompt_mode": "existing_config",
+                "automation_selfie_prompt_mode": "wildcards",
                 "selfie_saved_prompts": {"1": "selfie prompt"},
                 "selfie_prompt_titles": {"1": "selfie title"},
                 "selfie_prompt_template": "selfie template",
