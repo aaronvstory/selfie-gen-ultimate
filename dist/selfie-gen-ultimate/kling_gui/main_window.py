@@ -1608,7 +1608,7 @@ class KlingGUIWindow:
                     comspec = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe")
                 attempts.append(
                     (
-                        f"{launcher_name} (via cmd.exe)",
+                        f"{launcher_name} (via cmd.exe) @ {launcher_path}",
                         [comspec, "/c", launcher_path],
                         getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
                     )
@@ -1616,7 +1616,7 @@ class KlingGUIWindow:
             elif system == "Darwin":
                 attempts.append((f"/bin/bash {launcher_path}", ["/bin/bash", launcher_path], 0))
             else:
-                attempts.append((launcher_name, [launcher_path], 0))
+                attempts.append((f"{launcher_path}", [launcher_path], 0))
         else:
             missing_msg = f"Similarity launcher missing: {launcher_path}"
             self._log(missing_msg, "warning")
@@ -1642,7 +1642,10 @@ class KlingGUIWindow:
                             p, ln, rl, cl, sd, ll, False
                         ),
                     )
-                self._log(f"Launched Similarity app (runtime log: {runtime_log_path})", "success")
+                self._log(
+                    f"Launched Similarity app (runtime log: {runtime_log_path}, crash log: {crash_log_path})",
+                    "success",
+                )
                 return True
             attempt_errors.append(f"{label}: {proc_or_exc}")
 

@@ -1,8 +1,11 @@
 ## Runtime Priority (Codex App)
 
 - Follow global Codex hooks policy first.
-- Serena activation/use is expected each task.
+- Serena-first workflow is REQUIRED each coding task (fallback only when unavailable/inapplicable).
+- Serena active means symbol tools are available (`find_symbol`, `get_symbols_overview`), not just activation.
+- If Serena symbol tools are missing, explicitly report degraded mode before fallback.
 - Caveman concise communication style is required.
+- Do not paste raw Serena manual/tool dumps in user-facing output unless explicitly requested.
 - Prefer canonical repo path handling (`F:\claude\...` as source of truth).
 # AGENTS.md - Kling UI Codebase Guide
 
