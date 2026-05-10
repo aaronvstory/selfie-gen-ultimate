@@ -52,6 +52,9 @@ EXCLUDED_FILES: Set[str] = {
     "crash_log.txt",
     "ui_config.json",
 }
+RELEASE_VERSION = "v1.2"
+VERSIONED_ZIP_NAME = f"SelfieGenUltimate-{RELEASE_VERSION}.zip"
+LATEST_ALIAS_ZIP_NAME = "SelfieGenUltimate.zip"
 
 
 def _should_skip(path: Path) -> bool:
@@ -227,10 +230,17 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
     (bundle_dir / "kling_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     _write_top_level_launchers(bundle_dir)
     write_bundle_readme(bundle_dir)
-    zip_path = dist_root / "SelfieGenUltimate.zip"
-    if zip_path.exists():
-        zip_path.unlink()
-    archive_path = shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=staging_root)
-    created = [Path(archive_path)]
+    versioned_zip_path = dist_root / VERSIONED_ZIP_NAME
+    latest_alias_zip_path = dist_root / LATEST_ALIAS_ZIP_NAME
+    for path in (versioned_zip_path, latest_alias_zip_path):
+        if path.exists():
+            path.unlink()
+    archive_path = shutil.make_archive(
+        str(versioned_zip_path.with_suffix("")),
+        "zip",
+        root_dir=staging_root,
+    )
+    shutil.copy2(archive_path, latest_alias_zip_path)
+    created = [Path(archive_path), latest_alias_zip_path]
     shutil.rmtree(dist_root / "_staging", ignore_errors=True)
     return created

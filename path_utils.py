@@ -6,7 +6,7 @@ Provides functions to get correct paths whether running as script or frozen exe.
 import os
 import re
 import sys
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 APP_NAME = "selfie-gen-ultimate"
@@ -243,6 +243,28 @@ def sanitize_filename(name: str, default_stem: str = "untitled") -> str:
     return f"{stem}{ext}"
 
 
+def preflight_image_path(path: str, allowed_exts: Optional[Set[str]] = None) -> Tuple[bool, str]:
+    """Perform a lightweight image path validation for GUI ingest flows."""
+    if not path:
+        return False, "empty path"
+    if not os.path.isfile(path):
+        return False, "file not found"
+    ext = os.path.splitext(path)[1].lower()
+    valid_exts = allowed_exts or VALID_EXTENSIONS
+    if ext not in valid_exts:
+        return False, f"unsupported extension: {ext or '(none)'}"
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(path) as img:
+            img.load()
+            # Keep this tolerant: only verify this call does not hard-fail.
+            ImageOps.exif_transpose(img)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return True, "ok"
+
+
 def make_unique_name(parent_dir: str, candidate_name: str) -> str:
     """Return a non-colliding filename in *parent_dir* using numeric suffixes."""
     candidate_path = os.path.join(parent_dir, candidate_name)
@@ -332,6 +354,125 @@ def sanitize_tree_names_report(
         desired = make_unique_name(parent, desired)
         desired_path = os.path.join(parent, desired)
         reason = _sanitize_reasons(current_name=current_name, desired_name=desired)
+        try:
+            os.rename(old_path, desired_path)
+            renames.append((old_path, desired_path))
+            changes.append(
+                {
+                    "old_path": old_path,
+                    "new_path": desired_path,
+                    "old_name": current_name,
+                    "new_name": desired,
+                    "reason": reason,
+                }
+            )
+        except OSError as exc:
+            failures.append(
+                {
+                    "path": old_path,
+                    "desired_path": desired_path,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                }
+            )
+
+    for current_dir, dirs, files in os.walk(root_path, topdown=False):
+        for filename in sorted(files):
+            old_path = os.path.join(current_dir, filename)
+            if not os.path.exists(old_path):
+                continue
+            _attempt_rename(old_path)
+        for dirname in sorted(dirs):
+            old_path = os.path.join(current_dir, dirname)
+            if not os.path.isdir(old_path):
+                continue
+            _attempt_rename(old_path)
+
+    new_root = root_path
+    if rename_root:
+        old_root = root_path
+        _attempt_rename(old_root)
+        if renames and renames[-1][0] == old_root:
+            new_root = renames[-1][1]
+
+    return new_root, renames, failures, changes
+
+
+def sanitize_portable_stem(name: str, default: str = "untitled") -> str:
+    """Strict portable stem sanitizer for folder-tree compatibility fixes."""
+    raw = str(name or "")
+    sanitized = _INVALID_FILENAME_CHARS_RE.sub("_", raw)
+    sanitized = sanitized.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    sanitized = sanitized.rstrip(" .")
+    if not sanitized:
+        sanitized = default
+    if sanitized.upper() in _WINDOWS_RESERVED_NAMES:
+        sanitized = f"{sanitized}_file"
+    return sanitized[:180]
+
+
+def _portable_reasons(current_name: str, desired_name: str) -> str:
+    """Reason summary for strict portable sanitize mode."""
+    reasons: List[str] = []
+    if _INVALID_FILENAME_CHARS_RE.search(current_name):
+        reasons.append("invalid_characters")
+    if any(ch in current_name for ch in ("\n", "\r", "\t")):
+        reasons.append("control_whitespace")
+    if current_name != current_name.rstrip(" ."):
+        reasons.append("trailing_spaces_or_dots")
+    if current_name.upper() in _WINDOWS_RESERVED_NAMES:
+        reasons.append("windows_reserved_name")
+    if not reasons:
+        reasons.append("normalized")
+    return ",".join(reasons)
+
+
+def sanitize_portable_filename(name: str, default_stem: str = "untitled") -> str:
+    """Strict portable filename sanitizer preserving valid leading dots/underscores."""
+    raw = str(name or "")
+    if not raw:
+        return default_stem
+    stem_raw, ext_raw = os.path.splitext(raw)
+    stem = sanitize_portable_stem(stem_raw or raw, default=default_stem)
+    ext = _INVALID_FILENAME_CHARS_RE.sub("", ext_raw or "")
+    ext = ext.replace(" ", "")
+    if ext and not ext.startswith("."):
+        ext = f".{ext}"
+    if len(ext) > 20:
+        ext = ext[:20]
+    if ext == ".":
+        ext = ""
+    return f"{stem}{ext}"
+
+
+def sanitize_tree_names_portable_report(
+    root_path: str, rename_root: bool = True
+) -> Tuple[str, List[Tuple[str, str]], List[Dict[str, str]], List[Dict[str, str]]]:
+    """Strict tree sanitizer used by Sanitize Folder feature path."""
+    if not os.path.isdir(root_path):
+        return root_path, [], [], []
+
+    renames: List[Tuple[str, str]] = []
+    failures: List[Dict[str, str]] = []
+    changes: List[Dict[str, str]] = []
+
+    def _attempt_rename(old_path: str):
+        parent = os.path.dirname(old_path)
+        current_name = os.path.basename(old_path)
+        if not parent or not current_name:
+            return
+
+        if os.path.isdir(old_path):
+            desired = sanitize_portable_stem(current_name, default="untitled")
+        else:
+            desired = sanitize_portable_filename(current_name, default_stem="untitled")
+
+        if desired == current_name:
+            return
+
+        desired = make_unique_name(parent, desired)
+        desired_path = os.path.join(parent, desired)
+        reason = _portable_reasons(current_name=current_name, desired_name=desired)
         try:
             os.rename(old_path, desired_path)
             renames.append((old_path, desired_path))

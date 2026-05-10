@@ -8,9 +8,12 @@ from unittest.mock import patch
 from path_utils import (
     sanitize_filename,
     sanitize_stem,
+    sanitize_portable_filename,
+    sanitize_portable_stem,
     make_unique_name,
     sanitize_path_name,
     sanitize_tree_names,
+    sanitize_tree_names_portable_report,
     sanitize_tree_names_report,
 )
 
@@ -56,6 +59,16 @@ class PathSanitizerTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(new_path))
             self.assertTrue(os.path.isfile(second))
 
+    def test_sanitize_portable_stem_preserves_leading_dot_and_double_underscore(self):
+        self.assertEqual(sanitize_portable_stem(".ocr"), ".ocr")
+        self.assertEqual(sanitize_portable_stem("abc__def"), "abc__def")
+
+    def test_sanitize_portable_filename_fixes_invalid_trailing_reserved(self):
+        self.assertEqual(sanitize_portable_filename("bad:name.jpg"), "bad_name.jpg")
+        self.assertEqual(sanitize_portable_filename("name."), "name")
+        self.assertEqual(sanitize_portable_filename("name "), "name")
+        self.assertEqual(sanitize_portable_filename("CON"), "CON_file")
+
     def test_sanitize_tree_names_recursive(self):
         with self._workspace() as root:
             nested_bad_dir = os.path.join(root, "bad__folder")
@@ -72,6 +85,34 @@ class PathSanitizerTests(unittest.TestCase):
             expected_file = os.path.join(expected_dir, "line_break.png")
             self.assertTrue(os.path.isdir(expected_dir))
             self.assertTrue(os.path.isfile(expected_file))
+
+    def test_sanitize_tree_names_portable_report_preserves_dot_and_double_underscore(self):
+        with self._workspace() as root:
+            os.makedirs(os.path.join(root, ".ocr"), exist_ok=True)
+            sidecar_name = "70202146247__B7261BB3-6690-4EF1-88BC-0DE9E676BCA4.ocr.classify.json"
+            sidecar_path = os.path.join(root, sidecar_name)
+            with open(sidecar_path, "w", encoding="utf-8") as handle:
+                handle.write("x")
+
+            _new_root, renames, failures, changes = sanitize_tree_names_portable_report(root, rename_root=False)
+            self.assertEqual(renames, [])
+            self.assertEqual(failures, [])
+            self.assertEqual(changes, [])
+            self.assertTrue(os.path.isdir(os.path.join(root, ".ocr")))
+            self.assertTrue(os.path.isfile(sidecar_path))
+
+    def test_sanitize_tree_names_portable_report_renames_invalid_entries(self):
+        with self._workspace() as root:
+            reserved_file = os.path.join(root, "CON")
+            with open(reserved_file, "w", encoding="utf-8") as handle:
+                handle.write("y")
+
+            _new_root, renames, failures, changes = sanitize_tree_names_portable_report(root, rename_root=False)
+            self.assertEqual(failures, [])
+            self.assertGreaterEqual(len(renames), 1)
+            self.assertTrue(os.path.isfile(os.path.join(root, "CON_file")))
+            reasons = {change["reason"] for change in changes}
+            self.assertTrue(any("windows_reserved_name" in reason for reason in reasons))
 
     def test_sanitize_tree_names_report_continues_on_rename_error(self):
         with self._workspace() as root:
