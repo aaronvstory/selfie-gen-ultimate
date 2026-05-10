@@ -35,6 +35,9 @@ EXCLUDED_DIRS: Set[str] = {
     ".gsd",
     ".serena",
     ".planning",
+    ".launcher_state",
+    ".recovery",
+    ".tmp_pytest",
     ".tmp",
     "handoffs",
     "reviews",
@@ -54,6 +57,7 @@ EXCLUDED_FILES: Set[str] = {
     "crash_log.txt",
     "ui_config.json",
 }
+RELEASE_BASENAME = "SelfieGenUltimate"
 VERSIONED_ZIP_NAME = f"SelfieGenUltimate-{RELEASE_VERSION}.zip"
 LATEST_ALIAS_ZIP_NAME = "SelfieGenUltimate.zip"
 
@@ -172,14 +176,14 @@ def _write_top_level_launchers(bundle_root: Path) -> None:
         "@echo off\n"
         "setlocal\n"
         "cd /d \"%~dp0\"\n"
-        "call launchers\\run_gui.bat\n",
+        "call launchers\\windows\\run_gui.bat\n",
         encoding="utf-8",
     )
     (bundle_root / "Start CLI.bat").write_text(
         "@echo off\n"
         "setlocal\n"
         "cd /d \"%~dp0\"\n"
-        "call launchers\\run_cli.bat\n",
+        "call launchers\\windows\\run_cli.bat\n",
         encoding="utf-8",
     )
 
@@ -218,7 +222,7 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
         Iterable of created zip archive paths.
     """
     dist_root.mkdir(parents=True, exist_ok=True)
-    for old_zip in dist_root.glob("SelfieGenUltimate-*.zip"):
+    for old_zip in dist_root.glob(f"{RELEASE_BASENAME}-*.zip"):
         old_zip.unlink()
 
     staging_root = dist_root / "_staging" / "universal"

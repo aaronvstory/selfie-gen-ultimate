@@ -54,3 +54,7 @@ sessions/
 # Output
 gen-images/
 .dual-graph/
+.launcher_state/
+similarity/.venv/
+oldcam-v7/.venv/
+oldcam-v8/.venv/

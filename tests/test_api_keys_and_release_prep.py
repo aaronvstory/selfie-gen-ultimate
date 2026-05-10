@@ -6,6 +6,7 @@ from api_keys import API_KEY_SPECS, ensure_key_fields, required_missing_specs
 from distribution.build_release import refresh_extracted_bundle
 from distribution.release_prep import (
     LATEST_ALIAS_ZIP_NAME,
+    RELEASE_VERSION,
     VERSIONED_ZIP_NAME,
     build_sanitized_config,
     bundle_release,
@@ -119,6 +120,10 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     (src / "tests" / "test_a.py").write_text("x=1", encoding="utf-8")
     (src / "reviews").mkdir(parents=True)
     (src / "reviews" / "notes.md").write_text("private", encoding="utf-8")
+    (src / ".recovery").mkdir(parents=True)
+    (src / ".recovery" / "secret.txt").write_text("private", encoding="utf-8")
+    (src / ".tmp_pytest").mkdir(parents=True)
+    (src / ".tmp_pytest" / "temp.txt").write_text("private", encoding="utf-8")
     (src / "map-codebase-session-abc.md").write_text("private", encoding="utf-8")
     (src / "session-ses_123.md").write_text("private", encoding="utf-8")
     (src / "normal.py").write_text("ok", encoding="utf-8")
@@ -127,6 +132,8 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
 
     assert not (dst / "tests").exists()
     assert not (dst / "reviews").exists()
+    assert not (dst / ".recovery").exists()
+    assert not (dst / ".tmp_pytest").exists()
     assert not (dst / "map-codebase-session-abc.md").exists()
     assert not (dst / "session-ses_123.md").exists()
     assert (dst / "normal.py").exists()
@@ -137,16 +144,14 @@ def test_standalone_windows_launchers_use_stable_python_probes():
     similarity_cli = Path("similarity/run_cli.bat").read_text(encoding="utf-8")
     oldcam_v8 = Path("oldcam-v8/oldcam_launcher.bat").read_text(encoding="utf-8")
 
-    assert ".venv\\Scripts\\python.exe" in similarity_gui
-    assert "py -%%V" in similarity_gui
-    assert "python3.12 python3.11 python3.10 python3.9" not in similarity_gui
+    assert "%REPO_ROOT%\\venv\\Scripts\\python.exe" in similarity_gui
+    assert ".launcher_state" in similarity_gui
 
-    assert ".venv\\Scripts\\python.exe" in similarity_cli
-    assert "py -%%V" in similarity_cli
-    assert "python3.12 python3.11 python3.10 python3.9" not in similarity_cli
+    assert "%REPO_ROOT%\\venv\\Scripts\\python.exe" in similarity_cli
+    assert ".launcher_state" in similarity_cli
 
-    assert ".venv\\Scripts\\python.exe" in oldcam_v8
-    assert "py -%%V" in oldcam_v8
+    assert "%REPO_ROOT%\\venv\\Scripts\\python.exe" in oldcam_v8
+    assert ".launcher_state" in oldcam_v8
 
 
 def test_refresh_extracted_bundle_replaces_stale_files(tmp_path: Path):
@@ -216,8 +221,26 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
     (repo / "run_cli.command").write_text("#!/usr/bin/env bash\necho cli\n", encoding="utf-8")
     (repo / "setup_macos.sh").write_text("#!/usr/bin/env bash\necho setup\n", encoding="utf-8")
     (repo / "launchers").mkdir()
-    (repo / "launchers" / "run_gui.bat").write_text("@echo off\r\necho gui\r\n", encoding="utf-8")
-    (repo / "launchers" / "run_cli.bat").write_text("@echo off\r\necho cli\r\n", encoding="utf-8")
+    (repo / "launchers" / "windows").mkdir()
+    (repo / "launchers" / "macos").mkdir()
+    (repo / "launchers" / "windows" / "run_gui.bat").write_text("@echo off\r\necho gui\r\n", encoding="utf-8")
+    (repo / "launchers" / "windows" / "run_cli.bat").write_text("@echo off\r\necho cli\r\n", encoding="utf-8")
+    (repo / "launchers" / "windows" / "run_similarity_gui.bat").write_text("@echo off\r\ncall ..\\..\\similarity\\run_gui.bat\r\n", encoding="utf-8")
+    (repo / "launchers" / "windows" / "run_similarity_cli.bat").write_text("@echo off\r\ncall ..\\..\\similarity\\run_cli.bat\r\n", encoding="utf-8")
+    (repo / "launchers" / "windows" / "run_oldcam_v8.bat").write_text("@echo off\r\ncall ..\\..\\oldcam-v8\\oldcam_launcher.bat\r\n", encoding="utf-8")
+    (repo / "launchers" / "windows" / "run_oldcam_v7.bat").write_text("@echo off\r\ncall ..\\..\\oldcam-v7\\oldcam_launcher.bat\r\n", encoding="utf-8")
+    (repo / "launchers" / "macos" / "run_similarity_gui.command").write_text("#!/usr/bin/env bash\nexec ../../similarity/run_gui.command\n", encoding="utf-8")
+    (repo / "launchers" / "macos" / "run_similarity_cli.command").write_text("#!/usr/bin/env bash\nexec ../../similarity/run_cli.command\n", encoding="utf-8")
+    (repo / "launchers" / "macos" / "run_oldcam_v8.command").write_text("#!/usr/bin/env bash\nexec ../../oldcam-v8/macOS/oldcam.command\n", encoding="utf-8")
+    (repo / "launchers" / "macos" / "run_oldcam_v7.command").write_text("#!/usr/bin/env bash\nexec ../../oldcam-v7/macOS/oldcam.command\n", encoding="utf-8")
+    (repo / "launchers" / "run_similarity_gui.bat").write_text("@echo off\r\ncall windows\\run_similarity_gui.bat\r\n", encoding="utf-8")
+    (repo / "launchers" / "run_similarity_cli.bat").write_text("@echo off\r\ncall windows\\run_similarity_cli.bat\r\n", encoding="utf-8")
+    (repo / "launchers" / "run_oldcam_v8.bat").write_text("@echo off\r\ncall windows\\run_oldcam_v8.bat\r\n", encoding="utf-8")
+    (repo / "launchers" / "run_oldcam_v7.bat").write_text("@echo off\r\ncall windows\\run_oldcam_v7.bat\r\n", encoding="utf-8")
+    (repo / "launchers" / "run_similarity_gui.command").write_text("#!/usr/bin/env bash\nexec ./macos/run_similarity_gui.command\n", encoding="utf-8")
+    (repo / "launchers" / "run_similarity_cli.command").write_text("#!/usr/bin/env bash\nexec ./macos/run_similarity_cli.command\n", encoding="utf-8")
+    (repo / "launchers" / "run_oldcam_v8.command").write_text("#!/usr/bin/env bash\nexec ./macos/run_oldcam_v8.command\n", encoding="utf-8")
+    (repo / "launchers" / "run_oldcam_v7.command").write_text("#!/usr/bin/env bash\nexec ./macos/run_oldcam_v7.command\n", encoding="utf-8")
     (repo / "similarity").mkdir()
     (repo / "similarity" / "run_gui.bat").write_text(
         "@echo off\r\nset PYTHON_BIN=py -3.12\r\nif exist .venv\\Scripts\\python.exe echo ok\r\n",
@@ -240,36 +263,52 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
     created = list(bundle_release(repo, dist))
     names = sorted(path.name for path in created)
     assert names == sorted([LATEST_ALIAS_ZIP_NAME, VERSIONED_ZIP_NAME])
-
-    universal_zip = dist / VERSIONED_ZIP_NAME
+    assert RELEASE_VERSION.startswith("v")
+    versioned_zip = dist / VERSIONED_ZIP_NAME
     latest_zip = dist / LATEST_ALIAS_ZIP_NAME
-    assert universal_zip.exists()
+    assert versioned_zip.exists()
     assert latest_zip.exists()
 
-    with zipfile.ZipFile(universal_zip) as zf:
+    with zipfile.ZipFile(versioned_zip) as zf:
         names = zf.namelist()
         assert any(name.endswith("selfie-gen-ultimate/Start GUI.bat") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/Start CLI.bat") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/Start GUI.command") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/Start CLI.command") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_similarity_gui.bat") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_similarity_cli.bat") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_oldcam_v8.bat") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_oldcam_v7.bat") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_similarity_gui.command") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_similarity_cli.command") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_oldcam_v8.command") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_oldcam_v7.command") for name in names)
         similarity_gui_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_gui.bat"))
         similarity_gui = zf.read(similarity_gui_name).decode("utf-8")
-        assert "py -3.12" in similarity_gui
+        assert "set PYTHON_BIN=py -3.12" in similarity_gui
         assert ".venv\\Scripts\\python.exe" in similarity_gui
         similarity_cli_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_cli.bat"))
         similarity_cli = zf.read(similarity_cli_name).decode("utf-8")
-        assert "py -3.12" in similarity_cli
+        assert "set PYTHON_BIN=py -3.12" in similarity_cli
         oldcam_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/oldcam-v8/oldcam_launcher.bat"))
         oldcam_launcher = zf.read(oldcam_launcher_name).decode("utf-8")
-        assert "py -3.12" in oldcam_launcher
+        assert "set PYTHON_CMD=py -3.12" in oldcam_launcher
         assert not any(name.endswith("selfie-gen-ultimate/tests/test_x.py") for name in names)
         assert not any(name.endswith("selfie-gen-ultimate/kling_gui.log") for name in names)
         assert not any(name.endswith("selfie-gen-ultimate/distribution/build_release.py") for name in names)
+        assert not any("/.launcher_state/" in name for name in names)
+        assert not any("/.recovery/" in name for name in names)
+        assert not any("/.tmp_pytest/" in name for name in names)
+        assert not any("/venv/" in name for name in names)
+        assert not any("/.venv/" in name for name in names)
         gui_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start GUI.command"))
         gui_launcher = zf.read(gui_launcher_name).decode("utf-8")
         assert "if [[ -f ./run_gui.command ]]; then" in gui_launcher
         assert "exec /bin/bash ./run_gui.command" in gui_launcher
         assert "exec /bin/bash ./run_gui.sh" in gui_launcher
+        windows_gui_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start GUI.bat"))
+        windows_gui_launcher = zf.read(windows_gui_launcher_name).decode("utf-8")
+        assert "call launchers\\windows\\run_gui.bat" in windows_gui_launcher
         cli_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start CLI.command"))
         cli_launcher = zf.read(cli_launcher_name).decode("utf-8")
         assert "if [[ -f ./run_cli.command ]]; then" in cli_launcher
