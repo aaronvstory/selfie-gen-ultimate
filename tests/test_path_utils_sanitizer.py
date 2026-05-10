@@ -62,6 +62,7 @@ class PathSanitizerTests(unittest.TestCase):
     def test_sanitize_portable_stem_preserves_leading_dot_and_double_underscore(self):
         self.assertEqual(sanitize_portable_stem(".ocr"), ".ocr")
         self.assertEqual(sanitize_portable_stem("abc__def"), "abc__def")
+        self.assertEqual(sanitize_portable_filename(".ocr"), ".ocr")
 
     def test_sanitize_portable_filename_fixes_invalid_trailing_reserved(self):
         self.assertEqual(sanitize_portable_filename("bad:name.jpg"), "bad_name.jpg")

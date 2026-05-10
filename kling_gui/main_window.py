@@ -33,7 +33,6 @@ from path_utils import (
     preflight_image_path,
     sanitize_path_name,
     sanitize_tree_names_portable_report,
-    sanitize_tree_names_report,
 )
 
 from .drop_zone import DropZone, create_dnd_root, HAS_DND, DND_FILES, parse_dnd_paths
@@ -3308,6 +3307,7 @@ class KlingGUIWindow:
             "invalid_characters": "invalid characters",
             "control_whitespace": "control whitespace",
             "edge_spaces_or_dots": "edge spaces/dots",
+            "repeated_underscores": "repeated underscores",
             "trailing_spaces_or_dots": "trailing spaces/dots",
             "windows_reserved_name": "Windows reserved name",
             "length_limit": "name too long",

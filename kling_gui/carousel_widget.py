@@ -502,8 +502,9 @@ class ImageCarousel(tk.Frame):
         try:
             from PIL import Image, ImageTk, ImageOps
 
-            img = Image.open(path)
-            img.load()
+            with Image.open(path) as img_src:
+                img_src.load()
+                img = img_src.copy()
 
             # Auto-correct EXIF orientation
             img = ImageOps.exif_transpose(img)
@@ -855,8 +856,9 @@ class ImageCarousel(tk.Frame):
         try:
             from PIL import Image, ImageTk, ImageOps
 
-            img = Image.open(path)
-            img.load()
+            with Image.open(path) as img_src:
+                img_src.load()
+                img = img_src.copy()
 
             # Auto-correct EXIF orientation (match _show_image_on_canvas)
             img = ImageOps.exif_transpose(img)

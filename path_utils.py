@@ -401,8 +401,8 @@ def sanitize_tree_names_report(
 def sanitize_portable_stem(name: str, default: str = "untitled") -> str:
     """Strict portable stem sanitizer for folder-tree compatibility fixes."""
     raw = str(name or "")
-    sanitized = _INVALID_FILENAME_CHARS_RE.sub("_", raw)
-    sanitized = sanitized.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    sanitized = raw.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    sanitized = _INVALID_FILENAME_CHARS_RE.sub("_", sanitized)
     sanitized = sanitized.rstrip(" .")
     if not sanitized:
         sanitized = default
@@ -411,7 +411,7 @@ def sanitize_portable_stem(name: str, default: str = "untitled") -> str:
     return sanitized[:180]
 
 
-def _portable_reasons(current_name: str, desired_name: str) -> str:
+def _portable_reasons(current_name: str) -> str:
     """Reason summary for strict portable sanitize mode."""
     reasons: List[str] = []
     if _INVALID_FILENAME_CHARS_RE.search(current_name):
@@ -422,6 +422,8 @@ def _portable_reasons(current_name: str, desired_name: str) -> str:
         reasons.append("trailing_spaces_or_dots")
     if current_name.upper() in _WINDOWS_RESERVED_NAMES:
         reasons.append("windows_reserved_name")
+    if len(current_name) > 180:
+        reasons.append("length_limit")
     if not reasons:
         reasons.append("normalized")
     return ",".join(reasons)
@@ -433,6 +435,8 @@ def sanitize_portable_filename(name: str, default_stem: str = "untitled") -> str
     if not raw:
         return default_stem
     stem_raw, ext_raw = os.path.splitext(raw)
+    if not stem_raw:
+        stem_raw, ext_raw = raw, ""
     stem = sanitize_portable_stem(stem_raw or raw, default=default_stem)
     ext = _INVALID_FILENAME_CHARS_RE.sub("", ext_raw or "")
     ext = ext.replace(" ", "")
@@ -472,7 +476,7 @@ def sanitize_tree_names_portable_report(
 
         desired = make_unique_name(parent, desired)
         desired_path = os.path.join(parent, desired)
-        reason = _portable_reasons(current_name=current_name, desired_name=desired)
+        reason = _portable_reasons(current_name=current_name)
         try:
             os.rename(old_path, desired_path)
             renames.append((old_path, desired_path))
