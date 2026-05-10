@@ -174,14 +174,14 @@ def _write_top_level_launchers(bundle_root: Path) -> None:
         "@echo off\n"
         "setlocal\n"
         "cd /d \"%~dp0\"\n"
-        "call launchers\\run_gui.bat\n",
+        "call launchers\\windows\\run_gui.bat\n",
         encoding="utf-8",
     )
     (bundle_root / "Start CLI.bat").write_text(
         "@echo off\n"
         "setlocal\n"
         "cd /d \"%~dp0\"\n"
-        "call launchers\\run_cli.bat\n",
+        "call launchers\\windows\\run_cli.bat\n",
         encoding="utf-8",
     )
 

@@ -67,8 +67,8 @@ Retest policy:
 
 | Mode | Windows | macOS |
 | --- | --- | --- |
-| GUI | `launchers/run_gui.bat` | `launchers/run_gui.command` (or `./run_gui.sh`) |
-| CLI | `launchers/run_cli.bat` | `launchers/run_cli.command` (or `./run_cli.sh`) |
+| GUI | `launchers/windows/run_gui.bat` | `launchers/macos/run_gui.command` (or `./run_gui.sh`) |
+| CLI | `launchers/windows/run_cli.bat` | `launchers/macos/run_cli.command` (or `./run_cli.sh`) |
 | Setup | `python -m venv venv` + `pip install -r requirements.txt` | `./setup_macos.sh` |
 
 macOS compatibility constraints:
@@ -81,7 +81,7 @@ macOS compatibility constraints:
 ## Quick Start: Windows
 
 1. Install Python 3.10+ from [python.org](https://python.org) and enable **Add Python to PATH**.
-2. Double-click `launchers/run_gui.bat`.
+2. Double-click `launchers/windows/run_gui.bat`.
 3. Enter API keys in GUI settings.
 
 Manual launch:
@@ -122,9 +122,9 @@ Launch CLI from Terminal:
 
 Finder-friendly launchers:
 
-- `launchers/run_gui.command`: opens the GUI
+- `launchers/macos/run_gui.command`: opens the GUI
 - `run_kling_ui.command`: GUI alias for users expecting the app name
-- `launchers/run_cli.command`: opens the CLI menu
+- `launchers/macos/run_cli.command`: opens the CLI menu
 
 Compatibility wrappers remain at repo root:
 - `run_gui.bat`, `run_cli.bat`
@@ -204,10 +204,9 @@ This uses PyInstaller to produce a portable `dist/KlingUI/` folder. `tkinterdnd2
 python distribution/build_release.py
 ```
 
-This creates versioned bundles in `release/`:
-- `windows_gui.zip`
-- `windows_cli.zip`
-- `macos_portable.zip`
+This creates release bundles in `dist/`:
+- `SelfieGenUltimate-v1.1.zip` (canonical)
+- `SelfieGenUltimate.zip` (latest alias)
 
 Each bundle is sanitized for sharing:
 - API keys removed from distributable config
