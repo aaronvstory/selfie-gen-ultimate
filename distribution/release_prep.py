@@ -33,6 +33,9 @@ EXCLUDED_DIRS: Set[str] = {
     ".gsd",
     ".serena",
     ".planning",
+    ".launcher_state",
+    ".recovery",
+    ".tmp_pytest",
     ".tmp",
     "handoffs",
     "reviews",
@@ -52,6 +55,9 @@ EXCLUDED_FILES: Set[str] = {
     "crash_log.txt",
     "ui_config.json",
 }
+
+RELEASE_VERSION = "1.1"
+RELEASE_BASENAME = "SelfieGenUltimate"
 
 
 def _should_skip(path: Path) -> bool:
@@ -168,14 +174,14 @@ def _write_top_level_launchers(bundle_root: Path) -> None:
         "@echo off\n"
         "setlocal\n"
         "cd /d \"%~dp0\"\n"
-        "call launchers\\run_gui.bat\n",
+        "call launchers\\windows\\run_gui.bat\n",
         encoding="utf-8",
     )
     (bundle_root / "Start CLI.bat").write_text(
         "@echo off\n"
         "setlocal\n"
         "cd /d \"%~dp0\"\n"
-        "call launchers\\run_cli.bat\n",
+        "call launchers\\windows\\run_cli.bat\n",
         encoding="utf-8",
     )
 
@@ -214,7 +220,7 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
         Iterable of created zip archive paths.
     """
     dist_root.mkdir(parents=True, exist_ok=True)
-    for old_zip in dist_root.glob("SelfieGenUltimate-*.zip"):
+    for old_zip in dist_root.glob(f"{RELEASE_BASENAME}-*.zip"):
         old_zip.unlink()
 
     staging_root = dist_root / "_staging" / "universal"
@@ -227,10 +233,14 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
     (bundle_dir / "kling_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     _write_top_level_launchers(bundle_dir)
     write_bundle_readme(bundle_dir)
-    zip_path = dist_root / "SelfieGenUltimate.zip"
-    if zip_path.exists():
-        zip_path.unlink()
-    archive_path = shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=staging_root)
-    created = [Path(archive_path)]
+    versioned_zip_path = dist_root / f"{RELEASE_BASENAME}-v{RELEASE_VERSION}.zip"
+    latest_zip_path = dist_root / f"{RELEASE_BASENAME}.zip"
+    if versioned_zip_path.exists():
+        versioned_zip_path.unlink()
+    if latest_zip_path.exists():
+        latest_zip_path.unlink()
+    archive_path = shutil.make_archive(str(versioned_zip_path.with_suffix("")), "zip", root_dir=staging_root)
+    shutil.copy2(archive_path, latest_zip_path)
+    created = [Path(archive_path), latest_zip_path]
     shutil.rmtree(dist_root / "_staging", ignore_errors=True)
     return created

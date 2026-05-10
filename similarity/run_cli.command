@@ -20,116 +20,70 @@ export PYTHONNOUSERSITE=1
 unset PYTHONPATH
 unset PYTHONHOME
 
-sanitize_known_bad_pth() {
-    candidate="$1"
-    if [ -z "$candidate" ]; then
-        return 0
-    fi
-    "$candidate" - <<'PY'
-import site
-from pathlib import Path
-
-targets = []
-for root in (site.getsitepackages() or []):
-    targets.append(Path(root) / "protobuf-3.19.6-nspkg.pth")
-try:
-    user_site = site.getusersitepackages()
-except Exception:
-    user_site = None
-if user_site:
-    targets.append(Path(user_site) / "protobuf-3.19.6-nspkg.pth")
-
-for path in targets:
-    if path.exists():
-        try:
-            path.unlink()
-            print(f"[INFO] Removed incompatible site-packages artifact: {path}")
-        except Exception:
-            pass
-PY
-}
-
-pick_supported_python() {
-    for candidate in python3.12 python3.11 python3.10 python3.9 python3; do
-        if ! command -v "$candidate" >/dev/null 2>&1; then
-            continue
-        fi
-        if "$candidate" -c 'import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] <= (3,12)) else 1)' >/dev/null 2>&1; then
-            echo "$candidate"
-            return 0
-        fi
-    done
-    return 1
-}
-
-PYTHON_BIN="$(pick_supported_python)"
-if [ -z "$PYTHON_BIN" ]; then
-    echo "[ERROR] No supported Python found (requires 3.9-3.12 for TensorFlow/DeepFace)."
-    echo "Install Python 3.12 and retry (macOS: brew install python@3.12)."
-    if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
-        read -r -p "Press Enter to exit..."
-    fi
-    exit 1
-fi
-
-echo "[INFO] Using Python interpreter: $PYTHON_BIN"
-sanitize_known_bad_pth "$PYTHON_BIN"
-
-if [ ! -f ".venv/bin/activate" ]; then
-    echo "[INFO] Virtual environment not found. Creating one..."
-    sanitize_known_bad_pth "$PYTHON_BIN"
-    "$PYTHON_BIN" -m venv .venv
-    if [ $? -ne 0 ]; then
-        echo "[ERROR] Failed to create virtual environment."
-        if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
-            read -r -p "Press Enter to exit..."
-        fi
-        exit 1
-    fi
+if [ -f "../requirements.txt" ] && [ -f "../kling_automation_ui.py" ]; then
+  REPO_ROOT="$(cd .. && pwd)"
 else
-    if ! .venv/bin/python -c 'import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] <= (3,12)) else 1)' >/dev/null 2>&1; then
-        echo "[INFO] Existing virtual environment uses unsupported Python. Recreating..."
-        rm -rf .venv
-        sanitize_known_bad_pth "$PYTHON_BIN"
-        "$PYTHON_BIN" -m venv .venv
-        if [ $? -ne 0 ]; then
-            echo "[ERROR] Failed to recreate virtual environment."
-            if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
-                read -r -p "Press Enter to exit..."
-            fi
-            exit 1
-        fi
-    fi
-    echo "[INFO] Activating existing virtual environment..."
+  REPO_ROOT=""
+fi
+if [ -n "$REPO_ROOT" ]; then STATE_DIR="$REPO_ROOT/.launcher_state"; else STATE_DIR="$(pwd)/.launcher_state"; fi
+mkdir -p "$STATE_DIR"
+
+resolve_python() {
+  if [ -n "${SELFIEGEN_PYTHON:-}" ] && [ -x "${SELFIEGEN_PYTHON}" ] && "${SELFIEGEN_PYTHON}" -V >/dev/null 2>&1; then echo "${SELFIEGEN_PYTHON}|SELFIEGEN_PYTHON override"; return 0; fi
+  if [ -n "${SELFIEGEN_VENV_DIR:-}" ] && [ -x "${SELFIEGEN_VENV_DIR}/bin/python" ] && "${SELFIEGEN_VENV_DIR}/bin/python" -V >/dev/null 2>&1; then echo "${SELFIEGEN_VENV_DIR}/bin/python|SELFIEGEN_VENV_DIR override"; return 0; fi
+  if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/venv/bin/python" ]; then echo "$REPO_ROOT/venv/bin/python|shared root venv"; return 0; fi
+  if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/.venv/bin/python" ]; then echo "$REPO_ROOT/.venv/bin/python|shared root .venv"; return 0; fi
+  if [ -x ".venv/bin/python" ]; then echo "$(pwd)/.venv/bin/python|local module .venv fallback"; return 0; fi
+  if [ -n "$REPO_ROOT" ]; then pybin="$(command -v python3.12 || command -v python3.11 || command -v python3 || command -v python || true)"; [ -n "$pybin" ] || return 1; "$pybin" -m venv "$REPO_ROOT/venv" || return 1; echo "$REPO_ROOT/venv/bin/python|created shared root venv"; return 0; fi
+  pybin="$(command -v python3.12 || command -v python3.11 || command -v python3 || command -v python || true)"; [ -n "$pybin" ] || return 1; "$pybin" -m venv .venv || return 1; echo "$(pwd)/.venv/bin/python|created local module .venv fallback"
+}
+
+resolved="$(resolve_python)"
+if [ -z "$resolved" ]; then
+  echo "[ERROR] No usable Python environment found."
+  [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
+  exit 1
+fi
+PYTHON_BIN="${resolved%%|*}"
+ENV_KIND="${resolved#*|}"
+
+echo "[INFO] Using $ENV_KIND: $PYTHON_BIN"
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if (3, 9) <= sys.version_info[:2] < (3, 13) else 2)' >/dev/null 2>&1; then
+  echo "[ERROR] Unsupported Python version. Similarity requires Python 3.9-3.12."
+  [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
+  exit 1
 fi
 
-echo "[INFO] Activating virtual environment..."
-source .venv/bin/activate
-if [ $? -ne 0 ]; then
-    echo "[ERROR] Failed to activate virtual environment."
-    if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
-        read -r -p "Press Enter to exit..."
-    fi
-    exit 1
-fi
+REQ_HASH="$(shasum -a 256 requirements.txt 2>/dev/null | awk '{print $1}')"; [ -n "$REQ_HASH" ] || REQ_HASH="missing"
+PY_ID="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"
+STAMP_FILE="$STATE_DIR/similarity_cli_${REQ_HASH}_${PY_ID}.ok"
 
-echo "[INFO] Synchronizing dependencies from requirements.txt..."
-python -m pip install -r requirements.txt
-if [ $? -ne 0 ]; then
+NEED_PIP=1
+if [ -f "$STAMP_FILE" ] && "$PYTHON_BIN" -c 'import cv2, numpy; from PIL import Image' >/dev/null 2>&1; then NEED_PIP=0; fi
+if [ "$NEED_PIP" -eq 1 ]; then
+  echo "[INFO] Synchronizing dependencies from requirements.txt..."
+  if ! "$PYTHON_BIN" -m pip install -r requirements.txt; then
     echo "[ERROR] Failed to synchronize dependencies from requirements.txt."
-    if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
-        read -r -p "Press Enter to exit..."
-    fi
+    [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
     exit 1
+  fi
+  rm -f "$STATE_DIR"/similarity_cli_*.ok
+  echo "ok" > "$STAMP_FILE"
+else
+  echo "[INFO] Requirements unchanged. Skipping pip install."
 fi
 
 echo "[INFO] Launching Face Similarity CLI..."
-python main.py --cli
+if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
+  "$PYTHON_BIN" main.py --cli
+else
+  "$PYTHON_BIN" main.py --cli >> "${LOG_FILE}" 2>&1
+fi
 EXIT_CODE=$?
 
 echo "[INFO] Application finished with code $EXIT_CODE"
 if [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ]; then
-    read -r -p "Press Enter to exit..."
+  read -r -p "Press Enter to exit..."
 fi
 
 exit $EXIT_CODE

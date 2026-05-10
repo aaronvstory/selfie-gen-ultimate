@@ -12,69 +12,51 @@ def _read(path: str) -> str:
 
 
 class TestLauncherScripts(unittest.TestCase):
-    def test_windows_launchers_sync_dependencies_after_existing_venv_activation(self) -> None:
+    def test_windows_similarity_venv_priority_prefers_root_before_local(self) -> None:
         for script in ("run_gui.bat", "run_cli.bat"):
             with self.subTest(script=script):
                 text = _read(script)
-                existing_idx = text.index("echo [INFO] Activating existing virtual environment...")
-                sync_idx = text.index("python -m pip install -r requirements.txt")
-                self.assertGreater(sync_idx, existing_idx)
+                root_idx = text.index('"%REPO_ROOT%\\venv\\Scripts\\python.exe"')
+                local_idx = text.index('".venv\\Scripts\\python.exe"')
+                self.assertLess(root_idx, local_idx)
 
-    def test_command_launchers_sync_dependencies_after_existing_venv_activation(self) -> None:
+    def test_command_similarity_venv_priority_prefers_root_before_local(self) -> None:
         for script in ("run_gui.command", "run_cli.command"):
             with self.subTest(script=script):
                 text = _read(script)
-                existing_idx = text.index('echo "[INFO] Activating existing virtual environment..."')
-                sync_idx = text.index("python -m pip install -r requirements.txt")
-                self.assertGreater(sync_idx, existing_idx)
+                root_idx = text.index('"$REPO_ROOT/venv/bin/python"')
+                local_idx = text.index('".venv/bin/python"')
+                self.assertLess(root_idx, local_idx)
 
-    def test_all_launchers_fail_fast_when_dependency_sync_fails(self) -> None:
-        expectations = {
-            "run_gui.bat": [
-                "if errorlevel 1 (",
-                "echo [ERROR] Failed to synchronize dependencies from requirements.txt.",
-                "exit /b 1",
-            ],
-            "run_cli.bat": [
-                "if errorlevel 1 (",
-                "echo [ERROR] Failed to synchronize dependencies from requirements.txt.",
-                "exit /b 1",
-            ],
-            "run_gui.command": [
-                "if [ $? -ne 0 ]; then",
-                'echo "[ERROR] Failed to synchronize dependencies from requirements.txt."',
-                "exit 1",
-            ],
-            "run_cli.command": [
-                "if [ $? -ne 0 ]; then",
-                'echo "[ERROR] Failed to synchronize dependencies from requirements.txt."',
-                "exit 1",
-            ],
-        }
-
-        for script, needles in expectations.items():
+    def test_similarity_uses_launcher_state_dependency_stamp(self) -> None:
+        for script in ("run_gui.bat", "run_cli.bat", "run_gui.command", "run_cli.command"):
             with self.subTest(script=script):
                 text = _read(script)
-                for needle in needles:
-                    self.assertIn(needle, text)
+                self.assertIn(".launcher_state", text)
+                self.assertIn("requirements", text)
+                self.assertIn("STAMP_FILE", text)
 
-    def test_gui_launchers_require_tkinter_capability(self) -> None:
-        command_text = _read("run_gui.command")
-        self.assertIn('import tkinter', command_text)
-        self.assertIn("lacks Tk support", command_text)
+    def test_similarity_python_version_guard_exists(self) -> None:
+        for script in ("run_gui.bat", "run_cli.bat", "run_gui.command", "run_cli.command"):
+            with self.subTest(script=script):
+                text = _read(script)
+                self.assertIn("3.9", text)
+                self.assertTrue("3.13" in text or "3,13" in text or "3, 13" in text)
 
-        windows_text = _read("run_gui.bat")
-        self.assertIn("import sys, tkinter", windows_text)
-        self.assertIn("lacks Tk support", windows_text)
+    def test_similarity_gui_tkinter_guard_exists(self) -> None:
+        for script in ("run_gui.bat", "run_gui.command"):
+            with self.subTest(script=script):
+                text = _read(script)
+                self.assertIn("import tkinter", text)
 
-    def test_cli_launchers_only_require_supported_python_version(self) -> None:
-        command_text = _read("run_cli.command")
-        self.assertNotIn("import tkinter", command_text)
-        self.assertIn("requires 3.9-3.12", command_text)
+    def test_similarity_preserves_parent_launch_gating(self) -> None:
+        bat = _read("run_cli.bat")
+        self.assertIn('if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" (', bat)
 
-        windows_text = _read("run_cli.bat")
-        self.assertNotIn("import sys, tkinter", windows_text)
-        self.assertIn("requires 3.9-3.12", windows_text)
+        for script in ("run_gui.command", "run_cli.command"):
+            text = _read(script)
+            self.assertIn("SIMILARITY_LAUNCHED_BY_MAIN", text)
+            self.assertIn("tee -a", text)
 
 
 if __name__ == "__main__":

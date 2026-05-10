@@ -183,8 +183,8 @@ class FaceCropTab(tk.Frame):
             value=config.get("upscale_resemblance", 0.9)
         )
 
-        # Accordion state (force all collapsed on launch).
-        self._expanded_sections = []
+        # Accordion state (default to Generative Expand open on launch).
+        self._expanded_sections = ["expand"]
 
         # Outpaint state
         self._outpaint_busy = False

@@ -52,10 +52,10 @@ python distribution/build_release.py
 **What it does:**
 1. Stages one sanitized universal bundle under a temporary staging folder
 2. Writes blank-key `kling_config.json` into the staged bundle
-3. Produces `SelfieGenUltimate.zip`
+3. Produces `SelfieGenUltimate-v1.1.zip` (canonical) and `SelfieGenUltimate.zip` (latest alias)
 4. Cleans staging artifacts automatically
 
-**Output location:** `dist\SelfieGenUltimate.zip`
+**Output location:** `dist\SelfieGenUltimate-v1.1.zip` and `dist\SelfieGenUltimate.zip`
 
 Deprecated historical outputs: `windows_gui.zip`, `windows_cli.zip`, `macos_portable.zip`.
 
