@@ -21,15 +21,18 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
-    from distribution.release_prep import bundle_release
+    from distribution.release_prep import RELEASE_BASENAME, RELEASE_VERSION, bundle_release
 
     dist_root = repo_root / "dist"
     created = list(bundle_release(repo_root, dist_root))
     extracted_root = None
+    preferred = dist_root / f"{RELEASE_BASENAME}-v{RELEASE_VERSION}.zip"
     for path in created:
-        if path.name == "SelfieGenUltimate.zip":
+        if path == preferred:
             extracted_root = refresh_extracted_bundle(path, dist_root)
             break
+    if extracted_root is None and preferred.exists():
+        extracted_root = refresh_extracted_bundle(preferred, dist_root)
     print("Created release bundle:")
     for path in created:
         print(f"- {path}")

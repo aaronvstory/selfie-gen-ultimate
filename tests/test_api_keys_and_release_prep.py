@@ -4,7 +4,7 @@ from pathlib import Path
 
 from api_keys import API_KEY_SPECS, ensure_key_fields, required_missing_specs
 from distribution.build_release import refresh_extracted_bundle
-from distribution.release_prep import build_sanitized_config, bundle_release, copy_sanitized_tree
+from distribution.release_prep import RELEASE_VERSION, build_sanitized_config, bundle_release, copy_sanitized_tree
 from kling_automation_ui import KlingAutomationUI
 
 EXPECTED_PROMPT_KEYS = {
@@ -245,12 +245,14 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
 
     created = list(bundle_release(repo, dist))
     names = sorted(path.name for path in created)
-    assert names == ["SelfieGenUltimate.zip"]
+    assert names == [f"SelfieGenUltimate-v{RELEASE_VERSION}.zip", "SelfieGenUltimate.zip"]
 
-    universal_zip = dist / "SelfieGenUltimate.zip"
-    assert universal_zip.exists()
+    versioned_zip = dist / f"SelfieGenUltimate-v{RELEASE_VERSION}.zip"
+    latest_zip = dist / "SelfieGenUltimate.zip"
+    assert versioned_zip.exists()
+    assert latest_zip.exists()
 
-    with zipfile.ZipFile(universal_zip) as zf:
+    with zipfile.ZipFile(versioned_zip) as zf:
         names = zf.namelist()
         assert any(name.endswith("selfie-gen-ultimate/Start GUI.bat") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/Start CLI.bat") for name in names)
