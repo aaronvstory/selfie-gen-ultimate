@@ -10,6 +10,8 @@ def test_run_oldcam_defaults_to_v8_and_uses_stamp_cache():
     assert "oldcam_v8_" in text
     assert 'findstr /I /R "^[0-9A-F][0-9A-F]"' in text
     assert 'set "PY_ID=%PY_ID: =_%"' in text
+    assert 'if "%NEED_PIP%"=="0" (' in text
+    assert "Dependencies unchanged. Skipping pip install." in text
 
 
 def test_oldcam_local_launchers_keep_version_specific_targets():
@@ -40,3 +42,14 @@ def test_oldcam_macos_requirements_hash_has_missing_fallback():
     assert '[ -n "$REQ_HASH" ] || REQ_HASH="missing"' in v7
     assert 'REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk \'{print $1}\')"' in v8
     assert '[ -n "$REQ_HASH" ] || REQ_HASH="missing"' in v8
+
+
+def test_oldcam_macos_uses_repo_root_state_dir_and_file_picker():
+    v7 = (REPO_ROOT / "oldcam-v7" / "macOS" / "oldcam.command").read_text(encoding="utf-8")
+    v8 = (REPO_ROOT / "oldcam-v8" / "macOS" / "oldcam.command").read_text(encoding="utf-8")
+    for text in (v7, v8):
+        assert "find_repo_root()" in text
+        assert 'STATE_DIR="$REPO_ROOT/.launcher_state"' in text
+        assert "pick_files()" in text
+        assert "choose file with prompt" in text
+        assert 'if [ "$#" -eq 0 ]; then' in text

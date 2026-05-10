@@ -49,7 +49,9 @@ if exist "%STAMP_FILE%" (
   "%PYTHON_EXE%" -c "import cv2, numpy" >nul 2>&1
   if not errorlevel 1 set "NEED_PIP=0"
 )
-if "%NEED_PIP%"=="1" if exist "%OLDCAM_REQUIREMENTS%" (
+if "%NEED_PIP%"=="0" (
+    echo Dependencies unchanged. Skipping pip install.
+) else if exist "%OLDCAM_REQUIREMENTS%" (
     echo Syncing Oldcam V8 dependencies...
     "%PYTHON_EXE%" -m pip install -r "%OLDCAM_REQUIREMENTS%" >nul 2>&1
     if !errorlevel! neq 0 (
@@ -58,8 +60,6 @@ if "%NEED_PIP%"=="1" if exist "%OLDCAM_REQUIREMENTS%" (
         del /q "%STATE_DIR%\oldcam_v8_*.ok" >nul 2>&1
         > "%STAMP_FILE%" echo ok
     )
-) else (
-    echo Dependencies unchanged. Skipping pip install.
 )
 
 echo Launching Oldcam V8...

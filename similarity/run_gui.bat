@@ -98,6 +98,20 @@ echo [!STEP!/5] Selecting Python environment...
 echo       Using !ENV_KIND!:
 echo       !PYTHON_BIN!
 >> "%LOG_FILE%" echo [INFO] Using !ENV_KIND!: !PYTHON_BIN!
+"!PYTHON_BIN!" -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] Unsupported Python version. Similarity requires Python 3.9-3.12.
+  >> "%LOG_FILE%" echo [ERROR] Unsupported Python version. Similarity requires Python 3.9-3.12.
+  if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" pause
+  exit /b 1
+)
+"!PYTHON_BIN!" -c "import tkinter" >nul 2>&1
+if errorlevel 1 (
+  echo [ERROR] tkinter missing. Use a Python build with tkinter for GUI mode.
+  >> "%LOG_FILE%" echo [ERROR] tkinter missing. Use a Python build with tkinter for GUI mode.
+  if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" pause
+  exit /b 1
+)
 
 set /a STEP+=1
 set "REQ_HASH=missing"

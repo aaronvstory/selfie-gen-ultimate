@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd 2>/dev/null || true)"
+find_repo_root() {
+  local cur="$SCRIPT_DIR"
+  while [ -n "$cur" ] && [ "$cur" != "/" ]; do
+    if [ -f "$cur/kling_automation_ui.py" ] && [ -f "$cur/requirements.txt" ] && [ -d "$cur/oldcam-v7" ] && [ -d "$cur/oldcam-v8" ]; then
+      printf '%s\n' "$cur"
+      return 0
+    fi
+    cur="$(dirname "$cur")"
+  done
+  return 1
+}
+REPO_ROOT="$(find_repo_root 2>/dev/null || true)"
 if [ -n "$REPO_ROOT" ]; then STATE_DIR="$REPO_ROOT/.launcher_state"; else STATE_DIR="$SCRIPT_DIR/.launcher_state"; fi
 mkdir -p "$STATE_DIR"
 resolve_py(){
@@ -26,4 +37,28 @@ if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy" >/dev/null 2>&1; 
   rm -f "$STATE_DIR"/oldcam_v8_*.ok
   echo ok > "$STAMP"
 fi
+pick_files() {
+  osascript <<'APPLESCRIPT'
+set selectedFiles to choose file with prompt "Select one or more media files for Oldcam V8" with multiple selections allowed
+set outputText to ""
+repeat with oneFile in selectedFiles
+  set outputText to outputText & POSIX path of oneFile & linefeed
+end repeat
+return outputText
+APPLESCRIPT
+}
+
+if [ "$#" -eq 0 ]; then
+  if ! SELECTED_FILES="$(pick_files)"; then
+    echo "No files selected."
+    exit 0
+  fi
+  HAD_ERRORS=0
+  while IFS= read -r file_path; do
+    [ -z "$file_path" ] && continue
+    "$PYTHON_CMD" "$SCRIPT_DIR/oldcam.py" "$file_path" || HAD_ERRORS=1
+  done <<< "$SELECTED_FILES"
+  exit "$HAD_ERRORS"
+fi
+
 exec "$PYTHON_CMD" "$SCRIPT_DIR/oldcam.py" "$@"

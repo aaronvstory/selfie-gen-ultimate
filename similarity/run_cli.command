@@ -48,6 +48,11 @@ PYTHON_BIN="${resolved%%|*}"
 ENV_KIND="${resolved#*|}"
 
 echo "[INFO] Using $ENV_KIND: $PYTHON_BIN"
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if (3, 9) <= sys.version_info[:2] < (3, 13) else 2)' >/dev/null 2>&1; then
+  echo "[ERROR] Unsupported Python version. Similarity requires Python 3.9-3.12."
+  [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
+  exit 1
+fi
 
 REQ_HASH="$(shasum -a 256 requirements.txt 2>/dev/null | awk '{print $1}')"; [ -n "$REQ_HASH" ] || REQ_HASH="missing"
 PY_ID="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"
@@ -57,8 +62,7 @@ NEED_PIP=1
 if [ -f "$STAMP_FILE" ] && "$PYTHON_BIN" -c 'import cv2, numpy; from PIL import Image' >/dev/null 2>&1; then NEED_PIP=0; fi
 if [ "$NEED_PIP" -eq 1 ]; then
   echo "[INFO] Synchronizing dependencies from requirements.txt..."
-  "$PYTHON_BIN" -m pip install -r requirements.txt
-  if [ $? -ne 0 ]; then
+  if ! "$PYTHON_BIN" -m pip install -r requirements.txt; then
     echo "[ERROR] Failed to synchronize dependencies from requirements.txt."
     [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
     exit 1

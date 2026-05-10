@@ -34,7 +34,20 @@ class TestLauncherScripts(unittest.TestCase):
                 text = _read(script)
                 self.assertIn(".launcher_state", text)
                 self.assertIn("requirements", text)
-                self.assertIn("Skipping pip install", text)
+                self.assertIn("STAMP_FILE", text)
+
+    def test_similarity_python_version_guard_exists(self) -> None:
+        for script in ("run_gui.bat", "run_cli.bat", "run_gui.command", "run_cli.command"):
+            with self.subTest(script=script):
+                text = _read(script)
+                self.assertIn("3.9", text)
+                self.assertTrue("3.13" in text or "3,13" in text or "3, 13" in text)
+
+    def test_similarity_gui_tkinter_guard_exists(self) -> None:
+        for script in ("run_gui.bat", "run_gui.command"):
+            with self.subTest(script=script):
+                text = _read(script)
+                self.assertIn("import tkinter", text)
 
     def test_similarity_preserves_parent_launch_gating(self) -> None:
         bat = _read("run_cli.bat")

@@ -65,6 +65,17 @@ fi
 PYTHON_BIN="${resolved%%|*}"
 ENV_KIND="${resolved#*|}"
 
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if (3, 9) <= sys.version_info[:2] < (3, 13) else 2)' >/dev/null 2>&1; then
+  echo "[ERROR] Unsupported Python version. Similarity requires Python 3.9-3.12."
+  [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
+  exit 1
+fi
+if ! "$PYTHON_BIN" -c 'import tkinter' >/dev/null 2>&1; then
+  echo "[ERROR] tkinter missing. Use a Python build with tkinter for GUI mode."
+  [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
+  exit 1
+fi
+
 echo "[1/5] Locating repository root..."
 if [ -n "$REPO_ROOT" ]; then echo "      Found: $REPO_ROOT"; else echo "      Standalone mode: no repo root found."; fi
 echo "[2/5] Selecting Python environment..."
@@ -85,8 +96,7 @@ if [ "$NEED_PIP" -eq 0 ]; then
   echo "      Requirements unchanged. Skipping pip install."
 else
   echo "      Dependencies stale or missing. Installing..."
-  "$PYTHON_BIN" -m pip install -r requirements.txt
-  if [ $? -ne 0 ]; then
+  if ! "$PYTHON_BIN" -m pip install -r requirements.txt; then
     echo "[ERROR] Failed to synchronize dependencies from requirements.txt."
     [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
     exit 1
@@ -98,10 +108,9 @@ fi
 echo "[4/5] Launching Face Similarity GUI..."
 echo "      Runtime log: $LOG_FILE"
 echo "      Crash log: $(pwd)/crash.log"
+echo "[5/5] Running..."
 "$PYTHON_BIN" main.py
 EXIT_CODE=$?
-
-echo "[5/5] Running..."
 if [ $EXIT_CODE -ne 0 ]; then
   echo "[ERROR] Application exited with an error (code=$EXIT_CODE)."
   [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
