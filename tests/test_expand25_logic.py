@@ -143,5 +143,31 @@ class Expand25SimilarityLabelTests(unittest.TestCase):
             self.assertIsNone(entry.similarity_score)
 
 
+class Expand25ConfigTests(unittest.TestCase):
+    class _FakeGetVar:
+        def __init__(self, value):
+            self._value = value
+
+        def get(self):
+            return self._value
+
+    def test_get_config_updates_includes_composite_mode(self):
+        tab = ExpandTab.__new__(ExpandTab)
+        tab._auto_switch_var = self._FakeGetVar(True)
+        tab._expand_mode_var = self._FakeGetVar("percentage")
+        tab._pct_var = self._FakeGetVar(30)
+        tab._top_var = self._FakeGetVar(100)
+        tab._bottom_var = self._FakeGetVar(100)
+        tab._left_var = self._FakeGetVar(120)
+        tab._right_var = self._FakeGetVar(120)
+        tab._format_var = self._FakeGetVar("png")
+        tab._composite_mode_var = self._FakeGetVar("preserve_seamless")
+        tab._provider_var = self._FakeGetVar("bfl")
+
+        updates = tab.get_config_updates()
+        self.assertEqual(updates["outpaint_composite_mode"], "preserve_seamless")
+        self.assertEqual(updates["automation_selfie_expand_composite_mode"], "preserve_seamless")
+
+
 if __name__ == "__main__":
     unittest.main()
