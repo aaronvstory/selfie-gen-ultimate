@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 
 cd /d "%~dp0"
 
@@ -16,19 +16,19 @@ if exist ".venv\Scripts\python.exe" (
     .venv\Scripts\python.exe -V >nul 2>&1
     if not errorlevel 1 set "PYTHON_BIN=.venv\Scripts\python.exe"
 )
-if "%PYTHON_BIN%"=="" (
+if "!PYTHON_BIN!"=="" (
     for %%V in (3.12 3.11 3.10 3.9) do (
-        if "%PYTHON_BIN%"=="" (
+        if "!PYTHON_BIN!"=="" (
             py -%%V -V >nul 2>&1
             if not errorlevel 1 set "PYTHON_BIN=py -%%V"
         )
     )
 )
-if "%PYTHON_BIN%"=="" (
+if "!PYTHON_BIN!"=="" (
     python -V >nul 2>&1
     if not errorlevel 1 set "PYTHON_BIN=python"
 )
-if "%PYTHON_BIN%"=="" (
+if "!PYTHON_BIN!"=="" (
     echo [ERROR] No Python interpreter found.
     >> "%LOG_FILE%" echo [ERROR] No Python interpreter found.
     if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" pause
