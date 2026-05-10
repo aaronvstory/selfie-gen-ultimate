@@ -138,7 +138,7 @@ class KlingAutomationUI:
             "falai_api_key": "",  # Will prompt user on first run
             "bfl_api_key": "",
             "openrouter_api_key": "",
-            "freeimage_api_key": "", 
+            "freeimage_api_key": "",
             "outpaint_fal_timeout_seconds": 150,
             "outpaint_composite_mode": "preserve_seamless",
             "verbose_logging": True,
@@ -1635,7 +1635,12 @@ class KlingAutomationUI:
 
         print("\nApplied recommended automation defaults.")
         print("Before -> After")
-        print(f"  front expand: {before['front'][0]} / {before['front'][1]} / {before['front'][2]} / {before['front'][4]} -> bfl / percent / 70 / preserve_seamless")
+        print(
+            "  front expand: "
+            f"{before['front'][0]} / {before['front'][1]} / {before['front'][2]} / "
+            f"passes={before['front'][3]} / {before['front'][4]} "
+            "-> bfl / percent / 70 / passes=2 / preserve_seamless"
+        )
         print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} / {before['selfie_expand'][3]} -> bfl / percent / 30 / preserve_seamless")
         print(f"  selfie model: {before['selfie_models']} -> Nano Banana 2 Edit")
         print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
