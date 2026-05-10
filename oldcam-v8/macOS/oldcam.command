@@ -17,7 +17,8 @@ resolve_py(){
 }
 PYTHON_CMD="$(resolve_py)"
 [ -n "$PYTHON_CMD" ] || { echo "No python"; exit 1; }
-REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" | awk '{print $1}')"
+REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk '{print $1}')"
+[ -n "$REQ_HASH" ] || REQ_HASH="missing"
 PY_ID="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"
 STAMP="$STATE_DIR/oldcam_v8_${REQ_HASH}_${PY_ID}.ok"
 if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy" >/dev/null 2>&1; then

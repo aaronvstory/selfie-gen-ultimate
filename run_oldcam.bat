@@ -37,10 +37,11 @@ if not defined PYTHON_EXE (
 echo Using Python: %PYTHON_EXE%
 
 set "REQ_HASH=missing"
-for /f "tokens=1" %%H in ('certutil -hashfile "%OLDCAM_REQUIREMENTS%" SHA256 ^| findstr /R "^[0-9A-F][0-9A-F]"') do set "REQ_HASH=%%H"
+for /f "tokens=1" %%H in ('certutil -hashfile "%OLDCAM_REQUIREMENTS%" SHA256 ^| findstr /I /R "^[0-9A-F][0-9A-F]"') do set "REQ_HASH=%%H"
 set "PY_ID=%PYTHON_EXE::=_%"
 set "PY_ID=%PY_ID:\=_%"
 set "PY_ID=%PY_ID:/=_%"
+set "PY_ID=%PY_ID: =_%"
 set "STAMP_FILE=%STATE_DIR%\oldcam_v8_%REQ_HASH%_%PY_ID%.ok"
 
 set "NEED_PIP=1"

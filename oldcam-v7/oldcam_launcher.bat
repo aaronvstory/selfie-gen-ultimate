@@ -8,6 +8,7 @@ set "REPO_ROOT=%SCRIPT_DIR%.."
 for %%I in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fI"
 set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
+set "HAD_ERRORS="
 
 set "PYTHON_CMD="
 if not "%SELFIEGEN_PYTHON%"=="" ("%SELFIEGEN_PYTHON%" -V >nul 2>&1 && set "PYTHON_CMD=%SELFIEGEN_PYTHON%")
@@ -25,17 +26,19 @@ if not defined PYTHON_CMD (
 )
 
 set "REQ_HASH=missing"
-for /f "tokens=1" %%H in ('certutil -hashfile "%SCRIPT_DIR%requirements.txt" SHA256 ^| findstr /R "^[0-9A-F][0-9A-F]"') do set "REQ_HASH=%%H"
+for /f "tokens=1" %%H in ('certutil -hashfile "%SCRIPT_DIR%requirements.txt" SHA256 ^| findstr /I /R "^[0-9A-F][0-9A-F]"') do set "REQ_HASH=%%H"
 set "PY_ID=%PYTHON_CMD::=_%"
 set "PY_ID=%PY_ID:\=_%"
+set "PY_ID=%PY_ID:/=_%"
+set "PY_ID=%PY_ID: =_%"
 set "STAMP_FILE=%STATE_DIR%\oldcam_v7_%REQ_HASH%_%PY_ID%.ok"
 set "NEED_PIP=1"
 if exist "%STAMP_FILE%" (
-  %PYTHON_CMD% -c "import cv2, numpy" >nul 2>nul
+  "%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>nul
   if not errorlevel 1 set "NEED_PIP=0"
 )
 if "%NEED_PIP%"=="1" (
-  %PYTHON_CMD% -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul
+  "%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul
   if errorlevel 1 (
     echo Failed to install dependencies.
     goto DONE
@@ -64,7 +67,7 @@ shift
 goto PROCESS_ARGS
 
 :PROCESS_ONE
-%PYTHON_CMD% "%SCRIPT_DIR%oldcam.py" "%~1" %EXTRA_ARGS%
+call "%PYTHON_CMD%" "%SCRIPT_DIR%oldcam.py" "%~1" %EXTRA_ARGS%
 if not "%ERRORLEVEL%"=="0" set "HAD_ERRORS=1"
 exit /b 0
 
