@@ -1,6 +1,8 @@
 import unittest
 from unittest import mock
 
+import numpy as np
+
 import similarity_engine as se
 
 
@@ -102,6 +104,70 @@ class SimilarityEngineTests(unittest.TestCase):
         ]
         chosen = engine._select_prominent_face(faces, "img", image_shape=(200, 200))
         self.assertEqual(chosen["facial_area"]["x"], 80)
+
+    def test_compare_full_image_align_passes_real_image_shape_to_selector(self):
+        engine = se.FaceEngine()
+        reps1 = [{"embedding": [1.0, 0.0], "facial_area": {"x": 1, "y": 2, "w": 10, "h": 12}}]
+        reps2 = [{"embedding": [1.0, 0.0], "facial_area": {"x": 3, "y": 4, "w": 8, "h": 9}}]
+
+        with mock.patch.object(engine, "_represent_full_image_with_detection", side_effect=[reps1, reps2]), \
+            mock.patch("similarity_engine.cv2.imread", side_effect=[np.zeros((200, 300, 3), dtype=np.uint8), np.zeros((120, 220, 3), dtype=np.uint8)]), \
+            mock.patch.object(engine, "_select_prominent_face", side_effect=[reps1[0], reps2[0]]) as selector:
+            result = engine._compare_full_image_align("a.png", "b.png")
+
+        self.assertIsNone(result["error"])
+        self.assertEqual(selector.call_args_list[0].args[2], (300, 200))
+        self.assertEqual(selector.call_args_list[1].args[2], (220, 120))
+
+    def test_compare_existing_skips_failed_target_embedding_and_uses_valid_face(self):
+        engine = se.FaceEngine()
+        faces1 = [{"face": "src", "facial_area": {"x": 0, "y": 0, "w": 10, "h": 10}}]
+        faces2 = [
+            {"face": "bad-target", "facial_area": {"x": 0, "y": 0, "w": 8, "h": 8}},
+            {"face": "good-target", "facial_area": {"x": 2, "y": 2, "w": 8, "h": 8}},
+        ]
+
+        def _fake_repr(face):
+            if face == "src":
+                return np.asarray([1.0, 0.0], dtype=float)
+            if face == "bad-target":
+                raise ValueError("bad crop")
+            return np.asarray([1.0, 0.0], dtype=float)
+
+        with mock.patch.object(engine, "_extract_faces", side_effect=[faces1, faces2]), \
+            mock.patch("similarity_engine.cv2.imread", side_effect=[np.zeros((100, 100, 3), dtype=np.uint8), np.zeros((120, 120, 3), dtype=np.uint8)]), \
+            mock.patch.object(engine, "_represent_face", side_effect=_fake_repr):
+            result = engine._compare_existing("a.png", "b.png")
+
+        self.assertIsNone(result["error"])
+        self.assertTrue(result["match"])
+        self.assertGreaterEqual(result["score"], 99.0)
+        self.assertEqual(result["diagnostics"]["selected_face_boxes"]["target"]["x"], 2)
+
+    def test_score_from_distance_guards_threshold_out_of_range(self):
+        engine = se.FaceEngine()
+        original = engine.threshold
+        try:
+            engine.threshold = 0.0
+            score_low, match_low = engine._score_from_distance(0.1)
+            self.assertIsInstance(score_low, float)
+            self.assertIsInstance(match_low, bool)
+
+            engine.threshold = 1.0
+            score_high, match_high = engine._score_from_distance(0.9)
+            self.assertIsInstance(score_high, float)
+            self.assertIsInstance(match_high, bool)
+        finally:
+            engine.threshold = original
+
+    def test_class_level_defaults_available_without_init(self):
+        raw = object.__new__(se.FaceEngine)
+        self.assertEqual(raw.model_name, "ArcFace")
+        self.assertEqual(raw.detector_backend, "retinaface")
+        self.assertEqual(raw.threshold, 0.68)
+        self.assertEqual(raw.normalized_face_size, (224, 224))
+        self.assertEqual(raw.normalized_face_padding, 0.30)
+        self.assertEqual(raw.MODE_EXISTING, "existing")
 
 
 if __name__ == "__main__":

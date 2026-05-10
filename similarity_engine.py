@@ -7,7 +7,7 @@ import tempfile
 import urllib.request
 import logging
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -35,6 +35,18 @@ class FaceEngine:
 
     _instance = None
     _lock = threading.Lock()
+    model_name = "ArcFace"
+    detector_backend = "retinaface"
+    threshold = 0.68
+    normalized_face_size = (224, 224)
+    normalized_face_padding = 0.30
+    models_dir = ""
+    prototxt_path = ""
+    caffemodel_path = ""
+    prototxt_url = ""
+    caffemodel_url = ""
+    extraction_net = None
+    _executor: Optional[ThreadPoolExecutor] = None
     MODE_EXISTING = "existing"
     MODE_FULL_IMAGE_ALIGN = "full_image_align"
     MODE_NORMALIZED_CROP = "normalized_crop"
@@ -275,9 +287,11 @@ class FaceEngine:
 
     def _score_from_distance(self, distance: float) -> Tuple[float, bool]:
         distance = max(0.0, min(1.0, distance))
-        if distance <= self.threshold:
-            return 100.0 - ((distance / self.threshold) * 20.0), True
-        return max(0.0, 79.0 - (((distance - self.threshold) / (1.0 - self.threshold)) * 79.0)), False
+        epsilon = 1e-6
+        safe_threshold = max(epsilon, min(1.0 - epsilon, float(self.threshold)))
+        if distance <= safe_threshold:
+            return 100.0 - ((distance / safe_threshold) * 20.0), True
+        return max(0.0, 79.0 - (((distance - safe_threshold) / (1.0 - safe_threshold)) * 79.0)), False
 
     def _extract_faces(self, img_path: str) -> List[Dict[str, Any]]:
         return DeepFace.extract_faces(
@@ -385,11 +399,14 @@ class FaceEngine:
         best_distance = None
         best_face = None
         for face2 in faces2:
-            emb2 = self._represent_face(face2["face"])
-            dist = self._cosine_distance(emb1, emb2)
-            if best_distance is None or dist < best_distance:
-                best_distance = dist
-                best_face = face2
+            try:
+                emb2 = self._represent_face(face2["face"])
+                dist = self._cosine_distance(emb1, emb2)
+                if best_distance is None or dist < best_distance:
+                    best_distance = dist
+                    best_face = face2
+            except Exception:
+                continue
         if best_distance is None or best_face is None:
             raise ValueError("Could not generate face embedding(s) for image 2.")
 
@@ -404,8 +421,12 @@ class FaceEngine:
         reps1 = self._represent_full_image_with_detection(img1_path)
         reps2 = self._represent_full_image_with_detection(img2_path)
         diag["face_counts"] = {"ref": len(reps1), "target": len(reps2)}
-        src = self._select_prominent_face(reps1, "image 1")
-        tgt = self._select_prominent_face(reps2, "image 2")
+        src_img = cv2.imread(img1_path)
+        tgt_img = cv2.imread(img2_path)
+        if src_img is None or tgt_img is None:
+            raise ValueError("Unable to read image data via OpenCV during full-image mode.")
+        src = self._select_prominent_face(reps1, "image 1", (src_img.shape[1], src_img.shape[0]))
+        tgt = self._select_prominent_face(reps2, "image 2", (tgt_img.shape[1], tgt_img.shape[0]))
 
         emb1 = np.asarray(src.get("embedding"), dtype=float)
         emb2 = np.asarray(tgt.get("embedding"), dtype=float)
@@ -494,6 +515,8 @@ class FaceEngine:
         chosen: Optional[Dict[str, Any]],
         mode_results: List[Dict[str, Any]],
         err: Optional[str],
+        img1_path: str,
+        img2_path: str,
     ) -> Dict[str, Any]:
         if chosen is not None and chosen.get("error") is None:
             diagnostics = dict(chosen.get("diagnostics") or {})
@@ -505,7 +528,7 @@ class FaceEngine:
                 "diagnostics": diagnostics,
             }
 
-        fallback_diag = self._base_mode_diag("unavailable", "", "")
+        fallback_diag = self._base_mode_diag("unavailable", img1_path, img2_path)
         fallback_diag["mode_results"] = mode_results
         return {
             "match": False,
@@ -522,6 +545,7 @@ class FaceEngine:
             self.validate_image_file(img2_path)
 
             fallback_runtime_reason: Optional[str] = None
+            # Diagnostic-first design: evaluate a small bounded strategy set for stability analysis.
             mode_order = [
                 self.MODE_NORMALIZED_CROP,
                 self.MODE_FULL_IMAGE_ALIGN,
@@ -555,7 +579,7 @@ class FaceEngine:
                     )
 
             if chosen is not None:
-                return self._build_final_result(chosen, mode_results, None)
+                return self._build_final_result(chosen, mode_results, None, img1_path, img2_path)
 
             if fallback_runtime_reason is not None:
                 fallback_result = self._compare_with_opencv_fallback(
@@ -564,7 +588,7 @@ class FaceEngine:
                     fallback_runtime_reason,
                 )
                 mode_results.append(fallback_result)
-                return self._build_final_result(fallback_result, mode_results, None)
+                return self._build_final_result(fallback_result, mode_results, None, img1_path, img2_path)
 
             error_text = "; ".join(
                 [
@@ -573,7 +597,7 @@ class FaceEngine:
                     if entry.get("error")
                 ]
             )
-            return self._build_final_result(None, mode_results, f"All similarity modes failed: {error_text}")
+            return self._build_final_result(None, mode_results, f"All similarity modes failed: {error_text}", img1_path, img2_path)
 
         except FileNotFoundError as exc:
             return {
