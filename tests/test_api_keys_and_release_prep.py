@@ -337,7 +337,7 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         assert "All prompts are stored in kling_config.json" in readme_text
 
     with zipfile.ZipFile(latest_zip) as zf_latest:
-        with zipfile.ZipFile(universal_zip) as zf_versioned:
+        with zipfile.ZipFile(versioned_zip) as zf_versioned:
             assert zf_latest.namelist() == zf_versioned.namelist()
 
     staging_cfg = dist / "_staging" / "universal" / "selfie-gen-ultimate" / "kling_config.json"
