@@ -63,6 +63,12 @@ class ExpandTab(tk.Frame):
         self._left_var = tk.IntVar(value=self.config.get("outpaint_expand_left", 140))
         self._right_var = tk.IntVar(value=self.config.get("outpaint_expand_right", 140))
         self._format_var = tk.StringVar(value=self.config.get("outpaint_format", "png"))
+        self._composite_mode_var = tk.StringVar(
+            value=self.config.get(
+                "automation_selfie_expand_composite_mode",
+                self.config.get("outpaint_composite_mode", "preserve_seamless"),
+            )
+        )
         self._provider_var = tk.StringVar(
             value=self.config.get(
                 "outpaint_provider", "bfl" if self.config.get("bfl_api_key") else "fal"
@@ -257,6 +263,20 @@ class ExpandTab(tk.Frame):
             values=["png", "jpg"],
             state="readonly",
             width=6,
+        ).pack(side=tk.LEFT, padx=5)
+        tk.Label(
+            io_row,
+            text="Composite:",
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Combobox(
+            io_row,
+            textvariable=self._composite_mode_var,
+            values=["preserve_seamless", "feathered", "hard", "none"],
+            state="readonly",
+            width=18,
         ).pack(side=tk.LEFT, padx=5)
 
         run_frame = tk.Frame(self, bg=COLORS["bg_panel"])
@@ -623,7 +643,7 @@ class ExpandTab(tk.Frame):
         max_per_side = 2048 if use_bfl else 700
         output_format = self._format_var.get()
         prompt = cfg.get("outpaint_prompt", "")
-        composite_mode = cfg.get("outpaint_composite_mode", "feathered")
+        composite_mode = self._composite_mode_var.get().strip() or "preserve_seamless"
         freeimage_key = cfg.get("freeimage_api_key")
         ref_path = self._get_similarity_reference()
         if ref_path:
@@ -829,5 +849,7 @@ class ExpandTab(tk.Frame):
             "outpaint_expand_left": self._left_var.get(),
             "outpaint_expand_right": self._right_var.get(),
             "outpaint_format": self._format_var.get(),
+            "outpaint_composite_mode": self._composite_mode_var.get(),
+            "automation_selfie_expand_composite_mode": self._composite_mode_var.get(),
             "outpaint_provider": self._provider_var.get(),
         }

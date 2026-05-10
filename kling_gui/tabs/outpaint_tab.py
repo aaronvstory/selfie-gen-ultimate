@@ -30,6 +30,9 @@ class OutpaintTab(tk.Frame):
         self.get_config = config_getter
         self.log = log_callback
         self._busy = False
+        self._composite_mode_var = tk.StringVar(
+            value=self.config.get("outpaint_composite_mode", "preserve_seamless")
+        )
 
         self._build_ui()
 
@@ -266,6 +269,15 @@ class OutpaintTab(tk.Frame):
             fmt_frame, textvariable=self.format_var,
             values=["png", "jpg"], state="readonly", width=6,
         ).pack(side=tk.LEFT, padx=5)
+        tk.Label(
+            fmt_frame, text="Composite:",
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"], fg=COLORS["text_light"],
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Combobox(
+            fmt_frame, textvariable=self._composite_mode_var,
+            values=["preserve_seamless", "feathered", "hard", "none"], state="readonly", width=18,
+        ).pack(side=tk.LEFT, padx=5)
 
         # ── Expand button ───────────────────────────────────────────────
         btn_frame = tk.Frame(self, bg=COLORS["bg_panel"])
@@ -364,6 +376,7 @@ class OutpaintTab(tk.Frame):
 
         prompt = self.prompt_text.get("1.0", tk.END).strip()
         output_format = self.format_var.get()
+        composite_mode = self._composite_mode_var.get()
         mode = self._expand_mode_var.get()
 
         if mode == "percentage":
@@ -425,6 +438,7 @@ class OutpaintTab(tk.Frame):
                     expand_bottom=expand_bottom,
                     prompt=prompt,
                     output_format=output_format,
+                    composite_mode=composite_mode,
                     poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.get_config()),
                 )
 
@@ -487,4 +501,5 @@ class OutpaintTab(tk.Frame):
             "outpaint_expand_bottom": self.bottom_var.get(),
             "outpaint_prompt": self.prompt_text.get("1.0", tk.END).strip(),
             "outpaint_format": self.format_var.get(),
+            "outpaint_composite_mode": self._composite_mode_var.get(),
         }

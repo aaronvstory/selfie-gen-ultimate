@@ -598,7 +598,8 @@ def test_pipeline_existing_video_still_runs_oldcam_when_enabled(tmp_path: Path, 
 
     config = merge_automation_defaults({"falai_api_key": "x",
             "bfl_api_key": "bfl-token",
-            "automation_oldcam_required": False})
+            "automation_oldcam_required": False,
+            "automation_selfie_expand_composite_mode": "none"})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
@@ -871,7 +872,14 @@ def test_pipeline_front_expand_runs_two_passes_when_configured(tmp_path: Path, m
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-n2")
 
     config = merge_automation_defaults(
-        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 2}
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "automation_front_expand_passes": 2,
+            "automation_front_expand_composite_mode": "hard",
+            "automation_selfie_expand_composite_mode": "feathered",
+        }
     )
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
@@ -894,9 +902,15 @@ def test_pipeline_front_expand_runs_two_passes_when_configured(tmp_path: Path, m
     stats = runner.run([record])
     assert stats["completed"] == 1
     assert len(outpaint.calls) == 3
+    assert outpaint.calls[0]["composite_mode"] == "hard"
+    assert outpaint.calls[1]["composite_mode"] == "hard"
+    assert outpaint.calls[2]["composite_mode"] == "feathered"
     front_step = manifest.get_step(record.relative_key, "front_expand")
     assert front_step["meta"]["configured_passes"] == 2
     assert front_step["meta"]["executed_passes"] == 2
+    assert front_step["meta"]["composite_mode"] == "hard"
+    selfie_step = manifest.get_step(record.relative_key, "selfie_expand")
+    assert selfie_step["meta"]["composite_mode"] == "feathered"
 
 
 def test_pipeline_front_expand_runs_single_pass_when_configured(tmp_path: Path, monkeypatch):
@@ -947,7 +961,8 @@ def test_pipeline_selfie_expand_reuse_skips_outpaint_call(tmp_path: Path, monkey
 
     config = merge_automation_defaults({"falai_api_key": "x",
             "bfl_api_key": "bfl-token",
-            "automation_oldcam_required": False})
+            "automation_oldcam_required": False,
+            "automation_selfie_expand_composite_mode": "none"})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     manifest.update_step(record.relative_key, "selfie_expand", "complete", output=str(existing_expanded))
@@ -973,6 +988,7 @@ def test_pipeline_selfie_expand_reuse_skips_outpaint_call(tmp_path: Path, monkey
     assert selfie_expand_step["status"] == "complete"
     assert selfie_expand_step["output"] == str(existing_expanded)
     assert selfie_expand_step["meta"]["reused_existing"] is True
+    assert selfie_expand_step["meta"]["composite_mode"] == "none"
     assert len(outpaint.calls) == 2
 
 

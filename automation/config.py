@@ -40,6 +40,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_front_expand_enabled": True,
     "automation_front_expand_provider": "bfl",  # auto | bfl | fal
     "automation_front_expand_mode": "percent",  # document_3x4 | percent
+    "automation_front_expand_composite_mode": "preserve_seamless",  # preserve_seamless | feathered | hard | none
     "automation_front_expand_percent": 70,
     "automation_front_expand_passes": 2,  # 1 | 2
     "automation_front_edge_seal_enabled": False,
@@ -70,6 +71,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_selfie_expand_enabled": True,
     "automation_selfie_expand_provider": "bfl",
     "automation_selfie_expand_mode": "percent",  # percent | centered_3x4
+    "automation_selfie_expand_composite_mode": "preserve_seamless",  # preserve_seamless | feathered | hard | none
     "automation_selfie_expand_percent": 30,
     "automation_selfie_expand_edge_seal_enabled": False,
     "automation_video_enabled": True,

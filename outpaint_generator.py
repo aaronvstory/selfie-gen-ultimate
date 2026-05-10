@@ -39,6 +39,8 @@ class OutpaintGenerator:
     # Override via env: FAL_OUTPAINT_MAX_DIM, FAL_OUTPAINT_MAX_MP
     _MAX_CANVAS_DIM = int(os.environ.get("FAL_OUTPAINT_MAX_DIM", "1536"))
     _MAX_CANVAS_MP = float(os.environ.get("FAL_OUTPAINT_MAX_MP", "2.0"))
+    _PRESERVE_SEAM_BLEND_PX = 24
+    _PRESERVE_SEAM_BLEND_STRENGTH = 0.55
 
     @staticmethod
     def _preflight_size(
@@ -188,7 +190,7 @@ class OutpaintGenerator:
         expand_bottom: int = 140,
         prompt: str = "",
         output_format: str = "png",
-        composite_mode: str = "feathered",
+        composite_mode: str = "preserve_seamless",
         output_path: Optional[str] = None,
         provider: Optional[str] = None,
         document_mode: bool = False,
@@ -208,7 +210,8 @@ class OutpaintGenerator:
             expand_bottom: Pixels to expand on the bottom
             prompt: Optional guidance prompt
             output_format: Output format ("png" or "jpg")
-            composite_mode: "feathered" (3-6px blend), "hard" (pixel-perfect),
+            composite_mode: "preserve_seamless" (outside-only seam blend + exact center),
+                "feathered" (legacy 3px blend), "hard" (pixel-perfect),
                 or "none" (raw AI output)
             output_path: If provided, use this exact path instead of generating one
             poll_timeout_seconds: Maximum seconds to wait for async poll completion.
@@ -525,11 +528,203 @@ class OutpaintGenerator:
                 self._report("Original doesn't fit in AI result — using raw output", "warning")
                 return
 
-            # --- 3. APPLY TIGHT MASK (Fixing Destructive Bleed) ---
+            paste_right = paste_left + orig.width
+            paste_bottom = paste_top + orig.height
+            scaled_before_composite = (actual_w != expected_w) or (actual_h != expected_h)
+            self._report(
+                f"Composite placement rect=({paste_left},{paste_top})..({paste_right},{paste_bottom}), "
+                f"scaled_before_composite={scaled_before_composite}",
+                "debug",
+            )
+
+            def _calc_boundary_discontinuity(img: Image.Image) -> dict:
+                metrics = {}
+
+                def _avg_abs_diff(pairs):
+                    if not pairs:
+                        return None
+                    total = 0
+                    count = 0
+                    for a, b in pairs:
+                        total += abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+                        count += 3
+                    return round(total / count, 4) if count else None
+
+                top_pairs = []
+                if paste_top > 0:
+                    for x in range(paste_left, paste_right):
+                        top_pairs.append((img.getpixel((x, paste_top)), img.getpixel((x, paste_top - 1))))
+                metrics["top"] = _avg_abs_diff(top_pairs)
+
+                bottom_pairs = []
+                if paste_bottom < actual_h:
+                    for x in range(paste_left, paste_right):
+                        bottom_pairs.append((img.getpixel((x, paste_bottom - 1)), img.getpixel((x, paste_bottom))))
+                metrics["bottom"] = _avg_abs_diff(bottom_pairs)
+
+                left_pairs = []
+                if paste_left > 0:
+                    for y in range(paste_top, paste_bottom):
+                        left_pairs.append((img.getpixel((paste_left, y)), img.getpixel((paste_left - 1, y))))
+                metrics["left"] = _avg_abs_diff(left_pairs)
+
+                right_pairs = []
+                if paste_right < actual_w:
+                    for y in range(paste_top, paste_bottom):
+                        right_pairs.append((img.getpixel((paste_right - 1, y)), img.getpixel((paste_right, y))))
+                metrics["right"] = _avg_abs_diff(right_pairs)
+                return metrics
+
+            seam_debug_enabled = (
+                os.environ.get("OUTPAINT_SEAM_DEBUG", "0").strip().lower()
+                in {"1", "true", "yes", "on"}
+            )
+
+            # --- 3. APPLY COMPOSITE MODE ---
             if composite_mode == "hard":
-                result_img.paste(orig, (paste_left, paste_top))
+                result_img.paste(orig_rgb, (paste_left, paste_top))
                 self._report("Hard composite applied (no feather)", "progress")
+            elif composite_mode == "preserve_seamless":
+                seam_blend_px = max(1, int(self._PRESERVE_SEAM_BLEND_PX))
+                seam_blend_strength = float(self._PRESERVE_SEAM_BLEND_STRENGTH)
+                seam_blend_strength = max(0.0, min(1.0, seam_blend_strength))
+                self._report(
+                    (
+                        "Preserve seamless blend: "
+                        f"seam_blend_px={seam_blend_px} "
+                        f"strength={seam_blend_strength:.2f} "
+                        f"debug_metrics={seam_debug_enabled}"
+                    ),
+                    "debug",
+                )
+                before_metrics = _calc_boundary_discontinuity(result_img) if seam_debug_enabled else None
+
+                left_ring_x0 = max(0, paste_left - seam_blend_px)
+                right_ring_x1 = min(actual_w, paste_right + seam_blend_px)
+                top_ring_y0 = max(0, paste_top - seam_blend_px)
+                bottom_ring_y1 = min(actual_h, paste_bottom + seam_blend_px)
+                self._report(
+                    (
+                        "Preserve seamless ring bounds: "
+                        f"x={left_ring_x0}..{right_ring_x1} "
+                        f"y={top_ring_y0}..{bottom_ring_y1}"
+                    ),
+                    "debug",
+                )
+
+                overlay = Image.new("RGB", result_img.size, (0, 0, 0))
+                alpha = Image.new("L", result_img.size, 0)
+                alpha_draw = ImageDraw.Draw(alpha)
+                blur_radius = max(1, seam_blend_px // 4)
+
+                def _alpha_value(ratio: float) -> int:
+                    return int(255 * seam_blend_strength * max(0.0, min(1.0, ratio)))
+
+                def _build_top_bottom_band(is_top: bool, band_w: int, band_h: int) -> Image.Image:
+                    band = Image.new("RGB", (band_w, band_h))
+                    inner_x = paste_left - left_ring_x0
+                    center_w = max(0, min(orig.width, band_w - inner_x))
+
+                    y0 = 0 if is_top else (orig.height - 1)
+
+                    if center_w > 0:
+                        center_strip = orig_rgb.crop((0, y0, orig.width, y0 + 1)).resize(
+                            (center_w, band_h), Image.Resampling.BILINEAR
+                        )
+                        band.paste(center_strip, (inner_x, 0))
+
+                    if inner_x > 0:
+                        left_strip = orig_rgb.crop((0, y0, 1, y0 + 1)).resize(
+                            (inner_x, band_h), Image.Resampling.BILINEAR
+                        )
+                        band.paste(left_strip, (0, 0))
+
+                    right_fill_x0 = inner_x + center_w
+                    if right_fill_x0 < band_w:
+                        right_strip = orig_rgb.crop((orig.width - 1, y0, orig.width, y0 + 1)).resize(
+                            (band_w - right_fill_x0, band_h), Image.Resampling.BILINEAR
+                        )
+                        band.paste(right_strip, (right_fill_x0, 0))
+
+                    return band.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+                # Top band (outside-only, full ring width including corners)
+                top_h = paste_top - top_ring_y0
+                top_w = right_ring_x1 - left_ring_x0
+                if top_h > 0 and top_w > 0:
+                    top_band = _build_top_bottom_band(is_top=True, band_w=top_w, band_h=top_h)
+                    overlay.paste(top_band, (left_ring_x0, top_ring_y0))
+                    for row in range(top_h):
+                        ratio = (row + 1) / top_h
+                        alpha_draw.line(
+                            [(left_ring_x0, top_ring_y0 + row), (right_ring_x1 - 1, top_ring_y0 + row)],
+                            fill=_alpha_value(ratio),
+                        )
+
+                # Bottom band (outside-only, full ring width including corners)
+                bottom_h = bottom_ring_y1 - paste_bottom
+                bottom_w = right_ring_x1 - left_ring_x0
+                if bottom_h > 0 and bottom_w > 0:
+                    bottom_band = _build_top_bottom_band(is_top=False, band_w=bottom_w, band_h=bottom_h)
+                    overlay.paste(bottom_band, (left_ring_x0, paste_bottom))
+                    for row in range(bottom_h):
+                        ratio = (bottom_h - row) / bottom_h
+                        alpha_draw.line(
+                            [(left_ring_x0, paste_bottom + row), (right_ring_x1 - 1, paste_bottom + row)],
+                            fill=_alpha_value(ratio),
+                        )
+
+                # Left strip (outside-only center band)
+                left_w = paste_left - left_ring_x0
+                if left_w > 0 and paste_bottom > paste_top:
+                    strip = orig_rgb.crop((0, 0, 1, orig.height)).resize(
+                        (left_w, orig.height), Image.Resampling.BILINEAR
+                    )
+                    strip = strip.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+                    overlay.paste(strip, (left_ring_x0, paste_top))
+                    for col in range(left_w):
+                        ratio = (col + 1) / left_w
+                        alpha_draw.line(
+                            [(left_ring_x0 + col, paste_top), (left_ring_x0 + col, paste_bottom - 1)],
+                            fill=_alpha_value(ratio),
+                        )
+
+                # Right strip (outside-only center band)
+                right_w = right_ring_x1 - paste_right
+                if right_w > 0 and paste_bottom > paste_top:
+                    strip = orig_rgb.crop((orig.width - 1, 0, orig.width, orig.height)).resize(
+                        (right_w, orig.height), Image.Resampling.BILINEAR
+                    )
+                    strip = strip.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+                    overlay.paste(strip, (paste_right, paste_top))
+                    for col in range(right_w):
+                        ratio = (right_w - col) / right_w
+                        alpha_draw.line(
+                            [(paste_right + col, paste_top), (paste_right + col, paste_bottom - 1)],
+                            fill=_alpha_value(ratio),
+                        )
+
+                # Blend only outside seam ring, then hard-paste center for exact preservation.
+                result_img.paste(overlay, (0, 0), alpha)
+                result_img.paste(orig_rgb, (paste_left, paste_top))
+                self._report("Preserve seamless exact center preserved=True (final hard paste)", "debug")
+                if seam_debug_enabled:
+                    after_metrics = _calc_boundary_discontinuity(result_img)
+                    preserved_exact = (
+                        result_img.crop((paste_left, paste_top, paste_right, paste_bottom)).tobytes()
+                        == orig_rgb.tobytes()
+                    )
+                    self._report(f"Preserve seamless exact center preserved={preserved_exact}", "debug")
+                    self._report(
+                        f"Boundary discontinuity avg abs RGB diff before={before_metrics} after={after_metrics}",
+                        "debug",
+                    )
             else:
+                if composite_mode != "feathered":
+                    self._report(
+                        f"Unknown composite mode '{composite_mode}', falling back to feathered",
+                        "warning",
+                    )
                 feather_px = 3
                 mask = Image.new("L", orig.size, 0)
                 ImageDraw.Draw(mask).rectangle(
@@ -542,7 +737,7 @@ class OutpaintGenerator:
                     fill=255,
                 )
                 mask = mask.filter(ImageFilter.GaussianBlur(radius=feather_px))
-                result_img.paste(orig, (paste_left, paste_top), mask=mask)
+                result_img.paste(orig_rgb, (paste_left, paste_top), mask=mask)
                 self._report(f"Tight feathered blend applied (feather={feather_px}px)", "progress")
 
             save_kwargs = {"quality": 95} if output_format.lower() in ("jpg", "jpeg") else {}

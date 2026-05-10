@@ -125,6 +125,7 @@ def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):
         "automation_front_expand_enabled": True,
         "automation_front_expand_provider": "bfl",
         "automation_front_expand_mode": "percent",
+        "automation_front_expand_composite_mode": "preserve_seamless",
         "automation_front_expand_percent": 30,
         "automation_front_expand_passes": 1,
         "automation_front_edge_seal_enabled": False,
@@ -141,6 +142,7 @@ def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):
         "automation_selfie_expand_enabled": True,
         "automation_selfie_expand_provider": "bfl",
         "automation_selfie_expand_mode": "percent",
+        "automation_selfie_expand_composite_mode": "preserve_seamless",
         "automation_selfie_expand_percent": 30,
         "automation_video_enabled": True,
         "automation_video_aspect_ratio": "3:4",
@@ -161,14 +163,14 @@ def test_settings_editor_updates_selected_values(tmp_path, monkeypatch):
             "", "", "",  # skip toggles
             "y",  # allow reprocess
             "increment",  # mode
-            "", "", "",  # front enabled/provider/mode
+            "", "", "", "",  # front enabled/provider/mode/composite
             "40",  # front pct
             "2",  # front passes
             "", "", "",  # edge + output
             "", "", "", "",  # extract/crop/selfie enabled/models
             "", "",  # model policy/attempts
             "85",  # threshold
-            "", "", "", "",  # selfie expand settings
+            "", "", "", "", "",  # selfie expand settings
             "", "", "", "",  # video + oldcam
             "",  # oldcam required
             "",  # one extra keep for final boolean/input alignment
@@ -556,11 +558,13 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     ui.config = {
         "automation_front_expand_provider": "fal",
         "automation_front_expand_mode": "document_3x4",
+        "automation_front_expand_composite_mode": "hard",
         "automation_front_expand_percent": 22,
         "automation_front_expand_passes": 1,
         "automation_front_edge_seal_enabled": True,
         "automation_selfie_expand_provider": "fal",
         "automation_selfie_expand_mode": "centered_3x4",
+        "automation_selfie_expand_composite_mode": "feathered",
         "automation_selfie_expand_percent": 25,
         "automation_selfie_expand_edge_seal_enabled": True,
         "automation_selfie_models": ["openai/gpt-image-2/edit"],
@@ -591,10 +595,12 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert saved["count"] == 1
     assert ui.config["automation_front_expand_provider"] == "bfl"
     assert ui.config["automation_front_expand_mode"] == "percent"
+    assert ui.config["automation_front_expand_composite_mode"] == "preserve_seamless"
     assert ui.config["automation_front_expand_percent"] == 70
     assert ui.config["automation_front_expand_passes"] == 2
     assert ui.config["automation_selfie_expand_provider"] == "bfl"
     assert ui.config["automation_selfie_expand_mode"] == "percent"
+    assert ui.config["automation_selfie_expand_composite_mode"] == "preserve_seamless"
     assert ui.config["automation_selfie_expand_percent"] == 30
     assert ui.config["automation_selfie_models"] == ["fal-ai/nano-banana-2/edit"]
     assert ui.config["automation_selfie_prompt_slot"] == 3
@@ -649,9 +655,11 @@ def test_automation_status_lines_include_front_passes(tmp_path):
         "automation_front_expand_percent": 70,
         "automation_front_expand_passes": 2,
         "automation_front_expand_provider": "bfl",
+        "automation_front_expand_composite_mode": "preserve_seamless",
         "automation_selfie_expand_mode": "percent",
         "automation_selfie_expand_percent": 30,
         "automation_selfie_expand_provider": "bfl",
+        "automation_selfie_expand_composite_mode": "preserve_seamless",
         "automation_selfie_models": ["fal-ai/nano-banana-2/edit"],
         "automation_selfie_prompt_slot": 1,
         "automation_selfie_prompts": {"1": "x"},
@@ -671,3 +679,4 @@ def test_automation_status_lines_include_front_passes(tmp_path):
     ui._ensure_selfie_prompt_slots = lambda: None
     lines = ui._automation_status_lines()
     assert any("passes=2" in line for line in lines)
+    assert any("composite=" in line for line in lines)

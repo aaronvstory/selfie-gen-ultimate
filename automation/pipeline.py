@@ -35,6 +35,9 @@ class PipelineDeps:
 
 
 class AutoPipelineRunner:
+    _DEFAULT_OUTPAINT_COMPOSITE_MODE = "preserve_seamless"
+    _VALID_OUTPAINT_COMPOSITE_MODES = {"preserve_seamless", "feathered", "hard", "none"}
+
     def __init__(
         self,
         config: Dict[str, Any],
@@ -174,6 +177,18 @@ class AutoPipelineRunner:
             return "bfl"
         return "fal"
 
+    def _resolve_composite_mode(self, stage: str) -> str:
+        stage_key = f"automation_{stage}_expand_composite_mode"
+        configured_mode = str(
+            self.automation.get(
+                stage_key,
+                self.config.get("outpaint_composite_mode", self._DEFAULT_OUTPAINT_COMPOSITE_MODE),
+            )
+        ).strip().lower()
+        if configured_mode in self._VALID_OUTPAINT_COMPOSITE_MODES:
+            return configured_mode
+        return self._DEFAULT_OUTPAINT_COMPOSITE_MODE
+
     def resolve_provider_summary(self) -> Dict[str, str]:
         front_configured = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
         selfie_configured = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
@@ -237,6 +252,28 @@ class AutoPipelineRunner:
 
         similarity_threshold = self._read_int("automation_similarity_threshold", 80, issues, min_value=0, max_value=100)
         front_mode = str(self.automation.get("automation_front_expand_mode", "percent")).lower()
+        front_composite_mode = self._resolve_composite_mode("front")
+        selfie_composite_mode = self._resolve_composite_mode("selfie")
+        raw_front_composite_mode = str(
+            self.automation.get(
+                "automation_front_expand_composite_mode",
+                self.config.get("outpaint_composite_mode", self._DEFAULT_OUTPAINT_COMPOSITE_MODE),
+            )
+        ).strip().lower()
+        raw_selfie_composite_mode = str(
+            self.automation.get(
+                "automation_selfie_expand_composite_mode",
+                self.config.get("outpaint_composite_mode", self._DEFAULT_OUTPAINT_COMPOSITE_MODE),
+            )
+        ).strip().lower()
+        if raw_front_composite_mode not in self._VALID_OUTPAINT_COMPOSITE_MODES:
+            issues.append(
+                "automation_front_expand_composite_mode must be one of: preserve_seamless, feathered, hard, none."
+            )
+        if raw_selfie_composite_mode not in self._VALID_OUTPAINT_COMPOSITE_MODES:
+            issues.append(
+                "automation_selfie_expand_composite_mode must be one of: preserve_seamless, feathered, hard, none."
+            )
         front_expand_percent = (
             self._read_int("automation_front_expand_percent", 30, issues, min_value=0)
             if front_mode == "percent"
@@ -249,7 +286,15 @@ class AutoPipelineRunner:
         if front_passes not in {1, 2}:
             issues.append("automation_front_expand_passes must be 1 or 2.")
         # Keep variables consumed so validation checks stay explicit and deterministic.
-        _ = (similarity_threshold, front_expand_percent, selfie_expand_percent, crop_multiplier, selfie_attempts)
+        _ = (
+            similarity_threshold,
+            front_expand_percent,
+            selfie_expand_percent,
+            crop_multiplier,
+            selfie_attempts,
+            front_composite_mode,
+            selfie_composite_mode,
+        )
         if self.automation.get("automation_oldcam_required", False) and not self.automation.get("automation_oldcam_enabled", True):
             issues.append("automation_oldcam_required=true requires automation_oldcam_enabled=true.")
         if self.automation.get("automation_oldcam_required", False):
@@ -370,6 +415,8 @@ class AutoPipelineRunner:
         reprocess_mode = self._effective_reprocess_mode()
         front_provider = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
         selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
+        front_composite_mode = self._resolve_composite_mode("front")
+        selfie_composite_mode = self._resolve_composite_mode("selfie")
         resolved_front_provider = self._resolve_outpaint_provider(front_provider)
         resolved_selfie_provider = self._resolve_outpaint_provider(selfie_provider)
         case_entry["policy"] = {
@@ -412,6 +459,7 @@ class AutoPipelineRunner:
                         **self._policy_meta("front_expand", True, reprocess_mode),
                         "configured_passes": front_passes,
                         "executed_passes": 0,
+                        "composite_mode": front_composite_mode,
                     },
                 )
             elif reprocess_mode == "skip" and front_expanded and Path(front_expanded).exists():
@@ -424,6 +472,7 @@ class AutoPipelineRunner:
                         **self._policy_meta("front_expand", True, reprocess_mode),
                         "configured_passes": front_passes,
                         "executed_passes": 0,
+                        "composite_mode": front_composite_mode,
                     },
                 )
             else:
@@ -461,6 +510,7 @@ class AutoPipelineRunner:
                         output_folder=str(case_dir),
                         output_path=pass_output,
                         provider=resolved_front_provider,
+                        composite_mode=front_composite_mode,
                         document_mode=front_is_document,
                         edge_seal_px=int(self.automation.get("automation_front_edge_seal_px", 12))
                         if self.automation.get("automation_front_edge_seal_enabled", True)
@@ -491,6 +541,7 @@ class AutoPipelineRunner:
                         **self._policy_meta("front_expand", False, reprocess_mode),
                         "configured_passes": front_passes,
                         "executed_passes": executed_passes,
+                        "composite_mode": front_composite_mode,
                     },
                 )
                 front_expanded = Path(result)
@@ -750,7 +801,10 @@ class AutoPipelineRunner:
                     "selfie_expand",
                     "complete",
                     output=selfie_expand_output,
-                    meta=self._policy_meta("selfie_expand", True, reprocess_mode),
+                    meta={
+                        **self._policy_meta("selfie_expand", True, reprocess_mode),
+                        "composite_mode": selfie_composite_mode,
+                    },
                 )
             else:
                 pct = self._read_int("automation_selfie_expand_percent", 30)
@@ -779,6 +833,7 @@ class AutoPipelineRunner:
                     output_folder=str(case_dir / "gen-images"),
                     output_path=str(expanded_output),
                     provider=resolved_selfie_provider,
+                    composite_mode=selfie_composite_mode,
                     document_mode=self.automation.get("automation_selfie_expand_mode") == "centered_3x4",
                     expand_left=margins["left"],
                     expand_right=margins["right"],
@@ -794,13 +849,25 @@ class AutoPipelineRunner:
                         "selfie_expand",
                         "complete",
                         output=expanded_result,
-                        meta=self._policy_meta("selfie_expand", False, reprocess_mode),
+                        meta={
+                            **self._policy_meta("selfie_expand", False, reprocess_mode),
+                            "composite_mode": selfie_composite_mode,
+                        },
                     )
                 else:
                     self.manifest.update_step(case_key, "selfie_expand", "failed", error="selfie expand failed")
                     return self._finalize_case(case_entry, "failed")
         else:
-            self.manifest.update_step(case_key, "selfie_expand", "skipped", output=best_path)
+            self.manifest.update_step(
+                case_key,
+                "selfie_expand",
+                "skipped",
+                output=best_path,
+                meta={
+                    **self._policy_meta("selfie_expand", False, reprocess_mode),
+                    "composite_mode": selfie_composite_mode,
+                },
+            )
 
         # Step 6: video generation
         if self.automation.get("automation_video_enabled", True):

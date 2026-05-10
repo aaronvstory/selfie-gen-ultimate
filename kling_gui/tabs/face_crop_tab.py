@@ -205,7 +205,7 @@ class FaceCropTab(tk.Frame):
         self._expand_left_var = tk.IntVar(value=config.get("outpaint_expand_left", 140))
         self._expand_right_var = tk.IntVar(value=config.get("outpaint_expand_right", 140))
         self._outpaint_composite_var = tk.StringVar(
-            value=config.get("outpaint_composite_mode", "feathered")
+            value=config.get("outpaint_composite_mode", "preserve_seamless")
         )
         # Outpaint provider: "bfl" or "fal"
         self._outpaint_provider_var = tk.StringVar(
@@ -796,7 +796,7 @@ class FaceCropTab(tk.Frame):
         ).pack(side=tk.LEFT)
         ttk.Combobox(
             opts_row, textvariable=self._outpaint_composite_var,
-            values=["feathered", "hard", "none"], state="readonly", width=9,
+            values=["preserve_seamless", "feathered", "hard", "none"], state="readonly", width=18,
         ).pack(side=tk.LEFT, padx=(3, 0))
 
         # Apply initial mode visibility
