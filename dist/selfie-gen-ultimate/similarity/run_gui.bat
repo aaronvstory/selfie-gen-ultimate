@@ -12,19 +12,17 @@ set "TF_USE_LEGACY_KERAS=1"
 set "KERAS_BACKEND=tensorflow"
 
 set "PYTHON_BIN="
-py -3.12 -V >nul 2>&1
-if not errorlevel 1 set "PYTHON_BIN=py -3.12"
-if "%PYTHON_BIN%"=="" (
-    py -3.11 -V >nul 2>&1
-    if not errorlevel 1 set "PYTHON_BIN=py -3.11"
+if exist ".venv\Scripts\python.exe" (
+    .venv\Scripts\python.exe -V >nul 2>&1
+    if not errorlevel 1 set "PYTHON_BIN=.venv\Scripts\python.exe"
 )
 if "%PYTHON_BIN%"=="" (
-    py -3.10 -V >nul 2>&1
-    if not errorlevel 1 set "PYTHON_BIN=py -3.10"
-)
-if "%PYTHON_BIN%"=="" (
-    py -3.9 -V >nul 2>&1
-    if not errorlevel 1 set "PYTHON_BIN=py -3.9"
+    for %%V in (3.12 3.11 3.10 3.9) do (
+        if "%PYTHON_BIN%"=="" (
+            py -%%V -V >nul 2>&1
+            if not errorlevel 1 set "PYTHON_BIN=py -%%V"
+        )
+    )
 )
 if "%PYTHON_BIN%"=="" (
     python -V >nul 2>&1

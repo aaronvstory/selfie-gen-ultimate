@@ -34,7 +34,7 @@ def test_darwin_parent_launch_uses_bash_and_schedules_after_probe():
 
     assert launched is True
     args, kwargs = popen_mock.call_args
-    assert args[0] == ["open", os.path.join("/tmp/similarity", "run_gui.command")]
+    assert args[0] == ["/bin/bash", os.path.join("/tmp/similarity", "run_gui.command")]
     assert kwargs["env"]["SIMILARITY_LAUNCHED_BY_MAIN"] == "1"
     window.root.after.assert_called_once()
     after_args = window.root.after.call_args[0]
@@ -262,4 +262,4 @@ def test_similarity_launcher_scripts_avoid_inline_tuple_version_check_in_blocks(
     for script in scripts:
         text = script.read_text(encoding="utf-8")
         assert "((3,9)" not in text
-        assert "py -3.12 -V" in text
+        assert "py -%%V -V" in text

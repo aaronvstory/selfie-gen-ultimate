@@ -1614,7 +1614,7 @@ class KlingGUIWindow:
                     )
                 )
             elif system == "Darwin":
-                attempts.append((f"open {launcher_name} @ {launcher_path}", ["open", launcher_path], 0))
+                attempts.append((f"/bin/bash {launcher_path}", ["/bin/bash", launcher_path], 0))
             else:
                 attempts.append((f"{launcher_path}", [launcher_path], 0))
         else:
