@@ -247,11 +247,11 @@ def test_run_cli_bat_has_conditional_parent_and_direct_invocation():
     root = Path(__file__).resolve().parents[1]
     cli_bat = (root / "similarity" / "run_cli.bat").read_text(encoding="utf-8")
     assert "if \"%SIMILARITY_LAUNCHED_BY_MAIN%\"==\"\" (" in cli_bat
-    assert "python main.py --cli" in cli_bat
-    assert "python main.py --cli >> \"%LOG_FILE%\" 2>&1" in cli_bat
+    assert "\"!PYTHON_BIN!\" main.py --cli" in cli_bat
+    assert "\"!PYTHON_BIN!\" main.py --cli >> \"%LOG_FILE%\" 2>&1" in cli_bat
 
 
-def test_similarity_launcher_scripts_avoid_inline_tuple_version_check_in_blocks():
+def test_similarity_launcher_scripts_use_shared_venv_priority_and_stamps():
     root = Path(__file__).resolve().parents[1]
     source_scripts = [
         root / "similarity" / "run_gui.bat",
@@ -264,10 +264,12 @@ def test_similarity_launcher_scripts_avoid_inline_tuple_version_check_in_blocks(
     for script in source_scripts:
         text = script.read_text(encoding="utf-8")
         assert "((3,9)" not in text
-        assert "py -%%V -V" in text
+        assert "%REPO_ROOT%\\venv\\Scripts\\python.exe" in text
+        assert ".launcher_state" in text
     for script in optional_dist_scripts:
         if not script.exists():
             continue
         text = script.read_text(encoding="utf-8")
         assert "((3,9)" not in text
-        assert "py -%%V -V" in text
+        assert "%REPO_ROOT%\\venv\\Scripts\\python.exe" in text
+

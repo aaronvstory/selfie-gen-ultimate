@@ -113,6 +113,10 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     (src / "tests" / "test_a.py").write_text("x=1", encoding="utf-8")
     (src / "reviews").mkdir(parents=True)
     (src / "reviews" / "notes.md").write_text("private", encoding="utf-8")
+    (src / ".recovery").mkdir(parents=True)
+    (src / ".recovery" / "secret.txt").write_text("private", encoding="utf-8")
+    (src / ".tmp_pytest").mkdir(parents=True)
+    (src / ".tmp_pytest" / "temp.txt").write_text("private", encoding="utf-8")
     (src / "map-codebase-session-abc.md").write_text("private", encoding="utf-8")
     (src / "session-ses_123.md").write_text("private", encoding="utf-8")
     (src / "normal.py").write_text("ok", encoding="utf-8")
@@ -121,6 +125,8 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
 
     assert not (dst / "tests").exists()
     assert not (dst / "reviews").exists()
+    assert not (dst / ".recovery").exists()
+    assert not (dst / ".tmp_pytest").exists()
     assert not (dst / "map-codebase-session-abc.md").exists()
     assert not (dst / "session-ses_123.md").exists()
     assert (dst / "normal.py").exists()
@@ -131,16 +137,14 @@ def test_standalone_windows_launchers_use_stable_python_probes():
     similarity_cli = Path("similarity/run_cli.bat").read_text(encoding="utf-8")
     oldcam_v8 = Path("oldcam-v8/oldcam_launcher.bat").read_text(encoding="utf-8")
 
-    assert ".venv\\Scripts\\python.exe" in similarity_gui
-    assert "py -%%V" in similarity_gui
-    assert "python3.12 python3.11 python3.10 python3.9" not in similarity_gui
+    assert "%REPO_ROOT%\\venv\\Scripts\\python.exe" in similarity_gui
+    assert ".launcher_state" in similarity_gui
 
-    assert ".venv\\Scripts\\python.exe" in similarity_cli
-    assert "py -%%V" in similarity_cli
-    assert "python3.12 python3.11 python3.10 python3.9" not in similarity_cli
+    assert "%REPO_ROOT%\\venv\\Scripts\\python.exe" in similarity_cli
+    assert ".launcher_state" in similarity_cli
 
-    assert ".venv\\Scripts\\python.exe" in oldcam_v8
-    assert "py -%%V" in oldcam_v8
+    assert "%REPO_ROOT%\\venv\\Scripts\\python.exe" in oldcam_v8
+    assert ".launcher_state" in oldcam_v8
 
 
 def test_refresh_extracted_bundle_replaces_stale_files(tmp_path: Path):
@@ -246,14 +250,14 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         assert any(name.endswith("selfie-gen-ultimate/Start CLI.command") for name in names)
         similarity_gui_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_gui.bat"))
         similarity_gui = zf.read(similarity_gui_name).decode("utf-8")
-        assert "py -3.12" in similarity_gui
+        assert "set PYTHON_BIN=py -3.12" in similarity_gui
         assert ".venv\\Scripts\\python.exe" in similarity_gui
         similarity_cli_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_cli.bat"))
         similarity_cli = zf.read(similarity_cli_name).decode("utf-8")
-        assert "py -3.12" in similarity_cli
+        assert "set PYTHON_BIN=py -3.12" in similarity_cli
         oldcam_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/oldcam-v8/oldcam_launcher.bat"))
         oldcam_launcher = zf.read(oldcam_launcher_name).decode("utf-8")
-        assert "py -3.12" in oldcam_launcher
+        assert "set PYTHON_CMD=py -3.12" in oldcam_launcher
         assert not any(name.endswith("selfie-gen-ultimate/tests/test_x.py") for name in names)
         assert not any(name.endswith("selfie-gen-ultimate/kling_gui.log") for name in names)
         assert not any(name.endswith("selfie-gen-ultimate/distribution/build_release.py") for name in names)
