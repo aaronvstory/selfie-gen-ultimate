@@ -8,6 +8,7 @@ from typing import Dict, Iterable, Set
 
 try:
     from api_keys import API_KEY_SPECS, ensure_key_fields
+    from app_version import RELEASE_VERSION
 except ModuleNotFoundError:
     import sys
 
@@ -15,6 +16,7 @@ except ModuleNotFoundError:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     from api_keys import API_KEY_SPECS, ensure_key_fields
+    from app_version import RELEASE_VERSION
 
 
 EXCLUDED_DIRS: Set[str] = {
@@ -52,7 +54,6 @@ EXCLUDED_FILES: Set[str] = {
     "crash_log.txt",
     "ui_config.json",
 }
-RELEASE_VERSION = "v1.2"
 VERSIONED_ZIP_NAME = f"SelfieGenUltimate-{RELEASE_VERSION}.zip"
 LATEST_ALIAS_ZIP_NAME = "SelfieGenUltimate.zip"
 
