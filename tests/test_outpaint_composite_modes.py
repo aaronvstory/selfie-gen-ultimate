@@ -53,6 +53,16 @@ def test_preserve_seamless_exact_center_and_outside_ring_blend(tmp_path: Path):
     top_ring_after = after.crop((margin_left, margin_top - seam_px, margin_left + src.width, margin_top))
     assert top_ring_before.tobytes() != top_ring_after.tobytes()
 
+    # B2) all four seam corners are blended (outside-only corner coverage)
+    corner_points = [
+        (margin_left - 1, margin_top - 1),
+        (margin_left + src.width, margin_top - 1),
+        (margin_left - 1, margin_top + src.height),
+        (margin_left + src.width, margin_top + src.height),
+    ]
+    for px in corner_points:
+        assert after.getpixel(px) != before.getpixel(px)
+
     # C) far outside seam ring unchanged
     assert after.getpixel((0, 0)) == before.getpixel((0, 0))
 

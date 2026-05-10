@@ -1532,11 +1532,33 @@ class KlingAutomationUI:
         selfie_slot, _selfie_prompt, selfie_prompt_source = self._get_selected_selfie_prompt()
         front_configured = str(self.config.get("automation_front_expand_provider", "auto"))
         selfie_configured = str(self.config.get("automation_selfie_expand_provider", "auto"))
+        default_composite = self.config.get("outpaint_composite_mode", "preserve_seamless")
+        front_composite = self.config.get("automation_front_expand_composite_mode", default_composite)
+        selfie_composite = self.config.get("automation_selfie_expand_composite_mode", default_composite)
+        front_provider_resolved = self._resolve_provider(front_configured)
+        selfie_provider_resolved = self._resolve_provider(selfie_configured)
+        front_status = " ".join(
+            [
+                f"front mode={self.config.get('automation_front_expand_mode')}",
+                f"pct={self.config.get('automation_front_expand_percent', 70)}",
+                f"passes={self.config.get('automation_front_expand_passes', 2)}",
+                f"provider={front_configured}->{front_provider_resolved}",
+                f"composite={front_composite}",
+            ]
+        )
+        selfie_status = " ".join(
+            [
+                f"selfie expand mode={self.config.get('automation_selfie_expand_mode')}",
+                f"pct={self.config.get('automation_selfie_expand_percent', 30)}",
+                f"provider={selfie_configured}->{selfie_provider_resolved}",
+                f"composite={selfie_composite}",
+            ]
+        )
         lines = [
             f"root={self.automation_root_folder or '(not set)'} max_cases={self._read_max_cases_setting()}",
             f"keys fal={key_status(self.config, 'falai_api_key')} bfl={key_status(self.config, 'bfl_api_key')}",
-            f"front mode={self.config.get('automation_front_expand_mode')} pct={self.config.get('automation_front_expand_percent', 70)} passes={self.config.get('automation_front_expand_passes', 2)} provider={front_configured}->{self._resolve_provider(front_configured)} composite={self.config.get('automation_front_expand_composite_mode', self.config.get('outpaint_composite_mode', 'preserve_seamless'))}",
-            f"selfie expand mode={self.config.get('automation_selfie_expand_mode')} pct={self.config.get('automation_selfie_expand_percent', 30)} provider={selfie_configured}->{self._resolve_provider(selfie_configured)} composite={self.config.get('automation_selfie_expand_composite_mode', self.config.get('outpaint_composite_mode', 'preserve_seamless'))}",
+            front_status,
+            selfie_status,
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
             f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', DEFAULT_KLING_PROMPT_SLOT)}",
             f"oldcam version={self.config.get('automation_oldcam_version', 'v8')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",

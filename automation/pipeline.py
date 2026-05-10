@@ -35,6 +35,9 @@ class PipelineDeps:
 
 
 class AutoPipelineRunner:
+    _DEFAULT_OUTPAINT_COMPOSITE_MODE = "preserve_seamless"
+    _VALID_OUTPAINT_COMPOSITE_MODES = {"preserve_seamless", "feathered", "hard", "none"}
+
     def __init__(
         self,
         config: Dict[str, Any],
@@ -174,6 +177,18 @@ class AutoPipelineRunner:
             return "bfl"
         return "fal"
 
+    def _resolve_composite_mode(self, stage: str) -> str:
+        stage_key = f"automation_{stage}_expand_composite_mode"
+        configured_mode = str(
+            self.automation.get(
+                stage_key,
+                self.config.get("outpaint_composite_mode", self._DEFAULT_OUTPAINT_COMPOSITE_MODE),
+            )
+        ).strip().lower()
+        if configured_mode in self._VALID_OUTPAINT_COMPOSITE_MODES:
+            return configured_mode
+        return self._DEFAULT_OUTPAINT_COMPOSITE_MODE
+
     def resolve_provider_summary(self) -> Dict[str, str]:
         front_configured = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
         selfie_configured = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
@@ -237,24 +252,25 @@ class AutoPipelineRunner:
 
         similarity_threshold = self._read_int("automation_similarity_threshold", 80, issues, min_value=0, max_value=100)
         front_mode = str(self.automation.get("automation_front_expand_mode", "percent")).lower()
-        valid_composite_modes = {"preserve_seamless", "feathered", "hard", "none"}
-        front_composite_mode = str(
+        front_composite_mode = self._resolve_composite_mode("front")
+        selfie_composite_mode = self._resolve_composite_mode("selfie")
+        raw_front_composite_mode = str(
             self.automation.get(
                 "automation_front_expand_composite_mode",
-                self.config.get("outpaint_composite_mode", "preserve_seamless"),
+                self.config.get("outpaint_composite_mode", self._DEFAULT_OUTPAINT_COMPOSITE_MODE),
             )
         ).strip().lower()
-        selfie_composite_mode = str(
+        raw_selfie_composite_mode = str(
             self.automation.get(
                 "automation_selfie_expand_composite_mode",
-                self.config.get("outpaint_composite_mode", "preserve_seamless"),
+                self.config.get("outpaint_composite_mode", self._DEFAULT_OUTPAINT_COMPOSITE_MODE),
             )
         ).strip().lower()
-        if front_composite_mode not in valid_composite_modes:
+        if raw_front_composite_mode not in self._VALID_OUTPAINT_COMPOSITE_MODES:
             issues.append(
                 "automation_front_expand_composite_mode must be one of: preserve_seamless, feathered, hard, none."
             )
-        if selfie_composite_mode not in valid_composite_modes:
+        if raw_selfie_composite_mode not in self._VALID_OUTPAINT_COMPOSITE_MODES:
             issues.append(
                 "automation_selfie_expand_composite_mode must be one of: preserve_seamless, feathered, hard, none."
             )
@@ -399,18 +415,8 @@ class AutoPipelineRunner:
         reprocess_mode = self._effective_reprocess_mode()
         front_provider = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
         selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
-        front_composite_mode = str(
-            self.automation.get(
-                "automation_front_expand_composite_mode",
-                self.config.get("outpaint_composite_mode", "preserve_seamless"),
-            )
-        ).strip().lower()
-        selfie_composite_mode = str(
-            self.automation.get(
-                "automation_selfie_expand_composite_mode",
-                self.config.get("outpaint_composite_mode", "preserve_seamless"),
-            )
-        ).strip().lower()
+        front_composite_mode = self._resolve_composite_mode("front")
+        selfie_composite_mode = self._resolve_composite_mode("selfie")
         resolved_front_provider = self._resolve_outpaint_provider(front_provider)
         resolved_selfie_provider = self._resolve_outpaint_provider(selfie_provider)
         case_entry["policy"] = {
