@@ -29,6 +29,9 @@ class _FakeCanvas:
     def create_text(self, *_args, **_kwargs):
         return None
 
+    def create_image(self, *_args, **_kwargs):
+        return None
+
 
 class CarouselRefControlsTests(unittest.TestCase):
     def test_ref_and_compare_config_called_with_stable_widths(self):
@@ -118,6 +121,41 @@ class CarouselRefControlsTests(unittest.TestCase):
             open(p1, "wb").close()
             tab.image_session.add_image(p1, "input", make_active=True)
             tab._calc_all_similarity(reason="test")
+
+    def test_show_image_on_canvas_passes_canvas_as_photoimage_master(self):
+        try:
+            from PIL import Image
+        except Exception as exc:  # pragma: no cover - defensive skip
+            self.skipTest(f"Pillow unavailable: {exc}")
+
+        tab = ImageCarousel.__new__(ImageCarousel)
+        tab.log = mock.Mock()
+        tab.image_session = SimpleNamespace(active_entry=None)
+        canvas = _FakeCanvas()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = os.path.join(tmpdir, "front.jpeg")
+            Image.new("RGB", (32, 24), color="red").save(image_path, "JPEG")
+            with mock.patch("PIL.ImageTk.PhotoImage", return_value=object()) as photo_ctor:
+                ok = tab._show_image_on_canvas(canvas, image_path, "_photo")
+            self.assertTrue(ok)
+            self.assertTrue(photo_ctor.called)
+            self.assertIs(photo_ctor.call_args.kwargs.get("master"), canvas)
+
+    def test_on_add_image_skips_and_logs_when_preflight_fails(self):
+        tab = ImageCarousel.__new__(ImageCarousel)
+        tab.image_session = mock.Mock()
+        tab.log = mock.Mock()
+        tab.winfo_toplevel = lambda: None
+
+        with mock.patch("kling_gui.carousel_widget.select_open_files", return_value=["C:/tmp/front.jpeg"]):
+            with mock.patch("kling_gui.carousel_widget.preflight_image_path", return_value=(False, "bad image")):
+                tab._on_add_image()
+
+        tab.image_session.add_image.assert_not_called()
+        messages = [call.args[0] for call in tab.log.call_args_list]
+        self.assertTrue(any("Skipped carousel add" in msg for msg in messages))
+        self.assertFalse(any("Added to carousel" in msg for msg in messages))
 
 
 if __name__ == "__main__":

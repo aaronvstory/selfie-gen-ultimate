@@ -23,6 +23,7 @@ from .theme import (
 from .image_state import ImageSession
 from .tag_utils import derive_display_tag
 from tk_dialogs import select_open_files
+from path_utils import preflight_image_path
 
 
 def _format_image_info(path: str) -> str:
@@ -501,8 +502,9 @@ class ImageCarousel(tk.Frame):
         try:
             from PIL import Image, ImageTk, ImageOps
 
-            img = Image.open(path)
-            img.load()
+            with Image.open(path) as img_src:
+                img_src.load()
+                img = img_src.copy()
 
             # Auto-correct EXIF orientation
             img = ImageOps.exif_transpose(img)
@@ -521,11 +523,12 @@ class ImageCarousel(tk.Frame):
             new_h = max(1, int(img.height * ratio))
             img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-            photo = ImageTk.PhotoImage(img)
+            photo = ImageTk.PhotoImage(img, master=canvas)
             setattr(self, attr_name, photo)
             canvas.create_image(
                 cw // 2 + 2, ch // 2 + 2, image=photo, anchor=tk.CENTER
             )
+            return True
         except ImportError:
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
@@ -535,6 +538,9 @@ class ImageCarousel(tk.Frame):
                 fill=COLORS["warning"],
                 font=(FONT_FAMILY, 9),
             )
+            self.log("Carousel render failed: PIL not available", "error")
+            logger.exception("Carousel render failed: PIL not available for path=%s", path)
+            return False
         except Exception as e:
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
@@ -544,6 +550,12 @@ class ImageCarousel(tk.Frame):
                 fill=COLORS["error"],
                 font=(FONT_FAMILY, 9),
             )
+            self.log(
+                f"Carousel render failed: {os.path.basename(path)} ({type(e).__name__}: {e})",
+                "error",
+            )
+            logger.exception("Carousel render failed path=%s", path)
+            return False
 
     # ── Actions ─────────────────────────────────────────────────────
 
@@ -561,8 +573,16 @@ class ImageCarousel(tk.Frame):
             title="Select Images", filetypes=filetypes
         )
         for p in paths:
+            ok, reason = preflight_image_path(p)
+            if not ok:
+                self.log(
+                    f"Skipped carousel add: {os.path.basename(p)} ({reason})",
+                    "warning",
+                )
+                logger.error("Carousel add preflight failed path=%s reason=%s", p, reason)
+                continue
             self.image_session.add_image(p, "input")
-            self.log(f"Added to carousel: {os.path.basename(p)}", "info")
+            self.log(f"Added to carousel session: {os.path.basename(p)}", "info")
 
     def _on_remove_image(self):
         """Remove the currently active image from the carousel."""
@@ -836,8 +856,9 @@ class ImageCarousel(tk.Frame):
         try:
             from PIL import Image, ImageTk, ImageOps
 
-            img = Image.open(path)
-            img.load()
+            with Image.open(path) as img_src:
+                img_src.load()
+                img = img_src.copy()
 
             # Auto-correct EXIF orientation (match _show_image_on_canvas)
             img = ImageOps.exif_transpose(img)
@@ -854,7 +875,7 @@ class ImageCarousel(tk.Frame):
                 new_h = max(1, int(img.height * ratio))
                 img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-            photo = ImageTk.PhotoImage(img)
+            photo = ImageTk.PhotoImage(img, master=self)
             self._hover_photo = photo
 
             popup = tk.Toplevel(self)

@@ -30,8 +30,9 @@ from path_utils import (
     get_app_dir,
     get_resource_dir,
     get_user_data_dir,
+    preflight_image_path,
     sanitize_path_name,
-    sanitize_tree_names_report,
+    sanitize_tree_names_portable_report,
 )
 
 from .drop_zone import DropZone, create_dnd_root, HAS_DND, DND_FILES, parse_dnd_paths
@@ -3222,11 +3223,19 @@ class KlingGUIWindow:
         """Add input images to working session with front-image session rollover prompt."""
         valid_files: List[str] = []
         for path in files:
-            if not os.path.isfile(path):
+            ok, reason = preflight_image_path(path, allowed_exts=VALID_EXTENSIONS)
+            if not ok:
+                self._log(
+                    f"Skipped carousel add: {os.path.basename(path)} ({reason})",
+                    "warning",
+                )
+                self.logger.error(
+                    "Carousel add preflight failed path=%s reason=%s",
+                    path,
+                    reason,
+                )
                 continue
-            ext = os.path.splitext(path)[1].lower()
-            if ext in VALID_EXTENSIONS:
-                valid_files.append(path)
+            valid_files.append(path)
         if not valid_files:
             return 0
 
@@ -3258,7 +3267,7 @@ class KlingGUIWindow:
         added = 0
         for path in valid_files:
             self.image_session.add_image(path, "input")
-            self._log(f"Added to carousel: {os.path.basename(path)}", "info")
+            self._log(f"Added to carousel session: {os.path.basename(path)}", "info")
             added += 1
         return added
 
@@ -3299,6 +3308,7 @@ class KlingGUIWindow:
             "control_whitespace": "control whitespace",
             "edge_spaces_or_dots": "edge spaces/dots",
             "repeated_underscores": "repeated underscores",
+            "trailing_spaces_or_dots": "trailing spaces/dots",
             "windows_reserved_name": "Windows reserved name",
             "length_limit": "name too long",
             "normalized": "normalized",
@@ -3310,7 +3320,7 @@ class KlingGUIWindow:
     def _sanitize_folder_with_manifest(self, folder_path: str):
         """Sanitize one folder tree and always emit a manifest report."""
         requested_folder = folder_path
-        sanitized_folder, renames, failures, changes = sanitize_tree_names_report(
+        sanitized_folder, renames, failures, changes = sanitize_tree_names_portable_report(
             folder_path, rename_root=True
         )
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -4,7 +4,14 @@ from pathlib import Path
 
 from api_keys import API_KEY_SPECS, ensure_key_fields, required_missing_specs
 from distribution.build_release import refresh_extracted_bundle
-from distribution.release_prep import RELEASE_VERSION, build_sanitized_config, bundle_release, copy_sanitized_tree
+from distribution.release_prep import (
+    LATEST_ALIAS_ZIP_NAME,
+    RELEASE_VERSION,
+    VERSIONED_ZIP_NAME,
+    build_sanitized_config,
+    bundle_release,
+    copy_sanitized_tree,
+)
 from kling_automation_ui import KlingAutomationUI
 
 EXPECTED_PROMPT_KEYS = {
@@ -255,10 +262,10 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
 
     created = list(bundle_release(repo, dist))
     names = sorted(path.name for path in created)
-    assert names == [f"SelfieGenUltimate-v{RELEASE_VERSION}.zip", "SelfieGenUltimate.zip"]
-
-    versioned_zip = dist / f"SelfieGenUltimate-v{RELEASE_VERSION}.zip"
-    latest_zip = dist / "SelfieGenUltimate.zip"
+    assert names == sorted([LATEST_ALIAS_ZIP_NAME, VERSIONED_ZIP_NAME])
+    assert RELEASE_VERSION.startswith("v")
+    versioned_zip = dist / VERSIONED_ZIP_NAME
+    latest_zip = dist / LATEST_ALIAS_ZIP_NAME
     assert versioned_zip.exists()
     assert latest_zip.exists()
 
@@ -328,6 +335,10 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         assert 'macOS: double-click "Start GUI.command" or "Start CLI.command"' in readme_text
         assert "right-click -> Open once" in readme_text
         assert "All prompts are stored in kling_config.json" in readme_text
+
+    with zipfile.ZipFile(latest_zip) as zf_latest:
+        with zipfile.ZipFile(versioned_zip) as zf_versioned:
+            assert zf_latest.namelist() == zf_versioned.namelist()
 
     staging_cfg = dist / "_staging" / "universal" / "selfie-gen-ultimate" / "kling_config.json"
     assert not staging_cfg.exists()

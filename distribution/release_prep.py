@@ -8,6 +8,7 @@ from typing import Dict, Iterable, Set
 
 try:
     from api_keys import API_KEY_SPECS, ensure_key_fields
+    from app_version import RELEASE_VERSION
 except ModuleNotFoundError:
     import sys
 
@@ -15,6 +16,7 @@ except ModuleNotFoundError:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     from api_keys import API_KEY_SPECS, ensure_key_fields
+    from app_version import RELEASE_VERSION
 
 
 EXCLUDED_DIRS: Set[str] = {
@@ -55,9 +57,9 @@ EXCLUDED_FILES: Set[str] = {
     "crash_log.txt",
     "ui_config.json",
 }
-
-RELEASE_VERSION = "1.1"
 RELEASE_BASENAME = "SelfieGenUltimate"
+VERSIONED_ZIP_NAME = f"SelfieGenUltimate-{RELEASE_VERSION}.zip"
+LATEST_ALIAS_ZIP_NAME = "SelfieGenUltimate.zip"
 
 
 def _should_skip(path: Path) -> bool:
@@ -233,14 +235,17 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
     (bundle_dir / "kling_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     _write_top_level_launchers(bundle_dir)
     write_bundle_readme(bundle_dir)
-    versioned_zip_path = dist_root / f"{RELEASE_BASENAME}-v{RELEASE_VERSION}.zip"
-    latest_zip_path = dist_root / f"{RELEASE_BASENAME}.zip"
-    if versioned_zip_path.exists():
-        versioned_zip_path.unlink()
-    if latest_zip_path.exists():
-        latest_zip_path.unlink()
-    archive_path = shutil.make_archive(str(versioned_zip_path.with_suffix("")), "zip", root_dir=staging_root)
-    shutil.copy2(archive_path, latest_zip_path)
-    created = [Path(archive_path), latest_zip_path]
+    versioned_zip_path = dist_root / VERSIONED_ZIP_NAME
+    latest_alias_zip_path = dist_root / LATEST_ALIAS_ZIP_NAME
+    for path in (versioned_zip_path, latest_alias_zip_path):
+        if path.exists():
+            path.unlink()
+    archive_path = shutil.make_archive(
+        str(versioned_zip_path.with_suffix("")),
+        "zip",
+        root_dir=staging_root,
+    )
+    shutil.copy2(archive_path, latest_alias_zip_path)
+    created = [Path(archive_path), latest_alias_zip_path]
     shutil.rmtree(dist_root / "_staging", ignore_errors=True)
     return created

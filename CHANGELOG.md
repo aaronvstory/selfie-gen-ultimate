@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-10 (v1.2)
+
+### Fixed
+
+- Carousel rendering reliability for valid image inputs (including `.jpeg`) by binding `PhotoImage` to an explicit Tk master.
+- Carousel ingest logging mismatch: failed preflight/render paths now emit actionable errors instead of success-only add logs.
+
+### Changed
+
+- Added strict portable folder-tree sanitizer for `Sanitize Folder` flows:
+  - preserves valid names such as `.ocr` and repeated underscores
+  - only renames true cross-platform hazards (invalid chars, control chars, trailing spaces/dots, Windows reserved names)
+- Release packaging now emits:
+  - `SelfieGenUltimate-v1.2.zip` (canonical)
+  - `SelfieGenUltimate.zip` (latest alias)
+
 ## 2026-05-04
 
 ### Added
