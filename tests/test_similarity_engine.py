@@ -40,15 +40,17 @@ class SimilarityEngineTests(unittest.TestCase):
 
         with mock.patch.object(engine, "validate_image_file", return_value=None), \
             mock.patch.object(engine, "_compare_normalized_crop", return_value=norm), \
-            mock.patch.object(engine, "_compare_full_image_align", return_value=full), \
-            mock.patch.object(engine, "_compare_existing", return_value=existing):
+            mock.patch.object(engine, "_compare_full_image_align", return_value=full) as full_cmp, \
+            mock.patch.object(engine, "_compare_existing", return_value=existing) as exist_cmp:
             result = engine.compare_images("a.png", "b.png")
 
         self.assertIsNone(result["error"])
         self.assertAlmostEqual(result["score"], 92.5)
         self.assertTrue(result["match"])
         self.assertEqual(result["diagnostics"]["mode"], engine.MODE_NORMALIZED_CROP)
-        self.assertEqual(len(result["diagnostics"]["mode_results"]), 3)
+        self.assertEqual(len(result["diagnostics"]["mode_results"]), 1)
+        self.assertFalse(full_cmp.called)
+        self.assertFalse(exist_cmp.called)
 
     def test_compare_images_falls_back_to_full_image_when_normalized_fails(self):
         engine = se.FaceEngine()
@@ -64,13 +66,15 @@ class SimilarityEngineTests(unittest.TestCase):
         with mock.patch.object(engine, "validate_image_file", return_value=None), \
             mock.patch.object(engine, "_compare_normalized_crop", side_effect=ValueError("normalized failed")), \
             mock.patch.object(engine, "_compare_full_image_align", return_value=full), \
-            mock.patch.object(engine, "_compare_existing", side_effect=ValueError("existing failed")):
+            mock.patch.object(engine, "_compare_existing", side_effect=ValueError("existing failed")) as exist_cmp:
             result = engine.compare_images("a.png", "b.png")
 
         self.assertIsNone(result["error"])
         self.assertEqual(result["diagnostics"]["mode"], engine.MODE_FULL_IMAGE_ALIGN)
         errors = [x for x in result["diagnostics"]["mode_results"] if x.get("error")]
         self.assertTrue(any(e["mode"] == engine.MODE_NORMALIZED_CROP for e in errors))
+        self.assertEqual(len(result["diagnostics"]["mode_results"]), 2)
+        self.assertFalse(exist_cmp.called)
 
     def test_compare_images_backend_runtime_error_uses_opencv_fallback(self):
         engine = se.FaceEngine()
@@ -95,6 +99,39 @@ class SimilarityEngineTests(unittest.TestCase):
         self.assertIsNone(result["error"])
         self.assertEqual(result["diagnostics"]["mode"], engine.MODE_FALLBACK)
         self.assertTrue(fallback_mock.called)
+
+    def test_compare_images_diagnostic_matrix_runs_all_modes_after_success(self):
+        engine = se.FaceEngine()
+        norm = {
+            "mode": engine.MODE_NORMALIZED_CROP,
+            "score": 92.5,
+            "match": True,
+            "error": None,
+            "diagnostics": engine._base_mode_diag(engine.MODE_NORMALIZED_CROP, "a.png", "b.png"),
+        }
+        full = {
+            "mode": engine.MODE_FULL_IMAGE_ALIGN,
+            "score": 90.0,
+            "match": True,
+            "error": None,
+            "diagnostics": engine._base_mode_diag(engine.MODE_FULL_IMAGE_ALIGN, "a.png", "b.png"),
+        }
+        existing = {
+            "mode": engine.MODE_EXISTING,
+            "score": 89.0,
+            "match": True,
+            "error": None,
+            "diagnostics": engine._base_mode_diag(engine.MODE_EXISTING, "a.png", "b.png"),
+        }
+        with mock.patch.object(engine, "validate_image_file", return_value=None), \
+            mock.patch.object(engine, "_compare_normalized_crop", return_value=norm), \
+            mock.patch.object(engine, "_compare_full_image_align", return_value=full), \
+            mock.patch.object(engine, "_compare_existing", return_value=existing):
+            result = engine.compare_images("a.png", "b.png", diagnostic_matrix=True)
+
+        self.assertIsNone(result["error"])
+        self.assertEqual(result["diagnostics"]["mode"], engine.MODE_NORMALIZED_CROP)
+        self.assertEqual(len(result["diagnostics"]["mode_results"]), 3)
 
     def test_select_prominent_face_is_deterministic_on_area_tie(self):
         engine = se.FaceEngine()

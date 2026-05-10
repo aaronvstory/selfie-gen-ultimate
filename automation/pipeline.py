@@ -688,7 +688,19 @@ class AutoPipelineRunner:
                 **self._policy_meta("selfie_generate", bool(existing.selfie_candidate and best_path == str(existing.selfie_candidate)), reprocess_mode),
             },
         )
-        self.logger.info("case %s similarity details=%s", case_key, best_similarity_meta)
+        diag = best_similarity_meta.get("diagnostics") if isinstance(best_similarity_meta, dict) else None
+        if not isinstance(diag, dict):
+            diag = {}
+        self.logger.info(
+            "case %s similarity summary score=%s mode=%s distance=%s fallback=%s",
+            case_key,
+            best_similarity_meta.get("score"),
+            diag.get("mode"),
+            diag.get("raw_cosine_distance"),
+            diag.get("fallback_reason"),
+        )
+        if self.verbose_logging:
+            self.logger.debug("case %s similarity diagnostics=%s", case_key, best_similarity_meta)
         if best_similarity_meta.get("error"):
             similarity_error = str(best_similarity_meta.get("error"))
             self.manifest.update_step(

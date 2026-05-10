@@ -537,8 +537,10 @@ class FaceEngine:
             "diagnostics": fallback_diag,
         }
 
-    def compare_images(self, img1_path: str, img2_path: str) -> Dict[str, Any]:
-        """Compare two images with strategy diagnostics and stable fallback ordering."""
+    def compare_images(
+        self, img1_path: str, img2_path: str, diagnostic_matrix: bool = False
+    ) -> Dict[str, Any]:
+        """Compare two images; run full strategy matrix only when explicitly requested."""
         mode_results: List[Dict[str, Any]] = []
         try:
             self.validate_image_file(img1_path)
@@ -564,6 +566,8 @@ class FaceEngine:
                     mode_results.append(result)
                     if chosen is None and result.get("error") is None:
                         chosen = result
+                        if not diagnostic_matrix:
+                            break
                 except Exception as exc:
                     reason = str(exc)
                     if self._is_backend_runtime_error(exc):
