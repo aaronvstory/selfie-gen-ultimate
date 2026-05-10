@@ -625,7 +625,13 @@ class AutoPipelineRunner:
             and self.automation.get("automation_skip_if_selfie_exists", True)
         ) else None
         best_score = -1
-        best_similarity_meta: Dict[str, Any] = {"score": None, "threshold": threshold, "match": None, "error": None}
+        best_similarity_meta: Dict[str, Any] = {
+            "score": None,
+            "threshold": threshold,
+            "match": None,
+            "error": None,
+            "diagnostics": None,
+        }
         self._set_active_step(case_entry, "selfie_generate")
         self.manifest.update_step(case_key, "selfie_generate", "running")
         if best_path:
@@ -636,6 +642,7 @@ class AutoPipelineRunner:
                 "threshold": threshold,
                 "match": score_info.get("match"),
                 "error": score_info.get("error"),
+                "diagnostics": score_info.get("diagnostics"),
             }
             self._report(f"[{case_key}] Reused existing selfie: {Path(best_path).name}", "info")
         else:
@@ -659,6 +666,7 @@ class AutoPipelineRunner:
                             "threshold": threshold,
                             "match": score_info.get("match"),
                             "error": score_info.get("error"),
+                            "diagnostics": score_info.get("diagnostics"),
                         }
                     if self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass" and score >= threshold:
                         break

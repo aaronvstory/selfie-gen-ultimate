@@ -29,6 +29,15 @@ def _get_engine(report_cb: Optional[Callable[[str, str], None]] = None):
         return None
 
 
+def _diag_summary(diag: Dict[str, Any]) -> str:
+    return (
+        f"mode={diag.get('mode')} model={diag.get('model_name')} detector={diag.get('detector_backend')} "
+        f"faces={diag.get('face_counts')} boxes={diag.get('selected_face_boxes')} conf={diag.get('selected_face_confidence')} "
+        f"crop={diag.get('crop_dimensions')} dist={diag.get('raw_cosine_distance')} mapped={diag.get('mapped_score')} "
+        f"fallback_reason={diag.get('fallback_reason')}"
+    )
+
+
 def compute_face_similarity_details(
     source_path: str,
     target_path: str,
@@ -42,6 +51,11 @@ def compute_face_similarity_details(
             "pass": False,
             "error": _ENGINE_ERROR or "similarity backend unavailable",
             "match": False,
+            "diagnostics": {
+                "mode": "unavailable",
+                "ref_path": source_path,
+                "target_path": target_path,
+            },
         }
 
     _log(report_cb, f"compare ref={source_path!r} target={target_path!r}", "debug")
@@ -55,21 +69,24 @@ def compute_face_similarity_details(
 
     error = result.get("error")
     passed = bool(score >= SIMILARITY_PASS_THRESHOLD)
+    diagnostics = dict(result.get("diagnostics") or {})
+    diagnostics.setdefault("ref_path", source_path)
+    diagnostics.setdefault("target_path", target_path)
+    diagnostics["mapped_score"] = score
 
     if error:
         _log(report_cb, str(error), "warning")
+        _log(report_cb, _diag_summary(diagnostics), "warning")
     else:
-        _log(
-            report_cb,
-            f"score={score}% pass={passed} (threshold={SIMILARITY_PASS_THRESHOLD})",
-            "debug",
-        )
+        _log(report_cb, f"score={score}% pass={passed} (threshold={SIMILARITY_PASS_THRESHOLD})", "debug")
+        _log(report_cb, _diag_summary(diagnostics), "debug")
 
     return {
         "score": score,
         "pass": passed,
         "error": error,
         "match": bool(result.get("match", False)),
+        "diagnostics": diagnostics,
     }
 
 
