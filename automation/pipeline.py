@@ -625,7 +625,13 @@ class AutoPipelineRunner:
             and self.automation.get("automation_skip_if_selfie_exists", True)
         ) else None
         best_score = -1
-        best_similarity_meta: Dict[str, Any] = {"score": None, "threshold": threshold, "match": None, "error": None}
+        best_similarity_meta: Dict[str, Any] = {
+            "score": None,
+            "threshold": threshold,
+            "match": None,
+            "error": None,
+            "diagnostics": None,
+        }
         self._set_active_step(case_entry, "selfie_generate")
         self.manifest.update_step(case_key, "selfie_generate", "running")
         if best_path:
@@ -636,6 +642,7 @@ class AutoPipelineRunner:
                 "threshold": threshold,
                 "match": score_info.get("match"),
                 "error": score_info.get("error"),
+                "diagnostics": score_info.get("diagnostics"),
             }
             self._report(f"[{case_key}] Reused existing selfie: {Path(best_path).name}", "info")
         else:
@@ -659,6 +666,7 @@ class AutoPipelineRunner:
                             "threshold": threshold,
                             "match": score_info.get("match"),
                             "error": score_info.get("error"),
+                            "diagnostics": score_info.get("diagnostics"),
                         }
                     if self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass" and score >= threshold:
                         break
@@ -680,7 +688,19 @@ class AutoPipelineRunner:
                 **self._policy_meta("selfie_generate", bool(existing.selfie_candidate and best_path == str(existing.selfie_candidate)), reprocess_mode),
             },
         )
-        self.logger.info("case %s similarity details=%s", case_key, best_similarity_meta)
+        diag = best_similarity_meta.get("diagnostics") if isinstance(best_similarity_meta, dict) else None
+        if not isinstance(diag, dict):
+            diag = {}
+        self.logger.info(
+            "case %s similarity summary score=%s mode=%s distance=%s fallback=%s",
+            case_key,
+            best_similarity_meta.get("score"),
+            diag.get("mode"),
+            diag.get("raw_cosine_distance"),
+            diag.get("fallback_reason"),
+        )
+        if self.verbose_logging:
+            self.logger.debug("case %s similarity diagnostics=%s", case_key, best_similarity_meta)
         if best_similarity_meta.get("error"):
             similarity_error = str(best_similarity_meta.get("error"))
             self.manifest.update_step(
