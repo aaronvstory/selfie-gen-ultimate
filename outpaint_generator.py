@@ -20,9 +20,11 @@ from automation.config import get_outpaint_fal_timeout_seconds
 logger = logging.getLogger(__name__)
 
 # BFL polling limits (shared with selfie_generator pattern)
-_BFL_MAX_WAIT_SECONDS = int(os.environ.get("BFL_EXPAND_MAX_WAIT_SECONDS", "30"))
+_BFL_MAX_WAIT_SECONDS = int(
+    os.environ.get("BFL_MAX_WAIT_SECONDS", os.environ.get("BFL_EXPAND_MAX_WAIT_SECONDS", "30"))
+)
 _BFL_POLL_INTERVAL = 5
-_BFL_MAX_CONSECUTIVE_ERRORS = 5
+_BFL_MAX_CONSECUTIVE_ERRORS = 3
 _BFL_EXPAND_URL = "https://api.bfl.ai/v1/flux-pro-1.0-expand"
 # BFL Expand output limits — BFL recommends ≤2MP for best results (help.bfl.ai).
 # Override via env: BFL_EXPAND_MAX_DIM, BFL_EXPAND_MAX_MP
@@ -141,6 +143,7 @@ class OutpaintGenerator:
         self._progress_callback = cb
 
     def get_last_outpaint_error_detail(self) -> str:
+        """Last error detail for latest serial outpaint/_bfl_outpaint call on this instance; not concurrency-safe."""
         return self._last_outpaint_error_detail
 
     def _set_last_outpaint_error_detail(self, detail: str) -> None:
@@ -351,7 +354,7 @@ class OutpaintGenerator:
             self._report("Composite source: uploaded_processed_img (exact decoded upload)", "debug")
         else:
             composite_source = processed_img
-            self._report("Composite source: local processed image fallback (no uploaded_processed_img)", "warning")
+            self._report("Composite source: local processed image fallback (no uploaded_processed_img)", "debug")
 
         expected_canvas_w = composite_source.width + adj_left + adj_right
         expected_canvas_h = composite_source.height + adj_top + adj_bottom
@@ -471,12 +474,14 @@ class OutpaintGenerator:
             self._report("Download failed", "error")
             return None
 
+        read_failure_reason = ""
         try:
             with Image.open(output_path) as downloaded_img:
                 downloaded_w, downloaded_h = downloaded_img.size
         except Exception as exc:
             self._report(f"Could not read downloaded output dimensions: {exc}", "warning")
             downloaded_w, downloaded_h = 0, 0
+            read_failure_reason = f"read_failed:{type(exc).__name__}"
 
         underflow = (downloaded_w < expected_canvas_w) or (downloaded_h < expected_canvas_h)
         self._report(
@@ -489,7 +494,8 @@ class OutpaintGenerator:
         )
         if underflow:
             self._report(
-                "Provider output smaller than preflight expectation; composite disabled to avoid corrupting preserved pixels",
+                "Provider output smaller than preflight expectation; composite disabled to avoid corrupting preserved pixels"
+                + (f" ({read_failure_reason})" if read_failure_reason else ""),
                 "warning",
             )
             return output_path
