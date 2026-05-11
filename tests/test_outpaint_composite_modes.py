@@ -14,6 +14,12 @@ def _build_source_image(width: int, height: int) -> Image.Image:
     return src
 
 
+def test_read_int_env_invalid_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("BFL_MAX_WAIT_SECONDS", "not-an-int")
+    monkeypatch.setenv("BFL_EXPAND_MAX_WAIT_SECONDS", "also-bad")
+    assert outpaint_generator._read_int_env("BFL_MAX_WAIT_SECONDS", "BFL_EXPAND_MAX_WAIT_SECONDS", 30) == 30
+
+
 def test_preserve_seamless_exact_center_and_outside_ring_blend(tmp_path: Path):
     gen = OutpaintGenerator(api_key="x")
     src = _build_source_image(40, 30)
@@ -329,6 +335,8 @@ def test_fal_underflow_guard_skips_composite(monkeypatch, tmp_path: Path):
 
 
 def test_fal_dimension_read_failure_skips_composite(monkeypatch, tmp_path: Path):
+    import fal_utils
+
     gen = OutpaintGenerator(api_key="x")
     src_path = tmp_path / "input.png"
     Image.new("RGB", (640, 480), (90, 60, 40)).save(src_path)
@@ -349,15 +357,21 @@ def test_fal_dimension_read_failure_skips_composite(monkeypatch, tmp_path: Path)
         logs.append((level, message))
 
     orig_open = Image.open
+    downloaded = {"path": None}
+
+    def fake_download_file(_url, output_path, _cb):
+        downloaded["path"] = str(output_path)
+        Image.new("RGB", (960, 680), (10, 20, 30)).save(output_path)
+        return True
 
     def fake_open(fp, *args, **kwargs):
-        fp_str = str(fp)
-        if fp_str.endswith("-expanded.png"):
+        if downloaded["path"] is not None and str(fp) == downloaded["path"]:
             raise OSError("simulated read failure")
         return orig_open(fp, *args, **kwargs)
 
     gen.set_progress_callback(capture_log)
     monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
+    monkeypatch.setattr(fal_utils, "fal_download_file", fake_download_file)
     monkeypatch.setattr("outpaint_generator.Image.open", fake_open)
 
     out = gen.outpaint(

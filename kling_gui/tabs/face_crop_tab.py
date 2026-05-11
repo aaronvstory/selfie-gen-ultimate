@@ -2049,9 +2049,8 @@ class FaceCropTab(tk.Frame):
             gen = getattr(self, "outpaint_generator", None)
             if gen is not None and hasattr(gen, "get_last_outpaint_error_detail"):
                 detail = gen.get_last_outpaint_error_detail() or ""
-            msg = "Outpaint failed"
-            if detail:
-                msg = f"Outpaint failed ({detail})"
+            from outpaint_generator import OutpaintGenerator
+            msg = OutpaintGenerator.format_error_detail(detail)
             self.log(msg, "error")
 
     def _on_outpaint_error(self, error, run_token=None):
