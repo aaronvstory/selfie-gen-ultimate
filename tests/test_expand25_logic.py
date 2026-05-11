@@ -169,5 +169,25 @@ class Expand25ConfigTests(unittest.TestCase):
         self.assertEqual(updates["automation_selfie_expand_composite_mode"], "preserve_seamless")
 
 
+class OutpaintRouteWiringTests(unittest.TestCase):
+    def test_step0_and_step25_call_shared_outpaint_with_margins_and_mode(self):
+        root = os.path.dirname(os.path.dirname(__file__))
+        step0_path = os.path.join(root, "kling_gui", "tabs", "face_crop_tab.py")
+        step25_path = os.path.join(root, "kling_gui", "tabs", "expand_tab.py")
+
+        with open(step0_path, "r", encoding="utf-8") as handle:
+            step0_text = handle.read()
+        with open(step25_path, "r", encoding="utf-8") as handle:
+            step25_text = handle.read()
+
+        for text in (step0_text, step25_text):
+            self.assertIn("gen.outpaint(", text)
+            self.assertIn("expand_left=", text)
+            self.assertIn("expand_right=", text)
+            self.assertIn("expand_top=", text)
+            self.assertIn("expand_bottom=", text)
+            self.assertIn("composite_mode=", text)
+
+
 if __name__ == "__main__":
     unittest.main()

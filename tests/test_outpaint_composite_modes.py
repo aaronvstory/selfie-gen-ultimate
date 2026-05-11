@@ -105,3 +105,223 @@ def test_legacy_modes_none_hard_feathered_still_work(tmp_path: Path):
     center_x = margins[0] + src.width // 2
     center_y = margins[2] + src.height // 2
     assert feathered_after.getpixel((center_x, center_y)) != (5, 6, 7)
+
+
+def test_preflight_high_res_respects_caps(tmp_path: Path):
+    src_path = tmp_path / "hires.png"
+    Image.new("RGB", (2720, 4032), (120, 30, 210)).save(src_path)
+
+    max_size, adj_l, adj_r, adj_t, adj_b, sim_w, sim_h = OutpaintGenerator._preflight_size(
+        image_path=str(src_path),
+        expand_left=700,
+        expand_right=700,
+        expand_top=700,
+        expand_bottom=700,
+        max_dim=1536,
+        max_mp=2.0,
+    )
+    canvas_w = sim_w + adj_l + adj_r
+    canvas_h = sim_h + adj_t + adj_b
+
+    assert max_size >= 256
+    assert canvas_w <= 1536
+    assert canvas_h <= 1536
+    assert (canvas_w * canvas_h) <= 2_000_000
+    assert adj_l >= 0 and adj_r >= 0 and adj_t >= 0 and adj_b >= 0
+
+
+def test_preflight_preserves_zero_margins(tmp_path: Path):
+    src_path = tmp_path / "asym.png"
+    Image.new("RGB", (2100, 1600), (55, 90, 30)).save(src_path)
+
+    _max_size, adj_l, adj_r, adj_t, adj_b, sim_w, sim_h = OutpaintGenerator._preflight_size(
+        image_path=str(src_path),
+        expand_left=0,
+        expand_right=700,
+        expand_top=0,
+        expand_bottom=300,
+        max_dim=1536,
+        max_mp=2.0,
+    )
+    canvas_w = sim_w + adj_l + adj_r
+    canvas_h = sim_h + adj_t + adj_b
+    assert adj_l == 0
+    assert adj_t == 0
+    assert canvas_w <= 1536
+    assert canvas_h <= 1536
+    assert (canvas_w * canvas_h) <= 2_000_000
+
+
+def _configure_fake_fal(monkeypatch, source_size=(320, 240), uploaded_size=(300, 220), downloaded_size=(440, 320)):
+    import fal_utils
+
+    source_img = Image.new("RGB", source_size, (40, 70, 100))
+    uploaded_img = Image.new("RGB", uploaded_size, (80, 20, 60))
+
+    def fake_upload_reference_image(**_kwargs):
+        return "https://example.com/ref.jpg", uploaded_img, "fal"
+
+    def fake_queue_submit(*_args, **_kwargs):
+        return {"status_url": "https://example.com/status", "request_id": "req_1234"}
+
+    def fake_queue_poll(*_args, **_kwargs):
+        return {"images": [{"url": "https://example.com/result.png"}]}
+
+    def fake_download_file(_url, output_path, _cb):
+        Image.new("RGB", downloaded_size, (10, 20, 30)).save(output_path)
+        return True
+
+    monkeypatch.setattr(fal_utils, "upload_reference_image", fake_upload_reference_image)
+    monkeypatch.setattr(fal_utils, "fal_queue_submit", fake_queue_submit)
+    monkeypatch.setattr(fal_utils, "fal_queue_poll", fake_queue_poll)
+    monkeypatch.setattr(fal_utils, "fal_download_file", fake_download_file)
+    return source_img, uploaded_img
+
+
+def test_fal_payload_keeps_zoom_out_zero(monkeypatch, tmp_path: Path):
+    import fal_utils
+
+    gen = OutpaintGenerator(api_key="x")
+    src_path = tmp_path / "input.png"
+    Image.new("RGB", (320, 240), (5, 6, 7)).save(src_path)
+    uploaded_img = Image.new("RGB", (300, 220), (8, 9, 10))
+    captured = {}
+
+    def fake_upload_reference_image(**_kwargs):
+        return "https://example.com/ref.jpg", uploaded_img, "fal"
+
+    def fake_queue_submit(_key, _endpoint, payload, _cb):
+        captured["payload"] = payload
+        return {"status_url": "https://example.com/status", "request_id": "req_1234"}
+
+    def fake_queue_poll(*_args, **_kwargs):
+        return {"images": [{"url": "https://example.com/result.png"}]}
+
+    def fake_download_file(_url, output_path, _cb):
+        Image.new("RGB", (460, 340), (10, 20, 30)).save(output_path)
+        return True
+
+    monkeypatch.setattr(fal_utils, "upload_reference_image", fake_upload_reference_image)
+    monkeypatch.setattr(fal_utils, "fal_queue_submit", fake_queue_submit)
+    monkeypatch.setattr(fal_utils, "fal_queue_poll", fake_queue_poll)
+    monkeypatch.setattr(fal_utils, "fal_download_file", fake_download_file)
+    monkeypatch.setattr(gen, "_composite_onto_result", lambda *_args, **_kwargs: None)
+
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        expand_left=10,
+        expand_right=11,
+        expand_top=12,
+        expand_bottom=13,
+        provider="fal",
+        composite_mode="feathered",
+    )
+    assert out is not None
+    assert captured["payload"]["zoom_out_percentage"] == 0
+
+
+def test_fal_uses_uploaded_processed_image_for_composite(monkeypatch, tmp_path: Path):
+    gen = OutpaintGenerator(api_key="x")
+    src_path = tmp_path / "input.png"
+    Image.new("RGB", (320, 240), (1, 2, 3)).save(src_path)
+    _source_img, uploaded_img = _configure_fake_fal(
+        monkeypatch,
+        source_size=(320, 240),
+        uploaded_size=(300, 220),
+        downloaded_size=(460, 340),
+    )
+
+    captured = {}
+
+    def fake_composite(output_path, orig, margin_left, margin_right, margin_top, margin_bottom, output_format, composite_mode):
+        captured["orig_size"] = orig.size
+        captured["margins"] = (margin_left, margin_right, margin_top, margin_bottom)
+        captured["mode"] = composite_mode
+        captured["output_path"] = output_path
+
+    monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
+
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        expand_left=30,
+        expand_right=30,
+        expand_top=20,
+        expand_bottom=20,
+        provider="fal",
+        composite_mode="feathered",
+        edge_seal_px=0,
+    )
+
+    assert out is not None
+    assert captured["orig_size"] == uploaded_img.size
+    assert captured["mode"] == "feathered"
+
+
+def test_fal_edge_seal_upload_only_uses_unsealed_composite_source(monkeypatch, tmp_path: Path):
+    gen = OutpaintGenerator(api_key="x")
+    src_path = tmp_path / "input.png"
+    Image.new("RGB", (320, 240), (25, 35, 45)).save(src_path)
+    _source_img, uploaded_img = _configure_fake_fal(
+        monkeypatch,
+        source_size=(320, 240),
+        uploaded_size=(310, 230),
+        downloaded_size=(460, 340),
+    )
+
+    captured = {}
+
+    def fake_composite(output_path, orig, margin_left, margin_right, margin_top, margin_bottom, output_format, composite_mode):
+        captured["orig_size"] = orig.size
+        captured["sample_pixel"] = orig.getpixel((0, 0))
+
+    monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
+
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        expand_left=30,
+        expand_right=30,
+        expand_top=20,
+        expand_bottom=20,
+        provider="fal",
+        composite_mode="feathered",
+        edge_seal_px=8,
+    )
+    assert out is not None
+    # Unsealed source path should keep local processed dimensions, not uploaded sealed variant.
+    assert captured["orig_size"] == (320, 240)
+
+
+def test_fal_underflow_guard_skips_composite(monkeypatch, tmp_path: Path):
+    gen = OutpaintGenerator(api_key="x")
+    src_path = tmp_path / "input.png"
+    Image.new("RGB", (640, 480), (90, 60, 40)).save(src_path)
+    _source_img, _uploaded_img = _configure_fake_fal(
+        monkeypatch,
+        source_size=(640, 480),
+        uploaded_size=(640, 480),
+        downloaded_size=(200, 150),
+    )
+
+    called = {"composite": 0}
+
+    def fake_composite(*_args, **_kwargs):
+        called["composite"] += 1
+
+    monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
+
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        expand_left=200,
+        expand_right=200,
+        expand_top=100,
+        expand_bottom=100,
+        provider="fal",
+        composite_mode="preserve_seamless",
+        edge_seal_px=0,
+    )
+    assert out is not None
+    assert called["composite"] == 0

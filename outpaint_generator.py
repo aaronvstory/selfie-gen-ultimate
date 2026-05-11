@@ -96,9 +96,9 @@ class OutpaintGenerator:
         if scale >= 1.0:
             return max_size, expand_left, expand_right, expand_top, expand_bottom, img_w, img_h
 
-        # Use original image max dimension — not the thumbnail-capped max_size.
-        # For images < 2048, max_size * scale produces a no-op thumbnail.
-        new_max_size = max(256, math.floor(max(orig_w, orig_h) * scale))
+        # Scale from the simulated upload dimensions so preflight remains aligned
+        # with the actual image that will be uploaded to fal.
+        new_max_size = max(256, math.floor(max(img_w, img_h) * scale))
         adj_l = scale_margin(expand_left, scale)
         adj_r = scale_margin(expand_right, scale)
         adj_t = scale_margin(expand_top, scale)
@@ -310,9 +310,10 @@ class OutpaintGenerator:
             self._report(f"Applied upload-only edge seal ({edge_seal_px}px).", "debug")
 
         image_url = None
+        uploaded_processed_img = None
         uploaded_provider = None
         try:
-            image_url, _uploaded_processed_img, uploaded_provider = upload_reference_image(
+            image_url, uploaded_processed_img, uploaded_provider = upload_reference_image(
                 image_path=upload_path,
                 fal_api_key=self.api_key,
                 max_size=max_upload_size,
@@ -330,6 +331,33 @@ class OutpaintGenerator:
             return None
         if uploaded_provider:
             self._report(f"Reference upload provider: {uploaded_provider}", "upload")
+
+        if edge_seal_px > 0:
+            composite_source = processed_img
+            self._report(
+                "Composite source: unsealed processed image (edge seal upload-only, intentionally excluded from final paste)",
+                "debug",
+            )
+        elif uploaded_processed_img is not None:
+            composite_source = uploaded_processed_img.convert("RGB")
+            self._report("Composite source: uploaded_processed_img (exact decoded upload)", "debug")
+        else:
+            composite_source = processed_img
+            self._report("Composite source: local processed image fallback (no uploaded_processed_img)", "warning")
+
+        expected_canvas_w = composite_source.width + adj_left + adj_right
+        expected_canvas_h = composite_source.height + adj_top + adj_bottom
+        self._report(
+            (
+                "Fal composite precheck: "
+                f"requested=L{expand_left}/R{expand_right}/T{expand_top}/B{expand_bottom} "
+                f"adjusted=L{adj_left}/R{adj_right}/T{adj_top}/B{adj_bottom} "
+                f"upload_max={max_upload_size} "
+                f"composite_source={composite_source.width}x{composite_source.height} "
+                f"expected_canvas={expected_canvas_w}x{expected_canvas_h}"
+            ),
+            "debug",
+        )
 
         # Build payload — zoom_out_percentage=0 prevents hidden 20% default shrink
         payload = {
@@ -433,8 +461,31 @@ class OutpaintGenerator:
             self._report("Download failed", "error")
             return None
 
+        try:
+            with Image.open(output_path) as downloaded_img:
+                downloaded_w, downloaded_h = downloaded_img.size
+        except Exception as exc:
+            self._report(f"Could not read downloaded output dimensions: {exc}", "warning")
+            downloaded_w, downloaded_h = expected_canvas_w, expected_canvas_h
+
+        underflow = (downloaded_w < expected_canvas_w) or (downloaded_h < expected_canvas_h)
+        self._report(
+            (
+                "Fal composite downloaded result: "
+                f"actual={downloaded_w}x{downloaded_h} expected={expected_canvas_w}x{expected_canvas_h} "
+                f"underflow={underflow}"
+            ),
+            "debug",
+        )
+        if underflow:
+            self._report(
+                "Provider output smaller than preflight expectation; composite disabled to avoid corrupting preserved pixels",
+                "warning",
+            )
+            return output_path
+
         self._composite_onto_result(
-            output_path, processed_img, adj_left, adj_right, adj_top, adj_bottom,
+            output_path, composite_source, adj_left, adj_right, adj_top, adj_bottom,
             output_format, composite_mode,
         )
         return output_path
