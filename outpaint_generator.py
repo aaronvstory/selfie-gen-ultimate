@@ -466,7 +466,7 @@ class OutpaintGenerator:
                 downloaded_w, downloaded_h = downloaded_img.size
         except Exception as exc:
             self._report(f"Could not read downloaded output dimensions: {exc}", "warning")
-            downloaded_w, downloaded_h = expected_canvas_w, expected_canvas_h
+            downloaded_w, downloaded_h = 0, 0
 
         underflow = (downloaded_w < expected_canvas_w) or (downloaded_h < expected_canvas_h)
         self._report(

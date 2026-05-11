@@ -263,7 +263,7 @@ def test_fal_edge_seal_upload_only_uses_unsealed_composite_source(monkeypatch, t
     gen = OutpaintGenerator(api_key="x")
     src_path = tmp_path / "input.png"
     Image.new("RGB", (320, 240), (25, 35, 45)).save(src_path)
-    _source_img, uploaded_img = _configure_fake_fal(
+    _source_img, _uploaded_img = _configure_fake_fal(
         monkeypatch,
         source_size=(320, 240),
         uploaded_size=(310, 230),
@@ -325,3 +325,52 @@ def test_fal_underflow_guard_skips_composite(monkeypatch, tmp_path: Path):
     )
     assert out is not None
     assert called["composite"] == 0
+
+
+def test_fal_dimension_read_failure_skips_composite(monkeypatch, tmp_path: Path):
+    gen = OutpaintGenerator(api_key="x")
+    src_path = tmp_path / "input.png"
+    Image.new("RGB", (640, 480), (90, 60, 40)).save(src_path)
+    _source_img, _uploaded_img = _configure_fake_fal(
+        monkeypatch,
+        source_size=(640, 480),
+        uploaded_size=(640, 480),
+        downloaded_size=(960, 680),
+    )
+
+    called = {"composite": 0}
+    logs = []
+
+    def fake_composite(*_args, **_kwargs):
+        called["composite"] += 1
+
+    def capture_log(message: str, level: str = "info"):
+        logs.append((level, message))
+
+    orig_open = Image.open
+
+    def fake_open(fp, *args, **kwargs):
+        fp_str = str(fp)
+        if fp_str.endswith("-expanded.png"):
+            raise OSError("simulated read failure")
+        return orig_open(fp, *args, **kwargs)
+
+    gen.set_progress_callback(capture_log)
+    monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
+    monkeypatch.setattr("outpaint_generator.Image.open", fake_open)
+
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        expand_left=160,
+        expand_right=160,
+        expand_top=100,
+        expand_bottom=100,
+        provider="fal",
+        composite_mode="preserve_seamless",
+        edge_seal_px=0,
+    )
+
+    assert out is not None
+    assert called["composite"] == 0
+    assert any(level == "warning" and "Could not read downloaded output dimensions" in message for level, message in logs)
