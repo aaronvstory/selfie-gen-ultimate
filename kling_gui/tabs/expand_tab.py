@@ -271,13 +271,48 @@ class ExpandTab(tk.Frame):
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         ).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Combobox(
+        self._composite_mode_labels = {
+            "preserve_seamless": "Preserve Seamless",
+            "feathered": "Feathered",
+            "hard": "Hard",
+            "none": "None",
+        }
+        composite_value = self._composite_mode_var.get().strip()
+        if composite_value not in self._composite_mode_labels:
+            composite_value = "preserve_seamless"
+            self._composite_mode_var.set(composite_value)
+        self._composite_mode_label_var = tk.StringVar(
+            value=self._composite_mode_labels[composite_value]
+        )
+
+        composite_btn = tk.Menubutton(
             io_row,
-            textvariable=self._composite_mode_var,
-            values=["preserve_seamless", "feathered", "hard", "none"],
-            state="readonly",
+            textvariable=self._composite_mode_label_var,
+            relief=tk.RAISED,
             width=18,
-        ).pack(side=tk.LEFT, padx=5)
+            bg=COLORS["bg_input"],
+            fg=COLORS["text_light"],
+            activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            direction="below",
+            anchor="w",
+            padx=6,
+        )
+        composite_menu = tk.Menu(composite_btn, tearoff=0)
+
+        def _set_composite_mode(mode_key: str) -> None:
+            self._composite_mode_var.set(mode_key)
+            self._composite_mode_label_var.set(self._composite_mode_labels[mode_key])
+
+        for mode_key, mode_label in self._composite_mode_labels.items():
+            composite_menu.add_command(
+                label=mode_label,
+                command=lambda m=mode_key: _set_composite_mode(m),
+            )
+
+        composite_btn.configure(menu=composite_menu)
+        composite_btn.pack(side=tk.LEFT, padx=5)
+        self._composite_mode_btn = composite_btn
 
         run_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         run_frame.pack(fill=tk.X, padx=10, pady=(4, 4))

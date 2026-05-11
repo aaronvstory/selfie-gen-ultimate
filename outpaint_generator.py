@@ -20,7 +20,7 @@ from automation.config import get_outpaint_fal_timeout_seconds
 logger = logging.getLogger(__name__)
 
 # BFL polling limits (shared with selfie_generator pattern)
-_BFL_MAX_WAIT_SECONDS = 180
+_BFL_MAX_WAIT_SECONDS = int(os.environ.get("BFL_EXPAND_MAX_WAIT_SECONDS", "30"))
 _BFL_POLL_INTERVAL = 5
 _BFL_MAX_CONSECUTIVE_ERRORS = 5
 _BFL_EXPAND_URL = "https://api.bfl.ai/v1/flux-pro-1.0-expand"
@@ -96,9 +96,9 @@ class OutpaintGenerator:
         if scale >= 1.0:
             return max_size, expand_left, expand_right, expand_top, expand_bottom, img_w, img_h
 
-        # Use original image max dimension — not the thumbnail-capped max_size.
-        # For images < 2048, max_size * scale produces a no-op thumbnail.
-        new_max_size = max(256, math.floor(max(orig_w, orig_h) * scale))
+        # Scale from the simulated upload dimensions so preflight remains aligned
+        # with the actual image that will be uploaded to fal.
+        new_max_size = max(256, math.floor(max(img_w, img_h) * scale))
         adj_l = scale_margin(expand_left, scale)
         adj_r = scale_margin(expand_right, scale)
         adj_t = scale_margin(expand_top, scale)
@@ -135,9 +135,16 @@ class OutpaintGenerator:
         self._freeimage_key = freeimage_key
         self._bfl_api_key = bfl_api_key or ""
         self._progress_callback: Optional[Callable[[str, str], None]] = None
+        self._last_outpaint_error_detail: str = ""
 
     def set_progress_callback(self, cb: Callable[[str, str], None]):
         self._progress_callback = cb
+
+    def get_last_outpaint_error_detail(self) -> str:
+        return self._last_outpaint_error_detail
+
+    def _set_last_outpaint_error_detail(self, detail: str) -> None:
+        self._last_outpaint_error_detail = detail
 
     def _report(self, msg: str, level: str = "info"):
         if self._progress_callback:
@@ -220,6 +227,7 @@ class OutpaintGenerator:
         Returns:
             Absolute path to expanded image, or None on failure.
         """
+        self._set_last_outpaint_error_detail("")
         selected_provider = (provider or "auto").strip().lower()
         if selected_provider not in {"auto", "bfl", "fal"}:
             self._report(f"Invalid provider override: {provider}", "error")
@@ -310,9 +318,10 @@ class OutpaintGenerator:
             self._report(f"Applied upload-only edge seal ({edge_seal_px}px).", "debug")
 
         image_url = None
+        uploaded_processed_img = None
         uploaded_provider = None
         try:
-            image_url, _uploaded_processed_img, uploaded_provider = upload_reference_image(
+            image_url, uploaded_processed_img, uploaded_provider = upload_reference_image(
                 image_path=upload_path,
                 fal_api_key=self.api_key,
                 max_size=max_upload_size,
@@ -330,6 +339,33 @@ class OutpaintGenerator:
             return None
         if uploaded_provider:
             self._report(f"Reference upload provider: {uploaded_provider}", "upload")
+
+        if edge_seal_px > 0:
+            composite_source = processed_img
+            self._report(
+                "Composite source: unsealed processed image (edge seal upload-only, intentionally excluded from final paste)",
+                "debug",
+            )
+        elif uploaded_processed_img is not None:
+            composite_source = uploaded_processed_img.convert("RGB")
+            self._report("Composite source: uploaded_processed_img (exact decoded upload)", "debug")
+        else:
+            composite_source = processed_img
+            self._report("Composite source: local processed image fallback (no uploaded_processed_img)", "warning")
+
+        expected_canvas_w = composite_source.width + adj_left + adj_right
+        expected_canvas_h = composite_source.height + adj_top + adj_bottom
+        self._report(
+            (
+                "Fal composite precheck: "
+                f"requested=L{expand_left}/R{expand_right}/T{expand_top}/B{expand_bottom} "
+                f"adjusted=L{adj_left}/R{adj_right}/T{adj_top}/B{adj_bottom} "
+                f"upload_max={max_upload_size} "
+                f"composite_source={composite_source.width}x{composite_source.height} "
+                f"expected_canvas={expected_canvas_w}x{expected_canvas_h}"
+            ),
+            "debug",
+        )
 
         # Build payload — zoom_out_percentage=0 prevents hidden 20% default shrink
         payload = {
@@ -388,7 +424,9 @@ class OutpaintGenerator:
         if not final:
             if cancel_event is not None and cancel_event.is_set():
                 return None
-            self._report("Outpaint failed or timed out", "error")
+            detail = "reason=fal_failed_or_timed_out"
+            self._set_last_outpaint_error_detail(detail)
+            self._report(f"Outpaint failed or timed out ({detail})", "error")
             return None
 
         # Extract image URL from result
@@ -433,8 +471,31 @@ class OutpaintGenerator:
             self._report("Download failed", "error")
             return None
 
+        try:
+            with Image.open(output_path) as downloaded_img:
+                downloaded_w, downloaded_h = downloaded_img.size
+        except Exception as exc:
+            self._report(f"Could not read downloaded output dimensions: {exc}", "warning")
+            downloaded_w, downloaded_h = 0, 0
+
+        underflow = (downloaded_w < expected_canvas_w) or (downloaded_h < expected_canvas_h)
+        self._report(
+            (
+                "Fal composite downloaded result: "
+                f"actual={downloaded_w}x{downloaded_h} expected={expected_canvas_w}x{expected_canvas_h} "
+                f"underflow={underflow}"
+            ),
+            "debug",
+        )
+        if underflow:
+            self._report(
+                "Provider output smaller than preflight expectation; composite disabled to avoid corrupting preserved pixels",
+                "warning",
+            )
+            return output_path
+
         self._composite_onto_result(
-            output_path, processed_img, adj_left, adj_right, adj_top, adj_bottom,
+            output_path, composite_source, adj_left, adj_right, adj_top, adj_bottom,
             output_format, composite_mode,
         )
         return output_path
@@ -794,6 +855,15 @@ class OutpaintGenerator:
     ) -> Optional[str]:
         """Outpaint via BFL Expand (FLUX Pro 1.0). Returns output path or None."""
         import requests
+        self._set_last_outpaint_error_detail("")
+
+        def _summarize_poll_payload(payload: dict) -> str:
+            safe = {}
+            for key in ("status", "error", "message", "eta", "queue_position", "id"):
+                if key in payload and payload.get(key) not in (None, ""):
+                    val = str(payload.get(key))
+                    safe[key] = val[:160]
+            return str(safe) if safe else "{}"
 
         # 1. Preflight: shrink input + margins so total canvas fits BFL's MP limit.
         #    Without this, BFL silently clamps (e.g. 1536x2048 → 1088x1456).
@@ -948,9 +1018,20 @@ class OutpaintGenerator:
                 elapsed_s = int(time.monotonic() - poll_start)
 
                 if elapsed_s >= _BFL_MAX_WAIT_SECONDS:
-                    self._report(
-                        f"BFL Expand timed out after {elapsed_s}s", "error",
+                    last_status = "unknown"
+                    if isinstance(poll_data, dict):
+                        last_status = str(poll_data.get("status", "unknown"))
+                    detail = (
+                        f"reason=pending_timeout task={task_id or 'unknown'} "
+                        f"elapsed={elapsed_s}s last_status={last_status} poll_count={poll_num}"
                     )
+                    self._set_last_outpaint_error_detail(detail)
+                    if isinstance(poll_data, dict):
+                        self._report(
+                            f"BFL last poll snapshot: {_summarize_poll_payload(poll_data)}",
+                            "debug",
+                        )
+                    self._report(f"BFL Expand timed out after {elapsed_s}s ({detail})", "error")
                     return None
 
                 if cancel_event is not None and cancel_event.wait(timeout=_BFL_POLL_INTERVAL):
@@ -971,8 +1052,13 @@ class OutpaintGenerator:
                     consecutive_errors += 1
                     self._report(f"BFL poll error ({consecutive_errors}): {exc}", "warning")
                     if consecutive_errors >= _BFL_MAX_CONSECUTIVE_ERRORS:
+                        detail = (
+                            f"reason=poll_error_limit task={task_id or 'unknown'} "
+                            f"poll_errors={consecutive_errors}"
+                        )
+                        self._set_last_outpaint_error_detail(detail)
                         self._report(
-                            f"BFL polling aborted after {consecutive_errors} consecutive errors",
+                            f"BFL polling aborted after {consecutive_errors} consecutive errors ({detail})",
                             "error",
                         )
                         return None
@@ -984,7 +1070,15 @@ class OutpaintGenerator:
                     break
                 elif status_lower in ("error", "failed"):
                     err_msg = poll_data.get("error", "Unknown BFL error")
-                    self._report(f"BFL Expand failed: {err_msg}", "error")
+                    detail = (
+                        f"reason=provider_failed task={task_id or 'unknown'} "
+                        f"status={status or 'unknown'} error={str(err_msg)[:160]}"
+                    )
+                    self._set_last_outpaint_error_detail(detail)
+                    self._report(
+                        f"BFL Expand failed: {err_msg} ({detail})",
+                        "error",
+                    )
                     return None
                 else:
                     if poll_num % 6 == 0:

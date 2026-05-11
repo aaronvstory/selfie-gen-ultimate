@@ -424,6 +424,7 @@ class OutpaintTab(tk.Frame):
                 gen = OutpaintGenerator(
                     api_key, freeimage_key=freeimage_key, bfl_api_key=bfl_key,
                 )
+                self.outpaint_generator = gen
                 gen.set_progress_callback(
                     lambda msg, lvl: self.winfo_toplevel().after(
                         0, lambda m=msg, l=lvl: self.log(m, l)
@@ -474,7 +475,14 @@ class OutpaintTab(tk.Frame):
                 f"Outpaint complete{sim_msg}: {os.path.basename(result)}", "success"
             )
         else:
-            self.log("Outpaint failed", "error")
+            detail = ""
+            gen = getattr(self, "outpaint_generator", None)
+            if gen is not None and hasattr(gen, "get_last_outpaint_error_detail"):
+                detail = gen.get_last_outpaint_error_detail() or ""
+            msg = "Outpaint failed"
+            if detail:
+                msg = f"Outpaint failed ({detail})"
+            self.log(msg, "error")
 
     def _on_error(self, error):
         self._set_busy(False)

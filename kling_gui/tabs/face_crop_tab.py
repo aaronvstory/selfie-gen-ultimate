@@ -794,10 +794,48 @@ class FaceCropTab(tk.Frame):
             opts_row, text="Composite:", font=(FONT_FAMILY, 8),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
-        ttk.Combobox(
-            opts_row, textvariable=self._outpaint_composite_var,
-            values=["preserve_seamless", "feathered", "hard", "none"], state="readonly", width=18,
-        ).pack(side=tk.LEFT, padx=(3, 0))
+        self._outpaint_composite_labels = {
+            "preserve_seamless": "Preserve Seamless",
+            "feathered": "Feathered",
+            "hard": "Hard",
+            "none": "None",
+        }
+        composite_value = self._outpaint_composite_var.get().strip()
+        if composite_value not in self._outpaint_composite_labels:
+            composite_value = "preserve_seamless"
+            self._outpaint_composite_var.set(composite_value)
+        self._outpaint_composite_label_var = tk.StringVar(
+            value=self._outpaint_composite_labels[composite_value]
+        )
+
+        composite_btn = tk.Menubutton(
+            opts_row,
+            textvariable=self._outpaint_composite_label_var,
+            relief=tk.RAISED,
+            width=18,
+            bg=COLORS["bg_input"],
+            fg=COLORS["text_light"],
+            activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            direction="below",
+            anchor="w",
+            padx=6,
+        )
+        composite_menu = tk.Menu(composite_btn, tearoff=0)
+
+        def _set_outpaint_composite_mode(mode_key: str) -> None:
+            self._outpaint_composite_var.set(mode_key)
+            self._outpaint_composite_label_var.set(self._outpaint_composite_labels[mode_key])
+
+        for mode_key, mode_label in self._outpaint_composite_labels.items():
+            composite_menu.add_command(
+                label=mode_label,
+                command=lambda m=mode_key: _set_outpaint_composite_mode(m),
+            )
+
+        composite_btn.configure(menu=composite_menu)
+        composite_btn.pack(side=tk.LEFT, padx=(3, 0))
+        self._outpaint_composite_btn = composite_btn
 
         # Apply initial mode visibility
         self._apply_expand_mode_ui()
@@ -1929,6 +1967,7 @@ class FaceCropTab(tk.Frame):
                 gen = OutpaintGenerator(
                     api_key, freeimage_key=freeimage_key, bfl_api_key=bfl_key,
                 )
+                self.outpaint_generator = gen
                 gen.set_progress_callback(
                     lambda msg, lvl: self.winfo_toplevel().after(
                         0, lambda m=msg, l=lvl: self.log(m, l)
@@ -2006,7 +2045,14 @@ class FaceCropTab(tk.Frame):
             self.log(f"Outpaint: saved {basename}", "success")
         else:
             self._outpaint_status.config(text="Failed", fg=COLORS["error"])
-            self.log("Outpaint failed", "error")
+            detail = ""
+            gen = getattr(self, "outpaint_generator", None)
+            if gen is not None and hasattr(gen, "get_last_outpaint_error_detail"):
+                detail = gen.get_last_outpaint_error_detail() or ""
+            msg = "Outpaint failed"
+            if detail:
+                msg = f"Outpaint failed ({detail})"
+            self.log(msg, "error")
 
     def _on_outpaint_error(self, error, run_token=None):
         if run_token is not None and run_token != self._outpaint_run_token:
