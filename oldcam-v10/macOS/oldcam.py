@@ -146,6 +146,8 @@ def get_video_rotation(filepath):
                 "ffprobe",
                 "-v",
                 "error",
+                "-select_streams",
+                "v:0",
                 "-print_format",
                 "json",
                 "-show_streams",
