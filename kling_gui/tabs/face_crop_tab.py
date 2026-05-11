@@ -794,10 +794,48 @@ class FaceCropTab(tk.Frame):
             opts_row, text="Composite:", font=(FONT_FAMILY, 8),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
-        ttk.Combobox(
-            opts_row, textvariable=self._outpaint_composite_var,
-            values=["preserve_seamless", "feathered", "hard", "none"], state="readonly", width=18,
-        ).pack(side=tk.LEFT, padx=(3, 0))
+        self._outpaint_composite_labels = {
+            "preserve_seamless": "Preserve Seamless",
+            "feathered": "Feathered",
+            "hard": "Hard",
+            "none": "None",
+        }
+        composite_value = self._outpaint_composite_var.get().strip()
+        if composite_value not in self._outpaint_composite_labels:
+            composite_value = "preserve_seamless"
+            self._outpaint_composite_var.set(composite_value)
+        self._outpaint_composite_label_var = tk.StringVar(
+            value=self._outpaint_composite_labels[composite_value]
+        )
+
+        composite_btn = tk.Menubutton(
+            opts_row,
+            textvariable=self._outpaint_composite_label_var,
+            relief=tk.RAISED,
+            width=18,
+            bg=COLORS["bg_input"],
+            fg=COLORS["text_light"],
+            activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            direction="below",
+            anchor="w",
+            padx=6,
+        )
+        composite_menu = tk.Menu(composite_btn, tearoff=0)
+
+        def _set_outpaint_composite_mode(mode_key: str) -> None:
+            self._outpaint_composite_var.set(mode_key)
+            self._outpaint_composite_label_var.set(self._outpaint_composite_labels[mode_key])
+
+        for mode_key, mode_label in self._outpaint_composite_labels.items():
+            composite_menu.add_command(
+                label=mode_label,
+                command=lambda m=mode_key: _set_outpaint_composite_mode(m),
+            )
+
+        composite_btn.configure(menu=composite_menu)
+        composite_btn.pack(side=tk.LEFT, padx=(3, 0))
+        self._outpaint_composite_btn = composite_btn
 
         # Apply initial mode visibility
         self._apply_expand_mode_ui()
