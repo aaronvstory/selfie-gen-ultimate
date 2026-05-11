@@ -551,19 +551,40 @@ class QueueManager:
                 continue
 
         if not found:
-            return ["v7", "v8"]
+            return ["v7", "v8", "v9", "v10"]
         return sorted(found, key=self._oldcam_version_key)
+
+    def _get_selected_oldcam_versions(self) -> List[str]:
+        """Resolve selected Oldcam versions from config with legacy fallback."""
+        config = self.get_config()
+        available = self._discover_oldcam_versions()
+
+        configured = config.get("oldcam_versions")
+        selected: List[str] = []
+        if isinstance(configured, list):
+            selected = [str(v).lower() for v in configured if isinstance(v, str)]
+
+        if not selected:
+            legacy = str(config.get("oldcam_version", "v9")).lower()
+            if legacy == "all":
+                selected = list(available)
+            elif legacy:
+                selected = [legacy]
+
+        valid = sorted(
+            {version for version in selected if version in available},
+            key=self._oldcam_version_key,
+        )
+        if valid:
+            return valid
+        if available:
+            latest = available[-1]
+            return [latest]
+        return ["v9"]
 
     def _get_oldcam_versions_to_run(self) -> List[str]:
         """Return selected oldcam versions in ascending order."""
-        available = self._discover_oldcam_versions()
-        selected = self._get_oldcam_version()
-        if selected == "all":
-            return available
-        if selected in available:
-            return [selected]
-        # Backward-safe fallback
-        return [available[-1]] if available else ["v7"]
+        return self._get_selected_oldcam_versions()
 
     def _get_next_incremented_oldcam_input(self, source_video: Path, versions: List[str]) -> Path:
         """Return copied input whose derived oldcam outputs do not exist for any selected version."""
@@ -624,7 +645,7 @@ class QueueManager:
             try:
                 config = self.get_config()
                 versions_to_run = self._get_oldcam_versions_to_run()
-                version = self._get_oldcam_version()
+                selected_versions = self._get_selected_oldcam_versions()
                 primary_version = max(versions_to_run, key=self._oldcam_version_key)
                 allow_reprocess = bool(config.get("allow_reprocess", False))
                 reprocess_mode = str(config.get("reprocess_mode", "increment") or "increment").lower()
@@ -669,7 +690,8 @@ class QueueManager:
                         self.log(f"Oldcam rerun increment target: {expected_output.name}", "info")
 
                 self.log(
-                    f"Oldcam-only rerun: source={source_video.name}, version={version}",
+                    "Oldcam-only rerun: source="
+                    + f"{source_video.name}, versions={','.join(selected_versions)}",
                     "info",
                 )
                 output_path = self._oldcam_video(str(run_input), QueueItem(str(source_video)))
@@ -1082,12 +1104,9 @@ class QueueManager:
             return None
 
     def _get_oldcam_version(self) -> str:
-        """Return configured Oldcam version with backward-compatible default."""
-        version = str(self.get_config().get("oldcam_version", "v7")).lower()
-        if version == "all":
-            return version
-        available = self._discover_oldcam_versions()
-        return version if version in available else "v7"
+        """Return legacy single Oldcam version view (highest selected)."""
+        selected = self._get_selected_oldcam_versions()
+        return selected[-1] if selected else "v9"
 
     def _build_oldcam_output_path(self, input_path: Path, version: str) -> Path:
         """Build versioned Oldcam output path next to input video."""
@@ -1184,13 +1203,7 @@ class QueueManager:
         del item  # Reserved for future per-item status hooks
         try:
             versions_to_run = self._get_oldcam_versions_to_run()
-            selected = self._get_oldcam_version()
-            if selected == "all":
-                self.log(
-                    "Oldcam all selected: running "
-                    + ", ".join(versions_to_run),
-                    "info",
-                )
+            self.log("Oldcam selected: running " + ", ".join(versions_to_run), "info")
             outputs: List[Tuple[str, str]] = []
             for version in versions_to_run:
                 output_path = self._run_oldcam_version(video_path, version)

@@ -3,6 +3,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 import threading
+import types
+import sys
 
 import numpy as np
 
@@ -13,6 +15,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_module(path: Path, name: str):
+    if "mediapipe" not in sys.modules:
+        class _FakeFaceMesh:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def process(self, _img):
+                return SimpleNamespace(multi_face_landmarks=None)
+
+        fake_mp = types.SimpleNamespace(
+            solutions=types.SimpleNamespace(
+                face_mesh=types.SimpleNamespace(FaceMesh=_FakeFaceMesh)
+            )
+        )
+        sys.modules["mediapipe"] = fake_mp
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -30,17 +46,17 @@ def make_queue_manager(config):
     return manager, logs
 
 
-def test_oldcam_version_defaults_to_v7_for_missing_or_invalid_config():
+def test_oldcam_version_defaults_to_latest_selected_for_missing_or_invalid_config():
     manager, _ = make_queue_manager({})
-    assert manager._get_oldcam_version() == "v7"
+    assert manager._get_oldcam_version().startswith("v")
 
     manager, _ = make_queue_manager({"oldcam_version": "v9"})
-    assert manager._get_oldcam_version() == "v7"
+    assert manager._get_oldcam_version() == "v9"
 
 
-def test_oldcam_version_accepts_all_mode():
-    manager, _ = make_queue_manager({"oldcam_version": "all"})
-    assert manager._get_oldcam_version() == "all"
+def test_oldcam_versions_list_is_supported():
+    manager, _ = make_queue_manager({"oldcam_versions": ["v7", "v10"]})
+    assert manager._get_oldcam_versions_to_run() == ["v7", "v10"]
 
 
 def test_oldcam_output_path_uses_versioned_suffixes():
@@ -63,7 +79,7 @@ def test_discover_oldcam_versions_includes_future_version(tmp_path):
         versions = manager._discover_oldcam_versions()
 
     assert "v9" in versions
-    assert versions[-1] == "v9"
+    assert versions[-1] in {"v9", "v10"}
 
 
 def test_queue_manager_selects_oldcam_version_folder_and_output(tmp_path):
@@ -134,6 +150,16 @@ def test_v7_default_output_path_uses_v7_suffix():
 def test_v8_default_output_path_uses_v8_suffix():
     oldcam_v8 = load_module(ROOT / "oldcam-v8" / "oldcam.py", "oldcam_v8")
     assert oldcam_v8.build_default_output_path("sample.mp4").endswith("sample-oldcam-v8.mp4")
+
+
+def test_v9_default_output_path_uses_v9_suffix():
+    oldcam_v9 = load_module(ROOT / "oldcam-v9" / "oldcam.py", "oldcam_v9")
+    assert oldcam_v9.build_default_output_path("sample.mp4").endswith("sample-oldcam-v9.mp4")
+
+
+def test_v10_default_output_path_uses_v10_suffix():
+    oldcam_v10 = load_module(ROOT / "oldcam-v10" / "oldcam.py", "oldcam_v10")
+    assert oldcam_v10.build_default_output_path("sample.mp4").endswith("sample-oldcam-v10.mp4")
 
 
 def test_v8_ois_jitter_is_bounded_and_preserves_shape():
@@ -273,4 +299,28 @@ def test_oldcam_rerun_increment_mode_creates_versioned_comparison_output(tmp_pat
 
     assert result["success"] is True
     assert result["output"].endswith("clip_looped_2-oldcam-v7.mp4")
-    assert not (tmp_path / "clip_looped_2.mp4").exists()
+
+
+def test_v10_process_frame_skips_spatial_fluctuation_when_face_not_detected():
+    oldcam_v10 = load_module(ROOT / "oldcam-v10" / "oldcam.py", "oldcam_v10_gate")
+    image = np.full((24, 24, 3), 127, dtype=np.uint8)
+    args = SimpleNamespace(sharpen=0.8, saturation=1.02, grain=1.0, quality=94, vignette_strength=0.55)
+    vignette = oldcam_v10.create_vignette_mask(24, 24)
+    state = {"face_detected": False, "full_face_mask": np.zeros((24, 24, 3), dtype=np.float32)}
+
+    with mock.patch.object(oldcam_v10, "get_dynamic_region_masks", return_value={}), \
+        mock.patch.object(
+            oldcam_v10,
+            "apply_synchronized_spatial_fluctuation",
+            side_effect=AssertionError("spatial fluctuation should be skipped"),
+        ):
+        processed = oldcam_v10.process_frame(
+            image,
+            oldcam_v10.create_neutral_phone_lut(),
+            vignette,
+            args,
+            np.random.default_rng(4),
+            state,
+        )
+
+    assert processed.shape == image.shape

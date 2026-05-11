@@ -500,18 +500,28 @@ class ConfigPanel(tk.Frame):
             activeforeground=COLORS["text_light"], command=self._on_oldcam_changed,
         )
         self.oldcam_checkbox.pack(side=tk.LEFT, padx=(8, 0))
-        self.oldcam_version_var = tk.StringVar(value="v7")
-        self.oldcam_version_combo = ttk.Combobox(
-            rA,
-            textvariable=self.oldcam_version_var,
-            values=("v7", "v8", "all"),
-            state="readonly",
-            width=5,
-            font=(FONT_FAMILY, 9),
-            style="Dark.TCombobox",
-        )
-        self.oldcam_version_combo.pack(side=tk.LEFT, padx=(4, 0))
-        self.oldcam_version_combo.bind("<<ComboboxSelected>>", self._on_oldcam_version_changed)
+        self.oldcam_version_vars = {
+            "v7": tk.BooleanVar(value=False),
+            "v8": tk.BooleanVar(value=False),
+            "v9": tk.BooleanVar(value=True),
+            "v10": tk.BooleanVar(value=False),
+        }
+        self.oldcam_version_checks = {}
+        for version in ("v7", "v8", "v9", "v10"):
+            check = tk.Checkbutton(
+                rA,
+                text=version,
+                variable=self.oldcam_version_vars[version],
+                font=(FONT_FAMILY, 9),
+                bg=COLORS["bg_input"],
+                fg=COLORS["text_light"],
+                selectcolor=COLORS["bg_main"],
+                activebackground=COLORS["bg_input"],
+                activeforeground=COLORS["text_light"],
+                command=self._on_oldcam_versions_changed,
+            )
+            check.pack(side=tk.LEFT, padx=(4 if version == "v7" else 2, 0))
+            self.oldcam_version_checks[version] = check
         self.oldcam_rerun_btn = tk.Button(
             rA,
             text="↻",
@@ -1045,11 +1055,11 @@ class ConfigPanel(tk.Frame):
         self.loop_video_var.set(self.config.get("loop_videos", False))
         self._check_ffmpeg_status()
         self.oldcam_video_var.set(self.config.get("oldcam_videos", True))
-        oldcam_version = self.config.get("oldcam_version", "v7")
-        if oldcam_version not in ("v7", "v8", "all"):
-            oldcam_version = "v7"
-            self.config["oldcam_version"] = oldcam_version
-        self.oldcam_version_var.set(oldcam_version)
+        selected_versions = self._resolve_oldcam_versions_from_config()
+        for version, var in self.oldcam_version_vars.items():
+            var.set(version in selected_versions)
+        self.config["oldcam_versions"] = selected_versions
+        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v9"
 
         # Reprocess options
         self.reprocess_var.set(self.config.get("allow_reprocess", False))
@@ -1336,15 +1346,47 @@ class ConfigPanel(tk.Frame):
         status = "enabled" if self.oldcam_video_var.get() else "disabled"
         self._notify_change(f"Oldcam Finish {status}")
 
-    def _on_oldcam_version_changed(self, event=None):
-        """Handle oldcam version dropdown change."""
-        del event
-        version = self.oldcam_version_var.get()
-        if version not in ("v7", "v8", "all"):
-            version = "v7"
-            self.oldcam_version_var.set(version)
-        self.config["oldcam_version"] = version
-        self._notify_change(f"Oldcam Finish version set to {version}")
+    def _oldcam_version_key(self, version: str) -> int:
+        try:
+            return int(str(version).lower().replace("v", "", 1))
+        except ValueError:
+            return -1
+
+    def _resolve_oldcam_versions_from_config(self) -> list[str]:
+        configured = self.config.get("oldcam_versions")
+        valid_versions = tuple(self.oldcam_version_vars.keys())
+        if isinstance(configured, list):
+            versions = [str(v).lower() for v in configured if str(v).lower() in valid_versions]
+        else:
+            versions = []
+
+        if not versions:
+            legacy = str(self.config.get("oldcam_version", "v9")).lower()
+            if legacy == "all":
+                versions = list(valid_versions)
+            elif legacy in valid_versions:
+                versions = [legacy]
+            else:
+                versions = ["v9"]
+
+        return sorted(set(versions), key=self._oldcam_version_key)
+
+    def _on_oldcam_versions_changed(self):
+        """Handle oldcam version checkbox changes."""
+        selected_versions = [
+            version
+            for version in self.oldcam_version_vars
+            if self.oldcam_version_vars[version].get()
+        ]
+        if not selected_versions:
+            selected_versions = ["v9"]
+            self.oldcam_version_vars["v9"].set(True)
+
+        selected_versions = sorted(set(selected_versions), key=self._oldcam_version_key)
+        self.config["oldcam_versions"] = selected_versions
+        # Legacy compatibility key: highest selected version.
+        self.config["oldcam_version"] = selected_versions[-1]
+        self._notify_change("Oldcam Finish versions set to " + ", ".join(selected_versions))
 
     def _on_oldcam_rerun_clicked(self):
         """Trigger Oldcam-only rerun callback from the host window."""
@@ -1662,7 +1704,7 @@ class ConfigPanel(tk.Frame):
             "prompt_title_var",
             "loop_video_var",
             "oldcam_video_var",
-            "oldcam_version_var",
+            "oldcam_version_vars",
             "reprocess_var",
             "reprocess_mode_var",
             "verbose_gui_var",

@@ -26,7 +26,10 @@
   "current_prompt_slot": 4,
   "current_model": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
   "model_display_name": "Kling 2.5 Turbo Pro",
-  "oldcam_version": "v8",
+  "oldcam_version": "v9",
+  "oldcam_versions": [
+    "v9"
+  ],
   "prompt_titles": {
     "1": "",
     "2": "",

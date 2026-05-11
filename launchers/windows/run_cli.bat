@@ -8,6 +8,8 @@ set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
 set "REQUIREMENTS=%ROOT_DIR%\requirements.txt"
 set "OLDCAM_V7_REQUIREMENTS=%ROOT_DIR%\oldcam-v7\requirements.txt"
 set "OLDCAM_V8_REQUIREMENTS=%ROOT_DIR%\oldcam-v8\requirements.txt"
+set "OLDCAM_V9_REQUIREMENTS=%ROOT_DIR%\oldcam-v9\requirements.txt"
+set "OLDCAM_V10_REQUIREMENTS=%ROOT_DIR%\oldcam-v10\requirements.txt"
 set "DEP_CHECKER=%ROOT_DIR%\dependency_checker.py"
 set "DEP_HEALTH_SCRIPT=%ROOT_DIR%\dependency_health_check.py"
 
@@ -39,7 +41,7 @@ if !errorlevel! neq 0 (
     )
 )
 
-for %%R in ("%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%") do if exist "%%~R" (
+for %%R in ("%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_REQUIREMENTS%" "%OLDCAM_V10_REQUIREMENTS%") do if exist "%%~R" (
     echo.
     echo  Syncing Oldcam dependencies from %%~nxR...
     "%VENV_PYTHON%" -m pip install --only-binary :all: -r "%%~R"
@@ -48,9 +50,11 @@ for %%R in ("%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%") do if exist "
         "%VENV_PYTHON%" -m pip install -r "%%~R"
         if !errorlevel! neq 0 (
             echo.
-            echo  WARNING: Oldcam dependencies failed to install after retry.
-            echo  WARNING: Oldcam Finish may not work correctly.
             echo.
+            echo  ERROR: Oldcam dependencies failed to install after retry.
+            echo.
+            pause
+            exit /b 1
         ) else (
             echo  Oldcam dependencies installed on retry.
         )

@@ -723,7 +723,8 @@ class KlingGUIWindow:
             "video_duration": 10,
             "loop_videos": True,  # Loop videos ON by default
             "oldcam_videos": True,  # Oldcam Finish ON by default
-            "oldcam_version": "v7",
+            "oldcam_version": "v9",
+            "oldcam_versions": ["v9"],
             "allow_reprocess": True,
             "reprocess_mode": "increment",
             "custom_models": [],
@@ -3017,9 +3018,12 @@ class KlingGUIWindow:
             completion_callback=self._on_oldcam_rerun_complete_threadsafe,
         )
         if started:
+            selected_versions = self.config.get("oldcam_versions")
+            if not isinstance(selected_versions, list) or not selected_versions:
+                selected_versions = [self.config.get("oldcam_version", "v9")]
             self._log(
                 f"Oldcam-only rerun queued: {os.path.basename(source_video)} "
-                f"({self.config.get('oldcam_version', 'v7')})",
+                f"({', '.join(str(v) for v in selected_versions)})",
                 "info",
             )
 
