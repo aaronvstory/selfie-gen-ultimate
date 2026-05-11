@@ -473,7 +473,7 @@ class ConfigPanel(tk.Frame):
 
         lbl_w = 10  # consistent label width in chars
 
-        # Options: Loop Video + Oldcam Finish
+        # Options: Loop Video + Oldcam version selection
         rA = tk.Frame(left_col, bg=COLORS["bg_input"])
         rA.pack(fill=tk.X, pady=(0, 4))
         tk.Label(rA, text="Options:", font=(FONT_FAMILY, 10),
@@ -492,14 +492,13 @@ class ConfigPanel(tk.Frame):
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.loop_info_label.pack(side=tk.LEFT, padx=4)
-        self.oldcam_video_var = tk.BooleanVar(value=True)
-        self.oldcam_checkbox = tk.Checkbutton(
-            rA, text="Oldcam Finish", variable=self.oldcam_video_var,
-            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
-            activeforeground=COLORS["text_light"], command=self._on_oldcam_changed,
-        )
-        self.oldcam_checkbox.pack(side=tk.LEFT, padx=(8, 0))
+        tk.Label(
+            rA,
+            text="Oldcam:",
+            font=(FONT_FAMILY, 10),
+            bg=COLORS["bg_input"],
+            fg=COLORS["text_light"],
+        ).pack(side=tk.LEFT, padx=(8, 4))
         self.oldcam_version_vars = {
             "v7": tk.BooleanVar(value=False),
             "v8": tk.BooleanVar(value=False),
@@ -520,7 +519,7 @@ class ConfigPanel(tk.Frame):
                 activeforeground=COLORS["text_light"],
                 command=self._on_oldcam_versions_changed,
             )
-            check.pack(side=tk.LEFT, padx=(4 if version == "v7" else 2, 0))
+            check.pack(side=tk.LEFT, padx=(2, 0))
             self.oldcam_version_checks[version] = check
         self.oldcam_rerun_btn = tk.Button(
             rA,
@@ -1054,7 +1053,6 @@ class ConfigPanel(tk.Frame):
         # Loop video option
         self.loop_video_var.set(self.config.get("loop_videos", False))
         self._check_ffmpeg_status()
-        self.oldcam_video_var.set(self.config.get("oldcam_videos", True))
         selected_versions = self._resolve_oldcam_versions_from_config()
         for version, var in self.oldcam_version_vars.items():
             var.set(version in selected_versions)
@@ -1340,12 +1338,6 @@ class ConfigPanel(tk.Frame):
         status = "enabled" if self.loop_video_var.get() else "disabled"
         self._notify_change(f"Loop video {status}")
 
-    def _on_oldcam_changed(self):
-        """Handle oldcam video checkbox change."""
-        self.config["oldcam_videos"] = self.oldcam_video_var.get()
-        status = "enabled" if self.oldcam_video_var.get() else "disabled"
-        self._notify_change(f"Oldcam Finish {status}")
-
     def _oldcam_version_key(self, version: str) -> int:
         try:
             return int(str(version).lower().replace("v", "", 1))
@@ -1378,15 +1370,14 @@ class ConfigPanel(tk.Frame):
             for version in self.oldcam_version_vars
             if self.oldcam_version_vars[version].get()
         ]
-        if not selected_versions:
-            selected_versions = ["v9"]
-            self.oldcam_version_vars["v9"].set(True)
-
         selected_versions = sorted(set(selected_versions), key=self._oldcam_version_key)
         self.config["oldcam_versions"] = selected_versions
-        # Legacy compatibility key: highest selected version.
-        self.config["oldcam_version"] = selected_versions[-1]
-        self._notify_change("Oldcam Finish versions set to " + ", ".join(selected_versions))
+        # Legacy compatibility key: highest selected version, or v9 default when empty.
+        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v9"
+        if selected_versions:
+            self._notify_change("Oldcam versions set to " + ", ".join(selected_versions))
+        else:
+            self._notify_change("Oldcam disabled (no versions selected)")
 
     def _on_oldcam_rerun_clicked(self):
         """Trigger Oldcam-only rerun callback from the host window."""
@@ -1703,7 +1694,6 @@ class ConfigPanel(tk.Frame):
             "slot_var",
             "prompt_title_var",
             "loop_video_var",
-            "oldcam_video_var",
             "oldcam_version_vars",
             "reprocess_var",
             "reprocess_mode_var",

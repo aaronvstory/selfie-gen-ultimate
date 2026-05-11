@@ -168,8 +168,12 @@ fi
 
 if [[ "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
   printf 'Syncing Python dependencies\n'
+  FILTERED_REQUIREMENTS_FILE="${VENV_DIR}/.requirements.nomediapipe.txt"
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --upgrade pip
-  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check -r "${REQUIREMENTS_FILE}"
+  grep -vi '^[[:space:]]*mediapipe' "${REQUIREMENTS_FILE}" > "${FILTERED_REQUIREMENTS_FILE}"
+  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check -r "${FILTERED_REQUIREMENTS_FILE}"
+  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --no-deps "mediapipe>=0.10.14"
+  rm -f "${FILTERED_REQUIREMENTS_FILE}" || true
   printf '%s\n' "${CURRENT_REQUIREMENTS_HASH}" > "${REQUIREMENTS_STAMP}"
 fi
 

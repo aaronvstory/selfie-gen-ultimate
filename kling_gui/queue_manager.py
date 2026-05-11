@@ -561,10 +561,11 @@ class QueueManager:
 
         configured = config.get("oldcam_versions")
         selected: List[str] = []
-        if isinstance(configured, list):
+        has_versions_key = isinstance(configured, list)
+        if has_versions_key:
             selected = [str(v).lower() for v in configured if isinstance(v, str)]
 
-        if not selected:
+        if not selected and not has_versions_key:
             legacy = str(config.get("oldcam_version", "v9")).lower()
             if legacy == "all":
                 selected = list(available)
@@ -577,6 +578,8 @@ class QueueManager:
         )
         if valid:
             return valid
+        if has_versions_key:
+            return []
         if available:
             # Intentional product default: v9 is the safe fallback when no valid
             # selection survives migration/validation. Explicit legacy choices
@@ -651,6 +654,12 @@ class QueueManager:
                 config = self.get_config()
                 versions_to_run = self._get_oldcam_versions_to_run()
                 selected_versions = self._get_selected_oldcam_versions()
+                if not versions_to_run:
+                    message = "Oldcam not selected."
+                    self.log(message, "warning")
+                    if completion_callback:
+                        completion_callback(False, str(source_video), None, message)
+                    return
                 primary_version = max(versions_to_run, key=self._oldcam_version_key)
                 allow_reprocess = bool(config.get("allow_reprocess", False))
                 reprocess_mode = str(config.get("reprocess_mode", "increment") or "increment").lower()
@@ -931,8 +940,8 @@ class QueueManager:
                         if looped_video:
                             final_video = looped_video
 
-                    # Check if oldcam video is enabled
-                    if config.get("oldcam_videos", True):
+                    # Run oldcam only when one or more versions are selected.
+                    if self._get_oldcam_versions_to_run():
                         oldcam_video = self._oldcam_video(final_video, item)
                         if oldcam_video:
                             final_video = oldcam_video

@@ -33,7 +33,22 @@ REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk '{pri
 PY_ID="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"
 STAMP="$STATE_DIR/oldcam_v10_${REQ_HASH}_${PY_ID}.ok"
 if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy, mediapipe" >/dev/null 2>&1; then
-  "$PYTHON_CMD" -m pip install -r "$SCRIPT_DIR/requirements.txt" || exit 1
+  FILTERED_REQ="$STATE_DIR/oldcam_v10_requirements.filtered.txt"
+  grep -vi '^[[:space:]]*mediapipe' "$SCRIPT_DIR/requirements.txt" > "$FILTERED_REQ"
+  "$PYTHON_CMD" -m pip install -r "$FILTERED_REQ" || {
+    rm -f "$FILTERED_REQ" || true
+    echo "Failed to install Oldcam v10 dependencies."
+    echo "MediaPipe is required for Oldcam v10."
+    echo "Close running Python processes and retry. If still failing, recreate venv."
+    exit 1
+  }
+  "$PYTHON_CMD" -m pip install --no-deps "mediapipe>=0.10.14" || {
+    rm -f "$FILTERED_REQ" || true
+    echo "Failed to install MediaPipe required by Oldcam v10."
+    echo "Close running Python processes and retry. If still failing, recreate venv."
+    exit 1
+  }
+  rm -f "$FILTERED_REQ" || true
   rm -f "$STATE_DIR"/oldcam_v10_*.ok
   echo ok > "$STAMP"
 fi

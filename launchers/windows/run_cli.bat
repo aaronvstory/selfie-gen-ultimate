@@ -10,6 +10,7 @@ set "OLDCAM_V7_REQUIREMENTS=%ROOT_DIR%\oldcam-v7\requirements.txt"
 set "OLDCAM_V8_REQUIREMENTS=%ROOT_DIR%\oldcam-v8\requirements.txt"
 set "OLDCAM_V9_REQUIREMENTS=%ROOT_DIR%\oldcam-v9\requirements.txt"
 set "OLDCAM_V10_REQUIREMENTS=%ROOT_DIR%\oldcam-v10\requirements.txt"
+set "MEDIAPIPE_SPEC=mediapipe>=0.10.14"
 set "DEP_CHECKER=%ROOT_DIR%\dependency_checker.py"
 set "DEP_HEALTH_SCRIPT=%ROOT_DIR%\dependency_health_check.py"
 
@@ -28,37 +29,13 @@ if not exist "%VENV_PYTHON%" (
 echo.
 echo  Syncing dependencies from requirements.txt...
 "%VENV_PYTHON%" -m pip install --upgrade pip >nul 2>&1
-"%VENV_PYTHON%" -m pip install --only-binary :all: -r "%REQUIREMENTS%"
-if !errorlevel! neq 0 (
-    echo.
-    echo  Retrying base dependencies without binary constraint...
-    "%VENV_PYTHON%" -m pip install -r "%REQUIREMENTS%"
-    if !errorlevel! neq 0 (
-        echo.
-        echo  ERROR: Base dependencies failed to install.
-        pause
-        exit /b 1
-    )
-)
+call :INSTALL_REQUIREMENTS "%REQUIREMENTS%" "base"
+if !errorlevel! neq 0 goto :DEPENDENCY_FAIL
 
 for %%R in ("%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_REQUIREMENTS%" "%OLDCAM_V10_REQUIREMENTS%") do if exist "%%~R" (
     echo.
-    echo  Syncing Oldcam dependencies from %%~nxR...
-    "%VENV_PYTHON%" -m pip install --only-binary :all: -r "%%~R"
-    if !errorlevel! neq 0 (
-        echo  Retrying Oldcam dependencies without binary constraint...
-        "%VENV_PYTHON%" -m pip install -r "%%~R"
-        if !errorlevel! neq 0 (
-            echo.
-            echo.
-            echo  ERROR: Oldcam dependencies failed to install after retry.
-            echo.
-            pause
-            exit /b 1
-        ) else (
-            echo  Oldcam dependencies installed on retry.
-        )
-    )
+    call :INSTALL_REQUIREMENTS "%%~R" "oldcam"
+    if !errorlevel! neq 0 goto :DEPENDENCY_FAIL
 )
 
 if exist "%DEP_CHECKER%" (
@@ -102,4 +79,43 @@ if !EXIT_CODE! neq 0 (
 )
 
 endlocal & exit /b %EXIT_CODE%
+
+:DEPENDENCY_FAIL
+echo.
+echo  ERROR: Dependency bootstrap failed.
+echo  MediaPipe is required for Oldcam v9/v10.
+echo  Close running Python/GUI processes and retry.
+echo  If it still fails, recreate the venv or run dependency repair/bootstrap manually.
+pause
+endlocal & exit /b 1
+
+:INSTALL_REQUIREMENTS
+set "REQ_FILE=%~1"
+set "REQ_KIND=%~2"
+set "REQ_FILTERED=%TEMP%\\selfiegen_req_%RANDOM%_%RANDOM%.txt"
+if not exist "%REQ_FILE%" (
+    exit /b 0
+)
+findstr /V /I /R "^[ ]*mediapipe" "%REQ_FILE%" > "%REQ_FILTERED%"
+echo  Syncing %REQ_KIND% dependencies from %~nx1...
+"%VENV_PYTHON%" -m pip install --only-binary :all: -r "%REQ_FILTERED%"
+if !errorlevel! neq 0 (
+    echo  Retrying %REQ_KIND% dependencies without binary constraint...
+    "%VENV_PYTHON%" -m pip install -r "%REQ_FILTERED%"
+    if !errorlevel! neq 0 (
+        del "%REQ_FILTERED%" >nul 2>&1
+        exit /b 1
+    )
+)
+findstr /I /R "^[ ]*mediapipe" "%REQ_FILE%" >nul
+if !errorlevel! equ 0 (
+    echo  Installing MediaPipe separately with --no-deps...
+    "%VENV_PYTHON%" -m pip install --no-deps "%MEDIAPIPE_SPEC%"
+    if !errorlevel! neq 0 (
+        del "%REQ_FILTERED%" >nul 2>&1
+        exit /b 1
+    )
+)
+del "%REQ_FILTERED%" >nul 2>&1
+exit /b 0
 

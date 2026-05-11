@@ -51,3 +51,12 @@ def test_launcher_hub_windows_wrappers_preserve_exit_codes():
         text = _read(script)
         assert 'set "EXIT_CODE=%ERRORLEVEL%"' in text
         assert "exit /b %EXIT_CODE%" in text
+
+
+def test_windows_root_launchers_install_mediapipe_with_no_deps():
+    gui = _read("launchers/windows/run_gui.bat")
+    cli = _read("launchers/windows/run_cli.bat")
+    for text in (gui, cli):
+        assert 'findstr /V /I /R "^[ ]*mediapipe"' in text
+        assert '-m pip install --no-deps "%MEDIAPIPE_SPEC%"' in text
+        assert "ERROR: Dependency bootstrap failed." in text

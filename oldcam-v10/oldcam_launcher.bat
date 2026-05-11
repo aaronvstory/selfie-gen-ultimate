@@ -9,6 +9,7 @@ for %%I in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fI"
 set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
 set "HAD_ERRORS="
+set "MEDIAPIPE_SPEC=mediapipe>=0.10.14"
 
 set "PYTHON_CMD="
 if not "%SELFIEGEN_PYTHON%"=="" ("%SELFIEGEN_PYTHON%" -V >nul 2>&1 && set "PYTHON_CMD=%SELFIEGEN_PYTHON%")
@@ -38,11 +39,28 @@ if exist "%STAMP_FILE%" (
   if not errorlevel 1 set "NEED_PIP=0"
 )
 if "%NEED_PIP%"=="1" (
-  "%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul
+  set "REQ_FILTERED=%TEMP%\selfiegen_oldcam_v10_%RANDOM%_%RANDOM%.txt"
+  findstr /V /I /R "^[ ]*mediapipe" "%SCRIPT_DIR%requirements.txt" > "%REQ_FILTERED%"
+  "%PYTHON_CMD%" -m pip install -r "%REQ_FILTERED%" >nul 2>nul
   if errorlevel 1 (
-    echo Failed to install dependencies.
+    del "%REQ_FILTERED%" >nul 2>&1
+    echo Failed to install Oldcam v10 dependencies.
+    echo MediaPipe is required for Oldcam v10.
+    echo Close running Python/GUI processes and retry.
+    echo If it still fails, recreate the venv and rerun.
+    set "HAD_ERRORS=1"
     goto DONE
   )
+  "%PYTHON_CMD%" -m pip install --no-deps "%MEDIAPIPE_SPEC%" >nul 2>nul
+  if errorlevel 1 (
+    del "%REQ_FILTERED%" >nul 2>&1
+    echo Failed to install MediaPipe required by Oldcam v10.
+    echo Close running Python/GUI processes and retry.
+    echo If it still fails, recreate the venv and rerun.
+    set "HAD_ERRORS=1"
+    goto DONE
+  )
+  del "%REQ_FILTERED%" >nul 2>&1
   del /q "%STATE_DIR%\oldcam_v10_*.ok" >nul 2>&1
   > "%STAMP_FILE%" echo ok
 )

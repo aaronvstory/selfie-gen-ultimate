@@ -59,6 +59,11 @@ def test_oldcam_legacy_explicit_v7_is_preserved():
     assert manager._get_oldcam_version() == "v7"
 
 
+def test_oldcam_empty_versions_list_disables_oldcam():
+    manager, _ = make_queue_manager({"oldcam_versions": []})
+    assert manager._get_oldcam_versions_to_run() == []
+
+
 def test_oldcam_versions_list_is_supported():
     manager, _ = make_queue_manager({"oldcam_versions": ["v7", "v10"]})
     assert manager._get_oldcam_versions_to_run() == ["v7", "v10"]
@@ -306,6 +311,27 @@ def test_oldcam_rerun_increment_mode_creates_versioned_comparison_output(tmp_pat
     assert result["output"].endswith("clip_looped_2-oldcam-v7.mp4")
 
 
+def test_oldcam_rerun_fails_when_no_versions_selected(tmp_path):
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    manager, _ = make_queue_manager({"oldcam_versions": []})
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update(
+            {"success": success, "src": src, "output": output, "error": error}
+        )
+        done.set()
+
+    started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+    assert started is True
+    assert done.wait(2)
+    assert result["success"] is False
+    assert result["error"] == "Oldcam not selected."
+
+
 def test_v10_process_frame_skips_spatial_fluctuation_when_face_not_detected():
     oldcam_v10 = load_module(ROOT / "oldcam-v10" / "oldcam.py", "oldcam_v10_gate")
     image = np.full((24, 24, 3), 127, dtype=np.uint8)
@@ -329,3 +355,10 @@ def test_v10_process_frame_skips_spatial_fluctuation_when_face_not_detected():
         )
 
     assert processed.shape == image.shape
+
+
+def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
+    panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
+    assert 'text="Oldcam Finish"' not in panel_source
+    assert 'text="Oldcam:"' in panel_source
+    assert 'for version in ("v7", "v8", "v9", "v10")' in panel_source

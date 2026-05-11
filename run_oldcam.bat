@@ -8,6 +8,7 @@ if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
 
 set "OLDCAM_LAUNCHER=%BATCH_DIR%oldcam-v9\launcher.py"
 set "OLDCAM_REQUIREMENTS=%BATCH_DIR%oldcam-v9\requirements.txt"
+set "MEDIAPIPE_SPEC=mediapipe>=0.10.14"
 
 if not exist "%OLDCAM_LAUNCHER%" (
     echo ERROR: Missing Oldcam launcher at:
@@ -53,15 +54,33 @@ if "%NEED_PIP%"=="0" (
     echo Dependencies unchanged. Skipping pip install.
 ) else if exist "%OLDCAM_REQUIREMENTS%" (
     echo Syncing Oldcam V9 dependencies...
-    "%PYTHON_EXE%" -m pip install -r "%OLDCAM_REQUIREMENTS%" >nul 2>&1
+    set "REQ_FILTERED=%TEMP%\selfiegen_oldcam_v9_%RANDOM%_%RANDOM%.txt"
+    findstr /V /I /R "^[ ]*mediapipe" "%OLDCAM_REQUIREMENTS%" > "%REQ_FILTERED%"
+    "%PYTHON_EXE%" -m pip install -r "%REQ_FILTERED%" >nul 2>&1
     if !errorlevel! neq 0 (
+        del "%REQ_FILTERED%" >nul 2>&1
         echo ERROR: Could not auto-install all Oldcam dependencies.
+        echo MediaPipe is required for Oldcam v9.
+        echo Close running Python/GUI processes and retry.
+        echo If it still fails, recreate the venv and rerun.
         pause
         exit /b 1
-    ) else (
-        del /q "%STATE_DIR%\oldcam_v9_*.ok" >nul 2>&1
-        > "%STAMP_FILE%" echo ok
     )
+    findstr /I /R "^[ ]*mediapipe" "%OLDCAM_REQUIREMENTS%" >nul
+    if !errorlevel! equ 0 (
+        "%PYTHON_EXE%" -m pip install --no-deps "%MEDIAPIPE_SPEC%" >nul 2>&1
+        if !errorlevel! neq 0 (
+            del "%REQ_FILTERED%" >nul 2>&1
+            echo ERROR: MediaPipe install failed. Oldcam v9 requires MediaPipe.
+            echo Close running Python/GUI processes and retry.
+            echo If it still fails, recreate the venv and rerun.
+            pause
+            exit /b 1
+        )
+    )
+    del "%REQ_FILTERED%" >nul 2>&1
+    del /q "%STATE_DIR%\oldcam_v9_*.ok" >nul 2>&1
+    > "%STAMP_FILE%" echo ok
 )
 
 echo Launching Oldcam V9...
