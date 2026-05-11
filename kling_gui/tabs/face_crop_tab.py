@@ -2049,7 +2049,8 @@ class FaceCropTab(tk.Frame):
             gen = getattr(self, "outpaint_generator", None)
             if gen is not None and hasattr(gen, "get_last_outpaint_error_detail"):
                 detail = gen.get_last_outpaint_error_detail() or ""
-            msg = self._format_outpaint_failure_message(detail)
+            from outpaint_generator import OutpaintGenerator
+            msg = OutpaintGenerator.format_error_detail(detail)
             self.log(msg, "error")
 
     def _on_outpaint_error(self, error, run_token=None):
@@ -2061,23 +2062,6 @@ class FaceCropTab(tk.Frame):
         self._expand_abort_btn.config(text="Abort", state=tk.DISABLED)
         self._outpaint_status.config(text=error, fg=COLORS["error"])
         self.log(f"Outpaint error: {error}", "error")
-
-    @staticmethod
-    def _format_outpaint_failure_message(detail: str) -> str:
-        if not detail:
-            return "Outpaint failed"
-        reason = ""
-        for token in detail.split():
-            if token.startswith("reason="):
-                reason = token.split("=", 1)[1].strip().lower()
-                break
-        reason_map = {
-            "pending_timeout": "Outpaint failed (provider timed out)",
-            "provider_failed": "Outpaint failed (provider returned failure)",
-            "poll_error_limit": "Outpaint failed (provider polling errors)",
-            "fal_failed_or_timed_out": "Outpaint failed (provider failed or timed out)",
-        }
-        return reason_map.get(reason, f"Outpaint failed ({detail})")
 
     # ── Config Persistence ──────────────────────────────────────────
 

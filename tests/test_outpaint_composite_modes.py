@@ -14,6 +14,12 @@ def _build_source_image(width: int, height: int) -> Image.Image:
     return src
 
 
+def test_read_int_env_invalid_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("BFL_MAX_WAIT_SECONDS", "not-an-int")
+    monkeypatch.setenv("BFL_EXPAND_MAX_WAIT_SECONDS", "also-bad")
+    assert outpaint_generator._read_int_env("BFL_MAX_WAIT_SECONDS", "BFL_EXPAND_MAX_WAIT_SECONDS", 30) == 30
+
+
 def test_preserve_seamless_exact_center_and_outside_ring_blend(tmp_path: Path):
     gen = OutpaintGenerator(api_key="x")
     src = _build_source_image(40, 30)

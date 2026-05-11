@@ -19,10 +19,20 @@ from automation.config import get_outpaint_fal_timeout_seconds
 
 logger = logging.getLogger(__name__)
 
+# Safe env int loader: primary first, then fallback, then default.
+def _read_int_env(primary: str, fallback: str, default: int) -> int:
+    for key in (primary, fallback):
+        raw = os.environ.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            logger.warning("Invalid %s=%r; ignoring and trying fallback/default", key, raw)
+    return default
+
 # BFL polling limits (shared with selfie_generator pattern)
-_BFL_MAX_WAIT_SECONDS = int(
-    os.environ.get("BFL_MAX_WAIT_SECONDS", os.environ.get("BFL_EXPAND_MAX_WAIT_SECONDS", "30"))
-)
+_BFL_MAX_WAIT_SECONDS = _read_int_env("BFL_MAX_WAIT_SECONDS", "BFL_EXPAND_MAX_WAIT_SECONDS", 30)
 _BFL_POLL_INTERVAL = 5
 _BFL_MAX_CONSECUTIVE_ERRORS = 3
 _BFL_EXPAND_URL = "https://api.bfl.ai/v1/flux-pro-1.0-expand"
@@ -145,6 +155,23 @@ class OutpaintGenerator:
     def get_last_outpaint_error_detail(self) -> str:
         """Last error detail for latest serial outpaint/_bfl_outpaint call on this instance; not concurrency-safe."""
         return self._last_outpaint_error_detail
+
+    @staticmethod
+    def format_error_detail(detail: str) -> str:
+        if not detail:
+            return "Outpaint failed"
+        reason = ""
+        for token in detail.split():
+            if token.startswith("reason="):
+                reason = token.split("=", 1)[1].strip().lower()
+                break
+        reason_map = {
+            "pending_timeout": "Outpaint failed (provider timed out)",
+            "provider_failed": "Outpaint failed (provider returned failure)",
+            "poll_error_limit": "Outpaint failed (provider polling errors)",
+            "fal_failed_or_timed_out": "Outpaint failed (provider failed or timed out)",
+        }
+        return reason_map.get(reason, f"Outpaint failed ({detail})")
 
     def _set_last_outpaint_error_detail(self, detail: str) -> None:
         self._last_outpaint_error_detail = detail
