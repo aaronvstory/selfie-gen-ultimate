@@ -474,7 +474,13 @@ class OutpaintTab(tk.Frame):
                 f"Outpaint complete{sim_msg}: {os.path.basename(result)}", "success"
             )
         else:
-            self.log("Outpaint failed", "error")
+            detail = ""
+            if hasattr(self.outpaint_generator, "get_last_outpaint_error_detail"):
+                detail = self.outpaint_generator.get_last_outpaint_error_detail() or ""
+            msg = "Outpaint failed"
+            if detail:
+                msg = f"Outpaint failed: provider pending >30s ({detail})"
+            self.log(msg, "error")
 
     def _on_error(self, error):
         self._set_busy(False)

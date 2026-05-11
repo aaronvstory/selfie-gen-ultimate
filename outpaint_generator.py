@@ -20,7 +20,7 @@ from automation.config import get_outpaint_fal_timeout_seconds
 logger = logging.getLogger(__name__)
 
 # BFL polling limits (shared with selfie_generator pattern)
-_BFL_MAX_WAIT_SECONDS = 180
+_BFL_MAX_WAIT_SECONDS = 30
 _BFL_POLL_INTERVAL = 5
 _BFL_MAX_CONSECUTIVE_ERRORS = 5
 _BFL_EXPAND_URL = "https://api.bfl.ai/v1/flux-pro-1.0-expand"
@@ -135,9 +135,16 @@ class OutpaintGenerator:
         self._freeimage_key = freeimage_key
         self._bfl_api_key = bfl_api_key or ""
         self._progress_callback: Optional[Callable[[str, str], None]] = None
+        self._last_outpaint_error_detail: str = ""
 
     def set_progress_callback(self, cb: Callable[[str, str], None]):
         self._progress_callback = cb
+
+    def get_last_outpaint_error_detail(self) -> str:
+        return self._last_outpaint_error_detail
+
+    def _set_last_outpaint_error_detail(self, detail: str) -> None:
+        self._last_outpaint_error_detail = detail
 
     def _report(self, msg: str, level: str = "info"):
         if self._progress_callback:
@@ -220,6 +227,7 @@ class OutpaintGenerator:
         Returns:
             Absolute path to expanded image, or None on failure.
         """
+        self._set_last_outpaint_error_detail("")
         selected_provider = (provider or "auto").strip().lower()
         if selected_provider not in {"auto", "bfl", "fal"}:
             self._report(f"Invalid provider override: {provider}", "error")
@@ -416,7 +424,9 @@ class OutpaintGenerator:
         if not final:
             if cancel_event is not None and cancel_event.is_set():
                 return None
-            self._report("Outpaint failed or timed out", "error")
+            detail = "reason=fal_failed_or_timed_out"
+            self._set_last_outpaint_error_detail(detail)
+            self._report(f"Outpaint failed or timed out ({detail})", "error")
             return None
 
         # Extract image URL from result
@@ -845,6 +855,15 @@ class OutpaintGenerator:
     ) -> Optional[str]:
         """Outpaint via BFL Expand (FLUX Pro 1.0). Returns output path or None."""
         import requests
+        self._set_last_outpaint_error_detail("")
+
+        def _summarize_poll_payload(payload: dict) -> str:
+            safe = {}
+            for key in ("status", "error", "message", "eta", "queue_position", "id"):
+                if key in payload and payload.get(key) not in (None, ""):
+                    val = str(payload.get(key))
+                    safe[key] = val[:160]
+            return str(safe) if safe else "{}"
 
         # 1. Preflight: shrink input + margins so total canvas fits BFL's MP limit.
         #    Without this, BFL silently clamps (e.g. 1536x2048 → 1088x1456).
@@ -999,9 +1018,20 @@ class OutpaintGenerator:
                 elapsed_s = int(time.monotonic() - poll_start)
 
                 if elapsed_s >= _BFL_MAX_WAIT_SECONDS:
-                    self._report(
-                        f"BFL Expand timed out after {elapsed_s}s", "error",
+                    last_status = "unknown"
+                    if isinstance(poll_data, dict):
+                        last_status = str(poll_data.get("status", "unknown"))
+                    detail = (
+                        f"reason=pending_timeout task={task_id or 'unknown'} "
+                        f"elapsed={elapsed_s}s last_status={last_status} poll_count={poll_num}"
                     )
+                    self._set_last_outpaint_error_detail(detail)
+                    if isinstance(poll_data, dict):
+                        self._report(
+                            f"BFL last poll snapshot: {_summarize_poll_payload(poll_data)}",
+                            "debug",
+                        )
+                    self._report(f"BFL Expand timed out after {elapsed_s}s ({detail})", "error")
                     return None
 
                 if cancel_event is not None and cancel_event.wait(timeout=_BFL_POLL_INTERVAL):
@@ -1022,8 +1052,13 @@ class OutpaintGenerator:
                     consecutive_errors += 1
                     self._report(f"BFL poll error ({consecutive_errors}): {exc}", "warning")
                     if consecutive_errors >= _BFL_MAX_CONSECUTIVE_ERRORS:
+                        detail = (
+                            f"reason=poll_error_limit task={task_id or 'unknown'} "
+                            f"poll_errors={consecutive_errors}"
+                        )
+                        self._set_last_outpaint_error_detail(detail)
                         self._report(
-                            f"BFL polling aborted after {consecutive_errors} consecutive errors",
+                            f"BFL polling aborted after {consecutive_errors} consecutive errors ({detail})",
                             "error",
                         )
                         return None
@@ -1035,7 +1070,15 @@ class OutpaintGenerator:
                     break
                 elif status_lower in ("error", "failed"):
                     err_msg = poll_data.get("error", "Unknown BFL error")
-                    self._report(f"BFL Expand failed: {err_msg}", "error")
+                    detail = (
+                        f"reason=provider_failed task={task_id or 'unknown'} "
+                        f"status={status or 'unknown'} error={str(err_msg)[:160]}"
+                    )
+                    self._set_last_outpaint_error_detail(detail)
+                    self._report(
+                        f"BFL Expand failed: {err_msg} ({detail})",
+                        "error",
+                    )
                     return None
                 else:
                     if poll_num % 6 == 0:

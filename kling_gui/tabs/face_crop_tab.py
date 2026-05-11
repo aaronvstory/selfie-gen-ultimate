@@ -2044,7 +2044,13 @@ class FaceCropTab(tk.Frame):
             self.log(f"Outpaint: saved {basename}", "success")
         else:
             self._outpaint_status.config(text="Failed", fg=COLORS["error"])
-            self.log("Outpaint failed", "error")
+            detail = ""
+            if hasattr(self.outpaint_generator, "get_last_outpaint_error_detail"):
+                detail = self.outpaint_generator.get_last_outpaint_error_detail() or ""
+            msg = "Outpaint failed"
+            if detail:
+                msg = f"Outpaint failed: provider pending >30s ({detail})"
+            self.log(msg, "error")
 
     def _on_outpaint_error(self, error, run_token=None):
         if run_token is not None and run_token != self._outpaint_run_token:

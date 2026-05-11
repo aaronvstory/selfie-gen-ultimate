@@ -3,6 +3,7 @@ from pathlib import Path
 from PIL import Image
 
 from outpaint_generator import OutpaintGenerator
+import outpaint_generator
 
 
 def _build_source_image(width: int, height: int) -> Image.Image:
@@ -374,3 +375,60 @@ def test_fal_dimension_read_failure_skips_composite(monkeypatch, tmp_path: Path)
     assert out is not None
     assert called["composite"] == 0
     assert any(level == "warning" and "Could not read downloaded output dimensions" in message for level, message in logs)
+
+
+def test_bfl_pending_timeout_sets_reason_and_logs(monkeypatch, tmp_path: Path):
+    gen = OutpaintGenerator(api_key="x", bfl_api_key="bfl-key")
+    src_path = tmp_path / "input.png"
+    Image.new("RGB", (320, 240), (10, 20, 30)).save(src_path)
+
+    logs = []
+
+    def capture_log(message: str, level: str = "info"):
+        logs.append((level, message))
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    poll_payload = {"status": "Pending", "id": "task-xyz"}
+
+    def fake_post(*_args, **_kwargs):
+        return _Resp({"polling_url": "https://poll.example", "id": "task-xyz"})
+
+    def fake_get(*_args, **_kwargs):
+        return _Resp(poll_payload)
+
+    ticks = iter([0, 6, 12, 18, 24, 30, 36, 42])
+
+    def fake_monotonic():
+        return next(ticks)
+
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr(outpaint_generator.time, "sleep", lambda _sec: None)
+    monkeypatch.setattr(outpaint_generator.time, "monotonic", fake_monotonic)
+
+    gen.set_progress_callback(capture_log)
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        expand_left=80,
+        expand_right=80,
+        expand_top=60,
+        expand_bottom=60,
+        provider="bfl",
+        composite_mode="preserve_seamless",
+    )
+
+    assert out is None
+    detail = gen.get_last_outpaint_error_detail()
+    assert "reason=pending_timeout" in detail
+    assert "task=task-xyz" in detail
+    assert any("BFL Expand timed out after" in message and "reason=pending_timeout" in message for _, message in logs)
