@@ -1967,6 +1967,7 @@ class FaceCropTab(tk.Frame):
                 gen = OutpaintGenerator(
                     api_key, freeimage_key=freeimage_key, bfl_api_key=bfl_key,
                 )
+                self.outpaint_generator = gen
                 gen.set_progress_callback(
                     lambda msg, lvl: self.winfo_toplevel().after(
                         0, lambda m=msg, l=lvl: self.log(m, l)
@@ -2045,11 +2046,12 @@ class FaceCropTab(tk.Frame):
         else:
             self._outpaint_status.config(text="Failed", fg=COLORS["error"])
             detail = ""
-            if hasattr(self.outpaint_generator, "get_last_outpaint_error_detail"):
-                detail = self.outpaint_generator.get_last_outpaint_error_detail() or ""
+            gen = getattr(self, "outpaint_generator", None)
+            if gen is not None and hasattr(gen, "get_last_outpaint_error_detail"):
+                detail = gen.get_last_outpaint_error_detail() or ""
             msg = "Outpaint failed"
             if detail:
-                msg = f"Outpaint failed: provider pending >30s ({detail})"
+                msg = f"Outpaint failed ({detail})"
             self.log(msg, "error")
 
     def _on_outpaint_error(self, error, run_token=None):

@@ -20,7 +20,7 @@ from automation.config import get_outpaint_fal_timeout_seconds
 logger = logging.getLogger(__name__)
 
 # BFL polling limits (shared with selfie_generator pattern)
-_BFL_MAX_WAIT_SECONDS = 30
+_BFL_MAX_WAIT_SECONDS = int(os.environ.get("BFL_EXPAND_MAX_WAIT_SECONDS", "30"))
 _BFL_POLL_INTERVAL = 5
 _BFL_MAX_CONSECUTIVE_ERRORS = 5
 _BFL_EXPAND_URL = "https://api.bfl.ai/v1/flux-pro-1.0-expand"
