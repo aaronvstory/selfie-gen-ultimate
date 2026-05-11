@@ -627,7 +627,7 @@ def naturalize_video(input_path, output_path, args):
     height, width = test_frame.shape[:2]
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    lut = create_iphone_lut()
+    lut = create_neutral_phone_lut()
     vignette_mask = create_vignette_mask(height, width)
     rng = np.random.default_rng()
     state = {

@@ -569,13 +569,17 @@ class DropZoneWindowsRenderTests(unittest.TestCase):
 class OldcamRerunFlowTests(unittest.TestCase):
     def test_config_panel_contains_oldcam_rerun_icon_next_to_version_selector(self):
         src = inspect.getsource(ConfigPanel._setup_ui)
-        version_pos = src.find("self.oldcam_version_combo")
+        version_pos = src.find("self.oldcam_version_vars")
         rerun_pos = src.find("self.oldcam_rerun_btn")
         self.assertTrue(version_pos >= 0 and rerun_pos > version_pos)
 
-    def test_config_panel_oldcam_versions_include_all(self):
+    def test_config_panel_oldcam_versions_include_v7_v8_v9_v10(self):
         src = inspect.getsource(ConfigPanel._setup_ui)
-        self.assertIn('values=("v7", "v8", "all")', src)
+        self.assertIn('self.oldcam_version_vars = {', src)
+        self.assertIn('"v7"', src)
+        self.assertIn('"v8"', src)
+        self.assertIn('"v9"', src)
+        self.assertIn('"v10"', src)
 
     def test_resolve_oldcam_rerun_source_prefers_base_video_when_available(self):
         window = KlingGUIWindow.__new__(KlingGUIWindow)

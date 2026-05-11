@@ -578,6 +578,11 @@ class QueueManager:
         if valid:
             return valid
         if available:
+            # Intentional product default: v9 is the safe fallback when no valid
+            # selection survives migration/validation. Explicit legacy choices
+            # (e.g. oldcam_version=v7) still win via the valid path above.
+            if "v9" in available:
+                return ["v9"]
             latest = available[-1]
             return [latest]
         return ["v9"]

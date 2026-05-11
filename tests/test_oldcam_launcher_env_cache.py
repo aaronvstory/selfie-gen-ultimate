@@ -3,11 +3,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_run_oldcam_defaults_to_v8_and_uses_stamp_cache():
+def test_run_oldcam_defaults_to_v9_and_uses_stamp_cache():
     text = (REPO_ROOT / "run_oldcam.bat").read_text(encoding="utf-8")
-    assert "oldcam-v8\\launcher.py" in text
+    assert "oldcam-v9\\launcher.py" in text
     assert ".launcher_state" in text
-    assert "oldcam_v8_" in text
+    assert "oldcam_v9_" in text
     assert 'findstr /I /R "^[0-9A-F][0-9A-F]"' in text
     assert 'set "PY_ID=%PY_ID: =_%"' in text
     assert 'if "%NEED_PIP%"=="0" (' in text

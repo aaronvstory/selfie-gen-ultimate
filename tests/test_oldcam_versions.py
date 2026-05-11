@@ -46,12 +46,17 @@ def make_queue_manager(config):
     return manager, logs
 
 
-def test_oldcam_version_defaults_to_latest_selected_for_missing_or_invalid_config():
+def test_oldcam_version_defaults_to_v9_for_missing_or_invalid_config():
     manager, _ = make_queue_manager({})
-    assert manager._get_oldcam_version().startswith("v")
-
-    manager, _ = make_queue_manager({"oldcam_version": "v9"})
     assert manager._get_oldcam_version() == "v9"
+
+    manager, _ = make_queue_manager({"oldcam_version": "invalid"})
+    assert manager._get_oldcam_version() == "v9"
+
+
+def test_oldcam_legacy_explicit_v7_is_preserved():
+    manager, _ = make_queue_manager({"oldcam_version": "v7"})
+    assert manager._get_oldcam_version() == "v7"
 
 
 def test_oldcam_versions_list_is_supported():
