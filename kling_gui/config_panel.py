@@ -1347,10 +1347,14 @@ class ConfigPanel(tk.Frame):
     def _resolve_oldcam_versions_from_config(self) -> List[str]:
         configured = self.config.get("oldcam_versions")
         valid_versions = tuple(self.oldcam_version_vars.keys())
-        if isinstance(configured, list):
+        has_versions_key = isinstance(configured, list)
+        if has_versions_key:
             versions = [str(v).lower() for v in configured if str(v).lower() in valid_versions]
         else:
             versions = []
+
+        if has_versions_key:
+            return sorted(set(versions), key=self._oldcam_version_key)
 
         if not versions:
             legacy = str(self.config.get("oldcam_version", "v9")).lower()

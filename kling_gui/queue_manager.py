@@ -1180,8 +1180,8 @@ class QueueManager:
 
     def _ensure_oldcam_dependencies(self, oldcam_dir: Path, version: str) -> bool:
         """Check Oldcam requirements in current interpreter and emit install guidance."""
-        if version in self._oldcam_deps_status_by_version:
-            return self._oldcam_deps_status_by_version[version]
+        if self._oldcam_deps_status_by_version.get(version) is True:
+            return True
 
         required_modules = ["cv2", "numpy"]
         if version in {"v9", "v10"}:
@@ -1209,7 +1209,6 @@ class QueueManager:
                     )
             else:
                 self.log(f"Oldcam requirements missing: {requirements_path}", "warning")
-            self._oldcam_deps_status_by_version[version] = False
             return False
 
     def _oldcam_video(self, video_path: str, item: QueueItem) -> Optional[str]:

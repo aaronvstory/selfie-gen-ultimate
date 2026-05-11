@@ -23,6 +23,7 @@ if not defined PYTHON_CMD (
 )
 if not defined PYTHON_CMD (
   echo Could not find usable Python interpreter.
+  set "HAD_ERRORS=1"
   goto DONE
 )
 

@@ -284,14 +284,14 @@ def apply_dynamic_tone_mapping(image):
     return cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2BGR)
 
 
-def get_temporal_noise_field(state, shape, rng, strength=1.0):
-    previous = state.get("temporal_noise")
+def get_temporal_noise_field(state, shape, rng, strength=1.0, key="temporal_noise"):
+    previous = state.get(key)
     fresh = rng.normal(0.0, strength, shape).astype(np.float32)
     if previous is None or previous.shape != shape:
         field = fresh
     else:
         field = previous * 0.85 + fresh * 0.15
-    state["temporal_noise"] = field
+    state[key] = field
     return field
 
 
@@ -300,8 +300,12 @@ def apply_modern_sensor_noise(image, grain, rng, state=None, fpn_mask=None):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     lum = hsv[:, :, 2].astype(np.float32) / 255.0
     h, w = image.shape[:2]
-    temporal_luma = get_temporal_noise_field(state, (h, w), rng, strength=float(grain) * 0.9)
-    temporal_chroma = get_temporal_noise_field(state, (h, w, 2), rng, strength=float(grain) * 0.15)
+    temporal_luma = get_temporal_noise_field(
+        state, (h, w), rng, strength=float(grain) * 0.9, key="temporal_noise_luma"
+    )
+    temporal_chroma = get_temporal_noise_field(
+        state, (h, w, 2), rng, strength=float(grain) * 0.15, key="temporal_noise_chroma"
+    )
     if fpn_mask is None:
         fpn_mask = np.zeros((h, w), dtype=np.float32)
     shadow_mask = ((1.0 - lum) ** 1.4)
@@ -505,6 +509,7 @@ def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
 
 def naturalize_image(input_path, output_path, args):
     image = open_media(input_path)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     height, width = image.shape[:2]
     lut = create_neutral_phone_lut()
     vignette_mask = create_vignette_mask(height, width)
@@ -577,6 +582,7 @@ def finalize_video_output(temp_output, input_path, output_path, codec):
 
 def naturalize_video(input_path, output_path, args):
     source = ensure_input_exists(input_path)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(str(source))
     if not capture.isOpened():
         raise RuntimeError(f"Could not open video: {source}")

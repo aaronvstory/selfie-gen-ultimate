@@ -595,6 +595,7 @@ def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
 
 def naturalize_image(input_path, output_path, args):
     image = open_media(input_path)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     height, width = image.shape[:2]
     lut = create_neutral_phone_lut()
     vignette_mask = create_vignette_mask(height, width)
@@ -667,6 +668,7 @@ def finalize_video_output(temp_output, input_path, output_path, codec):
 
 def naturalize_video(input_path, output_path, args):
     source = ensure_input_exists(input_path)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(str(source))
     if not capture.isOpened():
         raise RuntimeError(f"Could not open video: {source}")
