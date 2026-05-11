@@ -1,4 +1,5 @@
 import importlib.util
+import builtins
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -362,3 +363,59 @@ def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
     assert 'text="Oldcam Finish"' not in panel_source
     assert 'text="Oldcam:"' in panel_source
     assert 'for version in ("v7", "v8", "v9", "v10")' in panel_source
+
+
+def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v10"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "requirements.txt").write_text("mediapipe>=0.10.14\n", encoding="utf-8")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("No module named mediapipe")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v10") is False
+
+
+def test_oldcam_dependency_preflight_v7_does_not_require_mediapipe(tmp_path):
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v7"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "requirements.txt").write_text("numpy\nopencv-python-headless\n", encoding="utf-8")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("No module named mediapipe")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v7") is True
+
+
+def test_v10_apply_modern_sensor_noise_accepts_3d_fpn_mask():
+    oldcam_v10 = load_module(ROOT / "oldcam-v10" / "oldcam.py", "oldcam_v10_fpn")
+    image = np.full((20, 20, 3), 64, dtype=np.uint8)
+    rng = np.random.default_rng(7)
+    fpn = np.zeros((20, 20, 3), dtype=np.float32)
+    fpn[:, :, 0] = 0.5
+    fpn[:, :, 1] = 0.25
+    fpn[:, :, 2] = -0.25
+    processed = oldcam_v10.apply_modern_sensor_noise(image, grain=1.0, rng=rng, state={}, fpn_mask=fpn)
+    assert processed.shape == image.shape
+
+
+def test_v10_temporal_noise_uses_distinct_state_keys():
+    oldcam_v10 = load_module(ROOT / "oldcam-v10" / "oldcam.py", "oldcam_v10_temporal_keys")
+    image = np.full((18, 18, 3), 72, dtype=np.uint8)
+    state = {}
+    _ = oldcam_v10.apply_modern_sensor_noise(image, grain=1.0, rng=np.random.default_rng(11), state=state, fpn_mask=None)
+    assert "temporal_noise_luma" in state
+    assert "temporal_noise_chroma" in state
+    assert "temporal_noise" not in state

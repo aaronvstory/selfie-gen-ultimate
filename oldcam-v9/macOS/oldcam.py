@@ -8,6 +8,7 @@ noise, and H.264 motion compression.
 """
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -141,22 +142,52 @@ def get_video_rotation(filepath):
 
     try:
         result = subprocess.run(
-            ["ffmpeg", "-i", filepath],
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_streams",
+                filepath,
+            ],
             check=False,
             capture_output=True,
             text=True,
+            timeout=30,
         )
-    except OSError:
+    except (subprocess.TimeoutExpired, OSError):
         return 0
 
-    stderr = result.stderr or ""
-    marker = "rotate"
-    for line in stderr.splitlines():
-        if marker in line.lower():
-            _, _, value = line.partition(":")
-            value = value.strip()
-            if value.isdigit():
-                return int(value)
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return 0
+
+    streams = payload.get("streams")
+    if not isinstance(streams, list) or not streams:
+        return 0
+
+    stream0 = streams[0]
+    if not isinstance(stream0, dict):
+        return 0
+
+    candidates = []
+    tags = stream0.get("tags")
+    if isinstance(tags, dict):
+        candidates.append(tags.get("rotate"))
+    side_data_list = stream0.get("side_data_list")
+    if isinstance(side_data_list, list):
+        for side_data in side_data_list:
+            if isinstance(side_data, dict) and "rotation" in side_data:
+                candidates.append(side_data.get("rotation"))
+
+    for value in candidates:
+        try:
+            normalized = int(float(value)) % 360
+            return normalized
+        except (TypeError, ValueError):
+            continue
     return 0
 
 
@@ -279,6 +310,16 @@ def apply_modern_sensor_noise(image, grain, rng, state=None, fpn_mask=None):
     image_f[:, :, 1] += temporal_luma * shadow_mask + fpn_mask
     image_f[:, :, 2] += (temporal_luma + temporal_chroma[:, :, 1]) * shadow_mask + fpn_mask
     return np.clip(image_f, 0, 255).astype(np.uint8)
+
+
+def close_face_mesh_state(state):
+    face_mesh = state.pop("face_mesh", None)
+    if face_mesh is None:
+        return
+    try:
+        face_mesh.close()
+    except Exception:
+        pass
 
 
 def apply_radial_chromatic_aberration(image, scale=ABERRATION_SCALE):
@@ -470,13 +511,16 @@ def naturalize_image(input_path, output_path, args):
     rng = np.random.default_rng()
     state = {"fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32)}
 
-    processed = process_frame(image, lut, vignette_mask, args, rng, state)
-    if args.preview:
-        processed = build_preview_frame(image, processed)
+    try:
+        processed = process_frame(image, lut, vignette_mask, args, rng, state)
+        if args.preview:
+            processed = build_preview_frame(image, processed)
 
-    if not cv2.imwrite(output_path, processed):
-        raise RuntimeError(f"Could not write image: {output_path}")
-    print(f"Saved image to: {output_path}")
+        if not cv2.imwrite(output_path, processed):
+            raise RuntimeError(f"Could not write image: {output_path}")
+        print(f"Saved image to: {output_path}")
+    finally:
+        close_face_mesh_state(state)
 
 
 def finalize_video_output(temp_output, input_path, output_path, codec):
@@ -520,8 +564,8 @@ def finalize_video_output(temp_output, input_path, output_path, codec):
     )
 
     try:
-        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-    except subprocess.CalledProcessError:
+        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=120)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(temp_output).replace(output_path)
         print(f"FFmpeg finalize failed. Saved video without audio to: {output_path}")
@@ -602,6 +646,7 @@ def naturalize_video(input_path, output_path, args):
                     end="",
                 )
     finally:
+        close_face_mesh_state(state)
         capture.release()
         writer.release()
 

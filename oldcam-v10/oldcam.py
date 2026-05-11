@@ -8,6 +8,7 @@ noise, and H.264 motion compression.
 """
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -141,22 +142,52 @@ def get_video_rotation(filepath):
 
     try:
         result = subprocess.run(
-            ["ffmpeg", "-i", filepath],
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_streams",
+                filepath,
+            ],
             check=False,
             capture_output=True,
             text=True,
+            timeout=30,
         )
-    except OSError:
+    except (subprocess.TimeoutExpired, OSError):
         return 0
 
-    stderr = result.stderr or ""
-    marker = "rotate"
-    for line in stderr.splitlines():
-        if marker in line.lower():
-            _, _, value = line.partition(":")
-            value = value.strip()
-            if value.isdigit():
-                return int(value)
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return 0
+
+    streams = payload.get("streams")
+    if not isinstance(streams, list) or not streams:
+        return 0
+
+    stream0 = streams[0]
+    if not isinstance(stream0, dict):
+        return 0
+
+    candidates = []
+    tags = stream0.get("tags")
+    if isinstance(tags, dict):
+        candidates.append(tags.get("rotate"))
+    side_data_list = stream0.get("side_data_list")
+    if isinstance(side_data_list, list):
+        for side_data in side_data_list:
+            if isinstance(side_data, dict) and "rotation" in side_data:
+                candidates.append(side_data.get("rotation"))
+
+    for value in candidates:
+        try:
+            normalized = int(float(value)) % 360
+            return normalized
+        except (TypeError, ValueError):
+            continue
     return 0
 
 
@@ -248,19 +279,19 @@ def apply_highlight_blooming(image, threshold=220, strength=0.2):
 
 def apply_dynamic_tone_mapping(image):
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    cl = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(8, 8)).apply(l)
-    return cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2BGR)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    cl = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(8, 8)).apply(l_channel)
+    return cv2.cvtColor(cv2.merge((cl, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
 
 
-def get_temporal_noise_field(state, shape, rng, strength=1.0):
-    previous = state.get("temporal_noise")
+def get_temporal_noise_field(state, shape, rng, strength=1.0, key="temporal_noise"):
+    previous = state.get(key)
     fresh = rng.normal(0.0, strength, shape).astype(np.float32)
     if previous is None or previous.shape != shape:
         field = fresh
     else:
         field = previous * 0.85 + fresh * 0.15
-    state["temporal_noise"] = field
+    state[key] = field
     return field
 
 
@@ -269,16 +300,39 @@ def apply_modern_sensor_noise(image, grain, rng, state=None, fpn_mask=None):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     lum = hsv[:, :, 2].astype(np.float32) / 255.0
     h, w = image.shape[:2]
-    temporal_luma = get_temporal_noise_field(state, (h, w), rng, strength=float(grain) * 0.9)
-    temporal_chroma = get_temporal_noise_field(state, (h, w, 2), rng, strength=float(grain) * 0.15)
+    temporal_luma = get_temporal_noise_field(
+        state, (h, w), rng, strength=float(grain) * 0.9, key="temporal_noise_luma"
+    )
+    temporal_chroma = get_temporal_noise_field(
+        state, (h, w, 2), rng, strength=float(grain) * 0.15, key="temporal_noise_chroma"
+    )
     if fpn_mask is None:
         fpn_mask = np.zeros((h, w), dtype=np.float32)
+    if fpn_mask.ndim == 2:
+        fpn_b = fpn_g = fpn_r = fpn_mask
+    elif fpn_mask.ndim == 3 and fpn_mask.shape[2] >= 3:
+        fpn_b = fpn_mask[:, :, 0]
+        fpn_g = fpn_mask[:, :, 1]
+        fpn_r = fpn_mask[:, :, 2]
+    else:
+        zeros = np.zeros((h, w), dtype=np.float32)
+        fpn_b = fpn_g = fpn_r = zeros
     shadow_mask = ((1.0 - lum) ** 1.4)
     image_f = image.astype(np.float32)
-    image_f[:, :, 0] += (temporal_luma - temporal_chroma[:, :, 0]) * shadow_mask + fpn_mask
-    image_f[:, :, 1] += temporal_luma * shadow_mask + fpn_mask
-    image_f[:, :, 2] += (temporal_luma + temporal_chroma[:, :, 1]) * shadow_mask + fpn_mask
+    image_f[:, :, 0] += (temporal_luma - temporal_chroma[:, :, 0]) * shadow_mask + fpn_b
+    image_f[:, :, 1] += temporal_luma * shadow_mask + fpn_g
+    image_f[:, :, 2] += (temporal_luma + temporal_chroma[:, :, 1]) * shadow_mask + fpn_r
     return np.clip(image_f, 0, 255).astype(np.uint8)
+
+
+def close_face_mesh_state(state):
+    face_mesh = state.pop("face_mesh", None)
+    if face_mesh is None:
+        return
+    try:
+        face_mesh.close()
+    except Exception:
+        pass
 
 
 def apply_radial_chromatic_aberration(image, scale=ABERRATION_SCALE):
@@ -547,13 +601,16 @@ def naturalize_image(input_path, output_path, args):
     rng = np.random.default_rng()
     state = {"fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32)}
 
-    processed = process_frame(image, lut, vignette_mask, args, rng, state)
-    if args.preview:
-        processed = build_preview_frame(image, processed)
+    try:
+        processed = process_frame(image, lut, vignette_mask, args, rng, state)
+        if args.preview:
+            processed = build_preview_frame(image, processed)
 
-    if not cv2.imwrite(output_path, processed):
-        raise RuntimeError(f"Could not write image: {output_path}")
-    print(f"Saved image to: {output_path}")
+        if not cv2.imwrite(output_path, processed):
+            raise RuntimeError(f"Could not write image: {output_path}")
+        print(f"Saved image to: {output_path}")
+    finally:
+        close_face_mesh_state(state)
 
 
 def finalize_video_output(temp_output, input_path, output_path, codec):
@@ -597,8 +654,8 @@ def finalize_video_output(temp_output, input_path, output_path, codec):
     )
 
     try:
-        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-    except subprocess.CalledProcessError:
+        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=120)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(temp_output).replace(output_path)
         print(f"FFmpeg finalize failed. Saved video without audio to: {output_path}")
@@ -679,6 +736,7 @@ def naturalize_video(input_path, output_path, args):
                     end="",
                 )
     finally:
+        close_face_mesh_state(state)
         capture.release()
         writer.release()
 

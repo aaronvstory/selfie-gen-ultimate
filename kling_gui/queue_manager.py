@@ -357,8 +357,7 @@ class QueueManager:
         self.is_running = False
         self.worker_thread: Optional[threading.Thread] = None
         self._stop_flag = False
-        self._oldcam_deps_checked = False
-        self._oldcam_deps_ready = False
+        self._oldcam_deps_status_by_version: Dict[str, bool] = {}
         self._oldcam_rerun_thread: Optional[threading.Thread] = None
 
     def log_verbose(self, message: str, level: str = "info"):
@@ -1150,7 +1149,7 @@ class QueueManager:
             self.log(f"Oldcam {version} launcher not found", "warning")
             return None
 
-        if not self._ensure_oldcam_dependencies(oldcam_dir):
+        if not self._ensure_oldcam_dependencies(oldcam_dir, version):
             self.log(f"Skipping Oldcam {version} Finish due to missing dependencies", "warning")
             return None
 
@@ -1179,31 +1178,38 @@ class QueueManager:
             self.log(err.splitlines()[-1], "warning")
         return None
 
-    def _ensure_oldcam_dependencies(self, oldcam_dir: Path) -> bool:
+    def _ensure_oldcam_dependencies(self, oldcam_dir: Path, version: str) -> bool:
         """Check Oldcam requirements in current interpreter and emit install guidance."""
-        if self._oldcam_deps_checked:
-            return self._oldcam_deps_ready
+        if version in self._oldcam_deps_status_by_version:
+            return self._oldcam_deps_status_by_version[version]
 
-        self._oldcam_deps_checked = True
+        required_modules = ["cv2", "numpy"]
+        if version in {"v9", "v10"}:
+            required_modules.append("mediapipe")
 
         try:
-            import cv2  # noqa: F401
-            import numpy  # noqa: F401
-            self._oldcam_deps_ready = True
+            for module_name in required_modules:
+                __import__(module_name)
+            self._oldcam_deps_status_by_version[version] = True
             return True
         except ImportError as e:
             requirements_path = oldcam_dir / "requirements.txt"
-            self.log(f"Oldcam dependencies missing: {e}", "warning")
+            self.log(f"Oldcam {version} dependencies missing: {e}", "warning")
             if requirements_path.exists():
                 install_cmd = f'{sys.executable} -m pip install -r "{requirements_path}"'
                 self.log(
-                    "Oldcam dependencies are not installed. "
+                    f"Oldcam {version} dependencies are not installed. "
                     f"Please install them before processing Oldcam jobs: {install_cmd}",
                     "warning",
                 )
+                if version in {"v9", "v10"}:
+                    self.log(
+                        f"Oldcam {version} requires mediapipe. Install guidance: {install_cmd}",
+                        "warning",
+                    )
             else:
                 self.log(f"Oldcam requirements missing: {requirements_path}", "warning")
-            self._oldcam_deps_ready = False
+            self._oldcam_deps_status_by_version[version] = False
             return False
 
     def _oldcam_video(self, video_path: str, item: QueueItem) -> Optional[str]:

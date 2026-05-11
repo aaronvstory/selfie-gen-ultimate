@@ -14,7 +14,7 @@ Behavior notes:
 - No landmarks, overlays, or debug watermarks are rendered to output.
 
 Setup:
-1. Install Python 3.11+.
+1. Install Python 3.9+.
 2. Install deps:
    `python3 -m pip install -r requirements.txt`
 3. Ensure launcher is executable (once):
@@ -24,3 +24,4 @@ Usage:
 - Double-click `oldcam.command` and choose files.
 - Or run directly:
   `python3 oldcam.py clip.mp4`
+

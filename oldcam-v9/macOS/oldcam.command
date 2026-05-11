@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 find_repo_root() {
   local cur="$SCRIPT_DIR"
   while [ -n "$cur" ] && [ "$cur" != "/" ]; do
-    if [ -f "$cur/kling_automation_ui.py" ] && [ -f "$cur/requirements.txt" ] && [ -d "$cur/oldcam-v7" ] && [ -d "$cur/oldcam-v8" ]; then
+    if [ -f "$cur/kling_automation_ui.py" ] && [ -f "$cur/requirements.txt" ] && [ -d "$cur/oldcam-v9" ]; then
       printf '%s\n' "$cur"
       return 0
     fi

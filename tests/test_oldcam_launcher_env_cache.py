@@ -41,6 +41,12 @@ def test_oldcam_local_launchers_keep_version_specific_targets():
     assert 'findstr /V /I /R "^[ ]*mediapipe"' in v10
     assert '-m pip install --no-deps "%MEDIAPIPE_SPEC%"' in v9
     assert '-m pip install --no-deps "%MEDIAPIPE_SPEC%"' in v10
+    assert 'set "FINAL_EXIT=0"' in v9
+    assert 'if defined HAD_ERRORS set "FINAL_EXIT=1"' in v9
+    assert "endlocal & exit /b %FINAL_EXIT%" in v9
+    assert 'set "FINAL_EXIT=0"' in v10
+    assert 'if defined HAD_ERRORS set "FINAL_EXIT=1"' in v10
+    assert "endlocal & exit /b %FINAL_EXIT%" in v10
 
 
 def test_oldcam_macos_requirements_hash_has_missing_fallback():
@@ -69,3 +75,7 @@ def test_oldcam_macos_v9_v10_install_mediapipe_separately():
     for text in (v9, v10):
         assert "grep -vi '^[[:space:]]*mediapipe'" in text
         assert '-m pip install --no-deps "mediapipe>=0.10.14"' in text
+    assert '[ -d "$cur/oldcam-v9" ]' in v9
+    assert '[ -d "$cur/oldcam-v10" ]' in v10
+    assert '[ -d "$cur/oldcam-v7" ] && [ -d "$cur/oldcam-v8" ]' not in v9
+    assert '[ -d "$cur/oldcam-v7" ] && [ -d "$cur/oldcam-v8" ]' not in v10

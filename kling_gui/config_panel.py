@@ -1344,7 +1344,7 @@ class ConfigPanel(tk.Frame):
         except ValueError:
             return -1
 
-    def _resolve_oldcam_versions_from_config(self) -> list[str]:
+    def _resolve_oldcam_versions_from_config(self) -> List[str]:
         configured = self.config.get("oldcam_versions")
         valid_versions = tuple(self.oldcam_version_vars.keys())
         if isinstance(configured, list):

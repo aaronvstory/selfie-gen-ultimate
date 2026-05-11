@@ -92,6 +92,6 @@ exit /b 0
 :DONE
 if not defined OLDCAM_NO_PAUSE pause
 popd >nul
-endlocal
-if defined HAD_ERRORS exit /b 1
-exit /b 0
+set "FINAL_EXIT=0"
+if defined HAD_ERRORS set "FINAL_EXIT=1"
+endlocal & exit /b %FINAL_EXIT%
