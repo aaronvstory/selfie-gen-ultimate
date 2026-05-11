@@ -15,6 +15,8 @@ find_repo_root() {
 REPO_ROOT="$(find_repo_root 2>/dev/null || true)"
 if [ -n "$REPO_ROOT" ]; then STATE_DIR="$REPO_ROOT/.launcher_state"; else STATE_DIR="$SCRIPT_DIR/.launcher_state"; fi
 mkdir -p "$STATE_DIR"
+MP_VALIDATE_CMD="import sys, mediapipe as mp; s=getattr(mp,'solutions',None); fm=getattr(s,'face_mesh',None) if s is not None else None; cls=getattr(fm,'FaceMesh',None) if fm is not None else None; sys.exit(0 if cls is not None else 1)"
+MP_DIAG_CMD="import sys, mediapipe as mp; s=getattr(mp,'solutions',None); fm=getattr(s,'face_mesh',None) if s is not None else None; cls=getattr(fm,'FaceMesh',None) if fm is not None else None; print('python='+sys.executable); print('mediapipe_file='+str(getattr(mp,'__file__','unknown'))); print('mediapipe_version='+str(getattr(mp,'__version__','unknown'))); print('has_solutions='+str(hasattr(mp,'solutions'))); print('has_face_mesh='+str(fm is not None)); print('has_facemesh_class='+str(cls is not None)); print('sys_path_0='+(sys.path[0] if sys.path else ''))"
 resolve_py(){
   if [ -n "${SELFIEGEN_PYTHON:-}" ] && [ -x "$SELFIEGEN_PYTHON" ]; then echo "$SELFIEGEN_PYTHON"; return; fi
   if [ -n "${SELFIEGEN_VENV_DIR:-}" ] && [ -x "$SELFIEGEN_VENV_DIR/bin/python" ]; then echo "$SELFIEGEN_VENV_DIR/bin/python"; return; fi
@@ -32,7 +34,7 @@ REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk '{pri
 [ -n "$REQ_HASH" ] || REQ_HASH="missing"
 PY_ID="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"
 STAMP="$STATE_DIR/oldcam_v9_${REQ_HASH}_${PY_ID}.ok"
-if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy, mediapipe" >/dev/null 2>&1; then
+if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy" >/dev/null 2>&1 || ! "$PYTHON_CMD" -c "$MP_VALIDATE_CMD" >/dev/null 2>&1; then
   FILTERED_REQ="$STATE_DIR/oldcam_v9_requirements.filtered.txt"
   grep -vi '^[[:space:]]*mediapipe' "$SCRIPT_DIR/requirements.txt" > "$FILTERED_REQ"
   "$PYTHON_CMD" -m pip install -r "$FILTERED_REQ" || {
@@ -42,12 +44,21 @@ if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy, mediapipe" >/dev/
     echo "Close running Python processes and retry. If still failing, recreate venv."
     exit 1
   }
-  "$PYTHON_CMD" -m pip install --no-deps "mediapipe>=0.10.14" || {
+  "$PYTHON_CMD" -m pip install --force-reinstall --no-deps "mediapipe>=0.10.14" || {
     rm -f "$FILTERED_REQ" || true
     echo "Failed to install MediaPipe required by Oldcam v9."
     echo "Close running Python processes and retry. If still failing, recreate venv."
     exit 1
   }
+  if ! "$PYTHON_CMD" -c "$MP_VALIDATE_CMD" >/dev/null 2>&1; then
+    echo "MediaPipe installed but FaceMesh API unavailable. Oldcam v9 cannot run."
+    echo "Close Python/GUI processes, delete/rebuild venv, and retry."
+    echo "Python executable: $PYTHON_CMD"
+    echo "Validation command: \"$PYTHON_CMD\" -c \"$MP_VALIDATE_CMD\""
+    "$PYTHON_CMD" -c "$MP_DIAG_CMD" || true
+    rm -f "$FILTERED_REQ" || true
+    exit 1
+  fi
   rm -f "$FILTERED_REQ" || true
   rm -f "$STATE_DIR"/oldcam_v9_*.ok
   echo ok > "$STAMP"

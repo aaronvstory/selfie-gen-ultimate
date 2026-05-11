@@ -418,7 +418,13 @@ def test_oldcam_dependency_preflight_retries_after_missing_dependency(tmp_path):
         if name == "mediapipe" and missing["enabled"]:
             raise ImportError("No module named mediapipe")
         if name == "mediapipe":
-            return types.SimpleNamespace()
+            return types.SimpleNamespace(
+                solutions=types.SimpleNamespace(
+                    face_mesh=types.SimpleNamespace(FaceMesh=object)
+                ),
+                __file__="site-packages/mediapipe/__init__.py",
+                __version__="0.10.14",
+            )
         return real_import(name, *args, **kwargs)
 
     with mock.patch("builtins.__import__", side_effect=fake_import):
@@ -437,6 +443,58 @@ def test_v10_apply_modern_sensor_noise_accepts_3d_fpn_mask():
     fpn[:, :, 2] = -0.25
     processed = oldcam_v10.apply_modern_sensor_noise(image, grain=1.0, rng=rng, state={}, fpn_mask=fpn)
     assert processed.shape == image.shape
+
+
+def test_v9_apply_modern_sensor_noise_accepts_3d_fpn_mask():
+    oldcam_v9 = load_module(ROOT / "oldcam-v9" / "oldcam.py", "oldcam_v9_fpn")
+    image = np.full((20, 20, 3), 64, dtype=np.uint8)
+    rng = np.random.default_rng(8)
+    fpn = np.zeros((20, 20, 3), dtype=np.float32)
+    fpn[:, :, 0] = 0.4
+    fpn[:, :, 1] = 0.2
+    fpn[:, :, 2] = -0.3
+    processed = oldcam_v9.apply_modern_sensor_noise(image, grain=1.0, rng=rng, state={}, fpn_mask=fpn)
+    assert processed.shape == image.shape
+
+
+def test_validate_mediapipe_facemesh_api_missing_solutions_fails():
+    manager, _ = make_queue_manager({})
+    real_import = builtins.__import__
+    fake_mp = types.SimpleNamespace(__file__="x/mediapipe.py", __version__="0")
+    with mock.patch("builtins.__import__", side_effect=lambda name, *a, **k: fake_mp if name == "mediapipe" else real_import(name, *a, **k)):
+        ok, diagnostics = manager._validate_mediapipe_facemesh_api()
+    assert ok is False
+    assert diagnostics["has_solutions"] == "False"
+
+
+def test_validate_mediapipe_facemesh_api_missing_facemesh_class_fails():
+    manager, _ = make_queue_manager({})
+    real_import = builtins.__import__
+    fake_mp = types.SimpleNamespace(
+        solutions=types.SimpleNamespace(face_mesh=types.SimpleNamespace()),
+        __file__="x/mediapipe.py",
+        __version__="0.10.14",
+    )
+    with mock.patch("builtins.__import__", side_effect=lambda name, *a, **k: fake_mp if name == "mediapipe" else real_import(name, *a, **k)):
+        ok, diagnostics = manager._validate_mediapipe_facemesh_api()
+    assert ok is False
+    assert diagnostics["has_facemesh_class"] == "False"
+
+
+def test_validate_mediapipe_facemesh_api_valid_chain_passes():
+    manager, _ = make_queue_manager({})
+    real_import = builtins.__import__
+    fake_mp = types.SimpleNamespace(
+        solutions=types.SimpleNamespace(face_mesh=types.SimpleNamespace(FaceMesh=object)),
+        __file__="site-packages/mediapipe/__init__.py",
+        __version__="0.10.14",
+    )
+    with mock.patch("builtins.__import__", side_effect=lambda name, *a, **k: fake_mp if name == "mediapipe" else real_import(name, *a, **k)):
+        ok, diagnostics = manager._validate_mediapipe_facemesh_api()
+    assert ok is True
+    assert diagnostics["has_solutions"] == "True"
+    assert diagnostics["has_face_mesh"] == "True"
+    assert diagnostics["has_facemesh_class"] == "True"
 
 
 def test_v10_temporal_noise_uses_distinct_state_keys():

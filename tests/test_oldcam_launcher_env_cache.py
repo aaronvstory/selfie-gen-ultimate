@@ -39,8 +39,12 @@ def test_oldcam_local_launchers_keep_version_specific_targets():
     assert 'set "PY_ID=%PY_ID: =_%"' in v8
     assert 'findstr /V /I /R "^[ ]*mediapipe"' in v9
     assert 'findstr /V /I /R "^[ ]*mediapipe"' in v10
-    assert '-m pip install --no-deps "%MEDIAPIPE_SPEC%"' in v9
-    assert '-m pip install --no-deps "%MEDIAPIPE_SPEC%"' in v10
+    assert '-m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%"' in v9
+    assert '-m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%"' in v10
+    assert 'set "MP_VALIDATE_CMD=' in v9
+    assert 'set "MP_VALIDATE_CMD=' in v10
+    assert "FaceMesh API unavailable" in v9
+    assert "FaceMesh API unavailable" in v10
     assert 'set "FINAL_EXIT=0"' in v9
     assert 'if defined HAD_ERRORS set "FINAL_EXIT=1"' in v9
     assert "endlocal & exit /b %FINAL_EXIT%" in v9
@@ -74,7 +78,9 @@ def test_oldcam_macos_v9_v10_install_mediapipe_separately():
     v10 = (REPO_ROOT / "oldcam-v10" / "macOS" / "oldcam.command").read_text(encoding="utf-8")
     for text in (v9, v10):
         assert "grep -vi '^[[:space:]]*mediapipe'" in text
-        assert '-m pip install --no-deps "mediapipe>=0.10.14"' in text
+        assert '-m pip install --force-reinstall --no-deps "mediapipe>=0.10.14"' in text
+        assert "MP_VALIDATE_CMD=" in text
+        assert "FaceMesh API unavailable" in text
     assert '[ -d "$cur/oldcam-v9" ]' in v9
     assert '[ -d "$cur/oldcam-v10" ]' in v10
     assert '[ -d "$cur/oldcam-v7" ] && [ -d "$cur/oldcam-v8" ]' not in v9

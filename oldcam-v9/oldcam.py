@@ -308,11 +308,20 @@ def apply_modern_sensor_noise(image, grain, rng, state=None, fpn_mask=None):
     )
     if fpn_mask is None:
         fpn_mask = np.zeros((h, w), dtype=np.float32)
+    if fpn_mask.ndim == 2:
+        fpn_b = fpn_g = fpn_r = fpn_mask
+    elif fpn_mask.ndim == 3 and fpn_mask.shape[2] >= 3:
+        fpn_b = fpn_mask[:, :, 0]
+        fpn_g = fpn_mask[:, :, 1]
+        fpn_r = fpn_mask[:, :, 2]
+    else:
+        zeros = np.zeros((h, w), dtype=np.float32)
+        fpn_b = fpn_g = fpn_r = zeros
     shadow_mask = ((1.0 - lum) ** 1.4)
     image_f = image.astype(np.float32)
-    image_f[:, :, 0] += (temporal_luma - temporal_chroma[:, :, 0]) * shadow_mask + fpn_mask
-    image_f[:, :, 1] += temporal_luma * shadow_mask + fpn_mask
-    image_f[:, :, 2] += (temporal_luma + temporal_chroma[:, :, 1]) * shadow_mask + fpn_mask
+    image_f[:, :, 0] += (temporal_luma - temporal_chroma[:, :, 0]) * shadow_mask + fpn_b
+    image_f[:, :, 1] += temporal_luma * shadow_mask + fpn_g
+    image_f[:, :, 2] += (temporal_luma + temporal_chroma[:, :, 1]) * shadow_mask + fpn_r
     return np.clip(image_f, 0, 255).astype(np.uint8)
 
 

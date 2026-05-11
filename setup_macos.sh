@@ -169,10 +169,21 @@ fi
 if [[ "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
   printf 'Syncing Python dependencies\n'
   FILTERED_REQUIREMENTS_FILE="${VENV_DIR}/.requirements.nomediapipe.txt"
+  MP_VALIDATE_CMD="import sys, mediapipe as mp; s=getattr(mp,'solutions',None); fm=getattr(s,'face_mesh',None) if s is not None else None; cls=getattr(fm,'FaceMesh',None) if fm is not None else None; sys.exit(0 if cls is not None else 1)"
+  MP_DIAG_CMD="import sys, mediapipe as mp; s=getattr(mp,'solutions',None); fm=getattr(s,'face_mesh',None) if s is not None else None; cls=getattr(fm,'FaceMesh',None) if fm is not None else None; print('python='+sys.executable); print('mediapipe_file='+str(getattr(mp,'__file__','unknown'))); print('mediapipe_version='+str(getattr(mp,'__version__','unknown'))); print('has_solutions='+str(hasattr(mp,'solutions'))); print('has_face_mesh='+str(fm is not None)); print('has_facemesh_class='+str(cls is not None)); print('sys_path_0='+(sys.path[0] if sys.path else ''))"
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --upgrade pip
   grep -vi '^[[:space:]]*mediapipe' "${REQUIREMENTS_FILE}" > "${FILTERED_REQUIREMENTS_FILE}"
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check -r "${FILTERED_REQUIREMENTS_FILE}"
-  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --no-deps "mediapipe>=0.10.14"
+  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --force-reinstall --no-deps "mediapipe>=0.10.14"
+  if ! "${VENV_DIR}/bin/python" -c "${MP_VALIDATE_CMD}" >/dev/null 2>&1; then
+    printf 'MediaPipe installed but FaceMesh API unavailable. Oldcam v9/v10 cannot run.\n' >&2
+    printf 'Close Python/GUI processes, delete/rebuild venv, and retry.\n' >&2
+    printf 'Python executable: %s\n' "${VENV_DIR}/bin/python" >&2
+    printf 'Validation command: "%s" -c "%s"\n' "${VENV_DIR}/bin/python" "${MP_VALIDATE_CMD}" >&2
+    "${VENV_DIR}/bin/python" -c "${MP_DIAG_CMD}" >&2 || true
+    rm -f "${FILTERED_REQUIREMENTS_FILE}" || true
+    exit 1
+  fi
   rm -f "${FILTERED_REQUIREMENTS_FILE}" || true
   printf '%s\n' "${CURRENT_REQUIREMENTS_HASH}" > "${REQUIREMENTS_STAMP}"
 fi

@@ -10,6 +10,8 @@ set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
 set "HAD_ERRORS="
 set "MEDIAPIPE_SPEC=mediapipe>=0.10.14"
+set "MP_VALIDATE_CMD=import sys, mediapipe as mp; s=getattr(mp,'solutions',None); fm=getattr(s,'face_mesh',None) if s is not None else None; cls=getattr(fm,'FaceMesh',None) if fm is not None else None; sys.exit(0 if cls is not None else 1)"
+set "MP_DIAG_CMD=import sys, mediapipe as mp; s=getattr(mp,'solutions',None); fm=getattr(s,'face_mesh',None) if s is not None else None; cls=getattr(fm,'FaceMesh',None) if fm is not None else None; print('python='+sys.executable); print('mediapipe_file='+str(getattr(mp,'__file__','unknown'))); print('mediapipe_version='+str(getattr(mp,'__version__','unknown'))); print('has_solutions='+str(hasattr(mp,'solutions'))); print('has_face_mesh='+str(fm is not None)); print('has_facemesh_class='+str(cls is not None)); print('sys_path_0='+(sys.path[0] if sys.path else ''))"
 
 set "PYTHON_CMD="
 if not "%SELFIEGEN_PYTHON%"=="" ("%SELFIEGEN_PYTHON%" -V >nul 2>&1 && set "PYTHON_CMD=%SELFIEGEN_PYTHON%")
@@ -23,6 +25,7 @@ if not defined PYTHON_CMD (
 )
 if not defined PYTHON_CMD (
   echo Could not find usable Python interpreter.
+  set "HAD_ERRORS=1"
   goto DONE
 )
 
@@ -35,7 +38,9 @@ set "PY_ID=%PY_ID: =_%"
 set "STAMP_FILE=%STATE_DIR%\oldcam_v9_%REQ_HASH%_%PY_ID%.ok"
 set "NEED_PIP=1"
 if exist "%STAMP_FILE%" (
-  "%PYTHON_CMD%" -c "import cv2, numpy, mediapipe" >nul 2>nul
+  "%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>nul
+  if errorlevel 1 goto NEED_PIP_BLOCK
+  "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%" >nul 2>nul
   if not errorlevel 1 set "NEED_PIP=0"
 )
 if "%NEED_PIP%"=="1" (
@@ -51,12 +56,23 @@ if "%NEED_PIP%"=="1" (
     set "HAD_ERRORS=1"
     goto DONE
   )
-  "%PYTHON_CMD%" -m pip install --no-deps "%MEDIAPIPE_SPEC%" >nul 2>nul
+  "%PYTHON_CMD%" -m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%" >nul 2>nul
   if errorlevel 1 (
     del "%REQ_FILTERED%" >nul 2>&1
     echo Failed to install MediaPipe required by Oldcam v9.
     echo Close running Python/GUI processes and retry.
     echo If it still fails, recreate the venv and rerun.
+    set "HAD_ERRORS=1"
+    goto DONE
+  )
+  "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%" >nul 2>nul
+  if errorlevel 1 (
+    echo MediaPipe installed but FaceMesh API unavailable. Oldcam v9 cannot run.
+    echo Close Python/GUI processes, delete/rebuild venv, and retry.
+    echo Python executable: %PYTHON_CMD%
+    echo Validation command: "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%"
+    "%PYTHON_CMD%" -c "%MP_DIAG_CMD%"
+    del "%REQ_FILTERED%" >nul 2>&1
     set "HAD_ERRORS=1"
     goto DONE
   )

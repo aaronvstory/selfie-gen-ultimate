@@ -10,7 +10,7 @@ import subprocess
 import sys
 import shutil
 from dataclasses import dataclass, field
-from typing import Callable, Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple, Dict
 from pathlib import Path
 from datetime import datetime
 
@@ -1184,12 +1184,34 @@ class QueueManager:
             return True
 
         required_modules = ["cv2", "numpy"]
-        if version in {"v9", "v10"}:
+        requires_mediapipe = version in {"v9", "v10"}
+        if requires_mediapipe:
             required_modules.append("mediapipe")
 
         try:
             for module_name in required_modules:
                 __import__(module_name)
+            if requires_mediapipe:
+                mp_ok, diagnostics = self._validate_mediapipe_facemesh_api()
+                if not mp_ok:
+                    self.log(
+                        f"MediaPipe FaceMesh API unavailable; Oldcam {version} cannot run.",
+                        "warning",
+                    )
+                    self.log(
+                        "Validation command: "
+                        + f'"{sys.executable}" -c "import mediapipe as mp; '
+                        + 'print(hasattr(mp, \'solutions\')); '
+                        + 'print(hasattr(getattr(mp, \'solutions\', None), \'face_mesh\')); '
+                        + 'print(hasattr(getattr(getattr(mp, \'solutions\', None), \'face_mesh\', None), \'FaceMesh\'))"',
+                        "warning",
+                    )
+                    self.log(
+                        "Diagnostics: "
+                        + ", ".join(f"{k}={v}" for k, v in diagnostics.items()),
+                        "warning",
+                    )
+                    return False
             self._oldcam_deps_status_by_version[version] = True
             return True
         except ImportError as e:
@@ -1210,6 +1232,47 @@ class QueueManager:
             else:
                 self.log(f"Oldcam requirements missing: {requirements_path}", "warning")
             return False
+
+    def _validate_mediapipe_facemesh_api(self) -> Tuple[bool, Dict[str, str]]:
+        """Validate the exact MediaPipe FaceMesh API used by oldcam v9/v10."""
+        diagnostics: Dict[str, str] = {
+            "python_executable": sys.executable,
+            "sys_path_0": sys.path[0] if sys.path else "",
+        }
+        try:
+            import mediapipe as mp  # noqa: F401
+        except Exception as exc:
+            diagnostics["import_error"] = f"{exc.__class__.__name__}: {exc}"
+            return False, diagnostics
+
+        mp_obj = locals().get("mp")
+        diagnostics["mediapipe_file"] = str(getattr(mp_obj, "__file__", "unknown"))
+        diagnostics["mediapipe_version"] = str(getattr(mp_obj, "__version__", "unknown"))
+        has_solutions = hasattr(mp_obj, "solutions")
+        diagnostics["has_solutions"] = str(has_solutions)
+        if not has_solutions:
+            return False, diagnostics
+
+        solutions = getattr(mp_obj, "solutions", None)
+        has_face_mesh = hasattr(solutions, "face_mesh")
+        diagnostics["has_face_mesh"] = str(has_face_mesh)
+        if not has_face_mesh:
+            return False, diagnostics
+
+        face_mesh = getattr(solutions, "face_mesh", None)
+        has_face_mesh_cls = hasattr(face_mesh, "FaceMesh")
+        diagnostics["has_facemesh_class"] = str(has_face_mesh_cls)
+        if not has_face_mesh_cls:
+            return False, diagnostics
+
+        # Shadowing hint: local repo paths usually indicate wrong module import.
+        try:
+            repo_root = str(Path(__file__).resolve().parents[1]).lower()
+            mp_file = str(getattr(mp_obj, "__file__", "")).lower()
+            diagnostics["shadowing_suspected"] = str(mp_file.startswith(repo_root))
+        except Exception:
+            diagnostics["shadowing_suspected"] = "unknown"
+        return True, diagnostics
 
     def _oldcam_video(self, video_path: str, item: QueueItem) -> Optional[str]:
         """
