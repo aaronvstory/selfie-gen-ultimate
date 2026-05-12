@@ -622,7 +622,7 @@ class KlingGUIWindow:
         # Pre-sanitize sash values against initial window size before widgets render.
         pre_sash, pre_sash_changed = sanitize_sash_layout(
             sash_dropzone=self.config.get("sash_dropzone", 500),
-            sash_prompt_split=self.config.get("sash_prompt_split", 620),
+            sash_prompt_split=self.config.get("sash_prompt_split", 760),
             sash_queue=self.config.get("sash_queue", 320),
             sash_log=self.config.get("sash_log", 150),
             sash_log_drop_split=self.config.get("sash_log_drop_split", 360),
@@ -1395,7 +1395,7 @@ class KlingGUIWindow:
         pane_names = [str(p) for p in self.top_h_paned.panes()]
         if str(self._right_pane) not in pane_names:
             self.top_h_paned.add(self._right_pane, minsize=260)
-            saved = self.config.get("sash_prompt_split", 640)
+            saved = self.config.get("sash_prompt_split", 760)
             self.root.after(50, lambda: self._safe_sash_place(self.top_h_paned, 0, saved, 0))
 
     def _hide_right_pane(self):
@@ -3750,7 +3750,7 @@ class KlingGUIWindow:
 
             sash_values, changed = sanitize_sash_layout(
                 sash_dropzone=self.config.get("sash_dropzone", 500),
-                sash_prompt_split=self.config.get("sash_prompt_split", 620),
+                sash_prompt_split=self.config.get("sash_prompt_split", 760),
                 sash_queue=self.config.get("sash_queue", 320),
                 sash_log=self.config.get("sash_log", 150),
                 sash_log_drop_split=self.config.get("sash_log_drop_split", 360),

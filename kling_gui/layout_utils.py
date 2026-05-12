@@ -84,9 +84,10 @@ def sanitize_sash_layout(
     drop_max = max(drop_min, int(safe_h * 0.75))
     drop_default = int(safe_h * 0.58)
 
-    prompt_min = 420
+    # Keep Step 3 settings panel wide enough by default so Oldcam controls are visible.
+    prompt_min = max(560, int(safe_w * 0.36))
     prompt_max = max(prompt_min, safe_w - 260)
-    prompt_default = int(safe_w * 0.62)
+    prompt_default = int(safe_w * 0.68)
 
     queue_min = 300
     queue_max = max(queue_min, int(safe_w * 0.68))
