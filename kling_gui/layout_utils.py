@@ -84,22 +84,24 @@ def sanitize_sash_layout(
     drop_max = max(drop_min, int(safe_h * 0.75))
     drop_default = int(safe_h * 0.58)
 
-    # Keep Step 3 settings panel wide enough by default so Oldcam controls are visible.
-    prompt_min = max(560, int(safe_w * 0.36))
-    prompt_max = max(prompt_min, safe_w - 260)
+    # Force top split rightward so Step 3 settings pane stays wide on persisted layouts.
+    prompt_min = max(700, int(safe_w * 0.65))
+    prompt_max = max(prompt_min, safe_w - 200)
     prompt_default = int(safe_w * 0.68)
 
-    queue_min = 300
+    # Force bottom-left carousel pane wider by default.
+    queue_min = max(400, int(safe_w * 0.45))
     queue_max = max(queue_min, int(safe_w * 0.68))
-    queue_default = int(safe_w * 0.38)
+    queue_default = int(safe_w * 0.45)
 
     log_min = 110
     log_max = max(log_min, int(safe_h * 0.42))
     log_default = int(safe_h * 0.22)
 
-    log_drop_min = 220
-    log_drop_max = max(log_drop_min, int(safe_w * 0.70))
-    log_drop_default = int(safe_w * 0.50)
+    # Force log/drop split rightward: wider processing log, narrower permanent drop zone.
+    log_drop_min = max(450, int(safe_w * 0.65))
+    log_drop_max = max(log_drop_min, int(safe_w * 0.80))
+    log_drop_default = int(safe_w * 0.70)
 
     sanitized = {
         "sash_dropzone": _clamp_int(sash_dropzone, drop_min, drop_max, drop_default),
