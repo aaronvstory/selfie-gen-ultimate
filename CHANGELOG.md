@@ -2,6 +2,43 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-13 (v1.5)
+
+### Added
+
+- **Oldcam V11 (Spatial Sync + AWB Drift)**: Combines V10's FFT-based biological pulse with V9's
+  AWB (Auto White Balance) drift hardware simulation. Signal ordering enforced: FFT reads the clean
+  green-channel history buffer before AWB drift corrupts global channel values, so the two systems
+  stack without interference. New `oldcam-v11/` standalone folder with Windows `oldcam_launcher.bat`
+  and macOS `oldcam.command`. V11 is now the default version in the GUI and CLI automation pipeline.
+- **V11 launchers**: `launchers/windows/run_oldcam_v11.bat`, `launchers/macos/run_oldcam_v11.command`,
+  `launchers/run_oldcam_v11.bat`, `launchers/run_oldcam_v11.command`.
+- **Generic `run_oldcam` launchers** updated to delegate to V11 (previously V9).
+
+### Fixed
+
+- **V11 motion stutter**: Removed every-other-frame MediaPipe frame-skip (`detect_frame_count % 2`)
+  that caused the face mask to freeze one frame while the face moved, creating a 15fps ghost on 30fps
+  video. MediaPipe now runs 1:1 on every frame.
+- **V11 AE stutter**: Removed `stutter_budget` / AE-step frame-repeat logic that intentionally wrote
+  the previous frame instead of the current one. Every input frame now produces a distinct output frame.
+- **V11 sepia/warm tint**: Removed `shift_intensity * 0.5 * mask * 3.0` ambient-warmth line that
+  injected raw red channel values on top of the balanced BGR biological pulse shifts. AWB drift
+  neutralized from red+green bias (`drift*0.35 / drift*0.15`) to equal-channel luma drift (`image_f += drift`).
+- **V11 output quality**: FFmpeg encoding upgraded from CRF 18 + `preset medium` to CRF 16 +
+  `preset slow` for visually lossless output closer to source file size.
+- **Oldcam progress streaming**: `_run_oldcam_version` switched from `subprocess.run(capture_output=True)`
+  (silent until completion) to `Popen` with `readline()` streaming so frame progress (25%, 50%…) appears
+  in the GUI log in real time. Deadline-aware loop prevents silent hangs.
+- **TF/MediaPipe noise filter**: `_is_tf_noise` function added; bare `"mediapipe"` pattern replaced
+  with specific startup-only substrings to avoid masking real import errors.
+- **Layout**: `sash_prompt_split` widened from 50–62% to 54–64% (default 56% → 60%) so the Oldcam
+  version checkboxes row no longer crushes the folder-icon button.
+
+### Changed
+
+- Release packaging emits `SelfieGenUltimate-v1.5.zip` (canonical) + `SelfieGenUltimate.zip` (alias).
+
 ## 2026-05-12 (v1.4)
 
 ### Added
