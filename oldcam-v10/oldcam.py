@@ -559,7 +559,7 @@ def synchronize_base_frequency(
         fps: Video frame rate for frequency analysis.
 
     Returns:
-        Dominant temporal frequency in Hz (clamped to [0.7, 4.0] range).
+        Dominant temporal frequency in Hz (selected from [0.8, 1.8] range).
     """
     if not state.get("face_detected", False):
         return 1.2

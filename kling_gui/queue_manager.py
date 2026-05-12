@@ -1195,6 +1195,7 @@ class QueueManager:
         run_cmd = [sys.executable, "-u", str(launcher_path), video_path]
         output_lines: list[str] = []
         returncode = -1
+        process: Optional[subprocess.Popen] = None
         try:
             process = subprocess.Popen(
                 run_cmd,
@@ -1213,11 +1214,15 @@ class QueueManager:
                         self.log(line_text, "info")
             returncode = process.wait(timeout=600)
         except subprocess.TimeoutExpired:
-            if process.poll() is None:
+            if process is not None and process.poll() is None:
                 process.kill()
+                process.wait()
             self.log(f"Oldcam {version} timed out after 600s", "warning")
             return None
         except Exception as exc:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait()
             self.log(f"Oldcam {version} launcher error: {exc}", "warning")
             return None
 
