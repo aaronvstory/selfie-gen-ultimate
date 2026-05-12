@@ -636,8 +636,11 @@ def finalize_video_output(temp_output, input_path, output_path, codec):
         Path(temp_output).replace(output_path)
         print(f"FFmpeg finalize failed. Saved video without audio to: {output_path}")
         return
-
-    Path(temp_output).unlink(missing_ok=True)
+    finally:
+        try:
+            Path(temp_output).unlink(missing_ok=True)
+        except OSError:
+            pass
     print(f"Saved video to: {output_path}")
 
 
@@ -678,6 +681,7 @@ def naturalize_video(input_path, output_path, args):
         raise RuntimeError(f"Could not create video writer for: {temp_output}")
 
     frame_num = 0
+    next_pct = 25.0
     previous_processed = None
 
     try:
@@ -706,19 +710,16 @@ def naturalize_video(input_path, output_path, args):
             writer.write(processed)
             frame_num += 1
 
-            if total_frames and frame_num % 10 == 0:
-                percent = frame_num / total_frames * 100
-                print(
-                    f"\rProcessing: {frame_num}/{total_frames} frames ({percent:.1f}%)",
-                    end="",
-                )
+            if total_frames > 0:
+                pct = (frame_num / total_frames) * 100
+                while pct >= next_pct and next_pct <= 100.0:
+                    print(f"[Oldcam] Processing: {int(next_pct)}% complete...", flush=True)
+                    next_pct += 25.0
     finally:
         close_face_landmarker_state(state)
         capture.release()
         writer.release()
 
-    if total_frames:
-        print()
     print("Video processing complete.")
     finalize_video_output(temp_output, str(source), output_path, args.codec)
 

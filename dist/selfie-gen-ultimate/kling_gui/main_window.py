@@ -2977,14 +2977,19 @@ class KlingGUIWindow:
         stem = candidate.stem
         match = re.search(r"-oldcam-v\d+$", stem, re.IGNORECASE)
         if match:
-            base = candidate.with_name(f"{stem[:match.start()]}{candidate.suffix}")
-            if base.exists():
-                return str(base)
-            self._log(
-                f"Base video not found for {candidate.name}; using selected output as source",
-                "warning",
-            )
-            return str(candidate)
+            stem = stem[:match.start()]
+        base = candidate.with_name(f"{stem}{candidate.suffix}")
+        if base.exists():
+            return str(base)
+        match_inc = re.search(r"_\d+$", stem)
+        if match_inc:
+            base_no_inc = candidate.with_name(f"{stem[:match_inc.start()]}{candidate.suffix}")
+            if base_no_inc.exists():
+                return str(base_no_inc)
+        self._log(
+            f"Base video not found for {candidate.name}; using selected output as source",
+            "warning",
+        )
         return str(candidate)
 
     def _on_oldcam_rerun_requested(self):

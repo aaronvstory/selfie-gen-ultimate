@@ -70,24 +70,34 @@ def run_oldcam_version(
         return None
 
     cmd = [sys.executable, "-u", str(launcher), str(video_path)]
+    output_lines: List[str] = []
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             cmd,
             cwd=str(oldcam_dir),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=timeout_seconds,
-            check=False,
+            bufsize=1,
         )
+        assert process.stdout is not None
+        for line in process.stdout:
+            line_text = line.rstrip()
+            if line_text:
+                output_lines.append(line_text)
+                _report(progress_cb, line_text, "info")
+        completed_returncode = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
+        if "process" in locals() and process.poll() is None:
+            process.kill()
         _report(progress_cb, f"Oldcam {version} timed out after {timeout_seconds}s", "warning")
         return None
     except Exception as exc:
         _report(progress_cb, f"Oldcam {version} launcher error: {exc}", "warning")
         return None
-    if completed.returncode != 0:
-        err = (completed.stderr or completed.stdout or "").strip()
-        _report(progress_cb, f"Oldcam {version} failed ({completed.returncode}): {err}", "warning")
+    if completed_returncode != 0:
+        err = output_lines[-1] if output_lines else ""
+        _report(progress_cb, f"Oldcam {version} failed ({completed_returncode}): {err}", "warning")
         return None
 
     output_path = build_oldcam_output_path(video_path, version)
