@@ -63,7 +63,9 @@ if "!PYTHON_BIN!"=="" (
 if "!PYTHON_BIN!"=="" (
   echo   [%LAUNCH_TS%] ERROR: No usable Python environment found.
   >>"%LOG_FILE%" echo [ERROR] No usable Python environment found.
-  if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
+  if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" (
+    pause
+  )
   exit /b 1
 )
 echo   [%LAUNCH_TS%] Python: !ENV_KIND! -- !PYTHON_BIN!
@@ -74,7 +76,9 @@ rem --- Version gate
 if errorlevel 1 (
   echo   [%LAUNCH_TS%] ERROR: Unsupported Python version. Similarity requires Python 3.9-3.12.
   >>"%LOG_FILE%" echo [ERROR] Unsupported Python version.
-  if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
+  if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" (
+    pause
+  )
   exit /b 1
 )
 
@@ -102,7 +106,9 @@ if "!NEED_PIP!"=="0" (
   if errorlevel 1 (
     echo   [%LAUNCH_TS%] ERROR: Failed to synchronize dependencies.
     >>"%LOG_FILE%" echo [ERROR] Failed to install requirements.txt
-    if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
+    if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" (
+      pause
+    )
     exit /b 1
   )
   for %%F in ("%STATE_DIR%\similarity_cli_*.ok") do del "%%F" >nul 2>&1
@@ -113,12 +119,18 @@ if "!NEED_PIP!"=="0" (
 
 echo   [%LAUNCH_TS%] Launching Face Similarity CLI...
 >>"%LOG_FILE%" echo [INFO] Launching Face Similarity CLI...
-"!PYTHON_BIN!" main.py --cli
+if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" (
+  "!PYTHON_BIN!" main.py --cli
+) else (
+  "!PYTHON_BIN!" main.py --cli >> "%LOG_FILE%" 2>&1
+)
 set "EXIT_CODE=%ERRORLEVEL%"
 
 echo(
 echo   [%LAUNCH_TS%] Application finished with code %EXIT_CODE%.
 >>"%LOG_FILE%" echo [INFO] Application finished with code %EXIT_CODE%.
-if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
+if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" (
+  pause
+)
 
 endlocal & exit /b %EXIT_CODE%

@@ -10,6 +10,7 @@ set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 if not exist "%STATE_DIR%\" mkdir "%STATE_DIR%"
 set "HAD_ERRORS="
 set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
+set "MP_VALIDATE_CMD=import mediapipe; from mediapipe.tasks.python import vision; v=getattr(vision,chr(70)+chr(97)+chr(99)+chr(101)+chr(76)+chr(97)+chr(110)+chr(100)+chr(109)+chr(97)+chr(114)+chr(107)+chr(101)+chr(114),None); exit(0 if v else 1)"
 
 rem --- Timestamp banner
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
@@ -82,22 +83,22 @@ if "%NEED_PIP%"=="0" (
   findstr /V /I /B "mediapipe" "%SCRIPT_DIR%requirements.txt" > "%REQ_FILTERED%"
   "%PYTHON_CMD%" -m pip install -r "%REQ_FILTERED%" >nul 2>&1
   if errorlevel 1 (
-    del "%REQ_FILTERED%" >nul 2>&1
+    for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
     echo   [%LAUNCH_TS%] ERROR: Failed to install Oldcam V9 dependencies.
     echo   Close running Python/GUI processes and retry.
     set "HAD_ERRORS=1"
     goto DONE
   )
-  "%PYTHON_CMD%" -m pip install --no-deps "%MEDIAPIPE_SPEC%" >nul 2>&1
+  "%PYTHON_CMD%" -m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%" >nul 2>&1
   if errorlevel 1 (
-    del "%REQ_FILTERED%" >nul 2>&1
+    for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
     echo   [%LAUNCH_TS%] ERROR: Failed to install MediaPipe for Oldcam V9.
     echo   Close running Python/GUI processes and retry.
     set "HAD_ERRORS=1"
     goto DONE
   )
-  del "%REQ_FILTERED%" >nul 2>&1
-  "%PYTHON_CMD%" -c "import mediapipe; from mediapipe.tasks.python import vision; v=getattr(vision,'FaceLandmarker',None); exit(0 if v else 1)" >nul 2>&1
+  for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
+  "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%" >nul 2>&1
   if errorlevel 1 (
     echo   [%LAUNCH_TS%] ERROR: MediaPipe Tasks FaceLandmarker API unavailable. Oldcam V9 cannot run.
     echo   Close Python/GUI processes, delete/rebuild venv, and retry.
@@ -120,7 +121,7 @@ set "SELECTION_FILE=%TEMP%\oldcam_sel_%RANDOM%%RANDOM%.txt"
 powershell -NoProfile -STA -Command "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Multiselect=$true; $d.Filter='Media Files|*.mp4;*.mov;*.avi;*.mkv;*.webm;*.m4v;*.jpg;*.jpeg;*.png;*.bmp;*.webp|All Files|*.*'; if ($d.ShowDialog()-eq[System.Windows.Forms.DialogResult]::OK){$d.FileNames|Set-Content -Path '%SELECTION_FILE%'}"
 if not exist "%SELECTION_FILE%" goto DONE
 for /f "usebackq delims=" %%F in ("%SELECTION_FILE%") do call :PROCESS_ONE "%%F"
-del "%SELECTION_FILE%" >nul 2>&1
+for %%F in ("%SELECTION_FILE%") do del "%%F" >nul 2>&1
 goto DONE
 
 :PROCESS_ARGS
@@ -144,6 +145,6 @@ if defined HAD_ERRORS (
 )
 if not defined OLDCAM_NO_PAUSE pause
 popd >nul
-endlocal
-if defined HAD_ERRORS exit /b 1
-exit /b 0
+set "FINAL_EXIT=0"
+if defined HAD_ERRORS set "FINAL_EXIT=1"
+endlocal & exit /b %FINAL_EXIT%

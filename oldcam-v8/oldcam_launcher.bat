@@ -40,6 +40,19 @@ if not defined PYTHON_CMD (
 )
 echo   [%LAUNCH_TS%] Python: %PYTHON_CMD%
 
+rem --- Python version ID for stamp (certutil-based)
+set "PY_ID="
+for /f "tokens=2" %%V in ('"%PYTHON_CMD%" -V 2^>^&1') do set "PY_ID=%%V"
+if defined PY_ID (
+  set "PY_HEX="
+  for /f "skip=1 delims=" %%L in ('certutil -hashfile "%PYTHON_CMD%" MD5 2^>nul') do (
+    if not defined PY_HEX echo %%L | findstr /I /R "^[0-9A-F][0-9A-F]" >nul 2>&1 && set "PY_HEX=%%L"
+  )
+  if defined PY_HEX set "PY_ID=%PY_ID%_%PY_HEX%"
+)
+set "PY_ID=%PY_ID:/=_%"
+set "PY_ID=%PY_ID: =_%"
+
 rem --- Dep stamp: req date+size, no subprocess
 set "STAMP_KEY="
 for %%F in ("%SCRIPT_DIR%requirements.txt") do set "STAMP_KEY=%%~tF%%~zF"
@@ -50,7 +63,7 @@ set "STAMP=%STATE_DIR%\oldcam_v8_%STAMP_KEY:~0,60%.ok"
 
 set "NEED_PIP=1"
 if exist "%STAMP%" (
-  "%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>&1
+  "%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>nul
   if not errorlevel 1 set "NEED_PIP=0"
 )
 if "%NEED_PIP%"=="0" (
@@ -58,7 +71,7 @@ if "%NEED_PIP%"=="0" (
   echo(
 ) else (
   echo   [%LAUNCH_TS%] Syncing Oldcam V8 dependencies...
-  "%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>&1
+  "%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul
   if errorlevel 1 (
     echo   [%LAUNCH_TS%] ERROR: Failed to install dependencies.
     set "HAD_ERRORS=1"
@@ -80,7 +93,7 @@ set "SELECTION_FILE=%TEMP%\oldcam_sel_%RANDOM%%RANDOM%.txt"
 powershell -NoProfile -STA -Command "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Multiselect=$true; $d.Filter='Media Files|*.mp4;*.mov;*.avi;*.mkv;*.webm;*.m4v;*.jpg;*.jpeg;*.png;*.bmp;*.webp|All Files|*.*'; if ($d.ShowDialog()-eq[System.Windows.Forms.DialogResult]::OK){$d.FileNames|Set-Content -Path '%SELECTION_FILE%'}"
 if not exist "%SELECTION_FILE%" goto DONE
 for /f "usebackq delims=" %%F in ("%SELECTION_FILE%") do call :PROCESS_ONE "%%F"
-del "%SELECTION_FILE%" >nul 2>&1
+for %%F in ("%SELECTION_FILE%") do del "%%F" >nul 2>&1
 goto DONE
 
 :PROCESS_ARGS
@@ -91,7 +104,7 @@ goto PROCESS_ARGS
 
 :PROCESS_ONE
 echo   [%LAUNCH_TS%] Processing: %~1
-"%PYTHON_CMD%" "%SCRIPT_DIR%oldcam.py" "%~1" %EXTRA_ARGS%
+call "%PYTHON_CMD%" "%SCRIPT_DIR%oldcam.py" "%~1" %EXTRA_ARGS%
 if not "%ERRORLEVEL%"=="0" set "HAD_ERRORS=1"
 exit /b 0
 
