@@ -506,15 +506,16 @@ def apply_global_awb_drift(image, state, rng):
     return np.clip(image_f, 0, 255).astype(np.uint8)
 
 
-def apply_soft_background_texture(image, focus_mask, strength=0.18):
+def apply_soft_background_texture(image, focus_mask, strength=0.08):
     if strength <= 0:
         return image
-    inverse_mask = 1.0 - focus_mask
+    tight_mask = np.power(focus_mask, 2.0)
+    inverse_mask = 1.0 - tight_mask
     h, w = image.shape[:2]
     small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
     restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
     blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
-    out = (image.astype(np.float32) * focus_mask + blended_bg.astype(np.float32) * inverse_mask)
+    out = (image.astype(np.float32) * tight_mask + blended_bg.astype(np.float32) * inverse_mask)
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -558,7 +559,7 @@ def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
     image = cv2.LUT(image, create_neutral_phone_lut() if lut is None else lut)
     image = apply_modern_sensor_noise(image, getattr(args, "grain", 1.0), rng, state=state, fpn_mask=state.get("fpn"))
     image = apply_radial_chromatic_aberration(image, scale=0.0006)
-    image = apply_soft_background_texture(image, full_face_mask, strength=0.18)
+    image = apply_soft_background_texture(image, full_face_mask, strength=getattr(args, "background_texture_strength", 0.08))
 
     vignette_strength = getattr(args, "vignette_strength", 0.55)
     if vignette_mask is not None and vignette_strength > 0:

@@ -527,7 +527,7 @@ def synchronize_base_frequency(image, state, face_mask, fps=30.0):
         sig = sig - np.mean(sig)
         freqs = np.fft.rfftfreq(len(sig), d=1.0 / fps)
         mags = np.abs(np.fft.rfft(sig))
-        valid = (freqs >= 0.7) & (freqs <= 4.0)
+        valid = (freqs >= 0.8) & (freqs <= 1.8)
         if np.any(valid):
             target_hz = float(freqs[valid][np.argmax(mags[valid])])
             state["target_hz"] = target_hz
@@ -549,25 +549,26 @@ def apply_synchronized_spatial_fluctuation(image, state, region_masks, target_hz
     for region, mask in region_masks.items():
         offset = SPATIAL_PHASE_OFFSETS.get(region, 0.0)
         phase = (t * 2 * np.pi * target_hz) + offset
-        shift_intensity = np.sin(phase) * envelope * 2.0
+        shift_intensity = np.sin(phase) * envelope * 0.45
         combined_mask = mask * warm_mask
         img_float[:, :, 1] += shift_intensity * 1.0 * combined_mask[:, :, 0]
         img_float[:, :, 2] += shift_intensity * 0.45 * combined_mask[:, :, 0]
         img_float[:, :, 0] -= shift_intensity * 0.10 * combined_mask[:, :, 0]
-        img_float[:, :, 2] += shift_intensity * 0.8 * mask[:, :, 0] * 5.0
+        img_float[:, :, 2] += shift_intensity * 0.5 * mask[:, :, 0] * 3.0
 
     return img_float.clip(0, 255).astype(np.uint8)
 
 
-def apply_soft_background_texture(image, focus_mask, strength=0.18):
+def apply_soft_background_texture(image, focus_mask, strength=0.08):
     if strength <= 0:
         return image
-    inverse_mask = 1.0 - focus_mask
+    tight_mask = np.power(focus_mask, 2.0)
+    inverse_mask = 1.0 - tight_mask
     h, w = image.shape[:2]
     small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
     restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
     blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
-    out = (image.astype(np.float32) * focus_mask + blended_bg.astype(np.float32) * inverse_mask)
+    out = (image.astype(np.float32) * tight_mask + blended_bg.astype(np.float32) * inverse_mask)
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -635,7 +636,7 @@ def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
     image = cv2.LUT(image, create_neutral_phone_lut() if lut is None else lut)
     image = apply_modern_sensor_noise(image, getattr(args, "grain", 1.0), rng, state=state, fpn_mask=state.get("fpn"))
     image = apply_radial_chromatic_aberration(image, scale=0.0006)
-    image = apply_soft_background_texture(image, full_face_mask, strength=0.18)
+    image = apply_soft_background_texture(image, full_face_mask, strength=getattr(args, "background_texture_strength", 0.08))
 
     vignette_strength = getattr(args, "vignette_strength", 0.55)
     if vignette_mask is not None and vignette_strength > 0:
