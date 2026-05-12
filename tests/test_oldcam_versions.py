@@ -106,7 +106,9 @@ def test_oldcam_output_path_uses_versioned_suffixes():
 
 
 def test_discover_oldcam_versions_includes_future_version(tmp_path):
-    for version in ("7", "8", "9"):
+    # Create a hypothetical future "v99" folder alongside known versions to confirm
+    # the discovery logic is generic (not hardcoded to a fixed set).
+    for version in ("7", "8", "9", "99"):
         folder = tmp_path / f"oldcam-v{version}"
         folder.mkdir()
         (folder / "launcher.py").write_text("pass", encoding="utf-8")
@@ -114,10 +116,16 @@ def test_discover_oldcam_versions_includes_future_version(tmp_path):
     manager, _ = make_queue_manager({"oldcam_version": "all"})
     with mock.patch("kling_gui.queue_manager.get_app_dir", return_value=str(tmp_path)), \
         mock.patch("kling_gui.queue_manager.get_resource_dir", return_value=str(tmp_path)):
-        versions = manager._discover_oldcam_versions()
+        # Also mock __file__-based root to point at tmp_path so only tmp_path is scanned
+        import kling_gui.queue_manager as qm_mod
+        with mock.patch.object(
+            qm_mod, "__file__",
+            str(tmp_path / "kling_gui" / "queue_manager.py"),
+        ):
+            versions = manager._discover_oldcam_versions()
 
     assert "v9" in versions
-    assert versions[-1] in {"v9", "v10"}
+    assert "v99" in versions  # future/arbitrary numeric versions are discovered
 
 
 def test_queue_manager_selects_oldcam_version_folder_and_output(tmp_path):
@@ -389,7 +397,7 @@ def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
     panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
     assert 'text="Oldcam Finish"' not in panel_source
     assert 'text="Oldcam:"' in panel_source
-    assert 'for version in ("v7", "v8", "v9", "v10")' in panel_source
+    assert 'for version in ("v7", "v8", "v9", "v10", "v11")' in panel_source
 
 
 def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
@@ -559,3 +567,66 @@ def test_v9_temporal_noise_uses_distinct_state_keys():
     assert "temporal_noise_luma" in state
     assert "temporal_noise_chroma" in state
     assert "temporal_noise" not in state
+
+
+def test_v11_default_output_path_uses_v11_suffix():
+    oldcam_v11 = load_module(ROOT / "oldcam-v11" / "oldcam.py", "oldcam_v11")
+    assert oldcam_v11.build_default_output_path("sample.mp4").endswith("sample-oldcam-v11.mp4")
+
+
+def test_oldcam_dependency_preflight_requires_mediapipe_for_v11(tmp_path):
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v11"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "requirements.txt").write_text("mediapipe==0.10.35\n", encoding="utf-8")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("No module named mediapipe")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v11") is False
+
+
+def test_v11_process_frame_applies_awb_drift_after_spatial_fluctuation():
+    oldcam_v11 = load_module(ROOT / "oldcam-v11" / "oldcam.py", "oldcam_v11_order")
+    call_order = []
+
+    def fake_spatial(image, state, region_masks, target_hz, fps=30.0):
+        call_order.append("spatial")
+        return image
+
+    def fake_awb(image, state, rng):
+        call_order.append("awb")
+        return image
+
+    image = np.full((32, 32, 3), 128, dtype=np.uint8)
+    state = {
+        "face_detected": True,
+        "full_face_mask": np.zeros((32, 32, 3), dtype=np.float32),
+        "last_masks": {"forehead": np.zeros((32, 32, 3), dtype=np.float32)},
+        "fpn": np.zeros((32, 32, 3), dtype=np.float32),
+        "adjusted_vignette_mask": np.ones((32, 32, 1), dtype=np.float32),
+        "target_hz": 1.2,
+        "detect_frame_count": 2,
+    }
+
+    import argparse
+    args = argparse.Namespace(grain=1, saturation=1.02, ghosting=0.08, vignette_strength=0.55)
+
+    with (
+        mock.patch.object(oldcam_v11, "apply_synchronized_spatial_fluctuation", side_effect=fake_spatial),
+        mock.patch.object(oldcam_v11, "apply_global_awb_drift", side_effect=fake_awb),
+        mock.patch.object(oldcam_v11, "get_dynamic_region_masks", return_value=state["last_masks"]),
+        mock.patch.object(oldcam_v11, "synchronize_base_frequency", return_value=1.2),
+    ):
+        oldcam_v11.process_frame(image, None, None, args, rng=np.random.default_rng(42), state=state)
+
+    assert "spatial" in call_order, "apply_synchronized_spatial_fluctuation was not called"
+    assert "awb" in call_order, "apply_global_awb_drift was not called"
+    assert call_order.index("spatial") < call_order.index("awb"), (
+        "AWB drift must be applied AFTER spatial fluctuation (signal ordering invariant)"
+    )

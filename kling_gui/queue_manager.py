@@ -1202,7 +1202,7 @@ class QueueManager:
             return True
 
         required_modules = ["cv2", "numpy"]
-        requires_mediapipe = version in {"v9", "v10"}
+        requires_mediapipe = version in {"v9", "v10", "v11"}
         if requires_mediapipe:
             required_modules.append("mediapipe")
 

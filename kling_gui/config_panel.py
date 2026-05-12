@@ -514,11 +514,12 @@ class ConfigPanel(tk.Frame):
         self.oldcam_version_vars = {
             "v7": tk.BooleanVar(value=False),
             "v8": tk.BooleanVar(value=False),
-            "v9": tk.BooleanVar(value=True),
+            "v9": tk.BooleanVar(value=False),
             "v10": tk.BooleanVar(value=False),
+            "v11": tk.BooleanVar(value=True),
         }
         self.oldcam_version_checks = {}
-        for version in ("v7", "v8", "v9", "v10"):
+        for version in ("v7", "v8", "v9", "v10", "v11"):
             check = tk.Checkbutton(
                 self.oldcam_controls_frame,
                 text=version,

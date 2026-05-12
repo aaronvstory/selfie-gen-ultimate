@@ -193,24 +193,73 @@ V10 is the most technically ambitious. The FFT sync means the color oscillations
 
 ---
 
+## V11 — "Spatial Sync + AWB Drift" (2026-05-12)
+
+V11 is the synthesis of V9's hardware realism and V10's biological realism. V10 had removed AWB drift because global channel shifts contaminate the green channel history buffer that the FFT reads to detect the 0.8–1.8 Hz heartbeat/breathing frequency. V11 solves this with strict execution ordering.
+
+### The Signal Integrity Problem
+
+V10's FFT analysis reads the **mean green channel** of the face region across the last 3 seconds of frames to detect the dominant low-frequency fluctuation. If AWB drift (which modifies global channel intensity) runs before this read, the FFT interprets camera hardware noise as a biological signal — frequency lock breaks down.
+
+### The V11 Solution: Operation Order
+
+```
+1. get_dynamic_region_masks()                  — face detection (every-other-frame cached)
+2. synchronize_base_frequency()                — FFT reads CLEAN green channel, no drift yet
+3. apply_synchronized_spatial_fluctuation()    — biological pulse baked into pixels
+4. apply_global_awb_drift()                    — hardware color drift applied AFTER FFT
+5. apply_soft_ois_jitter()
+6. apply_soft_rolling_shutter()
+7. apply_subtle_af_breathing()
+8. apply_ae_stepping()
+9. apply_dynamic_tone_mapping()
+10. apply_highlight_blooming()
+11. HSV saturation / LUT
+12. apply_modern_sensor_noise()
+13. apply_radial_chromatic_aberration()
+14. vignette
+```
+
+Steps 1–3 read and write `g_history` (the green channel buffer) before any AWB channel modification. Step 4 then applies camera-hardware white-balance wandering on top of the biological signal already baked in. The two systems are mathematically independent.
+
+### What V11 Adds vs V10
+
+- **`apply_global_awb_drift()`** is called again (V10 had the function defined but not called). Drift magnitude: ±2.0, step sigma 0.05 per frame. Red channel: +drift×0.35, Green: +drift×0.15.
+
+### What V11 Preserves from V10
+
+All V10 improvements are unchanged:
+- Every-other-frame face detection (50% MediaPipe CPU reduction)
+- Pre-computed vignette mask (no per-frame recalculation)
+- `tight_mask = focus_mask * focus_mask` (squared boundary, eliminates bleed onto face)
+- FFT range narrowed to [0.8, 1.8] Hz (realistic heartbeat band)
+- `shift_intensity` amplitude at 0.45 (eliminated siren-like strobing)
+- `apply_soft_background_texture` commented out (flat-sensor webcam model)
+- `apply_dynamic_relighting` commented out (flat focal plane, no depth separation)
+
+### Character
+
+V11 is the "best of all worlds" version. V9 simulates a physical camera sensor adjusting to ambient light. V10 simulates human skin microcirculation. V11 does both by calculating the biological signal before applying global hardware color shifts. The AWB drift adds a subtle warmth/coolness oscillation that's independent of (and layered on top of) the face-region biological pulsing — the result is a video that reads as both "phone footage" and "living person" simultaneously.
+
+---
+
 ## Side-by-Side Comparison
 
-| Feature | V7 | V8 | V9 | V10 |
-|---|---|---|---|---|
-| Face detection | None | None | MediaPipe 478 pts | MediaPipe 478 pts |
-| Region masks | None | None | 4 regions (forehead, cheeks, chin) | 4 regions |
-| Rolling shutter | Sine arm-sway | Velocity-coupled to OIS | Soft residual | Soft residual |
-| OIS model | None | Spring-damper ±2px | Spring-damper ±1.4px | Spring-damper ±1.4px |
-| AF model | 12-frame hunt 1.5% | 2-frame hunt 0.5% | 6-frame breathing | 6-frame breathing |
-| JPEG pass | Yes (quality 94) | No | No | No |
-| Noise type | 2D luma-only | 3D per-channel | Temporal luma+chroma | Temporal luma+chroma |
-| AWB drift | No | No | Yes | Yes |
-| Background softening | No | No | Yes | Yes |
-| FFT frequency sync | No | No | No | Yes |
-| Phase-locked oscillations | No | No | No | Yes |
-| Dynamic relighting | No | No | No | Yes |
-| Output encoding | CRF 18 | baseline + 1500k cap | CRF 18 high | CRF 18 high |
-| Lines of code | 536 | 590 | 829 | 939 |
+| Feature | V7 | V8 | V9 | V10 | V11 |
+|---|---|---|---|---|---|
+| Face detection | None | None | MediaPipe 478 pts | MediaPipe 478 pts | MediaPipe 478 pts |
+| Region masks | None | None | 4 regions (forehead, cheeks, chin) | 4 regions | 4 regions |
+| Rolling shutter | Sine arm-sway | Velocity-coupled to OIS | Soft residual | Soft residual | Soft residual |
+| OIS model | None | Spring-damper ±2px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px |
+| AF model | 12-frame hunt 1.5% | 2-frame hunt 0.5% | 6-frame breathing | 6-frame breathing | 6-frame breathing |
+| JPEG pass | Yes (quality 94) | No | No | No | No |
+| Noise type | 2D luma-only | 3D per-channel | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma |
+| AWB drift | No | No | Yes | No | Yes |
+| Background softening | No | No | Yes (commented out in latest) | No | No |
+| FFT frequency sync | No | No | No | Yes | Yes |
+| Phase-locked oscillations | No | No | No | Yes | Yes |
+| Dynamic relighting | No | No | No | No (removed) | No |
+| Output encoding | CRF 18 | baseline + 1500k cap | CRF 18 high | CRF 18 high | CRF 18 high |
 
 ---
 
@@ -219,4 +268,5 @@ V10 is the most technically ambitious. The FFT sync means the color oscillations
 - **V7** — Best for: general-purpose vintage look, clean grain, subtle imperfections. No MediaPipe dependency.
 - **V8** — Best for: smartphone/social-media aesthetic, authentic motion compression. Bitrate cap is a feature, not a bug.
 - **V9** — Best for: face-forward footage where you want subject/background separation and cinematic color drift. Requires MediaPipe.
-- **V10** — Best for: portrait subjects with visible motion (talking, slight movement). The FFT sync and relighting reward good source material.
+- **V10** — Best for: portrait subjects where biological realism is the priority; AWB drift removed to preserve FFT signal integrity.
+- **V11** — Best for: most use cases. Combines V10's biological skin microcirculation with V9's AWB hardware drift using correct signal ordering. Default recommended version.
