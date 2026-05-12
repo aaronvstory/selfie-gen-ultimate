@@ -15,6 +15,7 @@ import subprocess
 import sys
 import traceback
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import mediapipe as mp
@@ -248,8 +249,22 @@ def create_face_landmarker(task_path):
     return vision.FaceLandmarker.create_from_options(options)
 
 
-def get_dynamic_region_masks(image, state):
-    """Extracts temporally-stabilized, optically blended boolean masks for focal regions."""
+def get_dynamic_region_masks(image: np.ndarray, state: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    """Extracts temporally-stabilized, optically blended masks for each REGION_INDICES region.
+
+    Args:
+        image: BGR uint8 frame (H, W, 3).
+        state: Mutable per-video state dict. Relevant keys written/read:
+            'face_landmarker' (MediaPipe FaceLandmarker, lazily created),
+            'prev_landmarks' (List[Tuple[float, float]], smoothed landmark coords),
+            'last_masks' (Dict[str, np.ndarray], previous frame masks as (H,W,3) float32),
+            'last_full' (np.ndarray, full-face union mask (H,W,3) float32 in [0,1]),
+            'full_face_mask' (np.ndarray, alias of last_full (H,W,3) float32),
+            'face_detected' (bool), 'miss_count' (int).
+
+    Returns:
+        Dict mapping region name -> (H, W, 3) float32 mask in [0, 1].
+    """
     h, w = image.shape[:2]
     if "face_landmarker" not in state:
         task_path, searched_paths = resolve_face_landmarker_task_path()
@@ -336,7 +351,13 @@ def apply_dynamic_tone_mapping(image):
     return cv2.cvtColor(cv2.merge((cl, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
 
 
-def get_temporal_noise_field(state, shape, rng, strength=1.0, key="temporal_noise"):
+def get_temporal_noise_field(
+    state: Dict[str, Any],
+    shape: Tuple[int, ...],
+    rng: np.random.Generator,
+    strength: float = 1.0,
+    key: str = "temporal_noise",
+) -> np.ndarray:
     previous = state.get(key)
     fresh = rng.normal(0.0, strength, shape).astype(np.float32)
     if previous is None or previous.shape != shape:
@@ -347,7 +368,13 @@ def get_temporal_noise_field(state, shape, rng, strength=1.0, key="temporal_nois
     return field
 
 
-def apply_modern_sensor_noise(image, grain, rng, state=None, fpn_mask=None):
+def apply_modern_sensor_noise(
+    image: np.ndarray,
+    grain: float,
+    rng: np.random.Generator,
+    state: Optional[Dict[str, Any]] = None,
+    fpn_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
     state = {} if state is None else state
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     lum = hsv[:, :, 2].astype(np.float32) / 255.0
@@ -377,7 +404,7 @@ def apply_modern_sensor_noise(image, grain, rng, state=None, fpn_mask=None):
     return np.clip(image_f, 0, 255).astype(np.uint8)
 
 
-def close_face_landmarker_state(state):
+def close_face_landmarker_state(state: Dict[str, Any]) -> None:
     face_landmarker = state.pop("face_landmarker", None)
     if face_landmarker is None:
         return
@@ -509,8 +536,24 @@ def apply_global_awb_drift(image, state, rng):
 SPATIAL_PHASE_OFFSETS = {"forehead": 0.0, "left_cheek": 0.15, "right_cheek": 0.15, "chin": 0.25}
 
 
-def synchronize_base_frequency(image, state, face_mask, fps=30.0):
-    """Extracts existing temporal frequency from focal region to sync textures."""
+def synchronize_base_frequency(
+    image: np.ndarray,
+    state: Dict[str, Any],
+    face_mask: np.ndarray,
+    fps: float = 30.0,
+) -> float:
+    """Extracts existing temporal frequency from focal region to sync textures.
+
+    Args:
+        image: BGR uint8 frame (H, W, 3).
+        state: Per-video state dict. Reads/writes 'g_history' (List[float]),
+            'target_hz' (float), 'frame_count' (int), 'face_detected' (bool).
+        face_mask: Full-face mask (H, W, 3) float32; used to isolate green channel mean.
+        fps: Video frame rate for frequency analysis.
+
+    Returns:
+        Dominant temporal frequency in Hz (clamped to [0.7, 4.0] range).
+    """
     if not state.get("face_detected", False):
         return 1.2
 
@@ -534,8 +577,25 @@ def synchronize_base_frequency(image, state, face_mask, fps=30.0):
     return target_hz
 
 
-def apply_synchronized_spatial_fluctuation(image, state, region_masks, target_hz, fps=30.0):
-    """Applies spatially-delayed fluctuations synchronized to detected base frequency."""
+def apply_synchronized_spatial_fluctuation(
+    image: np.ndarray,
+    state: Dict[str, Any],
+    region_masks: Dict[str, np.ndarray],
+    target_hz: float,
+    fps: float = 30.0,
+) -> np.ndarray:
+    """Applies spatially-delayed fluctuations synchronized to detected base frequency.
+
+    Args:
+        image: BGR uint8 frame (H, W, 3).
+        state: Per-video state dict. Reads/writes 'frame_count' (int).
+        region_masks: Dict mapping region name -> (H, W, 3) float32 mask in [0, 1].
+        target_hz: Dominant frequency from synchronize_base_frequency (Hz).
+        fps: Video frame rate.
+
+    Returns:
+        BGR uint8 frame with spatial fluctuations applied.
+    """
     frame_count = state.get("frame_count", 0)
     state["frame_count"] = frame_count + 1
     t = frame_count / fps
@@ -602,13 +662,22 @@ def apply_jpeg_pass(image, quality):
     return decoded
 
 
-def blend_with_previous_frame(current_frame, previous_frame, ghosting):
+def blend_with_previous_frame(
+    current_frame: np.ndarray, previous_frame: Optional[np.ndarray], ghosting: float
+) -> np.ndarray:
     if previous_frame is None or ghosting <= 0.0:
         return current_frame
     return cv2.addWeighted(current_frame, 1.0 - ghosting, previous_frame, ghosting, 0)
 
 
-def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
+def process_frame(
+    image: np.ndarray,
+    lut: Optional[np.ndarray],
+    vignette_mask: Optional[np.ndarray],
+    args: argparse.Namespace,
+    rng: Optional[np.random.Generator] = None,
+    state: Optional[Dict[str, Any]] = None,
+) -> np.ndarray:
     rng = rng or np.random.default_rng()
     state = {} if state is None else state
     h, w = image.shape[:2]
@@ -645,7 +714,7 @@ def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
     return image
 
 
-def naturalize_image(input_path, output_path, args):
+def naturalize_image(input_path: str, output_path: str, args: argparse.Namespace) -> None:
     image = open_media(input_path)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     height, width = image.shape[:2]
@@ -666,7 +735,7 @@ def naturalize_image(input_path, output_path, args):
         close_face_landmarker_state(state)
 
 
-def finalize_video_output(temp_output, input_path, output_path, codec):
+def finalize_video_output(temp_output: str, input_path: str, output_path: str, codec: str) -> None:
     if not ffmpeg_available():
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(temp_output).replace(output_path)
@@ -721,7 +790,7 @@ def finalize_video_output(temp_output, input_path, output_path, codec):
     print(f"Saved video to: {output_path}")
 
 
-def naturalize_video(input_path, output_path, args):
+def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace) -> None:
     source = ensure_input_exists(input_path)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(str(source))

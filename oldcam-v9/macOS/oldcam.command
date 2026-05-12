@@ -54,7 +54,7 @@ PY_ID="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info[0]}.{sys.versio
 STAMP="$STATE_DIR/oldcam_v9_${REQ_HASH}_${PY_ID}.ok"
 if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy" >/dev/null 2>&1 || ! "$PYTHON_CMD" -c "$MP_VALIDATE_CMD" >/dev/null 2>&1; then
   FILTERED_REQ="$STATE_DIR/oldcam_v9_requirements.filtered.txt"
-  grep -vi '^[[:space:]]*mediapipe' "$SCRIPT_DIR/requirements.txt" > "$FILTERED_REQ"
+  grep -E -vi '^[[:space:]]*mediapipe($|[[:space:]]|==|>=|<=|~=|!=)' "$SCRIPT_DIR/requirements.txt" > "$FILTERED_REQ" || true
   "$PYTHON_CMD" -m pip install -r "$FILTERED_REQ" || {
     rm -f "$FILTERED_REQ" || true
     echo "Failed to install Oldcam v9 dependencies."

@@ -1,5 +1,6 @@
+import io
 from pathlib import Path
-from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import automation.oldcam as oldcam
 
@@ -27,11 +28,15 @@ def test_run_oldcam_version_success(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(oldcam, "ensure_oldcam_dependencies", lambda: (True, None))
 
-    def fake_run(*args, **kwargs):
+    def fake_popen(*args, **kwargs):
         expected_output.write_bytes(b"done")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        mock = MagicMock()
+        mock.stdout = io.StringIO("ok\n")
+        mock.wait.return_value = 0
+        mock.poll.return_value = 0
+        return mock
 
-    monkeypatch.setattr(oldcam.subprocess, "run", fake_run)
+    monkeypatch.setattr(oldcam.subprocess, "Popen", fake_popen)
 
     result = oldcam.run_oldcam_version(
         video_path=input_video,
@@ -49,11 +54,15 @@ def test_run_oldcam_version_failure(monkeypatch, tmp_path: Path):
     input_video.write_bytes(b"mp4")
 
     monkeypatch.setattr(oldcam, "ensure_oldcam_dependencies", lambda: (True, None))
-    monkeypatch.setattr(
-        oldcam.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
-    )
+
+    def fake_popen_fail(*args, **kwargs):
+        mock = MagicMock()
+        mock.stdout = io.StringIO("boom\n")
+        mock.wait.return_value = 1
+        mock.poll.return_value = 1
+        return mock
+
+    monkeypatch.setattr(oldcam.subprocess, "Popen", fake_popen_fail)
     result = oldcam.run_oldcam_version(video_path=input_video, version="v8", repo_root=tmp_path)
     assert result is None
 
@@ -67,9 +76,13 @@ def test_run_oldcam_version_timeout_returns_none(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(oldcam, "ensure_oldcam_dependencies", lambda: (True, None))
 
-    def fake_timeout(*args, **kwargs):
-        raise oldcam.subprocess.TimeoutExpired(cmd="python launcher.py", timeout=5)
+    def fake_popen_timeout(*args, **kwargs):
+        mock = MagicMock()
+        mock.stdout = io.StringIO("")
+        mock.wait.side_effect = oldcam.subprocess.TimeoutExpired(cmd="python launcher.py", timeout=5)
+        mock.poll.return_value = None
+        return mock
 
-    monkeypatch.setattr(oldcam.subprocess, "run", fake_timeout)
+    monkeypatch.setattr(oldcam.subprocess, "Popen", fake_popen_timeout)
     result = oldcam.run_oldcam_version(video_path=input_video, version="v8", repo_root=tmp_path, timeout_seconds=5)
     assert result is None

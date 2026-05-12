@@ -331,9 +331,9 @@ def apply_highlight_blooming(image, threshold=220, strength=0.2):
 
 def apply_dynamic_tone_mapping(image):
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    cl = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(8, 8)).apply(l)
-    return cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2BGR)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    cl = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(8, 8)).apply(l_channel)
+    return cv2.cvtColor(cv2.merge((cl, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
 
 
 def get_temporal_noise_field(state, shape, rng, strength=1.0, key="temporal_noise"):

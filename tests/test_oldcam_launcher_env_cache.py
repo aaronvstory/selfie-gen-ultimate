@@ -77,7 +77,7 @@ def test_oldcam_macos_v9_v10_install_mediapipe_separately():
     v9 = (REPO_ROOT / "oldcam-v9" / "macOS" / "oldcam.command").read_text(encoding="utf-8")
     v10 = (REPO_ROOT / "oldcam-v10" / "macOS" / "oldcam.command").read_text(encoding="utf-8")
     for text in (v9, v10):
-        assert "grep -vi '^[[:space:]]*mediapipe'" in text
+        assert "grep -E -vi '^[[:space:]]*mediapipe($|[[:space:]]|==|>=|<=|~=|!=)'" in text
         assert '-m pip install --force-reinstall --no-deps "mediapipe==0.10.35"' in text
         assert "MP_VALIDATE_CMD=" in text
         assert "Tasks FaceLandmarker API unavailable" in text
