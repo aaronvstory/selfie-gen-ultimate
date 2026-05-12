@@ -58,3 +58,5 @@ gen-images/
 similarity/.venv/
 oldcam-v7/.venv/
 oldcam-v8/.venv/
+test-material/
+.recovery/

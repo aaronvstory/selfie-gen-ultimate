@@ -581,6 +581,10 @@ class OldcamRerunFlowTests(unittest.TestCase):
         self.assertIn('"v9"', src)
         self.assertIn('"v10"', src)
 
+    def test_config_panel_oldcam_rerun_label_is_visible(self):
+        src = inspect.getsource(ConfigPanel._setup_ui)
+        self.assertIn('text="Re-Run:"', src)
+
     def test_resolve_oldcam_rerun_source_prefers_base_video_when_available(self):
         window = KlingGUIWindow.__new__(KlingGUIWindow)
         window._log = mock.Mock()

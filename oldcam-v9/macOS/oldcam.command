@@ -15,8 +15,8 @@ find_repo_root() {
 REPO_ROOT="$(find_repo_root 2>/dev/null || true)"
 if [ -n "$REPO_ROOT" ]; then STATE_DIR="$REPO_ROOT/.launcher_state"; else STATE_DIR="$SCRIPT_DIR/.launcher_state"; fi
 mkdir -p "$STATE_DIR"
-MP_VALIDATE_CMD="import sys, mediapipe as mp; s=getattr(mp,'solutions',None); fm=getattr(s,'face_mesh',None) if s is not None else None; cls=getattr(fm,'FaceMesh',None) if fm is not None else None; sys.exit(0 if cls is not None else 1)"
-MP_DIAG_CMD="import sys, mediapipe as mp; s=getattr(mp,'solutions',None); fm=getattr(s,'face_mesh',None) if s is not None else None; cls=getattr(fm,'FaceMesh',None) if fm is not None else None; print('python='+sys.executable); print('mediapipe_file='+str(getattr(mp,'__file__','unknown'))); print('mediapipe_version='+str(getattr(mp,'__version__','unknown'))); print('has_solutions='+str(hasattr(mp,'solutions'))); print('has_face_mesh='+str(fm is not None)); print('has_facemesh_class='+str(cls is not None)); print('sys_path_0='+(sys.path[0] if sys.path else ''))"
+MP_VALIDATE_CMD="import sys, mediapipe as mp; from mediapipe.tasks.python import vision; cls=getattr(vision,'FaceLandmarker',None); sys.exit(0 if cls is not None else 1)"
+MP_DIAG_CMD="import sys, os, mediapipe as mp; from mediapipe.tasks.python import vision; cls=getattr(vision,'FaceLandmarker',None); print('python='+sys.executable); print('mediapipe_file='+str(getattr(mp,'__file__','unknown'))); print('mediapipe_version='+str(getattr(mp,'__version__','unknown'))); print('facelandmarker_import_ok='+str(cls is not None)); print('task_file_path='+os.environ.get('OLDCAM_FACE_LANDMARKER_TASK','')); print('task_file_exists='+str(os.path.exists(os.environ.get('OLDCAM_FACE_LANDMARKER_TASK','')))); print('sys_path_0='+(sys.path[0] if sys.path else ''))"
 resolve_py(){
   if [ -n "${SELFIEGEN_PYTHON:-}" ] && [ -x "$SELFIEGEN_PYTHON" ]; then echo "$SELFIEGEN_PYTHON"; return; fi
   if [ -n "${SELFIEGEN_VENV_DIR:-}" ] && [ -x "$SELFIEGEN_VENV_DIR/bin/python" ]; then echo "$SELFIEGEN_VENV_DIR/bin/python"; return; fi
@@ -30,6 +30,24 @@ resolve_py(){
 }
 PYTHON_CMD="$(resolve_py)"
 [ -n "$PYTHON_CMD" ] || { echo "No python"; exit 1; }
+TASK_MODEL_PATH=""
+if [ -n "${OLDCAM_FACE_LANDMARKER_TASK:-}" ] && [ -f "$OLDCAM_FACE_LANDMARKER_TASK" ]; then
+  TASK_MODEL_PATH="$OLDCAM_FACE_LANDMARKER_TASK"
+elif [ -f "$SCRIPT_DIR/face_landmarker.task" ]; then
+  TASK_MODEL_PATH="$SCRIPT_DIR/face_landmarker.task"
+elif [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/face_landmarker.task" ]; then
+  TASK_MODEL_PATH="$REPO_ROOT/face_landmarker.task"
+elif [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/../face_landmarker.task" ]; then
+  TASK_MODEL_PATH="$REPO_ROOT/../face_landmarker.task"
+elif [ -f "$(pwd)/face_landmarker.task" ]; then
+  TASK_MODEL_PATH="$(pwd)/face_landmarker.task"
+fi
+if [ -z "$TASK_MODEL_PATH" ]; then
+  echo "FaceLandmarker task model missing. Expected face_landmarker.task. Oldcam v9/v10 cannot run."
+  echo "Searched: $SCRIPT_DIR/face_landmarker.task ; $REPO_ROOT/face_landmarker.task ; $REPO_ROOT/../face_landmarker.task ; $(pwd)/face_landmarker.task"
+  exit 1
+fi
+export OLDCAM_FACE_LANDMARKER_TASK="$TASK_MODEL_PATH"
 REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk '{print $1}')"
 [ -n "$REQ_HASH" ] || REQ_HASH="missing"
 PY_ID="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"
@@ -44,14 +62,14 @@ if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy" >/dev/null 2>&1 |
     echo "Close running Python processes and retry. If still failing, recreate venv."
     exit 1
   }
-  "$PYTHON_CMD" -m pip install --force-reinstall --no-deps "mediapipe>=0.10.14" || {
+  "$PYTHON_CMD" -m pip install --force-reinstall --no-deps "mediapipe==0.10.35" || {
     rm -f "$FILTERED_REQ" || true
     echo "Failed to install MediaPipe required by Oldcam v9."
     echo "Close running Python processes and retry. If still failing, recreate venv."
     exit 1
   }
   if ! "$PYTHON_CMD" -c "$MP_VALIDATE_CMD" >/dev/null 2>&1; then
-    echo "MediaPipe installed but FaceMesh API unavailable. Oldcam v9 cannot run."
+    echo "MediaPipe installed but Tasks FaceLandmarker API unavailable. Oldcam v9 cannot run."
     echo "Close Python/GUI processes, delete/rebuild venv, and retry."
     echo "Python executable: $PYTHON_CMD"
     echo "Validation command: \"$PYTHON_CMD\" -c \"$MP_VALIDATE_CMD\""

@@ -492,13 +492,23 @@ class ConfigPanel(tk.Frame):
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.loop_info_label.pack(side=tk.LEFT, padx=4)
-        tk.Label(
+        self.oldcam_controls_frame = tk.Frame(
             rA,
+            bg="#2A1F34",
+            highlightthickness=1,
+            highlightbackground="#5E3A7D",
+            bd=0,
+            padx=6,
+            pady=2,
+        )
+        self.oldcam_controls_frame.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        tk.Label(
+            self.oldcam_controls_frame,
             text="Oldcam:",
             font=(FONT_FAMILY, 10),
-            bg=COLORS["bg_input"],
+            bg="#2A1F34",
             fg=COLORS["text_light"],
-        ).pack(side=tk.LEFT, padx=(8, 4))
+        ).pack(side=tk.LEFT, padx=(0, 4))
         self.oldcam_version_vars = {
             "v7": tk.BooleanVar(value=False),
             "v8": tk.BooleanVar(value=False),
@@ -508,34 +518,41 @@ class ConfigPanel(tk.Frame):
         self.oldcam_version_checks = {}
         for version in ("v7", "v8", "v9", "v10"):
             check = tk.Checkbutton(
-                rA,
+                self.oldcam_controls_frame,
                 text=version,
                 variable=self.oldcam_version_vars[version],
                 font=(FONT_FAMILY, 9),
-                bg=COLORS["bg_input"],
+                bg="#2A1F34",
                 fg=COLORS["text_light"],
                 selectcolor=COLORS["bg_main"],
-                activebackground=COLORS["bg_input"],
+                activebackground="#2A1F34",
                 activeforeground=COLORS["text_light"],
                 command=self._on_oldcam_versions_changed,
             )
             check.pack(side=tk.LEFT, padx=(2, 0))
             self.oldcam_version_checks[version] = check
+        tk.Label(
+            self.oldcam_controls_frame,
+            text="Re-Run:",
+            font=(FONT_FAMILY, 9, "bold"),
+            bg="#2A1F34",
+            fg=COLORS["text_light"],
+        ).pack(side=tk.LEFT, padx=(8, 4))
         self.oldcam_rerun_btn = tk.Button(
-            rA,
-            text="↻",
+            self.oldcam_controls_frame,
+            text="Run",
             font=(FONT_FAMILY, 10, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             activebackground=COLORS["bg_main"],
             activeforeground=COLORS["text_light"],
-            padx=7,
+            padx=10,
             pady=1,
             relief=tk.FLAT,
             borderwidth=0,
             command=self._on_oldcam_rerun_clicked,
         )
-        self.oldcam_rerun_btn.pack(side=tk.LEFT, padx=(4, 0))
+        self.oldcam_rerun_btn.pack(side=tk.LEFT, padx=(0, 2))
         HoverTooltip(
             self.oldcam_rerun_btn,
             lambda: (

@@ -17,20 +17,40 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load_module(path: Path, name: str):
     injected_fake = False
+    injected_names = []
     if "mediapipe" not in sys.modules:
-        class _FakeFaceMesh:
+        class _FakeImage:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def process(self, _img):
-                return SimpleNamespace(multi_face_landmarks=None)
+        fake_mp = types.ModuleType("mediapipe")
+        fake_mp.Image = _FakeImage
+        fake_mp.ImageFormat = types.SimpleNamespace(SRGB=0)
+        fake_mp.__version__ = "0.10.35"
+        fake_mp.__file__ = "site-packages/mediapipe/__init__.py"
 
-        fake_mp = types.SimpleNamespace(
-            solutions=types.SimpleNamespace(
-                face_mesh=types.SimpleNamespace(FaceMesh=_FakeFaceMesh)
+        fake_tasks = types.ModuleType("mediapipe.tasks")
+        fake_tasks_python = types.ModuleType("mediapipe.tasks.python")
+        fake_tasks_python.BaseOptions = lambda **kwargs: types.SimpleNamespace(**kwargs)
+        fake_tasks_python_vision = types.ModuleType("mediapipe.tasks.python.vision")
+        fake_tasks_python_vision.FaceLandmarkerOptions = lambda **kwargs: types.SimpleNamespace(**kwargs)
+        fake_tasks_python_vision.FaceLandmarker = types.SimpleNamespace(
+            create_from_options=lambda _opts: types.SimpleNamespace(
+                detect=lambda _img: types.SimpleNamespace(face_landmarks=[]),
+                close=lambda: None,
             )
         )
+
         sys.modules["mediapipe"] = fake_mp
+        sys.modules["mediapipe.tasks"] = fake_tasks
+        sys.modules["mediapipe.tasks.python"] = fake_tasks_python
+        sys.modules["mediapipe.tasks.python.vision"] = fake_tasks_python_vision
+        injected_names = [
+            "mediapipe",
+            "mediapipe.tasks",
+            "mediapipe.tasks.python",
+            "mediapipe.tasks.python.vision",
+        ]
         injected_fake = True
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -38,7 +58,8 @@ def load_module(path: Path, name: str):
         spec.loader.exec_module(module)
     finally:
         if injected_fake:
-            sys.modules.pop("mediapipe", None)
+            for name in injected_names:
+                sys.modules.pop(name, None)
     return module
 
 
@@ -375,7 +396,7 @@ def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
     manager, _ = make_queue_manager({})
     oldcam_dir = tmp_path / "oldcam-v10"
     oldcam_dir.mkdir()
-    (oldcam_dir / "requirements.txt").write_text("mediapipe>=0.10.14\n", encoding="utf-8")
+    (oldcam_dir / "requirements.txt").write_text("mediapipe==0.10.35\n", encoding="utf-8")
 
     real_import = builtins.__import__
 
@@ -409,7 +430,8 @@ def test_oldcam_dependency_preflight_retries_after_missing_dependency(tmp_path):
     manager, _ = make_queue_manager({})
     oldcam_dir = tmp_path / "oldcam-v10"
     oldcam_dir.mkdir()
-    (oldcam_dir / "requirements.txt").write_text("mediapipe>=0.10.14\n", encoding="utf-8")
+    (oldcam_dir / "face_landmarker.task").write_bytes(b"x")
+    (oldcam_dir / "requirements.txt").write_text("mediapipe==0.10.35\n", encoding="utf-8")
 
     real_import = builtins.__import__
     missing = {"enabled": True}
@@ -419,12 +441,11 @@ def test_oldcam_dependency_preflight_retries_after_missing_dependency(tmp_path):
             raise ImportError("No module named mediapipe")
         if name == "mediapipe":
             return types.SimpleNamespace(
-                solutions=types.SimpleNamespace(
-                    face_mesh=types.SimpleNamespace(FaceMesh=object)
-                ),
                 __file__="site-packages/mediapipe/__init__.py",
-                __version__="0.10.14",
+                __version__="0.10.35",
             )
+        if name == "mediapipe.tasks.python":
+            return types.SimpleNamespace(vision=types.SimpleNamespace(FaceLandmarker=object))
         return real_import(name, *args, **kwargs)
 
     with mock.patch("builtins.__import__", side_effect=fake_import):
@@ -457,44 +478,67 @@ def test_v9_apply_modern_sensor_noise_accepts_3d_fpn_mask():
     assert processed.shape == image.shape
 
 
-def test_validate_mediapipe_facemesh_api_missing_solutions_fails():
+def test_validate_mediapipe_tasks_api_missing_facelandmarker_fails(tmp_path):
     manager, _ = make_queue_manager({})
     real_import = builtins.__import__
     fake_mp = types.SimpleNamespace(__file__="x/mediapipe.py", __version__="0")
     with mock.patch("builtins.__import__", side_effect=lambda name, *a, **k: fake_mp if name == "mediapipe" else real_import(name, *a, **k)):
-        ok, diagnostics = manager._validate_mediapipe_facemesh_api()
+        oldcam_dir = tmp_path / "oldcam-v10"
+        oldcam_dir.mkdir()
+        ok, diagnostics = manager._validate_mediapipe_tasks_api(oldcam_dir)
     assert ok is False
-    assert diagnostics["has_solutions"] == "False"
+    assert diagnostics["facelandmarker_import_ok"] == "False"
 
 
-def test_validate_mediapipe_facemesh_api_missing_facemesh_class_fails():
+def test_validate_mediapipe_tasks_api_missing_task_file_fails(tmp_path):
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v10"
+    oldcam_dir.mkdir()
+    real_import = builtins.__import__
+    fake_mp = types.SimpleNamespace(__file__="site-packages/mediapipe/__init__.py", __version__="0.10.35")
+
+    def fake_import(name, *a, **k):
+        if name == "mediapipe":
+            return fake_mp
+        if name == "mediapipe.tasks.python":
+            return types.SimpleNamespace(vision=types.SimpleNamespace(FaceLandmarker=object))
+        return real_import(name, *a, **k)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import), \
+         mock.patch.object(manager, "_resolve_face_landmarker_task_path", return_value=(None, [])):
+        ok, diagnostics = manager._validate_mediapipe_tasks_api(oldcam_dir)
+    assert ok is False
+    assert diagnostics["task_file_exists"] == "False"
+
+
+def test_validate_mediapipe_tasks_api_valid_chain_passes(tmp_path):
     manager, _ = make_queue_manager({})
     real_import = builtins.__import__
-    fake_mp = types.SimpleNamespace(
-        solutions=types.SimpleNamespace(face_mesh=types.SimpleNamespace()),
-        __file__="x/mediapipe.py",
-        __version__="0.10.14",
-    )
-    with mock.patch("builtins.__import__", side_effect=lambda name, *a, **k: fake_mp if name == "mediapipe" else real_import(name, *a, **k)):
-        ok, diagnostics = manager._validate_mediapipe_facemesh_api()
-    assert ok is False
-    assert diagnostics["has_facemesh_class"] == "False"
+    oldcam_dir = tmp_path / "oldcam-v10"
+    oldcam_dir.mkdir()
+    task = oldcam_dir / "face_landmarker.task"
+    task.write_bytes(b"x")
 
-
-def test_validate_mediapipe_facemesh_api_valid_chain_passes():
-    manager, _ = make_queue_manager({})
-    real_import = builtins.__import__
     fake_mp = types.SimpleNamespace(
-        solutions=types.SimpleNamespace(face_mesh=types.SimpleNamespace(FaceMesh=object)),
         __file__="site-packages/mediapipe/__init__.py",
-        __version__="0.10.14",
+        __version__="0.10.35",
     )
-    with mock.patch("builtins.__import__", side_effect=lambda name, *a, **k: fake_mp if name == "mediapipe" else real_import(name, *a, **k)):
-        ok, diagnostics = manager._validate_mediapipe_facemesh_api()
+    fake_vision = types.SimpleNamespace(FaceLandmarker=object)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name == "mediapipe":
+            return fake_mp
+        if name == "mediapipe.tasks.python":
+            return types.SimpleNamespace(vision=fake_vision)
+        return real_import(name, *a, **k)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        ok, diagnostics = manager._validate_mediapipe_tasks_api(oldcam_dir)
     assert ok is True
-    assert diagnostics["has_solutions"] == "True"
-    assert diagnostics["has_face_mesh"] == "True"
-    assert diagnostics["has_facemesh_class"] == "True"
+    assert diagnostics["facelandmarker_import_ok"] == "True"
+    assert diagnostics["task_file_exists"] == "True"
 
 
 def test_v10_temporal_noise_uses_distinct_state_keys():

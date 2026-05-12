@@ -5,7 +5,7 @@ fal-client>=0.7,<1
 Pillow>=10.0,<12
 rich>=13.0,<14
 opencv-python-headless>=4.8.1.78
-mediapipe>=0.10.14
+mediapipe==0.10.35
 deepface==0.0.92
 tf-keras==2.16.0
 retina-face==0.0.17

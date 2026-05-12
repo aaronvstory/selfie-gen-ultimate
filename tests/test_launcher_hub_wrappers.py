@@ -57,6 +57,6 @@ def test_windows_root_launchers_install_mediapipe_with_no_deps():
     gui = _read("launchers/windows/run_gui.bat")
     cli = _read("launchers/windows/run_cli.bat")
     for text in (gui, cli):
-        assert 'findstr /V /I /R "^[ ]*mediapipe"' in text
+        assert 'findstr /V /I /B "mediapipe"' in text
         assert '-m pip install --no-deps "%MEDIAPIPE_SPEC%"' in text
         assert "ERROR: Dependency bootstrap failed." in text

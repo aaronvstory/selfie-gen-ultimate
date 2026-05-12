@@ -9,9 +9,10 @@ for %%I in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fI"
 set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
 set "HAD_ERRORS="
-set "MEDIAPIPE_SPEC=mediapipe>=0.10.14"
-set "MP_VALIDATE_CMD=import sys, mediapipe as mp; s=getattr(mp,'solutions',None); fm=getattr(s,'face_mesh',None) if s is not None else None; cls=getattr(fm,'FaceMesh',None) if fm is not None else None; sys.exit(0 if cls is not None else 1)"
-set "MP_DIAG_CMD=import sys, mediapipe as mp; s=getattr(mp,'solutions',None); fm=getattr(s,'face_mesh',None) if s is not None else None; cls=getattr(fm,'FaceMesh',None) if fm is not None else None; print('python='+sys.executable); print('mediapipe_file='+str(getattr(mp,'__file__','unknown'))); print('mediapipe_version='+str(getattr(mp,'__version__','unknown'))); print('has_solutions='+str(hasattr(mp,'solutions'))); print('has_face_mesh='+str(fm is not None)); print('has_facemesh_class='+str(cls is not None)); print('sys_path_0='+(sys.path[0] if sys.path else ''))"
+set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
+set "TASK_MODEL_PATH="
+set "MP_VALIDATE_CMD=import sys, mediapipe as mp; from mediapipe.tasks.python import vision; cls=getattr(vision,'FaceLandmarker',None); sys.exit(0 if cls is not None else 1)"
+set "MP_DIAG_CMD=import sys, os, mediapipe as mp; from mediapipe.tasks.python import vision; cls=getattr(vision,'FaceLandmarker',None); print('python='+sys.executable); print('mediapipe_file='+str(getattr(mp,'__file__','unknown'))); print('mediapipe_version='+str(getattr(mp,'__version__','unknown'))); print('facelandmarker_import_ok='+str(cls is not None)); print('task_file_path='+os.environ.get('OLDCAM_FACE_LANDMARKER_TASK','')); print('task_file_exists='+str(os.path.exists(os.environ.get('OLDCAM_FACE_LANDMARKER_TASK','')))); print('sys_path_0='+(sys.path[0] if sys.path else ''))"
 
 set "PYTHON_CMD="
 if not "%SELFIEGEN_PYTHON%"=="" ("%SELFIEGEN_PYTHON%" -V >nul 2>&1 && set "PYTHON_CMD=%SELFIEGEN_PYTHON%")
@@ -28,6 +29,18 @@ if not defined PYTHON_CMD (
   set "HAD_ERRORS=1"
   goto DONE
 )
+if not defined OLDCAM_FACE_LANDMARKER_TASK if exist "%SCRIPT_DIR%face_landmarker.task" set "TASK_MODEL_PATH=%SCRIPT_DIR%face_landmarker.task"
+if not defined TASK_MODEL_PATH if exist "%REPO_ROOT%\face_landmarker.task" set "TASK_MODEL_PATH=%REPO_ROOT%\face_landmarker.task"
+if not defined TASK_MODEL_PATH if exist "%REPO_ROOT%\..\face_landmarker.task" set "TASK_MODEL_PATH=%REPO_ROOT%\..\face_landmarker.task"
+if not defined TASK_MODEL_PATH if exist "%CD%\face_landmarker.task" set "TASK_MODEL_PATH=%CD%\face_landmarker.task"
+if defined OLDCAM_FACE_LANDMARKER_TASK set "TASK_MODEL_PATH=%OLDCAM_FACE_LANDMARKER_TASK%"
+if not defined TASK_MODEL_PATH (
+  echo FaceLandmarker task model missing. Expected face_landmarker.task. Oldcam v9/v10 cannot run.
+  echo Searched: %SCRIPT_DIR%face_landmarker.task ; %REPO_ROOT%\face_landmarker.task ; %REPO_ROOT%\..\face_landmarker.task ; %CD%\face_landmarker.task
+  set "HAD_ERRORS=1"
+  goto DONE
+)
+set "OLDCAM_FACE_LANDMARKER_TASK=%TASK_MODEL_PATH%"
 
 set "REQ_HASH=missing"
 for /f "tokens=1" %%H in ('certutil -hashfile "%SCRIPT_DIR%requirements.txt" SHA256 ^| findstr /I /R "^[0-9A-F][0-9A-F]"') do set "REQ_HASH=%%H"
@@ -45,11 +58,11 @@ if exist "%STAMP_FILE%" (
 )
 if "%NEED_PIP%"=="1" (
   :NEED_PIP_BLOCK
-  set "REQ_FILTERED=%TEMP%\selfiegen_oldcam_v10_%RANDOM%_%RANDOM%.txt"
-  findstr /V /I /R "^[ ]*mediapipe" "%SCRIPT_DIR%requirements.txt" > "%REQ_FILTERED%"
-  "%PYTHON_CMD%" -m pip install -r "%REQ_FILTERED%" >nul 2>nul
+  set "REQ_FILTERED=%STATE_DIR%\oldcam_v10_requirements_filtered.txt"
+  findstr /V /I /B "mediapipe" "%SCRIPT_DIR%requirements.txt" > "!REQ_FILTERED!"
+  "%PYTHON_CMD%" -m pip install -r "!REQ_FILTERED!" >nul 2>nul
   if errorlevel 1 (
-    del "%REQ_FILTERED%" >nul 2>&1
+    del "!REQ_FILTERED!" >nul 2>&1
     echo Failed to install Oldcam v10 dependencies.
     echo MediaPipe is required for Oldcam v10.
     echo Close running Python/GUI processes and retry.
@@ -59,7 +72,7 @@ if "%NEED_PIP%"=="1" (
   )
   "%PYTHON_CMD%" -m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%" >nul 2>nul
   if errorlevel 1 (
-    del "%REQ_FILTERED%" >nul 2>&1
+    del "!REQ_FILTERED!" >nul 2>&1
     echo Failed to install MediaPipe required by Oldcam v10.
     echo Close running Python/GUI processes and retry.
     echo If it still fails, recreate the venv and rerun.
@@ -68,16 +81,16 @@ if "%NEED_PIP%"=="1" (
   )
   "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%" >nul 2>nul
   if errorlevel 1 (
-    echo MediaPipe installed but FaceMesh API unavailable. Oldcam v10 cannot run.
+    echo MediaPipe Tasks FaceLandmarker API unavailable. Oldcam v10 cannot run.
     echo Close Python/GUI processes, delete/rebuild venv, and retry.
     echo Python executable: %PYTHON_CMD%
     echo Validation command: "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%"
     "%PYTHON_CMD%" -c "%MP_DIAG_CMD%"
-    del "%REQ_FILTERED%" >nul 2>&1
+    del "!REQ_FILTERED!" >nul 2>&1
     set "HAD_ERRORS=1"
     goto DONE
   )
-  del "%REQ_FILTERED%" >nul 2>&1
+  del "!REQ_FILTERED!" >nul 2>&1
   del /q "%STATE_DIR%\oldcam_v10_*.ok" >nul 2>&1
   > "%STAMP_FILE%" echo ok
 )
@@ -112,3 +125,4 @@ popd >nul
 set "FINAL_EXIT=0"
 if defined HAD_ERRORS set "FINAL_EXIT=1"
 endlocal & exit /b %FINAL_EXIT%
+

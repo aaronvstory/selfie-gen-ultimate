@@ -10,7 +10,7 @@ set "OLDCAM_V7_REQUIREMENTS=%ROOT_DIR%\oldcam-v7\requirements.txt"
 set "OLDCAM_V8_REQUIREMENTS=%ROOT_DIR%\oldcam-v8\requirements.txt"
 set "OLDCAM_V9_REQUIREMENTS=%ROOT_DIR%\oldcam-v9\requirements.txt"
 set "OLDCAM_V10_REQUIREMENTS=%ROOT_DIR%\oldcam-v10\requirements.txt"
-set "MEDIAPIPE_SPEC=mediapipe>=0.10.14"
+set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
 set "DEP_CHECKER=%ROOT_DIR%\dependency_checker.py"
 set "DEP_HEALTH_SCRIPT=%ROOT_DIR%\dependency_health_check.py"
 
@@ -116,7 +116,7 @@ set "REQ_FILTERED=%TEMP%\\selfiegen_req_%RANDOM%_%RANDOM%.txt"
 if not exist "%REQ_FILE%" (
     exit /b 0
 )
-findstr /V /I /R "^[ ]*mediapipe" "%REQ_FILE%" > "%REQ_FILTERED%"
+findstr /V /I /B "mediapipe" "%REQ_FILE%" > "%REQ_FILTERED%"
 echo  Syncing %REQ_KIND% dependencies from %~nx1...
 "%VENV_PYTHON%" -m pip install --only-binary :all: -r "%REQ_FILTERED%"
 if !errorlevel! neq 0 (

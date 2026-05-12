@@ -358,6 +358,7 @@ class QueueManager:
         self.worker_thread: Optional[threading.Thread] = None
         self._stop_flag = False
         self._oldcam_deps_status_by_version: Dict[str, bool] = {}
+        self._last_oldcam_run_summary: Optional[Dict[str, object]] = None
         self._oldcam_rerun_thread: Optional[threading.Thread] = None
 
     def log_verbose(self, message: str, level: str = "info"):
@@ -708,6 +709,23 @@ class QueueManager:
                     "info",
                 )
                 output_path = self._oldcam_video(str(run_input), QueueItem(str(source_video)))
+                summary = self._last_oldcam_run_summary or {}
+                requested_versions = summary.get("requested_versions", [])
+                succeeded_versions = summary.get("succeeded_versions", [])
+                failed_versions = summary.get("failed_versions", [])
+                primary_output = summary.get("primary_output", "")
+                if requested_versions:
+                    self.log(
+                        "Oldcam-only rerun summary: requested versions="
+                        + ",".join(str(v) for v in requested_versions)
+                        + "; succeeded versions="
+                        + ",".join(str(v) for v in succeeded_versions)
+                        + "; failed/skipped versions="
+                        + ",".join(f"{v} ({r})" for v, r in failed_versions)
+                        + "; primary output="
+                        + str(primary_output),
+                        "info",
+                    )
                 if output_path and Path(output_path).exists():
                     self.log(f"Oldcam-only rerun complete: {Path(output_path).name}", "success")
                     if completion_callback:
@@ -1192,18 +1210,18 @@ class QueueManager:
             for module_name in required_modules:
                 __import__(module_name)
             if requires_mediapipe:
-                mp_ok, diagnostics = self._validate_mediapipe_facemesh_api()
+                mp_ok, diagnostics = self._validate_mediapipe_tasks_api(oldcam_dir)
                 if not mp_ok:
                     self.log(
-                        f"MediaPipe FaceMesh API unavailable; Oldcam {version} cannot run.",
+                        f"MediaPipe Tasks FaceLandmarker API unavailable; Oldcam {version} cannot run.",
                         "warning",
                     )
                     self.log(
                         "Validation command: "
                         + f'"{sys.executable}" -c "import mediapipe as mp; '
-                        + 'print(hasattr(mp, \'solutions\')); '
-                        + 'print(hasattr(getattr(mp, \'solutions\', None), \'face_mesh\')); '
-                        + 'print(hasattr(getattr(getattr(mp, \'solutions\', None), \'face_mesh\', None), \'FaceMesh\'))"',
+                        + 'from mediapipe.tasks.python import vision; '
+                        + 'print(getattr(mp, \'__version__\', \'unknown\')); '
+                        + 'print(hasattr(vision, \'FaceLandmarker\'))"',
                         "warning",
                     )
                     self.log(
@@ -1226,15 +1244,41 @@ class QueueManager:
                 )
                 if version in {"v9", "v10"}:
                     self.log(
-                        f"Oldcam {version} requires mediapipe. Install guidance: {install_cmd}",
+                        f"Oldcam {version} requires mediapipe tasks + {self._task_model_filename()}. Install guidance: {install_cmd}",
                         "warning",
                     )
             else:
                 self.log(f"Oldcam requirements missing: {requirements_path}", "warning")
             return False
 
-    def _validate_mediapipe_facemesh_api(self) -> Tuple[bool, Dict[str, str]]:
-        """Validate the exact MediaPipe FaceMesh API used by oldcam v9/v10."""
+    def _task_model_filename(self) -> str:
+        return "face_landmarker.task"
+
+    def _resolve_face_landmarker_task_path(self, oldcam_dir: Path) -> Tuple[Optional[Path], List[Path]]:
+        searched: List[Path] = []
+        env_override = str(os.environ.get("OLDCAM_FACE_LANDMARKER_TASK", "")).strip()
+        if env_override:
+            env_path = Path(env_override).expanduser()
+            searched.append(env_path)
+            if env_path.exists():
+                return env_path.resolve(), searched
+
+        app_root = Path(__file__).resolve().parents[1]
+        dist_root = app_root.parent
+        candidates = [
+            oldcam_dir / self._task_model_filename(),
+            app_root / self._task_model_filename(),
+            dist_root / self._task_model_filename(),
+            Path.cwd() / self._task_model_filename(),
+        ]
+        for candidate in candidates:
+            searched.append(candidate)
+            if candidate.exists():
+                return candidate.resolve(), searched
+        return None, searched
+
+    def _validate_mediapipe_tasks_api(self, oldcam_dir: Path) -> Tuple[bool, Dict[str, str]]:
+        """Validate MediaPipe Tasks API + task model file used by oldcam v9/v10."""
         diagnostics: Dict[str, str] = {
             "python_executable": sys.executable,
             "sys_path_0": sys.path[0] if sys.path else "",
@@ -1248,21 +1292,20 @@ class QueueManager:
         mp_obj = locals().get("mp")
         diagnostics["mediapipe_file"] = str(getattr(mp_obj, "__file__", "unknown"))
         diagnostics["mediapipe_version"] = str(getattr(mp_obj, "__version__", "unknown"))
-        has_solutions = hasattr(mp_obj, "solutions")
-        diagnostics["has_solutions"] = str(has_solutions)
-        if not has_solutions:
+        try:
+            from mediapipe.tasks.python import vision  # type: ignore
+            facelandmarker_ok = hasattr(vision, "FaceLandmarker")
+        except Exception as exc:
+            diagnostics["facelandmarker_import_error"] = f"{exc.__class__.__name__}: {exc}"
+            facelandmarker_ok = False
+        diagnostics["facelandmarker_import_ok"] = str(facelandmarker_ok)
+        if not facelandmarker_ok:
             return False, diagnostics
-
-        solutions = getattr(mp_obj, "solutions", None)
-        has_face_mesh = hasattr(solutions, "face_mesh")
-        diagnostics["has_face_mesh"] = str(has_face_mesh)
-        if not has_face_mesh:
-            return False, diagnostics
-
-        face_mesh = getattr(solutions, "face_mesh", None)
-        has_face_mesh_cls = hasattr(face_mesh, "FaceMesh")
-        diagnostics["has_facemesh_class"] = str(has_face_mesh_cls)
-        if not has_face_mesh_cls:
+        task_path, searched = self._resolve_face_landmarker_task_path(oldcam_dir)
+        diagnostics["task_file_path"] = str(task_path) if task_path else ""
+        diagnostics["task_file_exists"] = str(task_path is not None)
+        diagnostics["task_file_searched"] = ";".join(str(path) for path in searched)
+        if task_path is None:
             return False, diagnostics
 
         # Shadowing hint: local repo paths usually indicate wrong module import.
@@ -1284,20 +1327,55 @@ class QueueManager:
         """
         del item  # Reserved for future per-item status hooks
         try:
-            versions_to_run = self._get_oldcam_versions_to_run()
-            self.log("Oldcam selected: running " + ", ".join(versions_to_run), "info")
-            outputs: List[Tuple[str, str]] = []
-            for version in versions_to_run:
-                output_path = self._run_oldcam_version(video_path, version)
-                if output_path:
-                    outputs.append((version, output_path))
-            if not outputs:
-                return None
-            # Primary output is highest version number among successful runs.
-            primary = max(outputs, key=lambda entry: self._oldcam_version_key(entry[0]))
-            return primary[1]
+                versions_to_run = self._get_oldcam_versions_to_run()
+                self.log("Oldcam selected: running " + ", ".join(versions_to_run), "info")
+                outputs: List[Tuple[str, str]] = []
+                failures: List[Tuple[str, str]] = []
+                for version in versions_to_run:
+                    output_path = self._run_oldcam_version(video_path, version)
+                    if output_path:
+                        outputs.append((version, output_path))
+                    else:
+                        failures.append((version, f"Oldcam {version} failed or was skipped"))
+                requested = list(versions_to_run)
+                if not outputs:
+                    self._last_oldcam_run_summary = {
+                        "requested_versions": requested,
+                        "succeeded_versions": [],
+                        "failed_versions": failures,
+                        "primary_output": "",
+                    }
+                    self.log(
+                        "Oldcam summary: requested versions="
+                        + ",".join(requested)
+                        + "; succeeded versions=; failed/skipped versions="
+                        + ",".join(f"{version} ({reason})" for version, reason in failures),
+                        "warning",
+                    )
+                    return None
+                # Primary output is highest version number among successful runs.
+                primary = max(outputs, key=lambda entry: self._oldcam_version_key(entry[0]))
+                self._last_oldcam_run_summary = {
+                    "requested_versions": requested,
+                    "succeeded_versions": [version for version, _ in outputs],
+                    "failed_versions": failures,
+                    "primary_output": primary[1],
+                }
+                self.log(
+                    "Oldcam summary: requested versions="
+                    + ",".join(requested)
+                    + "; succeeded versions="
+                    + ",".join(version for version, _ in outputs)
+                    + "; failed/skipped versions="
+                    + ",".join(f"{version} ({reason})" for version, reason in failures)
+                    + "; primary output="
+                    + primary[1],
+                    "info",
+                )
+                return primary[1]
         except Exception as e:
             self.log(f"Error applying Oldcam Finish: {e}", "warning")
+            self._last_oldcam_run_summary = None
             return None
 
     def _get_current_prompt(self, config: dict) -> str:

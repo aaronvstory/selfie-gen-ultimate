@@ -9,6 +9,7 @@ noise, and H.264 motion compression.
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,10 +18,13 @@ from pathlib import Path
 
 import cv2
 import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
 import numpy as np
 
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 ABERRATION_SCALE = 0.0015
+TASK_MODEL_FILENAME = "face_landmarker.task"
 
 
 REGION_INDICES = {
@@ -203,20 +207,66 @@ def correct_rotation(frame, rotation):
     return frame
 
 
+def resolve_face_landmarker_task_path():
+    script_dir = Path(__file__).resolve().parent
+    app_root = script_dir.parent
+    dist_root = app_root.parent
+    searched = []
+
+    env_override = os.environ.get("OLDCAM_FACE_LANDMARKER_TASK", "").strip()
+    if env_override:
+        env_path = Path(env_override).expanduser()
+        searched.append(env_path)
+        if env_path.exists():
+            return env_path.resolve(), searched
+
+    candidates = [
+        script_dir / TASK_MODEL_FILENAME,
+        app_root / TASK_MODEL_FILENAME,
+        dist_root / TASK_MODEL_FILENAME,
+        Path.cwd() / TASK_MODEL_FILENAME,
+    ]
+    for candidate in candidates:
+        searched.append(candidate)
+        if candidate.exists():
+            return candidate.resolve(), searched
+
+    search_text = ", ".join(str(path) for path in searched)
+    raise FileNotFoundError(
+        "FaceLandmarker task model missing. Expected face_landmarker.task. "
+        + f"Oldcam v9/v10 cannot run. Searched: {search_text}"
+    )
+
+
+def create_face_landmarker(task_path):
+    options = vision.FaceLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=str(task_path)),
+        num_faces=1,
+        output_face_blendshapes=False,
+        output_facial_transformation_matrixes=False,
+    )
+    return vision.FaceLandmarker.create_from_options(options)
+
+
 def get_dynamic_region_masks(image, state):
     """Extracts temporally-stabilized, optically blended boolean masks for focal regions."""
     h, w = image.shape[:2]
-    if "face_mesh" not in state:
-        state["face_mesh"] = mp.solutions.face_mesh.FaceMesh(static_image_mode=False, max_num_faces=1, min_detection_confidence=0.5)
+    if "face_landmarker" not in state:
+        task_path, searched_paths = resolve_face_landmarker_task_path()
+        state["face_landmarker"] = create_face_landmarker(task_path)
+        state["face_landmarker_task_path"] = str(task_path)
+        state["face_landmarker_task_searched"] = [str(path) for path in searched_paths]
+        print(f"FaceLandmarker task model: {task_path}")
 
     rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = state["face_mesh"].process(rgb_image)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
+    results = state["face_landmarker"].detect(mp_image)
     masks, full_face_mask = {}, np.zeros((h, w), dtype=np.float32)
     state["face_detected"] = False
 
-    if results.multi_face_landmarks:
+    if results.face_landmarks:
         state["face_detected"] = True
-        landmarks = results.multi_face_landmarks[0].landmark
+        landmarks = results.face_landmarks[0]
 
         prev_landmarks = state.get("prev_landmarks")
         use_prev = prev_landmarks is not None and len(prev_landmarks) == len(landmarks)
@@ -327,12 +377,12 @@ def apply_modern_sensor_noise(image, grain, rng, state=None, fpn_mask=None):
     return np.clip(image_f, 0, 255).astype(np.uint8)
 
 
-def close_face_mesh_state(state):
-    face_mesh = state.pop("face_mesh", None)
-    if face_mesh is None:
+def close_face_landmarker_state(state):
+    face_landmarker = state.pop("face_landmarker", None)
+    if face_landmarker is None:
         return
     try:
-        face_mesh.close()
+        face_landmarker.close()
     except Exception:
         pass
 
@@ -613,7 +663,7 @@ def naturalize_image(input_path, output_path, args):
             raise RuntimeError(f"Could not write image: {output_path}")
         print(f"Saved image to: {output_path}")
     finally:
-        close_face_mesh_state(state)
+        close_face_landmarker_state(state)
 
 
 def finalize_video_output(temp_output, input_path, output_path, codec):
@@ -740,7 +790,7 @@ def naturalize_video(input_path, output_path, args):
                     end="",
                 )
     finally:
-        close_face_mesh_state(state)
+        close_face_landmarker_state(state)
         capture.release()
         writer.release()
 

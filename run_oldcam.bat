@@ -8,7 +8,7 @@ if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
 
 set "OLDCAM_LAUNCHER=%BATCH_DIR%oldcam-v9\launcher.py"
 set "OLDCAM_REQUIREMENTS=%BATCH_DIR%oldcam-v9\requirements.txt"
-set "MEDIAPIPE_SPEC=mediapipe>=0.10.14"
+set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
 
 if not exist "%OLDCAM_LAUNCHER%" (
     echo ERROR: Missing Oldcam launcher at:
