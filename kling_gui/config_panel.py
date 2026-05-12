@@ -540,7 +540,7 @@ class ConfigPanel(tk.Frame):
         ).pack(side=tk.LEFT, padx=(8, 4))
         self.oldcam_rerun_btn = tk.Button(
             self.oldcam_controls_frame,
-            text="↻ Run",
+            text="↻",
             font=(FONT_FAMILY, 10, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],

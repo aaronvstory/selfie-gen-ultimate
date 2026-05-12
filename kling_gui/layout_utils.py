@@ -89,19 +89,19 @@ def sanitize_sash_layout(
     prompt_max = max(prompt_min, safe_w - 200)
     prompt_default = int(safe_w * 0.58)
 
-    # TARGET 2: Bottom carousel vs right pane (balanced)
-    queue_min = max(340, int(safe_w * 0.32))
-    queue_max = max(queue_min, int(safe_w * 0.68))
-    queue_default = int(safe_w * 0.35)
+    # TARGET 2: Bottom carousel vs right pane (carousel narrower, more room for log+drop)
+    queue_min = max(240, int(safe_w * 0.22))
+    queue_max = max(queue_min, int(safe_w * 0.55))
+    queue_default = int(safe_w * 0.28)
 
     log_min = 110
     log_max = max(log_min, int(safe_h * 0.42))
     log_default = int(safe_h * 0.22)
 
-    # TARGET 3: Processing log vs permanent drop zone (balanced)
-    log_drop_min = max(350, int(safe_w * 0.50))
-    log_drop_max = max(log_drop_min, int(safe_w * 0.80))
-    log_drop_default = int(safe_w * 0.55)
+    # TARGET 3: Processing log vs permanent drop zone (wider log and wider drop zone)
+    log_drop_min = max(300, int(safe_w * 0.40))
+    log_drop_max = max(log_drop_min, int(safe_w * 0.78))
+    log_drop_default = int(safe_w * 0.50)
 
     sanitized = {
         "sash_dropzone": _clamp_int(sash_dropzone, drop_min, drop_max, drop_default),
