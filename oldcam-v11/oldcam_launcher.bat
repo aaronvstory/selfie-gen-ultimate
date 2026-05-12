@@ -10,7 +10,7 @@ set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 if not exist "%STATE_DIR%\" mkdir "%STATE_DIR%"
 set "HAD_ERRORS="
 set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
-set "MP_VALIDATE_CMD=import mediapipe; from mediapipe.tasks.python import vision; v=getattr(vision,chr(70)+chr(97)+chr(99)+chr(101)+chr(76)+chr(97)+chr(110)+chr(100)+chr(109)+chr(97)+chr(114)+chr(107)+chr(101)+chr(114),None); exit(0 if v else 1)"
+set "MP_VALIDATE_CMD=import mediapipe; from mediapipe.tasks.python import vision; v=getattr(vision,'FaceLandmarker',None); exit(0 if v else 1)"
 
 rem --- Timestamp banner
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"

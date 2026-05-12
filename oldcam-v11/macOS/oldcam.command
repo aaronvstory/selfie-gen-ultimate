@@ -4,7 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 find_repo_root() {
   local cur="$SCRIPT_DIR"
   while [ -n "$cur" ] && [ "$cur" != "/" ]; do
-    if [ -f "$cur/kling_automation_ui.py" ] && [ -f "$cur/requirements.txt" ] && [ -d "$cur/oldcam-v10" ]; then
+    if [ -f "$cur/kling_automation_ui.py" ] && [ -f "$cur/requirements.txt" ] && [ -d "$cur/oldcam-v11" ]; then
       printf '%s\n' "$cur"
       return 0
     fi
@@ -51,25 +51,25 @@ export OLDCAM_FACE_LANDMARKER_TASK="$TASK_MODEL_PATH"
 REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk '{print $1}')"
 [ -n "$REQ_HASH" ] || REQ_HASH="missing"
 PY_ID="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"
-STAMP="$STATE_DIR/oldcam_v10_${REQ_HASH}_${PY_ID}.ok"
+STAMP="$STATE_DIR/oldcam_v11_${REQ_HASH}_${PY_ID}.ok"
 if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy" >/dev/null 2>&1 || ! "$PYTHON_CMD" -c "$MP_VALIDATE_CMD" >/dev/null 2>&1; then
-  FILTERED_REQ="$STATE_DIR/oldcam_v10_requirements.filtered.txt"
+  FILTERED_REQ="$STATE_DIR/oldcam_v11_requirements.filtered.txt"
   grep -E -vi '^[[:space:]]*mediapipe($|[[:space:]]|==|>=|<=|~=|!=)' "$SCRIPT_DIR/requirements.txt" > "$FILTERED_REQ" || true
   "$PYTHON_CMD" -m pip install -r "$FILTERED_REQ" || {
     rm -f "$FILTERED_REQ" || true
-    echo "Failed to install Oldcam v10 dependencies."
-    echo "MediaPipe is required for Oldcam v10."
+    echo "Failed to install Oldcam v11 dependencies."
+    echo "MediaPipe is required for Oldcam v11."
     echo "Close running Python processes and retry. If still failing, recreate venv."
     exit 1
   }
   "$PYTHON_CMD" -m pip install --force-reinstall --no-deps "mediapipe==0.10.35" || {
     rm -f "$FILTERED_REQ" || true
-    echo "Failed to install MediaPipe required by Oldcam v10."
+    echo "Failed to install MediaPipe required by Oldcam v11."
     echo "Close running Python processes and retry. If still failing, recreate venv."
     exit 1
   }
   if ! "$PYTHON_CMD" -c "$MP_VALIDATE_CMD" >/dev/null 2>&1; then
-    echo "MediaPipe installed but Tasks FaceLandmarker API unavailable. Oldcam v10 cannot run."
+    echo "MediaPipe installed but Tasks FaceLandmarker API unavailable. Oldcam v11 cannot run."
     echo "Close Python/GUI processes, delete/rebuild venv, and retry."
     echo "Python executable: $PYTHON_CMD"
     echo "Validation command: \"$PYTHON_CMD\" -c \"$MP_VALIDATE_CMD\""
@@ -78,12 +78,12 @@ if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy" >/dev/null 2>&1 |
     exit 1
   fi
   rm -f "$FILTERED_REQ" || true
-  rm -f "$STATE_DIR"/oldcam_v10_*.ok
+  rm -f "$STATE_DIR"/oldcam_v11_*.ok
   echo ok > "$STAMP"
 fi
 pick_files() {
   osascript <<'APPLESCRIPT'
-set selectedFiles to choose file with prompt "Select one or more media files for Oldcam V10" with multiple selections allowed
+set selectedFiles to choose file with prompt "Select one or more media files for Oldcam V11" with multiple selections allowed
 set outputText to ""
 repeat with oneFile in selectedFiles
   set outputText to outputText & POSIX path of oneFile & linefeed

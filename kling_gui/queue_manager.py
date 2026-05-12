@@ -1242,7 +1242,7 @@ class QueueManager:
                     f"Please install them before processing Oldcam jobs: {install_cmd}",
                     "warning",
                 )
-                if version in {"v9", "v10"}:
+                if version in {"v9", "v10", "v11"}:
                     self.log(
                         f"Oldcam {version} requires mediapipe tasks + {self._task_model_filename()}. Install guidance: {install_cmd}",
                         "warning",

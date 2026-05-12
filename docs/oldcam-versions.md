@@ -203,7 +203,7 @@ V10's FFT analysis reads the **mean green channel** of the face region across th
 
 ### The V11 Solution: Operation Order
 
-```
+```text
 1. get_dynamic_region_masks()                  — face detection (every-other-frame cached)
 2. synchronize_base_frequency()                — FFT reads CLEAN green channel, no drift yet
 3. apply_synchronized_spatial_fluctuation()    — biological pulse baked into pixels
