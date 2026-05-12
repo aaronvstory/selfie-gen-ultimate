@@ -258,12 +258,7 @@ def get_dynamic_region_masks(image, state):
         state["face_landmarker_task_searched"] = [str(path) for path in searched_paths]
         print(f"FaceLandmarker task model: {task_path}")
 
-    # Run detection every other frame; reuse cached masks on skipped frames.
-    # The existing 65%/35% temporal smoothing makes alternating frames visually seamless.
-    detect_frame_count = state.get("detect_frame_count", 0)
-    state["detect_frame_count"] = detect_frame_count + 1
-    if detect_frame_count % 2 == 1 and "last_masks" in state:
-        return state["last_masks"]
+
 
     rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
@@ -505,11 +500,10 @@ def apply_soft_rolling_shutter(image, state, rng):
 def apply_global_awb_drift(image, state, rng):
     drift = float(state.get("awb_drift", 0.0))
     drift += float(rng.normal(0.0, 0.05))
-    drift = float(np.clip(drift, -2.0, 2.0))
+    drift = float(np.clip(drift, -1.5, 1.5))
     state["awb_drift"] = drift
     image_f = image.astype(np.float32)
-    image_f[:, :, 2] += drift * 0.35
-    image_f[:, :, 1] += drift * 0.15
+    image_f += drift
     return np.clip(image_f, 0, 255).astype(np.uint8)
 
 
@@ -561,7 +555,6 @@ def apply_synchronized_spatial_fluctuation(image, state, region_masks, target_hz
         img_float[:, :, 1] += shift_intensity * 1.0 * combined_mask[:, :, 0]
         img_float[:, :, 2] += shift_intensity * 0.45 * combined_mask[:, :, 0]
         img_float[:, :, 0] -= shift_intensity * 0.10 * combined_mask[:, :, 0]
-        img_float[:, :, 2] += shift_intensity * 0.5 * mask[:, :, 0] * 3.0
 
     return img_float.clip(0, 255).astype(np.uint8)
 
@@ -699,11 +692,11 @@ def finalize_video_output(temp_output, input_path, output_path, codec):
             "-profile:v",
             "high",
             "-crf",
-            "18",
+            "16",
             "-pix_fmt",
             "yuv420p",
             "-preset",
-            "medium",
+            "slow",
         ])
     else:
         command.extend(["-c:v", "copy"])
@@ -760,7 +753,6 @@ def naturalize_video(input_path, output_path, args):
     _adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * _vignette_strength)).astype(np.float32) if _vignette_strength > 0 else None
     state = {
         "fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32),
-        "stutter_budget": 0,
         "adjusted_vignette_mask": _adjusted_vignette,
     }
 
@@ -783,18 +775,11 @@ def naturalize_video(input_path, output_path, args):
                 break
 
             frame = correct_rotation(frame, rotation)
-            if state.get("stutter_budget", 0) > 0 and previous_processed is not None:
-                state["stutter_budget"] -= 1
-                processed = previous_processed
-            else:
-                current_processed = process_frame(frame, lut, vignette_mask, args, rng, state)
-                processed = blend_with_previous_frame(
-                    current_processed, previous_processed, args.ghosting
-                )
-                previous_processed = current_processed
-
-                if state.get("ae_stepped", False) or rng.random() < 0.002:
-                    state["stutter_budget"] = int(rng.integers(1, 3))
+            current_processed = process_frame(frame, lut, vignette_mask, args, rng, state)
+            processed = blend_with_previous_frame(
+                current_processed, previous_processed, args.ghosting
+            )
+            previous_processed = current_processed
 
             if args.preview:
                 processed = build_preview_frame(frame, processed)
