@@ -1396,7 +1396,7 @@ class KlingGUIWindow:
         pane_names = [str(p) for p in self.top_h_paned.panes()]
         if str(self._right_pane) not in pane_names:
             self.top_h_paned.add(self._right_pane, minsize=260)
-            saved = self.config.get("sash_prompt_split", int(self.root.winfo_width() * 0.56))
+            saved = self.config.get("sash_prompt_split", int(self.root.winfo_width() * 0.60))
             self.root.after(50, lambda: self._safe_sash_place(self.top_h_paned, 0, saved, 0))
 
     def _hide_right_pane(self):
