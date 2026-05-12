@@ -1233,6 +1233,7 @@ class KlingGUIWindow:
             on_config_changed=self._on_config_changed,
             build_prompt=False,
             on_oldcam_rerun=self._on_oldcam_rerun_requested,
+            on_oldcam_pick_rerun=self._on_oldcam_pick_and_rerun_requested,
         )
 
         self.video_tab.attach_config_panel(self.config_panel)
@@ -3048,6 +3049,43 @@ class KlingGUIWindow:
                 f"({', '.join(str(v) for v in selected_versions)})",
                 "info",
             )
+
+    def _on_oldcam_pick_and_rerun_requested(self):
+        """Open file picker, then run Oldcam on the chosen video(s)."""
+        if not self.queue_manager:
+            self._log("Queue manager not initialized", "error")
+            return
+
+        from tk_dialogs import select_open_files
+        paths = select_open_files(
+            parent=self.root,
+            title="Select video(s) for Oldcam",
+            filetypes=[
+                ("Video files", "*.mp4 *.mov *.avi *.mkv *.webm *.m4v"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not paths:
+            return
+
+        for source_video in paths:
+            if not os.path.isfile(source_video):
+                self._log(f"Skipping non-existent file: {source_video}", "warning")
+                continue
+
+            started = self.queue_manager.rerun_oldcam_only(
+                source_video,
+                completion_callback=self._on_oldcam_rerun_complete_threadsafe,
+            )
+            if started:
+                selected_versions = self.config.get("oldcam_versions")
+                if not isinstance(selected_versions, list) or not selected_versions:
+                    selected_versions = [self.config.get("oldcam_version", "v9")]
+                self._log(
+                    f"Oldcam queued (picked): {os.path.basename(source_video)} "
+                    f"({', '.join(str(v) for v in selected_versions)})",
+                    "info",
+                )
 
     def _on_oldcam_rerun_complete_threadsafe(
         self,

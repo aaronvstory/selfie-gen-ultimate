@@ -296,6 +296,7 @@ class ConfigPanel(tk.Frame):
         build_prompt: bool = True,
         on_images_dropped: Optional[Callable[[List[str]], None]] = None,
         on_oldcam_rerun: Optional[Callable[[], None]] = None,
+        on_oldcam_pick_rerun: Optional[Callable[[], None]] = None,
         **kwargs,
     ):
         """
@@ -318,6 +319,7 @@ class ConfigPanel(tk.Frame):
         self._build_prompt_inline = build_prompt
         self._on_images_dropped = on_images_dropped
         self._on_oldcam_rerun = on_oldcam_rerun
+        self._on_oldcam_pick_rerun = on_oldcam_pick_rerun
 
         # Configure dark theme for ttk Combobox widgets
         self._setup_combobox_style()
@@ -541,13 +543,13 @@ class ConfigPanel(tk.Frame):
         self.oldcam_rerun_btn = tk.Button(
             self.oldcam_controls_frame,
             text="↻",
-            font=(FONT_FAMILY, 10, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             activebackground=COLORS["bg_main"],
             activeforeground=COLORS["text_light"],
-            padx=7,
-            pady=1,
+            padx=8,
+            pady=2,
             relief=tk.FLAT,
             borderwidth=0,
             command=self._on_oldcam_rerun_clicked,
@@ -559,6 +561,29 @@ class ConfigPanel(tk.Frame):
                 "Re-run Oldcam on an already generated video.\n"
                 "Uses selected Processed Videos row first,\n"
                 "or latest completed output if none selected."
+            ),
+        )
+        self.oldcam_pick_btn = tk.Button(
+            self.oldcam_controls_frame,
+            text="📂",
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            activebackground=COLORS["bg_main"],
+            activeforeground=COLORS["text_light"],
+            padx=8,
+            pady=2,
+            relief=tk.FLAT,
+            borderwidth=0,
+            command=self._on_oldcam_pick_rerun_clicked,
+        )
+        self.oldcam_pick_btn.pack(side=tk.LEFT, padx=(0, 2))
+        HoverTooltip(
+            self.oldcam_pick_btn,
+            lambda: (
+                "Pick a video file and run Oldcam on it.\n"
+                "Uses selected version checkboxes above.\n"
+                "Respects Allow reprocessing / Increment settings."
             ),
         )
 
@@ -1406,6 +1431,13 @@ class ConfigPanel(tk.Frame):
             self._on_oldcam_rerun()
             return
         self._notify_change("Oldcam rerun action unavailable")
+
+    def _on_oldcam_pick_rerun_clicked(self):
+        """Open file picker and run Oldcam on selected video(s)."""
+        if callable(self._on_oldcam_pick_rerun):
+            self._on_oldcam_pick_rerun()
+            return
+        self._notify_change("Oldcam pick-and-rerun action unavailable")
 
     def _on_reprocess_changed(self):
         """Handle reprocess checkbox change."""
