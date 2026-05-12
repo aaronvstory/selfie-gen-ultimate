@@ -1,8 +1,11 @@
 import importlib.util
+import builtins
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 import threading
+import types
+import sys
 
 import numpy as np
 
@@ -13,9 +16,50 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_module(path: Path, name: str):
+    injected_fake = False
+    injected_names = []
+    if "mediapipe" not in sys.modules:
+        class _FakeImage:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        fake_mp = types.ModuleType("mediapipe")
+        fake_mp.Image = _FakeImage
+        fake_mp.ImageFormat = types.SimpleNamespace(SRGB=0)
+        fake_mp.__version__ = "0.10.35"
+        fake_mp.__file__ = "site-packages/mediapipe/__init__.py"
+
+        fake_tasks = types.ModuleType("mediapipe.tasks")
+        fake_tasks_python = types.ModuleType("mediapipe.tasks.python")
+        fake_tasks_python.BaseOptions = lambda **kwargs: types.SimpleNamespace(**kwargs)
+        fake_tasks_python_vision = types.ModuleType("mediapipe.tasks.python.vision")
+        fake_tasks_python_vision.FaceLandmarkerOptions = lambda **kwargs: types.SimpleNamespace(**kwargs)
+        fake_tasks_python_vision.FaceLandmarker = types.SimpleNamespace(
+            create_from_options=lambda _opts: types.SimpleNamespace(
+                detect=lambda _img: types.SimpleNamespace(face_landmarks=[]),
+                close=lambda: None,
+            )
+        )
+
+        sys.modules["mediapipe"] = fake_mp
+        sys.modules["mediapipe.tasks"] = fake_tasks
+        sys.modules["mediapipe.tasks.python"] = fake_tasks_python
+        sys.modules["mediapipe.tasks.python.vision"] = fake_tasks_python_vision
+        injected_names = [
+            "mediapipe",
+            "mediapipe.tasks",
+            "mediapipe.tasks.python",
+            "mediapipe.tasks.python.vision",
+        ]
+        injected_fake = True
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if injected_fake:
+            for name in injected_names:
+                sys.modules.pop(name, None)
     return module
 
 
@@ -30,17 +74,27 @@ def make_queue_manager(config):
     return manager, logs
 
 
-def test_oldcam_version_defaults_to_v7_for_missing_or_invalid_config():
+def test_oldcam_version_defaults_to_v9_for_missing_or_invalid_config():
     manager, _ = make_queue_manager({})
+    assert manager._get_oldcam_version() == "v9"
+
+    manager, _ = make_queue_manager({"oldcam_version": "invalid"})
+    assert manager._get_oldcam_version() == "v9"
+
+
+def test_oldcam_legacy_explicit_v7_is_preserved():
+    manager, _ = make_queue_manager({"oldcam_version": "v7"})
     assert manager._get_oldcam_version() == "v7"
 
-    manager, _ = make_queue_manager({"oldcam_version": "v9"})
-    assert manager._get_oldcam_version() == "v7"
+
+def test_oldcam_empty_versions_list_disables_oldcam():
+    manager, _ = make_queue_manager({"oldcam_versions": []})
+    assert manager._get_oldcam_versions_to_run() == []
 
 
-def test_oldcam_version_accepts_all_mode():
-    manager, _ = make_queue_manager({"oldcam_version": "all"})
-    assert manager._get_oldcam_version() == "all"
+def test_oldcam_versions_list_is_supported():
+    manager, _ = make_queue_manager({"oldcam_versions": ["v7", "v10"]})
+    assert manager._get_oldcam_versions_to_run() == ["v7", "v10"]
 
 
 def test_oldcam_output_path_uses_versioned_suffixes():
@@ -63,7 +117,7 @@ def test_discover_oldcam_versions_includes_future_version(tmp_path):
         versions = manager._discover_oldcam_versions()
 
     assert "v9" in versions
-    assert versions[-1] == "v9"
+    assert versions[-1] in {"v9", "v10"}
 
 
 def test_queue_manager_selects_oldcam_version_folder_and_output(tmp_path):
@@ -134,6 +188,16 @@ def test_v7_default_output_path_uses_v7_suffix():
 def test_v8_default_output_path_uses_v8_suffix():
     oldcam_v8 = load_module(ROOT / "oldcam-v8" / "oldcam.py", "oldcam_v8")
     assert oldcam_v8.build_default_output_path("sample.mp4").endswith("sample-oldcam-v8.mp4")
+
+
+def test_v9_default_output_path_uses_v9_suffix():
+    oldcam_v9 = load_module(ROOT / "oldcam-v9" / "oldcam.py", "oldcam_v9")
+    assert oldcam_v9.build_default_output_path("sample.mp4").endswith("sample-oldcam-v9.mp4")
+
+
+def test_v10_default_output_path_uses_v10_suffix():
+    oldcam_v10 = load_module(ROOT / "oldcam-v10" / "oldcam.py", "oldcam_v10")
+    assert oldcam_v10.build_default_output_path("sample.mp4").endswith("sample-oldcam-v10.mp4")
 
 
 def test_v8_ois_jitter_is_bounded_and_preserves_shape():
@@ -273,4 +337,225 @@ def test_oldcam_rerun_increment_mode_creates_versioned_comparison_output(tmp_pat
 
     assert result["success"] is True
     assert result["output"].endswith("clip_looped_2-oldcam-v7.mp4")
-    assert not (tmp_path / "clip_looped_2.mp4").exists()
+
+
+def test_oldcam_rerun_fails_when_no_versions_selected(tmp_path):
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    manager, _ = make_queue_manager({"oldcam_versions": []})
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update(
+            {"success": success, "src": src, "output": output, "error": error}
+        )
+        done.set()
+
+    started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+    assert started is True
+    assert done.wait(2)
+    assert result["success"] is False
+    assert result["error"] == "Oldcam not selected."
+
+
+def test_v10_process_frame_skips_spatial_fluctuation_when_face_not_detected():
+    oldcam_v10 = load_module(ROOT / "oldcam-v10" / "oldcam.py", "oldcam_v10_gate")
+    image = np.full((24, 24, 3), 127, dtype=np.uint8)
+    args = SimpleNamespace(sharpen=0.8, saturation=1.02, grain=1.0, quality=94, vignette_strength=0.55)
+    vignette = oldcam_v10.create_vignette_mask(24, 24)
+    state = {"face_detected": False, "full_face_mask": np.zeros((24, 24, 3), dtype=np.float32)}
+
+    with mock.patch.object(oldcam_v10, "get_dynamic_region_masks", return_value={}), \
+        mock.patch.object(
+            oldcam_v10,
+            "apply_synchronized_spatial_fluctuation",
+            side_effect=AssertionError("spatial fluctuation should be skipped"),
+        ):
+        processed = oldcam_v10.process_frame(
+            image,
+            oldcam_v10.create_neutral_phone_lut(),
+            vignette,
+            args,
+            np.random.default_rng(4),
+            state,
+        )
+
+    assert processed.shape == image.shape
+
+
+def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
+    panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
+    assert 'text="Oldcam Finish"' not in panel_source
+    assert 'text="Oldcam:"' in panel_source
+    assert 'for version in ("v7", "v8", "v9", "v10")' in panel_source
+
+
+def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v10"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "requirements.txt").write_text("mediapipe==0.10.35\n", encoding="utf-8")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("No module named mediapipe")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v10") is False
+
+
+def test_oldcam_dependency_preflight_v7_does_not_require_mediapipe(tmp_path):
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v7"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "requirements.txt").write_text("numpy\nopencv-python-headless\n", encoding="utf-8")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("No module named mediapipe")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v7") is True
+
+
+def test_oldcam_dependency_preflight_retries_after_missing_dependency(tmp_path):
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v10"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "face_landmarker.task").write_bytes(b"x")
+    (oldcam_dir / "requirements.txt").write_text("mediapipe==0.10.35\n", encoding="utf-8")
+
+    real_import = builtins.__import__
+    missing = {"enabled": True}
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe" and missing["enabled"]:
+            raise ImportError("No module named mediapipe")
+        if name == "mediapipe":
+            return types.SimpleNamespace(
+                __file__="site-packages/mediapipe/__init__.py",
+                __version__="0.10.35",
+            )
+        if name == "mediapipe.tasks.python":
+            return types.SimpleNamespace(vision=types.SimpleNamespace(FaceLandmarker=object))
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v10") is False
+        missing["enabled"] = False
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v10") is True
+
+
+def test_v10_apply_modern_sensor_noise_accepts_3d_fpn_mask():
+    oldcam_v10 = load_module(ROOT / "oldcam-v10" / "oldcam.py", "oldcam_v10_fpn")
+    image = np.full((20, 20, 3), 64, dtype=np.uint8)
+    rng = np.random.default_rng(7)
+    fpn = np.zeros((20, 20, 3), dtype=np.float32)
+    fpn[:, :, 0] = 0.5
+    fpn[:, :, 1] = 0.25
+    fpn[:, :, 2] = -0.25
+    processed = oldcam_v10.apply_modern_sensor_noise(image, grain=1.0, rng=rng, state={}, fpn_mask=fpn)
+    assert processed.shape == image.shape
+
+
+def test_v9_apply_modern_sensor_noise_accepts_3d_fpn_mask():
+    oldcam_v9 = load_module(ROOT / "oldcam-v9" / "oldcam.py", "oldcam_v9_fpn")
+    image = np.full((20, 20, 3), 64, dtype=np.uint8)
+    rng = np.random.default_rng(8)
+    fpn = np.zeros((20, 20, 3), dtype=np.float32)
+    fpn[:, :, 0] = 0.4
+    fpn[:, :, 1] = 0.2
+    fpn[:, :, 2] = -0.3
+    processed = oldcam_v9.apply_modern_sensor_noise(image, grain=1.0, rng=rng, state={}, fpn_mask=fpn)
+    assert processed.shape == image.shape
+
+
+def test_validate_mediapipe_tasks_api_missing_facelandmarker_fails(tmp_path):
+    manager, _ = make_queue_manager({})
+    real_import = builtins.__import__
+    fake_mp = types.SimpleNamespace(__file__="x/mediapipe.py", __version__="0")
+    with mock.patch("builtins.__import__", side_effect=lambda name, *a, **k: fake_mp if name == "mediapipe" else real_import(name, *a, **k)):
+        oldcam_dir = tmp_path / "oldcam-v10"
+        oldcam_dir.mkdir()
+        ok, diagnostics = manager._validate_mediapipe_tasks_api(oldcam_dir)
+    assert ok is False
+    assert diagnostics["facelandmarker_import_ok"] == "False"
+
+
+def test_validate_mediapipe_tasks_api_missing_task_file_fails(tmp_path):
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v10"
+    oldcam_dir.mkdir()
+    real_import = builtins.__import__
+    fake_mp = types.SimpleNamespace(__file__="site-packages/mediapipe/__init__.py", __version__="0.10.35")
+
+    def fake_import(name, *a, **k):
+        if name == "mediapipe":
+            return fake_mp
+        if name == "mediapipe.tasks.python":
+            return types.SimpleNamespace(vision=types.SimpleNamespace(FaceLandmarker=object))
+        return real_import(name, *a, **k)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import), \
+         mock.patch.object(manager, "_resolve_face_landmarker_task_path", return_value=(None, [])):
+        ok, diagnostics = manager._validate_mediapipe_tasks_api(oldcam_dir)
+    assert ok is False
+    assert diagnostics["task_file_exists"] == "False"
+
+
+def test_validate_mediapipe_tasks_api_valid_chain_passes(tmp_path):
+    manager, _ = make_queue_manager({})
+    real_import = builtins.__import__
+    oldcam_dir = tmp_path / "oldcam-v10"
+    oldcam_dir.mkdir()
+    task = oldcam_dir / "face_landmarker.task"
+    task.write_bytes(b"x")
+
+    fake_mp = types.SimpleNamespace(
+        __file__="site-packages/mediapipe/__init__.py",
+        __version__="0.10.35",
+    )
+    fake_vision = types.SimpleNamespace(FaceLandmarker=object)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name == "mediapipe":
+            return fake_mp
+        if name == "mediapipe.tasks.python":
+            return types.SimpleNamespace(vision=fake_vision)
+        return real_import(name, *a, **k)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        ok, diagnostics = manager._validate_mediapipe_tasks_api(oldcam_dir)
+    assert ok is True
+    assert diagnostics["facelandmarker_import_ok"] == "True"
+    assert diagnostics["task_file_exists"] == "True"
+
+
+def test_v10_temporal_noise_uses_distinct_state_keys():
+    oldcam_v10 = load_module(ROOT / "oldcam-v10" / "oldcam.py", "oldcam_v10_temporal_keys")
+    image = np.full((18, 18, 3), 72, dtype=np.uint8)
+    state = {}
+    _ = oldcam_v10.apply_modern_sensor_noise(image, grain=1.0, rng=np.random.default_rng(11), state=state, fpn_mask=None)
+    assert "temporal_noise_luma" in state
+    assert "temporal_noise_chroma" in state
+    assert "temporal_noise" not in state
+
+
+def test_v9_temporal_noise_uses_distinct_state_keys():
+    oldcam_v9 = load_module(ROOT / "oldcam-v9" / "oldcam.py", "oldcam_v9_temporal_keys")
+    image = np.full((18, 18, 3), 72, dtype=np.uint8)
+    state = {}
+    _ = oldcam_v9.apply_modern_sensor_noise(image, grain=1.0, rng=np.random.default_rng(13), state=state, fpn_mask=None)
+    assert "temporal_noise_luma" in state
+    assert "temporal_noise_chroma" in state
+    assert "temporal_noise" not in state

@@ -2,6 +2,45 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-12 (v1.4)
+
+### Added
+
+- **Oldcam V9 (Dynamic Mesh)**: MediaPipe FaceLandmarker face detection, region-aware effect masks,
+  AWB color drift simulation, background blur, temporal smoothing of mesh landmarks.
+- **Oldcam V10 (Spatial Sync)**: All of V9 plus FFT-based per-region frequency analysis,
+  phase-locked oscillations per face region, dynamic relighting, graceful degradation for short clips.
+- GUI: Re-Run button right-sized with folder picker for alternate output directories.
+- GUI: Rerun icon button restored; sash layout proportions tuned (Step 3 wider, drop zone narrower).
+
+### Fixed
+
+- Oldcam V9/V10 H.264 video quality: upgraded from `baseline` + 1500k bitrate cap to CRF 18 +
+  `profile:v high`, eliminating motion-detail crushing on face-aware output videos.
+- Preview output collision: each version now writes version-tagged preview files
+  (`clip-preview-v7.mp4` through `clip-preview-v10.mp4`) instead of all overwriting the same filename.
+- macOS `.command` launchers (all 4 versions): added `[ -n "$REPO_ROOT" ]` guard before venv path
+  probes, preventing false filesystem matches when `find_repo_root()` returns empty.
+- `setup_macos.sh`: tightened mediapipe grep pattern and added `|| true` to prevent script abort
+  under `set -euo pipefail`.
+- Windows bat launchers V7/V8: added certutil-based PY_ID stamp, fixed `>nul 2>nul` redirects,
+  added `call` keyword in PROCESS_ONE subroutine.
+- Windows bat launchers V9/V10: added `MP_VALIDATE_CMD` variable, `--force-reinstall --no-deps`
+  for MediaPipe install, `FINAL_EXIT` exit pattern.
+- `run_oldcam.bat`: full rewrite with V9 launcher logic, mediapipe install, stamp cache.
+- `similarity/run_cli.bat`: structured `if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" (` blocks with
+  log-redirected launch path alongside direct invocation.
+
+### Changed
+
+- Release packaging emits `SelfieGenUltimate-v1.4.zip` (canonical) + `SelfieGenUltimate.zip` (alias).
+
+### Docs
+
+- Added "Oldcam: Virtual Camera Simulator" section to root `README.md` with version comparison
+  table, requirements, and standalone launcher instructions.
+- Added complete macOS READMEs for `oldcam-v9/macOS/` and `oldcam-v10/macOS/`.
+
 ## 2026-05-10 (v1.2)
 
 ### Fixed

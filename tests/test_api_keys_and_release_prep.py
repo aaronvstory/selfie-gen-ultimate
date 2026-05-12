@@ -220,6 +220,7 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
     (repo / "run_gui.command").write_text("#!/usr/bin/env bash\necho gui\n", encoding="utf-8")
     (repo / "run_cli.command").write_text("#!/usr/bin/env bash\necho cli\n", encoding="utf-8")
     (repo / "setup_macos.sh").write_text("#!/usr/bin/env bash\necho setup\n", encoding="utf-8")
+    (repo / "face_landmarker.task").write_bytes(b"task-model")
     (repo / "launchers").mkdir()
     (repo / "launchers" / "windows").mkdir()
     (repo / "launchers" / "macos").mkdir()
@@ -283,6 +284,7 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_similarity_cli.command") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_oldcam_v8.command") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_oldcam_v7.command") for name in names)
+        assert any(name.endswith("selfie-gen-ultimate/face_landmarker.task") for name in names)
         similarity_gui_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_gui.bat"))
         similarity_gui = zf.read(similarity_gui_name).decode("utf-8")
         assert "set PYTHON_BIN=py -3.12" in similarity_gui

@@ -84,21 +84,27 @@ def sanitize_sash_layout(
     drop_max = max(drop_min, int(safe_h * 0.75))
     drop_default = int(safe_h * 0.58)
 
-    prompt_min = 420
-    prompt_max = max(prompt_min, safe_w - 260)
-    prompt_default = int(safe_w * 0.62)
+    # Left tab panel vs right tools/prompt panel — left panel 52-62% of window
+    prompt_min = max(480, int(safe_w * 0.50))
+    prompt_max = max(prompt_min, int(safe_w * 0.62))
+    prompt_default = int(safe_w * 0.56)
 
-    queue_min = 300
-    queue_max = max(queue_min, int(safe_w * 0.68))
-    queue_default = int(safe_w * 0.38)
+    # Carousel width: 20-30% of window (narrower carousel = more room for log+drop)
+    queue_min = max(200, int(safe_w * 0.20))
+    queue_max = max(queue_min, int(safe_w * 0.30))
+    queue_default = int(safe_w * 0.24)
 
     log_min = 110
     log_max = max(log_min, int(safe_h * 0.42))
     log_default = int(safe_h * 0.22)
 
-    log_drop_min = 220
-    log_drop_max = max(log_drop_min, int(safe_w * 0.70))
-    log_drop_default = int(safe_w * 0.50)
+    # Log vs drop zone: clamp relative to the right section width (safe_w - clamped queue)
+    # so saved values from a different window size don't blow past the pane boundary.
+    clamped_queue = max(queue_min, min(int(sash_queue) if sash_queue else queue_default, queue_max))
+    right_section_w = max(400, safe_w - clamped_queue)
+    log_drop_min = max(200, int(right_section_w * 0.42))
+    log_drop_max = max(log_drop_min, int(right_section_w * 0.62))
+    log_drop_default = int(right_section_w * 0.52)
 
     sanitized = {
         "sash_dropzone": _clamp_int(sash_dropzone, drop_min, drop_max, drop_default),

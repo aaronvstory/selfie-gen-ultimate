@@ -569,13 +569,21 @@ class DropZoneWindowsRenderTests(unittest.TestCase):
 class OldcamRerunFlowTests(unittest.TestCase):
     def test_config_panel_contains_oldcam_rerun_icon_next_to_version_selector(self):
         src = inspect.getsource(ConfigPanel._setup_ui)
-        version_pos = src.find("self.oldcam_version_combo")
+        version_pos = src.find("self.oldcam_version_vars")
         rerun_pos = src.find("self.oldcam_rerun_btn")
         self.assertTrue(version_pos >= 0 and rerun_pos > version_pos)
 
-    def test_config_panel_oldcam_versions_include_all(self):
+    def test_config_panel_oldcam_versions_include_v7_v8_v9_v10(self):
         src = inspect.getsource(ConfigPanel._setup_ui)
-        self.assertIn('values=("v7", "v8", "all")', src)
+        self.assertIn('self.oldcam_version_vars = {', src)
+        self.assertIn('"v7"', src)
+        self.assertIn('"v8"', src)
+        self.assertIn('"v9"', src)
+        self.assertIn('"v10"', src)
+
+    def test_config_panel_oldcam_rerun_label_is_visible(self):
+        src = inspect.getsource(ConfigPanel._setup_ui)
+        self.assertIn('text="Re-Run:"', src)
 
     def test_resolve_oldcam_rerun_source_prefers_base_video_when_available(self):
         window = KlingGUIWindow.__new__(KlingGUIWindow)
@@ -635,6 +643,41 @@ class OldcamRerunFlowTests(unittest.TestCase):
 
         args, _kwargs = window.queue_manager.rerun_oldcam_only.call_args
         self.assertEqual(args[0], str(latest))
+
+    def test_oldcam_rerun_uses_persisted_source_when_history_unavailable(self):
+        window = KlingGUIWindow.__new__(KlingGUIWindow)
+        window._log = mock.Mock()
+        window.config = {"oldcam_version": "v9"}
+        window.history = []
+        window.queue_manager = mock.Mock()
+        window.queue_manager.rerun_oldcam_only.return_value = True
+        window._get_selected_history = lambda: None
+        window._get_latest_completed_history = lambda: None
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "persisted.mp4"
+            source.write_bytes(b"video")
+            window.config["oldcam_last_source_video"] = str(source)
+            window._on_oldcam_rerun_requested()
+
+        args, _kwargs = window.queue_manager.rerun_oldcam_only.call_args
+        self.assertEqual(args[0], str(source))
+
+    def test_oldcam_rerun_logs_clear_message_when_no_source_available(self):
+        window = KlingGUIWindow.__new__(KlingGUIWindow)
+        window._log = mock.Mock()
+        window.config = {"oldcam_version": "v9", "oldcam_last_source_video": ""}
+        window.history = []
+        window.queue_manager = mock.Mock()
+        window._get_selected_history = lambda: None
+        window._get_latest_completed_history = lambda: None
+
+        window._on_oldcam_rerun_requested()
+
+        window.queue_manager.rerun_oldcam_only.assert_not_called()
+        window._log.assert_any_call(
+            "No generated/looped video found to rerun Oldcam. Generate a video first.",
+            "warning",
+        )
 
     def test_on_item_complete_does_not_emit_duplicate_failed_log(self):
         window = KlingGUIWindow.__new__(KlingGUIWindow)

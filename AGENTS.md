@@ -379,6 +379,92 @@ Guidance:
 - Preserve Tk requirements in docs and troubleshooting.
 - Do not prescribe Windows-only fix commands for shared macOS workflows.
 
+---
+
+## Hard Rules — Windows Launchers (NON-NEGOTIABLE)
+
+Repeated breakage has occurred from ignoring these. Treat as blocking requirements.
+
+### CRLF endings — bat/cmd files
+
+`Write` and `Edit` tools produce LF-only files. LF-only batch files garble every command on Windows. **Never use `Write`/`Edit` for `.bat`/`.cmd` files.** Always write via PowerShell:
+
+```powershell
+$crlf = $content -replace "`r`n","`n" -replace "`n","`r`n"
+[System.IO.File]::WriteAllText("path\file.bat", $crlf, [System.Text.Encoding]::ASCII)
+```
+
+Verify: `CRLF=True`, `LFonly=False`. macOS `.sh`/`.command` files use LF — `Write`/`Edit` are fine for those.
+
+### Blank lines — use `echo(` not `echo.`
+
+`echo.` causes `'. was unexpected at this time'` with `enabledelayedexpansion`. Use `echo(` unconditionally for blank lines.
+
+### Log appends — redirect operator before echo
+
+```bat
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] message   ← CORRECT
+echo [%LAUNCH_TS%] message >> "%LOG_FILE%"  ← WRONG ([ ] may be misinterpreted)
+```
+
+### Launcher chain
+
+```
+root\run_gui.bat  →  launchers\run_gui.bat  →  launchers\windows\run_gui.bat
+```
+
+Root files are pass-through wrappers only. All logic lives in `launchers/windows/`.
+
+### Dep-skip stamp (no subprocess)
+
+```bat
+for %%F in (req files...) do set "STAMP_KEY=!STAMP_KEY!%%~tF%%~zF"
+set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,60%.ok"
+if exist "%STAMP%" goto :launch
+```
+
+No `certutil` or hash subprocess — date+size fingerprint is sufficient and instant.
+
+### MediaPipe install
+
+Always filter mediapipe from requirements before pip, then install separately:
+
+```bat
+"%VENV_PYTHON%" -m pip install --no-deps "mediapipe==0.10.35"
+```
+
+---
+
+## Hard Rules — GUI Sash Layout
+
+### Saved config wins over code defaults
+
+`kling_config.json` sash values (gitignored) are restored on every launch and override all code-level defaults. When changing layout targets, you **must also** clear stale saved values:
+
+```python
+import json; c=json.load(open('kling_config.json'))
+for k in ['sash_dropzone','sash_queue','sash_log','sash_log_drop_split','sash_prompt_split']: c.pop(k,None)
+json.dump(c,open('kling_config.json','w'),indent=2)
+```
+
+### `sash_log_drop_split` is relative to right section, not full window
+
+`log_drop_paned` is inside the right section (`safe_w - sash_queue`). Clamping as % of full window width produces values larger than the pane. Always:
+
+```python
+right_section_w = max(400, safe_w - clamped_queue)
+log_drop_min = int(right_section_w * 0.42)
+log_drop_max = int(right_section_w * 0.62)
+```
+
+### Target proportions
+
+| Sash | Target | Range |
+|------|--------|-------|
+| `sash_prompt_split` | 56% of window | 50–62% |
+| `sash_queue` (carousel) | 24% of window | 20–30% |
+| `sash_log_drop_split` | 52% of right section | 42–62% |
+
 ## Adding New Features
 
 ### New GUI Component

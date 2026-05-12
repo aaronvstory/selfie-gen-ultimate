@@ -3,20 +3,24 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_run_oldcam_defaults_to_v8_and_uses_stamp_cache():
+def test_run_oldcam_defaults_to_v9_and_uses_stamp_cache():
     text = (REPO_ROOT / "run_oldcam.bat").read_text(encoding="utf-8")
-    assert "oldcam-v8\\launcher.py" in text
+    assert "oldcam-v9\\launcher.py" in text
     assert ".launcher_state" in text
-    assert "oldcam_v8_" in text
+    assert "oldcam_v9_" in text
     assert 'findstr /I /R "^[0-9A-F][0-9A-F]"' in text
     assert 'set "PY_ID=%PY_ID: =_%"' in text
     assert 'if "%NEED_PIP%"=="0" (' in text
     assert "Dependencies unchanged. Skipping pip install." in text
+    assert 'findstr /V /I /R "^[ ]*mediapipe"' in text
+    assert '-m pip install --no-deps "%MEDIAPIPE_SPEC%"' in text
 
 
 def test_oldcam_local_launchers_keep_version_specific_targets():
     v7 = (REPO_ROOT / "oldcam-v7" / "oldcam_launcher.bat").read_text(encoding="utf-8")
     v8 = (REPO_ROOT / "oldcam-v8" / "oldcam_launcher.bat").read_text(encoding="utf-8")
+    v9 = (REPO_ROOT / "oldcam-v9" / "oldcam_launcher.bat").read_text(encoding="utf-8")
+    v10 = (REPO_ROOT / "oldcam-v10" / "oldcam_launcher.bat").read_text(encoding="utf-8")
     assert "oldcam_v7_" in v7
     assert "oldcam_v8_" in v8
     assert "%REPO_ROOT%\\venv\\Scripts\\python.exe" in v7
@@ -33,6 +37,20 @@ def test_oldcam_local_launchers_keep_version_specific_targets():
     assert 'set "PY_ID=%PY_ID: =_%"' in v7
     assert 'set "PY_ID=%PY_ID:/=_%"' in v8
     assert 'set "PY_ID=%PY_ID: =_%"' in v8
+    assert 'findstr /V /I /B "mediapipe"' in v9
+    assert 'findstr /V /I /B "mediapipe"' in v10
+    assert '-m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%"' in v9
+    assert '-m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%"' in v10
+    assert 'set "MP_VALIDATE_CMD=' in v9
+    assert 'set "MP_VALIDATE_CMD=' in v10
+    assert "Tasks FaceLandmarker API unavailable" in v9
+    assert "Tasks FaceLandmarker API unavailable" in v10
+    assert 'set "FINAL_EXIT=0"' in v9
+    assert 'if defined HAD_ERRORS set "FINAL_EXIT=1"' in v9
+    assert "endlocal & exit /b %FINAL_EXIT%" in v9
+    assert 'set "FINAL_EXIT=0"' in v10
+    assert 'if defined HAD_ERRORS set "FINAL_EXIT=1"' in v10
+    assert "endlocal & exit /b %FINAL_EXIT%" in v10
 
 
 def test_oldcam_macos_requirements_hash_has_missing_fallback():
@@ -53,3 +71,17 @@ def test_oldcam_macos_uses_repo_root_state_dir_and_file_picker():
         assert "pick_files()" in text
         assert "choose file with prompt" in text
         assert 'if [ "$#" -eq 0 ]; then' in text
+
+
+def test_oldcam_macos_v9_v10_install_mediapipe_separately():
+    v9 = (REPO_ROOT / "oldcam-v9" / "macOS" / "oldcam.command").read_text(encoding="utf-8")
+    v10 = (REPO_ROOT / "oldcam-v10" / "macOS" / "oldcam.command").read_text(encoding="utf-8")
+    for text in (v9, v10):
+        assert "grep -E -vi '^[[:space:]]*mediapipe($|[[:space:]]|==|>=|<=|~=|!=)'" in text
+        assert '-m pip install --force-reinstall --no-deps "mediapipe==0.10.35"' in text
+        assert "MP_VALIDATE_CMD=" in text
+        assert "Tasks FaceLandmarker API unavailable" in text
+    assert '[ -d "$cur/oldcam-v9" ]' in v9
+    assert '[ -d "$cur/oldcam-v10" ]' in v10
+    assert '[ -d "$cur/oldcam-v7" ] && [ -d "$cur/oldcam-v8" ]' not in v9
+    assert '[ -d "$cur/oldcam-v7" ] && [ -d "$cur/oldcam-v8" ]' not in v10

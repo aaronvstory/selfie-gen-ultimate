@@ -10,7 +10,7 @@ import subprocess
 import sys
 import shutil
 from dataclasses import dataclass, field
-from typing import Callable, Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple, Dict
 from pathlib import Path
 from datetime import datetime
 
@@ -357,8 +357,8 @@ class QueueManager:
         self.is_running = False
         self.worker_thread: Optional[threading.Thread] = None
         self._stop_flag = False
-        self._oldcam_deps_checked = False
-        self._oldcam_deps_ready = False
+        self._oldcam_deps_status_by_version: Dict[str, bool] = {}
+        self._last_oldcam_run_summary: Optional[Dict[str, object]] = None
         self._oldcam_rerun_thread: Optional[threading.Thread] = None
 
     def log_verbose(self, message: str, level: str = "info"):
@@ -551,19 +551,48 @@ class QueueManager:
                 continue
 
         if not found:
-            return ["v7", "v8"]
+            return ["v7", "v8", "v9", "v10"]
         return sorted(found, key=self._oldcam_version_key)
+
+    def _get_selected_oldcam_versions(self) -> List[str]:
+        """Resolve selected Oldcam versions from config with legacy fallback."""
+        config = self.get_config()
+        available = self._discover_oldcam_versions()
+
+        configured = config.get("oldcam_versions")
+        selected: List[str] = []
+        has_versions_key = isinstance(configured, list)
+        if has_versions_key:
+            selected = [str(v).lower() for v in configured if isinstance(v, str)]
+
+        if not selected and not has_versions_key:
+            legacy = str(config.get("oldcam_version", "v9")).lower()
+            if legacy == "all":
+                selected = list(available)
+            elif legacy:
+                selected = [legacy]
+
+        valid = sorted(
+            {version for version in selected if version in available},
+            key=self._oldcam_version_key,
+        )
+        if valid:
+            return valid
+        if has_versions_key:
+            return []
+        if available:
+            # Intentional product default: v9 is the safe fallback when no valid
+            # selection survives migration/validation. Explicit legacy choices
+            # (e.g. oldcam_version=v7) still win via the valid path above.
+            if "v9" in available:
+                return ["v9"]
+            latest = available[-1]
+            return [latest]
+        return ["v9"]
 
     def _get_oldcam_versions_to_run(self) -> List[str]:
         """Return selected oldcam versions in ascending order."""
-        available = self._discover_oldcam_versions()
-        selected = self._get_oldcam_version()
-        if selected == "all":
-            return available
-        if selected in available:
-            return [selected]
-        # Backward-safe fallback
-        return [available[-1]] if available else ["v7"]
+        return self._get_selected_oldcam_versions()
 
     def _get_next_incremented_oldcam_input(self, source_video: Path, versions: List[str]) -> Path:
         """Return copied input whose derived oldcam outputs do not exist for any selected version."""
@@ -624,7 +653,13 @@ class QueueManager:
             try:
                 config = self.get_config()
                 versions_to_run = self._get_oldcam_versions_to_run()
-                version = self._get_oldcam_version()
+                selected_versions = self._get_selected_oldcam_versions()
+                if not versions_to_run:
+                    message = "Oldcam not selected."
+                    self.log(message, "warning")
+                    if completion_callback:
+                        completion_callback(False, str(source_video), None, message)
+                    return
                 primary_version = max(versions_to_run, key=self._oldcam_version_key)
                 allow_reprocess = bool(config.get("allow_reprocess", False))
                 reprocess_mode = str(config.get("reprocess_mode", "increment") or "increment").lower()
@@ -669,10 +704,28 @@ class QueueManager:
                         self.log(f"Oldcam rerun increment target: {expected_output.name}", "info")
 
                 self.log(
-                    f"Oldcam-only rerun: source={source_video.name}, version={version}",
+                    "Oldcam-only rerun: source="
+                    + f"{source_video.name}, versions={','.join(selected_versions)}",
                     "info",
                 )
                 output_path = self._oldcam_video(str(run_input), QueueItem(str(source_video)))
+                summary = self._last_oldcam_run_summary or {}
+                requested_versions = summary.get("requested_versions", [])
+                succeeded_versions = summary.get("succeeded_versions", [])
+                failed_versions = summary.get("failed_versions", [])
+                primary_output = summary.get("primary_output", "")
+                if requested_versions:
+                    self.log(
+                        "Oldcam-only rerun summary: requested versions="
+                        + ",".join(str(v) for v in requested_versions)
+                        + "; succeeded versions="
+                        + ",".join(str(v) for v in succeeded_versions)
+                        + "; failed/skipped versions="
+                        + ",".join(f"{v} ({r})" for v, r in failed_versions)
+                        + "; primary output="
+                        + str(primary_output),
+                        "info",
+                    )
                 if output_path and Path(output_path).exists():
                     self.log(f"Oldcam-only rerun complete: {Path(output_path).name}", "success")
                     if completion_callback:
@@ -904,8 +957,8 @@ class QueueManager:
                         if looped_video:
                             final_video = looped_video
 
-                    # Check if oldcam video is enabled
-                    if config.get("oldcam_videos", True):
+                    # Run oldcam only when one or more versions are selected.
+                    if self._get_oldcam_versions_to_run():
                         oldcam_video = self._oldcam_video(final_video, item)
                         if oldcam_video:
                             final_video = oldcam_video
@@ -1082,12 +1135,9 @@ class QueueManager:
             return None
 
     def _get_oldcam_version(self) -> str:
-        """Return configured Oldcam version with backward-compatible default."""
-        version = str(self.get_config().get("oldcam_version", "v7")).lower()
-        if version == "all":
-            return version
-        available = self._discover_oldcam_versions()
-        return version if version in available else "v7"
+        """Return legacy single Oldcam version view (highest selected)."""
+        selected = self._get_selected_oldcam_versions()
+        return selected[-1] if selected else "v9"
 
     def _build_oldcam_output_path(self, input_path: Path, version: str) -> Path:
         """Build versioned Oldcam output path next to input video."""
@@ -1117,7 +1167,7 @@ class QueueManager:
             self.log(f"Oldcam {version} launcher not found", "warning")
             return None
 
-        if not self._ensure_oldcam_dependencies(oldcam_dir):
+        if not self._ensure_oldcam_dependencies(oldcam_dir, version):
             self.log(f"Skipping Oldcam {version} Finish due to missing dependencies", "warning")
             return None
 
@@ -1146,32 +1196,126 @@ class QueueManager:
             self.log(err.splitlines()[-1], "warning")
         return None
 
-    def _ensure_oldcam_dependencies(self, oldcam_dir: Path) -> bool:
+    def _ensure_oldcam_dependencies(self, oldcam_dir: Path, version: str) -> bool:
         """Check Oldcam requirements in current interpreter and emit install guidance."""
-        if self._oldcam_deps_checked:
-            return self._oldcam_deps_ready
+        if self._oldcam_deps_status_by_version.get(version) is True:
+            return True
 
-        self._oldcam_deps_checked = True
+        required_modules = ["cv2", "numpy"]
+        requires_mediapipe = version in {"v9", "v10"}
+        if requires_mediapipe:
+            required_modules.append("mediapipe")
 
         try:
-            import cv2  # noqa: F401
-            import numpy  # noqa: F401
-            self._oldcam_deps_ready = True
+            for module_name in required_modules:
+                __import__(module_name)
+            if requires_mediapipe:
+                mp_ok, diagnostics = self._validate_mediapipe_tasks_api(oldcam_dir)
+                if not mp_ok:
+                    self.log(
+                        f"MediaPipe Tasks FaceLandmarker API unavailable; Oldcam {version} cannot run.",
+                        "warning",
+                    )
+                    self.log(
+                        "Validation command: "
+                        + f'"{sys.executable}" -c "import mediapipe as mp; '
+                        + 'from mediapipe.tasks.python import vision; '
+                        + 'print(getattr(mp, \'__version__\', \'unknown\')); '
+                        + 'print(hasattr(vision, \'FaceLandmarker\'))"',
+                        "warning",
+                    )
+                    self.log(
+                        "Diagnostics: "
+                        + ", ".join(f"{k}={v}" for k, v in diagnostics.items()),
+                        "warning",
+                    )
+                    return False
+            self._oldcam_deps_status_by_version[version] = True
             return True
         except ImportError as e:
             requirements_path = oldcam_dir / "requirements.txt"
-            self.log(f"Oldcam dependencies missing: {e}", "warning")
+            self.log(f"Oldcam {version} dependencies missing: {e}", "warning")
             if requirements_path.exists():
                 install_cmd = f'{sys.executable} -m pip install -r "{requirements_path}"'
                 self.log(
-                    "Oldcam dependencies are not installed. "
+                    f"Oldcam {version} dependencies are not installed. "
                     f"Please install them before processing Oldcam jobs: {install_cmd}",
                     "warning",
                 )
+                if version in {"v9", "v10"}:
+                    self.log(
+                        f"Oldcam {version} requires mediapipe tasks + {self._task_model_filename()}. Install guidance: {install_cmd}",
+                        "warning",
+                    )
             else:
                 self.log(f"Oldcam requirements missing: {requirements_path}", "warning")
-            self._oldcam_deps_ready = False
             return False
+
+    def _task_model_filename(self) -> str:
+        return "face_landmarker.task"
+
+    def _resolve_face_landmarker_task_path(self, oldcam_dir: Path) -> Tuple[Optional[Path], List[Path]]:
+        searched: List[Path] = []
+        env_override = str(os.environ.get("OLDCAM_FACE_LANDMARKER_TASK", "")).strip()
+        if env_override:
+            env_path = Path(env_override).expanduser()
+            searched.append(env_path)
+            if env_path.exists():
+                return env_path.resolve(), searched
+
+        app_root = Path(__file__).resolve().parents[1]
+        dist_root = app_root.parent
+        candidates = [
+            oldcam_dir / self._task_model_filename(),
+            app_root / self._task_model_filename(),
+            dist_root / self._task_model_filename(),
+            Path.cwd() / self._task_model_filename(),
+        ]
+        for candidate in candidates:
+            searched.append(candidate)
+            if candidate.exists():
+                return candidate.resolve(), searched
+        return None, searched
+
+    def _validate_mediapipe_tasks_api(self, oldcam_dir: Path) -> Tuple[bool, Dict[str, str]]:
+        """Validate MediaPipe Tasks API + task model file used by oldcam v9/v10."""
+        diagnostics: Dict[str, str] = {
+            "python_executable": sys.executable,
+            "sys_path_0": sys.path[0] if sys.path else "",
+        }
+        try:
+            import mediapipe as mp  # noqa: F401
+        except Exception as exc:
+            diagnostics["import_error"] = f"{exc.__class__.__name__}: {exc}"
+            return False, diagnostics
+
+        mp_obj = locals().get("mp")
+        diagnostics["mediapipe_file"] = str(getattr(mp_obj, "__file__", "unknown"))
+        diagnostics["mediapipe_version"] = str(getattr(mp_obj, "__version__", "unknown"))
+        try:
+            from mediapipe.tasks.python import vision  # type: ignore
+            facelandmarker_ok = hasattr(vision, "FaceLandmarker")
+        except Exception as exc:
+            diagnostics["facelandmarker_import_error"] = f"{exc.__class__.__name__}: {exc}"
+            facelandmarker_ok = False
+        diagnostics["facelandmarker_import_ok"] = str(facelandmarker_ok)
+        if not facelandmarker_ok:
+            return False, diagnostics
+        task_path, searched = self._resolve_face_landmarker_task_path(oldcam_dir)
+        diagnostics["task_file_path"] = str(task_path) if task_path else ""
+        diagnostics["task_file_exists"] = str(task_path is not None)
+        diagnostics["task_file_searched"] = ";".join(str(path) for path in searched)
+        if task_path is None:
+            return False, diagnostics
+
+        # Shadowing hint: local repo paths usually indicate wrong module import.
+        try:
+            repo_root = str(Path(__file__).resolve().parents[1]).lower()
+            mp_file = str(getattr(mp_obj, "__file__", "")).lower()
+            diagnostics["shadowing_suspected"] = str(mp_file.startswith(repo_root))
+        except Exception:
+            diagnostics["shadowing_suspected"] = "unknown"
+        return True, diagnostics
 
     def _oldcam_video(self, video_path: str, item: QueueItem) -> Optional[str]:
         """
@@ -1183,26 +1327,55 @@ class QueueManager:
         """
         del item  # Reserved for future per-item status hooks
         try:
-            versions_to_run = self._get_oldcam_versions_to_run()
-            selected = self._get_oldcam_version()
-            if selected == "all":
+                versions_to_run = self._get_oldcam_versions_to_run()
+                self.log("Oldcam selected: running " + ", ".join(versions_to_run), "info")
+                outputs: List[Tuple[str, str]] = []
+                failures: List[Tuple[str, str]] = []
+                for version in versions_to_run:
+                    output_path = self._run_oldcam_version(video_path, version)
+                    if output_path:
+                        outputs.append((version, output_path))
+                    else:
+                        failures.append((version, f"Oldcam {version} failed or was skipped"))
+                requested = list(versions_to_run)
+                if not outputs:
+                    self._last_oldcam_run_summary = {
+                        "requested_versions": requested,
+                        "succeeded_versions": [],
+                        "failed_versions": failures,
+                        "primary_output": "",
+                    }
+                    self.log(
+                        "Oldcam summary: requested versions="
+                        + ",".join(requested)
+                        + "; succeeded versions=; failed/skipped versions="
+                        + ",".join(f"{version} ({reason})" for version, reason in failures),
+                        "warning",
+                    )
+                    return None
+                # Primary output is highest version number among successful runs.
+                primary = max(outputs, key=lambda entry: self._oldcam_version_key(entry[0]))
+                self._last_oldcam_run_summary = {
+                    "requested_versions": requested,
+                    "succeeded_versions": [version for version, _ in outputs],
+                    "failed_versions": failures,
+                    "primary_output": primary[1],
+                }
                 self.log(
-                    "Oldcam all selected: running "
-                    + ", ".join(versions_to_run),
+                    "Oldcam summary: requested versions="
+                    + ",".join(requested)
+                    + "; succeeded versions="
+                    + ",".join(version for version, _ in outputs)
+                    + "; failed/skipped versions="
+                    + ",".join(f"{version} ({reason})" for version, reason in failures)
+                    + "; primary output="
+                    + primary[1],
                     "info",
                 )
-            outputs: List[Tuple[str, str]] = []
-            for version in versions_to_run:
-                output_path = self._run_oldcam_version(video_path, version)
-                if output_path:
-                    outputs.append((version, output_path))
-            if not outputs:
-                return None
-            # Primary output is highest version number among successful runs.
-            primary = max(outputs, key=lambda entry: self._oldcam_version_key(entry[0]))
-            return primary[1]
+                return primary[1]
         except Exception as e:
             self.log(f"Error applying Oldcam Finish: {e}", "warning")
+            self._last_oldcam_run_summary = None
             return None
 
     def _get_current_prompt(self, config: dict) -> str:

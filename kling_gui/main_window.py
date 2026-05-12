@@ -622,7 +622,7 @@ class KlingGUIWindow:
         # Pre-sanitize sash values against initial window size before widgets render.
         pre_sash, pre_sash_changed = sanitize_sash_layout(
             sash_dropzone=self.config.get("sash_dropzone", 500),
-            sash_prompt_split=self.config.get("sash_prompt_split", 620),
+            sash_prompt_split=self.config.get("sash_prompt_split", 760),
             sash_queue=self.config.get("sash_queue", 320),
             sash_log=self.config.get("sash_log", 150),
             sash_log_drop_split=self.config.get("sash_log_drop_split", 360),
@@ -723,7 +723,9 @@ class KlingGUIWindow:
             "video_duration": 10,
             "loop_videos": True,  # Loop videos ON by default
             "oldcam_videos": True,  # Oldcam Finish ON by default
-            "oldcam_version": "v7",
+            "oldcam_version": "v9",
+            "oldcam_versions": ["v9"],
+            "oldcam_last_source_video": "",
             "allow_reprocess": True,
             "reprocess_mode": "increment",
             "custom_models": [],
@@ -759,9 +761,9 @@ class KlingGUIWindow:
             # Window layout persistence
             "window_geometry": "",  # Empty = use default
             "sash_dropzone": 500,  # Height of top pane
-            "sash_queue": 320,  # Width of left bottom pane
+            "sash_queue": 220,  # Width of left bottom pane (carousel narrow ~24%)
             "sash_log": 150,  # Height of log pane (before history)
-            "sash_log_drop_split": 360,  # Width split in log pane (log | permanent drop zone)
+            "sash_log_drop_split": 380,  # Width split in log pane (log | permanent drop zone)
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)
@@ -1231,6 +1233,7 @@ class KlingGUIWindow:
             on_config_changed=self._on_config_changed,
             build_prompt=False,
             on_oldcam_rerun=self._on_oldcam_rerun_requested,
+            on_oldcam_pick_rerun=self._on_oldcam_pick_and_rerun_requested,
         )
 
         self.video_tab.attach_config_panel(self.config_panel)
@@ -1393,7 +1396,7 @@ class KlingGUIWindow:
         pane_names = [str(p) for p in self.top_h_paned.panes()]
         if str(self._right_pane) not in pane_names:
             self.top_h_paned.add(self._right_pane, minsize=260)
-            saved = self.config.get("sash_prompt_split", 640)
+            saved = self.config.get("sash_prompt_split", int(self.root.winfo_width() * 0.56))
             self.root.after(50, lambda: self._safe_sash_place(self.top_h_paned, 0, saved, 0))
 
     def _hide_right_pane(self):
@@ -2975,15 +2978,35 @@ class KlingGUIWindow:
         stem = candidate.stem
         match = re.search(r"-oldcam-v\d+$", stem, re.IGNORECASE)
         if match:
-            base = candidate.with_name(f"{stem[:match.start()]}{candidate.suffix}")
-            if base.exists():
-                return str(base)
-            self._log(
-                f"Base video not found for {candidate.name}; using selected output as source",
-                "warning",
-            )
-            return str(candidate)
+            stem = stem[:match.start()]
+        base = candidate.with_name(f"{stem}{candidate.suffix}")
+        if base.exists():
+            return str(base)
+        match_inc = re.search(r"_\d+$", stem)
+        if match_inc:
+            base_no_inc = candidate.with_name(f"{stem[:match_inc.start()]}{candidate.suffix}")
+            if base_no_inc.exists():
+                return str(base_no_inc)
+        self._log(
+            f"Base video not found for {candidate.name}; using selected output as source",
+            "warning",
+        )
         return str(candidate)
+
+    def _get_persisted_oldcam_source(self) -> str:
+        """Return persisted Oldcam source video fallback path."""
+        source = str(self.config.get("oldcam_last_source_video", "") or "").strip()
+        if source and os.path.isfile(source):
+            return source
+        return ""
+
+    def _set_persisted_oldcam_source(self, source_video: str):
+        """Persist latest usable source video for Oldcam reruns."""
+        source = str(source_video or "").strip()
+        if not source:
+            return
+        self.config["oldcam_last_source_video"] = source
+        self._save_config()
 
     def _on_oldcam_rerun_requested(self):
         """Handle Oldcam-only rerun button from config panel."""
@@ -2997,19 +3020,20 @@ class KlingGUIWindow:
             history_entry = selected
         else:
             history_entry = self._get_latest_completed_history()
+        source_video = ""
+        if history_entry:
+            chosen_output = str(history_entry.get("output") or "").strip()
+            if chosen_output:
+                source_video = self._resolve_oldcam_rerun_source(chosen_output)
 
-        if not history_entry:
-            self._log("No completed video available for Oldcam rerun", "warning")
-            return
+        if (not source_video or not os.path.isfile(source_video)):
+            source_video = self._get_persisted_oldcam_source()
 
-        chosen_output = str(history_entry.get("output") or "").strip()
-        if not chosen_output:
-            self._log("No output video path available for Oldcam rerun", "warning")
-            return
-
-        source_video = self._resolve_oldcam_rerun_source(chosen_output)
         if not source_video or not os.path.isfile(source_video):
-            self._log(f"Oldcam rerun source not found: {source_video or chosen_output}", "warning")
+            self._log(
+                "No generated/looped video found to rerun Oldcam. Generate a video first.",
+                "warning",
+            )
             return
 
         started = self.queue_manager.rerun_oldcam_only(
@@ -3017,11 +3041,51 @@ class KlingGUIWindow:
             completion_callback=self._on_oldcam_rerun_complete_threadsafe,
         )
         if started:
+            selected_versions = self.config.get("oldcam_versions")
+            if not isinstance(selected_versions, list) or not selected_versions:
+                selected_versions = [self.config.get("oldcam_version", "v9")]
             self._log(
                 f"Oldcam-only rerun queued: {os.path.basename(source_video)} "
-                f"({self.config.get('oldcam_version', 'v7')})",
+                f"({', '.join(str(v) for v in selected_versions)})",
                 "info",
             )
+
+    def _on_oldcam_pick_and_rerun_requested(self):
+        """Open file picker, then run Oldcam on the chosen video(s)."""
+        if not self.queue_manager:
+            self._log("Queue manager not initialized", "error")
+            return
+
+        from tk_dialogs import select_open_files
+        paths = select_open_files(
+            parent=self.root,
+            title="Select video(s) for Oldcam",
+            filetypes=[
+                ("Video files", "*.mp4 *.mov *.avi *.mkv *.webm *.m4v"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not paths:
+            return
+
+        for source_video in paths:
+            if not os.path.isfile(source_video):
+                self._log(f"Skipping non-existent file: {source_video}", "warning")
+                continue
+
+            started = self.queue_manager.rerun_oldcam_only(
+                source_video,
+                completion_callback=self._on_oldcam_rerun_complete_threadsafe,
+            )
+            if started:
+                selected_versions = self.config.get("oldcam_versions")
+                if not isinstance(selected_versions, list) or not selected_versions:
+                    selected_versions = [self.config.get("oldcam_version", "v9")]
+                self._log(
+                    f"Oldcam queued (picked): {os.path.basename(source_video)} "
+                    f"({', '.join(str(v) for v in selected_versions)})",
+                    "info",
+                )
 
     def _on_oldcam_rerun_complete_threadsafe(
         self,
@@ -3066,6 +3130,7 @@ class KlingGUIWindow:
         self._refresh_history_view()
 
         if success and output_path:
+            self._set_persisted_oldcam_source(source_video)
             self._log(
                 f"Oldcam-only rerun complete: {os.path.basename(source_video)} → {output_path}",
                 "success",
@@ -3631,6 +3696,9 @@ class KlingGUIWindow:
         self._refresh_history_view()
 
         if status == "completed" and item.output_path:
+            source_video = self._resolve_oldcam_rerun_source(item.output_path)
+            if source_video and os.path.isfile(source_video):
+                self._set_persisted_oldcam_source(source_video)
             self._log(
                 f"Finished {os.path.basename(item.path)} → {item.output_path}",
                 "success",
@@ -3725,7 +3793,7 @@ class KlingGUIWindow:
 
             sash_values, changed = sanitize_sash_layout(
                 sash_dropzone=self.config.get("sash_dropzone", 500),
-                sash_prompt_split=self.config.get("sash_prompt_split", 620),
+                sash_prompt_split=self.config.get("sash_prompt_split", 760),
                 sash_queue=self.config.get("sash_queue", 320),
                 sash_log=self.config.get("sash_log", 150),
                 sash_log_drop_split=self.config.get("sash_log_drop_split", 360),

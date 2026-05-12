@@ -45,14 +45,14 @@ class LayoutSizingTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertGreaterEqual(sash["sash_dropzone"], 320)
         self.assertLessEqual(sash["sash_dropzone"], int(900 * 0.75))
-        self.assertGreaterEqual(sash["sash_prompt_split"], 420)
-        self.assertLessEqual(sash["sash_prompt_split"], 1100 - 260)
-        self.assertGreaterEqual(sash["sash_queue"], 300)
-        self.assertLessEqual(sash["sash_queue"], int(1100 * 0.68))
+        self.assertGreaterEqual(sash["sash_prompt_split"], int(1100 * 0.50))
+        self.assertLessEqual(sash["sash_prompt_split"], int(1100 * 0.62))
+        self.assertGreaterEqual(sash["sash_queue"], int(1100 * 0.20))
+        self.assertLessEqual(sash["sash_queue"], int(1100 * 0.30))
         self.assertGreaterEqual(sash["sash_log"], 110)
         self.assertLessEqual(sash["sash_log"], int(900 * 0.42))
-        self.assertGreaterEqual(sash["sash_log_drop_split"], 220)
-        self.assertLessEqual(sash["sash_log_drop_split"], int(1100 * 0.70))
+        self.assertGreaterEqual(sash["sash_log_drop_split"], 200)
+        self.assertLessEqual(sash["sash_log_drop_split"], int((1100 - int(1100 * 0.20)) * 0.62))
 
     def test_sane_values_remain_unchanged(self):
         window, geometry, changed_window = sanitize_window_layout(
@@ -68,21 +68,24 @@ class LayoutSizingTests(unittest.TestCase):
         self.assertEqual(window["min_height"], 620)
         self.assertEqual(geometry, "1100x880+300+20")
 
+        # Values within new ranges: queue=270 (20-30% of 1100=220-330),
+        # prompt_split=620 (50-62% of 1100=550-682),
+        # log_drop_split=440: right_section=1100-270=830, range=max(200,830*0.42)..830*0.62=349..515
         sash, changed_sash = sanitize_sash_layout(
             sash_dropzone=500,
             sash_prompt_split=620,
-            sash_queue=320,
+            sash_queue=270,
             sash_log=150,
-            sash_log_drop_split=360,
+            sash_log_drop_split=440,
             root_width=1100,
             root_height=900,
         )
         self.assertFalse(changed_sash)
         self.assertEqual(sash["sash_dropzone"], 500)
         self.assertEqual(sash["sash_prompt_split"], 620)
-        self.assertEqual(sash["sash_queue"], 320)
+        self.assertEqual(sash["sash_queue"], 270)
         self.assertEqual(sash["sash_log"], 150)
-        self.assertEqual(sash["sash_log_drop_split"], 360)
+        self.assertEqual(sash["sash_log_drop_split"], 440)
 
 
 if __name__ == "__main__":

@@ -78,6 +78,39 @@ macOS compatibility constraints:
 - `.command` launchers may require one-time Gatekeeper approval.
 - Shared pipeline behavior is intended to remain platform-consistent; avoid Windows-only assumptions in automation logic.
 
+## Oldcam: Virtual Camera Simulator
+
+The `oldcam` pipeline applies per-version virtual camera effects to generated videos, simulating authentic smartphone camera imperfections.
+
+| Version | Nickname | Key Character |
+| --- | --- | --- |
+| V7 | Modern Imperfection | JPEG artifact texture, rolling shutter arm-sway, light AF hunting, high-quality CRF 18 encoding |
+| V8 | Temporal Smartphone | OIS micro-jitter, velocity-driven rolling shutter, 3D chroma sensor noise, bitrate-limited H.264 |
+| V9 | Dynamic Mesh | MediaPipe face detection, region-aware effect masks, AWB color drift, background blur, temporal smoothing |
+| V10 | Spatial Sync | All of V9 + FFT-based frequency analysis, per-region phase-locked oscillations, dynamic relighting |
+
+Multiple versions can be selected simultaneously in the GUI (Video tab → Oldcam section). Each runs independently and produces a version-tagged output file alongside the source: `clip-oldcam-v9.mp4`, `clip-oldcam-v10.mp4`, etc.
+
+### Oldcam Requirements
+
+| Versions | Extra Dependencies |
+| --- | --- |
+| V7, V8 | numpy, opencv — already in main requirements |
+| V9, V10 | Also requires `mediapipe==0.10.35` and a `face_landmarker.task` model file |
+
+For V9/V10: place `face_landmarker.task` in the repo root or next to the oldcam directory. Download from [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker).
+
+### Oldcam Standalone Launchers
+
+Each version includes a standalone launcher for direct CLI use, independent of the main GUI:
+
+| Platform | Command |
+| --- | --- |
+| Windows | `oldcam-vN\oldcam_launcher.bat path\to\video.mp4` |
+| macOS | `oldcam-vN/macOS/oldcam.command path/to/video.mp4` |
+
+Double-clicking the launcher with no arguments opens a file picker.
+
 ## Quick Start: Windows
 
 1. Install Python 3.10+ from [python.org](https://python.org) and enable **Add Python to PATH**.
