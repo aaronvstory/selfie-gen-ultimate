@@ -258,6 +258,13 @@ def get_dynamic_region_masks(image, state):
         state["face_landmarker_task_searched"] = [str(path) for path in searched_paths]
         print(f"FaceLandmarker task model: {task_path}")
 
+    # Run detection every other frame; reuse cached masks on skipped frames.
+    # The existing 65%/35% temporal smoothing makes alternating frames visually seamless.
+    detect_frame_count = state.get("detect_frame_count", 0)
+    state["detect_frame_count"] = detect_frame_count + 1
+    if detect_frame_count % 2 == 1 and "last_masks" in state:
+        return state["last_masks"]
+
     rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
     results = state["face_landmarker"].detect(mp_image)
@@ -562,10 +569,13 @@ def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
     image = apply_radial_chromatic_aberration(image, scale=0.0006)
     image = apply_soft_background_texture(image, full_face_mask, strength=getattr(args, "background_texture_strength", 0.08))
 
-    vignette_strength = getattr(args, "vignette_strength", 0.55)
-    if vignette_mask is not None and vignette_strength > 0:
-        adjusted_mask = 1.0 - ((1.0 - vignette_mask) * vignette_strength)
-        image = np.clip(image.astype(np.float32) * adjusted_mask, 0, 255).astype(np.uint8)
+    adjusted_vignette = state.get("adjusted_vignette_mask")
+    if adjusted_vignette is None and vignette_mask is not None:
+        vignette_strength = getattr(args, "vignette_strength", 0.55)
+        if vignette_strength > 0:
+            adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * vignette_strength)).astype(np.float32)
+    if adjusted_vignette is not None:
+        image = np.clip(image.astype(np.float32) * adjusted_vignette, 0, 255).astype(np.uint8)
 
     return image
 
@@ -665,9 +675,12 @@ def naturalize_video(input_path, output_path, args):
     lut = create_neutral_phone_lut()
     vignette_mask = create_vignette_mask(height, width)
     rng = np.random.default_rng()
+    _vignette_strength = getattr(args, "vignette_strength", 0.55)
+    _adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * _vignette_strength)).astype(np.float32) if _vignette_strength > 0 else None
     state = {
         "fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32),
         "stutter_budget": 0,
+        "adjusted_vignette_mask": _adjusted_vignette,
     }
 
     temp_output = build_temp_video_path(output_path)
