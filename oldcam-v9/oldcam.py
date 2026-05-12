@@ -534,9 +534,10 @@ def apply_global_awb_drift(image, state, rng):
 
 
 def apply_soft_background_texture(image, focus_mask, strength=0.08):
-    if strength <= 0:
+    strength = max(0.0, min(strength, 1.0))
+    if strength == 0:
         return image
-    tight_mask = np.power(focus_mask, 2.0)
+    tight_mask = focus_mask * focus_mask  # squaring pulls blur boundary inward, preventing face bleed
     inverse_mask = 1.0 - tight_mask
     h, w = image.shape[:2]
     small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
@@ -783,6 +784,13 @@ def build_parser():
         "--saturation", type=float, default=1.12, help="Saturation multiplier. Default: 1.12"
     )
     parser.add_argument("--grain", type=int, default=1, help="Sensor-grain strength. Default: 1")
+    parser.add_argument(
+        "--background-texture-strength",
+        type=float,
+        default=0.08,
+        dest="background_texture_strength",
+        help="Background blur blend strength [0.0-1.0]. Default: 0.08",
+    )
     parser.add_argument(
         "--ghosting",
         type=bounded_ghosting,
