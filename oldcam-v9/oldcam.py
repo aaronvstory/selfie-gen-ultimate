@@ -540,18 +540,20 @@ def apply_global_awb_drift(image, state, rng):
     return np.clip(image_f, 0, 255).astype(np.uint8)
 
 
-def apply_soft_background_texture(image, focus_mask, strength=0.08):
-    strength = max(0.0, min(strength, 1.0))
-    if strength == 0:
-        return image
-    tight_mask = focus_mask * focus_mask  # squaring pulls blur boundary inward, preventing face bleed
-    inverse_mask = 1.0 - tight_mask
-    h, w = image.shape[:2]
-    small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
-    restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
-    blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
-    out = (image.astype(np.float32) * tight_mask + blended_bg.astype(np.float32) * inverse_mask)
-    return np.clip(out, 0, 255).astype(np.uint8)
+# def apply_soft_background_texture(image, focus_mask, strength=0.08):
+#     # Disabled: standard webcams/phone front-cameras have deep focal length with no optical
+#     # background separation. Applying blur here creates an artificial portrait-mode look.
+#     strength = max(0.0, min(strength, 1.0))
+#     if strength == 0:
+#         return image
+#     tight_mask = focus_mask * focus_mask  # squaring pulls blur boundary inward, preventing face bleed
+#     inverse_mask = 1.0 - tight_mask
+#     h, w = image.shape[:2]
+#     small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
+#     restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+#     blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
+#     out = (image.astype(np.float32) * tight_mask + blended_bg.astype(np.float32) * inverse_mask)
+#     return np.clip(out, 0, 255).astype(np.uint8)
 
 
 def apply_jpeg_pass(image, quality):
@@ -603,7 +605,7 @@ def process_frame(
     image = cv2.LUT(image, create_neutral_phone_lut() if lut is None else lut)
     image = apply_modern_sensor_noise(image, getattr(args, "grain", 1.0), rng, state=state, fpn_mask=state.get("fpn"))
     image = apply_radial_chromatic_aberration(image, scale=0.0006)
-    image = apply_soft_background_texture(image, full_face_mask, strength=getattr(args, "background_texture_strength", 0.08))
+    # image = apply_soft_background_texture(image, full_face_mask, strength=getattr(args, "background_texture_strength", 0.08))
 
     adjusted_vignette = state.get("adjusted_vignette_mask")
     if adjusted_vignette is None and vignette_mask is not None:
@@ -797,13 +799,7 @@ def build_parser():
         "--saturation", type=float, default=1.12, help="Saturation multiplier. Default: 1.12"
     )
     parser.add_argument("--grain", type=int, default=1, help="Sensor-grain strength. Default: 1")
-    parser.add_argument(
-        "--background-texture-strength",
-        type=float,
-        default=0.08,
-        dest="background_texture_strength",
-        help="Background blur blend strength [0.0-1.0]. Default: 0.08",
-    )
+    # "--background-texture-strength" removed: flat-sensor mode, no depth separation
     parser.add_argument(
         "--ghosting",
         type=bounded_ghosting,

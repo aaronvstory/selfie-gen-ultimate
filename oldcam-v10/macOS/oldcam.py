@@ -566,36 +566,40 @@ def apply_synchronized_spatial_fluctuation(image, state, region_masks, target_hz
     return img_float.clip(0, 255).astype(np.uint8)
 
 
-def apply_soft_background_texture(image, focus_mask, strength=0.08):
-    strength = max(0.0, min(strength, 1.0))
-    if strength == 0:
-        return image
-    tight_mask = focus_mask * focus_mask  # squaring pulls blur boundary inward, preventing face bleed
-    inverse_mask = 1.0 - tight_mask
-    h, w = image.shape[:2]
-    small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
-    restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
-    blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
-    out = (image.astype(np.float32) * tight_mask + blended_bg.astype(np.float32) * inverse_mask)
-    return np.clip(out, 0, 255).astype(np.uint8)
+# def apply_soft_background_texture(image, focus_mask, strength=0.08):
+#     # Disabled: standard webcams/phone front-cameras have deep focal length with no optical
+#     # background separation. Applying blur here creates an artificial portrait-mode look.
+#     strength = max(0.0, min(strength, 1.0))
+#     if strength == 0:
+#         return image
+#     tight_mask = focus_mask * focus_mask  # squaring pulls blur boundary inward, preventing face bleed
+#     inverse_mask = 1.0 - tight_mask
+#     h, w = image.shape[:2]
+#     small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
+#     restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+#     blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
+#     out = (image.astype(np.float32) * tight_mask + blended_bg.astype(np.float32) * inverse_mask)
+#     return np.clip(out, 0, 255).astype(np.uint8)
 
 
-def apply_dynamic_relighting(image, state):
-    """Shift highlights opposite OIS jitter to simulate scene relighting."""
-    ois_x = state.get("ois_x", 0.0)
-    ois_y = state.get("ois_y", 0.0)
-    if abs(ois_x) < 0.1 and abs(ois_y) < 0.1:
-        return image
-    h, w = image.shape[:2]
-    x_grid = state.get("x_grid") if state.get("x_grid") is not None else np.meshgrid(np.linspace(-1, 1, w), np.linspace(-1, 1, h))[0]
-    y_grid = state.get("y_grid") if state.get("y_grid") is not None else np.meshgrid(np.linspace(-1, 1, w), np.linspace(-1, 1, h))[1]
-    light_shift = (x_grid * -ois_x + y_grid * -ois_y) * 1.5
-    light_shift = np.stack([light_shift] * 3, axis=-1).astype(np.float32)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    highlight_mask = (cv2.GaussianBlur(gray, (15, 15), 0) / 255.0) ** 2
-    highlight_mask = np.stack([highlight_mask] * 3, axis=-1).astype(np.float32)
-    relit = image.astype(np.float32) + (light_shift * highlight_mask)
-    return relit.clip(0, 255).astype(np.uint8)
+# def apply_dynamic_relighting(image, state):
+#     # Disabled: cinematic 3D specular shift requires a lens with optical depth.
+#     # Standard webcam/front-camera has flat, even illumination; this effect looks processed.
+#     """Shift highlights opposite OIS jitter to simulate scene relighting."""
+#     ois_x = state.get("ois_x", 0.0)
+#     ois_y = state.get("ois_y", 0.0)
+#     if abs(ois_x) < 0.1 and abs(ois_y) < 0.1:
+#         return image
+#     h, w = image.shape[:2]
+#     x_grid = state.get("x_grid") if state.get("x_grid") is not None else np.meshgrid(np.linspace(-1, 1, w), np.linspace(-1, 1, h))[0]
+#     y_grid = state.get("y_grid") if state.get("y_grid") is not None else np.meshgrid(np.linspace(-1, 1, w), np.linspace(-1, 1, h))[1]
+#     light_shift = (x_grid * -ois_x + y_grid * -ois_y) * 1.5
+#     light_shift = np.stack([light_shift] * 3, axis=-1).astype(np.float32)
+#     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+#     highlight_mask = (cv2.GaussianBlur(gray, (15, 15), 0) / 255.0) ** 2
+#     highlight_mask = np.stack([highlight_mask] * 3, axis=-1).astype(np.float32)
+#     relit = image.astype(np.float32) + (light_shift * highlight_mask)
+#     return relit.clip(0, 255).astype(np.uint8)
 
 
 def apply_jpeg_pass(image, quality):
@@ -631,7 +635,7 @@ def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
     image = apply_soft_ois_jitter(image, state, rng)
     image = apply_soft_rolling_shutter(image, state, rng)
     image = apply_subtle_af_breathing(image, state, rng)
-    image = apply_dynamic_relighting(image, state)
+    # image = apply_dynamic_relighting(image, state)
     image = apply_ae_stepping(image, state)
     image = apply_dynamic_tone_mapping(image)
     image = apply_highlight_blooming(image, threshold=232, strength=0.055)
@@ -643,7 +647,7 @@ def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
     image = cv2.LUT(image, create_neutral_phone_lut() if lut is None else lut)
     image = apply_modern_sensor_noise(image, getattr(args, "grain", 1.0), rng, state=state, fpn_mask=state.get("fpn"))
     image = apply_radial_chromatic_aberration(image, scale=0.0006)
-    image = apply_soft_background_texture(image, full_face_mask, strength=getattr(args, "background_texture_strength", 0.08))
+    # image = apply_soft_background_texture(image, full_face_mask, strength=getattr(args, "background_texture_strength", 0.08))
 
     adjusted_vignette = state.get("adjusted_vignette_mask")
     if adjusted_vignette is None and vignette_mask is not None:
@@ -751,14 +755,11 @@ def naturalize_video(input_path, output_path, args):
     lut = create_neutral_phone_lut()
     vignette_mask = create_vignette_mask(height, width)
     rng = np.random.default_rng()
-    _x_grid, _y_grid = np.meshgrid(np.linspace(-1, 1, width), np.linspace(-1, 1, height))
     _vignette_strength = getattr(args, "vignette_strength", 0.55)
     _adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * _vignette_strength)).astype(np.float32) if _vignette_strength > 0 else None
     state = {
         "fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32),
         "stutter_budget": 0,
-        "x_grid": _x_grid.astype(np.float32),
-        "y_grid": _y_grid.astype(np.float32),
         "adjusted_vignette_mask": _adjusted_vignette,
     }
 
@@ -840,13 +841,7 @@ def build_parser():
         "--saturation", type=float, default=1.12, help="Saturation multiplier. Default: 1.12"
     )
     parser.add_argument("--grain", type=int, default=1, help="Sensor-grain strength. Default: 1")
-    parser.add_argument(
-        "--background-texture-strength",
-        type=float,
-        default=0.08,
-        dest="background_texture_strength",
-        help="Background blur blend strength [0.0-1.0]. Default: 0.08",
-    )
+    # "--background-texture-strength" removed: flat-sensor mode, no depth separation
     parser.add_argument(
         "--ghosting",
         type=bounded_ghosting,
