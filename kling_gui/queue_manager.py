@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import shutil
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional, List, Tuple, Dict
 from pathlib import Path
@@ -282,7 +283,10 @@ _TF_NOISE_PATTERNS = (
     "face_landmarker_graph",
     "xnnpack",
     "i tensorflow",
-    "mediapipe",
+    "mediapipe version",
+    "mediapipe graph",
+    "mediapipe init",
+    "mediapipe info",
 )
 
 
@@ -1196,6 +1200,7 @@ class QueueManager:
         output_lines: list[str] = []
         returncode = -1
         process: Optional[subprocess.Popen] = None
+        _TIMEOUT = 600
         try:
             process = subprocess.Popen(
                 run_cmd,
@@ -1206,13 +1211,19 @@ class QueueManager:
                 bufsize=1,
             )
             assert process.stdout is not None
-            for line in process.stdout:
+            deadline = time.monotonic() + _TIMEOUT
+            while True:
+                line = process.stdout.readline()
+                if not line:
+                    break
+                if time.monotonic() > deadline:
+                    raise subprocess.TimeoutExpired(run_cmd, _TIMEOUT)
                 line_text = line.rstrip()
                 if line_text:
                     output_lines.append(line_text)
                     if not _is_tf_noise(line_text):
                         self.log(line_text, "info")
-            returncode = process.wait(timeout=600)
+            returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             if process is not None and process.poll() is None:
                 process.kill()
@@ -1287,8 +1298,14 @@ class QueueManager:
                     "warning",
                 )
                 if version in {"v9", "v10", "v11"}:
+                    mp_install = (
+                        f"{sys.executable} -m pip install "
+                        f"--force-reinstall --no-deps mediapipe==0.10.35"
+                    )
                     self.log(
-                        f"Oldcam {version} requires mediapipe tasks + {self._task_model_filename()}. Install guidance: {install_cmd}",
+                        f"Oldcam {version} requires mediapipe + {self._task_model_filename()}. "
+                        f"Step 1: {install_cmd}  "
+                        f"Step 2: {mp_install}",
                         "warning",
                     )
             else:

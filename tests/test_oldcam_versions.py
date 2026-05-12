@@ -142,7 +142,9 @@ def test_queue_manager_selects_oldcam_version_folder_and_output(tmp_path):
         oldcam_dir.mkdir()
         (oldcam_dir / "launcher.py").write_text("pass", encoding="utf-8")
 
-        fake_proc = SimpleNamespace(stdout=iter(["Processing frame 1/10\n"]), poll=lambda: 0)
+        import io
+        fake_stdout = io.StringIO("Processing frame 1/10\n")
+        fake_proc = SimpleNamespace(stdout=fake_stdout, poll=lambda: 0)
         fake_proc.wait = lambda timeout=None: (output_path.write_bytes(b"done"), 0)[1]
         popen_mock.return_value = fake_proc
 
