@@ -57,7 +57,7 @@ def build_default_output_path(input_path):
 
 def build_preview_output_path(input_path):
     path = Path(input_path)
-    return str(path.with_name(f"{path.stem}-preview{path.suffix}"))
+    return str(path.with_name(f"{path.stem}-preview-v7{path.suffix}"))
 
 
 def build_temp_video_path(output_path):

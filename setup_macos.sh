@@ -188,7 +188,7 @@ if [[ "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
   fi
   export OLDCAM_FACE_LANDMARKER_TASK="${TASK_MODEL_PATH}"
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --upgrade pip
-  grep -vi '^[[:space:]]*mediapipe' "${REQUIREMENTS_FILE}" > "${FILTERED_REQUIREMENTS_FILE}"
+  grep -E -vi '^[[:space:]]*mediapipe($|[[:space:]]|==|>=|<=|~=|!=)' "${REQUIREMENTS_FILE}" > "${FILTERED_REQUIREMENTS_FILE}" || true
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check -r "${FILTERED_REQUIREMENTS_FILE}"
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --force-reinstall --no-deps "mediapipe==0.10.35"
   if ! "${VENV_DIR}/bin/python" -c "${MP_VALIDATE_CMD}" >/dev/null 2>&1; then

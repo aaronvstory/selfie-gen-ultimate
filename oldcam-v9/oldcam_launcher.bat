@@ -79,10 +79,10 @@ if "%NEED_PIP%"=="0" (
 ) else (
   echo   [%LAUNCH_TS%] Syncing Oldcam V9 dependencies...
   set "REQ_FILTERED=%STATE_DIR%\oldcam_v9_req_filtered.txt"
-  findstr /V /I /B "mediapipe" "%SCRIPT_DIR%requirements.txt" > "!REQ_FILTERED!"
-  "%PYTHON_CMD%" -m pip install -r "!REQ_FILTERED!" >nul 2>&1
+  findstr /V /I /B "mediapipe" "%SCRIPT_DIR%requirements.txt" > "%REQ_FILTERED%"
+  "%PYTHON_CMD%" -m pip install -r "%REQ_FILTERED%" >nul 2>&1
   if errorlevel 1 (
-    del "!REQ_FILTERED!" >nul 2>&1
+    del "%REQ_FILTERED%" >nul 2>&1
     echo   [%LAUNCH_TS%] ERROR: Failed to install Oldcam V9 dependencies.
     echo   Close running Python/GUI processes and retry.
     set "HAD_ERRORS=1"
@@ -90,13 +90,13 @@ if "%NEED_PIP%"=="0" (
   )
   "%PYTHON_CMD%" -m pip install --no-deps "%MEDIAPIPE_SPEC%" >nul 2>&1
   if errorlevel 1 (
-    del "!REQ_FILTERED!" >nul 2>&1
+    del "%REQ_FILTERED%" >nul 2>&1
     echo   [%LAUNCH_TS%] ERROR: Failed to install MediaPipe for Oldcam V9.
     echo   Close running Python/GUI processes and retry.
     set "HAD_ERRORS=1"
     goto DONE
   )
-  del "!REQ_FILTERED!" >nul 2>&1
+  del "%REQ_FILTERED%" >nul 2>&1
   "%PYTHON_CMD%" -c "import mediapipe; from mediapipe.tasks.python import vision; v=getattr(vision,'FaceLandmarker',None); exit(0 if v else 1)" >nul 2>&1
   if errorlevel 1 (
     echo   [%LAUNCH_TS%] ERROR: MediaPipe Tasks FaceLandmarker API unavailable. Oldcam V9 cannot run.

@@ -73,7 +73,7 @@ def build_default_output_path(input_path):
 
 def build_preview_output_path(input_path):
     path = Path(input_path)
-    return str(path.with_name(f"{path.stem}-preview{path.suffix}"))
+    return str(path.with_name(f"{path.stem}-preview-v9{path.suffix}"))
 
 
 def build_temp_video_path(output_path):
@@ -640,13 +640,9 @@ def finalize_video_output(temp_output: str, input_path: str, output_path: str, c
             "-c:v",
             "libx264",
             "-profile:v",
-            "baseline",
-            "-b:v",
-            "1500k",
-            "-maxrate",
-            "2000k",
-            "-bufsize",
-            "1000k",
+            "high",
+            "-crf",
+            "18",
             "-pix_fmt",
             "yuv420p",
             "-preset",

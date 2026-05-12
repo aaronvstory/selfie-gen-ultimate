@@ -18,8 +18,8 @@ mkdir -p "$STATE_DIR"
 resolve_py(){
   if [ -n "${SELFIEGEN_PYTHON:-}" ] && [ -x "$SELFIEGEN_PYTHON" ]; then echo "$SELFIEGEN_PYTHON"; return; fi
   if [ -n "${SELFIEGEN_VENV_DIR:-}" ] && [ -x "$SELFIEGEN_VENV_DIR/bin/python" ]; then echo "$SELFIEGEN_VENV_DIR/bin/python"; return; fi
-  [ -x "$REPO_ROOT/venv/bin/python" ] && { echo "$REPO_ROOT/venv/bin/python"; return; }
-  [ -x "$REPO_ROOT/.venv/bin/python" ] && { echo "$REPO_ROOT/.venv/bin/python"; return; }
+  [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/venv/bin/python" ] && { echo "$REPO_ROOT/venv/bin/python"; return; }
+  [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/.venv/bin/python" ] && { echo "$REPO_ROOT/.venv/bin/python"; return; }
   [ -x "$SCRIPT_DIR/.venv/bin/python" ] && { echo "$SCRIPT_DIR/.venv/bin/python"; return; }
   pybin="$(command -v python3.12 || command -v python3.11 || command -v python3 || command -v python || true)"
   [ -z "$pybin" ] && return
