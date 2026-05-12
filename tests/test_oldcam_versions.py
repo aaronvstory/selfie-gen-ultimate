@@ -137,17 +137,14 @@ def test_queue_manager_selects_oldcam_version_folder_and_output(tmp_path):
 
     with mock.patch.object(manager, "_resolve_oldcam_dir", return_value=tmp_path / "oldcam-v8") as resolve_mock, \
         mock.patch.object(manager, "_ensure_oldcam_dependencies", return_value=True), \
-        mock.patch("kling_gui.queue_manager.subprocess.run") as run_mock:
+        mock.patch("kling_gui.queue_manager.subprocess.Popen") as popen_mock:
         oldcam_dir = tmp_path / "oldcam-v8"
         oldcam_dir.mkdir()
         (oldcam_dir / "launcher.py").write_text("pass", encoding="utf-8")
-        run_mock.return_value = SimpleNamespace(returncode=0, stderr="", stdout="")
 
-        def create_output(*_args, **_kwargs):
-            output_path.write_bytes(b"done")
-            return run_mock.return_value
-
-        run_mock.side_effect = create_output
+        fake_proc = SimpleNamespace(stdout=iter(["Processing frame 1/10\n"]), poll=lambda: 0)
+        fake_proc.wait = lambda timeout=None: (output_path.write_bytes(b"done"), 0)[1]
+        popen_mock.return_value = fake_proc
 
         result = manager._oldcam_video(str(input_path), QueueItem(str(input_path)))
 

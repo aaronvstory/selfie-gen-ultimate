@@ -43,7 +43,7 @@ elif [ -f "$(pwd)/face_landmarker.task" ]; then
   TASK_MODEL_PATH="$(pwd)/face_landmarker.task"
 fi
 if [ -z "$TASK_MODEL_PATH" ]; then
-  echo "FaceLandmarker task model missing. Expected face_landmarker.task. Oldcam v9/v10 cannot run."
+  echo "FaceLandmarker task model missing. Expected face_landmarker.task. Oldcam v11 cannot run."
   echo "Searched: $SCRIPT_DIR/face_landmarker.task ; $REPO_ROOT/face_landmarker.task ; $REPO_ROOT/../face_landmarker.task ; $(pwd)/face_landmarker.task"
   exit 1
 fi
