@@ -204,7 +204,9 @@ if [[ "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
   printf '%s\n' "${CURRENT_REQUIREMENTS_HASH}" > "${REQUIREMENTS_STAMP}"
 fi
 
-if [[ -f "${ROOT_DIR}/dependency_checker.py" ]]; then
+# Only run dependency_checker when requirements actually changed (SYNC_REQUIREMENTS=1)
+# or when forced. Skipping saves ~60-90s TF import on every launch.
+if [[ -f "${ROOT_DIR}/dependency_checker.py" && "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
   run_dep_check() {
     "${VENV_DIR}/bin/python" "${ROOT_DIR}/dependency_checker.py" --auto --enforce-all
   }

@@ -13,7 +13,29 @@ set "OLDCAM_V10_REQUIREMENTS=%ROOT_DIR%\oldcam-v10\requirements.txt"
 set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
 set "DEP_CHECKER=%ROOT_DIR%\dependency_checker.py"
 set "DEP_HEALTH_SCRIPT=%ROOT_DIR%\dependency_health_check.py"
+set "STATE_DIR=%ROOT_DIR%\.launcher_state"
 
+if not exist "%STATE_DIR%" mkdir "%STATE_DIR%"
+
+rem ── Compute a combined hash of all requirements files ──────────────────────
+set "HASH_INPUT="
+for %%F in ("%REQUIREMENTS%" "%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_REQUIREMENTS%" "%OLDCAM_V10_REQUIREMENTS%") do (
+    if exist "%%~F" (
+        for /f "tokens=1" %%H in ('certutil -hashfile "%%~F" SHA256 2^>nul ^| findstr /v "hash" ^| findstr /v "CertUtil"') do (
+            set "HASH_INPUT=!HASH_INPUT!%%H"
+        )
+    )
+)
+rem Hash the combined string via a temp file
+set "HASH_TMP=%TEMP%\selfiegen_hashsrc_%RANDOM%.txt"
+echo !HASH_INPUT!> "%HASH_TMP%"
+set "REQ_HASH=unknown"
+for /f "tokens=1" %%H in ('certutil -hashfile "%HASH_TMP%" SHA256 2^>nul ^| findstr /v "hash" ^| findstr /v "CertUtil"') do set "REQ_HASH=%%H"
+del "%HASH_TMP%" >nul 2>&1
+
+set "STAMP=%STATE_DIR%\deps_%REQ_HASH%.ok"
+
+rem ── Create venv if needed (always required before anything else) ────────────
 if not exist "%VENV_PYTHON%" (
     echo.
     echo  Creating virtual environment...
@@ -28,8 +50,17 @@ if not exist "%VENV_PYTHON%" (
     )
     echo  venv created.
     echo.
+    rem Invalidate any existing stamps on fresh venv
+    del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 )
 
+rem ── Skip all dep work if stamp is fresh ────────────────────────────────────
+if exist "%STAMP%" (
+    echo  Dependencies up to date (cached). Skipping sync.
+    goto :launch
+)
+
+rem ── Full dep sync (requirements changed or first run) ──────────────────────
 echo.
 echo  Syncing dependencies from requirements.txt...
 echo.
@@ -76,6 +107,12 @@ if exist "%DEP_HEALTH_SCRIPT%" (
         )
     )
 )
+
+rem ── Write stamp so next launch skips all of the above ─────────────────────
+rem Delete stale stamps from previous req hashes first
+del "%STATE_DIR%\deps_*.ok" >nul 2>&1
+echo %date% %time% > "%STAMP%"
+echo  Dependency stamp written. Next launch will skip sync.
 
 :launch
 echo Using venv: %VENV_PYTHON%
@@ -138,4 +175,3 @@ if !errorlevel! equ 0 (
 )
 del "%REQ_FILTERED%" >nul 2>&1
 exit /b 0
-
