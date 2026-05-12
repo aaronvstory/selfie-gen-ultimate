@@ -761,9 +761,9 @@ class KlingGUIWindow:
             # Window layout persistence
             "window_geometry": "",  # Empty = use default
             "sash_dropzone": 500,  # Height of top pane
-            "sash_queue": 250,  # Width of left bottom pane (carousel narrower)
+            "sash_queue": 220,  # Width of left bottom pane (carousel narrow ~24%)
             "sash_log": 150,  # Height of log pane (before history)
-            "sash_log_drop_split": 420,  # Width split in log pane (log | permanent drop zone)
+            "sash_log_drop_split": 380,  # Width split in log pane (log | permanent drop zone)
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)
@@ -1395,7 +1395,7 @@ class KlingGUIWindow:
         pane_names = [str(p) for p in self.top_h_paned.panes()]
         if str(self._right_pane) not in pane_names:
             self.top_h_paned.add(self._right_pane, minsize=260)
-            saved = self.config.get("sash_prompt_split", 760)
+            saved = self.config.get("sash_prompt_split", int(self.root.winfo_width() * 0.56))
             self.root.after(50, lambda: self._safe_sash_place(self.top_h_paned, 0, saved, 0))
 
     def _hide_right_pane(self):
