@@ -2,11 +2,6 @@
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "LOG_FILE=%CD%\launcher_runtime.log"
->> "%LOG_FILE%" echo.
->> "%LOG_FILE%" echo ===============================================================================
->> "%LOG_FILE%" echo [INFO] [%date% %time%] Starting run_gui.bat in %CD%
-
 set "TF_USE_LEGACY_KERAS=1"
 set "KERAS_BACKEND=tensorflow"
 
@@ -18,147 +13,121 @@ if defined REPO_ROOT (
   set "STATE_DIR=%CD%\.launcher_state"
 )
 if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
+set "LOG_FILE=%STATE_DIR%\similarity_gui.log"
 
-set "STEP=1"
-echo ===============================================================================
-echo SELFIE GEN ULTIMATE - Similarity GUI
-echo ===============================================================================
-echo [!STEP!/5] Locating repository root...
-if defined REPO_ROOT (
-  echo       Found: %REPO_ROOT%
-) else (
-  echo       Standalone mode: no repo root found.
-)
+rem --- Timestamp banner
+for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
+set "WMIC_DT=%WMIC_DT: =_%"
+set "LAUNCH_TS=%WMIC_DT:~0,4%-%WMIC_DT:~4,2%-%WMIC_DT:~6,2% %WMIC_DT:~8,2%:%WMIC_DT:~10,2%:%WMIC_DT:~12,2%"
+echo(
+echo  ============================================================
+echo   Ultimate-Selfie-Gen  --  Similarity GUI
+echo  ============================================================
+echo   [%LAUNCH_TS%] Launch started
+echo(
+>>"%LOG_FILE%" echo(
+>>"%LOG_FILE%" echo ============================================================
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] Starting similarity GUI
 
-set /a STEP+=1
 set "PYTHON_BIN="
 set "ENV_KIND="
 if not "%SELFIEGEN_PYTHON%"=="" (
   "%SELFIEGEN_PYTHON%" -V >nul 2>&1
-  if not errorlevel 1 (
-    set "PYTHON_BIN=%SELFIEGEN_PYTHON%"
-    set "ENV_KIND=SELFIEGEN_PYTHON override"
-  )
+  if not errorlevel 1 ( set "PYTHON_BIN=%SELFIEGEN_PYTHON%" & set "ENV_KIND=SELFIEGEN_PYTHON override" )
 )
-if "!PYTHON_BIN!"=="" if not "%SELFIEGEN_VENV_DIR%"=="" (
-  if exist "%SELFIEGEN_VENV_DIR%\Scripts\python.exe" (
-    "%SELFIEGEN_VENV_DIR%\Scripts\python.exe" -V >nul 2>&1
-    if not errorlevel 1 (
-      set "PYTHON_BIN=%SELFIEGEN_VENV_DIR%\Scripts\python.exe"
-      set "ENV_KIND=SELFIEGEN_VENV_DIR override"
-    )
-  )
+if "!PYTHON_BIN!"=="" if not "%SELFIEGEN_VENV_DIR%"=="" if exist "%SELFIEGEN_VENV_DIR%\Scripts\python.exe" (
+  "%SELFIEGEN_VENV_DIR%\Scripts\python.exe" -V >nul 2>&1
+  if not errorlevel 1 ( set "PYTHON_BIN=%SELFIEGEN_VENV_DIR%\Scripts\python.exe" & set "ENV_KIND=SELFIEGEN_VENV_DIR override" )
 )
 if "!PYTHON_BIN!"=="" if defined REPO_ROOT if exist "%REPO_ROOT%\venv\Scripts\python.exe" (
   "%REPO_ROOT%\venv\Scripts\python.exe" -V >nul 2>&1
-  if not errorlevel 1 (
-    set "PYTHON_BIN=%REPO_ROOT%\venv\Scripts\python.exe"
-    set "ENV_KIND=shared root venv"
-  )
+  if not errorlevel 1 ( set "PYTHON_BIN=%REPO_ROOT%\venv\Scripts\python.exe" & set "ENV_KIND=shared root venv" )
 )
 if "!PYTHON_BIN!"=="" if defined REPO_ROOT if exist "%REPO_ROOT%\.venv\Scripts\python.exe" (
   "%REPO_ROOT%\.venv\Scripts\python.exe" -V >nul 2>&1
-  if not errorlevel 1 (
-    set "PYTHON_BIN=%REPO_ROOT%\.venv\Scripts\python.exe"
-    set "ENV_KIND=shared root .venv"
-  )
+  if not errorlevel 1 ( set "PYTHON_BIN=%REPO_ROOT%\.venv\Scripts\python.exe" & set "ENV_KIND=shared root .venv" )
 )
 if "!PYTHON_BIN!"=="" if exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -V >nul 2>&1
-  if not errorlevel 1 (
-    set "PYTHON_BIN=.venv\Scripts\python.exe"
-    set "ENV_KIND=local module .venv fallback"
-  )
+  if not errorlevel 1 ( set "PYTHON_BIN=.venv\Scripts\python.exe" & set "ENV_KIND=local .venv fallback" )
 )
 if "!PYTHON_BIN!"=="" (
   if defined REPO_ROOT (
-    echo [INFO] Creating repo root venv at %REPO_ROOT%\venv
     py -3.12 -m venv "%REPO_ROOT%\venv" >nul 2>&1 || py -3.11 -m venv "%REPO_ROOT%\venv" >nul 2>&1 || python -m venv "%REPO_ROOT%\venv" >nul 2>&1
-    if exist "%REPO_ROOT%\venv\Scripts\python.exe" (
-      set "PYTHON_BIN=%REPO_ROOT%\venv\Scripts\python.exe"
-      set "ENV_KIND=created shared root venv"
-    )
+    if exist "%REPO_ROOT%\venv\Scripts\python.exe" ( set "PYTHON_BIN=%REPO_ROOT%\venv\Scripts\python.exe" & set "ENV_KIND=created shared root venv" )
   ) else (
-    echo [INFO] Creating standalone local .venv
     py -3.12 -m venv .venv >nul 2>&1 || py -3.11 -m venv .venv >nul 2>&1 || python -m venv .venv >nul 2>&1
-    if exist ".venv\Scripts\python.exe" (
-      set "PYTHON_BIN=.venv\Scripts\python.exe"
-      set "ENV_KIND=created local module .venv fallback"
-    )
+    if exist ".venv\Scripts\python.exe" ( set "PYTHON_BIN=.venv\Scripts\python.exe" & set "ENV_KIND=created local .venv" )
   )
 )
 if "!PYTHON_BIN!"=="" (
-  echo [ERROR] No usable Python environment found.
-  >> "%LOG_FILE%" echo [ERROR] No usable Python environment found.
-  if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" pause
+  echo   [%LAUNCH_TS%] ERROR: No usable Python environment found.
+  >>"%LOG_FILE%" echo [ERROR] No usable Python environment found.
+  if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
   exit /b 1
 )
+echo   [%LAUNCH_TS%] Python: !ENV_KIND! -- !PYTHON_BIN!
+>>"%LOG_FILE%" echo [INFO] Using !ENV_KIND!: !PYTHON_BIN!
 
-echo [!STEP!/5] Selecting Python environment...
-echo       Using !ENV_KIND!:
-echo       !PYTHON_BIN!
->> "%LOG_FILE%" echo [INFO] Using !ENV_KIND!: !PYTHON_BIN!
+rem --- Version gate
 "!PYTHON_BIN!" -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >nul 2>&1
 if errorlevel 1 (
-  echo [ERROR] Unsupported Python version. Similarity requires Python 3.9-3.12.
-  >> "%LOG_FILE%" echo [ERROR] Unsupported Python version. Similarity requires Python 3.9-3.12.
-  if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" pause
+  echo   [%LAUNCH_TS%] ERROR: Unsupported Python version. Similarity requires Python 3.9-3.12.
+  >>"%LOG_FILE%" echo [ERROR] Unsupported Python version.
+  if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
   exit /b 1
 )
+
+rem --- tkinter check
 "!PYTHON_BIN!" -c "import tkinter" >nul 2>&1
 if errorlevel 1 (
-  echo [ERROR] tkinter missing. Use a Python build with tkinter for GUI mode.
-  >> "%LOG_FILE%" echo [ERROR] tkinter missing. Use a Python build with tkinter for GUI mode.
-  if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" pause
+  echo   [%LAUNCH_TS%] ERROR: tkinter missing. Use a Python build with tkinter for GUI mode.
+  >>"%LOG_FILE%" echo [ERROR] tkinter missing.
+  if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
   exit /b 1
 )
 
-set /a STEP+=1
-set "REQ_HASH=missing"
-for /f "tokens=1" %%H in ('certutil -hashfile "requirements.txt" SHA256 ^| findstr /R "^[0-9A-F][0-9A-F]"') do set "REQ_HASH=%%H"
-set "PY_ID=!PYTHON_BIN::=_!"
-set "PY_ID=!PY_ID:\=_!"
-set "PY_ID=!PY_ID:/=_!"
-set "PY_ID=!PY_ID: =_!"
-set "STAMP_FILE=%STATE_DIR%\similarity_gui_!REQ_HASH!_!PY_ID!.ok"
+rem --- Dep stamp: req date+size
+set "STAMP_KEY="
+for %%F in ("requirements.txt") do set "STAMP_KEY=%%~tF%%~zF"
+set "STAMP_KEY=%STAMP_KEY: =_%"
+set "STAMP_KEY=%STAMP_KEY:/=-%"
+set "STAMP_KEY=%STAMP_KEY::=-%"
+set "STAMP_FILE=%STATE_DIR%\similarity_gui_%STAMP_KEY:~0,60%.ok"
 
-echo [!STEP!/5] Checking dependency state...
 set "NEED_PIP=1"
 if exist "!STAMP_FILE!" (
   "!PYTHON_BIN!" -c "import cv2, numpy; from PIL import Image; import tkinter" >nul 2>&1
   if not errorlevel 1 set "NEED_PIP=0"
 )
 if "!NEED_PIP!"=="0" (
-  echo       Requirements unchanged. Skipping pip install.
-  >> "%LOG_FILE%" echo [INFO] Stamp hit. Skipping pip install.
+  echo   [%LAUNCH_TS%] Dependencies up-to-date ^(cached stamp^). Skipping sync.
+  >>"%LOG_FILE%" echo [INFO] Stamp hit. Skipping pip install.
+  echo(
 ) else (
-  echo       Dependencies stale or missing. Installing...
-  >> "%LOG_FILE%" echo [INFO] Installing requirements.txt
-  "!PYTHON_BIN!" -m pip install -r requirements.txt >> "%LOG_FILE%" 2>&1
+  echo   [%LAUNCH_TS%] Synchronizing dependencies from requirements.txt...
+  >>"%LOG_FILE%" echo [INFO] Installing requirements.txt
+  "!PYTHON_BIN!" -m pip install -r requirements.txt >>"%LOG_FILE%" 2>&1
   if errorlevel 1 (
-    echo [ERROR] Failed to synchronize dependencies from requirements.txt.
-    >> "%LOG_FILE%" echo [ERROR] Failed to synchronize dependencies from requirements.txt.
-    if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" pause
+    echo   [%LAUNCH_TS%] ERROR: Failed to synchronize dependencies.
+    >>"%LOG_FILE%" echo [ERROR] Failed to install requirements.txt
+    if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
     exit /b 1
   )
-  del /q "%STATE_DIR%\similarity_gui_*.ok" >nul 2>&1
-  > "!STAMP_FILE!" echo ok
+  for %%F in ("%STATE_DIR%\similarity_gui_*.ok") do del "%%F" >nul 2>&1
+  >>"!STAMP_FILE!" echo %LAUNCH_TS%
+  echo   [%LAUNCH_TS%] Dependencies installed. Stamp written.
+  echo(
 )
 
-set /a STEP+=1
-echo [!STEP!/5] Launching Face Similarity GUI...
-echo       Runtime log: %LOG_FILE%
-echo       Crash log: %CD%\crash.log
->> "%LOG_FILE%" echo [INFO] Launching Face Similarity GUI...
-"!PYTHON_BIN!" main.py >> "%LOG_FILE%" 2>&1
+echo   [%LAUNCH_TS%] Launching Face Similarity GUI...
+>>"%LOG_FILE%" echo [INFO] Launching Face Similarity GUI...
+"!PYTHON_BIN!" main.py
 set "EXIT_CODE=%ERRORLEVEL%"
 
-set /a STEP+=1
-echo [!STEP!/5] Running...
-if not "%EXIT_CODE%"=="0" (
-  echo [ERROR] Application exited with an error (code=%EXIT_CODE%).
-  >> "%LOG_FILE%" echo [ERROR] Application exited with an error (code=%EXIT_CODE%).
-  if "%SIMILARITY_LAUNCHED_BY_MAIN%"=="" pause
-)
->> "%LOG_FILE%" echo [INFO] run_gui.bat exiting with code %EXIT_CODE%
+echo(
+echo   [%LAUNCH_TS%] Application finished with code %EXIT_CODE%.
+>>"%LOG_FILE%" echo [INFO] Application finished with code %EXIT_CODE%.
+if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
+
 endlocal & exit /b %EXIT_CODE%
