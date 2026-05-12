@@ -1173,15 +1173,34 @@ class QueueManager:
 
         self.log(f"Applying Oldcam {version} Finish...", "info")
         run_cmd = [sys.executable, "-u", str(launcher_path), video_path]
-        completed = subprocess.run(
-            run_cmd,
-            cwd=str(oldcam_dir),
-            capture_output=True,
-            text=True,
-            timeout=600,
-            check=False,
-        )
-        if completed.returncode == 0:
+        output_lines: list[str] = []
+        returncode = -1
+        try:
+            process = subprocess.Popen(
+                run_cmd,
+                cwd=str(oldcam_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert process.stdout is not None
+            for line in process.stdout:
+                line_text = line.rstrip()
+                if line_text:
+                    output_lines.append(line_text)
+                    self.log(line_text, "info")
+            returncode = process.wait(timeout=600)
+        except subprocess.TimeoutExpired:
+            if process.poll() is None:
+                process.kill()
+            self.log(f"Oldcam {version} timed out after 600s", "warning")
+            return None
+        except Exception as exc:
+            self.log(f"Oldcam {version} launcher error: {exc}", "warning")
+            return None
+
+        if returncode == 0:
             input_path = Path(video_path)
             oldcam_output = self._build_oldcam_output_path(input_path, version)
             if oldcam_output.exists():
@@ -1190,10 +1209,9 @@ class QueueManager:
             self.log(f"Oldcam {version} process completed but output file was not found", "warning")
             return None
 
-        self.log(f"Oldcam {version} Finish failed (code {completed.returncode})", "warning")
-        err = (completed.stderr or completed.stdout or "").strip()
-        if err:
-            self.log(err.splitlines()[-1], "warning")
+        self.log(f"Oldcam {version} Finish failed (code {returncode})", "warning")
+        if output_lines:
+            self.log(output_lines[-1], "warning")
         return None
 
     def _ensure_oldcam_dependencies(self, oldcam_dir: Path, version: str) -> bool:
