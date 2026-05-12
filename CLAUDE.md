@@ -187,3 +187,102 @@ When processing PR review bots:
 2. Collect fresh actionable findings tied to the latest commit range.
 3. Ignore stale historical findings already superseded by newer commits.
 4. Run targeted pytest suites before pushing fix commits.
+
+---
+
+## Hard Rules — Windows Launchers (NON-NEGOTIABLE)
+
+These rules exist because violating them has caused repeated launch breakage. Do not skip them.
+
+### 1. CRLF line endings for all .bat/.cmd files
+
+The `Write` and `Edit` tools produce LF-only files. On Windows, LF-only batch files garble every command — errors like `'"tokens=1" is not recognized'`. **Always write `.bat`/`.cmd` files using PowerShell:**
+
+```powershell
+$content = @'
+@echo off
+...batch content here, use `r`n manually...
+'@
+$crlf = $content -replace "`r`n","`n" -replace "`n","`r`n"
+[System.IO.File]::WriteAllText("path\file.bat", $crlf, [System.Text.Encoding]::ASCII)
+```
+
+Verify after writing: `CRLF=True` and `LFonly=False`. Never use `Write` or `Edit` for bat files.
+
+### 2. Use `echo(` not `echo.` for blank lines
+
+`echo.` (dot, no space) causes `'. was unexpected at this time'` in some cmd environments, including when `enabledelayedexpansion` is active. **Always use `echo(` for blank lines.** The `echo(` form is unconditionally safe.
+
+### 3. Log-file append: redirect operator goes before echo
+
+```bat
+rem WRONG — [ ] in unquoted echo can be misinterpreted
+echo [%LAUNCH_TS%] started >> "%LOG_FILE%"
+
+rem CORRECT — >> before echo, no ambiguity
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] started
+```
+
+### 4. Launcher chain
+
+```
+root\run_gui.bat  →  launchers\run_gui.bat  →  launchers\windows\run_gui.bat
+```
+The root files are compat wrappers only. All real logic lives in `launchers/windows/`. Do not duplicate logic in the root wrappers.
+
+### 5. Dep-skip stamp (no subprocess for hashing)
+
+Stamp key is built from req file dates+sizes — no `certutil` subprocess needed:
+
+```bat
+for %%F in ("%REQUIREMENTS%" ...) do (
+    if exist "%%~F" set "STAMP_KEY=!STAMP_KEY!%%~tF%%~zF"
+)
+set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,60%.ok"
+```
+
+If stamp exists → `goto :launch` (skip all pip/dep work). Only run dep sync when stamp is missing or stale.
+
+### 6. MediaPipe must be installed with `--no-deps`
+
+```bat
+"%VENV_PYTHON%" -m pip install --no-deps "mediapipe==0.10.35"
+```
+
+Always filter mediapipe out of requirements files before the main pip install, then install it separately. Letting pip resolve mediapipe deps causes conflicts.
+
+---
+
+## Hard Rules — GUI Sash Layout
+
+### Sash positions are restored from `kling_config.json` on every launch
+
+Saved sash values from `kling_config.json` are applied by `_restore_sash_positions()` and by `_show_right_pane()` after the window is built. Editing defaults alone does nothing if stale values are already saved. **When changing layout targets:**
+
+1. Update clamp ranges in `kling_gui/layout_utils.py` → `sanitize_sash_layout()`
+2. Update fallback defaults in `kling_gui/main_window.py` (the `UI_CONFIG_DEFAULTS` dict and `_show_right_pane` fallback)
+3. Clear stale values from `kling_config.json` (it is gitignored — delete the sash keys directly):
+   ```python
+   import json; c=json.load(open('kling_config.json'))
+   for k in ['sash_dropzone','sash_queue','sash_log','sash_log_drop_split','sash_prompt_split']: c.pop(k,None)
+   json.dump(c,open('kling_config.json','w'),indent=2)
+   ```
+
+### `sash_log_drop_split` is relative to the right section, not the full window
+
+`log_drop_paned` lives inside the space to the right of the carousel (`safe_w - sash_queue`). Clamping it as a % of `safe_w` allows values larger than the pane itself. Always compute the right-section width first:
+
+```python
+clamped_queue = max(queue_min, min(int(sash_queue or queue_default), queue_max))
+right_section_w = max(400, safe_w - clamped_queue)
+log_drop_min = int(right_section_w * 0.42)
+log_drop_max = int(right_section_w * 0.62)
+```
+
+### Current target proportions (1600px-wide window)
+
+| Sash | Target | Range |
+|------|--------|-------|
+| `sash_prompt_split` (left tabs width) | 56% of window | 50–62% |
+| `sash_queue` (carousel width) | 24% of window | 20–30% |
+| `sash_log_drop_split` (log width within right section) | 52% of right section | 42–62% |
