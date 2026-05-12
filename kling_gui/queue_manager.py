@@ -271,6 +271,26 @@ def get_duration_options_for_model(model_endpoint: str) -> list:
     return [5, 10]
 
 
+_TF_NOISE_PATTERNS = (
+    "tensorflow/",
+    "onednn",
+    "w0000 ",
+    "tflite",
+    "inference_feedback_manager",
+    "warning:tensorflow",
+    "tf_enable_onednn",
+    "face_landmarker_graph",
+    "xnnpack",
+    "i tensorflow",
+    "mediapipe",
+)
+
+
+def _is_tf_noise(line: str) -> bool:
+    low = line.lower()
+    return any(pat in low for pat in _TF_NOISE_PATTERNS)
+
+
 def get_next_available_path(
     image_path: str,
     output_folder: str,
@@ -1189,7 +1209,8 @@ class QueueManager:
                 line_text = line.rstrip()
                 if line_text:
                     output_lines.append(line_text)
-                    self.log(line_text, "info")
+                    if not _is_tf_noise(line_text):
+                        self.log(line_text, "info")
             returncode = process.wait(timeout=600)
         except subprocess.TimeoutExpired:
             if process.poll() is None:
