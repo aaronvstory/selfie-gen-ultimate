@@ -14,32 +14,26 @@ set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
 set "DEP_CHECKER=%ROOT_DIR%\dependency_checker.py"
 set "DEP_HEALTH_SCRIPT=%ROOT_DIR%\dependency_health_check.py"
 set "STATE_DIR=%ROOT_DIR%\.launcher_state"
+set "LOG_FILE=%STATE_DIR%\launch.log"
 
 if not exist "%STATE_DIR%" mkdir "%STATE_DIR%"
 
-rem ── Compute a combined hash of all requirements files ──────────────────────
-set "HASH_INPUT="
-for %%F in ("%REQUIREMENTS%" "%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_REQUIREMENTS%" "%OLDCAM_V10_REQUIREMENTS%") do (
-    if exist "%%~F" (
-        for /f "tokens=1" %%H in ('certutil -hashfile "%%~F" SHA256 2^>nul ^| findstr /v "hash" ^| findstr /v "CertUtil"') do (
-            set "HASH_INPUT=!HASH_INPUT!%%H"
-        )
-    )
-)
-rem Hash the combined string via a temp file
-set "HASH_TMP=%TEMP%\selfiegen_hashsrc_%RANDOM%.txt"
-echo !HASH_INPUT!> "%HASH_TMP%"
-set "REQ_HASH=unknown"
-for /f "tokens=1" %%H in ('certutil -hashfile "%HASH_TMP%" SHA256 2^>nul ^| findstr /v "hash" ^| findstr /v "CertUtil"') do set "REQ_HASH=%%H"
-del "%HASH_TMP%" >nul 2>&1
+rem --- Timestamp banner -----------------------------------------------------
+for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
+set "WMIC_DT=%WMIC_DT: =%"
+set "LAUNCH_TS=%WMIC_DT:~0,4%-%WMIC_DT:~4,2%-%WMIC_DT:~6,2% %WMIC_DT:~8,2%:%WMIC_DT:~10,2%:%WMIC_DT:~12,2%"
+echo.
+echo  ============================================================
+echo   Ultimate-Selfie-Gen  --  GUI Launcher
+echo  ============================================================
+echo  [%LAUNCH_TS%] Launch started
+echo  Root: %ROOT_DIR%
+echo.
+echo [%LAUNCH_TS%] GUI launch started >> "%LOG_FILE%"
 
-set "STAMP=%STATE_DIR%\deps_%REQ_HASH%.ok"
-
-rem ── Create venv if needed (always required before anything else) ────────────
+rem --- Create venv if needed ------------------------------------------------
 if not exist "%VENV_PYTHON%" (
-    echo.
-    echo  Creating virtual environment...
-    echo.
+    echo  [%LAUNCH_TS%] Creating virtual environment...
     python -m venv "%VENV_DIR%"
     if !errorlevel! neq 0 (
         echo.
@@ -48,21 +42,31 @@ if not exist "%VENV_PYTHON%" (
         pause
         exit /b 1
     )
-    echo  venv created.
+    echo  Virtual environment created.
     echo.
-    rem Invalidate any existing stamps on fresh venv
     del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 )
 
-rem ── Skip all dep work if stamp is fresh ────────────────────────────────────
+rem --- Build stamp key from req file dates+sizes (no subprocess needed) -----
+set "STAMP_KEY="
+for %%F in ("%REQUIREMENTS%" "%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_REQUIREMENTS%" "%OLDCAM_V10_REQUIREMENTS%") do (
+    if exist "%%~F" set "STAMP_KEY=!STAMP_KEY!%%~tF%%~zF"
+)
+set "STAMP_KEY=%STAMP_KEY: =_%"
+set "STAMP_KEY=%STAMP_KEY:/=-%"
+set "STAMP_KEY=%STAMP_KEY::=-%"
+set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,60%.ok"
+
+rem --- Skip dep work if stamp is current -----------------------------------
 if exist "%STAMP%" (
-    echo  Dependencies up to date (cached). Skipping sync.
+    echo  [%LAUNCH_TS%] Dependencies up-to-date (cached stamp). Skipping sync.
+    echo  Tip: delete .launcher_state\deps_*.ok to force a full re-check.
+    echo.
     goto :launch
 )
 
-rem ── Full dep sync (requirements changed or first run) ──────────────────────
-echo.
-echo  Syncing dependencies from requirements.txt...
+rem --- Full dep sync (requirements changed or first run) -------------------
+echo  [%LAUNCH_TS%] Requirements changed -- syncing dependencies...
 echo.
 "%VENV_PYTHON%" -m pip install --upgrade pip >nul 2>&1
 call :INSTALL_REQUIREMENTS "%REQUIREMENTS%" "base"
@@ -75,48 +79,48 @@ for %%R in ("%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_RE
 )
 
 echo.
-echo  Dependency sync complete.
+echo  [%LAUNCH_TS%] Dependency sync complete.
 echo.
 
 if exist "%DEP_HEALTH_SCRIPT%" (
     if exist "%DEP_CHECKER%" (
-        echo  Running strict dependency bootstrap...
+        echo  [%LAUNCH_TS%] Running dependency bootstrap...
         "%VENV_PYTHON%" "%DEP_CHECKER%" --auto --enforce-all
         if !errorlevel! neq 0 (
             echo.
-            echo  ERROR: Strict dependency bootstrap failed.
+            echo  ERROR: Dependency bootstrap failed.
             echo.
             pause
             exit /b 1
         )
     )
 
-    echo  Validating runtime dependency health...
+    echo  [%LAUNCH_TS%] Validating runtime dependency health...
     "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode check
     if !errorlevel! neq 0 (
         echo.
-        echo  Runtime dependency health check failed. Attempting auto-repair...
+        echo  [%LAUNCH_TS%] Health check failed. Attempting auto-repair...
         "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode repair
         if !errorlevel! neq 0 (
             echo.
             echo  ERROR: Automatic dependency repair failed.
-            echo  ERROR: See messages above for the exact failed import checks.
             echo.
             pause
             exit /b 1
         )
     )
+    echo  [%LAUNCH_TS%] Runtime health: OK
 )
 
-rem ── Write stamp so next launch skips all of the above ─────────────────────
-rem Delete stale stamps from previous req hashes first
+rem --- Write stamp so next launch skips the above --------------------------
 del "%STATE_DIR%\deps_*.ok" >nul 2>&1
-echo %date% %time% > "%STAMP%"
-echo  Dependency stamp written. Next launch will skip sync.
+echo %LAUNCH_TS% > "%STAMP%"
+echo  [%LAUNCH_TS%] Stamp written. Next launch will skip dep sync.
+echo.
 
 :launch
-echo Using venv: %VENV_PYTHON%
-echo Starting Kling UI GUI...
+echo  [%LAUNCH_TS%] Launching GUI...
+echo  Venv: %VENV_PYTHON%
 echo.
 
 set "KLING_GUI_CLI_ERRORS=1"
@@ -125,7 +129,7 @@ set "EXIT_CODE=!errorlevel!"
 
 echo.
 if !EXIT_CODE! neq 0 (
-    echo  CRASH - exit code: !EXIT_CODE!
+    echo  [%LAUNCH_TS%] CRASH -- exit code: !EXIT_CODE!
     echo  Check crash_log.txt for details.
     echo.
 )
@@ -140,7 +144,7 @@ echo.
 echo  ERROR: Dependency bootstrap failed.
 echo  MediaPipe is required for Oldcam v9/v10.
 echo  Close running Python/GUI processes and retry.
-echo  If it still fails, recreate the venv or run dependency repair/bootstrap manually.
+echo  If it still fails, recreate the venv or run dep repair/bootstrap manually.
 echo.
 pause
 endlocal
@@ -149,15 +153,13 @@ exit /b 1
 :INSTALL_REQUIREMENTS
 set "REQ_FILE=%~1"
 set "REQ_KIND=%~2"
-set "REQ_FILTERED=%TEMP%\\selfiegen_req_%RANDOM%_%RANDOM%.txt"
-if not exist "%REQ_FILE%" (
-    exit /b 0
-)
+set "REQ_FILTERED=%TEMP%\selfiegen_req_%RANDOM%_%RANDOM%.txt"
+if not exist "%REQ_FILE%" exit /b 0
 findstr /V /I /B "mediapipe" "%REQ_FILE%" > "%REQ_FILTERED%"
-echo  Syncing %REQ_KIND% dependencies from %~nx1...
+echo  Syncing %REQ_KIND% deps from %~nx1...
 "%VENV_PYTHON%" -m pip install --only-binary :all: -r "%REQ_FILTERED%"
 if !errorlevel! neq 0 (
-    echo  Retrying %REQ_KIND% dependencies without binary constraint...
+    echo  Retrying without binary constraint...
     "%VENV_PYTHON%" -m pip install -r "%REQ_FILTERED%"
     if !errorlevel! neq 0 (
         del "%REQ_FILTERED%" >nul 2>&1
