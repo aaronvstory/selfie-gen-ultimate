@@ -504,25 +504,25 @@ class ConfigPanel(tk.Frame):
             pady=2,
         )
         self.oldcam_controls_frame.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
-        # Label + ⓘ stacked vertically on the left — width stays fixed as versions are added
-        _oldcam_label_col = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
-        _oldcam_label_col.pack(side=tk.LEFT, anchor="n", padx=(0, 4))
+        # "Oldcam: ⓘ" inline on top of the controls frame — top-anchored
+        _oldcam_label_row = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
+        _oldcam_label_row.pack(side=tk.LEFT, anchor="n", padx=(0, 6))
         tk.Label(
-            _oldcam_label_col,
+            _oldcam_label_row,
             text="Oldcam:",
             font=(FONT_FAMILY, 10),
             bg="#2A1F34",
             fg=COLORS["text_light"],
-        ).pack(anchor="w")
+        ).pack(side=tk.LEFT)
         self.oldcam_info_icon = tk.Label(
-            _oldcam_label_col,
+            _oldcam_label_row,
             text="ⓘ",
             font=(FONT_FAMILY, 11),
             cursor="question_arrow",
             bg="#2A1F34",
             fg=COLORS["text_dim"],
         )
-        self.oldcam_info_icon.pack(anchor="w")
+        self.oldcam_info_icon.pack(side=tk.LEFT, padx=(4, 0))
         HoverTooltip(self.oldcam_info_icon, self._get_oldcam_version_notes)
         self.oldcam_version_vars = {
             "v7": tk.BooleanVar(value=False),
@@ -531,8 +531,9 @@ class ConfigPanel(tk.Frame):
             "v10": tk.BooleanVar(value=False),
             "v11": tk.BooleanVar(value=True),
         }
-        # 2-column grid — new versions append rows, never widen the strip
-        _OLDCAM_COLS = 2
+        # 3-column grid — new versions append rows, strip width stays fixed.
+        # 5 versions → 2 rows (3 + 2); 6 versions → 2 rows (3 + 3); 7+ → 3 rows.
+        _OLDCAM_COLS = 3
         _check_grid = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
         _check_grid.pack(side=tk.LEFT, anchor="n")
         self.oldcam_version_checks = {}
@@ -551,28 +552,35 @@ class ConfigPanel(tk.Frame):
             )
             check.grid(row=i // _OLDCAM_COLS, column=i % _OLDCAM_COLS, sticky="w", padx=(2, 4), pady=0)
             self.oldcam_version_checks[version] = check
+        # Re-Run column: label on top, [↻] [📂] buttons aligned below — top-anchored
+        # so it doesn't vertically center against the taller checkbox grid.
+        _rerun_col = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
+        _rerun_col.pack(side=tk.LEFT, anchor="n", padx=(10, 0))
         tk.Label(
-            self.oldcam_controls_frame,
+            _rerun_col,
             text="Re-Run:",
-            font=(FONT_FAMILY, 9),
+            font=(FONT_FAMILY, 10),
             bg="#2A1F34",
             fg=COLORS["text_light"],
-        ).pack(side=tk.LEFT, padx=(8, 4))
+        ).pack(anchor="w")
+        _rerun_btn_row = tk.Frame(_rerun_col, bg="#2A1F34")
+        _rerun_btn_row.pack(anchor="w", pady=(2, 0))
         self.oldcam_rerun_btn = tk.Button(
-            self.oldcam_controls_frame,
+            _rerun_btn_row,
             text="↻",
             font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             activebackground=COLORS["bg_main"],
             activeforeground=COLORS["text_light"],
+            width=2,
             padx=8,
             pady=2,
             relief=tk.FLAT,
             borderwidth=0,
             command=self._on_oldcam_rerun_clicked,
         )
-        self.oldcam_rerun_btn.pack(side=tk.LEFT, padx=(0, 2))
+        self.oldcam_rerun_btn.pack(side=tk.LEFT, padx=(0, 4))
         HoverTooltip(
             self.oldcam_rerun_btn,
             lambda: (
@@ -582,20 +590,21 @@ class ConfigPanel(tk.Frame):
             ),
         )
         self.oldcam_pick_btn = tk.Button(
-            self.oldcam_controls_frame,
+            _rerun_btn_row,
             text="📂",
             font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             activebackground=COLORS["bg_main"],
             activeforeground=COLORS["text_light"],
+            width=2,
             padx=8,
             pady=2,
             relief=tk.FLAT,
             borderwidth=0,
             command=self._on_oldcam_pick_rerun_clicked,
         )
-        self.oldcam_pick_btn.pack(side=tk.LEFT, padx=(0, 2))
+        self.oldcam_pick_btn.pack(side=tk.LEFT, padx=(0, 0))
         HoverTooltip(
             self.oldcam_pick_btn,
             lambda: (

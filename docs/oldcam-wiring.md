@@ -101,10 +101,11 @@ self.oldcam_version_vars = {
     "vN": tk.BooleanVar(value=False),  # ← add (set True if new default)
 }
 
-# ~line 530 — add to enumerate tuple (checkboxes use grid(), _OLDCAM_COLS=2)
+# ~line 530 — add to enumerate tuple (checkboxes use grid(), _OLDCAM_COLS=3)
 for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "vN")):  # ← add "vN"
 # The grid layout auto-wraps: new versions add rows, never widen the strip.
-# _OLDCAM_COLS = 2 is defined just before the loop — change it to 3 for wider layouts.
+# _OLDCAM_COLS = 3 is defined just before the loop. With 5 versions it shows 2 rows
+# (3 + 2); 6 versions → 2 even rows (3 + 3); 7+ → 3 rows. Change to 4 if going wider.
 
 # Update _get_oldcam_version_notes() to add an entry for vN
 ```

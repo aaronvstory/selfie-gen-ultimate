@@ -1225,15 +1225,33 @@ class QueueManager:
                         self.log(line_text, "info")
             returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            if process is not None and process.poll() is None:
-                process.kill()
-                process.wait()
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                if process.stdout is not None:
+                    try:
+                        process.stdout.close()
+                    except Exception:
+                        pass
             self.log(f"Oldcam {version} timed out after 600s", "warning")
             return None
         except Exception as exc:
-            if process is not None and process.poll() is None:
-                process.kill()
-                process.wait()
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                if process.stdout is not None:
+                    try:
+                        process.stdout.close()
+                    except Exception:
+                        pass
             self.log(f"Oldcam {version} launcher error: {exc}", "warning")
             return None
 
