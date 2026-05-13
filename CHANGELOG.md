@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-13 (v1.5.1, in progress)
+
+### Added
+
+- **Oldcam V12 (Pristine Hardware-Only)**: Removes rPPG biological pulse, global LUT, dynamic
+  tone mapping (CLAHE), and HSV saturation. Rationale: modern Presentation Attack Detection
+  (PAD) systems flag synthetic 2D color pulses as a spoofing signature (3D-CNN liveness models
+  track blood propagation through facial geometry, which a 2D color overlay cannot replicate).
+  The global LUT was injecting a red boost causing sepia tint; CLAHE was crushing local
+  contrast. V12 keeps physical camera artifacts only: OIS jitter, rolling shutter, AE stepping,
+  highlight blooming, AWB drift, sensor noise, chromatic aberration, and vignette.
+
+### Changed
+
+- Oldcam GUI strip restructured: 3-column checkbox grid, "Oldcam: ⓘ" inline label, top-anchored
+  Re-Run column with label-on-top + buttons-below layout. Strip width stays fixed regardless
+  of how many versions are added.
+- queue_manager.py Popen cleanup: bounded `wait(timeout=5)` + explicit `stdout.close()` in
+  TimeoutExpired/Exception branches to prevent pipe-buffer deadlock if the child wrote after
+  our last readline().
+
 ## 2026-05-13 (v1.5)
 
 ### Added

@@ -530,6 +530,7 @@ class ConfigPanel(tk.Frame):
             "v9": tk.BooleanVar(value=False),
             "v10": tk.BooleanVar(value=False),
             "v11": tk.BooleanVar(value=True),
+            "v12": tk.BooleanVar(value=False),
         }
         # 3-column grid — new versions append rows, strip width stays fixed.
         # 5 versions → 2 rows (3 + 2); 6 versions → 2 rows (3 + 3); 7+ → 3 rows.
@@ -537,7 +538,7 @@ class ConfigPanel(tk.Frame):
         _check_grid = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
         _check_grid.pack(side=tk.LEFT, anchor="n")
         self.oldcam_version_checks = {}
-        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11")):
+        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12")):
             check = tk.Checkbutton(
                 _check_grid,
                 text=version,
@@ -1360,6 +1361,11 @@ class ConfigPanel(tk.Frame):
             "v11  + AWB drift reinstated AFTER FFT read (best of all worlds)  ★ default",
             "     Face tracking: Yes |  Biological pulse: Yes |  AWB drift: Yes |  MediaPipe: Yes",
             "     Signal order: FFT reads clean buffer → pulse applied → AWB drifts last",
+            "",
+            "v12  Pristine hardware-only (anti-spoofing aware)",
+            "     Face tracking: Yes |  Biological pulse: No  |  AWB drift: Yes |  MediaPipe: Yes",
+            "     No rPPG (flagged by 3D-CNN PAD models), no LUT (sepia tint), no",
+            "     CLAHE tone mapping (contrast crushing), no HSV tweak. Pure OIS/AE/noise.",
         ]
         return "\n".join(lines)
 

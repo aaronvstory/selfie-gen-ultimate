@@ -396,7 +396,7 @@ def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
     panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
     assert 'text="Oldcam Finish"' not in panel_source
     assert 'text="Oldcam:"' in panel_source
-    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11"))' in panel_source
+    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12"))' in panel_source
 
 
 def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
@@ -629,3 +629,70 @@ def test_v11_process_frame_applies_awb_drift_after_spatial_fluctuation():
     assert call_order.index("spatial") < call_order.index("awb"), (
         "AWB drift must be applied AFTER spatial fluctuation (signal ordering invariant)"
     )
+
+
+def test_v12_default_output_path_uses_v12_suffix():
+    oldcam_v12 = load_module(ROOT / "oldcam-v12" / "oldcam.py", "oldcam_v12")
+    assert oldcam_v12.build_default_output_path("sample.mp4").endswith("sample-oldcam-v12.mp4")
+
+
+def test_oldcam_dependency_preflight_requires_mediapipe_for_v12(tmp_path):
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v12"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "requirements.txt").write_text("mediapipe==0.10.35\n", encoding="utf-8")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("No module named mediapipe")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v12") is False
+
+
+def test_v12_process_frame_skips_rppg_lut_and_tone_mapping():
+    """V12 pristine pipeline: no rPPG, no LUT, no dynamic tone mapping."""
+    oldcam_v12 = load_module(ROOT / "oldcam-v12" / "oldcam.py", "oldcam_v12_pristine")
+
+    # rPPG functions must be removed entirely from V12.
+    assert not hasattr(oldcam_v12, "synchronize_base_frequency"), (
+        "V12 must not define synchronize_base_frequency (rPPG removed)"
+    )
+    assert not hasattr(oldcam_v12, "apply_synchronized_spatial_fluctuation"), (
+        "V12 must not define apply_synchronized_spatial_fluctuation (rPPG removed)"
+    )
+
+    # process_frame must not call the destructive color filters.
+    called = []
+
+    def mark(name):
+        def _wrapped(*args, **kwargs):
+            called.append(name)
+            # Most filters return the image unchanged here; vignette and noise
+            # paths just need to not crash. We pass through the first positional arg.
+            return args[0]
+        return _wrapped
+
+    image = np.full((32, 32, 3), 128, dtype=np.uint8)
+    state = {
+        "face_detected": False,
+        "fpn": np.zeros((32, 32, 3), dtype=np.float32),
+        "adjusted_vignette_mask": np.ones((32, 32, 1), dtype=np.float32),
+        "last_masks": {},
+    }
+
+    import argparse
+    args = argparse.Namespace(grain=1, vignette_strength=0.55)
+
+    with (
+        mock.patch.object(oldcam_v12, "get_dynamic_region_masks", return_value={}),
+        mock.patch.object(oldcam_v12, "apply_dynamic_tone_mapping", side_effect=mark("tone")),
+        mock.patch.object(oldcam_v12, "create_neutral_phone_lut", side_effect=mark("lut")),
+    ):
+        oldcam_v12.process_frame(image, None, None, args, rng=np.random.default_rng(0), state=state)
+
+    assert "tone" not in called, "V12 must not call apply_dynamic_tone_mapping"
+    assert "lut" not in called, "V12 must not call create_neutral_phone_lut from process_frame"

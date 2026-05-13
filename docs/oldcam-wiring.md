@@ -14,6 +14,7 @@
 | v9      | Yes        | No               | Yes       | Yes       | + Face-aware masking, temporal mesh |
 | v10     | Yes        | Yes              | No        | Yes       | + FFT biological sync (AWB removed) |
 | v11     | Yes        | Yes              | Yes       | Yes       | + AWB after FFT — best of all ★ default |
+| v12     | Yes        | No               | Yes       | Yes       | Pristine hardware-only (anti-spoofing aware): no rPPG, no LUT, no CLAHE |
 
 ---
 

@@ -307,4 +307,4 @@ When adding a new Oldcam version (e.g., v12), these are the required touch-point
 
 **Auto-discovered (no changes needed):** `_discover_oldcam_versions()` in `queue_manager.py` scans `oldcam-v*` dirs; output filename suffix is generic; face landmarker task searched generically; `automation/pipeline.py` is fully version-agnostic.
 
-**Current default version:** v11. Mediapipe versions: v9, v10, v11.
+**Current default version:** v11. Mediapipe versions: v9, v10, v11, v12.
