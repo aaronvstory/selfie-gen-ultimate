@@ -504,13 +504,26 @@ class ConfigPanel(tk.Frame):
             pady=2,
         )
         self.oldcam_controls_frame.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        # Label + ⓘ stacked vertically on the left — width stays fixed as versions are added
+        _oldcam_label_col = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
+        _oldcam_label_col.pack(side=tk.LEFT, anchor="n", padx=(0, 4))
         tk.Label(
-            self.oldcam_controls_frame,
+            _oldcam_label_col,
             text="Oldcam:",
             font=(FONT_FAMILY, 10),
             bg="#2A1F34",
             fg=COLORS["text_light"],
-        ).pack(side=tk.LEFT, padx=(0, 4))
+        ).pack(anchor="w")
+        self.oldcam_info_icon = tk.Label(
+            _oldcam_label_col,
+            text="ⓘ",
+            font=(FONT_FAMILY, 11),
+            cursor="question_arrow",
+            bg="#2A1F34",
+            fg=COLORS["text_dim"],
+        )
+        self.oldcam_info_icon.pack(anchor="w")
+        HoverTooltip(self.oldcam_info_icon, self._get_oldcam_version_notes)
         self.oldcam_version_vars = {
             "v7": tk.BooleanVar(value=False),
             "v8": tk.BooleanVar(value=False),
@@ -518,10 +531,14 @@ class ConfigPanel(tk.Frame):
             "v10": tk.BooleanVar(value=False),
             "v11": tk.BooleanVar(value=True),
         }
+        # 2-column grid — new versions append rows, never widen the strip
+        _OLDCAM_COLS = 2
+        _check_grid = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
+        _check_grid.pack(side=tk.LEFT, anchor="n")
         self.oldcam_version_checks = {}
-        for version in ("v7", "v8", "v9", "v10", "v11"):
+        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11")):
             check = tk.Checkbutton(
-                self.oldcam_controls_frame,
+                _check_grid,
                 text=version,
                 variable=self.oldcam_version_vars[version],
                 font=(FONT_FAMILY, 9),
@@ -532,18 +549,8 @@ class ConfigPanel(tk.Frame):
                 activeforeground=COLORS["text_light"],
                 command=self._on_oldcam_versions_changed,
             )
-            check.pack(side=tk.LEFT, padx=(2, 0))
+            check.grid(row=i // _OLDCAM_COLS, column=i % _OLDCAM_COLS, sticky="w", padx=(2, 4), pady=0)
             self.oldcam_version_checks[version] = check
-        self.oldcam_info_icon = tk.Label(
-            self.oldcam_controls_frame,
-            text="ⓘ",
-            font=(FONT_FAMILY, 11),
-            cursor="question_arrow",
-            bg="#2A1F34",
-            fg=COLORS["text_dim"],
-        )
-        self.oldcam_info_icon.pack(side=tk.LEFT, padx=(4, 0))
-        HoverTooltip(self.oldcam_info_icon, self._get_oldcam_version_notes)
         tk.Label(
             self.oldcam_controls_frame,
             text="Re-Run:",

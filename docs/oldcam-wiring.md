@@ -101,10 +101,12 @@ self.oldcam_version_vars = {
     "vN": tk.BooleanVar(value=False),  # ← add (set True if new default)
 }
 
-# ~line 522 — add to loop tuple
-for version in ("v7", "v8", "v9", "v10", "v11", "vN"):  # ← add "vN"
+# ~line 530 — add to enumerate tuple (checkboxes use grid(), _OLDCAM_COLS=2)
+for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "vN")):  # ← add "vN"
+# The grid layout auto-wraps: new versions add rows, never widen the strip.
+# _OLDCAM_COLS = 2 is defined just before the loop — change it to 3 for wider layouts.
 
-# Update _get_oldcam_version_notes() to add a row for vN
+# Update _get_oldcam_version_notes() to add an entry for vN
 ```
 
 ### 5. MediaPipe dependency flag — `kling_gui/queue_manager.py`
