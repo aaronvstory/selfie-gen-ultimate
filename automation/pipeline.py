@@ -943,12 +943,12 @@ class AutoPipelineRunner:
             else:
                 selected_video_path = None
             if selected_video_path and selected_video_path.exists() and selected_video_path.suffix.lower() == ".mp4":
-                self.logger.info("case %s oldcam readiness=ready version=%s required=%s", case_key, self.automation.get("automation_oldcam_version", "v8"), bool(self.automation.get("automation_oldcam_required", False)))
+                self.logger.info("case %s oldcam readiness=ready version=%s required=%s", case_key, self.automation.get("automation_oldcam_version", "v12"), bool(self.automation.get("automation_oldcam_required", False)))
                 self._set_active_step(case_entry, "oldcam")
                 self.manifest.update_step(case_key, "oldcam", "running")
                 oldcam_output = run_oldcam(
                     video_path=selected_video_path,
-                    version_setting=str(self.automation.get("automation_oldcam_version", "v8")),
+                    version_setting=str(self.automation.get("automation_oldcam_version", "v12")),
                     repo_root=Path(__file__).resolve().parent.parent,
                     progress_cb=self.progress_cb,
                 )

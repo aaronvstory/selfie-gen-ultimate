@@ -529,8 +529,8 @@ class ConfigPanel(tk.Frame):
             "v8": tk.BooleanVar(value=False),
             "v9": tk.BooleanVar(value=False),
             "v10": tk.BooleanVar(value=False),
-            "v11": tk.BooleanVar(value=True),
-            "v12": tk.BooleanVar(value=False),
+            "v11": tk.BooleanVar(value=False),
+            "v12": tk.BooleanVar(value=True),
         }
         # 3-column grid — new versions append rows, strip width stays fixed.
         # 5 versions → 2 rows (3 + 2); 6 versions → 2 rows (3 + 3); 7+ → 3 rows.
@@ -1361,11 +1361,11 @@ class ConfigPanel(tk.Frame):
             "     FFT on green channel → phase-locked color pulse in 4 face regions.",
             "     Trade-off: visible color siren; AWB removed to keep FFT signal clean.",
             "",
-            "v11  Best-of-all combination   ★ default",
+            "v11  Best-of-all combination",
             "     V10 pulse + V9 AWB, applied AFTER the FFT read.",
             "     Trade-off: 2D rPPG flagged by modern PAD; global LUT tints sepia.",
             "",
-            "v12  Pristine hardware-only (anti-spoofing aware)",
+            "v12  Pristine hardware-only (anti-spoofing aware)   ★ default",
             "     No rPPG, no LUT, no CLAHE, no HSV. Pure OIS / AE / noise / vignette.",
             "     Best for KYC / liveness pipelines; preserves Kling's color fidelity.",
         ]

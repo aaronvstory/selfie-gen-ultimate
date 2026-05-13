@@ -2,26 +2,53 @@
 
 All notable changes to this project are documented here.
 
-## 2026-05-13 (v1.5.1, in progress)
+## 2026-05-14 (v1.6)
 
 ### Added
 
-- **Oldcam V12 (Pristine Hardware-Only)**: Removes rPPG biological pulse, global LUT, dynamic
-  tone mapping (CLAHE), and HSV saturation. Rationale: modern Presentation Attack Detection
-  (PAD) systems flag synthetic 2D color pulses as a spoofing signature (3D-CNN liveness models
-  track blood propagation through facial geometry, which a 2D color overlay cannot replicate).
-  The global LUT was injecting a red boost causing sepia tint; CLAHE was crushing local
-  contrast. V12 keeps physical camera artifacts only: OIS jitter, rolling shutter, AE stepping,
-  highlight blooming, AWB drift, sensor noise, chromatic aberration, and vignette.
+- **Oldcam V12 (Pristine Hardware-Only)** — now the default version across CLI, GUI, automation,
+  and all launcher chains. Removes rPPG biological pulse, global LUT, dynamic tone mapping (CLAHE),
+  and HSV saturation. Rationale: modern Presentation Attack Detection (PAD) systems flag synthetic
+  2D color pulses as a spoofing signature (3D-CNN liveness models track blood propagation through
+  facial geometry, which a 2D color overlay cannot replicate). The global LUT was injecting a red
+  boost causing sepia tint; CLAHE was crushing local contrast. V12 keeps physical camera artifacts
+  only: OIS jitter, rolling shutter, AE stepping, highlight blooming, AWB drift, sensor noise,
+  chromatic aberration, and vignette.
+- **V12 launchers** at all 3 levels: `launchers/windows/run_oldcam_v12.bat`,
+  `launchers/macos/run_oldcam_v12.command`, `launchers/run_oldcam_v12.bat`,
+  `launchers/run_oldcam_v12.command`.
+- **Oldcam version (ⓘ) tooltip** rewritten with theme + trade-off thread per version, anchored to
+  fact-checked code citations.
+- **`docs/oldcam-versions.md`** — full V12 section + "Version History Theme & Trade-Off" table.
+- **`docs/oldcam-wiring.md`** — comprehensive checklist for adding new versions (v13+).
 
 ### Changed
 
-- Oldcam GUI strip restructured: 3-column checkbox grid, "Oldcam: ⓘ" inline label, top-anchored
-  Re-Run column with label-on-top + buttons-below layout. Strip width stays fixed regardless
-  of how many versions are added.
-- queue_manager.py Popen cleanup: bounded `wait(timeout=5)` + explicit `stdout.close()` in
-  TimeoutExpired/Exception branches to prevent pipe-buffer deadlock if the child wrote after
-  our last readline().
+- **Default Oldcam version** is now **v12** everywhere:
+  - GUI: v12 checkbox checked by default (v11 unchecked)
+  - CLI: `automation_oldcam_version` defaults to `v12`; CLI choice menu lists all v7–v12 + "all"
+  - Launchers: root `run_oldcam.bat`, `launchers/windows/run_oldcam.bat`, and
+    `launchers/macos/run_oldcam.command` all chain into v12
+  - `automation/pipeline.py`: fallback default in logger format strings bumped from `v8` → `v12`
+- **Oldcam GUI strip** restructured: 3-column checkbox grid, "Oldcam: ⓘ" inline label,
+  top-anchored Re-Run column with label-on-top + buttons-below. Strip width stays fixed as
+  versions are added; buttons standardized to font 9 / `padx=8 pady=2 width=2` so the rotate
+  and folder icons render at identical sizes.
+- **`queue_manager.py` Popen cleanup**: bounded `wait(timeout=5)` + explicit `stdout.close()`
+  in TimeoutExpired/Exception branches to prevent pipe-buffer deadlock if the child wrote
+  after our last readline().
+- **Log noise filter** extended to suppress MediaPipe `portable_clearcut_uploader` telemetry
+  errors (`FAILED_PRECONDITION`, `Source Location Trace`, `wireless/android/play/playlog`).
+
+### Fixed
+
+- Updated several v10→v11 (and now v11→v12) stale strings in launcher scripts and error messages.
+- README + CLAUDE.md + AGENTS.md kept in sync with the new default + new wiring doc.
+
+### Distribution
+
+- Release packaging emits `SelfieGenUltimate-v1.6.zip` (canonical) +
+  `SelfieGenUltimate.zip` (latest alias).
 
 ## 2026-05-13 (v1.5)
 

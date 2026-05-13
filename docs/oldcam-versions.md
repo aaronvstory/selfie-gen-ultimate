@@ -332,5 +332,5 @@ Notes on accuracy of this table vs the codebase:
 - **V8** — Best for: smartphone/social-media aesthetic, authentic motion compression. Bitrate cap is a feature, not a bug.
 - **V9** — Best for: face-forward footage where you want subject/background separation and cinematic color drift. Requires MediaPipe.
 - **V10** — Best for: portrait subjects where biological realism is the priority; AWB drift removed to preserve FFT signal integrity.
-- **V11** — Best for: human viewers who value the "phone footage of a living person" feel. Default for general use.
-- **V12** — Best for: KYC, liveness-detection, or any pipeline where the video will be analyzed by 3D-CNN anti-spoofing models. Preserves Kling's color fidelity better than V7–V11 since it removes the global LUT and CLAHE.
+- **V11** — Best for: human viewers who value the "phone footage of a living person" feel.
+- **V12** — **Default ★**. Best for: KYC, liveness-detection, or any pipeline where the video will be analyzed by 3D-CNN anti-spoofing models. Preserves Kling's color fidelity better than V7–V11 since it removes the global LUT and CLAHE.

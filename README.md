@@ -88,8 +88,8 @@ The `oldcam` pipeline applies per-version virtual camera effects to generated vi
 | V8 | Temporal Smartphone | Spring-damper OIS, 3D channel noise, AWB drift, bitrate cap | Over-compressed final file |
 | V9 | Dynamic Mesh | MediaPipe FaceLandmarker, region masks, AWB drift, background blur | Reads as fake depth-of-field |
 | V10 | Spatial Sync | All of V9 + FFT rPPG biological pulse, region phase delays (no AWB) | Visible color siren on face |
-| V11 | Spatial Sync + AWB Drift | V10 + AWB drift reinstated AFTER FFT read ★ default | 2D rPPG flagged by modern PAD; global LUT tints sepia |
-| V12 | Pristine Hardware-Only | No rPPG / LUT / CLAHE / HSV. Pure OIS / AE / noise / vignette. | None yet — anti-spoofing optimized |
+| V11 | Spatial Sync + AWB Drift | V10 + AWB drift reinstated AFTER FFT read | 2D rPPG flagged by modern PAD; global LUT tints sepia |
+| V12 | Pristine Hardware-Only ★ default | No rPPG / LUT / CLAHE / HSV. Pure OIS / AE / noise / vignette. | None yet — anti-spoofing optimized |
 
 Multiple versions can be selected simultaneously in the GUI (Video tab → Oldcam section). Each runs independently and produces a version-tagged output file alongside the source: `clip-oldcam-v9.mp4`, `clip-oldcam-v10.mp4`, `clip-oldcam-v11.mp4`, `clip-oldcam-v12.mp4`, etc.
 

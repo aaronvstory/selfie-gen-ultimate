@@ -287,6 +287,12 @@ _TF_NOISE_PATTERNS = (
     "mediapipe graph",
     "mediapipe init",
     "mediapipe info",
+    # MediaPipe clearcut telemetry noise (Android playlog tries to phone home,
+    # fails with FAILED_PRECONDITION on dev machines, and dumps a 3-line trace).
+    "portable_clearcut_uploader",
+    "failed to send to clearcut",
+    "=== source location trace: ===",
+    "wireless/android/play/playlog",
 )
 
 

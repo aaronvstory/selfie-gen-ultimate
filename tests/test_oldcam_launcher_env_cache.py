@@ -3,11 +3,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_run_oldcam_defaults_to_v11_via_launcher_chain():
-    # run_oldcam.bat is a thin wrapper that chains through launchers/windows/run_oldcam_v11.bat
-    # (which in turn delegates to oldcam-v11/oldcam_launcher.bat)
+def test_run_oldcam_defaults_to_v12_via_launcher_chain():
+    # run_oldcam.bat is a thin wrapper that chains through launchers/windows/run_oldcam_v12.bat
+    # (which in turn delegates to oldcam-v12/oldcam_launcher.bat)
     text = (REPO_ROOT / "run_oldcam.bat").read_text(encoding="utf-8")
-    assert "run_oldcam_v11.bat" in text
+    assert "run_oldcam_v12.bat" in text
     assert 'set "EXIT_CODE=%ERRORLEVEL%"' in text
     assert "exit /b %EXIT_CODE%" in text
 

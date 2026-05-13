@@ -1561,7 +1561,7 @@ class KlingAutomationUI:
             selfie_status,
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
             f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', DEFAULT_KLING_PROMPT_SLOT)}",
-            f"oldcam version={self.config.get('automation_oldcam_version', 'v8')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
+            f"oldcam version={self.config.get('automation_oldcam_version', 'v12')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
             f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
             f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
         ]
@@ -1586,7 +1586,7 @@ class KlingAutomationUI:
             "video_model": self.config.get("model_display_name") or self.config.get("current_model"),
             "selfie_prompt_slot": self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT),
             "kling_prompt_slot": self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT),
-            "oldcam": (self.config.get("automation_oldcam_version", "v8"), self.config.get("automation_oldcam_required", False)),
+            "oldcam": (self.config.get("automation_oldcam_version", "v12"), self.config.get("automation_oldcam_required", False)),
             "max_cases": self._read_max_cases_setting(),
         }
 
@@ -1628,7 +1628,7 @@ class KlingAutomationUI:
         self.config["automation_similarity_threshold"] = 80
         self.config["automation_video_enabled"] = True
         self.config["automation_oldcam_enabled"] = True
-        self.config["automation_oldcam_version"] = "v8"
+        self.config["automation_oldcam_version"] = "v12"
         self.config["automation_oldcam_required"] = True
         self.config["automation_recommended_defaults_version"] = RECOMMENDED_DEFAULTS_VERSION
         self.save_config()
@@ -2024,7 +2024,7 @@ class KlingAutomationUI:
         _ask("Video aspect ratio", "automation_video_aspect_ratio", str, lambda v: ":" in v)
         _ask_bool("Use existing video prompt", "automation_video_use_existing_prompt")
         _ask_bool("Oldcam enabled", "automation_oldcam_enabled")
-        _ask_choice("Oldcam version", "automation_oldcam_version", ["v7", "v8", "all"])
+        _ask_choice("Oldcam version", "automation_oldcam_version", ["v7", "v8", "v9", "v10", "v11", "v12", "all"])
         _ask_bool("Oldcam required", "automation_oldcam_required")
         _ask_bool("Automation verbose logging", "automation_verbose_logging")
         _ask("Automation log max bytes", "automation_log_max_bytes", int, lambda v: v > 0)
