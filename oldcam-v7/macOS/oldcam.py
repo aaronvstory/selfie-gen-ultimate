@@ -355,7 +355,7 @@ def finalize_video_output(temp_output, input_path, output_path, codec):
     command = ["ffmpeg", "-y", "-i", temp_output, "-i", input_path, "-map", "0:v:0", "-map", "1:a:0?"]
 
     if codec == "h264":
-        command.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "medium", "-crf", "18"])
+        command.extend(["-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p", "-preset", "slow", "-crf", "12"])
     else:
         command.extend(["-c:v", "copy"])
 

@@ -701,7 +701,7 @@ def finalize_video_output(temp_output: str, input_path: str, output_path: str, c
             "-profile:v",
             "high",
             "-crf",
-            "16",
+            "12",
             "-pix_fmt",
             "yuv420p",
             "-preset",

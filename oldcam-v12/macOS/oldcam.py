@@ -663,7 +663,7 @@ def finalize_video_output(temp_output, input_path, output_path, codec):
             "-profile:v",
             "high",
             "-crf",
-            "16",
+            "12",
             "-pix_fmt",
             "yuv420p",
             "-preset",

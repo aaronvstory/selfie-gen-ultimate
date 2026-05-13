@@ -50,6 +50,18 @@ All notable changes to this project are documented here.
 - Release packaging emits `SelfieGenUltimate-v1.6.zip` (canonical) +
   `SelfieGenUltimate.zip` (latest alias).
 
+### Quality
+
+- **FFmpeg encode bumped to near-lossless across all Oldcam versions** (except v8,
+  which keeps its bitrate-cap "Temporal Smartphone" character):
+  - V7/V9/V10/V11/V12: `-crf 12 -preset slow -profile:v high` (was CRF 16–18,
+    preset medium on V7/V9/V10).
+  - Ping-pong looper (`kling_gui/video_looper.py`) also bumped to CRF 12 / preset
+    slow so the intermediate looped video preserves source quality before Oldcam
+    processing.
+- Result: visually-lossless H.264 throughout the pipeline. Output files are
+  larger but match Kling's source fidelity.
+
 ## 2026-05-13 (v1.5)
 
 ### Added

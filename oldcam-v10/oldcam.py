@@ -752,11 +752,11 @@ def finalize_video_output(temp_output: str, input_path: str, output_path: str, c
             "-profile:v",
             "high",
             "-crf",
-            "18",
+            "12",
             "-pix_fmt",
             "yuv420p",
             "-preset",
-            "medium",
+            "slow",
         ])
     else:
         command.extend(["-c:v", "copy"])
