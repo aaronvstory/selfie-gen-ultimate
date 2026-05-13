@@ -636,11 +636,12 @@ def test_v12_default_output_path_uses_v12_suffix():
     assert oldcam_v12.build_default_output_path("sample.mp4").endswith("sample-oldcam-v12.mp4")
 
 
-def test_oldcam_dependency_preflight_requires_mediapipe_for_v12(tmp_path):
+def test_oldcam_dependency_preflight_does_not_require_mediapipe_for_v12(tmp_path):
+    """V12 is pristine hardware-only — does not call MediaPipe, so missing mediapipe is OK."""
     manager, _ = make_queue_manager({})
     oldcam_dir = tmp_path / "oldcam-v12"
     oldcam_dir.mkdir()
-    (oldcam_dir / "requirements.txt").write_text("mediapipe==0.10.35\n", encoding="utf-8")
+    (oldcam_dir / "requirements.txt").write_text("numpy>=1.24\nopencv-python-headless>=4.8\n", encoding="utf-8")
 
     real_import = builtins.__import__
 
@@ -650,7 +651,8 @@ def test_oldcam_dependency_preflight_requires_mediapipe_for_v12(tmp_path):
         return real_import(name, *args, **kwargs)
 
     with mock.patch("builtins.__import__", side_effect=fake_import):
-        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v12") is False
+        # Should succeed (returns True) because v12 does not require mediapipe
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v12") is True
 
 
 def test_v12_process_frame_skips_rppg_lut_and_tone_mapping():
@@ -687,8 +689,10 @@ def test_v12_process_frame_skips_rppg_lut_and_tone_mapping():
     import argparse
     args = argparse.Namespace(grain=1, vignette_strength=0.55)
 
+    # V12 should NOT call get_dynamic_region_masks (MediaPipe inference)
+    # because nothing downstream consumes the result — that was wasted compute.
     with (
-        mock.patch.object(oldcam_v12, "get_dynamic_region_masks", return_value={}),
+        mock.patch.object(oldcam_v12, "get_dynamic_region_masks", side_effect=mark("mediapipe")),
         mock.patch.object(oldcam_v12, "apply_dynamic_tone_mapping", side_effect=mark("tone")),
         mock.patch.object(oldcam_v12, "create_neutral_phone_lut", side_effect=mark("lut")),
     ):
@@ -696,3 +700,4 @@ def test_v12_process_frame_skips_rppg_lut_and_tone_mapping():
 
     assert "tone" not in called, "V12 must not call apply_dynamic_tone_mapping"
     assert "lut" not in called, "V12 must not call create_neutral_phone_lut from process_frame"
+    assert "mediapipe" not in called, "V12 must not call get_dynamic_region_masks (wasted compute)"

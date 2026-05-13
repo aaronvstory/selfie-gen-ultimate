@@ -204,7 +204,7 @@ V10's FFT analysis reads the **mean green channel** of the face region across th
 ### The V11 Solution: Operation Order
 
 ```text
-1. get_dynamic_region_masks()                  — face detection (every-other-frame cached)
+1. get_dynamic_region_masks()                  — face detection (per-frame; the every-other-frame skip from v10 was removed in v1.5 to fix motion stutter)
 2. synchronize_base_frequency()                — FFT reads CLEAN green channel, no drift yet
 3. apply_synchronized_spatial_fluctuation()    — biological pulse baked into pixels
 4. apply_global_awb_drift()                    — hardware color drift applied AFTER FFT
@@ -229,7 +229,7 @@ Steps 1–3 read and write `g_history` (the green channel buffer) before any AWB
 ### What V11 Preserves from V10
 
 All V10 improvements are unchanged:
-- Every-other-frame face detection (50% MediaPipe CPU reduction)
+- ~~Every-other-frame face detection~~ (removed in v1.5: caused motion stutter; MediaPipe now runs 1:1 on every frame)
 - Pre-computed vignette mask (no per-frame recalculation)
 - `tight_mask = focus_mask * focus_mask` (squared boundary, eliminates bleed onto face)
 - FFT range narrowed to [0.8, 1.8] Hz (realistic heartbeat band)

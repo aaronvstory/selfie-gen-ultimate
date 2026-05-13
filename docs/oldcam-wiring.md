@@ -22,7 +22,7 @@
 
 For any version that combines FFT biological pulse with AWB drift, the execution order is non-negotiable:
 
-```
+```text
 1. get_dynamic_region_masks()              ← face detection
 2. synchronize_base_frequency()            ← FFT reads CLEAN green channel (no AWB yet)
 3. apply_synchronized_spatial_fluctuation() ← biological pulse injected
@@ -40,11 +40,11 @@ For any version that combines FFT biological pulse with AWB drift, the execution
 
 ### 1. Algorithm folder
 
-```
+```text
 oldcam-vN/
 ├── oldcam.py               ← main algorithm (start from previous version)
 ├── launcher.py             ← pass-through launcher (copy from v10/v11)
-├── requirements.txt        ← mediapipe + cv2 + numpy (copy from v10/v11 if using mediapipe)
+├── requirements.txt        ← numpy + cv2 (+ mediapipe ONLY if version uses face landmarks)
 ├── oldcam_launcher.bat     ← Windows launcher (CRLF — see bat rules below)
 └── macOS/
     ├── oldcam.py           ← byte-for-byte mirror of Windows oldcam.py
@@ -60,21 +60,21 @@ oldcam-vN/
 | `launchers/run_oldcam_vN.bat` | CRLF | delegates to `launchers\windows\run_oldcam_vN.bat` |
 | `launchers/run_oldcam_vN.command` | LF | delegates to `launchers/macos/run_oldcam_vN.command` |
 
-Pattern for `launchers/windows/run_oldcam_vN.bat`:
+Pattern for `launchers/windows/run_oldcam_vN.bat` (a script in `launchers/windows/` needs `..\..` to reach repo root):
 ```bat
 @echo off
 setlocal
-for %%I in ("%~dp0..\.") do set "ROOT_DIR=%%~fI"
+for %%I in ("%~dp0..\..") do set "ROOT_DIR=%%~fI"
 call "%ROOT_DIR%\oldcam-vN\oldcam_launcher.bat" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 endlocal & exit /b %EXIT_CODE%
 ```
 
-Pattern for `launchers/run_oldcam_vN.bat`:
+Pattern for `launchers/run_oldcam_vN.bat` (a script in `launchers/` needs `..` to reach repo root):
 ```bat
 @echo off
 setlocal
-for %%I in ("%~dp0.") do set "ROOT_DIR=%%~fI"
+for %%I in ("%~dp0..") do set "ROOT_DIR=%%~fI"
 call "%ROOT_DIR%\launchers\windows\run_oldcam_vN.bat" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 endlocal & exit /b %EXIT_CODE%

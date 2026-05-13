@@ -702,11 +702,18 @@ def process_frame(
     image = apply_highlight_blooming(image, threshold=232, strength=0.055)
 
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
+    # Saturation fallback 1.02 is the production-pipeline value (gentle bump);
+    # CLI parser default 1.12 is for standalone CLI use where stronger color
+    # boost looks better. The getattr() lets the production pipeline call
+    # process_frame() with an args namespace that doesn't set --saturation.
     hsv[:, :, 1] = np.clip(hsv[:, :, 1] * getattr(args, "saturation", 1.02), 0, 255)
     image = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
     image = cv2.LUT(image, create_neutral_phone_lut() if lut is None else lut)
     image = apply_modern_sensor_noise(image, getattr(args, "grain", 1.0), rng, state=state, fpn_mask=state.get("fpn"))
+    # Aberration scale 0.0006 is V11's tuned value (subtle fringing); the module
+    # constant ABERRATION_SCALE = 0.0015 is the CLI default exposed in older
+    # versions and kept for backward compatibility with --aberration-scale calls.
     image = apply_radial_chromatic_aberration(image, scale=0.0006)
     # image = apply_soft_background_texture(image, full_face_mask, strength=getattr(args, "background_texture_strength", 0.08))
 

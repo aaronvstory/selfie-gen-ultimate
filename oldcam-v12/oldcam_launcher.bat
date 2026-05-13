@@ -9,8 +9,6 @@ for %%I in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fI"
 set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 if not exist "%STATE_DIR%\" mkdir "%STATE_DIR%"
 set "HAD_ERRORS="
-set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
-set "MP_VALIDATE_CMD=import mediapipe; from mediapipe.tasks.python import vision; v=getattr(vision,'FaceLandmarker',None); exit(0 if v else 1)"
 
 rem --- Timestamp banner
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
@@ -18,7 +16,7 @@ set "WMIC_DT=%WMIC_DT: =_%"
 set "LAUNCH_TS=%WMIC_DT:~0,4%-%WMIC_DT:~4,2%-%WMIC_DT:~6,2% %WMIC_DT:~8,2%:%WMIC_DT:~10,2%:%WMIC_DT:~12,2%"
 echo(
 echo  ============================================================
-echo   Ultimate-Selfie-Gen  --  Oldcam V12
+echo   Ultimate-Selfie-Gen  --  Oldcam V12 (Pristine Hardware-Only)
 echo  ============================================================
 echo   [%LAUNCH_TS%] Launch started
 echo   Script: %SCRIPT_DIR%
@@ -42,24 +40,7 @@ if not defined PYTHON_CMD (
 )
 echo   [%LAUNCH_TS%] Python: %PYTHON_CMD%
 
-rem --- Locate face_landmarker.task
-set "TASK_MODEL_PATH="
-if not defined OLDCAM_FACE_LANDMARKER_TASK if exist "%SCRIPT_DIR%face_landmarker.task" set "TASK_MODEL_PATH=%SCRIPT_DIR%face_landmarker.task"
-if not defined TASK_MODEL_PATH if exist "%REPO_ROOT%\face_landmarker.task" set "TASK_MODEL_PATH=%REPO_ROOT%\face_landmarker.task"
-if not defined TASK_MODEL_PATH if exist "%REPO_ROOT%\..\face_landmarker.task" set "TASK_MODEL_PATH=%REPO_ROOT%\..\face_landmarker.task"
-if not defined TASK_MODEL_PATH if exist "%CD%\face_landmarker.task" set "TASK_MODEL_PATH=%CD%\face_landmarker.task"
-if defined OLDCAM_FACE_LANDMARKER_TASK set "TASK_MODEL_PATH=%OLDCAM_FACE_LANDMARKER_TASK%"
-if not defined TASK_MODEL_PATH (
-  echo   [%LAUNCH_TS%] ERROR: face_landmarker.task not found. Oldcam V12 cannot run.
-  echo   Searched: %SCRIPT_DIR%face_landmarker.task
-  echo           : %REPO_ROOT%\face_landmarker.task
-  echo           : %REPO_ROOT%\..\face_landmarker.task
-  echo           : %CD%\face_landmarker.task
-  set "HAD_ERRORS=1"
-  goto DONE
-)
-set "OLDCAM_FACE_LANDMARKER_TASK=%TASK_MODEL_PATH%"
-echo   [%LAUNCH_TS%] Task model: %OLDCAM_FACE_LANDMARKER_TASK%
+rem --- V12 needs no MediaPipe / face_landmarker.task: hardware-only pipeline.
 
 rem --- Dep stamp: req date+size, no subprocess
 set "STAMP_KEY="
@@ -71,7 +52,7 @@ set "STAMP=%STATE_DIR%\oldcam_v12_%STAMP_KEY:~0,60%.ok"
 
 set "NEED_PIP=1"
 if exist "%STAMP%" (
-  "%PYTHON_CMD%" -c "import cv2, numpy, mediapipe" >nul 2>&1
+  "%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>&1
   if not errorlevel 1 set "NEED_PIP=0"
 )
 if "%NEED_PIP%"=="0" (
@@ -79,29 +60,10 @@ if "%NEED_PIP%"=="0" (
   echo(
 ) else (
   echo   [%LAUNCH_TS%] Syncing Oldcam V12 dependencies...
-  set "REQ_FILTERED=%STATE_DIR%\oldcam_v12_req_filtered.txt"
-  findstr /V /I /B "mediapipe" "%SCRIPT_DIR%requirements.txt" > "%REQ_FILTERED%"
-  "%PYTHON_CMD%" -m pip install -r "%REQ_FILTERED%" >nul 2>&1
+  "%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>&1
   if errorlevel 1 (
-    for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
     echo   [%LAUNCH_TS%] ERROR: Failed to install Oldcam V12 dependencies.
     echo   Close running Python/GUI processes and retry.
-    set "HAD_ERRORS=1"
-    goto DONE
-  )
-  "%PYTHON_CMD%" -m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%" >nul 2>&1
-  if errorlevel 1 (
-    for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
-    echo   [%LAUNCH_TS%] ERROR: Failed to install MediaPipe for Oldcam V12.
-    echo   Close running Python/GUI processes and retry.
-    set "HAD_ERRORS=1"
-    goto DONE
-  )
-  for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
-  "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%" >nul 2>&1
-  if errorlevel 1 (
-    echo   [%LAUNCH_TS%] ERROR: MediaPipe Tasks FaceLandmarker API unavailable. Oldcam V12 cannot run.
-    echo   Close Python/GUI processes, delete/rebuild venv, and retry.
     set "HAD_ERRORS=1"
     goto DONE
   )

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-oldcam.py - V11 "Spatial Sync + AWB Drift" Virtual Hardware Simulator
+oldcam.py - V12 "Pristine Hardware-Only" Virtual Hardware Simulator
 
-Optimized for modern handheld selfie videos. Prioritizes temporal camera
-behavior: OIS micro-jitter, random velocity rolling shutter, chroma sensor
-noise, and H.264 motion compression.
+Pristine physical-camera emulation for KYC / liveness pipelines. Strips out
+synthetic-looking layers that modern Presentation Attack Detection (PAD) /
+3D-CNN liveness models flag (2D rPPG color pulse) and removes the global
+LUT + CLAHE tone mapping that were degrading Kling's source color and
+contrast. Keeps only hardware artifacts: OIS micro-jitter, rolling shutter,
+auto-exposure stepping, highlight blooming, AWB luma drift, sensor noise,
+radial chromatic aberration, and vignette.
 """
 
 import argparse
@@ -18,10 +22,22 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision
 import numpy as np
+
+# V12 doesn't actually use MediaPipe in process_frame (hardware-only pipeline),
+# but the face-landmarker helper functions remain defined for backwards
+# compatibility / future reuse. Import is guarded so V12 can run without
+# mediapipe installed in the venv.
+try:
+    import mediapipe as mp  # noqa: F401
+    from mediapipe.tasks import python as mp_python  # noqa: F401
+    from mediapipe.tasks.python import vision  # noqa: F401
+    _MEDIAPIPE_AVAILABLE = True
+except ImportError:
+    mp = None  # type: ignore[assignment]
+    mp_python = None  # type: ignore[assignment]
+    vision = None  # type: ignore[assignment]
+    _MEDIAPIPE_AVAILABLE = False
 
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 ABERRATION_SCALE = 0.0015
@@ -123,7 +139,7 @@ def build_preview_frame(original, processed):
     )
     cv2.putText(
         preview,
-        "Oldcam V11",
+        "Oldcam V12",
         (original.shape[1] + 16, 32),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.9,
@@ -613,11 +629,10 @@ def process_frame(
     # - No global LUT (was injecting a global red boost → sepia tint).
     # - No dynamic tone mapping (CLAHE was crushing local shadows/highlights).
     # - No HSV saturation tweak (preserve Kling's source color science).
-    # Result: physical camera artifacts only, no destructive color or contrast filters.
-
-    # Run face detection so adjusted_vignette_mask / fpn_mask / state still populate,
-    # but discard the region masks — no rPPG layer consumes them in V12.
-    get_dynamic_region_masks(image, state)
+    # - No MediaPipe face detection: nothing downstream consumes face masks in V12.
+    #   fpn and adjusted_vignette_mask are pre-computed in naturalize_video state init.
+    # Result: physical camera artifacts only, no destructive color or contrast filters,
+    # and no dependency on mediapipe / face_landmarker.task for V12.
 
     # 1. Physics & Motion
     image = apply_soft_ois_jitter(image, state, rng)
@@ -652,13 +667,13 @@ def naturalize_image(input_path: str, output_path: str, args: argparse.Namespace
     image = open_media(input_path)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     height, width = image.shape[:2]
-    lut = create_neutral_phone_lut()
     vignette_mask = create_vignette_mask(height, width)
     rng = np.random.default_rng()
     state = {"fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32)}
 
     try:
-        processed = process_frame(image, lut, vignette_mask, args, rng, state)
+        # V12: lut param kept for signature compatibility with other versions but unused
+        processed = process_frame(image, None, vignette_mask, args, rng, state)
         if args.preview:
             processed = build_preview_frame(image, processed)
 
@@ -740,7 +755,7 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
     height, width = test_frame.shape[:2]
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    lut = create_neutral_phone_lut()
+    # V12: no LUT — global color manipulation removed (sepia tint elimination).
     vignette_mask = create_vignette_mask(height, width)
     rng = np.random.default_rng()
     _vignette_strength = getattr(args, "vignette_strength", 0.55)
@@ -769,7 +784,7 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
                 break
 
             frame = correct_rotation(frame, rotation)
-            current_processed = process_frame(frame, lut, vignette_mask, args, rng, state)
+            current_processed = process_frame(frame, None, vignette_mask, args, rng, state)
             processed = blend_with_previous_frame(
                 current_processed, previous_processed, args.ghosting
             )
@@ -814,12 +829,7 @@ def build_parser():
     parser.add_argument(
         "--codec", choices=("h264", "copy"), default="h264", help="FFmpeg video codec. Default: h264"
     )
-    parser.add_argument(
-        "--sharpen", type=float, default=0.8, help="Sharpening blur radius. Default: 0.8"
-    )
-    parser.add_argument(
-        "--saturation", type=float, default=1.12, help="Saturation multiplier. Default: 1.12"
-    )
+    # --sharpen and --saturation removed in V12: no HSV tweak and no sharpening pass.
     parser.add_argument("--grain", type=int, default=1, help="Sensor-grain strength. Default: 1")
     # "--background-texture-strength" removed: flat-sensor mode, no depth separation
     parser.add_argument(

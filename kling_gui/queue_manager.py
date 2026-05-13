@@ -1281,7 +1281,7 @@ class QueueManager:
             return True
 
         required_modules = ["cv2", "numpy"]
-        requires_mediapipe = version in {"v9", "v10", "v11", "v12"}
+        requires_mediapipe = version in {"v9", "v10", "v11"}
         if requires_mediapipe:
             required_modules.append("mediapipe")
 
@@ -1321,7 +1321,7 @@ class QueueManager:
                     f"Please install them before processing Oldcam jobs: {install_cmd}",
                     "warning",
                 )
-                if version in {"v9", "v10", "v11", "v12"}:
+                if version in {"v9", "v10", "v11"}:
                     mp_install = (
                         f"{sys.executable} -m pip install "
                         f"--force-reinstall --no-deps mediapipe==0.10.35"
