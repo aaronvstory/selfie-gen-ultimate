@@ -88,17 +88,20 @@ The `oldcam` pipeline applies per-version virtual camera effects to generated vi
 | V8 | Temporal Smartphone | OIS micro-jitter, velocity-driven rolling shutter, 3D chroma sensor noise, bitrate-limited H.264 |
 | V9 | Dynamic Mesh | MediaPipe face detection, region-aware effect masks, AWB color drift, background blur, temporal smoothing |
 | V10 | Spatial Sync | All of V9 + FFT-based frequency analysis, per-region phase-locked oscillations, dynamic relighting |
+| V11 | Spatial Sync + AWB Drift | All of V10 + AWB drift reinstated after FFT read — signal ordering preserved ★ default |
 
-Multiple versions can be selected simultaneously in the GUI (Video tab → Oldcam section). Each runs independently and produces a version-tagged output file alongside the source: `clip-oldcam-v9.mp4`, `clip-oldcam-v10.mp4`, etc.
+Multiple versions can be selected simultaneously in the GUI (Video tab → Oldcam section). Each runs independently and produces a version-tagged output file alongside the source: `clip-oldcam-v9.mp4`, `clip-oldcam-v10.mp4`, `clip-oldcam-v11.mp4`, etc.
 
 ### Oldcam Requirements
 
 | Versions | Extra Dependencies |
 | --- | --- |
 | V7, V8 | numpy, opencv — already in main requirements |
-| V9, V10 | Also requires `mediapipe==0.10.35` and a `face_landmarker.task` model file |
+| V9, V10, V11 | Also requires `mediapipe==0.10.35` and a `face_landmarker.task` model file |
 
-For V9/V10: place `face_landmarker.task` in the repo root or next to the oldcam directory. Download from [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker).
+For V9/V10/V11: place `face_landmarker.task` in the repo root or next to the oldcam directory. Download from [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker).
+
+For wiring details when adding a new Oldcam version (v12+), see [docs/oldcam-wiring.md](docs/oldcam-wiring.md).
 
 ### Oldcam Standalone Launchers
 

@@ -14,6 +14,11 @@ All notable changes to this project are documented here.
 - **V11 launchers**: `launchers/windows/run_oldcam_v11.bat`, `launchers/macos/run_oldcam_v11.command`,
   `launchers/run_oldcam_v11.bat`, `launchers/run_oldcam_v11.command`.
 - **Generic `run_oldcam` launchers** updated to delegate to V11 (previously V9).
+- **Oldcam version tooltip**: (ⓘ) hover icon added next to the Oldcam version checkboxes in the GUI.
+  Shows a version comparison table (face tracking, biological pulse, AWB drift, MediaPipe, signature).
+- **Oldcam wiring reference** (`docs/oldcam-wiring.md`): complete checklist for adding new Oldcam versions
+  (v12+), covering algorithm folder structure, launchers at all 3 levels, GUI checkbox wiring, mediapipe
+  flag, tests, distribution, and signal pipeline order invariant. Linked from CLAUDE.md, AGENTS.md, README.
 
 ### Fixed
 

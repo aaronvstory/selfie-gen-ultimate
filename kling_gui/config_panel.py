@@ -534,6 +534,16 @@ class ConfigPanel(tk.Frame):
             )
             check.pack(side=tk.LEFT, padx=(2, 0))
             self.oldcam_version_checks[version] = check
+        self.oldcam_info_icon = tk.Label(
+            self.oldcam_controls_frame,
+            text="ⓘ",
+            font=(FONT_FAMILY, 11),
+            cursor="question_arrow",
+            bg="#2A1F34",
+            fg=COLORS["text_dim"],
+        )
+        self.oldcam_info_icon.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(self.oldcam_info_icon, self._get_oldcam_version_notes)
         tk.Label(
             self.oldcam_controls_frame,
             text="Re-Run:",
@@ -1312,6 +1322,30 @@ class ConfigPanel(tk.Frame):
             return model.get("notes", "")
 
         return "\n\n".join(sections)
+
+    def _get_oldcam_version_notes(self) -> str:
+        """Return version comparison tooltip for the Oldcam (ⓘ) icon."""
+        lines = [
+            "─── Oldcam Version Comparison ───",
+            "",
+            "v7   Basic sensor noise + film LUT",
+            "     Face tracking: No  |  Biological pulse: No  |  AWB drift: No  |  MediaPipe: No",
+            "",
+            "v8   + AWB color drift (white-balance hunting simulation)",
+            "     Face tracking: No  |  Biological pulse: No  |  AWB drift: Yes |  MediaPipe: No",
+            "",
+            "v9   + Face-aware masking, temporal mesh smoothing",
+            "     Face tracking: Yes |  Biological pulse: No  |  AWB drift: Yes |  MediaPipe: Yes",
+            "",
+            "v10  + FFT biological pulse (skin microcirculation sync)",
+            "     Face tracking: Yes |  Biological pulse: Yes |  AWB drift: No  |  MediaPipe: Yes",
+            "     Note: AWB removed — it corrupts the green-channel FFT read",
+            "",
+            "v11  + AWB drift reinstated AFTER FFT read (best of all worlds)  ★ default",
+            "     Face tracking: Yes |  Biological pulse: Yes |  AWB drift: Yes |  MediaPipe: Yes",
+            "     Signal order: FFT reads clean buffer → pulse applied → AWB drifts last",
+        ]
+        return "\n".join(lines)
 
     def _update_model_info_icon(self, model: dict = None):
         """Set info icon color: blue when model has notes/info, dim otherwise."""
