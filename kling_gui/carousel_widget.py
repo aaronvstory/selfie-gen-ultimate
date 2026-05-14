@@ -414,14 +414,11 @@ class ImageCarousel(tk.Frame):
         )
         self.fas_label.pack(side=tk.RIGHT, padx=(0, 6))
 
-        # v5.5: info_label widget kept for code paths that still call
-        # .config(text=...) on it (e.g. line ~537, "★ tag filename" when an
-        # image is selected, plus "File not found" error states). NOT packed
-        # any more — the row was eating vertical space that the carousel
-        # canvas needs for image preview. The canvas already renders an
-        # internal "Add images to start" hint when empty (see _update_panel),
-        # and the active-image filename is now visible via the image's
-        # own tag overlay + the IMAGE CAROUSEL X/Y counter in the header.
+        # v5.5: info_label is ALWAYS packed (constant row height) so the
+        # canvas doesn't resize/jump when an image is added or removed.
+        # When empty: shows "Add images to start" (replaces the
+        # canvas-internal hint that previously rendered there). When
+        # populated: shows "★ tag filename" of the active image.
         self.info_label = tk.Label(
             self.panel_frame,
             text="",
@@ -430,6 +427,7 @@ class ImageCarousel(tk.Frame):
             fg=COLORS["text_dim"],
             anchor=tk.W,
         )
+        self.info_label.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 0))
 
         # Canvas for image display
         self.canvas = tk.Canvas(
@@ -522,22 +520,13 @@ class ImageCarousel(tk.Frame):
 
         if n == 0:
             self.counter_label.config(text="0/0")
-            # v5.5: info_label cleared (not "Add images to start") — the
-            # canvas-internal hint renders that text on the empty canvas
-            # itself, and info_label is no longer packed so this is purely
-            # defensive cleanup in case some legacy code re-shows it.
-            self.info_label.config(text="", fg=COLORS["text_dim"])
+            # v5.5: info_label stays packed (constant row height) and just
+            # shows the "Add images to start" hint when empty so the canvas
+            # above doesn't resize when images are added/removed. The
+            # canvas itself is left blank in the empty state.
+            self.info_label.config(text="Add images to start", fg=COLORS["text_dim"])
             self.meta_label.config(text="")
             self.sim_label.config(text="")
-            cw = max(1, self.canvas.winfo_width())
-            ch = max(1, self.canvas.winfo_height())
-            self.canvas.create_text(
-                cw // 2,
-                ch // 2,
-                text="Add images to start",
-                fill=COLORS["text_dim"],
-                font=(FONT_FAMILY, 10),
-            )
             return
         self.counter_label.config(text=f"{session.current_index + 1}/{n}")
 
@@ -545,7 +534,7 @@ class ImageCarousel(tk.Frame):
         if entry and entry.exists:
             self._show_image_on_canvas(self.canvas, entry.path, "_photo")
 
-            # Type-colored info label (line 1: tag + truncated filename)
+            # Type-colored info label (line 1: tag + truncated filename).
             tag, color_key = derive_display_tag(entry)
             color = COLORS.get(color_key, COLORS["text_dim"])
             display_name = _truncate_filename(entry.filename)
