@@ -296,43 +296,20 @@ class ImageCarousel(tk.Frame):
         # request — see bottom_row build below. Sim_row now only carries
         # action buttons (★ Ref, Compare, 📂 folder).
 
-        # v5.4 bottom row: ALL THREE toggle checkboxes on one line at the
-        # very bottom: [☐ Auto | ☐ Anti-spoof | ☐ Boxes]. Packed BEFORE
-        # meta_frame (both side=BOTTOM) so bottom_row sits BELOW meta_frame
-        # — Tk stacks BOTTOM-packed widgets from bottom up in pack-call
-        # order. Defaults: Auto=ON (auto-recalc), Anti-spoof=OFF (advisory
-        # opt-in), Boxes=ON (face-bbox overlay).
+        # v5.5 bottom row: ALL THREE toggle checkboxes RIGHT-ALIGNED on one
+        # line: [..............☐ Auto | ☐ Anti-spoof | ☐ Boxes]. Packed
+        # BEFORE meta_frame (both side=BOTTOM) so bottom_row sits BELOW
+        # meta_frame — Tk stacks BOTTOM-packed widgets from bottom up in
+        # pack-call order. pady=(0, 2) keeps the row compact so the carousel
+        # canvas above gets maximum vertical real-estate. Defaults:
+        # Auto=ON (auto-recalc), Anti-spoof=OFF (advisory opt-in),
+        # Boxes=ON (face-bbox overlay).
+        #
+        # pack(side=tk.RIGHT) order is right-to-left visually, so to get
+        # display order [Auto | Anti-spoof | Boxes] left-to-right, we pack
+        # rightmost (Boxes) FIRST, then Anti-spoof, then Auto.
         bottom_row = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
-        bottom_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 4))
-
-        self._auto_chk = tk.Checkbutton(
-            bottom_row,
-            text="Auto",
-            variable=self._auto_var,
-            font=(FONT_FAMILY, 8),
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"],
-            activebackground=COLORS["bg_panel"],
-            activeforeground=COLORS["text_light"],
-            padx=2,
-        )
-        self._auto_chk.pack(side=tk.LEFT, padx=(0, 8))
-
-        self._anti_spoof_chk = tk.Checkbutton(
-            bottom_row,
-            text="Anti-spoof",
-            variable=self._anti_spoof_var,
-            command=self._on_anti_spoof_toggle,
-            font=(FONT_FAMILY, 8),
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"],
-            activebackground=COLORS["bg_panel"],
-            activeforeground=COLORS["text_light"],
-            padx=2,
-        )
-        self._anti_spoof_chk.pack(side=tk.LEFT, padx=(0, 8))
+        bottom_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
 
         self._show_face_box_chk = tk.Checkbutton(
             bottom_row,
@@ -347,7 +324,36 @@ class ImageCarousel(tk.Frame):
             activeforeground=COLORS["text_light"],
             padx=2,
         )
-        self._show_face_box_chk.pack(side=tk.LEFT, padx=(0, 6))
+        self._show_face_box_chk.pack(side=tk.RIGHT, padx=(0, 0))
+
+        self._anti_spoof_chk = tk.Checkbutton(
+            bottom_row,
+            text="Anti-spoof",
+            variable=self._anti_spoof_var,
+            command=self._on_anti_spoof_toggle,
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["text_light"],
+            padx=2,
+        )
+        self._anti_spoof_chk.pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._auto_chk = tk.Checkbutton(
+            bottom_row,
+            text="Auto",
+            variable=self._auto_var,
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["text_light"],
+            padx=2,
+        )
+        self._auto_chk.pack(side=tk.RIGHT, padx=(0, 8))
 
         # Metadata row (resolution + filesize on left, similarity on right).
         # Packed AFTER bottom_row (both side=BOTTOM) so meta_frame sits
@@ -408,7 +414,14 @@ class ImageCarousel(tk.Frame):
         )
         self.fas_label.pack(side=tk.RIGHT, padx=(0, 6))
 
-        # Info label (type tag + name) — pack second = just above meta
+        # v5.5: info_label widget kept for code paths that still call
+        # .config(text=...) on it (e.g. line ~537, "★ tag filename" when an
+        # image is selected, plus "File not found" error states). NOT packed
+        # any more — the row was eating vertical space that the carousel
+        # canvas needs for image preview. The canvas already renders an
+        # internal "Add images to start" hint when empty (see _update_panel),
+        # and the active-image filename is now visible via the image's
+        # own tag overlay + the IMAGE CAROUSEL X/Y counter in the header.
         self.info_label = tk.Label(
             self.panel_frame,
             text="",
@@ -417,7 +430,6 @@ class ImageCarousel(tk.Frame):
             fg=COLORS["text_dim"],
             anchor=tk.W,
         )
-        self.info_label.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 0))
 
         # Canvas for image display
         self.canvas = tk.Canvas(
@@ -510,7 +522,11 @@ class ImageCarousel(tk.Frame):
 
         if n == 0:
             self.counter_label.config(text="0/0")
-            self.info_label.config(text="Add images to start", fg=COLORS["text_dim"])
+            # v5.5: info_label cleared (not "Add images to start") — the
+            # canvas-internal hint renders that text on the empty canvas
+            # itself, and info_label is no longer packed so this is purely
+            # defensive cleanup in case some legacy code re-shows it.
+            self.info_label.config(text="", fg=COLORS["text_dim"])
             self.meta_label.config(text="")
             self.sim_label.config(text="")
             cw = max(1, self.canvas.winfo_width())
