@@ -2,6 +2,174 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-14 (v1.7) — Oldcam V13 "High-End Daylight" (new default)
+
+### Added
+
+- **Oldcam V13 (High-End Daylight)** — new default version. Pristine pipeline tuned for
+  flagship-phone-in-bright-sun footage. Strips the remaining noise / AE / ghosting layers
+  that V12 still applied, leaving only the geometric and optical signatures a physical
+  device imposes: sub-pixel OIS jitter, CMOS rolling shutter scan-warp, highlight blooming,
+  micro-luma AWB drift, radial chromatic aberration, and vignette.
+
+  Rationale: in stable bright daylight a high-end CMOS sensor produces a flawlessly clean
+  image — its ISP cleans away the FPN and temporal grain before the encoded frame ever
+  reaches you. V12's `apply_modern_sensor_noise` and `apply_ae_stepping` passes were
+  re-introducing degradation signals that flagship daylight footage simply doesn't carry.
+  V13 also hardcodes ghosting to 0.0 (razor-sharp frames) and drops the `--grain` CLI arg.
+
+- Four new launchers: `launchers/{windows,macos}/run_oldcam_v13.{bat,command}` plus
+  hub-level chain shims. Generic `run_oldcam` launchers across all three levels now
+  delegate to V13.
+
+### Changed
+
+- **Default oldcam version: V12 → V13.** GUI ships with V13 checked by default in the
+  Video tab; CLI default is `automation_oldcam_version="v13"`. V12 remains available
+  via checkbox / `--oldcam-version v12` for users who prefer the low-light realism
+  profile.
+- **Performance:** V13 skips per-frame FPN + temporal noise generation. Combined with
+  v1.6's CRF 12 quality bump, output is both sharper *and* faster to encode than V12.
+- Release stamp bumped to v1.7; release zip is `dist/SelfieGenUltimate-v1.7.zip` with
+  `dist/SelfieGenUltimate.zip` alias.
+
+### Behavioral notes
+
+- Users upgrading from v1.6 will see V13 checked by default in the Video tab. To keep
+  v1.6 behavior, uncheck V13 and check V12.
+- V13 ignores `--ghosting` (hardcoded to 0.0) and does not accept `--grain` (arg removed
+  from V13 parser only; V7–V12 parsers unchanged).
+- V13 does not require MediaPipe — same dependency story as V12. MediaPipe-required
+  versions remain V9, V10, V11.
+
+### Quality
+
+- **Ping-pong looper now mathematically lossless.** `kling_gui/video_looper.py`
+  bumped from CRF 12 → `-crf 0 -tune film -pix_fmt yuv420p` (libx264 lossless
+  within 4:2:0 constraints). Reason: Kling delivers ~28 MB H.264 clips; the
+  previous CRF 12 ping-pong re-encode was dropping intermediate files to ~7 MB
+  (forward + reverse should *double* duration, so this was net quality loss
+  not just compression). The intermediate file is now larger by design — it's
+  consumed immediately by Oldcam V13's encoder (CRF 12 / preset slow / profile
+  high) which produces the final size-conscious output. End result: zero
+  generational loss between Kling source and Oldcam input.
+- `yuv420p` (not `yuv444p`) chosen for OpenCV decode compatibility; stream-copy
+  concat rejected to avoid PTS/DTS glitches with reversed-half H.264.
+
+### Fixed
+
+- **Re-Run Oldcam now honors the Loop checkbox.** Previously, the
+  `rerun_oldcam_only()` worker in `kling_gui/queue_manager.py` hardcoded its
+  input to the un-looped source and ignored `config["loop_videos"]`, so users
+  who pressed Re-Run with Loop checked got `..._k25tStd-oldcam-vN.mp4` built
+  directly on the 28 MB Kling source instead of the expected
+  `..._k25tStd_looped-oldcam-vN.mp4` built on a freshly-looped intermediate.
+  The fix mirrors the normal queue path (loop → Oldcam) and overwrites any
+  stale `_looped.mp4` with the v1.7 lossless looper output. Re-Run on a
+  source whose stem already ends in `_looped` skips the loop step to avoid
+  `..._looped_looped.mp4`.
+
+- **Looper FFmpeg crash on strict libx264 builds.** The v1.7 looper used
+  `-profile:v high -crf 0 -tune film -pix_fmt yuv420p`, which crashes on
+  strict libx264 builds with `Could not open encoder before EOF` /
+  `Invalid argument (-22)`. Root cause: H.264 true-lossless coding
+  requires the High 4:4:4 Predictive profile, not plain High, but we need
+  yuv420p downstream for OpenCV compatibility. Replaced with the canonical
+  `-qp 0 -preset slow -pix_fmt yuv420p` idiom (no `-profile:v`, no `-tune`)
+  which works on every libx264 build. libx264 picks the appropriate profile
+  internally based on pix_fmt + quantizer. Intermediate file is ~5-15%
+  larger than `-crf 0` but Oldcam re-encodes it immediately, so size of
+  the throwaway intermediate is irrelevant.
+
+### Logging & UX
+
+- **Verbose Mode checkbox now properly gates panel verbosity.** The
+  existing "Verbose Mode" checkbox in the config panel previously only
+  controlled per-frame generator progress callbacks (a small slice of
+  logging). `KlingGUIWindow._log()` now consults `verbose_gui_mode`: when
+  OFF (default), `"debug"`-level emits stay out of the panel and go only
+  to `kling_gui.log`; when ON, the panel ALSO shows the debug stream
+  (raw FFmpeg stderr, subprocess path dumps, all the demoted duplicates
+  below) so power users can see everything without opening the log file.
+
+- **5 more panel duplicates removed/demoted to debug:**
+  - `video_looper.py`: dropped the second `Creating looped video: <name>`
+    line (queue_manager already prints a friendlier `Creating looped
+    video...` immediately before it) and demoted the `Running FFmpeg...`
+    beat to file-only.
+  - `queue_manager._loop_video`: the wrapper's basename-only
+    `Looped video saved: <name>` emit is now debug-level; the looper
+    itself already prints the user-facing `Looped video saved: <name>
+    (X.Y MB)` success line with file size.
+  - `queue_manager` Re-Run path: `Re-Run loop intermediate: <name>` is
+    now debug — the user just saw the looper's success line for the
+    same file one line above.
+  - `queue_manager._oldcam_video`: `Oldcam selected: running v13`
+    demoted to debug — the per-version `Applying Oldcam vN Finish...`
+    and `Oldcam vN Finish applied: <name>` panel pair already conveys
+    which version ran.
+  - `queue_manager._oldcam_video`: the success-summary line
+    `Oldcam summary: requested versions=...; succeeded versions=...;
+    primary output=<full path>` is now debug — `Oldcam vN Finish
+    applied: <name>` (already in the panel) plus `main_window`'s
+    final `Oldcam-only rerun complete: <src> → <output>` cover the
+    user-facing summary without the full-path noise.
+
+  Net effect: a Re-Run with Loop + V13 now produces ~9 panel lines
+  instead of ~17. File log content is unchanged (everything still
+  recorded at DEBUG level).
+
+- **`verbose_gui_mode` default flipped True → False** with a one-shot
+  migration in `_load_config._migrate_legacy_defaults`. Pre-v1.7 installs
+  shipped Verbose Mode ON, which dumped raw FFmpeg stderr, subprocess
+  path lines, and every demoted summary into the panel — even after the
+  v1.7 logging cleanup, existing users still saw the noisy stream because
+  their saved config explicitly carried the old True. The migration flips
+  legacy `True` → `False` exactly once (stamped via the
+  `verbose_gui_mode_migrated_v17` flag) so users who later opt INTO
+  verbose mode aren't overridden on subsequent boots. New regression test
+  `test_default_oldcam_version_is_v13_across_all_layers` asserts CLI / GUI
+  / launcher chains all agree on v13 across Windows + macOS; another test
+  asserts the verbose default + migration semantics.
+
+- **`Oldcam rerun increment target: <next-name>` line demoted to debug.**
+  Pure preview of the filename Oldcam is about to write; the
+  `Oldcam vN Finish applied: <name>` panel line ~10 s later shows the
+  actual file.
+
+- **In-app log panel decluttered (file log retains everything).** Added a
+  `"debug"` level to `KlingGUIWindow._log()` that routes to the rotating
+  file handler (`~/.kling-ui/kling_gui.log`) only — never to the user-facing
+  panel. Applied at three known noisy sites:
+  - `video_looper.py`: FFmpeg failure now emits a single friendly one-liner
+    to the panel (e.g., `"Loop encode failed: FFmpeg could not open the
+    H.264 encoder (libx264 init failed)"`) with the full multi-line stderr
+    blob going to the file log at debug level. New `_summarize_ffmpeg_error()`
+    helper does priority-ordered classification: encoder init, invalid
+    argument, missing file, permission denied, generic conversion failure.
+  - `queue_manager.py`: subprocess stdout lines matching the new
+    `_PANEL_NOISE_PATTERNS` tuple (`"Input :"`, `"Output:"`, `"Saved video
+    to:"`, `"Video processing complete."`, `"Finalizing video with FFmpeg
+    codec"`) are routed to file-only. Progress lines (`[Oldcam] Processing:
+    N% complete`) and friendly summaries still show in the panel.
+  - Duplicate `"Oldcam-only rerun summary:"` and basename-only
+    `"Oldcam-only rerun complete:"` emits demoted to debug; `main_window.py`
+    already emits the friendlier `<source> → <output>` arrow line for the
+    panel.
+- File logger level bumped from `INFO` → `DEBUG` so the demoted lines
+  actually reach the disk file for diagnostics. Log file rotation
+  (5 MB × 3 backups) unchanged.
+
+### Tests
+
+- 3 V13 algorithm tests + 4 Re-Run loop-wiring tests + 2 logging-UX tests
+  in `tests/test_oldcam_versions.py`; new `tests/test_video_looper.py`
+  with 12 tests covering `_summarize_ffmpeg_error` priority order,
+  the canonical `-qp 0` cmd structure (no `-profile:v`, no `-tune`,
+  no `-crf`), and the friendly-vs-debug stderr split on failure.
+  Total: **370 tests** all passing.
+- Updated existing tests for default-switch sites (5 files).
+
 ## 2026-05-14 (v1.6)
 
 ### Added

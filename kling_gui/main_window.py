@@ -687,7 +687,10 @@ class KlingGUIWindow:
         log_file = get_log_path("kling_gui.log")
 
         logger = logging.getLogger("kling_gui")
-        logger.setLevel(logging.INFO)
+        # DEBUG so "debug"-level emits (e.g., raw FFmpeg stderr, panel-noisy
+        # subprocess lines) reach the rotating file log while staying out of
+        # the user-facing panel. See _log() for level routing.
+        logger.setLevel(logging.DEBUG)
         logger.propagate = False
 
         if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
@@ -710,7 +713,12 @@ class KlingGUIWindow:
             "use_source_folder": True,
             "falai_api_key": "",
             "verbose_logging": True,
-            "verbose_gui_mode": True,  # Verbose GUI logging ON by default
+            # Verbose GUI logging OFF by default — clean panel for new users.
+            # When OFF, "debug"-level emits go to ~/.kling-ui/kling_gui.log
+            # only (raw FFmpeg stderr, subprocess path dumps, structured
+            # duplicate-summary lines). Power users tick "Verbose Mode" in
+            # the Settings panel to surface those lines live.
+            "verbose_gui_mode": False,
             "log_max_mb": 5,
             "log_backups": 3,
             "duplicate_detection": True,
@@ -828,6 +836,9 @@ class KlingGUIWindow:
         # Layer 4: migrate known broken endpoint paths
         self._migrate_endpoints(default_config)
 
+        # Layer 5: one-shot migrations for config keys whose defaults changed.
+        self._migrate_legacy_defaults(default_config)
+
         return default_config
 
     @staticmethod
@@ -841,6 +852,33 @@ class KlingGUIWindow:
         if current in _ENDPOINT_MIGRATIONS:
             config["current_model"] = _ENDPOINT_MIGRATIONS[current]
             print(f"Migrated endpoint: {current} -> {config['current_model']}")
+
+    @staticmethod
+    def _migrate_legacy_defaults(config: dict) -> None:
+        """One-shot migrations for keys whose defaults changed across versions.
+
+        Releases prior to v1.7 shipped `verbose_gui_mode=True`, which makes
+        the in-app log panel show every debug-level line (raw FFmpeg stderr,
+        subprocess path dumps, demoted summary duplicates). The v1.7 default
+        is `False` so the panel stays clean out of the box. Users who saved
+        configs under the old default will keep seeing the noisy panel even
+        though they never explicitly turned verbose mode on — flip them once,
+        then mark migrated so we don't override the user's preference again
+        if they later turn verbose mode back on.
+        """
+        if not config.get("verbose_gui_mode_migrated_v17"):
+            # If the user had the old True default in their saved config, flip
+            # to the clean default. Users who already set False explicitly are
+            # unaffected (already False). Users who explicitly want verbose
+            # can re-enable via the Settings checkbox — we set the migration
+            # flag below so we won't touch their preference again.
+            if config.get("verbose_gui_mode") is True:
+                config["verbose_gui_mode"] = False
+                print(
+                    "Migrated verbose_gui_mode: True -> False (v1.7 default)."
+                    " Use the 'Verbose Mode' checkbox in Settings to re-enable."
+                )
+            config["verbose_gui_mode_migrated_v17"] = True
 
     def _merge_ui_config(self, base: dict, updates: dict) -> dict:
         """Deep-merge UI config dictionaries."""
@@ -2866,15 +2904,31 @@ class KlingGUIWindow:
             )
 
     def _log(self, message: str, level: str = "info"):
-        """Log a message to the log display."""
-        if hasattr(self, "log_display"):
-            self.log_display.log(message, level)
+        """Log a message to the log display.
+
+        Levels:
+        - "info" / "success" / "warning" / "error": always panel + file
+        - "debug": file only by default; ALSO shown in panel when the user
+          has enabled "Verbose Mode" (config["verbose_gui_mode"] == True).
+
+        The Verbose Mode checkbox lives in the Settings/Logging section of
+        the config panel and lets power users see the full diagnostic
+        stream (raw FFmpeg stderr, subprocess path dumps, demoted summary
+        duplicates) without having to open kling_gui.log.
+        """
+        show_in_panel = level != "debug" or bool(self.config.get("verbose_gui_mode", False))
+        if show_in_panel and hasattr(self, "log_display"):
+            # Render debug lines with the "info" tag in the panel so they
+            # stay legible (the panel's "debug" tag would otherwise be
+            # undefined; "info" is the neutral default).
+            self.log_display.log(message, "info" if level == "debug" else level)
         if self.logger:
             level_map = {
                 "info": self.logger.info,
                 "success": self.logger.info,
                 "warning": self.logger.warning,
                 "error": self.logger.error,
+                "debug": self.logger.debug,
             }
             level_map.get(level, self.logger.info)(message)
 

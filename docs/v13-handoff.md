@@ -1,6 +1,8 @@
 # V13 / v1.7 Release Hand-off
 
-> **Purpose:** Drop-in context for a fresh Claude Code session resuming the v1.7 release work on PR #17.
+> **Status 2026-05-14:** ✅ V13 / v1.7 shipped. PR #17 (v1.6) merged to main at 808ba08; V13 work landed on a fresh `feat/oldcam-v13` branch in a new PR. This hand-off is now **historical** — kept for reference. Live spec is in `docs/oldcam-versions.md` (V13 section) and `docs/oldcam-wiring.md` (updated comparison table).
+>
+> **Purpose (original):** Drop-in context for a fresh Claude Code session resuming the v1.7 release work.
 > **Authored:** 2026-05-14 (light prep session — no code changes, only this doc)
 > **Original location intent:** `.claude/v13-handoff.md` — but `.claude/` is gitignored, so this lives in `docs/` instead.
 

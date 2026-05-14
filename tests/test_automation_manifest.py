@@ -183,6 +183,6 @@ def test_automation_defaults_use_percent_and_nano_model():
     assert merged["automation_selfie_expand_composite_mode"] == "preserve_seamless"
     assert merged["automation_selfie_expand_percent"] == 30
     assert merged["automation_selfie_models"] == ["fal-ai/nano-banana-2/edit"]
-    assert merged["automation_oldcam_version"] == "v12"
+    assert merged["automation_oldcam_version"] == "v13"
     assert merged["automation_oldcam_required"] is True
     assert "parked car" in merged["automation_selfie_prompts"]["1"].lower()

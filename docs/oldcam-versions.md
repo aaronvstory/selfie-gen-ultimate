@@ -285,24 +285,63 @@ V12 looks like a raw sensor feed with imperfect optics, not a color-graded clip.
 
 ---
 
+## V13 — "High-End Daylight" (2026-05-14)
+
+**File:** `oldcam-v13/oldcam.py` (~830 lines, cloned from V12)
+**Output encoding:** CRF 12 / preset slow / profile high (near-lossless H.264)
+
+### The Sensor Noise Problem
+
+V12 kept `apply_modern_sensor_noise()` — FPN (fixed pattern noise) baked into the sensor plus a temporal grain pass per frame. In stable bright daylight, a flagship phone's ISP cleans those signals away before the encoded frame ever reaches you. So injecting grain into Kling's already-pristine daylight footage was *adding* a synthetic-looking signal, not removing one.
+
+V13's premise: when the source already looks like flagship-daylight output, don't degrade it. Simulate only the hardware artifacts a real CMOS *can't* fully hide — the geometric and optical fingerprints.
+
+### What V13 Removes (vs V12)
+
+- **`apply_modern_sensor_noise`** — no FPN, no temporal noise, no grain (largest perf win)
+- **`apply_ae_stepping`** — no auto-exposure walk; V13 assumes stable daylight
+- **Ghosting blend forced to `0.0`** — razor-sharp frames, no inter-frame smear
+- **`--grain` CLI arg** — dead code since the noise call is gone
+
+### What V13 Keeps
+
+- `apply_soft_ois_jitter` — sub-pixel hand motion residual
+- `apply_soft_rolling_shutter` — CMOS scan-line warp
+- `apply_highlight_blooming(threshold=232, strength=0.055)` — photons scattering through glass
+- `apply_global_awb_drift` — AWB algorithm recalculating in microscale
+- `apply_radial_chromatic_aberration(scale=0.0006)` — corner fringing
+- Vignette
+
+### Why V13 Renders Faster
+
+`apply_modern_sensor_noise` was the heaviest per-frame pass — it generated a temporal noise field, blended it with the FPN mask, and clipped per channel. Removing it shaves a measurable chunk off render time, especially on long clips. V13 is the fastest version that produces a release-quality output.
+
+### Character
+
+V13 looks like a high-end smartphone's daylight output: razor-sharp, no visible grain, no exposure hunting, no temporal smear. To a human viewer it looks pristine. To a KYC anti-spoofing algorithm reading raw data, it still carries the geometric (OIS sub-pixel jitter, rolling shutter scan-warp) and optical (blooming, chromatic aberration, vignette) signatures of a real physical device.
+
+---
+
 ## Side-by-Side Comparison
 
-| Feature | V7 | V8 | V9 | V10 | V11 | V12 |
-|---|---|---|---|---|---|---|
-| Face detection | None | None | MediaPipe 478 pts | MediaPipe 478 pts | MediaPipe 478 pts | MediaPipe 478 pts |
-| Region masks | None | None | 4 regions | 4 regions | 4 regions | Detected, discarded |
-| Rolling shutter | Sine arm-sway | Velocity-coupled to OIS | Soft residual | Soft residual | Soft residual | Soft residual |
-| OIS model | None | Spring-damper ±2px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px |
-| AF model | 12-frame hunt 1.5% | 2-frame hunt 0.5% | 6-frame breathing | 6-frame breathing | 6-frame breathing | None (removed) |
-| JPEG pass | Yes (quality 94) | No | No | No | No | No |
-| Noise type | 2D luma-only | 3D per-channel | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma |
-| AWB drift | No | Yes | Yes | No | Yes | Yes (luma-only) |
-| FFT rPPG sync | No | No | No | Yes | Yes | No |
-| Phase-locked oscillations | No | No | No | Yes | Yes | No |
-| Global LUT applied | Yes | Yes | Yes | Yes | Yes | **No** |
-| Dynamic tone mapping (CLAHE) | Yes | Yes | Yes | Yes | Yes | **No** |
-| HSV saturation tweak | Yes | Yes | Yes | Yes | Yes | **No** |
-| Output encoding | CRF 18 | baseline + 1500k cap | CRF 18 high | CRF 18 high | CRF 16 slow | CRF 16 slow |
+| Feature | V7 | V8 | V9 | V10 | V11 | V12 | V13 |
+|---|---|---|---|---|---|---|---|
+| Face detection | None | None | MediaPipe 478 pts | MediaPipe 478 pts | MediaPipe 478 pts | None (lazy import only) | **None** |
+| Region masks | None | None | 4 regions | 4 regions | 4 regions | Discarded | **Not computed** |
+| Rolling shutter | Sine arm-sway | Velocity-coupled to OIS | Soft residual | Soft residual | Soft residual | Soft residual | Soft residual |
+| OIS model | None | Spring-damper ±2px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px |
+| AF model | 12-frame hunt 1.5% | 2-frame hunt 0.5% | 6-frame breathing | 6-frame breathing | 6-frame breathing | None (removed) | None |
+| AE stepping | Yes | Yes | Yes | Yes | Yes | Yes | **No** |
+| JPEG pass | Yes (quality 94) | No | No | No | No | No | No |
+| Sensor noise | 2D luma-only | 3D per-channel | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma | **None** |
+| Ghosting blend | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | **Forced 0.0** |
+| AWB drift | No | Yes | Yes | No | Yes | Yes (luma-only) | Yes (luma-only) |
+| FFT rPPG sync | No | No | No | Yes | Yes | No | No |
+| Phase-locked oscillations | No | No | No | Yes | Yes | No | No |
+| Global LUT applied | Yes | Yes | Yes | Yes | Yes | **No** | No |
+| Dynamic tone mapping (CLAHE) | Yes | Yes | Yes | Yes | Yes | **No** | No |
+| HSV saturation tweak | Yes | Yes | Yes | Yes | Yes | **No** | No |
+| Output encoding | CRF 12 slow | baseline + 1500k cap | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 12 slow |
 
 ---
 
@@ -317,7 +356,8 @@ Each version had a guiding theme and a limitation that motivated the next one. T
 | V9 | Face-aware portrait pass | MediaPipe FaceLandmarker (478 pts), 4-region masks, AWB color drift, soft background blur (later disabled) | Background softening read as "computational photography depth-of-field," not raw webcam |
 | V10 | rPPG biological sync | FFT on green-channel face mean, phase-locked spatial oscillation in 4 face regions, dynamic relighting | Visible color "siren" on the face; needed to remove AWB drift so FFT could read clean signal |
 | V11 | Best-of-all combination | Re-enabled `apply_global_awb_drift()` AFTER FFT read; relighting kept disabled | Modern PAD detectors flag the 2D rPPG color pulse; global LUT crushes contrast and tints the frame sepia |
-| V12 | Pristine hardware-only | Removed rPPG, removed `cv2.LUT()` call, removed CLAHE tone mapping, removed HSV saturation tweak | None yet — V12 is the current optimization for anti-spoofing + color fidelity |
+| V12 | Pristine hardware-only | Removed rPPG, removed `cv2.LUT()` call, removed CLAHE tone mapping, removed HSV saturation tweak | Sensor noise and AE stepping still applied per-frame — degradation signals flagship daylight footage doesn't carry |
+| V13 | High-end daylight | Removed `apply_modern_sensor_noise`, removed `apply_ae_stepping`, hardcoded ghosting to 0.0, dropped `--grain` CLI arg | None yet — flagship daylight is the design floor |
 
 Notes on accuracy of this table vs the codebase:
 - "Digital over-sharpening" was a `--sharpen` CLI parameter present in every version (default 0.8), not a V11 addition. The actual destructive effects in V11 are the global LUT and CLAHE — both inherited from earlier versions, exposed by V11's higher fidelity.
@@ -333,4 +373,5 @@ Notes on accuracy of this table vs the codebase:
 - **V9** — Best for: face-forward footage where you want subject/background separation and cinematic color drift. Requires MediaPipe.
 - **V10** — Best for: portrait subjects where biological realism is the priority; AWB drift removed to preserve FFT signal integrity.
 - **V11** — Best for: human viewers who value the "phone footage of a living person" feel.
-- **V12** — **Default ★**. Best for: KYC, liveness-detection, or any pipeline where the video will be analyzed by 3D-CNN anti-spoofing models. Preserves Kling's color fidelity better than V7–V11 since it removes the global LUT and CLAHE.
+- **V12** — Best for: low-light realism, KYC pipelines that expect visible sensor noise, scenes where AE walk reads as authentic. Preserves Kling's color fidelity better than V7–V11.
+- **V13** — **Default ★**. Best for: bright daylight footage and any scene where Kling's source already looks like high-end smartphone output. No noise, no AE hunting, no temporal smear — preserves Kling's fidelity end-to-end. Renders faster than V12. Same MediaPipe-free dependency story.

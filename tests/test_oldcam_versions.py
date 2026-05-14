@@ -8,6 +8,7 @@ import types
 import sys
 
 import numpy as np
+import pytest
 
 from kling_gui.queue_manager import QueueItem, QueueManager
 
@@ -396,7 +397,7 @@ def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
     panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
     assert 'text="Oldcam Finish"' not in panel_source
     assert 'text="Oldcam:"' in panel_source
-    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12"))' in panel_source
+    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13"))' in panel_source
 
 
 def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
@@ -701,3 +702,677 @@ def test_v12_process_frame_skips_rppg_lut_and_tone_mapping():
     assert "tone" not in called, "V12 must not call apply_dynamic_tone_mapping"
     assert "lut" not in called, "V12 must not call create_neutral_phone_lut from process_frame"
     assert "mediapipe" not in called, "V12 must not call get_dynamic_region_masks (wasted compute)"
+
+
+def test_v13_default_output_path_uses_v13_suffix():
+    oldcam_v13 = load_module(ROOT / "oldcam-v13" / "oldcam.py", "oldcam_v13")
+    assert oldcam_v13.build_default_output_path("sample.mp4").endswith("sample-oldcam-v13.mp4")
+
+
+def test_oldcam_dependency_preflight_does_not_require_mediapipe_for_v13(tmp_path):
+    """V13 High-End Daylight — like V12, no MediaPipe; missing mediapipe must be OK."""
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v13"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "requirements.txt").write_text("numpy>=1.24\nopencv-python-headless>=4.8\n", encoding="utf-8")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("No module named mediapipe")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v13") is True
+
+
+def test_v13_process_frame_skips_noise_and_ae_stepping():
+    """V13 must not call apply_modern_sensor_noise or apply_ae_stepping in process_frame."""
+    oldcam_v13 = load_module(ROOT / "oldcam-v13" / "oldcam.py", "oldcam_v13_daylight")
+
+    called = []
+
+    def mark(name):
+        def _wrapped(*args, **kwargs):
+            called.append(name)
+            return args[0]
+        return _wrapped
+
+    image = np.full((32, 32, 3), 128, dtype=np.uint8)
+    state = {
+        "face_detected": False,
+        "fpn": np.zeros((32, 32, 3), dtype=np.float32),
+        "adjusted_vignette_mask": np.ones((32, 32, 1), dtype=np.float32),
+        "last_masks": {},
+    }
+
+    import argparse
+    args = argparse.Namespace(vignette_strength=0.55)
+
+    with (
+        mock.patch.object(oldcam_v13, "apply_modern_sensor_noise", side_effect=mark("noise")),
+        mock.patch.object(oldcam_v13, "apply_ae_stepping", side_effect=mark("ae")),
+    ):
+        oldcam_v13.process_frame(image, None, None, args, rng=np.random.default_rng(0), state=state)
+
+    assert "noise" not in called, "V13 must not call apply_modern_sensor_noise (pristine daylight)"
+    assert "ae" not in called, "V13 must not call apply_ae_stepping (stable daylight assumption)"
+
+
+def test_v13_naturalize_image_does_not_reference_args_grain(tmp_path):
+    """Regression test: removing --grain from V13 parser left args.grain reads in
+    naturalize_image / naturalize_video state init, which would AttributeError
+    when the CLI parser path (not test-mocked Namespace) was used. Caught by
+    Gemini on PR #18.
+
+    This test exercises the actual parser → naturalize_image path with a
+    tiny synthetic image to ensure no AttributeError.
+    """
+    import cv2
+    oldcam_v13 = load_module(ROOT / "oldcam-v13" / "oldcam.py", "oldcam_v13_cli_path")
+
+    # Build parser as the real CLI does, parse with only an input path
+    src_img = tmp_path / "tiny.png"
+    cv2.imwrite(str(src_img), np.full((16, 16, 3), 128, dtype=np.uint8))
+    out_img = tmp_path / "out.png"
+
+    parser = oldcam_v13.build_parser()
+    args = parser.parse_args([str(src_img)])
+
+    # If args.grain is read anywhere, this raises AttributeError.
+    # We're not asserting visual output, just that the call doesn't crash.
+    oldcam_v13.naturalize_image(str(src_img), str(out_img), args)
+    assert out_img.exists(), "V13 naturalize_image did not produce output"
+
+
+def test_v13_parser_does_not_expose_grain_arg():
+    """V13 parser must not accept --grain (it's dead in the daylight pipeline)."""
+    import argparse
+    oldcam_v13 = load_module(ROOT / "oldcam-v13" / "oldcam.py", "oldcam_v13_parser_check")
+    parser = oldcam_v13.build_parser()
+    with pytest.raises(SystemExit):
+        # argparse exits with non-zero on unknown args
+        parser.parse_args(["dummy.mp4", "--grain", "5"])
+
+
+# ---------------------------------------------------------------------------
+# Re-Run loop wiring (PR #18 follow-up): rerun_oldcam_only() must honor the
+# loop_videos config the same way the normal queue path does.
+# ---------------------------------------------------------------------------
+
+
+def test_rerun_oldcam_loop_enabled_re_loops_source_before_oldcam(tmp_path):
+    """When loop_videos=True, rerun_oldcam_only must call _loop_video and
+    pass the looped path to _oldcam_video (matching normal-queue behavior)."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    looped = tmp_path / "clip_looped.mp4"
+    looped.write_bytes(b"looped-video")
+
+    manager, _ = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "loop_videos": True,
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update({"success": success, "src": src, "output": output, "error": error})
+        done.set()
+
+    captured_inputs = []
+
+    def _fake_oldcam(path, _item):
+        captured_inputs.append(path)
+        expected = manager._build_oldcam_output_path(Path(path), "v13")
+        expected.write_bytes(b"done")
+        return str(expected)
+
+    with mock.patch.object(manager, "_loop_video", return_value=str(looped)) as loop_mock, \
+        mock.patch.object(manager, "_oldcam_video", side_effect=_fake_oldcam):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+        manager._oldcam_rerun_thread.join(timeout=2)
+
+        loop_mock.assert_called_once()
+        # _loop_video was called with the un-looped source path string
+        args, _ = loop_mock.call_args
+        assert args[0] == str(source.resolve())
+
+    assert result["success"] is True
+    # The captured Oldcam input must be the looped path (not the un-looped source)
+    assert len(captured_inputs) == 1
+    assert captured_inputs[0] == str(looped.resolve())
+    # Output filename inherits the _looped stem
+    assert "_looped-oldcam-v13" in result["output"]
+
+
+def test_rerun_oldcam_loop_disabled_skips_loop_step(tmp_path):
+    """When loop_videos=False, rerun_oldcam_only must NOT call _loop_video
+    and must pass the un-looped source straight to _oldcam_video."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, _ = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "loop_videos": False,
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update({"success": success, "src": src, "output": output, "error": error})
+        done.set()
+
+    captured_inputs = []
+
+    def _fake_oldcam(path, _item):
+        captured_inputs.append(path)
+        expected = manager._build_oldcam_output_path(Path(path), "v13")
+        expected.write_bytes(b"done")
+        return str(expected)
+
+    with mock.patch.object(manager, "_loop_video") as loop_mock, \
+        mock.patch.object(manager, "_oldcam_video", side_effect=_fake_oldcam):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+        manager._oldcam_rerun_thread.join(timeout=2)
+
+        loop_mock.assert_not_called()
+
+    assert result["success"] is True
+    assert captured_inputs == [str(source.resolve())]
+
+
+def test_rerun_oldcam_loop_enabled_skips_when_source_already_looped(tmp_path):
+    """If the user picks a _looped source while loop_videos=True, skip the
+    loop step so we don't produce ..._looped_looped.mp4."""
+    source = tmp_path / "clip_looped.mp4"
+    source.write_bytes(b"video")
+
+    manager, logs = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "loop_videos": True,
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update({"success": success, "src": src, "output": output, "error": error})
+        done.set()
+
+    captured_inputs = []
+
+    def _fake_oldcam(path, _item):
+        captured_inputs.append(path)
+        expected = manager._build_oldcam_output_path(Path(path), "v13")
+        expected.write_bytes(b"done")
+        return str(expected)
+
+    with mock.patch.object(manager, "_loop_video") as loop_mock, \
+        mock.patch.object(manager, "_oldcam_video", side_effect=_fake_oldcam):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+        manager._oldcam_rerun_thread.join(timeout=2)
+
+        loop_mock.assert_not_called()
+
+    assert result["success"] is True
+    assert captured_inputs == [str(source.resolve())]
+    # A user-visible log line explains the skip
+    assert any("already looped" in message for message, _level in logs)
+
+
+def test_rerun_oldcam_loop_failure_falls_back_to_unlooped_source(tmp_path):
+    """If _loop_video returns None, log a warning and run Oldcam on the
+    original un-looped source rather than aborting the rerun."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, logs = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "loop_videos": True,
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update({"success": success, "src": src, "output": output, "error": error})
+        done.set()
+
+    captured_inputs = []
+
+    def _fake_oldcam(path, _item):
+        captured_inputs.append(path)
+        expected = manager._build_oldcam_output_path(Path(path), "v13")
+        expected.write_bytes(b"done")
+        return str(expected)
+
+    with mock.patch.object(manager, "_loop_video", return_value=None) as loop_mock, \
+        mock.patch.object(manager, "_oldcam_video", side_effect=_fake_oldcam):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+        manager._oldcam_rerun_thread.join(timeout=2)
+
+        loop_mock.assert_called_once()
+
+    assert result["success"] is True
+    # Fell back to the un-looped source
+    assert captured_inputs == [str(source.resolve())]
+    # Warning logged so the user knows the loop step didn't run
+    assert any(
+        level == "warning" and "loop step failed" in message
+        for message, level in logs
+    )
+
+
+# ---------------------------------------------------------------------------
+# Logging UX: panel-vs-file separation
+# ---------------------------------------------------------------------------
+
+
+def test_is_panel_noise_matches_known_subprocess_noise():
+    """Verbose subprocess lines that already have a friendlier panel
+    equivalent are routed to file-only ("debug") via _is_panel_noise."""
+    from kling_gui.queue_manager import _is_panel_noise
+
+    # Substring-match, case-insensitive, mirrors _TF_NOISE_PATTERNS contract.
+    assert _is_panel_noise("Input : F:/Downloads/clip.mp4")
+    assert _is_panel_noise("Input: F:/Downloads/clip.mp4")
+    assert _is_panel_noise("Output: F:/Downloads/clip-oldcam-v13.mp4")
+    assert _is_panel_noise("Saved video to: F:/Downloads/clip-oldcam-v13.mp4")
+    assert _is_panel_noise("Video processing complete.")
+    assert _is_panel_noise("Finalizing video with FFmpeg codec: h264")
+
+    # Friendly lines that the user SHOULD see in the panel must NOT match.
+    assert not _is_panel_noise("[Oldcam] Processing: 50% complete...")
+    assert not _is_panel_noise("Oldcam v13 Finish applied: clip-oldcam-v13.mp4")
+    assert not _is_panel_noise("Applying Oldcam v13 Finish...")
+    assert not _is_panel_noise("")
+
+
+def test_rerun_oldcam_summary_demoted_to_debug_level(tmp_path):
+    """The rerun summary duplicates the _oldcam_video 'Oldcam summary:' line.
+    It must be logged at "debug" level so it stays in the file log but
+    doesn't reappear in the user-facing panel."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, logs = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "loop_videos": False,
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    done = threading.Event()
+
+    def callback(success, src, output, error):
+        done.set()
+
+    def _fake_oldcam(path, _item):
+        expected = manager._build_oldcam_output_path(Path(path), "v13")
+        expected.write_bytes(b"done")
+        # Populate the summary state that the rerun worker reads.
+        manager._last_oldcam_run_summary = {
+            "requested_versions": ["v13"],
+            "succeeded_versions": ["v13"],
+            "failed_versions": [],
+            "primary_output": str(expected),
+        }
+        return str(expected)
+
+    with mock.patch.object(manager, "_oldcam_video", side_effect=_fake_oldcam):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+        manager._oldcam_rerun_thread.join(timeout=2)
+
+    # The "Oldcam-only rerun summary:" line exists, but only at debug level.
+    rerun_summary_logs = [
+        (message, level) for message, level in logs
+        if "Oldcam-only rerun summary:" in message
+    ]
+    assert len(rerun_summary_logs) >= 1, "Expected the rerun summary to be logged"
+    for message, level in rerun_summary_logs:
+        assert level == "debug", (
+            f"Rerun summary must be at 'debug' (file-only) to avoid duplicating "
+            f"the 'Oldcam summary:' panel line; got level={level!r} for: {message}"
+        )
+
+    # The basename-only "Oldcam-only rerun complete: <name>" emit must also be
+    # debug, since main_window's completion callback emits the friendlier
+    # "<src> → <output>" message for the panel.
+    rerun_complete_logs = [
+        (message, level) for message, level in logs
+        if message.startswith("Oldcam-only rerun complete:")
+    ]
+    for message, level in rerun_complete_logs:
+        assert level == "debug", (
+            f"Basename-only 'rerun complete' must be debug; main_window emits "
+            f"the user-facing arrow form. Got level={level!r} for: {message}"
+        )
+
+
+def test_oldcam_summary_and_selected_lines_demoted_to_debug(tmp_path):
+    """Inside _oldcam_video the structured 'Oldcam selected: running ...'
+    and 'Oldcam summary:' lines are now debug-level to avoid duplicating
+    the per-version 'Oldcam vN Finish applied: ...' panel messages."""
+    source = tmp_path / "clip_looped.mp4"
+    source.write_bytes(b"video")
+
+    manager, logs = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    # Stub _run_oldcam_version so _oldcam_video runs end-to-end without
+    # spawning a real Oldcam subprocess.
+    def _fake_run(_path, version):
+        produced = manager._build_oldcam_output_path(Path(_path), version)
+        produced.write_bytes(b"done")
+        return str(produced)
+
+    with mock.patch.object(manager, "_run_oldcam_version", side_effect=_fake_run):
+        result = manager._oldcam_video(str(source), QueueItem(str(source)))
+
+    assert result is not None and result.endswith(".mp4")
+
+    # "Oldcam selected: running v13" -> must be debug now.
+    selected_logs = [
+        (msg, lvl) for msg, lvl in logs if msg.startswith("Oldcam selected: running")
+    ]
+    assert selected_logs, "Expected at least one 'Oldcam selected: running' emit"
+    for msg, lvl in selected_logs:
+        assert lvl == "debug", (
+            f"'Oldcam selected: running ...' must be debug (file-only); the "
+            f"per-version 'Applying' / 'Finish applied' lines convey the same "
+            f"info to the panel. Got level={lvl!r} for: {msg}"
+        )
+
+    # "Oldcam summary: ..." -> must also be debug (the success summary).
+    summary_logs = [
+        (msg, lvl) for msg, lvl in logs if msg.startswith("Oldcam summary: requested versions=")
+    ]
+    assert summary_logs, "Expected at least one 'Oldcam summary:' emit"
+    for msg, lvl in summary_logs:
+        assert lvl == "debug", (
+            f"'Oldcam summary:' must be debug (file-only); per-version 'Finish "
+            f"applied' lines + main_window's final 'rerun complete' arrow line "
+            f"cover the user-facing summary. Got level={lvl!r} for: {msg}"
+        )
+
+
+def test_loop_video_wrapper_emits_saved_line_at_debug_level(tmp_path):
+    """QueueManager._loop_video should NOT duplicate the looper's
+    'Looped video saved: <name> (X.Y MB)' panel success line; its own
+    basename-only 'Looped video saved: <name>' emit must be debug."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, logs = make_queue_manager({"loop_videos": True})
+
+    # Mock the looper to return a sentinel path without invoking ffmpeg.
+    fake_looped = tmp_path / "clip_looped.mp4"
+    fake_looped.write_bytes(b"loop-output")
+
+    with mock.patch(
+        "kling_gui.video_looper.create_looped_video",
+        return_value=str(fake_looped),
+    ):
+        result = manager._loop_video(str(source), QueueItem(str(source)))
+
+    assert result == str(fake_looped)
+
+    saved_logs = [
+        (msg, lvl) for msg, lvl in logs if msg.startswith("Looped video saved:")
+    ]
+    # The wrapper emits its own "Looped video saved: <name>" event; verify
+    # the wrapper's emit is debug-level (file only). The looper itself
+    # emits the panel-facing success line with file size and is not under
+    # test here.
+    assert saved_logs, "Expected the wrapper to emit a 'Looped video saved' event"
+    for msg, lvl in saved_logs:
+        assert lvl == "debug", (
+            f"Wrapper's 'Looped video saved: <name>' must be debug to avoid "
+            f"duplicating the looper's '... (X.Y MB)' panel success line. "
+            f"Got level={lvl!r} for: {msg}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Verbose Mode checkbox: when enabled, "debug" lines also appear in the panel.
+# ---------------------------------------------------------------------------
+
+
+def test_verbose_mode_routing_logic_present_in_log_method():
+    """`KlingGUIWindow._log` must read `verbose_gui_mode` from config when
+    deciding whether to surface a 'debug' line in the panel."""
+    from kling_gui.main_window import KlingGUIWindow
+    import inspect
+
+    src = inspect.getsource(KlingGUIWindow._log)
+
+    # The method must consult the verbose_gui_mode config to decide whether
+    # to render debug emits in the panel.
+    assert "verbose_gui_mode" in src, (
+        "_log must read config['verbose_gui_mode'] to decide whether to "
+        "show debug-level lines in the panel"
+    )
+    # The default path (verbose OFF) must still suppress debug from the panel.
+    assert 'level != "debug"' in src or "level == \"debug\"" in src, (
+        "_log must explicitly branch on level == 'debug' so the panel is "
+        "clean when Verbose Mode is off"
+    )
+    # debug must still reach the file logger via logger.debug.
+    assert "logger.debug" in src, "debug-level emits must still go to logger.debug for the file log"
+
+
+def test_verbose_mode_panel_routing_simulated():
+    """Simulate the _log routing logic (without booting Tkinter) and verify:
+    - verbose OFF: debug lines skip the panel, info lines show
+    - verbose ON: both debug and info show in the panel
+    File logger always sees both, regardless of verbose setting.
+    """
+    panel_log: list = []
+    file_log: list = []
+
+    def simulate_log(message: str, level: str, *, verbose_gui_mode: bool):
+        # Mirror the production routing in KlingGUIWindow._log.
+        show_in_panel = level != "debug" or verbose_gui_mode
+        if show_in_panel:
+            panel_log.append((message, "info" if level == "debug" else level))
+        # File logger always sees the line.
+        file_log.append((message, level))
+
+    # Default (verbose OFF)
+    simulate_log("user-facing info", "info", verbose_gui_mode=False)
+    simulate_log("verbose debug detail", "debug", verbose_gui_mode=False)
+    assert ("user-facing info", "info") in panel_log
+    assert all(m != "verbose debug detail" for m, _ in panel_log)
+    assert ("verbose debug detail", "debug") in file_log
+
+    # Verbose ON
+    panel_log.clear()
+    simulate_log("user-facing info 2", "info", verbose_gui_mode=True)
+    simulate_log("verbose debug detail 2", "debug", verbose_gui_mode=True)
+    assert ("user-facing info 2", "info") in panel_log
+    # debug emit becomes panel-visible but rendered with the "info" tag.
+    assert ("verbose debug detail 2", "info") in panel_log
+
+
+def test_verbose_gui_mode_default_is_false():
+    """The clean-panel-by-default contract: the boot-time default for
+    verbose_gui_mode must be False so new users get the friendly stream
+    out of the box. Verbose Mode is opt-in via the Settings checkbox."""
+    panel_source = (ROOT / "kling_gui" / "main_window.py").read_text(encoding="utf-8")
+    # The default-config dict in _load_config must declare verbose_gui_mode
+    # as False. We match the literal line that defines it.
+    assert '"verbose_gui_mode": False' in panel_source, (
+        "verbose_gui_mode default must be False (clean panel out of the box). "
+        "Verbose stream is opt-in via the Settings checkbox."
+    )
+    # Belt-and-suspenders: explicitly assert the True default is gone.
+    assert '"verbose_gui_mode": True' not in panel_source, (
+        "Found a legacy 'verbose_gui_mode: True' default; flip to False so "
+        "new installs and migrated configs land on the clean panel."
+    )
+
+
+def test_verbose_gui_mode_legacy_true_migrated_to_false_once():
+    """Existing users who saved configs under the pre-v1.7 True default
+    get flipped once to False; the migration flag prevents us from
+    overriding the user's preference if they later opt back into verbose."""
+    from kling_gui.main_window import KlingGUIWindow
+
+    # Legacy config: had True from old default, no migration flag.
+    legacy = {"verbose_gui_mode": True}
+    KlingGUIWindow._migrate_legacy_defaults(legacy)
+    assert legacy["verbose_gui_mode"] is False
+    assert legacy["verbose_gui_mode_migrated_v17"] is True
+
+    # User opted into verbose AFTER the migration ran: stays True.
+    opted_in = {"verbose_gui_mode": True, "verbose_gui_mode_migrated_v17": True}
+    KlingGUIWindow._migrate_legacy_defaults(opted_in)
+    assert opted_in["verbose_gui_mode"] is True
+
+    # User had False already (either explicit or fresh install): stays False.
+    fresh = {"verbose_gui_mode": False}
+    KlingGUIWindow._migrate_legacy_defaults(fresh)
+    assert fresh["verbose_gui_mode"] is False
+    assert fresh["verbose_gui_mode_migrated_v17"] is True
+
+
+# ---------------------------------------------------------------------------
+# Default-version consistency regression: every layer that picks a default
+# Oldcam version must agree on v13 across CLI, GUI, and launcher chains.
+# ---------------------------------------------------------------------------
+
+
+def test_default_oldcam_version_is_v13_across_all_layers():
+    """If someone adds a new default-version site and forgets to set v13,
+    this test fails. Locks the contract until the next intentional bump."""
+    # CLI / automation default
+    from automation.config import merge_automation_defaults
+    merged = merge_automation_defaults({})
+    assert merged["automation_oldcam_version"] == "v13", (
+        f"automation/config.py default must be v13; got "
+        f"{merged['automation_oldcam_version']!r}"
+    )
+
+    # GUI checkbox default (v13 BooleanVar with value=True)
+    config_panel_src = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
+    assert '"v13": tk.BooleanVar(value=True)' in config_panel_src, (
+        "GUI must ship with v13 checkbox pre-selected"
+    )
+    # Other versions in the dict must be value=False (only v13 starts ticked).
+    for legacy in ("v7", "v8", "v9", "v10", "v11", "v12"):
+        assert f'"{legacy}": tk.BooleanVar(value=True)' not in config_panel_src, (
+            f"Only v13 should be pre-selected; found {legacy} also marked True"
+        )
+
+    # Legacy fallback strings inside config_panel must default to v13.
+    # (Three call sites: load → save, on-change → save, _resolve fallback.)
+    fallback_v13_count = config_panel_src.count('"v13"')
+    assert fallback_v13_count >= 3, (
+        f"Expected at least 3 'v13' fallback strings in config_panel.py; got {fallback_v13_count}"
+    )
+
+    # CLI fallback strings + choice list must include v13 and use it as default.
+    cli_src = (ROOT / "kling_automation_ui.py").read_text(encoding="utf-8")
+    assert cli_src.count("'v13'") + cli_src.count('"v13"') >= 4, (
+        "Expected CLI to default to v13 in ≥3 get(..., 'v13') calls + choice list"
+    )
+    # The choice list must contain v13.
+    assert '"v13"' in cli_src or "'v13'" in cli_src
+    assert '"v7", "v8", "v9", "v10", "v11", "v12", "v13", "all"' in cli_src, (
+        "CLI menu choice list must enumerate v7-v13 plus 'all'"
+    )
+
+    # Launcher chains: root + windows hub + macOS hub must chain to v13.
+    for path in (
+        "run_oldcam.bat",
+        "launchers/windows/run_oldcam.bat",
+    ):
+        text = (ROOT / path).read_text(encoding="utf-8")
+        assert "run_oldcam_v13.bat" in text, f"{path} must chain to run_oldcam_v13.bat"
+
+    macos_chain = (ROOT / "launchers" / "macos" / "run_oldcam.command").read_text(encoding="utf-8")
+    assert "run_oldcam_v13.command" in macos_chain, (
+        "launchers/macos/run_oldcam.command must chain to run_oldcam_v13.command"
+    )
+
+
+def test_oldcam_v13_standalone_files_present_for_both_platforms():
+    """v13 standalone must exist for Windows + macOS so users can run it
+    directly without the GUI. Cross-platform parity is non-negotiable."""
+    expected_files = [
+        # Windows side
+        "oldcam-v13/oldcam.py",
+        "oldcam-v13/launcher.py",
+        "oldcam-v13/oldcam_launcher.bat",
+        "oldcam-v13/requirements.txt",
+        # macOS side
+        "oldcam-v13/macOS/oldcam.py",
+        "oldcam-v13/macOS/oldcam.command",
+        "oldcam-v13/macOS/requirements.txt",
+        # Hub launchers
+        "launchers/windows/run_oldcam_v13.bat",
+        "launchers/macos/run_oldcam_v13.command",
+        "launchers/run_oldcam_v13.bat",
+        "launchers/run_oldcam_v13.command",
+    ]
+    for rel in expected_files:
+        assert (ROOT / rel).exists(), f"Missing v13 standalone file: {rel}"
+
+    # Sanity: macOS .command must use LF endings only (else Bash chokes).
+    for cmd_rel in (
+        "oldcam-v13/macOS/oldcam.command",
+        "launchers/macos/run_oldcam_v13.command",
+        "launchers/run_oldcam_v13.command",
+    ):
+        data = (ROOT / cmd_rel).read_bytes()
+        assert b"\r\n" not in data, (
+            f"{cmd_rel} must use LF endings only (macOS bash rejects CRLF)"
+        )
+
+    # Sanity: Windows .bat must contain CRLF (cmd.exe garbles LF-only batches).
+    for bat_rel in (
+        "oldcam-v13/oldcam_launcher.bat",
+        "launchers/windows/run_oldcam_v13.bat",
+        "launchers/run_oldcam_v13.bat",
+    ):
+        data = (ROOT / bat_rel).read_bytes()
+        assert b"\r\n" in data, (
+            f"{bat_rel} must use CRLF endings (cmd.exe garbles LF-only .bat files)"
+        )
