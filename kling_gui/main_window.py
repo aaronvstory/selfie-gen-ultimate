@@ -4057,16 +4057,25 @@ class KlingGUIWindow:
         self._refresh_session_dependent_ui()
         self._queue_autosave(reason="session_load")
         self._log(f"Session restored: {loaded_count} images loaded", "success")
-        # If we invalidated stale pre-v1.8 scores during restore, the carousel auto-calc
-        # path can't fire (n == _last_known_count after suppress_auto_calc(False)), so
-        # explicitly kick off a batch recompute. recalc_all_similarity_now() logs both
-        # success and skip reasons so the user always sees activity in the Processing Log.
-        if invalidate_legacy_scores and loaded_count > 0:
+        # ALWAYS kick off a batch recompute after restore so the user sees engine
+        # activity in the Processing Log — never silent.
+        # The carousel's auto-calc path is dead post-restore (suppress lifts AFTER
+        # _last_known_count is updated, so n > _last_known_count is False forever),
+        # and the legacy-score invalidation gate previously gated this call too —
+        # producing the silent failure where v1.8 autosaves never recomputed.
+        # recalc_all_similarity_now() handles all three cases with visible logs:
+        #   - work started:       "Sim: batch start: N images, ref=..., reason=..."
+        #   - no reference set:   "Sim: recalc skipped (...): no similarity reference"
+        #   - no eligible targets: "Sim: recalc skipped (...): no eligible targets"
+        if loaded_count > 0:
+            recalc_reason = (
+                "post-restore v1.8 KYC migration"
+                if invalidate_legacy_scores
+                else "post-restore engine refresh"
+            )
             self.root.after(
                 250,
-                lambda: self.carousel.recalc_all_similarity_now(
-                    reason="post-restore v1.8 KYC migration",
-                ),
+                lambda r=recalc_reason: self.carousel.recalc_all_similarity_now(reason=r),
             )
 
     # ── Auto-save timer ───────────────────────────────────────────────────────

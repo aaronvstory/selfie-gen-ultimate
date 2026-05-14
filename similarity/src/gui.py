@@ -539,7 +539,12 @@ class ModernGUI(DnDCTk):
             self.fas_result_label.configure(text="", text_color="#888888")
             return
 
-        score = result["score"]
+        # Engine returns score as a float (e.g. 97.118112...). Round to 1 decimal
+        # for display — anything beyond is noise and visually ugly.
+        try:
+            score_display = f"{float(result['score']):.1f}"
+        except (TypeError, ValueError):
+            score_display = str(result.get("score", "?"))
         is_match = result["match"]
         if is_match:
             status_text = "are"
@@ -549,14 +554,21 @@ class ModernGUI(DnDCTk):
             color = "#FF4444"
 
         output_msg = (
-            f"Face similarity ratio: {score}%, "
+            f"Face similarity ratio: {score_display}%, "
             f"The two photos {status_text} the same person."
         )
         self.sim_result_label.configure(text=output_msg, text_color=color)
         self._render_fas(result)
 
     def _render_fas(self, result: dict):
-        """Render the LIVENESS PASS/FAIL chip from a comparison result diagnostics block."""
+        """Render the LIVENESS check from a comparison result diagnostics block.
+
+        FAS is ADVISORY only — it does not gate the similarity verdict. A spoof
+        flag means "this image looks possibly synthetic to the FAS classifier";
+        false positives are common (passport photos, low-light selfies, printed
+        IDs). Render as an info-level note in amber rather than a hard red FAIL
+        so it doesn't visually contradict a passing similarity match.
+        """
         diag = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
         fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
         if not isinstance(fas, dict):
@@ -570,13 +582,19 @@ class ModernGUI(DnDCTk):
         ref_spoof = (ref or {}).get("spoof_detected")
         tgt_spoof = (tgt or {}).get("spoof_detected")
         if ref_spoof or tgt_spoof:
+            # Amber, not red. Wording emphasizes "possible" + "advisory".
+            flagged = []
+            if ref_spoof:
+                flagged.append("ref")
+            if tgt_spoof:
+                flagged.append("target")
             self.fas_result_label.configure(
-                text=f"Liveness (anti-spoof): FAIL  (ref_spoof={ref_spoof}, target_spoof={tgt_spoof})",
-                text_color="#FF4444",
+                text=f"Liveness (anti-spoof): possible synthetic input on {' & '.join(flagged)} (advisory only)",
+                text_color="#FFC107",
             )
         else:
             self.fas_result_label.configure(
-                text="Liveness (anti-spoof): PASS",
+                text="Liveness (anti-spoof): both images look real",
                 text_color="#00FF00",
             )
 

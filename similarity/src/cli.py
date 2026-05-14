@@ -609,10 +609,18 @@ class ProCLI:
         if result.get("error"):
             console.print(Panel(f"[bold red]Error:[/bold red] {result['error']}", border_style="red"))
             return
-        score, is_match = result["score"], result["match"]
+        # Engine returns score as a float (e.g. 97.118112...). Round to 1 decimal —
+        # anything beyond is noise for end users.
+        try:
+            score_display = f"{float(result['score']):.1f}"
+        except (TypeError, ValueError):
+            score_display = str(result.get("score", "?"))
+        is_match = result["match"]
         color = "green" if is_match else "red"
         status = "are" if is_match else "are not"
-        # FAS PASS/FAIL surfaced in a second line when anti_spoofing is active.
+        # FAS is ADVISORY only — does not gate the verdict. Render in amber with
+        # softened wording when triggered (false positives are common on passport
+        # photos, low-light selfies, printed IDs).
         diag = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
         fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
         fas_line = ""
@@ -622,11 +630,24 @@ class ProCLI:
             if ref is not None or tgt is not None:
                 ref_spoof = (ref or {}).get("spoof_detected")
                 tgt_spoof = (tgt or {}).get("spoof_detected")
-                fas_color = "red" if (ref_spoof or tgt_spoof) else "green"
-                fas_text = "FAIL" if (ref_spoof or tgt_spoof) else "PASS"
-                fas_line = f"\nLiveness (anti-spoof): [{fas_color} bold]{fas_text}[/{fas_color} bold]"
+                if ref_spoof or tgt_spoof:
+                    flagged = []
+                    if ref_spoof:
+                        flagged.append("ref")
+                    if tgt_spoof:
+                        flagged.append("target")
+                    fas_line = (
+                        f"\nLiveness (anti-spoof): "
+                        f"[yellow bold]possible synthetic input on {' & '.join(flagged)}[/yellow bold]"
+                        f" (advisory only)"
+                    )
+                else:
+                    fas_line = (
+                        f"\nLiveness (anti-spoof): "
+                        f"[green bold]both images look real[/green bold]"
+                    )
         console.print(Panel(
-            f"Face similarity ratio: [{color} bold]{score}%[/{color} bold], "
+            f"Face similarity ratio: [{color} bold]{score_display}%[/{color} bold], "
             f"The two photos [{color} bold]{status}[/{color} bold] the same person.{fas_line}",
             border_style=color,
             expand=False,

@@ -267,6 +267,32 @@ class ImageCarousel(tk.Frame):
         )
         self.compare_btn.pack(side=tk.LEFT, padx=(6, 0))
 
+        # Manual recompute button — universal escape hatch when auto-trigger paths fail
+        # (post-restore, after config changes, etc). Always enabled; the underlying
+        # method emits a clear log line whether work started or was skipped.
+        self.recalc_btn = tk.Button(
+            sim_row,
+            text="Recalc",
+            command=debounce_command(
+                lambda: self.recalc_all_similarity_now(reason="manual recalc button"),
+                key="carousel_recalc",
+            ),
+            width=8,
+            font=(FONT_FAMILY, 9, "bold"),
+            bg=COLORS["bg_panel"],
+            fg=BUTTON_TEXT_COLOR,
+            activebackground=COLORS["bg_hover"],
+            activeforeground=BUTTON_TEXT_COLOR,
+            highlightbackground=COLORS["bg_main"],
+            highlightthickness=1,
+            relief=tk.FLAT,
+            bd=0,
+            padx=8,
+            pady=4,
+            cursor="hand2",
+        )
+        self.recalc_btn.pack(side=tk.LEFT, padx=(6, 0))
+
         self.open_active_folder_btn = ttk.Button(
             sim_row,
             text="📂",
