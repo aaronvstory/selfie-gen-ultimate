@@ -291,8 +291,22 @@ class ImageCarousel(tk.Frame):
         )
         self.open_active_folder_btn.pack(side=tk.LEFT, padx=(6, 0))
 
+        # NOTE: All three toggle checkboxes (Auto, Anti-spoof, Boxes) moved
+        # to a single dedicated bottom_row below meta_frame in v5.4 per user
+        # request — see bottom_row build below. Sim_row now only carries
+        # action buttons (★ Ref, Compare, 📂 folder).
+
+        # v5.4 bottom row: ALL THREE toggle checkboxes on one line at the
+        # very bottom: [☐ Auto | ☐ Anti-spoof | ☐ Boxes]. Packed BEFORE
+        # meta_frame (both side=BOTTOM) so bottom_row sits BELOW meta_frame
+        # — Tk stacks BOTTOM-packed widgets from bottom up in pack-call
+        # order. Defaults: Auto=ON (auto-recalc), Anti-spoof=OFF (advisory
+        # opt-in), Boxes=ON (face-bbox overlay).
+        bottom_row = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
+        bottom_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 4))
+
         self._auto_chk = tk.Checkbutton(
-            sim_row,
+            bottom_row,
             text="Auto",
             variable=self._auto_var,
             font=(FONT_FAMILY, 8),
@@ -303,20 +317,8 @@ class ImageCarousel(tk.Frame):
             activeforeground=COLORS["text_light"],
             padx=2,
         )
-        self._auto_chk.pack(side=tk.RIGHT, padx=(0, 4))
+        self._auto_chk.pack(side=tk.LEFT, padx=(0, 8))
 
-        # NOTE: "Anti-spoof" toggle moved to a dedicated bottom row below
-        # meta_frame in v5.2 per user request — see bottom_row build below.
-        # Sim_row now only carries action buttons (★ Ref, Compare, Auto,
-        # 📂 folder) so the per-image FAS preview row stays uncluttered.
-
-        # v5.2 bottom row: Anti-spoof toggle pinned at the very bottom.
-        # Packed BEFORE meta_frame (both side=BOTTOM) so bottom_row sits
-        # BELOW meta_frame — Tk stacks BOTTOM-packed widgets from bottom up
-        # in pack-call order. Anti-spoof is OFF by default (main carousel
-        # is a generative-content workflow, not strict KYC).
-        bottom_row = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
-        bottom_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 4))
         self._anti_spoof_chk = tk.Checkbutton(
             bottom_row,
             text="Anti-spoof",
@@ -330,7 +332,22 @@ class ImageCarousel(tk.Frame):
             activeforeground=COLORS["text_light"],
             padx=2,
         )
-        self._anti_spoof_chk.pack(side=tk.LEFT, padx=(0, 6))
+        self._anti_spoof_chk.pack(side=tk.LEFT, padx=(0, 8))
+
+        self._show_face_box_chk = tk.Checkbutton(
+            bottom_row,
+            text="Boxes",
+            variable=self._show_face_box_var,
+            command=self._on_show_face_box_toggle,
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["text_light"],
+            padx=2,
+        )
+        self._show_face_box_chk.pack(side=tk.LEFT, padx=(0, 6))
 
         # Metadata row (resolution + filesize on left, similarity on right).
         # Packed AFTER bottom_row (both side=BOTTOM) so meta_frame sits
@@ -344,25 +361,9 @@ class ImageCarousel(tk.Frame):
         )
         self.meta_label.pack(side=tk.LEFT)
 
-        # v5.2 control strip in meta_frame, packed RIGHT (right-to-left
-        # visual order). To get final layout [LIVE, SIM, ↻, ☐ Boxes] we
-        # pack RIGHTMOST FIRST: Boxes → recalc → SIM → LIVE.
-        #
-        # Boxes checkbox (rightmost — toggles face-bbox overlay).
-        self._show_face_box_chk = tk.Checkbutton(
-            self.meta_frame,
-            text="Boxes",
-            variable=self._show_face_box_var,
-            command=self._on_show_face_box_toggle,
-            font=(FONT_FAMILY, 8),
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"],
-            activebackground=COLORS["bg_panel"],
-            activeforeground=COLORS["text_light"],
-            padx=2,
-        )
-        self._show_face_box_chk.pack(side=tk.RIGHT, padx=(6, 0))
+        # v5.4: meta_frame now ONLY carries the result chips [LIVE, SIM].
+        # The Boxes/Auto/Anti-spoof checkboxes all live on bottom_row above.
+        # The recalc button was removed in v5.3.
 
         # NOTE: Manual recalc button removed in v5.3 per user request — the
         # method recalc_all_similarity_now() below stays in place because the
