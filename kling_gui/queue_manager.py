@@ -301,6 +301,25 @@ def _is_tf_noise(line: str) -> bool:
     return any(pat in low for pat in _TF_NOISE_PATTERNS)
 
 
+# Lines from the Oldcam subprocess that already have a friendlier equivalent
+# in the queue_manager's own logging (or are pure path-dump noise). Routed
+# to the file log only to keep the user-facing panel readable.
+# Substring match, lowercase, mirroring _TF_NOISE_PATTERNS.
+_PANEL_NOISE_PATTERNS = (
+    "input :",
+    "input:",
+    "output:",
+    "saved video to:",
+    "video processing complete.",
+    "finalizing video with ffmpeg codec",
+)
+
+
+def _is_panel_noise(line: str) -> bool:
+    low = line.lower()
+    return any(pat in low for pat in _PANEL_NOISE_PATTERNS)
+
+
 def get_next_available_path(
     image_path: str,
     output_folder: str,
@@ -772,6 +791,9 @@ class QueueManager:
                 failed_versions = summary.get("failed_versions", [])
                 primary_output = summary.get("primary_output", "")
                 if requested_versions:
+                    # Same payload already emitted by _oldcam_video as
+                    # "Oldcam summary:" — demote to debug so it stays in the
+                    # file log without duplicating the panel line.
                     self.log(
                         "Oldcam-only rerun summary: requested versions="
                         + ",".join(str(v) for v in requested_versions)
@@ -781,10 +803,15 @@ class QueueManager:
                         + ",".join(f"{v} ({r})" for v, r in failed_versions)
                         + "; primary output="
                         + str(primary_output),
-                        "info",
+                        "debug",
                     )
                 if output_path and Path(output_path).exists():
-                    self.log(f"Oldcam-only rerun complete: {Path(output_path).name}", "success")
+                    # The user-facing "rerun complete: <src> → <output>" line is
+                    # emitted by main_window's completion callback (it has the
+                    # source name + arrow + full output path). Demote this
+                    # basename-only twin to debug to avoid duplicating in the
+                    # panel.
+                    self.log(f"Oldcam-only rerun complete: {Path(output_path).name}", "debug")
                     if completion_callback:
                         completion_callback(True, str(source_video), str(output_path), None)
                     return
@@ -1255,7 +1282,11 @@ class QueueManager:
                 if line_text:
                     output_lines.append(line_text)
                     if not _is_tf_noise(line_text):
-                        self.log(line_text, "info")
+                        # Panel-noisy lines (already summarized elsewhere or
+                        # pure path dumps) go to the file log only; everything
+                        # else continues to the user-facing panel.
+                        level = "debug" if _is_panel_noise(line_text) else "info"
+                        self.log(line_text, level)
             returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             if process is not None:

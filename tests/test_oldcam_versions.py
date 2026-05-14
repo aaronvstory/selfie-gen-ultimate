@@ -989,3 +989,93 @@ def test_rerun_oldcam_loop_failure_falls_back_to_unlooped_source(tmp_path):
         level == "warning" and "loop step failed" in message
         for message, level in logs
     )
+
+
+# ---------------------------------------------------------------------------
+# Logging UX: panel-vs-file separation
+# ---------------------------------------------------------------------------
+
+
+def test_is_panel_noise_matches_known_subprocess_noise():
+    """Verbose subprocess lines that already have a friendlier panel
+    equivalent are routed to file-only ("debug") via _is_panel_noise."""
+    from kling_gui.queue_manager import _is_panel_noise
+
+    # Substring-match, case-insensitive, mirrors _TF_NOISE_PATTERNS contract.
+    assert _is_panel_noise("Input : F:/Downloads/clip.mp4")
+    assert _is_panel_noise("Input: F:/Downloads/clip.mp4")
+    assert _is_panel_noise("Output: F:/Downloads/clip-oldcam-v13.mp4")
+    assert _is_panel_noise("Saved video to: F:/Downloads/clip-oldcam-v13.mp4")
+    assert _is_panel_noise("Video processing complete.")
+    assert _is_panel_noise("Finalizing video with FFmpeg codec: h264")
+
+    # Friendly lines that the user SHOULD see in the panel must NOT match.
+    assert not _is_panel_noise("[Oldcam] Processing: 50% complete...")
+    assert not _is_panel_noise("Oldcam v13 Finish applied: clip-oldcam-v13.mp4")
+    assert not _is_panel_noise("Applying Oldcam v13 Finish...")
+    assert not _is_panel_noise("")
+
+
+def test_rerun_oldcam_summary_demoted_to_debug_level(tmp_path):
+    """The rerun summary duplicates the _oldcam_video 'Oldcam summary:' line.
+    It must be logged at "debug" level so it stays in the file log but
+    doesn't reappear in the user-facing panel."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, logs = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "loop_videos": False,
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    done = threading.Event()
+
+    def callback(success, src, output, error):
+        done.set()
+
+    def _fake_oldcam(path, _item):
+        expected = manager._build_oldcam_output_path(Path(path), "v13")
+        expected.write_bytes(b"done")
+        # Populate the summary state that the rerun worker reads.
+        manager._last_oldcam_run_summary = {
+            "requested_versions": ["v13"],
+            "succeeded_versions": ["v13"],
+            "failed_versions": [],
+            "primary_output": str(expected),
+        }
+        return str(expected)
+
+    with mock.patch.object(manager, "_oldcam_video", side_effect=_fake_oldcam):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+        manager._oldcam_rerun_thread.join(timeout=2)
+
+    # The "Oldcam-only rerun summary:" line exists, but only at debug level.
+    rerun_summary_logs = [
+        (message, level) for message, level in logs
+        if "Oldcam-only rerun summary:" in message
+    ]
+    assert len(rerun_summary_logs) >= 1, "Expected the rerun summary to be logged"
+    for message, level in rerun_summary_logs:
+        assert level == "debug", (
+            f"Rerun summary must be at 'debug' (file-only) to avoid duplicating "
+            f"the 'Oldcam summary:' panel line; got level={level!r} for: {message}"
+        )
+
+    # The basename-only "Oldcam-only rerun complete: <name>" emit must also be
+    # debug, since main_window's completion callback emits the friendlier
+    # "<src> → <output>" message for the panel.
+    rerun_complete_logs = [
+        (message, level) for message, level in logs
+        if message.startswith("Oldcam-only rerun complete:")
+    ]
+    for message, level in rerun_complete_logs:
+        assert level == "debug", (
+            f"Basename-only 'rerun complete' must be debug; main_window emits "
+            f"the user-facing arrow form. Got level={level!r} for: {message}"
+        )

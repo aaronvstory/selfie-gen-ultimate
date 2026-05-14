@@ -12,6 +12,32 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 
+def _summarize_ffmpeg_error(stderr: str) -> str:
+    """Reduce a multi-line FFmpeg stderr blob to one user-friendly line.
+
+    Looks for the most informative signal in priority order; falls back to
+    a generic message. Full stderr is preserved separately in the file log
+    via a "debug" level emit, so diagnostics are never lost.
+    """
+    if not stderr:
+        return "FFmpeg returned no output (encoder may have failed to start)"
+    lower = stderr.lower()
+    if "could not open encoder" in lower:
+        return "FFmpeg could not open the H.264 encoder (libx264 init failed)"
+    if "invalid argument" in lower:
+        return "FFmpeg rejected the encoder configuration (invalid argument)"
+    if "no such file" in lower or "no such directory" in lower:
+        return "FFmpeg could not find the input file"
+    if "permission denied" in lower:
+        return "FFmpeg permission denied (close any program holding the file open)"
+    if "conversion failed" in lower:
+        return "FFmpeg conversion failed (see kling_gui.log for details)"
+    first_line = next((l.strip() for l in stderr.splitlines() if l.strip()), "")
+    if len(first_line) > 160:
+        return first_line[:160] + "…"
+    return first_line or "Unknown error (see kling_gui.log for details)"
+
+
 def check_ffmpeg_available() -> Tuple[bool, str]:
     """
     Check if FFmpeg is available in PATH.
@@ -108,16 +134,22 @@ def create_looped_video(
     # Intermediate looped file: mathematically lossless H.264 so the forward+
     # reverse halves carry 100% of Kling's source detail into Oldcam. Oldcam's
     # own encoder (CRF 12 / preset slow / profile high) does the final size-
-    # conscious encode downstream, so this intermediate can be large — that's
-    # fine, it's deleted/replaced on each run.
+    # conscious encode downstream — the intermediate can be large.
     #
-    # Why not -qp 0 / yuv444p:
-    # - yuv444p breaks OpenCV decode paths and standard players downstream.
-    # - Stream-copy concat of a reversed H.264 stream causes PTS/DTS glitches.
-    # libx264 lossless mode needs -crf 0 + High 4:4:4 Predictive normally, but
-    # locking pix_fmt to yuv420p means x264 falls back to High profile lossless
-    # within 4:2:0 constraints — visually indistinguishable from source for
-    # this pipeline (Kling already delivers 4:2:0) and downstream-safe.
+    # Use -qp 0 (constant quantizer 0) rather than -crf 0: it's the canonical
+    # libx264 lossless idiom and works on every libx264 build. -crf 0 combined
+    # with -profile:v high crashes on strict libx264 builds because true H.264
+    # lossless requires the High 4:4:4 Predictive profile, but we need yuv420p
+    # downstream (yuv444p breaks OpenCV decode paths). -qp 0 sidesteps the
+    # profile-compatibility trap entirely; libx264 picks the appropriate
+    # profile internally based on the chosen pix_fmt and quantizer.
+    #
+    # -tune film and -profile:v also dropped: -tune film's psy-rd/psy-trellis
+    # are mathematically meaningless under lossless coding, and explicit
+    # -profile:v constraints conflict with libx264's internal lossless path.
+    #
+    # Stream-copy concat rejected: PTS/DTS glitches when concatenating a
+    # reversed H.264 half.
     cmd = [
         "ffmpeg",
         "-y" if overwrite else "-n",  # Overwrite or fail if exists
@@ -129,16 +161,12 @@ def create_looped_video(
         "[outv]",
         "-c:v",
         "libx264",
-        "-profile:v",
-        "high",
-        "-pix_fmt",
-        "yuv420p",
         "-preset",
         "slow",
-        "-tune",
-        "film",
-        "-crf",
+        "-qp",
         "0",
+        "-pix_fmt",
+        "yuv420p",
         "-movflags",
         "+faststart",
         str(output_file),
@@ -167,8 +195,12 @@ def create_looped_video(
                 log("FFmpeg completed but output file not found", "error")
                 return None
         else:
-            error_msg = result.stderr[-500:] if result.stderr else "Unknown error"
-            log(f"FFmpeg error: {error_msg}", "error")
+            full_stderr = (result.stderr or "").strip()
+            # Verbose dump → file log only (preserves diagnostics).
+            if full_stderr:
+                log(f"FFmpeg stderr (full): {full_stderr}", "debug")
+            # Friendly one-liner → panel.
+            log(f"Loop encode failed: {_summarize_ffmpeg_error(full_stderr)}", "error")
             return None
 
     except subprocess.TimeoutExpired:

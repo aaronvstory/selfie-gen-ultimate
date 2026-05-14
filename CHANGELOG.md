@@ -69,10 +69,51 @@ All notable changes to this project are documented here.
   source whose stem already ends in `_looped` skips the loop step to avoid
   `..._looped_looped.mp4`.
 
+- **Looper FFmpeg crash on strict libx264 builds.** The v1.7 looper used
+  `-profile:v high -crf 0 -tune film -pix_fmt yuv420p`, which crashes on
+  strict libx264 builds with `Could not open encoder before EOF` /
+  `Invalid argument (-22)`. Root cause: H.264 true-lossless coding
+  requires the High 4:4:4 Predictive profile, not plain High, but we need
+  yuv420p downstream for OpenCV compatibility. Replaced with the canonical
+  `-qp 0 -preset slow -pix_fmt yuv420p` idiom (no `-profile:v`, no `-tune`)
+  which works on every libx264 build. libx264 picks the appropriate profile
+  internally based on pix_fmt + quantizer. Intermediate file is ~5-15%
+  larger than `-crf 0` but Oldcam re-encodes it immediately, so size of
+  the throwaway intermediate is irrelevant.
+
+### Quality
+
+- **In-app log panel decluttered (file log retains everything).** Added a
+  `"debug"` level to `KlingGUIWindow._log()` that routes to the rotating
+  file handler (`~/.kling-ui/kling_gui.log`) only — never to the user-facing
+  panel. Applied at three known noisy sites:
+  - `video_looper.py`: FFmpeg failure now emits a single friendly one-liner
+    to the panel (e.g., `"Loop encode failed: FFmpeg could not open the
+    H.264 encoder (libx264 init failed)"`) with the full multi-line stderr
+    blob going to the file log at debug level. New `_summarize_ffmpeg_error()`
+    helper does priority-ordered classification: encoder init, invalid
+    argument, missing file, permission denied, generic conversion failure.
+  - `queue_manager.py`: subprocess stdout lines matching the new
+    `_PANEL_NOISE_PATTERNS` tuple (`"Input :"`, `"Output:"`, `"Saved video
+    to:"`, `"Video processing complete."`, `"Finalizing video with FFmpeg
+    codec"`) are routed to file-only. Progress lines (`[Oldcam] Processing:
+    N% complete`) and friendly summaries still show in the panel.
+  - Duplicate `"Oldcam-only rerun summary:"` and basename-only
+    `"Oldcam-only rerun complete:"` emits demoted to debug; `main_window.py`
+    already emits the friendlier `<source> → <output>` arrow line for the
+    panel.
+- File logger level bumped from `INFO` → `DEBUG` so the demoted lines
+  actually reach the disk file for diagnostics. Log file rotation
+  (5 MB × 3 backups) unchanged.
+
 ### Tests
 
-- 3 new V13 algorithm tests + 4 new Re-Run loop-wiring tests in
-  `tests/test_oldcam_versions.py`. Total: **346 tests** (345 pass + 1 skip).
+- 3 V13 algorithm tests + 4 Re-Run loop-wiring tests + 2 logging-UX tests
+  in `tests/test_oldcam_versions.py`; new `tests/test_video_looper.py`
+  with 12 tests covering `_summarize_ffmpeg_error` priority order,
+  the canonical `-qp 0` cmd structure (no `-profile:v`, no `-tune`,
+  no `-crf`), and the friendly-vs-debug stderr split on failure.
+  Total: **362 tests** all passing.
 - Updated existing tests for default-switch sites (5 files).
 
 ## 2026-05-14 (v1.6)

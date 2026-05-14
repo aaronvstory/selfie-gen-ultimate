@@ -687,7 +687,10 @@ class KlingGUIWindow:
         log_file = get_log_path("kling_gui.log")
 
         logger = logging.getLogger("kling_gui")
-        logger.setLevel(logging.INFO)
+        # DEBUG so "debug"-level emits (e.g., raw FFmpeg stderr, panel-noisy
+        # subprocess lines) reach the rotating file log while staying out of
+        # the user-facing panel. See _log() for level routing.
+        logger.setLevel(logging.DEBUG)
         logger.propagate = False
 
         if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
@@ -2866,8 +2869,13 @@ class KlingGUIWindow:
             )
 
     def _log(self, message: str, level: str = "info"):
-        """Log a message to the log display."""
-        if hasattr(self, "log_display"):
+        """Log a message to the log display.
+
+        Levels:
+        - "info" / "success" / "warning" / "error": panel + file
+        - "debug": file only (skipped from the user-facing panel)
+        """
+        if level != "debug" and hasattr(self, "log_display"):
             self.log_display.log(message, level)
         if self.logger:
             level_map = {
@@ -2875,6 +2883,7 @@ class KlingGUIWindow:
                 "success": self.logger.info,
                 "warning": self.logger.warning,
                 "error": self.logger.error,
+                "debug": self.logger.debug,
             }
             level_map.get(level, self.logger.info)(message)
 
