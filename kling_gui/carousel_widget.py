@@ -747,8 +747,14 @@ class ImageCarousel(tk.Frame):
             self._last_known_count = self.image_session.count
 
     def _sim_log(self, msg: str, lvl: str = "debug"):
-        """Thread-safe log wrapper for similarity — routes to Processing Log."""
-        self.after(0, lambda: self.log(f"Sim: {msg}", lvl))
+        """Thread-safe log wrapper for similarity — routes to Processing Log.
+
+        face_similarity._log already prefixes its messages with "Sim: ", so we
+        only add the prefix when the message arrived without one (e.g. our own
+        carousel-internal calls like "anti-spoof = True").
+        """
+        prefixed = msg if msg.startswith("Sim:") else f"Sim: {msg}"
+        self.after(0, lambda: self.log(prefixed, lvl))
 
     def _toggle_sim_ref(self):
         """Toggle the similarity reference on/off for the active image."""

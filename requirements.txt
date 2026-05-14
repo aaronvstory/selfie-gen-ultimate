@@ -9,6 +9,10 @@ mediapipe==0.10.35
 deepface==0.0.92
 tf-keras==2.16.0
 retina-face==0.0.17
+# torch is required by DeepFace's anti-spoofing classifier (MiniFASNetV2).
+# Without it the engine fails ALL similarity comparisons when anti_spoofing=True.
+# Pinned to a CPU-only-compatible version range; user can swap for the CUDA build manually.
+torch>=2.2,<3
 
 # GUI drag-and-drop support
 tkinterdnd2>=0.3,<1

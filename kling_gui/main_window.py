@@ -769,9 +769,9 @@ class KlingGUIWindow:
             # Window layout persistence
             "window_geometry": "",  # Empty = use default
             "sash_dropzone": 500,  # Height of top pane
-            "sash_queue": 260,  # Width of left bottom pane (carousel ~26%, widened v1.8 for Anti-spoof + LIVE chip)
+            "sash_queue": 356,  # Width of left bottom pane (carousel ~22%, user-tested at 1621w)
             "sash_log": 150,  # Height of log pane (before history)
-            "sash_log_drop_split": 700,  # Width of LOG pane (log | drop zone), v1.8 follow-up: log dominant ~65%
+            "sash_log_drop_split": 655,  # Width of LOG pane (~52% of right section, user-tested layout)
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)

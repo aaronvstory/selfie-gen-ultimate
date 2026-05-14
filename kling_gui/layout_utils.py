@@ -90,11 +90,12 @@ def sanitize_sash_layout(
     prompt_max = max(prompt_min, int(safe_w * 0.64))
     prompt_default = int(safe_w * 0.60)
 
-    # Carousel width: 22-32% of window. Widened in v1.8 to fit the new
-    # "Anti-spoof" checkbox and the "LIVE ✓ / ✖" PASS/FAIL chip alongside the SIM badge.
-    queue_min = max(220, int(safe_w * 0.22))
-    queue_max = max(queue_min, int(safe_w * 0.32))
-    queue_default = int(safe_w * 0.26)
+    # Carousel width: 20-30% of window, default 22%.
+    # Users tested 22% as their preferred carousel width — the Anti-spoof checkbox
+    # fits there with proper padding (font 8 + padx 12) without crowding the SIM badge.
+    queue_min = max(200, int(safe_w * 0.20))
+    queue_max = max(queue_min, int(safe_w * 0.30))
+    queue_default = int(safe_w * 0.22)
 
     log_min = 110
     log_max = max(log_min, int(safe_h * 0.42))
@@ -102,13 +103,13 @@ def sanitize_sash_layout(
 
     # Log vs drop zone: clamp relative to the right section width (safe_w - clamped queue)
     # so saved values from a different window size don't blow past the pane boundary.
-    # Widened in v1.8 follow-up: log was too narrow at 52% default; drop zone doesn't
-    # need that much real estate.  Range now 50-78% (log dominant), default 65%.
+    # Default 52% gives the log a slight edge over the drop zone — matches the
+    # user-tested layout at 1621w (carousel 22%, log 52% of right section).
     clamped_queue = max(queue_min, min(int(sash_queue) if sash_queue else queue_default, queue_max))
     right_section_w = max(400, safe_w - clamped_queue)
-    log_drop_min = max(240, int(right_section_w * 0.50))
-    log_drop_max = max(log_drop_min, int(right_section_w * 0.78))
-    log_drop_default = int(right_section_w * 0.65)
+    log_drop_min = max(220, int(right_section_w * 0.42))
+    log_drop_max = max(log_drop_min, int(right_section_w * 0.62))
+    log_drop_default = int(right_section_w * 0.52)
 
     sanitized = {
         "sash_dropzone": _clamp_int(sash_dropzone, drop_min, drop_max, drop_default),
