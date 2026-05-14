@@ -9,6 +9,24 @@ _ENGINE = None
 _ENGINE_ERROR: Optional[str] = None
 
 
+def _parse_bool(value: Any) -> Optional[bool]:
+    """Tolerant boolean parser for config values that may have round-tripped as strings.
+
+    Accepts true Python bools, common string forms ("true"/"false", "1"/"0",
+    "yes"/"no", "on"/"off", case-insensitive). Returns None when the value
+    can't be confidently coerced — callers should fall back to defaults.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return None
+
+
 def _apply_config_overrides(engine, report_cb: Optional[Callable[[str, str], None]]) -> None:
     """Apply runtime overrides for ensemble / FAS / secondary model from kling_config.json."""
     try:
@@ -18,14 +36,21 @@ def _apply_config_overrides(engine, report_cb: Optional[Callable[[str, str], Non
             return
         with open(cfg_path, "r", encoding="utf-8") as fh:
             cfg = json.load(fh)
-        if "automation_similarity_use_ensemble" in cfg:
-            engine.use_ensemble = bool(cfg["automation_similarity_use_ensemble"])
-        if "automation_similarity_anti_spoofing" in cfg:
-            engine.anti_spoofing = bool(cfg["automation_similarity_anti_spoofing"])
-        if "automation_similarity_secondary_model" in cfg:
-            engine.secondary_model_name = str(cfg["automation_similarity_secondary_model"])
-    except Exception as exc:
+    except (ImportError, OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         _log(report_cb, f"config load failed (using defaults): {exc}", "debug")
+        return
+    if "automation_similarity_use_ensemble" in cfg:
+        parsed = _parse_bool(cfg["automation_similarity_use_ensemble"])
+        if parsed is not None:
+            engine.use_ensemble = parsed
+    if "automation_similarity_anti_spoofing" in cfg:
+        parsed = _parse_bool(cfg["automation_similarity_anti_spoofing"])
+        if parsed is not None:
+            engine.anti_spoofing = parsed
+    if "automation_similarity_secondary_model" in cfg:
+        secondary = cfg["automation_similarity_secondary_model"]
+        if isinstance(secondary, str) and secondary.strip():
+            engine.secondary_model_name = secondary.strip()
 
 
 def _log(report_cb: Optional[Callable[[str, str], None]], msg: str, level: str = "debug") -> None:

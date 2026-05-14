@@ -106,3 +106,24 @@ def test_face_similarity_details_passes_through_spoof_warning_in_diagnostics():
     assert details["pass"] is True
     assert details["error"] is None
     assert details["diagnostics"]["anti_spoofing"]["ref"]["spoof_detected"] is True
+
+
+def test_parse_bool_handles_python_bools():
+    assert fs._parse_bool(True) is True
+    assert fs._parse_bool(False) is False
+
+
+def test_parse_bool_handles_string_truthy():
+    for v in ("true", "TRUE", "True", "1", "yes", "YES", "on", "ON"):
+        assert fs._parse_bool(v) is True, f"expected True for {v!r}"
+
+
+def test_parse_bool_handles_string_falsy():
+    # Critical: "false" must NOT evaluate to True (the bug CodeRabbit caught).
+    for v in ("false", "FALSE", "False", "0", "no", "NO", "off", "OFF"):
+        assert fs._parse_bool(v) is False, f"expected False for {v!r}"
+
+
+def test_parse_bool_returns_none_for_unrecognized():
+    for v in ("garbage", "", None, 42, [], {}):
+        assert fs._parse_bool(v) is None, f"expected None for {v!r}"

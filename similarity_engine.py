@@ -323,6 +323,59 @@ class FaceEngine:
         similarity = max(-1.0, min(1.0, similarity))
         return 1.0 - similarity
 
+    def _embed_reference_for_ensemble(
+        self, face_input: Any
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Compute primary (and optionally secondary) embeddings for a reference face.
+
+        Returns (primary_emb, secondary_emb_or_None). Used by callers that compare a
+        single reference against many targets — embedding the reference once and
+        reusing it avoids 2N redundant DeepFace inference calls when ensemble is on.
+        """
+        primary_emb = self._represent_face_with_model(face_input, self.model_name)
+        if not self.use_ensemble:
+            return primary_emb, None
+        try:
+            secondary_emb = self._represent_face_with_model(face_input, self.secondary_model_name)
+            return primary_emb, secondary_emb
+        except Exception as exc:
+            logger.warning(
+                "Secondary model %s failed for reference: %s", self.secondary_model_name, exc
+            )
+            return primary_emb, None
+
+    def _distance_against_cached_ref(
+        self,
+        target_face: Any,
+        ref_primary: np.ndarray,
+        ref_secondary: Optional[np.ndarray],
+    ) -> Tuple[float, Dict[str, float]]:
+        """Distance between a target face and a pre-computed reference embedding pair.
+
+        Mirrors `_ensemble_distance_pair` semantics (avg of two model distances when
+        ensemble is on, primary-only fallback if secondary errors), but skips the
+        cost of re-embedding the reference. Use when comparing one ref against
+        many candidates.
+        """
+        per_model: Dict[str, float] = {}
+        target_primary = self._represent_face_with_model(target_face, self.model_name)
+        primary_dist = self._cosine_distance(ref_primary, target_primary)
+        per_model[self.model_name] = float(primary_dist)
+
+        if ref_secondary is None:
+            return primary_dist, per_model
+
+        try:
+            target_secondary = self._represent_face_with_model(target_face, self.secondary_model_name)
+            sec_dist = self._cosine_distance(ref_secondary, target_secondary)
+            per_model[self.secondary_model_name] = float(sec_dist)
+            return (primary_dist + sec_dist) / 2.0, per_model
+        except Exception as exc:
+            logger.warning(
+                "Secondary model %s failed for target: %s", self.secondary_model_name, exc
+            )
+            return primary_dist, per_model
+
     def _ensemble_distance_pair(
         self, face_input1: Any, face_input2: Any
     ) -> Tuple[float, Dict[str, float]]:
@@ -330,25 +383,13 @@ class FaceEngine:
 
         Returns (avg_distance, {model_name: distance}).
         Falls back to primary-only if secondary model errors out.
+
+        For one-ref-against-many-targets workflows, prefer
+        `_embed_reference_for_ensemble` + `_distance_against_cached_ref` to avoid
+        re-embedding the reference on every call.
         """
-        per_model: Dict[str, float] = {}
-        primary_emb1 = self._represent_face_with_model(face_input1, self.model_name)
-        primary_emb2 = self._represent_face_with_model(face_input2, self.model_name)
-        primary_dist = self._cosine_distance(primary_emb1, primary_emb2)
-        per_model[self.model_name] = float(primary_dist)
-
-        if not self.use_ensemble:
-            return primary_dist, per_model
-
-        try:
-            sec_emb1 = self._represent_face_with_model(face_input1, self.secondary_model_name)
-            sec_emb2 = self._represent_face_with_model(face_input2, self.secondary_model_name)
-            sec_dist = self._cosine_distance(sec_emb1, sec_emb2)
-            per_model[self.secondary_model_name] = float(sec_dist)
-            return (primary_dist + sec_dist) / 2.0, per_model
-        except Exception as exc:
-            logger.warning("Secondary model %s failed: %s", self.secondary_model_name, exc)
-            return primary_dist, per_model
+        ref_primary, ref_secondary = self._embed_reference_for_ensemble(face_input1)
+        return self._distance_against_cached_ref(face_input2, ref_primary, ref_secondary)
 
     def _check_anti_spoofing(
         self, faces: List[Dict[str, Any]], image_label: str
@@ -507,14 +548,19 @@ class FaceEngine:
         diag["selected_face_boxes"]["ref"] = self._face_bbox(face1)
         diag["selected_face_confidence"]["ref"] = self._face_confidence(face1)
 
-        # Sanity: ensure primary embedding is reachable before iterating targets.
-        self._represent_face_with_model(face1["face"], self.model_name)
+        # Embed the reference face ONCE (primary + optional secondary). With ensemble on
+        # this is the single biggest perf win: previously we re-embedded the ref against
+        # both ArcFace AND Facenet512 for every target face, scaling 2N inference calls
+        # per multi-face image. This collapses it to 2 + N (ensemble) or 1 + N (primary-only).
+        ref_primary, ref_secondary = self._embed_reference_for_ensemble(face1["face"])
         best_distance: Optional[float] = None
         best_face: Optional[Dict[str, Any]] = None
         best_per_model: Dict[str, float] = {}
         for face2 in faces2:
             try:
-                dist, per_model = self._ensemble_distance_pair(face1["face"], face2["face"])
+                dist, per_model = self._distance_against_cached_ref(
+                    face2["face"], ref_primary, ref_secondary
+                )
                 if best_distance is None or dist < best_distance:
                     best_distance = dist
                     best_face = face2

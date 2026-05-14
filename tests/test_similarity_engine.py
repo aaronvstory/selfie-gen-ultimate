@@ -298,6 +298,43 @@ class SimilarityEngineTests(unittest.TestCase):
         assert result is not None
         self.assertFalse(result["spoof_detected"])
 
+    def test_compare_existing_caches_reference_embeddings_with_ensemble(self):
+        """Regression test: with ensemble on, the reference face must be embedded
+        exactly once per model (2 calls total), not 2*N times where N=number of
+        target faces. Catches the perf bug flagged by CodeRabbit + Gemini in PR #19."""
+        engine = se.FaceEngine()
+        engine.use_ensemble = True
+        faces1 = [{"face": "src", "facial_area": {"x": 0, "y": 0, "w": 10, "h": 10}}]
+        faces2 = [
+            {"face": f"tgt{i}", "facial_area": {"x": i, "y": i, "w": 8, "h": 8}}
+            for i in range(5)
+        ]
+
+        calls = []
+        def _fake_repr(face_input, model_name):
+            calls.append((face_input, model_name))
+            return np.asarray([1.0, 0.0], dtype=float)
+
+        with mock.patch.object(engine, "_extract_faces", side_effect=[faces1, faces2]), \
+            mock.patch("similarity_engine.cv2.imread",
+                       side_effect=[np.zeros((100, 100, 3), dtype=np.uint8),
+                                    np.zeros((120, 120, 3), dtype=np.uint8)]), \
+            mock.patch.object(engine, "_represent_face_with_model", side_effect=_fake_repr):
+            result = engine._compare_existing("a.png", "b.png")
+
+        ref_calls = [c for c in calls if c[0] == "src"]
+        self.assertEqual(
+            len(ref_calls), 2,
+            f"Reference embedded {len(ref_calls)} times; expected 2 (primary + secondary). Calls: {ref_calls}",
+        )
+        target_calls = [c for c in calls if c[0] != "src"]
+        self.assertEqual(
+            len(target_calls), 10,
+            f"Got {len(target_calls)} target embedding calls; expected 5 targets * 2 models = 10.",
+        )
+        self.assertIsNone(result["error"])
+        self.assertTrue(result["match"])
+
     def test_anti_spoofing_absent_key_returns_none(self):
         engine = se.FaceEngine()
         faces = [{"facial_area": {"x": 0, "y": 0, "w": 10, "h": 10}}]
