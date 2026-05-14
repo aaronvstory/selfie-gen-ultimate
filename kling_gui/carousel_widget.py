@@ -136,6 +136,7 @@ class ImageCarousel(tk.Frame):
         self._sim_lock = threading.Lock()
         self._sim_busy: bool = False
         self._auto_var = tk.BooleanVar(value=True)
+        self._anti_spoof_var = tk.BooleanVar(value=True)
         self._last_known_count: int = 0
         self._suppress_auto_calc: bool = False
 
@@ -288,6 +289,20 @@ class ImageCarousel(tk.Frame):
         )
         self._auto_chk.pack(side=tk.RIGHT)
 
+        self._anti_spoof_chk = tk.Checkbutton(
+            sim_row,
+            text="Anti-spoof",
+            variable=self._anti_spoof_var,
+            command=self._on_anti_spoof_toggle,
+            font=(FONT_FAMILY, 7),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["text_light"],
+        )
+        self._anti_spoof_chk.pack(side=tk.RIGHT, padx=(0, 4))
+
         # Metadata row (resolution + filesize on left, similarity on right)
         self.meta_frame = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
         self.meta_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
@@ -312,6 +327,22 @@ class ImageCarousel(tk.Frame):
             highlightthickness=0,
         )
         self.sim_label.pack(side=tk.RIGHT)
+
+        # FAS (anti-spoof) PASS/FAIL chip — appears LEFT of sim_label when active.
+        self.fas_label = tk.Label(
+            self.meta_frame,
+            text="",
+            font=(FONT_FAMILY, 8, "bold"),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+            anchor=tk.E,
+            bd=0,
+            relief=tk.FLAT,
+            padx=4,
+            pady=0,
+            highlightthickness=0,
+        )
+        self.fas_label.pack(side=tk.RIGHT, padx=(0, 6))
 
         # Info label (type tag + name) — pack second = just above meta
         self.info_label = tk.Label(
@@ -490,10 +521,39 @@ class ImageCarousel(tk.Frame):
                     padx=0,
                     pady=0,
                 )
+            # FAS PASS/FAIL chip — only renders when the engine returned anti_spoofing data.
+            self._render_fas_chip(getattr(entry, "similarity_diagnostics", None))
         elif entry:
             self.info_label.config(text="File not found", fg=COLORS["error"])
             self.meta_label.config(text="")
             self.sim_label.config(text="")
+            self._render_fas_chip(None)
+
+    def _render_fas_chip(self, diag):
+        summary = self._fas_summary_from_diag(diag)
+        if not summary:
+            self.fas_label.config(
+                text="",
+                bg=COLORS["bg_panel"],
+                fg=COLORS["text_dim"],
+                highlightthickness=0,
+                padx=0,
+            )
+            return
+        if "FAIL" in summary:
+            text, fg, bg, border = "  LIVE ✖  ", "#FFFFFF", "#7A1F1F", "#A33A3A"
+        else:
+            text, fg, bg, border = "  LIVE ✓  ", "#0B2A12", "#A6E3A1", "#5DB075"
+        self.fas_label.config(
+            text=text,
+            fg=fg,
+            bg=bg,
+            highlightthickness=1,
+            highlightbackground=border,
+            highlightcolor=border,
+            padx=6,
+            pady=2,
+        )
 
     # ── Image rendering helper ──────────────────────────────────────
 
@@ -758,9 +818,47 @@ class ImageCarousel(tk.Frame):
             score = details.get("score")
         entry.similarity_recalculating = False
         entry.update_similarity(score)
+        # Stash full diagnostics so the FAS chip can render PASS/FAIL alongside the score.
+        diag = (details or {}).get("diagnostics") if details else None
+        setattr(entry, "similarity_diagnostics", diag if isinstance(diag, dict) else None)
         self.image_session._notify()
         if score is not None:
-            self._sim_log(f"result: {score}%", "info")
+            fas_chip = self._fas_summary_from_diag(diag)
+            self._sim_log(f"result: {score}%{(' ' + fas_chip) if fas_chip else ''}", "info")
+
+    @staticmethod
+    def _fas_summary_from_diag(diag):
+        """Return a short 'liveness=PASS|FAIL|n/a' string from a diagnostics dict."""
+        if not isinstance(diag, dict):
+            return ""
+        fas = diag.get("anti_spoofing")
+        if not isinstance(fas, dict):
+            return ""
+        ref = fas.get("ref") if isinstance(fas.get("ref"), dict) else None
+        tgt = fas.get("target") if isinstance(fas.get("target"), dict) else None
+        if ref is None and tgt is None:
+            return ""
+        ref_spoof = (ref or {}).get("spoof_detected")
+        tgt_spoof = (tgt or {}).get("spoof_detected")
+        if ref_spoof or tgt_spoof:
+            return "liveness=FAIL"
+        return "liveness=PASS"
+
+    def _on_anti_spoof_toggle(self):
+        """Apply checkbox state to the engine and recompute scores in-place."""
+        try:
+            from face_similarity import _get_engine
+            engine = _get_engine(report_cb=self._sim_log)
+            if engine is not None:
+                engine.anti_spoofing = bool(self._anti_spoof_var.get())
+                self._sim_log(
+                    f"anti-spoof = {engine.anti_spoofing} (recomputing all)", "info"
+                )
+        except Exception as exc:
+            self._sim_log(f"anti-spoof toggle failed: {exc!r}", "warning")
+            return
+        # Trigger a fresh batch recompute so the displayed scores reflect the new setting.
+        self._calc_all_similarity(auto_triggered=False, reason="anti-spoof toggle")
 
     def _calc_all_similarity(self, auto_triggered: bool = False, reason: str = "manual recalc"):
         """Compute similarity for all non-ref generated images."""

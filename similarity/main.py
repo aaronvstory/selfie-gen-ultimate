@@ -76,6 +76,13 @@ def main():
         choices=["index", "skip", "overwrite"],
         help="Existing-file handling for extraction."
     )
+    parser.add_argument(
+        "--anti-spoof",
+        dest="anti_spoof",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable / disable face anti-spoofing on the engine. Use --anti-spoof or --no-anti-spoof.",
+    )
 
     args = parser.parse_args()
 
@@ -90,6 +97,7 @@ def main():
         or args.extraction_keyword
         or args.padding_ratio is not None
         or args.existing_file_mode
+        or args.anti_spoof is not None
     )
 
     if not cli_requested:
@@ -115,6 +123,7 @@ def main():
             extraction_keyword=args.extraction_keyword,
             padding_ratio=args.padding_ratio,
             existing_file_mode=args.existing_file_mode,
+            anti_spoofing=args.anti_spoof,
         )
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)

@@ -46,6 +46,7 @@ class CarouselRefControlsTests(unittest.TestCase):
         tab.info_label = _FakeButton()
         tab.meta_label = _FakeButton()
         tab.sim_label = _FakeButton()
+        tab.fas_label = _FakeButton()
         tab._show_image_on_canvas = lambda *_args, **_kwargs: None
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -72,6 +73,7 @@ class CarouselRefControlsTests(unittest.TestCase):
         tab.info_label = _FakeButton()
         tab.meta_label = _FakeButton()
         tab.sim_label = _FakeButton()
+        tab.fas_label = _FakeButton()
         tab._show_image_on_canvas = lambda *_args, **_kwargs: None
 
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -2,6 +2,7 @@ import os
 import threading
 import json
 import logging
+import tkinter as tk
 from tkinter import filedialog
 from typing import List, Optional, Tuple
 
@@ -156,6 +157,19 @@ class ModernGUI(DnDCTk):
         self.sim_controls.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 16))
         self.sim_controls.grid_columnconfigure(0, weight=1)
 
+        # Anti-spoof toggle. Default ON to match KYC-grade defaults.
+        # Toggling re-runs the comparison if both images are loaded.
+        self.anti_spoof_var = tk.BooleanVar(value=getattr(self.engine, "anti_spoofing", True))
+        self.anti_spoof_checkbox = ctk.CTkCheckBox(
+            self.sim_controls,
+            text="Anti-spoof (face liveness)",
+            variable=self.anti_spoof_var,
+            onvalue=True,
+            offvalue=False,
+            command=self._on_anti_spoof_toggle,
+        )
+        self.anti_spoof_checkbox.grid(row=0, column=0, pady=(4, 6))
+
         self.btn_run = ctk.CTkButton(
             self.sim_controls,
             text="Run Similarity Comparison",
@@ -163,10 +177,10 @@ class ModernGUI(DnDCTk):
             command=self.start_comparison,
             height=40,
         )
-        self.btn_run.grid(row=0, column=0, pady=8)
+        self.btn_run.grid(row=1, column=0, pady=8)
 
         self.sim_progressbar = ctk.CTkProgressBar(self.sim_controls, mode="indeterminate")
-        self.sim_progressbar.grid(row=1, column=0, pady=(0, 10), sticky="ew")
+        self.sim_progressbar.grid(row=2, column=0, pady=(0, 10), sticky="ew")
         self.sim_progressbar.set(0)
         self.sim_progressbar.grid_remove()
 
@@ -176,7 +190,15 @@ class ModernGUI(DnDCTk):
             font=ctk.CTkFont(size=18),
             wraplength=760,
         )
-        self.sim_result_label.grid(row=2, column=0)
+        self.sim_result_label.grid(row=3, column=0)
+
+        self.fas_result_label = ctk.CTkLabel(
+            self.sim_controls,
+            text="",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            wraplength=760,
+        )
+        self.fas_result_label.grid(row=4, column=0, pady=(4, 0))
 
     def _build_extraction_tab(self):
         self.extraction_tab.grid_columnconfigure(0, weight=1)
@@ -514,6 +536,7 @@ class ModernGUI(DnDCTk):
 
         if result.get("error"):
             self.sim_result_label.configure(text=f"Error: {result['error']}", text_color="red")
+            self.fas_result_label.configure(text="", text_color="#888888")
             return
 
         score = result["score"]
@@ -530,6 +553,44 @@ class ModernGUI(DnDCTk):
             f"The two photos {status_text} the same person."
         )
         self.sim_result_label.configure(text=output_msg, text_color=color)
+        self._render_fas(result)
+
+    def _render_fas(self, result: dict):
+        """Render the LIVENESS PASS/FAIL chip from a comparison result diagnostics block."""
+        diag = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
+        fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
+        if not isinstance(fas, dict):
+            self.fas_result_label.configure(text="", text_color="#888888")
+            return
+        ref = fas.get("ref") if isinstance(fas.get("ref"), dict) else None
+        tgt = fas.get("target") if isinstance(fas.get("target"), dict) else None
+        if ref is None and tgt is None:
+            self.fas_result_label.configure(text="", text_color="#888888")
+            return
+        ref_spoof = (ref or {}).get("spoof_detected")
+        tgt_spoof = (tgt or {}).get("spoof_detected")
+        if ref_spoof or tgt_spoof:
+            self.fas_result_label.configure(
+                text=f"Liveness (anti-spoof): FAIL  (ref_spoof={ref_spoof}, target_spoof={tgt_spoof})",
+                text_color="#FF4444",
+            )
+        else:
+            self.fas_result_label.configure(
+                text="Liveness (anti-spoof): PASS",
+                text_color="#00FF00",
+            )
+
+    def _on_anti_spoof_toggle(self):
+        """Apply checkbox state to the engine; re-run comparison if both images are loaded."""
+        new_value = bool(self.anti_spoof_var.get())
+        self.engine.anti_spoofing = new_value
+        # Re-run comparison if we have a previous result on screen and both images are still loaded.
+        if (
+            getattr(self, "img1_path", None)
+            and getattr(self, "img2_path", None)
+            and self.btn_run.cget("state") != "disabled"
+        ):
+            self.start_comparison()
 
     def start_extraction(self):
         if not self.extraction_src_path:

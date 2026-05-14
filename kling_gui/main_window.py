@@ -769,7 +769,7 @@ class KlingGUIWindow:
             # Window layout persistence
             "window_geometry": "",  # Empty = use default
             "sash_dropzone": 500,  # Height of top pane
-            "sash_queue": 220,  # Width of left bottom pane (carousel narrow ~24%)
+            "sash_queue": 260,  # Width of left bottom pane (carousel ~26%, widened v1.8 for Anti-spoof + LIVE chip)
             "sash_log": 150,  # Height of log pane (before history)
             "sash_log_drop_split": 380,  # Width split in log pane (log | permanent drop zone)
         }
@@ -3997,6 +3997,16 @@ class KlingGUIWindow:
         self.carousel.suppress_auto_calc(True)
         self.session_controller.autosave_suspended = True
         loaded_count = 0
+        # Version-gate: invalidate similarity scores produced by the v1.7 linear formula
+        # so v1.8's polynomial + ensemble + FAS recomputes them. Sessions saved by v1.8+
+        # carry "similarity_engine_version": "1.8" at the top-level of the JSON.
+        session_engine_ver = str(data.get("similarity_engine_version", ""))
+        invalidate_legacy_scores = session_engine_ver != "1.8"
+        if invalidate_legacy_scores and any(img.get("similarity_score") is not None for img in images):
+            self._log(
+                "Session predates v1.8 KYC scoring — clearing legacy scores so the new engine recomputes.",
+                "info",
+            )
         try:
             # Clear and re-populate the LIVE session (preserves tab references)
             self.image_session.clear()
@@ -4005,14 +4015,25 @@ class KlingGUIWindow:
                 if not os.path.isfile(path):
                     self._log(f"Skipped missing: {os.path.basename(path)}", "warning")
                     continue
+                # Drop legacy similarity (set to None) when loading a pre-v1.8 session.
+                # Manual user overrides are always preserved.
+                is_override = bool(img.get("similarity_override", False))
+                if invalidate_legacy_scores and not is_override:
+                    sim_value = None
+                    sim_score_value = None
+                    sim_pass_value = None
+                else:
+                    sim_value = img.get("similarity")
+                    sim_score_value = img.get("similarity_score")
+                    sim_pass_value = img.get("similarity_pass")
                 self.image_session.add_image(
                     path,
                     img.get("source_type", "input"),
                     label=img.get("label", ""),
-                    similarity=img.get("similarity"),
-                    similarity_score=img.get("similarity_score"),
-                    similarity_pass=img.get("similarity_pass"),
-                    similarity_override=bool(img.get("similarity_override", False)),
+                    similarity=sim_value,
+                    similarity_score=sim_score_value,
+                    similarity_pass=sim_pass_value,
+                    similarity_override=is_override,
                     similarity_override_note=img.get("similarity_override_note", ""),
                     similarity_override_ts=img.get("similarity_override_ts"),
                     ops=img.get("ops", {}),

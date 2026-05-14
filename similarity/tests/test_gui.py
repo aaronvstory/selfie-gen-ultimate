@@ -131,6 +131,7 @@ class _CTkModuleStub(types.ModuleType):
         self.CTkLabel = _WidgetStub
         self.CTkButton = _WidgetStub
         self.CTkProgressBar = _WidgetStub
+        self.CTkCheckBox = _WidgetStub
         self.CTkImage = _CTkImageStub
         self.CTkFont = lambda *args, **kwargs: {"args": args, "kwargs": kwargs}
         self.set_appearance_mode = lambda *args, **kwargs: None
@@ -198,6 +199,17 @@ class TestModernGUI(unittest.TestCase):
         filedialog_module.askopenfilename = lambda *args, **kwargs: ""
         tkinter_module.TclError = _TclError
         tkinter_module.filedialog = filedialog_module
+
+        class _BooleanVarStub:
+            """Minimal tk.BooleanVar replacement for headless GUI tests."""
+            def __init__(self, value=False):
+                self._value = bool(value)
+            def get(self):
+                return self._value
+            def set(self, value):
+                self._value = bool(value)
+
+        tkinter_module.BooleanVar = _BooleanVarStub
 
         parent = self
 

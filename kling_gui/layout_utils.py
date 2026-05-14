@@ -90,10 +90,11 @@ def sanitize_sash_layout(
     prompt_max = max(prompt_min, int(safe_w * 0.64))
     prompt_default = int(safe_w * 0.60)
 
-    # Carousel width: 20-30% of window (narrower carousel = more room for log+drop)
-    queue_min = max(200, int(safe_w * 0.20))
-    queue_max = max(queue_min, int(safe_w * 0.30))
-    queue_default = int(safe_w * 0.24)
+    # Carousel width: 22-32% of window. Widened in v1.8 to fit the new
+    # "Anti-spoof" checkbox and the "LIVE ✓ / ✖" PASS/FAIL chip alongside the SIM badge.
+    queue_min = max(220, int(safe_w * 0.22))
+    queue_max = max(queue_min, int(safe_w * 0.32))
+    queue_default = int(safe_w * 0.26)
 
     log_min = 110
     log_max = max(log_min, int(safe_h * 0.42))

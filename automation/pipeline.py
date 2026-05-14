@@ -660,6 +660,7 @@ class AutoPipelineRunner:
         model_endpoints = list(self.automation.get("automation_selfie_models", ["fal-ai/nano-banana-2/edit"]))
         selfie_prompt_ctx = self.resolve_selfie_prompt()
         threshold = self._read_int("automation_similarity_threshold", 80)
+        require_fas_pass = bool(self.automation.get("automation_similarity_require_fas_pass", False))
         max_attempts = max(1, self._read_int("automation_selfie_max_attempts_per_model", 1))
         self.logger.info(
             "case %s selfie config models=%s prompt_slot=%s prompt_source=%s threshold=%s",
@@ -752,20 +753,44 @@ class AutoPipelineRunner:
             diag.get("per_model_distances"),
         )
         fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
+        spoof_blocking = False
+        ref_spoof = None
+        tgt_spoof = None
         if isinstance(fas, dict):
             ref_fas = fas.get("ref") if isinstance(fas.get("ref"), dict) else {}
             tgt_fas = fas.get("target") if isinstance(fas.get("target"), dict) else {}
             ref_spoof = (ref_fas or {}).get("spoof_detected")
             tgt_spoof = (tgt_fas or {}).get("spoof_detected")
             if ref_spoof or tgt_spoof:
-                self.logger.warning(
-                    "case %s anti-spoofing warning ref=%s target=%s (log-only; gate unchanged)",
-                    case_key,
-                    ref_spoof,
-                    tgt_spoof,
-                )
+                if require_fas_pass:
+                    self.logger.warning(
+                        "case %s anti-spoofing FAILED ref=%s target=%s (require_fas_pass=true; routing to manual_review)",
+                        case_key,
+                        ref_spoof,
+                        tgt_spoof,
+                    )
+                    spoof_blocking = True
+                else:
+                    self.logger.warning(
+                        "case %s anti-spoofing warning ref=%s target=%s (log-only; gate unchanged)",
+                        case_key,
+                        ref_spoof,
+                        tgt_spoof,
+                    )
         if self.verbose_logging:
             self.logger.debug("case %s similarity diagnostics=%s", case_key, best_similarity_meta)
+        if spoof_blocking:
+            spoof_reason = f"anti-spoofing failed (ref_spoof={ref_spoof}, target_spoof={tgt_spoof})"
+            self.manifest.update_step(
+                case_key,
+                "similarity_gate",
+                "manual_review",
+                output=best_path,
+                error=spoof_reason,
+                meta=best_similarity_meta,
+            )
+            self.last_case_results[case_key] = {"status": "manual_review", "reason": spoof_reason}
+            return self._finalize_case(case_entry, "manual_review")
         if best_similarity_meta.get("error"):
             similarity_error = str(best_similarity_meta.get("error"))
             self.manifest.update_step(

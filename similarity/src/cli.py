@@ -584,6 +584,7 @@ class ProCLI:
         extraction_keyword: Optional[str] = None,
         padding_ratio: Optional[float] = None,
         existing_file_mode: Optional[str] = None,
+        anti_spoofing: Optional[bool] = None,
     ) -> None:
         if img1_keyword:
             self.config["img1_keyword"] = img1_keyword
@@ -600,6 +601,9 @@ class ProCLI:
                 raise ValueError(
                     f"`existing_file_mode` must be one of: {', '.join(self.VALID_EXISTING_FILE_MODES)}."
                 )
+        if anti_spoofing is not None:
+            self.engine.anti_spoofing = bool(anti_spoofing)
+            self.config["anti_spoofing"] = bool(anti_spoofing)
 
     def _display_result(self, result: dict) -> None:
         if result.get("error"):
@@ -608,7 +612,25 @@ class ProCLI:
         score, is_match = result["score"], result["match"]
         color = "green" if is_match else "red"
         status = "are" if is_match else "are not"
-        console.print(Panel(f"Face similarity ratio: [{color} bold]{score}%[/{color} bold], The two photos [{color} bold]{status}[/{color} bold] the same person.", border_style=color, expand=False))
+        # FAS PASS/FAIL surfaced in a second line when anti_spoofing is active.
+        diag = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
+        fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
+        fas_line = ""
+        if isinstance(fas, dict):
+            ref = fas.get("ref") if isinstance(fas.get("ref"), dict) else None
+            tgt = fas.get("target") if isinstance(fas.get("target"), dict) else None
+            if ref is not None or tgt is not None:
+                ref_spoof = (ref or {}).get("spoof_detected")
+                tgt_spoof = (tgt or {}).get("spoof_detected")
+                fas_color = "red" if (ref_spoof or tgt_spoof) else "green"
+                fas_text = "FAIL" if (ref_spoof or tgt_spoof) else "PASS"
+                fas_line = f"\nLiveness (anti-spoof): [{fas_color} bold]{fas_text}[/{fas_color} bold]"
+        console.print(Panel(
+            f"Face similarity ratio: [{color} bold]{score}%[/{color} bold], "
+            f"The two photos [{color} bold]{status}[/{color} bold] the same person.{fas_line}",
+            border_style=color,
+            expand=False,
+        ))
 
 if __name__ == "__main__":
     cli = ProCLI()

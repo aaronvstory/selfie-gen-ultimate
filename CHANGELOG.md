@@ -4,6 +4,42 @@ All notable changes to this project are documented here.
 
 ## 2026-05-14 (v1.8) — KYC-grade similarity scoring
 
+### Added (v1.8 follow-up — full-stack FAS toggle integration)
+
+- **`Anti-spoof` checkbox in the main GUI carousel**, sitting next to the existing `Auto`
+  checkbox. Toggling it flips `FaceEngine.anti_spoofing` and immediately triggers a fresh
+  batch recompute via `_calc_all_similarity()` so on-screen scores reflect the new state.
+- **`LIVE ✓ / LIVE ✖` PASS/FAIL chip** rendered alongside the SIM badge in the carousel
+  meta row. Sourced from `diagnostics.anti_spoofing.{ref,target}.spoof_detected`. The chip
+  is hidden when `anti_spoofing=false` (no FAS data on the result).
+- **Carousel pane widened from ~24% → ~26% of window width** (clamp range
+  20–30% → 22–32%, default 220 px → 260 px) to fit the new checkbox + chip without
+  crowding the SIM badge. Stale `sash_*` keys are cleared from `kling_config.json` so
+  users see the new defaults on first launch.
+- **Standalone CLI `--anti-spoof` / `--no-anti-spoof` flag** (uses
+  `argparse.BooleanOptionalAction`) plumbed through `apply_runtime_config(anti_spoofing=...)`
+  to set `engine.anti_spoofing` before any comparison. The Rich result panel now also
+  emits a `Liveness (anti-spoof): PASS/FAIL` line when FAS data is present.
+- **Standalone GUI `Anti-spoof (face liveness)` checkbox** above the Run button.
+  Toggling auto-re-runs the comparison if both images are loaded. A second result label
+  surfaces `Liveness (anti-spoof): PASS` (green) or `FAIL` (red).
+- **`automation_similarity_require_fas_pass` config key** (default `false`). When set
+  to `true`, the automation pipeline routes any case whose ref OR target image is
+  flagged as spoofed to `manual_review` even if the similarity score passes. This
+  upgrades FAS from observational to enforcement for KYC-strict deployments.
+- **Stale-score invalidation on session load.** Sessions saved by v1.7 (or earlier)
+  carry similarity scores produced by the old linear formula. On load, the GUI now
+  detects the absence of `similarity_engine_version: "1.8"` in the session JSON and
+  drops the stored scores so the carousel auto-recomputes them with the v1.8 engine.
+  Manual user overrides (`similarity_override=true`) are always preserved. v1.8+ saves
+  always include `"similarity_engine_version": "1.8"` at the top level of the session
+  JSON so this only happens once per legacy session.
+- **Filename `_sim{N}` continues to embed the score at generation time.** That tag is
+  now produced by the v1.8 polynomial curve (and ensemble + FAS when enabled), so new
+  outputs may carry slightly different numeric tags than v1.7 outputs sitting on disk.
+  The on-screen SIM badge always reflects a fresh recompute — the embedded tag is a
+  permanent record of the score at the moment of generation, not a runtime cache.
+
 ### Added
 
 - **Polynomial easing curve** for similarity scores. Replaces the linear distance→score
