@@ -77,15 +77,17 @@ def _get_engine(report_cb: Optional[Callable[[str, str], None]] = None):
 
 
 def _diag_summary(diag: Dict[str, Any]) -> str:
-    fas = diag.get("anti_spoofing") or {}
-    fas_summary = ""
-    if isinstance(fas, dict):
-        ref_fas = fas.get("ref") if isinstance(fas.get("ref"), dict) else None
-        tgt_fas = fas.get("target") if isinstance(fas.get("target"), dict) else None
-        if ref_fas or tgt_fas:
-            ref_spoof = (ref_fas or {}).get("spoof_detected")
-            tgt_spoof = (tgt_fas or {}).get("spoof_detected")
-            fas_summary = f" fas_ref={ref_spoof} fas_tgt={tgt_spoof}"
+    # Unified FAS verdict (same source as carousel chip + standalone GUI/CLI).
+    try:
+        from similarity_engine import FaceEngine
+        fas_pair = FaceEngine.summarize_fas_pair(diag)
+        fas_summary = (
+            f" fas_verdict={fas_pair.get('verdict')} "
+            f"fas_ref_status={fas_pair.get('ref_status')} "
+            f"fas_target_status={fas_pair.get('target_status')}"
+        )
+    except Exception:
+        fas_summary = ""
     return (
         f"mode={diag.get('mode')} model={diag.get('model_name')} detector={diag.get('detector_backend')} "
         f"faces={diag.get('face_counts')} boxes={diag.get('selected_face_boxes')} conf={diag.get('selected_face_confidence')} "

@@ -335,11 +335,73 @@ class SimilarityEngineTests(unittest.TestCase):
         self.assertIsNone(result["error"])
         self.assertTrue(result["match"])
 
-    def test_anti_spoofing_absent_key_returns_none(self):
+    def test_anti_spoofing_absent_key_returns_not_active_status(self):
+        """When DeepFace returned faces but no is_real key (FAS disabled at extract
+        time), we now return a sentinel dict with status='not_active' instead of
+        None — so UIs can render a consistent 'not assessed' message rather than
+        treating one side as unknown."""
         engine = se.FaceEngine()
         faces = [{"facial_area": {"x": 0, "y": 0, "w": 10, "h": 10}}]
         result = engine._check_anti_spoofing(faces, "img")
-        self.assertIsNone(result)
+        self.assertEqual(result["status"], "not_active")
+        self.assertIsNone(result["spoof_detected"])
+
+    def test_anti_spoofing_no_faces_returns_no_face_status(self):
+        """Empty faces list (detector found nothing) → status='no_face'.
+        This is what caused the asymmetric ref-only / target-only renderings."""
+        engine = se.FaceEngine()
+        result = engine._check_anti_spoofing([], "img")
+        self.assertEqual(result["status"], "no_face")
+
+    def test_summarize_fas_pair_both_real_returns_pass(self):
+        diag = {"anti_spoofing": {
+            "ref": {"status": "ok", "spoof_detected": False, "faces": []},
+            "target": {"status": "ok", "spoof_detected": False, "faces": []},
+        }}
+        s = se.FaceEngine.summarize_fas_pair(diag)
+        self.assertEqual(s["verdict"], "pass")
+        self.assertEqual(s["color_hint"], "green")
+
+    def test_summarize_fas_pair_one_side_spoof_returns_fail(self):
+        diag = {"anti_spoofing": {
+            "ref": {"status": "ok", "spoof_detected": True, "faces": []},
+            "target": {"status": "ok", "spoof_detected": False, "faces": []},
+        }}
+        s = se.FaceEngine.summarize_fas_pair(diag)
+        self.assertEqual(s["verdict"], "fail")
+        self.assertEqual(s["color_hint"], "amber")
+        self.assertIn("ref", s["message"])
+
+    def test_summarize_fas_pair_asymmetric_returns_unavailable(self):
+        """The bug case: ref has FAS data, target lost it (e.g., no face
+        detected on one side). Previously rendered as 'target only' or 'ref
+        only' — now consistently 'unavailable' so the user gets the same
+        message every time."""
+        diag = {"anti_spoofing": {
+            "ref": {"status": "ok", "spoof_detected": False, "faces": []},
+            "target": {"status": "no_face", "spoof_detected": None, "faces": []},
+        }}
+        s = se.FaceEngine.summarize_fas_pair(diag)
+        self.assertEqual(s["verdict"], "unavailable")
+        self.assertEqual(s["color_hint"], "muted")
+        self.assertIn("target=no_face", s["message"])
+
+    def test_summarize_fas_pair_legacy_shape_returns_unavailable(self):
+        """Backward-compat: dicts WITHOUT the new 'status' key (e.g., from
+        external mocks or pre-fix test fixtures) fall back to unavailable
+        rather than crashing or producing partial verdicts."""
+        diag = {"anti_spoofing": {
+            "ref": {"spoof_detected": False, "faces": []},
+            "target": {"spoof_detected": False, "faces": []},
+        }}
+        s = se.FaceEngine.summarize_fas_pair(diag)
+        # No 'status' key in the legacy shape → treated as missing.
+        self.assertEqual(s["verdict"], "unavailable")
+
+    def test_summarize_fas_pair_no_diag_returns_unavailable(self):
+        for diag in (None, {}, {"anti_spoofing": None}, {"anti_spoofing": "garbage"}):
+            s = se.FaceEngine.summarize_fas_pair(diag)
+            self.assertEqual(s["verdict"], "unavailable", f"failed on {diag!r}")
 
 
 if __name__ == "__main__":

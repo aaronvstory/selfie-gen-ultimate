@@ -752,16 +752,32 @@ class AutoPipelineRunner:
             diag.get("fallback_reason"),
             diag.get("per_model_distances"),
         )
-        fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
-        spoof_blocking = False
+        # Route through summarize_fas_pair so the gate decision uses the same
+        # verdict the GUI/CLI shows the user. The strict-pass gate ONLY blocks
+        # on verdict="fail" (both sides have ok FAS data + at least one spoof
+        # flagged). Verdict "unavailable" (one side missing FAS) NEVER blocks —
+        # there's nothing to enforce against.
+        fas_pair = None
         ref_spoof = None
         tgt_spoof = None
-        if isinstance(fas, dict):
-            ref_fas = fas.get("ref") if isinstance(fas.get("ref"), dict) else {}
-            tgt_fas = fas.get("target") if isinstance(fas.get("target"), dict) else {}
-            ref_spoof = (ref_fas or {}).get("spoof_detected")
-            tgt_spoof = (tgt_fas or {}).get("spoof_detected")
-            if ref_spoof or tgt_spoof:
+        spoof_blocking = False
+        try:
+            from similarity_engine import FaceEngine as _FaceEngine
+            fas_pair = _FaceEngine.summarize_fas_pair(diag if isinstance(diag, dict) else None)
+        except Exception:
+            fas_pair = None
+        if isinstance(fas_pair, dict):
+            verdict = fas_pair.get("verdict")
+            ref_status = fas_pair.get("ref_status")
+            tgt_status = fas_pair.get("target_status")
+            # Pull raw spoof flags for log readability (when ok-status).
+            fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
+            if isinstance(fas, dict):
+                ref_fas = fas.get("ref") if isinstance(fas.get("ref"), dict) else {}
+                tgt_fas = fas.get("target") if isinstance(fas.get("target"), dict) else {}
+                ref_spoof = (ref_fas or {}).get("spoof_detected")
+                tgt_spoof = (tgt_fas or {}).get("spoof_detected")
+            if verdict == "fail":
                 if require_fas_pass:
                     self.logger.warning(
                         "case %s anti-spoofing FAILED ref=%s target=%s (require_fas_pass=true; routing to manual_review)",
@@ -772,11 +788,18 @@ class AutoPipelineRunner:
                     spoof_blocking = True
                 else:
                     self.logger.warning(
-                        "case %s anti-spoofing warning ref=%s target=%s (log-only; gate unchanged)",
+                        "case %s anti-spoofing advisory ref=%s target=%s (log-only; gate unchanged)",
                         case_key,
                         ref_spoof,
                         tgt_spoof,
                     )
+            elif verdict == "unavailable":
+                self.logger.info(
+                    "case %s anti-spoofing not assessable (ref_status=%s target_status=%s) — gate unchanged",
+                    case_key,
+                    ref_status,
+                    tgt_status,
+                )
         if self.verbose_logging:
             self.logger.debug("case %s similarity diagnostics=%s", case_key, best_similarity_meta)
         if spoof_blocking:

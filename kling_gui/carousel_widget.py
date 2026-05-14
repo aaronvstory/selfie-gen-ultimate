@@ -558,8 +558,18 @@ class ImageCarousel(tk.Frame):
             self._render_fas_chip(None)
 
     def _render_fas_chip(self, diag):
-        summary = self._fas_summary_from_diag(diag)
-        if not summary:
+        # Single source of truth for FAS verdict — see similarity_engine.summarize_fas_pair.
+        # Three possible verdicts: pass / fail / unavailable. Same diag → same chip,
+        # always (no more "ref+target sometimes, target only sometimes" drift).
+        try:
+            from similarity_engine import FaceEngine
+            summary = FaceEngine.summarize_fas_pair(diag)
+        except Exception:
+            summary = {"verdict": "unavailable", "color_hint": "muted"}
+        verdict = summary.get("verdict", "unavailable")
+        if verdict == "unavailable":
+            # Hide the chip entirely when FAS isn't assessable — full message
+            # surfaces in the Processing Log instead, keeping the carousel tidy.
             self.fas_label.config(
                 text="",
                 bg=COLORS["bg_panel"],
@@ -568,8 +578,9 @@ class ImageCarousel(tk.Frame):
                 padx=0,
             )
             return
-        if "FAIL" in summary:
-            text, fg, bg, border = "  LIVE ✖  ", "#FFFFFF", "#7A1F1F", "#A33A3A"
+        if verdict == "fail":
+            # Amber chip — FAS is advisory; never red, never contradicts a passing SIM badge.
+            text, fg, bg, border = "  LIVE ?  ", "#3A2A00", "#FFC107", "#C99500"
         else:
             text, fg, bg, border = "  LIVE ✓  ", "#0B2A12", "#A6E3A1", "#5DB075"
         self.fas_label.config(
@@ -862,21 +873,30 @@ class ImageCarousel(tk.Frame):
 
     @staticmethod
     def _fas_summary_from_diag(diag):
-        """Return a short 'liveness=PASS|FAIL|n/a' string from a diagnostics dict."""
-        if not isinstance(diag, dict):
+        """Return a short 'liveness=… (ref=X% real, target=Y% real)' string.
+
+        Routes through similarity_engine.summarize_fas_pair so the Processing Log,
+        the LIVE chip, and the standalone GUI all agree on the verdict and scores.
+        """
+        try:
+            from similarity_engine import FaceEngine
+            summary = FaceEngine.summarize_fas_pair(diag)
+        except Exception:
             return ""
-        fas = diag.get("anti_spoofing")
-        if not isinstance(fas, dict):
+        verdict = summary.get("verdict", "unavailable")
+        if verdict == "unavailable":
             return ""
-        ref = fas.get("ref") if isinstance(fas.get("ref"), dict) else None
-        tgt = fas.get("target") if isinstance(fas.get("target"), dict) else None
-        if ref is None and tgt is None:
-            return ""
-        ref_spoof = (ref or {}).get("spoof_detected")
-        tgt_spoof = (tgt or {}).get("spoof_detected")
-        if ref_spoof or tgt_spoof:
-            return "liveness=FAIL"
-        return "liveness=PASS"
+        verdict_word = "PASS" if verdict == "pass" else "advisory"
+        ref_score = summary.get("ref_score")
+        tgt_score = summary.get("target_score")
+        score_bits = []
+        if isinstance(ref_score, (int, float)):
+            score_bits.append(f"ref={float(ref_score) * 100:.1f}% real")
+        if isinstance(tgt_score, (int, float)):
+            score_bits.append(f"target={float(tgt_score) * 100:.1f}% real")
+        if score_bits:
+            return f"liveness={verdict_word} ({', '.join(score_bits)})"
+        return f"liveness={verdict_word}"
 
     def _on_anti_spoof_toggle(self):
         """Apply checkbox state to the engine and recompute scores in-place."""

@@ -563,40 +563,42 @@ class ModernGUI(DnDCTk):
     def _render_fas(self, result: dict):
         """Render the LIVENESS check from a comparison result diagnostics block.
 
-        FAS is ADVISORY only — it does not gate the similarity verdict. A spoof
-        flag means "this image looks possibly synthetic to the FAS classifier";
-        false positives are common (passport photos, low-light selfies, printed
-        IDs). Render as an info-level note in amber rather than a hard red FAIL
-        so it doesn't visually contradict a passing similarity match.
+        Routes through similarity_engine.summarize_fas_pair (the SINGLE source
+        of truth for FAS verdicts) so the standalone GUI, standalone CLI, and
+        main GUI carousel all show the same message for the same input —
+        no more asymmetric "ref+target sometimes, target only sometimes".
+
+        Renders verdict on line 1; per-image antispoof_scores on line 2 so the
+        user can see which image was flagged and at what confidence.
+        Score is on a 0.0–1.0 scale where higher means MORE likely to be real.
         """
+        try:
+            from src.engine import FaceEngine
+        except ImportError:
+            from similarity_engine import FaceEngine  # fallback for direct invocation
         diag = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
-        fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
-        if not isinstance(fas, dict):
-            self.fas_result_label.configure(text="", text_color="#888888")
-            return
-        ref = fas.get("ref") if isinstance(fas.get("ref"), dict) else None
-        tgt = fas.get("target") if isinstance(fas.get("target"), dict) else None
-        if ref is None and tgt is None:
-            self.fas_result_label.configure(text="", text_color="#888888")
-            return
-        ref_spoof = (ref or {}).get("spoof_detected")
-        tgt_spoof = (tgt or {}).get("spoof_detected")
-        if ref_spoof or tgt_spoof:
-            # Amber, not red. Wording emphasizes "possible" + "advisory".
-            flagged = []
-            if ref_spoof:
-                flagged.append("ref")
-            if tgt_spoof:
-                flagged.append("target")
-            self.fas_result_label.configure(
-                text=f"Liveness (anti-spoof): possible synthetic input on {' & '.join(flagged)} (advisory only)",
-                text_color="#FFC107",
-            )
+        summary = FaceEngine.summarize_fas_pair(diag)
+        verdict = summary.get("verdict", "unavailable")
+        message = summary.get("message", "")
+        # Color map: pass=green, fail=amber (advisory, not red), unavailable=muted gray.
+        color = {
+            "pass": "#00FF00",
+            "fail": "#FFC107",
+            "unavailable": "#888888",
+        }.get(verdict, "#888888")
+        # Per-image score line — only shown when at least one side has a number.
+        ref_score = summary.get("ref_score")
+        tgt_score = summary.get("target_score")
+        score_parts = []
+        if isinstance(ref_score, (int, float)):
+            score_parts.append(f"Image 1 (ref): {float(ref_score) * 100:.1f}% real")
+        if isinstance(tgt_score, (int, float)):
+            score_parts.append(f"Image 2 (target): {float(tgt_score) * 100:.1f}% real")
+        if score_parts:
+            full_message = f"{message}\n  " + "   |   ".join(score_parts)
         else:
-            self.fas_result_label.configure(
-                text="Liveness (anti-spoof): both images look real",
-                text_color="#00FF00",
-            )
+            full_message = message
+        self.fas_result_label.configure(text=full_message, text_color=color)
 
     def _on_anti_spoof_toggle(self):
         """Apply checkbox state to the engine; re-run comparison if both images are loaded."""

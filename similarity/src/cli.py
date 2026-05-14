@@ -618,34 +618,30 @@ class ProCLI:
         is_match = result["match"]
         color = "green" if is_match else "red"
         status = "are" if is_match else "are not"
-        # FAS is ADVISORY only — does not gate the verdict. Render in amber with
-        # softened wording when triggered (false positives are common on passport
-        # photos, low-light selfies, printed IDs).
+        # Route FAS rendering through the canonical verdict helper so CLI, standalone
+        # GUI, and main GUI carousel all show the same message for the same input.
+        try:
+            from src.engine import FaceEngine
+        except ImportError:
+            from similarity_engine import FaceEngine  # fallback when run as module
         diag = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
-        fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
+        fas_summary = FaceEngine.summarize_fas_pair(diag)
+        fas_verdict = fas_summary.get("verdict", "unavailable")
+        fas_message = fas_summary.get("message", "")
         fas_line = ""
-        if isinstance(fas, dict):
-            ref = fas.get("ref") if isinstance(fas.get("ref"), dict) else None
-            tgt = fas.get("target") if isinstance(fas.get("target"), dict) else None
-            if ref is not None or tgt is not None:
-                ref_spoof = (ref or {}).get("spoof_detected")
-                tgt_spoof = (tgt or {}).get("spoof_detected")
-                if ref_spoof or tgt_spoof:
-                    flagged = []
-                    if ref_spoof:
-                        flagged.append("ref")
-                    if tgt_spoof:
-                        flagged.append("target")
-                    fas_line = (
-                        f"\nLiveness (anti-spoof): "
-                        f"[yellow bold]possible synthetic input on {' & '.join(flagged)}[/yellow bold]"
-                        f" (advisory only)"
-                    )
-                else:
-                    fas_line = (
-                        f"\nLiveness (anti-spoof): "
-                        f"[green bold]both images look real[/green bold]"
-                    )
+        if fas_message:
+            rich_color = {"pass": "green", "fail": "yellow", "unavailable": "dim"}.get(fas_verdict, "dim")
+            fas_line = f"\n[{rich_color} bold]{fas_message}[/{rich_color} bold]"
+            # Per-image antispoof_score on a separate line when available.
+            ref_score = fas_summary.get("ref_score")
+            tgt_score = fas_summary.get("target_score")
+            score_bits = []
+            if isinstance(ref_score, (int, float)):
+                score_bits.append(f"Image 1 (ref): {float(ref_score) * 100:.1f}% real")
+            if isinstance(tgt_score, (int, float)):
+                score_bits.append(f"Image 2 (target): {float(tgt_score) * 100:.1f}% real")
+            if score_bits:
+                fas_line += f"\n[{rich_color}]  " + "   |   ".join(score_bits) + f"[/{rich_color}]"
         console.print(Panel(
             f"Face similarity ratio: [{color} bold]{score_display}%[/{color} bold], "
             f"The two photos [{color} bold]{status}[/{color} bold] the same person.{fas_line}",

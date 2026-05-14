@@ -63,8 +63,8 @@ def test_face_similarity_details_passes_through_per_model_distances():
                     "raw_cosine_distance": 0.21,
                     "per_model_distances": {"ArcFace": 0.21, "Facenet512": 0.18},
                     "anti_spoofing": {
-                        "ref": {"spoof_detected": False, "faces": [{"is_real": True, "antispoof_score": 0.92}]},
-                        "target": {"spoof_detected": False, "faces": [{"is_real": True, "antispoof_score": 0.88}]},
+                        "ref": {"status": "ok", "spoof_detected": False, "faces": [{"is_real": True, "antispoof_score": 0.92}]},
+                        "target": {"status": "ok", "spoof_detected": False, "faces": [{"is_real": True, "antispoof_score": 0.88}]},
                     },
                     "fallback_reason": None,
                 },
@@ -92,8 +92,8 @@ def test_face_similarity_details_passes_through_spoof_warning_in_diagnostics():
                 "diagnostics": {
                     "mode": "normalized_crop",
                     "anti_spoofing": {
-                        "ref": {"spoof_detected": True, "faces": [{"is_real": False, "antispoof_score": 0.11}]},
-                        "target": {"spoof_detected": False, "faces": [{"is_real": True, "antispoof_score": 0.91}]},
+                        "ref": {"status": "ok", "spoof_detected": True, "faces": [{"is_real": False, "antispoof_score": 0.11}]},
+                        "target": {"status": "ok", "spoof_detected": False, "faces": [{"is_real": True, "antispoof_score": 0.91}]},
                     },
                 },
             }

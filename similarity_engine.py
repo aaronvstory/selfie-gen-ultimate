@@ -393,18 +393,28 @@ class FaceEngine:
 
     def _check_anti_spoofing(
         self, faces: List[Dict[str, Any]], image_label: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """Inspect FAS verdicts on extracted faces. LOG-ONLY — never raises.
 
-        Returns None if the FAS feature wasn't active (no is_real key on any face).
-        Returns {spoof_detected: bool, faces: [{is_real, antispoof_score}, ...]}
-        when DeepFace populated FAS fields.
+        ALWAYS returns a dict so the UI can render a consistent message per side.
+        The `status` field tells callers WHY FAS data is or isn't available:
+
+          - status="ok":          spoof_detected + faces populated normally
+          - status="no_face":     no face was detected on this image
+          - status="not_active":  FAS was disabled at extraction time (no is_real key)
+          - status="error":       unexpected shape from DeepFace
+
+        This replaces the prior None return that made it impossible for the UI
+        to distinguish "we don't know" from "this side wasn't checked", causing
+        asymmetric ref=None / target={...} renderings.
         """
         if not faces:
-            return None
-        has_fas_data = any("is_real" in f for f in faces if isinstance(f, dict))
+            return {"status": "no_face", "spoof_detected": None, "faces": []}
+        has_fas_data = any(
+            isinstance(f, dict) and "is_real" in f for f in faces
+        )
         if not has_fas_data:
-            return None
+            return {"status": "not_active", "spoof_detected": None, "faces": []}
         records: List[Dict[str, Any]] = []
         spoof_detected = False
         for face in faces:
@@ -419,7 +429,114 @@ class FaceEngine:
             logger.warning(
                 "Anti-spoofing flagged possible spoof in %s: %s", image_label, records
             )
-        return {"spoof_detected": spoof_detected, "faces": records}
+        return {"status": "ok", "spoof_detected": spoof_detected, "faces": records}
+
+    @staticmethod
+    def _side_antispoof_score(side: Optional[Dict[str, Any]]) -> Optional[float]:
+        """Reduce a side's per-face antispoof_score list to a single number.
+
+        Uses the MIN across detected faces — i.e., the least-confidently-real
+        face on the image, which is the most informative value for "is this
+        image trustworthy?". Returns None if no scores are available.
+        """
+        if not isinstance(side, dict):
+            return None
+        faces = side.get("faces") or []
+        scores = []
+        for face in faces:
+            if not isinstance(face, dict):
+                continue
+            v = face.get("antispoof_score")
+            if isinstance(v, (int, float)):
+                scores.append(float(v))
+        if not scores:
+            return None
+        return min(scores)
+
+    @staticmethod
+    def summarize_fas_pair(diag: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Reduce per-side FAS records into a single, consistent UI verdict.
+
+        Returns {verdict, message, color_hint, ref_status, target_status,
+                 ref_score, target_score} where:
+          - verdict ∈ {"pass", "fail", "unavailable"}
+          - color_hint ∈ {"green", "amber", "muted"}
+          - message:   user-facing text (verdict line only)
+          - ref_status / target_status: per-side status from _check_anti_spoofing
+          - ref_score / target_score: per-image antispoof_score (0.0–1.0, higher=more real)
+                                       or None when not available
+
+        Renderers (carousel chip, standalone GUI label, CLI Rich panel) should
+        ALL go through this helper so the same input always produces the same
+        output — no more "ref+target sometimes, target only sometimes" drift.
+        """
+        muted = {
+            "verdict": "unavailable",
+            "color_hint": "muted",
+            "message": "Liveness (anti-spoof): not assessed",
+            "ref_status": "missing",
+            "target_status": "missing",
+            "ref_score": None,
+            "target_score": None,
+        }
+        if not isinstance(diag, dict):
+            return muted
+        fas = diag.get("anti_spoofing")
+        if not isinstance(fas, dict):
+            return muted
+        ref = fas.get("ref") if isinstance(fas.get("ref"), dict) else None
+        tgt = fas.get("target") if isinstance(fas.get("target"), dict) else None
+        ref_status = (ref or {}).get("status", "missing") if ref else "missing"
+        tgt_status = (tgt or {}).get("status", "missing") if tgt else "missing"
+        ref_ok = ref_status == "ok"
+        tgt_ok = tgt_status == "ok"
+        ref_score = FaceEngine._side_antispoof_score(ref)
+        tgt_score = FaceEngine._side_antispoof_score(tgt)
+        # If EITHER side lacks ok-status FAS data, treat the whole verdict as
+        # unavailable — never report a partial ref-only or target-only reading,
+        # which is what was confusing the user.
+        if not (ref_ok and tgt_ok):
+            reasons = []
+            if not ref_ok:
+                reasons.append(f"ref={ref_status}")
+            if not tgt_ok:
+                reasons.append(f"target={tgt_status}")
+            return {
+                "verdict": "unavailable",
+                "color_hint": "muted",
+                "message": f"Liveness (anti-spoof): not assessed ({', '.join(reasons)})",
+                "ref_status": ref_status,
+                "target_status": tgt_status,
+                "ref_score": ref_score,
+                "target_score": tgt_score,
+            }
+        # Both sides have ok FAS data — render the verdict.
+        ref_spoof = bool((ref or {}).get("spoof_detected"))
+        tgt_spoof = bool((tgt or {}).get("spoof_detected"))
+        if ref_spoof or tgt_spoof:
+            flagged = []
+            if ref_spoof:
+                flagged.append("ref")
+            if tgt_spoof:
+                flagged.append("target")
+            return {
+                "verdict": "fail",
+                "color_hint": "amber",
+                "message": f"Liveness (anti-spoof): possible synthetic input on {' & '.join(flagged)} (advisory only)",
+                "ref_status": "ok",
+                "target_status": "ok",
+                "ref_score": ref_score,
+                "target_score": tgt_score,
+            }
+        return {
+            "verdict": "pass",
+            "color_hint": "green",
+            "message": "Liveness (anti-spoof): both images look real",
+            "ref_status": "ok",
+            "target_status": "ok",
+            "ref_score": ref_score,
+            "target_score": tgt_score,
+        }
 
     def _score_from_distance(self, distance: float) -> Tuple[float, bool]:
         distance = max(0.0, min(1.0, distance))

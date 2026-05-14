@@ -161,6 +161,18 @@ class _EngineStub:
     def extract_face(self, _src: str, _out: str, padding: float = 0.175):
         return 0.81
 
+    @staticmethod
+    def summarize_fas_pair(_diag):
+        # Mirror the canonical helper's "no diag" return so render code paths
+        # don't crash. Real verdict logic is unit-tested in test_similarity_engine.
+        return {
+            "verdict": "unavailable",
+            "color_hint": "muted",
+            "message": "",
+            "ref_status": "missing",
+            "target_status": "missing",
+        }
+
 
 class _ThreadCaptureBase:
     instances: ClassVar[list["_ThreadCaptureBase"]] = []
