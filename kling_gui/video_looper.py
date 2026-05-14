@@ -105,6 +105,19 @@ def create_looped_video(
     # Filter: play forward, then reversed, concatenated
     filter_complex = "[0:v]reverse[rv];[0:v][rv]concat=n=2:v=1:a=0[outv]"
 
+    # Intermediate looped file: mathematically lossless H.264 so the forward+
+    # reverse halves carry 100% of Kling's source detail into Oldcam. Oldcam's
+    # own encoder (CRF 12 / preset slow / profile high) does the final size-
+    # conscious encode downstream, so this intermediate can be large — that's
+    # fine, it's deleted/replaced on each run.
+    #
+    # Why not -qp 0 / yuv444p:
+    # - yuv444p breaks OpenCV decode paths and standard players downstream.
+    # - Stream-copy concat of a reversed H.264 stream causes PTS/DTS glitches.
+    # libx264 lossless mode needs -crf 0 + High 4:4:4 Predictive normally, but
+    # locking pix_fmt to yuv420p means x264 falls back to High profile lossless
+    # within 4:2:0 constraints — visually indistinguishable from source for
+    # this pipeline (Kling already delivers 4:2:0) and downstream-safe.
     cmd = [
         "ffmpeg",
         "-y" if overwrite else "-n",  # Overwrite or fail if exists
@@ -118,10 +131,14 @@ def create_looped_video(
         "libx264",
         "-profile:v",
         "high",
+        "-pix_fmt",
+        "yuv420p",
         "-preset",
         "slow",
+        "-tune",
+        "film",
         "-crf",
-        "12",
+        "0",
         "-movflags",
         "+faststart",
         str(output_file),

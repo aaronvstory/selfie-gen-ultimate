@@ -42,10 +42,24 @@ All notable changes to this project are documented here.
 - V13 does not require MediaPipe — same dependency story as V12. MediaPipe-required
   versions remain V9, V10, V11.
 
+### Quality
+
+- **Ping-pong looper now mathematically lossless.** `kling_gui/video_looper.py`
+  bumped from CRF 12 → `-crf 0 -tune film -pix_fmt yuv420p` (libx264 lossless
+  within 4:2:0 constraints). Reason: Kling delivers ~28 MB H.264 clips; the
+  previous CRF 12 ping-pong re-encode was dropping intermediate files to ~7 MB
+  (forward + reverse should *double* duration, so this was net quality loss
+  not just compression). The intermediate file is now larger by design — it's
+  consumed immediately by Oldcam V13's encoder (CRF 12 / preset slow / profile
+  high) which produces the final size-conscious output. End result: zero
+  generational loss between Kling source and Oldcam input.
+- `yuv420p` (not `yuv444p`) chosen for OpenCV decode compatibility; stream-copy
+  concat rejected to avoid PTS/DTS glitches with reversed-half H.264.
+
 ### Tests
 
 - 3 new V13 tests in `tests/test_oldcam_versions.py`: output suffix, no-MediaPipe
-  preflight, `process_frame` skips noise + AE stepping. Total: **340 pass** (337 baseline + 3).
+  preflight, `process_frame` skips noise + AE stepping. Total: **342 pass**.
 - Updated existing tests for default-switch sites (5 files).
 
 ## 2026-05-14 (v1.6)
