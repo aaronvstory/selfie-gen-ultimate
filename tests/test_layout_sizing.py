@@ -47,12 +47,17 @@ class LayoutSizingTests(unittest.TestCase):
         self.assertLessEqual(sash["sash_dropzone"], int(900 * 0.75))
         self.assertGreaterEqual(sash["sash_prompt_split"], int(1100 * 0.50))
         self.assertLessEqual(sash["sash_prompt_split"], int(1100 * 0.62))
-        self.assertGreaterEqual(sash["sash_queue"], int(1100 * 0.20))
-        self.assertLessEqual(sash["sash_queue"], int(1100 * 0.30))
+        # v1.8 follow-up: carousel widened (22-32%) for Anti-spoof + LIVE chip;
+        # log/drop split rebalanced toward log (50-78%) so log isn't crushed.
+        self.assertGreaterEqual(sash["sash_queue"], max(220, int(1100 * 0.22)))
+        self.assertLessEqual(sash["sash_queue"], int(1100 * 0.32))
         self.assertGreaterEqual(sash["sash_log"], 110)
         self.assertLessEqual(sash["sash_log"], int(900 * 0.42))
-        self.assertGreaterEqual(sash["sash_log_drop_split"], 200)
-        self.assertLessEqual(sash["sash_log_drop_split"], int((1100 - int(1100 * 0.20)) * 0.62))
+        # log_drop_split is clamped relative to the right section, not the full window.
+        clamped_queue = sash["sash_queue"]
+        right_w = 1100 - clamped_queue
+        self.assertGreaterEqual(sash["sash_log_drop_split"], max(240, int(right_w * 0.50)))
+        self.assertLessEqual(sash["sash_log_drop_split"], int(right_w * 0.78))
 
     def test_sane_values_remain_unchanged(self):
         window, geometry, changed_window = sanitize_window_layout(

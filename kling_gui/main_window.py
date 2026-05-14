@@ -771,7 +771,7 @@ class KlingGUIWindow:
             "sash_dropzone": 500,  # Height of top pane
             "sash_queue": 260,  # Width of left bottom pane (carousel ~26%, widened v1.8 for Anti-spoof + LIVE chip)
             "sash_log": 150,  # Height of log pane (before history)
-            "sash_log_drop_split": 380,  # Width split in log pane (log | permanent drop zone)
+            "sash_log_drop_split": 700,  # Width of LOG pane (log | drop zone), v1.8 follow-up: log dominant ~65%
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)
@@ -4057,6 +4057,17 @@ class KlingGUIWindow:
         self._refresh_session_dependent_ui()
         self._queue_autosave(reason="session_load")
         self._log(f"Session restored: {loaded_count} images loaded", "success")
+        # If we invalidated stale pre-v1.8 scores during restore, the carousel auto-calc
+        # path can't fire (n == _last_known_count after suppress_auto_calc(False)), so
+        # explicitly kick off a batch recompute. recalc_all_similarity_now() logs both
+        # success and skip reasons so the user always sees activity in the Processing Log.
+        if invalidate_legacy_scores and loaded_count > 0:
+            self.root.after(
+                250,
+                lambda: self.carousel.recalc_all_similarity_now(
+                    reason="post-restore v1.8 KYC migration",
+                ),
+            )
 
     # ── Auto-save timer ───────────────────────────────────────────────────────
 

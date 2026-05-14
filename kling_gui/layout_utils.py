@@ -102,11 +102,13 @@ def sanitize_sash_layout(
 
     # Log vs drop zone: clamp relative to the right section width (safe_w - clamped queue)
     # so saved values from a different window size don't blow past the pane boundary.
+    # Widened in v1.8 follow-up: log was too narrow at 52% default; drop zone doesn't
+    # need that much real estate.  Range now 50-78% (log dominant), default 65%.
     clamped_queue = max(queue_min, min(int(sash_queue) if sash_queue else queue_default, queue_max))
     right_section_w = max(400, safe_w - clamped_queue)
-    log_drop_min = max(200, int(right_section_w * 0.42))
-    log_drop_max = max(log_drop_min, int(right_section_w * 0.62))
-    log_drop_default = int(right_section_w * 0.52)
+    log_drop_min = max(240, int(right_section_w * 0.50))
+    log_drop_max = max(log_drop_min, int(right_section_w * 0.78))
+    log_drop_default = int(right_section_w * 0.65)
 
     sanitized = {
         "sash_dropzone": _clamp_int(sash_dropzone, drop_min, drop_max, drop_default),

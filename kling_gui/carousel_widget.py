@@ -280,28 +280,30 @@ class ImageCarousel(tk.Frame):
             sim_row,
             text="Auto",
             variable=self._auto_var,
-            font=(FONT_FAMILY, 7),
+            font=(FONT_FAMILY, 8),
             bg=COLORS["bg_panel"],
-            fg=COLORS["text_dim"],
+            fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
+            padx=2,
         )
-        self._auto_chk.pack(side=tk.RIGHT)
+        self._auto_chk.pack(side=tk.RIGHT, padx=(0, 4))
 
         self._anti_spoof_chk = tk.Checkbutton(
             sim_row,
             text="Anti-spoof",
             variable=self._anti_spoof_var,
             command=self._on_anti_spoof_toggle,
-            font=(FONT_FAMILY, 7),
+            font=(FONT_FAMILY, 8),
             bg=COLORS["bg_panel"],
-            fg=COLORS["text_dim"],
+            fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
+            padx=2,
         )
-        self._anti_spoof_chk.pack(side=tk.RIGHT, padx=(0, 4))
+        self._anti_spoof_chk.pack(side=tk.RIGHT, padx=(12, 6))
 
         # Metadata row (resolution + filesize on left, similarity on right)
         self.meta_frame = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
@@ -860,15 +862,38 @@ class ImageCarousel(tk.Frame):
         # Trigger a fresh batch recompute so the displayed scores reflect the new setting.
         self._calc_all_similarity(auto_triggered=False, reason="anti-spoof toggle")
 
-    def _calc_all_similarity(self, auto_triggered: bool = False, reason: str = "manual recalc"):
-        """Compute similarity for all non-ref generated images."""
+    def recalc_all_similarity_now(self, reason: str = "manual recalc") -> bool:
+        """Public entry to force a batch similarity recompute.
+
+        Returns True if a recompute was kicked off, False if there was nothing to do
+        (no reference image, no targets, etc). Always emits a Processing Log line so
+        the user can see *why* a request didn't recompute.
+        """
+        return self._calc_all_similarity(auto_triggered=False, reason=reason)
+
+    def _calc_all_similarity(self, auto_triggered: bool = False, reason: str = "manual recalc") -> bool:
+        """Compute similarity for all non-ref generated images. Returns True if work started.
+
+        `auto_triggered` is preserved in the signature for callers that distinguish
+        auto vs manual triggers; the log line is now always at info level so the
+        Processing Log shows recompute activity in both cases.
+        """
+        del auto_triggered  # keep signature stable; opt out of unused-parameter warning
         ref, ref_source = self.image_session.get_effective_similarity_ref()
         if not ref:
-            return
+            self._sim_log(
+                f"recalc skipped ({reason}): no similarity reference set — pick one with the ★ Ref button.",
+                "warning",
+            )
+            return False
         targets = [e for e in self.image_session.images
                    if e.source_type != "input" and e is not ref and e.exists]
         if not targets:
-            return
+            self._sim_log(
+                f"recalc skipped ({reason}): no eligible targets (need at least one generated/outpaint image other than the reference).",
+                "warning",
+            )
+            return False
         ref_name = os.path.basename(ref.path)
         source_label = {
             "manual_star_ref": "manual ★ Ref",
@@ -877,9 +902,12 @@ class ImageCarousel(tk.Frame):
             "auto_first_input": "auto first-input fallback",
             "none": "none",
         }.get(ref_source, ref_source or "unknown")
+        # Always log batch start at info level so the user can see recompute activity in
+        # the Processing Log (the previous "debug only when manual" gating made the new
+        # post-restore recompute completely invisible).
         self._sim_log(
             f"batch start: {len(targets)} images, ref={ref_name}, source={source_label}, reason={reason}",
-            "info" if auto_triggered else "debug",
+            "info",
         )
             
         for t in targets:
@@ -916,6 +944,7 @@ class ImageCarousel(tk.Frame):
             self.after(0, lambda: self._sim_log("batch complete", "info"))
 
         threading.Thread(target=_worker, daemon=True).start()
+        return True
 
     # ── Hover preview ───────────────────────────────────────────────
 
