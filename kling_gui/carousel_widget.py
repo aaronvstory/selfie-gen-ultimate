@@ -136,11 +136,15 @@ class ImageCarousel(tk.Frame):
         self._sim_lock = threading.Lock()
         self._sim_busy: bool = False
         self._auto_var = tk.BooleanVar(value=True)
-        self._anti_spoof_var = tk.BooleanVar(value=True)
+        # Anti-spoof default OFF — user-confirmed preference. The standalone
+        # similarity GUI defaults Anti-spoof ON for strict KYC use; the main
+        # carousel runs in a more generative-content workflow where the
+        # liveness signal usually isn't relevant.
+        self._anti_spoof_var = tk.BooleanVar(value=False)
         # Show/hide green face-bounding-box overlay on the active carousel image.
-        # OFF by default — opt-in so the carousel stays clean for users who don't
-        # need the diagnostic.
-        self._show_face_box_var = tk.BooleanVar(value=False)
+        # ON by default — user-confirmed preference. Helpful at-a-glance for
+        # the carousel preview; pure UI redraw on toggle, no recompute cost.
+        self._show_face_box_var = tk.BooleanVar(value=True)
         self._last_known_count: int = 0
         self._suppress_auto_calc: bool = False
 

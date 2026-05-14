@@ -90,13 +90,14 @@ def sanitize_sash_layout(
     prompt_max = max(prompt_min, int(safe_w * 0.64))
     prompt_default = int(safe_w * 0.60)
 
-    # Carousel width: 22-32% of window, default 26%.
-    # v5: bumped from 20-30% / 22% per user request ("carousel a bit wider").
-    # The new floor (22%) ensures the carousel can never collapse back to a
-    # cramped width even if a stale config saved a smaller value.
+    # Carousel width: 22-32% of window, default 22%.
+    # v5.1: default lowered from 26% back to 22% to match the user's actual
+    # tested preference (356px in their 1621px window = 22.0%). Keeping the
+    # 22-32% clamp range so users can still widen if desired, but the default
+    # respects what they're actually using day-to-day.
     queue_min = max(200, int(safe_w * 0.22))
     queue_max = max(queue_min, int(safe_w * 0.32))
-    queue_default = int(safe_w * 0.26)
+    queue_default = int(safe_w * 0.22)
 
     log_min = 110
     log_max = max(log_min, int(safe_h * 0.42))
@@ -104,15 +105,15 @@ def sanitize_sash_layout(
 
     # Log vs drop zone: clamp relative to the right section width (safe_w - clamped queue)
     # so saved values from a different window size don't blow past the pane boundary.
-    # v5: bumped from 42-62% / 52% to 55-78% / 68% per user request ("dropzone
-    # half the width, processing log more space"). The log now claims the
-    # majority of the right section by default; floor at 55% means even the
-    # most aggressive resize can't shrink the log below a usable size.
+    # v5.1: default lowered from 68% back to 55% to match the user's actual
+    # tested preference (695px log within the ~1265px right section at 1621w
+    # = 54.9%). Keeping the 55-78% floor so the log always wins over the drop
+    # zone but doesn't claim quite as aggressive a majority by default.
     clamped_queue = max(queue_min, min(int(sash_queue) if sash_queue else queue_default, queue_max))
     right_section_w = max(400, safe_w - clamped_queue)
     log_drop_min = max(220, int(right_section_w * 0.55))
     log_drop_max = max(log_drop_min, int(right_section_w * 0.78))
-    log_drop_default = int(right_section_w * 0.68)
+    log_drop_default = int(right_section_w * 0.55)
 
     sanitized = {
         "sash_dropzone": _clamp_int(sash_dropzone, drop_min, drop_max, drop_default),

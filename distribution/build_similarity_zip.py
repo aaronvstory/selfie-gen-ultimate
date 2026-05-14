@@ -63,7 +63,13 @@ def _should_skip(rel_path: Path) -> bool:
 
     Conservative: any segment matching SKIP_DIRS, any suffix in SKIP_SUFFIXES,
     or any name in SKIP_FILENAMES is dropped. Wildcards in SKIP_DIRS are
-    handled with a simple `endswith` for the `*.egg-info` case.
+    handled with a simple ``endswith`` for the ``*.egg-info`` case.
+
+    Args:
+        rel_path: Path relative to the similarity root to check.
+
+    Returns:
+        True if the path should be excluded from the zip, False otherwise.
     """
     parts = set(rel_path.parts)
     for skip in SKIP_DIRS:
@@ -81,11 +87,15 @@ def _should_skip(rel_path: Path) -> bool:
 
 
 def _detect_version() -> str:
-    """Read the latest released version tag from `similarity/CHANGELOG.md`.
+    """Read the latest released version tag from ``similarity/CHANGELOG.md``.
 
-    Falls back to "unreleased" if no [x.y.z] header is found. The "[Unreleased]"
-    section is intentionally skipped — we want a stable shippable version
-    string for the zip filename, not a moving target.
+    Falls back to ``"unreleased"`` if no ``[x.y.z]`` header is found. The
+    ``[Unreleased]`` section is intentionally skipped — we want a stable
+    shippable version string for the zip filename, not a moving target.
+
+    Returns:
+        Version string in ``"x.y.z"`` format, or ``"unreleased"`` if no
+        released version header is present (or the CHANGELOG is missing).
     """
     if not CHANGELOG.is_file():
         return "unreleased"
@@ -95,14 +105,24 @@ def _detect_version() -> str:
 
 
 def _copy_subproject(src_root: Path, dest_root: Path) -> int:
-    """Copy `similarity/` into `dest_root/similarity/`, skipping excluded paths.
+    """Copy ``similarity/`` into ``dest_root/similarity/``, skipping excluded paths.
 
-    Returns the count of files copied so the caller can sanity-check that
-    the bundle isn't empty (which would mean SKIP_DIRS is too aggressive).
+    Args:
+        src_root: Source directory to copy (e.g., the ``similarity/`` subproject).
+        dest_root: Destination parent directory (the staging root).
+
+    Returns:
+        Count of files copied for sanity-checking that the bundle isn't empty
+        (zero would indicate the SKIP rules are too aggressive).
     """
     target = dest_root / src_root.name
-    if target.exists():
+    # Use is_dir() rather than exists() so a stray file at this path raises a
+    # clear error rather than rmtree's misleading "not a directory" trace
+    # (coderabbit nit on PR #19).
+    if target.is_dir():
         shutil.rmtree(target)
+    elif target.exists():
+        raise RuntimeError(f"Staging target {target} exists but is not a directory")
     target.mkdir(parents=True)
     file_count = 0
     for path in src_root.rglob("*"):
@@ -120,11 +140,16 @@ def _copy_subproject(src_root: Path, dest_root: Path) -> int:
 
 
 def _write_readme(staging_root: Path, version: str) -> None:
-    """Drop a README_FIRST.txt at the staging root with run instructions.
+    """Drop a ``README_FIRST.txt`` at the staging root with run instructions.
 
-    Sits ALONGSIDE the `similarity/` folder so the recipient sees it first
+    Sits ALONGSIDE the ``similarity/`` folder so the recipient sees it first
     when they unzip. Uses LF line endings so it renders cleanly on macOS,
     Linux, and modern Windows (Notepad gained LF support in Win10 1809).
+
+    Args:
+        staging_root: Staging directory path where ``README_FIRST.txt`` will
+            be written.
+        version: Version string to include in the README header.
     """
     text = (
         f"Face Similarity Pro - Standalone Distributable (v{version})\n"
@@ -167,6 +192,18 @@ def _write_readme(staging_root: Path, version: str) -> None:
 
 
 def main() -> int:
+    """Build a shareable .zip distributable of the ``similarity/`` subproject.
+
+    Validates ``SIM_ROOT``, copies the tree into ``STAGING_DIR`` (excluding
+    artifacts via :func:`_copy_subproject`), detects the version from
+    ``CHANGELOG.md`` via :func:`_detect_version`, writes a ``README_FIRST.txt``
+    via :func:`_write_readme`, creates a timestamped zip in ``DIST_DIR``, then
+    cleans up staging.
+
+    Returns:
+        0 on success, 1 if ``similarity/`` is missing, 2 if zero files copied
+        (which would indicate the SKIP rules are too aggressive).
+    """
     if not SIM_ROOT.is_dir():
         print(f"ERROR: similarity subproject not found at {SIM_ROOT}", file=sys.stderr)
         return 1

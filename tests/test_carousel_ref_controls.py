@@ -172,7 +172,7 @@ class CarouselFasSummaryTests(unittest.TestCase):
     which the engine has already inverted when needed.
     """
 
-    def test_spoofed_side_logs_low_real_percentage(self):
+    def test_spoofed_side_logs_low_real_percentage(self) -> None:
         diag = {"anti_spoofing": {
             "ref": {
                 "status": "ok",
