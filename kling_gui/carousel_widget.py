@@ -364,33 +364,12 @@ class ImageCarousel(tk.Frame):
         )
         self._show_face_box_chk.pack(side=tk.RIGHT, padx=(6, 0))
 
-        # Recalc — icon-only round-feel button. Glyph is ↻ (U+21BB
-        # CLOCKWISE OPEN CIRCLE ARROW) which is universally present in
-        # Segoe UI / SF Symbols / DejaVu Sans. Earlier glyph ⟳ (U+27F3
-        # HEAVY CLOCKWISE ARROW) renders as ? in default Tk fonts on
-        # Windows because it's only in symbol-specific fonts.
-        self.recalc_btn = tk.Button(
-            self.meta_frame,
-            text="↻",
-            command=debounce_command(
-                lambda: self.recalc_all_similarity_now(reason="manual recalc button"),
-                key="carousel_recalc",
-            ),
-            width=2,
-            font=(FONT_FAMILY, 11, "bold"),
-            bg="#3D434B",
-            fg="#E6E8EB",
-            activebackground="#5C636C",
-            activeforeground="#FFFFFF",
-            highlightbackground="#5C636C",
-            highlightthickness=1,
-            relief=tk.FLAT,
-            bd=0,
-            padx=2,
-            pady=2,
-            cursor="hand2",
-        )
-        self.recalc_btn.pack(side=tk.RIGHT, padx=(6, 0))
+        # NOTE: Manual recalc button removed in v5.3 per user request — the
+        # method recalc_all_similarity_now() below stays in place because the
+        # auto-recalc paths (post-restore, post anti-spoof toggle, post
+        # session-rebuild) still call it programmatically. Only the visible
+        # button widget is gone. Visual order in meta_frame is now just
+        # [LIVE | SIM | ☐ Boxes].
 
         self.sim_label = tk.Label(
             self.meta_frame,
