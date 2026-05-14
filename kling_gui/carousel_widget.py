@@ -182,6 +182,25 @@ class ImageCarousel(tk.Frame):
         )
         self.counter_label.pack(side=tk.LEFT, padx=(8, 8))
 
+        # v5: Boxes checkbox moved here from sim_row per user request — sits
+        # on the SAME ROW as the IMAGE CAROUSEL counter (right-aligned), so
+        # it doesn't crowd the action-button row below. Compact font matches
+        # the counter's visual weight.
+        self._show_face_box_chk = tk.Checkbutton(
+            header,
+            text="Boxes",
+            variable=self._show_face_box_var,
+            command=self._on_show_face_box_toggle,
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["text_light"],
+            padx=2,
+        )
+        self._show_face_box_chk.pack(side=tk.RIGHT, padx=(0, 4))
+
         controls = tk.Frame(header, bg=COLORS["bg_panel"])
         controls.pack(side=tk.RIGHT)
 
@@ -271,31 +290,10 @@ class ImageCarousel(tk.Frame):
         )
         self.compare_btn.pack(side=tk.LEFT, padx=(6, 0))
 
-        # Manual recompute button — universal escape hatch when auto-trigger paths fail
-        # (post-restore, after config changes, etc). Always enabled; the underlying
-        # method emits a clear log line whether work started or was skipped.
-        self.recalc_btn = tk.Button(
-            sim_row,
-            text="Recalc",
-            command=debounce_command(
-                lambda: self.recalc_all_similarity_now(reason="manual recalc button"),
-                key="carousel_recalc",
-            ),
-            width=8,
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            highlightbackground=COLORS["bg_main"],
-            highlightthickness=1,
-            relief=tk.FLAT,
-            bd=0,
-            padx=8,
-            pady=4,
-            cursor="hand2",
-        )
-        self.recalc_btn.pack(side=tk.LEFT, padx=(6, 0))
+        # NOTE: manual recompute "Recalc" button moved to meta_frame (next
+        # to the SIM badge) as an icon-only ⟳ button in v5 per user request.
+        # See meta_frame build below for the new widget. Comment kept as a
+        # wayfinding marker for future editors.
 
         self.open_active_folder_btn = ttk.Button(
             sim_row,
@@ -335,23 +333,10 @@ class ImageCarousel(tk.Frame):
         )
         self._anti_spoof_chk.pack(side=tk.RIGHT, padx=(12, 6))
 
-        # Toggle: overlay a green rectangle on the active carousel image showing
-        # the face bbox the engine matched against. Pure UI — no recompute on
-        # toggle, just redraws the active panel from cached entry.face_bbox.
-        self._show_face_box_chk = tk.Checkbutton(
-            sim_row,
-            text="Boxes",
-            variable=self._show_face_box_var,
-            command=self._on_show_face_box_toggle,
-            font=(FONT_FAMILY, 8),
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"],
-            activebackground=COLORS["bg_panel"],
-            activeforeground=COLORS["text_light"],
-            padx=2,
-        )
-        self._show_face_box_chk.pack(side=tk.RIGHT, padx=(0, 6))
+        # NOTE: "Boxes" face-bbox toggle moved to header row (next to the
+        # IMAGE CAROUSEL counter) in v5 per user request — see header build
+        # above. Keeping this comment as a wayfinding marker for future
+        # editors who go looking for it where it used to live.
 
         # Metadata row (resolution + filesize on left, similarity on right)
         self.meta_frame = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
@@ -362,6 +347,34 @@ class ImageCarousel(tk.Frame):
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor=tk.W,
         )
         self.meta_label.pack(side=tk.LEFT)
+
+        # v5: Recalc moved here from sim_row as an icon-only ⟳ button per user
+        # request. pack(side=tk.RIGHT) order = right-to-left visually, so to
+        # have visual order [...LIVE, SIM, ⟳], pack ⟳ FIRST (rightmost), then
+        # SIM, then LIVE. Same height as the chips so the trio reads as a
+        # cohesive control strip.
+        self.recalc_btn = tk.Button(
+            self.meta_frame,
+            text="⟳",
+            command=debounce_command(
+                lambda: self.recalc_all_similarity_now(reason="manual recalc button"),
+                key="carousel_recalc",
+            ),
+            width=2,
+            font=(FONT_FAMILY, 11, "bold"),
+            bg="#3D434B",
+            fg="#E6E8EB",
+            activebackground="#5C636C",
+            activeforeground="#FFFFFF",
+            highlightbackground="#5C636C",
+            highlightthickness=1,
+            relief=tk.FLAT,
+            bd=0,
+            padx=2,
+            pady=2,
+            cursor="hand2",
+        )
+        self.recalc_btn.pack(side=tk.RIGHT, padx=(6, 0))
 
         self.sim_label = tk.Label(
             self.meta_frame,
@@ -379,18 +392,23 @@ class ImageCarousel(tk.Frame):
         self.sim_label.pack(side=tk.RIGHT)
 
         # FAS (anti-spoof) PASS/FAIL chip — appears LEFT of sim_label when active.
+        # v5: font + padding bumped to size 11 bold + padx=8 to match SIM badge
+        # exactly. Previously this chip was font 8 + padx=4 which read as
+        # "ugly tiny chip next to nice big SIM" — they should be a matched pair.
+        # width=8 chars enforces equal visual footprint with "SIM 100%" / "LIVE ⚠".
         self.fas_label = tk.Label(
             self.meta_frame,
             text="",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 11, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
-            anchor=tk.E,
+            anchor=tk.CENTER,
             bd=0,
             relief=tk.FLAT,
-            padx=4,
+            padx=0,
             pady=0,
             highlightthickness=0,
+            width=8,
         )
         self.fas_label.pack(side=tk.RIGHT, padx=(0, 6))
 
@@ -601,16 +619,19 @@ class ImageCarousel(tk.Frame):
             )
             return
         if verdict == "fail":
-            # FAS is ADVISORY ONLY — keep the chip amber, never red. The
-            # similarity verdict is the actual gate; the chip says "heads-up,
-            # the liveness model flagged this side", not "this comparison
-            # failed". Reverted from v4's red chip after codex + coderabbit
-            # bot review on PR #19 reminded us of the project's advisory-only
-            # FAS policy. Use ⚠ glyph (not ?) so the signal is still clear
-            # without overstating it.
-            text, fg, bg, border = "  LIVE ⚠  ", "#3A2A00", "#FFC107", "#C99500"
+            # FAS is ADVISORY ONLY — amber chip, never red. The similarity
+            # verdict is the actual gate; the chip says "heads-up, the
+            # liveness model flagged this side", not "this comparison failed"
+            # (codex + coderabbit on PR #19 reaffirmed advisory-only policy).
+            text, fg, bg, border = "LIVE ⚠", "#3A2A00", "#FFC107", "#C99500"
         else:
-            text, fg, bg, border = "  LIVE ✓  ", "#0B2A12", "#A6E3A1", "#5DB075"
+            # v5: green colors aligned to SIM 100% palette (#0B5D1E bg /
+            # #F4FFF6 fg / #2B8A3E border) so a passing LIVE chip and a
+            # passing SIM badge read as a coherent matched pair instead of
+            # two unrelated greens.
+            text, fg, bg, border = "LIVE ✓", "#F4FFF6", "#0B5D1E", "#2B8A3E"
+        # Padding matches SIM badge exactly (padx=8 pady=2) so the two chips
+        # have identical height and visual weight.
         self.fas_label.config(
             text=text,
             fg=fg,
@@ -618,7 +639,7 @@ class ImageCarousel(tk.Frame):
             highlightthickness=1,
             highlightbackground=border,
             highlightcolor=border,
-            padx=6,
+            padx=8,
             pady=2,
         )
 
