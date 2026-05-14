@@ -743,13 +743,27 @@ class AutoPipelineRunner:
         if not isinstance(diag, dict):
             diag = {}
         self.logger.info(
-            "case %s similarity summary score=%s mode=%s distance=%s fallback=%s",
+            "case %s similarity summary score=%s mode=%s distance=%s fallback=%s per_model=%s",
             case_key,
             best_similarity_meta.get("score"),
             diag.get("mode"),
             diag.get("raw_cosine_distance"),
             diag.get("fallback_reason"),
+            diag.get("per_model_distances"),
         )
+        fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
+        if isinstance(fas, dict):
+            ref_fas = fas.get("ref") if isinstance(fas.get("ref"), dict) else {}
+            tgt_fas = fas.get("target") if isinstance(fas.get("target"), dict) else {}
+            ref_spoof = (ref_fas or {}).get("spoof_detected")
+            tgt_spoof = (tgt_fas or {}).get("spoof_detected")
+            if ref_spoof or tgt_spoof:
+                self.logger.warning(
+                    "case %s anti-spoofing warning ref=%s target=%s (log-only; gate unchanged)",
+                    case_key,
+                    ref_spoof,
+                    tgt_spoof,
+                )
         if self.verbose_logging:
             self.logger.debug("case %s similarity diagnostics=%s", case_key, best_similarity_meta)
         if best_similarity_meta.get("error"):

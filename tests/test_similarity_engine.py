@@ -144,10 +144,11 @@ class SimilarityEngineTests(unittest.TestCase):
 
     def test_compare_full_image_align_passes_real_image_shape_to_selector(self):
         engine = se.FaceEngine()
+        engine.use_ensemble = False  # keep mock count to 2 (primary only)
         reps1 = [{"embedding": [1.0, 0.0], "facial_area": {"x": 1, "y": 2, "w": 10, "h": 12}}]
         reps2 = [{"embedding": [1.0, 0.0], "facial_area": {"x": 3, "y": 4, "w": 8, "h": 9}}]
 
-        with mock.patch.object(engine, "_represent_full_image_with_detection", side_effect=[reps1, reps2]), \
+        with mock.patch.object(engine, "_represent_full_image_with_detection_with_model", side_effect=[reps1, reps2]), \
             mock.patch("similarity_engine.cv2.imread", side_effect=[np.zeros((200, 300, 3), dtype=np.uint8), np.zeros((120, 220, 3), dtype=np.uint8)]), \
             mock.patch.object(engine, "_select_prominent_face", side_effect=[reps1[0], reps2[0]]) as selector:
             result = engine._compare_full_image_align("a.png", "b.png")
@@ -158,13 +159,14 @@ class SimilarityEngineTests(unittest.TestCase):
 
     def test_compare_existing_skips_failed_target_embedding_and_uses_valid_face(self):
         engine = se.FaceEngine()
+        engine.use_ensemble = False  # keep test focused on original per-target retry logic
         faces1 = [{"face": "src", "facial_area": {"x": 0, "y": 0, "w": 10, "h": 10}}]
         faces2 = [
             {"face": "bad-target", "facial_area": {"x": 0, "y": 0, "w": 8, "h": 8}},
             {"face": "good-target", "facial_area": {"x": 2, "y": 2, "w": 8, "h": 8}},
         ]
 
-        def _fake_repr(face):
+        def _fake_repr(face, _model=None):
             if face == "src":
                 return np.asarray([1.0, 0.0], dtype=float)
             if face == "bad-target":
@@ -173,7 +175,7 @@ class SimilarityEngineTests(unittest.TestCase):
 
         with mock.patch.object(engine, "_extract_faces", side_effect=[faces1, faces2]), \
             mock.patch("similarity_engine.cv2.imread", side_effect=[np.zeros((100, 100, 3), dtype=np.uint8), np.zeros((120, 120, 3), dtype=np.uint8)]), \
-            mock.patch.object(engine, "_represent_face", side_effect=_fake_repr):
+            mock.patch.object(engine, "_represent_face_with_model", side_effect=_fake_repr):
             result = engine._compare_existing("a.png", "b.png")
 
         self.assertIsNone(result["error"])
@@ -205,6 +207,102 @@ class SimilarityEngineTests(unittest.TestCase):
         self.assertEqual(raw.normalized_face_size, (224, 224))
         self.assertEqual(raw.normalized_face_padding, 0.30)
         self.assertEqual(raw.MODE_EXISTING, "existing")
+        self.assertEqual(raw.secondary_model_name, "Facenet512")
+        self.assertTrue(raw.use_ensemble)
+        self.assertTrue(raw.anti_spoofing)
+
+    def test_polynomial_curve_at_distance_zero_returns_100(self):
+        engine = se.FaceEngine()
+        score, match = engine._score_from_distance(0.0)
+        self.assertAlmostEqual(score, 100.0)
+        self.assertTrue(match)
+
+    def test_polynomial_curve_at_threshold_returns_80(self):
+        engine = se.FaceEngine()
+        score, match = engine._score_from_distance(engine.threshold)
+        self.assertAlmostEqual(score, 80.0)
+        self.assertTrue(match)
+
+    def test_polynomial_curve_at_distance_one_returns_zero(self):
+        engine = se.FaceEngine()
+        score, match = engine._score_from_distance(1.0)
+        self.assertAlmostEqual(score, 0.0)
+        self.assertFalse(match)
+
+    def test_polynomial_curve_just_above_threshold_drops_below_80(self):
+        engine = se.FaceEngine()
+        score, match = engine._score_from_distance(engine.threshold + 0.01)
+        self.assertLess(score, 80.0)
+        self.assertFalse(match)
+
+    def test_ensemble_distance_pair_averages_two_models(self):
+        engine = se.FaceEngine()
+        engine.use_ensemble = True
+        engine.secondary_model_name = "Facenet512"
+
+        def _fake(face_input, model_name):
+            if model_name == "ArcFace":
+                return np.asarray([1.0, 0.0], dtype=float) if face_input == "src" \
+                    else np.asarray([0.8, 0.6], dtype=float)
+            return np.asarray([1.0, 0.0], dtype=float) if face_input == "src" \
+                else np.asarray([0.6, 0.8], dtype=float)
+
+        with mock.patch.object(engine, "_represent_face_with_model", side_effect=_fake):
+            avg, per_model = engine._ensemble_distance_pair("src", "tgt")
+        # ArcFace dist = 1 - 0.8 = 0.2; Facenet512 dist = 1 - 0.6 = 0.4; avg = 0.3
+        self.assertAlmostEqual(avg, 0.3, places=4)
+        self.assertEqual(set(per_model.keys()), {"ArcFace", "Facenet512"})
+
+    def test_ensemble_disabled_returns_primary_only(self):
+        engine = se.FaceEngine()
+        engine.use_ensemble = False
+        with mock.patch.object(
+            engine,
+            "_represent_face_with_model",
+            return_value=np.asarray([1.0, 0.0], dtype=float),
+        ) as m:
+            avg, per_model = engine._ensemble_distance_pair("a", "b")
+        self.assertEqual(m.call_count, 2)  # primary only on each face
+        self.assertEqual(set(per_model.keys()), {"ArcFace"})
+        self.assertAlmostEqual(avg, 0.0)
+
+    def test_ensemble_secondary_failure_falls_back_to_primary(self):
+        engine = se.FaceEngine()
+        engine.use_ensemble = True
+
+        def _fake(face_input, model_name):
+            if model_name == "Facenet512":
+                raise RuntimeError("secondary boom")
+            return np.asarray([1.0, 0.0], dtype=float)
+
+        with mock.patch.object(engine, "_represent_face_with_model", side_effect=_fake):
+            avg, per_model = engine._ensemble_distance_pair("a", "b")
+        self.assertAlmostEqual(avg, 0.0)
+        self.assertEqual(set(per_model.keys()), {"ArcFace"})
+
+    def test_anti_spoofing_check_detects_spoof(self):
+        engine = se.FaceEngine()
+        faces = [{"facial_area": {"x": 0, "y": 0, "w": 10, "h": 10},
+                  "is_real": False, "antispoof_score": 0.12}]
+        result = engine._check_anti_spoofing(faces, "img")
+        self.assertIsNotNone(result)
+        assert result is not None  # for type-checker
+        self.assertTrue(result["spoof_detected"])
+
+    def test_anti_spoofing_check_passes_real(self):
+        engine = se.FaceEngine()
+        faces = [{"facial_area": {"x": 0, "y": 0, "w": 10, "h": 10},
+                  "is_real": True, "antispoof_score": 0.94}]
+        result = engine._check_anti_spoofing(faces, "img")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertFalse(result["spoof_detected"])
+
+    def test_anti_spoofing_absent_key_returns_none(self):
+        engine = se.FaceEngine()
+        faces = [{"facial_area": {"x": 0, "y": 0, "w": 10, "h": 10}}]
+        result = engine._check_anti_spoofing(faces, "img")
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

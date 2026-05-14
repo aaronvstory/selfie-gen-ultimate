@@ -38,6 +38,9 @@ class FaceEngine:
     model_name = "ArcFace"
     detector_backend = "retinaface"
     threshold = 0.68
+    secondary_model_name = "Facenet512"
+    use_ensemble = True
+    anti_spoofing = True
     normalized_face_size = (224, 224)
     normalized_face_padding = 0.30
     models_dir = ""
@@ -66,6 +69,9 @@ class FaceEngine:
         self.model_name = "ArcFace"
         self.detector_backend = "retinaface"
         self.threshold = 0.68
+        self.secondary_model_name = "Facenet512"
+        self.use_ensemble = True
+        self.anti_spoofing = True
         self.normalized_face_size = (224, 224)
         self.normalized_face_padding = 0.30
 
@@ -90,9 +96,18 @@ class FaceEngine:
         self._initialized = True
 
     def initialize_models(self) -> None:
-        """Warm heavy ArcFace model in memory."""
+        """Warm primary + (when ensemble enabled) secondary embedding models in memory."""
         try:
             DeepFace.build_model(model_name=self.model_name)
+            if self.use_ensemble:
+                try:
+                    DeepFace.build_model(model_name=self.secondary_model_name)
+                except Exception as exc:
+                    logger.warning(
+                        "Secondary model warmup failed (%s); ensemble will fall back at runtime: %s",
+                        self.secondary_model_name,
+                        exc,
+                    )
         except Exception as exc:
             raise RuntimeError(f"Failed to initialize Face Models: {exc}") from exc
 
@@ -250,30 +265,53 @@ class FaceEngine:
             or "symbolic placeholder" in lowered
         )
 
-    def _represent_face(self, face_input: Any) -> np.ndarray:
+    def _represent_face_with_model(self, face_input: Any, model_name: str) -> np.ndarray:
         representations = DeepFace.represent(
             img_path=face_input,
-            model_name=self.model_name,
+            model_name=model_name,
             detector_backend="skip",
             enforce_detection=False,
             align=False,
         )
         if not representations:
-            raise ValueError("Could not generate a face embedding.")
-        embedding = representations[0].get("embedding")
+            raise ValueError(f"Could not generate embedding via {model_name}.")
+        first = representations[0]
+        if isinstance(first, list):
+            if not first:
+                raise ValueError(f"{model_name} returned empty representation list.")
+            first = first[0]
+        embedding = first.get("embedding") if isinstance(first, dict) else None
         if not embedding:
-            raise ValueError("DeepFace did not return an embedding.")
+            raise ValueError(f"{model_name} did not return an embedding.")
         return np.asarray(embedding, dtype=float)
 
-    def _represent_full_image_with_detection(self, img_path: str) -> List[Dict[str, Any]]:
-        reps = DeepFace.represent(
+    def _represent_face(self, face_input: Any) -> np.ndarray:
+        return self._represent_face_with_model(face_input, self.model_name)
+
+    def _represent_full_image_with_detection_with_model(
+        self, img_path: str, model_name: str
+    ) -> List[Dict[str, Any]]:
+        kwargs: Dict[str, Any] = dict(
             img_path=img_path,
-            model_name=self.model_name,
+            model_name=model_name,
             detector_backend=self.detector_backend,
             enforce_detection=True,
             align=True,
         )
-        return reps or []
+        if self.anti_spoofing:
+            kwargs["anti_spoofing"] = True
+        reps = DeepFace.represent(**kwargs) or []
+        # Normalize: some DeepFace builds return List[List[Dict]] when multiple embeddings/models.
+        if reps and isinstance(reps[0], list):
+            flat: List[Dict[str, Any]] = []
+            for inner in reps:
+                if isinstance(inner, list):
+                    flat.extend([item for item in inner if isinstance(item, dict)])
+            return flat
+        return [item for item in reps if isinstance(item, dict)]
+
+    def _represent_full_image_with_detection(self, img_path: str) -> List[Dict[str, Any]]:
+        return self._represent_full_image_with_detection_with_model(img_path, self.model_name)
 
     @staticmethod
     def _cosine_distance(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
@@ -285,21 +323,93 @@ class FaceEngine:
         similarity = max(-1.0, min(1.0, similarity))
         return 1.0 - similarity
 
+    def _ensemble_distance_pair(
+        self, face_input1: Any, face_input2: Any
+    ) -> Tuple[float, Dict[str, float]]:
+        """Average cosine distance across primary + secondary models.
+
+        Returns (avg_distance, {model_name: distance}).
+        Falls back to primary-only if secondary model errors out.
+        """
+        per_model: Dict[str, float] = {}
+        primary_emb1 = self._represent_face_with_model(face_input1, self.model_name)
+        primary_emb2 = self._represent_face_with_model(face_input2, self.model_name)
+        primary_dist = self._cosine_distance(primary_emb1, primary_emb2)
+        per_model[self.model_name] = float(primary_dist)
+
+        if not self.use_ensemble:
+            return primary_dist, per_model
+
+        try:
+            sec_emb1 = self._represent_face_with_model(face_input1, self.secondary_model_name)
+            sec_emb2 = self._represent_face_with_model(face_input2, self.secondary_model_name)
+            sec_dist = self._cosine_distance(sec_emb1, sec_emb2)
+            per_model[self.secondary_model_name] = float(sec_dist)
+            return (primary_dist + sec_dist) / 2.0, per_model
+        except Exception as exc:
+            logger.warning("Secondary model %s failed: %s", self.secondary_model_name, exc)
+            return primary_dist, per_model
+
+    def _check_anti_spoofing(
+        self, faces: List[Dict[str, Any]], image_label: str
+    ) -> Optional[Dict[str, Any]]:
+        """Inspect FAS verdicts on extracted faces. LOG-ONLY — never raises.
+
+        Returns None if the FAS feature wasn't active (no is_real key on any face).
+        Returns {spoof_detected: bool, faces: [{is_real, antispoof_score}, ...]}
+        when DeepFace populated FAS fields.
+        """
+        if not faces:
+            return None
+        has_fas_data = any("is_real" in f for f in faces if isinstance(f, dict))
+        if not has_fas_data:
+            return None
+        records: List[Dict[str, Any]] = []
+        spoof_detected = False
+        for face in faces:
+            if not isinstance(face, dict):
+                continue
+            is_real = face.get("is_real")
+            score = face.get("antispoof_score")
+            records.append({"is_real": is_real, "antispoof_score": score})
+            if is_real is False:
+                spoof_detected = True
+        if spoof_detected:
+            logger.warning(
+                "Anti-spoofing flagged possible spoof in %s: %s", image_label, records
+            )
+        return {"spoof_detected": spoof_detected, "faces": records}
+
     def _score_from_distance(self, distance: float) -> Tuple[float, bool]:
         distance = max(0.0, min(1.0, distance))
         epsilon = 1e-6
         safe_threshold = max(epsilon, min(1.0 - epsilon, float(self.threshold)))
         if distance <= safe_threshold:
-            return 100.0 - ((distance / safe_threshold) * 20.0), True
-        return max(0.0, 79.0 - (((distance - safe_threshold) / (1.0 - safe_threshold)) * 79.0)), False
+            ratio = distance / safe_threshold
+            curved_score = 80.0 + (20.0 * (1.0 - math.pow(ratio, 2.5)))
+            return curved_score, True
+        fail_ratio = (distance - safe_threshold) / (1.0 - safe_threshold)
+        fail_score = max(0.0, 79.0 * (1.0 - math.pow(fail_ratio, 0.5)))
+        return fail_score, False
 
     def _extract_faces(self, img_path: str) -> List[Dict[str, Any]]:
-        return DeepFace.extract_faces(
+        kwargs: Dict[str, Any] = dict(
             img_path=img_path,
             detector_backend=self.detector_backend,
             enforce_detection=True,
             align=True,
-        ) or []
+        )
+        if self.anti_spoofing:
+            kwargs["anti_spoofing"] = True
+        faces = DeepFace.extract_faces(**kwargs) or []
+        # Normalize: some DeepFace builds may wrap in nested lists.
+        if faces and isinstance(faces[0], list):
+            flat: List[Dict[str, Any]] = []
+            for inner in faces:
+                if isinstance(inner, list):
+                    flat.extend([item for item in inner if isinstance(item, dict)])
+            return flat
+        return [item for item in faces if isinstance(item, dict)]
 
     def _clip_box(self, box: Dict[str, int], width: int, height: int) -> Dict[str, int]:
         x = max(0, min(int(box.get("x", 0)), max(0, width - 1)))
@@ -359,6 +469,8 @@ class FaceEngine:
             "raw_cosine_distance": None,
             "mapped_score": None,
             "fallback_reason": None,
+            "per_model_distances": None,
+            "anti_spoofing": None,
         }
 
     def _mode_result(
@@ -395,16 +507,18 @@ class FaceEngine:
         diag["selected_face_boxes"]["ref"] = self._face_bbox(face1)
         diag["selected_face_confidence"]["ref"] = self._face_confidence(face1)
 
-        emb1 = self._represent_face(face1["face"])
-        best_distance = None
-        best_face = None
+        # Sanity: ensure primary embedding is reachable before iterating targets.
+        self._represent_face_with_model(face1["face"], self.model_name)
+        best_distance: Optional[float] = None
+        best_face: Optional[Dict[str, Any]] = None
+        best_per_model: Dict[str, float] = {}
         for face2 in faces2:
             try:
-                emb2 = self._represent_face(face2["face"])
-                dist = self._cosine_distance(emb1, emb2)
+                dist, per_model = self._ensemble_distance_pair(face1["face"], face2["face"])
                 if best_distance is None or dist < best_distance:
                     best_distance = dist
                     best_face = face2
+                    best_per_model = per_model
             except Exception:
                 continue
         if best_distance is None or best_face is None:
@@ -413,13 +527,18 @@ class FaceEngine:
         diag["selected_face_boxes"]["target"] = self._face_bbox(best_face)
         diag["selected_face_confidence"]["target"] = self._face_confidence(best_face)
         diag["raw_cosine_distance"] = round(float(best_distance), 6)
+        diag["per_model_distances"] = {k: round(float(v), 6) for k, v in best_per_model.items()}
+        diag["anti_spoofing"] = {
+            "ref": self._check_anti_spoofing(faces1, "image 1"),
+            "target": self._check_anti_spoofing(faces2, "image 2"),
+        }
         score, match = self._score_from_distance(float(best_distance))
         return self._mode_result(self.MODE_EXISTING, score, match, None, diag)
 
     def _compare_full_image_align(self, img1_path: str, img2_path: str) -> Dict[str, Any]:
         diag = self._base_mode_diag(self.MODE_FULL_IMAGE_ALIGN, img1_path, img2_path)
-        reps1 = self._represent_full_image_with_detection(img1_path)
-        reps2 = self._represent_full_image_with_detection(img2_path)
+        reps1 = self._represent_full_image_with_detection_with_model(img1_path, self.model_name)
+        reps2 = self._represent_full_image_with_detection_with_model(img2_path, self.model_name)
         diag["face_counts"] = {"ref": len(reps1), "target": len(reps2)}
         src_img = cv2.imread(img1_path)
         tgt_img = cv2.imread(img2_path)
@@ -430,13 +549,46 @@ class FaceEngine:
 
         emb1 = np.asarray(src.get("embedding"), dtype=float)
         emb2 = np.asarray(tgt.get("embedding"), dtype=float)
-        dist = self._cosine_distance(emb1, emb2)
+        primary_dist = self._cosine_distance(emb1, emb2)
+        per_model: Dict[str, float] = {self.model_name: float(primary_dist)}
+
+        dist = primary_dist
+        if self.use_ensemble:
+            try:
+                reps1_sec = self._represent_full_image_with_detection_with_model(
+                    img1_path, self.secondary_model_name
+                )
+                reps2_sec = self._represent_full_image_with_detection_with_model(
+                    img2_path, self.secondary_model_name
+                )
+                src_sec = self._select_prominent_face(
+                    reps1_sec, "image 1 (sec)", (src_img.shape[1], src_img.shape[0])
+                )
+                tgt_sec = self._select_prominent_face(
+                    reps2_sec, "image 2 (sec)", (tgt_img.shape[1], tgt_img.shape[0])
+                )
+                emb1_sec = np.asarray(src_sec.get("embedding"), dtype=float)
+                emb2_sec = np.asarray(tgt_sec.get("embedding"), dtype=float)
+                sec_dist = self._cosine_distance(emb1_sec, emb2_sec)
+                per_model[self.secondary_model_name] = float(sec_dist)
+                dist = (primary_dist + sec_dist) / 2.0
+            except Exception as exc:
+                logger.warning(
+                    "Secondary model %s failed in full-image mode: %s",
+                    self.secondary_model_name,
+                    exc,
+                )
 
         diag["selected_face_boxes"]["ref"] = self._face_bbox(src)
         diag["selected_face_boxes"]["target"] = self._face_bbox(tgt)
         diag["selected_face_confidence"]["ref"] = self._face_confidence(src)
         diag["selected_face_confidence"]["target"] = self._face_confidence(tgt)
         diag["raw_cosine_distance"] = round(float(dist), 6)
+        diag["per_model_distances"] = {k: round(float(v), 6) for k, v in per_model.items()}
+        diag["anti_spoofing"] = {
+            "ref": self._check_anti_spoofing(reps1, "image 1"),
+            "target": self._check_anti_spoofing(reps2, "image 2"),
+        }
 
         score, match = self._score_from_distance(float(dist))
         return self._mode_result(self.MODE_FULL_IMAGE_ALIGN, score, match, None, diag)
@@ -465,10 +617,13 @@ class FaceEngine:
         diag["crop_dimensions"]["ref"] = src_diag["crop_dimensions"]
         diag["crop_dimensions"]["target"] = tgt_diag["crop_dimensions"]
 
-        emb1 = self._represent_face(src_norm)
-        emb2 = self._represent_face(tgt_norm)
-        dist = self._cosine_distance(emb1, emb2)
+        dist, per_model = self._ensemble_distance_pair(src_norm, tgt_norm)
         diag["raw_cosine_distance"] = round(float(dist), 6)
+        diag["per_model_distances"] = {k: round(float(v), 6) for k, v in per_model.items()}
+        diag["anti_spoofing"] = {
+            "ref": self._check_anti_spoofing(faces1, "image 1"),
+            "target": self._check_anti_spoofing(faces2, "image 2"),
+        }
 
         score, match = self._score_from_distance(float(dist))
         return self._mode_result(self.MODE_NORMALIZED_CROP, score, match, None, diag)
@@ -501,6 +656,8 @@ class FaceEngine:
                 "normalized_w": self.normalized_face_size[0],
                 "normalized_h": self.normalized_face_size[1],
             }
+            diag["per_model_distances"] = {self.model_name: round(float(dist), 6)}
+            diag["anti_spoofing"] = {"ref": None, "target": None}
             return self._mode_result(self.MODE_FALLBACK, score, match, None, diag)
         finally:
             for tmp_path in (fallback1, fallback2):
