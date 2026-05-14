@@ -314,7 +314,11 @@ class TestModernGUI(unittest.TestCase):
         self.assertEqual(app.btn_run_extract.state, "normal")
         self.assertEqual(app.sim_result_label.text, "")
         self.assertEqual(app.ext_result_label.text, "")
-        self.assertTrue(app.sim_progressbar.grid_hidden)
+        # sim_progressbar stays gridded post-init (layout-stability fix in v1.8
+        # follow-up). It just resets to value=0 and the status label clears.
+        self.assertFalse(app.sim_progressbar.grid_hidden)
+        self.assertEqual(app.sim_progressbar.value, 0)
+        # Extraction bar still hides until used.
         self.assertTrue(app.ext_progressbar.grid_hidden)
         self.assertIn("<<Drop>>", app.zone1_dropzone.dnd_handlers)
         self.assertIn("<<Drop>>", app.zone2_dropzone.dnd_handlers)
@@ -519,7 +523,10 @@ class TestModernGUI(unittest.TestCase):
     def test_on_init_error_hides_both_progress_bars(self) -> None:
         app = self.gui_module.ModernGUI()
         app._on_init_error("init failed")
-        self.assertTrue(app.sim_progressbar.grid_hidden)
+        # Layout-stability fix: sim_progressbar stays gridded; bar resets to 0
+        # and status text clears. Extraction bar still hides until used.
+        self.assertFalse(app.sim_progressbar.grid_hidden)
+        self.assertEqual(app.sim_progressbar.value, 0)
         self.assertTrue(app.ext_progressbar.grid_hidden)
         self.assertIn("Initialization Error", app.sim_result_label.text)
         self.assertIn("Initialization Error", app.ext_result_label.text)

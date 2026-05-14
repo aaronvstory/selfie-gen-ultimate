@@ -117,45 +117,73 @@ class ModernGUI(DnDCTk):
         self.similarity_tab.grid_columnconfigure(1, weight=1)
         self.similarity_tab.grid_rowconfigure(1, weight=1)
 
+        # ── ZONE 1 (reference image) ──────────────────────────────────────
+        # Tighter padding: pady reduced from 10 to 6 (frame), 10 to 4 (label)
+        # so the image fills more of the visual zone. Per-image liveness
+        # label sits right under the image — eliminates the long bottom
+        # readout ambiguity ("which image scored what?").
         self.zone1_frame = ctk.CTkFrame(self.similarity_tab)
-        self.zone1_frame.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 8), pady=10)
+        self.zone1_frame.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 8), pady=6)
         self.zone1_frame.grid_rowconfigure(1, weight=1)
         self.zone1_frame.grid_columnconfigure(0, weight=1)
 
-        self.zone1_label = ctk.CTkLabel(self.zone1_frame, text="Upload Image 1", font=ctk.CTkFont(size=16))
-        self.zone1_label.grid(row=0, column=0, pady=10)
+        self.zone1_label = ctk.CTkLabel(self.zone1_frame, text="Upload Image 1 (reference)", font=ctk.CTkFont(size=14, weight="bold"))
+        self.zone1_label.grid(row=0, column=0, pady=(8, 4))
         self.zone1_dropzone = ctk.CTkFrame(
             self.zone1_frame, fg_color="transparent", border_width=2, border_color="#1f6aa5"
         )
-        self.zone1_dropzone.grid(row=1, column=0, pady=10, padx=8, sticky="nsew")
+        self.zone1_dropzone.grid(row=1, column=0, pady=2, padx=6, sticky="nsew")
         self.zone1_dropzone.grid_rowconfigure(1, weight=1)
         self.zone1_dropzone.grid_columnconfigure(0, weight=1)
-        self.zone1_drop_hint = ctk.CTkLabel(self.zone1_dropzone, text="Drag and drop image here")
-        self.zone1_drop_hint.grid(row=0, column=0, pady=(10, 6), padx=12)
+        self.zone1_drop_hint = ctk.CTkLabel(self.zone1_dropzone, text="Drag and drop image here", text_color="#6B7280")
+        self.zone1_drop_hint.grid(row=0, column=0, pady=(4, 2), padx=8)
         self.img1_display = ctk.CTkLabel(self.zone1_dropzone, text="No Image Selected")
-        self.img1_display.grid(row=1, column=0, pady=(4, 10), padx=12)
-        self.btn_upload1 = ctk.CTkButton(self.zone1_frame, text="Select File...", command=lambda: self.upload_image(1))
-        self.btn_upload1.grid(row=2, column=0, pady=20)
+        self.img1_display.grid(row=1, column=0, pady=(2, 4), padx=8)
 
+        # Per-image FAS readout — pre-allocated empty space (height-stable)
+        # so it doesn't shift the layout when populated after a comparison.
+        self.zone1_fas_label = ctk.CTkLabel(
+            self.zone1_frame, text=" ", font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#6B7280", height=22,
+        )
+        self.zone1_fas_label.grid(row=2, column=0, pady=(2, 0), sticky="ew")
+
+        self.btn_upload1 = ctk.CTkButton(
+            self.zone1_frame, text="Select File...",
+            command=lambda: self.upload_image(1), height=32, corner_radius=8,
+        )
+        self.btn_upload1.grid(row=3, column=0, pady=(6, 8))
+
+        # ── ZONE 2 (target image) ─────────────────────────────────────────
         self.zone2_frame = ctk.CTkFrame(self.similarity_tab)
-        self.zone2_frame.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(8, 0), pady=10)
+        self.zone2_frame.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(8, 0), pady=6)
         self.zone2_frame.grid_rowconfigure(1, weight=1)
         self.zone2_frame.grid_columnconfigure(0, weight=1)
 
-        self.zone2_label = ctk.CTkLabel(self.zone2_frame, text="Upload Image 2", font=ctk.CTkFont(size=16))
-        self.zone2_label.grid(row=0, column=0, pady=10)
+        self.zone2_label = ctk.CTkLabel(self.zone2_frame, text="Upload Image 2 (target)", font=ctk.CTkFont(size=14, weight="bold"))
+        self.zone2_label.grid(row=0, column=0, pady=(8, 4))
         self.zone2_dropzone = ctk.CTkFrame(
             self.zone2_frame, fg_color="transparent", border_width=2, border_color="#1f6aa5"
         )
-        self.zone2_dropzone.grid(row=1, column=0, pady=10, padx=8, sticky="nsew")
+        self.zone2_dropzone.grid(row=1, column=0, pady=2, padx=6, sticky="nsew")
         self.zone2_dropzone.grid_rowconfigure(1, weight=1)
         self.zone2_dropzone.grid_columnconfigure(0, weight=1)
-        self.zone2_drop_hint = ctk.CTkLabel(self.zone2_dropzone, text="Drag and drop image here")
-        self.zone2_drop_hint.grid(row=0, column=0, pady=(10, 6), padx=12)
+        self.zone2_drop_hint = ctk.CTkLabel(self.zone2_dropzone, text="Drag and drop image here", text_color="#6B7280")
+        self.zone2_drop_hint.grid(row=0, column=0, pady=(4, 2), padx=8)
         self.img2_display = ctk.CTkLabel(self.zone2_dropzone, text="No Image Selected")
-        self.img2_display.grid(row=1, column=0, pady=(4, 10), padx=12)
-        self.btn_upload2 = ctk.CTkButton(self.zone2_frame, text="Select File...", command=lambda: self.upload_image(2))
-        self.btn_upload2.grid(row=2, column=0, pady=20)
+        self.img2_display.grid(row=1, column=0, pady=(2, 4), padx=8)
+
+        self.zone2_fas_label = ctk.CTkLabel(
+            self.zone2_frame, text=" ", font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#6B7280", height=22,
+        )
+        self.zone2_fas_label.grid(row=2, column=0, pady=(2, 0), sticky="ew")
+
+        self.btn_upload2 = ctk.CTkButton(
+            self.zone2_frame, text="Select File...",
+            command=lambda: self.upload_image(2), height=32, corner_radius=8,
+        )
+        self.btn_upload2.grid(row=3, column=0, pady=(6, 8))
 
         self._bind_drop_target(self.zone1_dropzone, self._on_drop_similarity_image1)
         self._bind_drop_target(self.zone1_drop_hint, self._on_drop_similarity_image1)
@@ -208,23 +236,25 @@ class ModernGUI(DnDCTk):
 
         # Determinate progress bar — drives 0-100% from a phase-milestone timer
         # while the comparison thread runs. Snaps to 100% when the thread returns.
+        # ALWAYS gridded so the layout doesn't shift when a comparison starts;
+        # we just toggle the fill (set 0 → set value) and the status text below.
         self.sim_progressbar = ctk.CTkProgressBar(
-            self.sim_controls, mode="determinate", height=10, corner_radius=5
+            self.sim_controls, mode="determinate", height=10, corner_radius=5,
         )
         self.sim_progressbar.grid(row=2, column=0, columnspan=2, pady=(8, 2), sticky="ew", padx=20)
         self.sim_progressbar.set(0)
-        self.sim_progressbar.grid_remove()
 
-        # Live transient status text — updated from the phase-milestone timer.
-        # "Detecting faces (RetinaFace)... 25%"
+        # Live transient status text. Pre-reserved fixed-height widget with a
+        # placeholder space so the GUI doesn't shift when text appears mid-run.
+        # When idle, the placeholder is invisible; phase milestones overwrite it.
         self.sim_status_label = ctk.CTkLabel(
             self.sim_controls,
-            text="",
+            text=" ",  # non-empty placeholder so layout reserves the line
             font=ctk.CTkFont(size=12),
-            text_color="#9DA3AE",
+            text_color="#6B7280",
+            height=20,
         )
-        self.sim_status_label.grid(row=3, column=0, columnspan=2, pady=(0, 6))
-        self.sim_status_label.grid_remove()
+        self.sim_status_label.grid(row=3, column=0, columnspan=2, pady=(0, 6), sticky="ew")
 
         self.sim_result_label = ctk.CTkLabel(
             self.sim_controls,
@@ -306,10 +336,15 @@ class ModernGUI(DnDCTk):
             self.after(0, self._on_init_error, str(e))
 
     def _on_models_ready(self):
+        # Stop the indeterminate startup pulse and switch the bar back to
+        # determinate mode so the comparison driver can use it. Bar stays
+        # gridded — layout-stability is more important than hiding pixels.
         self.sim_progressbar.stop()
         self.ext_progressbar.stop()
-        self.sim_progressbar.grid_remove()
-        self.ext_progressbar.grid_remove()
+        self.sim_progressbar.configure(mode="determinate")
+        self.sim_progressbar.set(0)
+        self.ext_progressbar.grid_remove()  # extraction bar stays hidden until used
+        self.sim_status_label.configure(text=" ", text_color="#6B7280")
         self.sim_result_label.configure(text="", text_color="white")
         self.ext_result_label.configure(text="", text_color="white")
         self.set_ui_state("normal")
@@ -317,8 +352,10 @@ class ModernGUI(DnDCTk):
     def _on_init_error(self, error_msg: str):
         self.sim_progressbar.stop()
         self.ext_progressbar.stop()
-        self.sim_progressbar.grid_remove()
+        self.sim_progressbar.configure(mode="determinate")
+        self.sim_progressbar.set(0)
         self.ext_progressbar.grid_remove()
+        self.sim_status_label.configure(text=" ", text_color="#6B7280")
         self.sim_result_label.configure(text=f"Initialization Error: {error_msg}", text_color="red")
         self.ext_result_label.configure(text=f"Initialization Error: {error_msg}", text_color="red")
 
@@ -367,11 +404,15 @@ class ModernGUI(DnDCTk):
             self._last_ref_bbox = None
             self.img1_display.configure(image=None, text="No Image Selected")
             self.img1_display.image = None
+            if hasattr(self, "zone1_fas_label"):
+                self.zone1_fas_label.configure(text=" ", text_color="#6B7280")
             return
         self.img2_path = None
         self._last_target_bbox = None
         self.img2_display.configure(image=None, text="No Image Selected")
         self.img2_display.image = None
+        if hasattr(self, "zone2_fas_label"):
+            self.zone2_fas_label.configure(text=" ", text_color="#6B7280")
 
     def _clear_extraction_source(self):
         self.extraction_src_path = None
@@ -569,19 +610,21 @@ class ModernGUI(DnDCTk):
             return
 
         self.set_ui_state("disabled")
-        # Clear previous result lines so the user sees only fresh in-progress UI.
+        # Clear previous result lines + per-image FAS labels so the user sees
+        # only fresh in-progress UI.
         self.sim_result_label.configure(text="", text_color="white")
         self.fas_result_label.configure(text="", text_color="#888888")
+        self._reset_per_image_fas_labels()
         # Stop any leftover indeterminate animation (from startup) and switch
-        # to determinate mode for the phase-milestone driver.
+        # to determinate mode for the phase-milestone driver. The widgets are
+        # ALWAYS gridded — we just reset state, not visibility, so the GUI
+        # layout never shifts when a comparison starts.
         try:
             self.sim_progressbar.stop()
         except Exception:
             pass
         self.sim_progressbar.configure(mode="determinate")
-        self.sim_progressbar.grid()
         self.sim_progressbar.set(0)
-        self.sim_status_label.grid()
         self.sim_status_label.configure(text="Starting…  0%", text_color="#9DA3AE")
         # Phase-milestone driver state.
         self._progress_done = False
@@ -684,10 +727,15 @@ class ModernGUI(DnDCTk):
         self._render_fas(result)
 
     def _hide_progress_ui(self):
-        """Hide the progress bar + status label after a comparison completes."""
+        """Reset progress UI to idle after a comparison completes.
+
+        Widgets stay gridded (so the layout doesn't shift); we just zero the
+        bar and clear the status text. The placeholder space keeps the row
+        height stable.
+        """
         try:
-            self.sim_progressbar.grid_remove()
-            self.sim_status_label.grid_remove()
+            self.sim_progressbar.set(0)
+            self.sim_status_label.configure(text=" ", text_color="#6B7280")
         except Exception:
             pass
 
@@ -750,21 +798,19 @@ class ModernGUI(DnDCTk):
         out = img.copy().convert("RGB")
         draw = ImageDraw.Draw(out)
         # Stroke width scales with image size so the box is visible at preview scale.
-        stroke = max(2, int(min(out.width, out.height) * 0.005))
-        draw.rectangle((x, y, x + w, y + h), outline=(93, 176, 117), width=stroke)
+        # Bumped from 0.005 -> 0.008 for better visibility per user feedback.
+        stroke = max(3, int(min(out.width, out.height) * 0.008))
+        # Brighter green for better contrast against dark backgrounds + portrait skin.
+        draw.rectangle((x, y, x + w, y + h), outline=(72, 219, 122), width=stroke)
         return out
 
     def _render_fas(self, result: dict):
         """Render the LIVENESS check from a comparison result diagnostics block.
 
-        Routes through similarity_engine.summarize_fas_pair (the SINGLE source
-        of truth for FAS verdicts) so the standalone GUI, standalone CLI, and
-        main GUI carousel all show the same message for the same input —
-        no more asymmetric "ref+target sometimes, target only sometimes".
-
-        Renders verdict on line 1; per-image antispoof_scores on line 2 so the
-        user can see which image was flagged and at what confidence.
-        Score is on a 0.0–1.0 scale where higher means MORE likely to be real.
+        Three rendering surfaces, all driven from the same source-of-truth helper:
+          1. fas_result_label (centered below the Run button) — verdict only
+          2. zone1_fas_label (below image 1) — per-image score + status
+          3. zone2_fas_label (below image 2) — per-image score + status
         """
         try:
             from src.engine import FaceEngine
@@ -778,21 +824,61 @@ class ModernGUI(DnDCTk):
         color = {
             "pass": "#00FF00",
             "fail": "#FFC107",
-            "unavailable": "#888888",
-        }.get(verdict, "#888888")
-        # Per-image score line — only shown when at least one side has a number.
+            "unavailable": "#6B7280",
+        }.get(verdict, "#6B7280")
+        # Centered verdict line — short and non-redundant (no per-image scores;
+        # those live under each image now).
+        self.fas_result_label.configure(text=message, text_color=color)
+        # Per-image labels under each image zone.
         ref_score = summary.get("ref_score")
         tgt_score = summary.get("target_score")
-        score_parts = []
-        if isinstance(ref_score, (int, float)):
-            score_parts.append(f"Image 1 (ref): {float(ref_score) * 100:.1f}% real")
-        if isinstance(tgt_score, (int, float)):
-            score_parts.append(f"Image 2 (target): {float(tgt_score) * 100:.1f}% real")
-        if score_parts:
-            full_message = f"{message}\n  " + "   |   ".join(score_parts)
+        ref_status = summary.get("ref_status", "missing")
+        tgt_status = summary.get("target_status", "missing")
+        self._set_per_image_fas_label(self.zone1_fas_label, ref_score, ref_status, summary, side="ref")
+        self._set_per_image_fas_label(self.zone2_fas_label, tgt_score, tgt_status, summary, side="target")
+
+    @staticmethod
+    def _set_per_image_fas_label(label, score, status: str, summary: dict, *, side: str):
+        """Populate a per-image liveness label under one of the image zones.
+
+        - status='ok' + has score:    "Liveness: 99.6% real" (green)
+                                     or "Possible spoof: 12.3% real" (amber)
+        - status='no_face':          "No face detected" (muted)
+        - status='not_active':       "Liveness check disabled" (muted)
+        - missing/other:             empty placeholder line (muted)
+        """
+        if status == "ok" and isinstance(score, (int, float)):
+            pct = float(score) * 100
+            # Per-side spoof_detected drives the per-image color, not the
+            # combined verdict — so users see exactly which image was flagged.
+            sides = {"ref": summary.get("ref_status"), "target": summary.get("target_status")}
+            spoof_flagged = (
+                summary.get("verdict") == "fail"
+                and sides.get(side) == "ok"
+                and pct < 50  # spoof confidence threshold
+            )
+            if spoof_flagged:
+                text = f"⚠ Possible spoof:  {pct:.1f}% real"
+                color = "#FFC107"  # amber
+            else:
+                text = f"✓ Liveness:  {pct:.1f}% real"
+                color = "#5DB075"  # green
+        elif status == "no_face":
+            text = "No face detected"
+            color = "#6B7280"
+        elif status == "not_active":
+            text = "Liveness check disabled"
+            color = "#6B7280"
         else:
-            full_message = message
-        self.fas_result_label.configure(text=full_message, text_color=color)
+            text = " "  # placeholder — keeps row height stable
+            color = "#6B7280"
+        label.configure(text=text, text_color=color)
+
+    def _reset_per_image_fas_labels(self):
+        """Clear the per-image liveness labels so a new comparison starts clean."""
+        for lbl in (getattr(self, "zone1_fas_label", None), getattr(self, "zone2_fas_label", None)):
+            if lbl is not None:
+                lbl.configure(text=" ", text_color="#6B7280")
 
     def _on_anti_spoof_toggle(self):
         """Apply checkbox state to the engine; re-run comparison if both images are loaded."""

@@ -692,8 +692,8 @@ class ImageCarousel(tk.Frame):
                         y1 = max(img_top, min(img_top + new_h, y1))
                         canvas.create_rectangle(
                             x0, y0, x1, y1,
-                            outline="#5DB075",
-                            width=2,
+                            outline="#48DB7A",  # brighter green for visibility
+                            width=3,
                         )
             return True
         except ImportError:
