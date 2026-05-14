@@ -234,6 +234,24 @@ except Exception as e:
 | Runner | `automation/pipeline.py` | Orchestrates full 7-step automated flow |
 | Face extraction service | `face_crop_service.py` | Headless portrait crop for CLI pipeline |
 
+### Oldcam Version Wiring
+
+See [`docs/oldcam-wiring.md`](docs/oldcam-wiring.md) for the complete step-by-step checklist.
+
+Quick touch-points when adding vN:
+
+- `oldcam-vN/` folder: `oldcam.py`, `launcher.py`, `requirements.txt`, `oldcam_launcher.bat` (CRLF)
+- `oldcam-vN/macOS/`: `oldcam.py`, `oldcam.command` (LF)
+- Launcher files at 3 levels: `launchers/windows/`, `launchers/macos/`, `launchers/`
+- `kling_gui/config_panel.py`: add `"vN"` to `oldcam_version_vars` dict + loop tuple; update tooltip method
+- `kling_gui/queue_manager.py`: add `"vN"` to `requires_mediapipe` set if vN uses face landmarks
+- `tests/test_oldcam_versions.py`: add vN to version tuple + output-suffix test + mediapipe test
+- `tests/test_launcher_hub_wrappers.py`: add launcher path/target assertions
+- `build_release_zip.py`: add new launcher filenames explicitly (algorithm folder auto-included)
+- If new default: update `automation/config.py` + 5 `run_oldcam` launcher files
+
+**Auto-discovered:** `_discover_oldcam_versions()` scans `oldcam-v*` dirs — no hardcoded version list anywhere in pipeline/automation code.
+
 ### Automation Manifest Semantics
 
 - Fixed step keys:

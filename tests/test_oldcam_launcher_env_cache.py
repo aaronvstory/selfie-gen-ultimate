@@ -3,17 +3,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_run_oldcam_defaults_to_v9_and_uses_stamp_cache():
+def test_run_oldcam_defaults_to_v12_via_launcher_chain():
+    # run_oldcam.bat is a thin wrapper that chains through launchers/windows/run_oldcam_v12.bat
+    # (which in turn delegates to oldcam-v12/oldcam_launcher.bat)
     text = (REPO_ROOT / "run_oldcam.bat").read_text(encoding="utf-8")
-    assert "oldcam-v9\\launcher.py" in text
-    assert ".launcher_state" in text
-    assert "oldcam_v9_" in text
-    assert 'findstr /I /R "^[0-9A-F][0-9A-F]"' in text
-    assert 'set "PY_ID=%PY_ID: =_%"' in text
-    assert 'if "%NEED_PIP%"=="0" (' in text
-    assert "Dependencies unchanged. Skipping pip install." in text
-    assert 'findstr /V /I /R "^[ ]*mediapipe"' in text
-    assert '-m pip install --no-deps "%MEDIAPIPE_SPEC%"' in text
+    assert "run_oldcam_v12.bat" in text
+    assert 'set "EXIT_CODE=%ERRORLEVEL%"' in text
+    assert "exit /b %EXIT_CODE%" in text
 
 
 def test_oldcam_local_launchers_keep_version_specific_targets():

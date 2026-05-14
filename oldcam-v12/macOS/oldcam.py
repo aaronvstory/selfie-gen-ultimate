@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-oldcam.py - V9 "Dynamic Mesh Modern" Virtual Hardware Simulator
+oldcam.py - V12 "Pristine Hardware-Only" Virtual Hardware Simulator
 
-Optimized for modern handheld selfie videos. Prioritizes temporal camera
-behavior: OIS micro-jitter, random velocity rolling shutter, chroma sensor
-noise, and H.264 motion compression.
+Pristine physical-camera emulation for KYC / liveness pipelines. Strips out
+synthetic-looking layers that modern Presentation Attack Detection (PAD) /
+3D-CNN liveness models flag (2D rPPG color pulse) and removes the global
+LUT + CLAHE tone mapping that were degrading Kling's source color and
+contrast. Keeps only hardware artifacts: OIS micro-jitter, rolling shutter,
+auto-exposure stepping, highlight blooming, AWB luma drift, sensor noise,
+radial chromatic aberration, and vignette.
 """
 
 import argparse
@@ -17,10 +21,20 @@ import traceback
 from pathlib import Path
 
 import cv2
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision
 import numpy as np
+
+# V12 doesn't actually use MediaPipe in process_frame (hardware-only pipeline).
+# Import is guarded so V12 can run without mediapipe installed.
+try:
+    import mediapipe as mp  # noqa: F401
+    from mediapipe.tasks import python as mp_python  # noqa: F401
+    from mediapipe.tasks.python import vision  # noqa: F401
+    _MEDIAPIPE_AVAILABLE = True
+except ImportError:
+    mp = None
+    mp_python = None
+    vision = None
+    _MEDIAPIPE_AVAILABLE = False
 
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
 ABERRATION_SCALE = 0.0015
@@ -67,12 +81,12 @@ def create_vignette_mask(height, width, strength=0.04):
 
 def build_default_output_path(input_path):
     path = Path(input_path)
-    return str(path.with_name(f"{path.stem}-oldcam-v9{path.suffix}"))
+    return str(path.with_name(f"{path.stem}-oldcam-v12{path.suffix}"))
 
 
 def build_preview_output_path(input_path):
     path = Path(input_path)
-    return str(path.with_name(f"{path.stem}-preview-v9{path.suffix}"))
+    return str(path.with_name(f"{path.stem}-preview-v12{path.suffix}"))
 
 
 def build_temp_video_path(output_path):
@@ -122,7 +136,7 @@ def build_preview_frame(original, processed):
     )
     cv2.putText(
         preview,
-        "Oldcam V9",
+        "Oldcam V12",
         (original.shape[1] + 16, 32),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.9,
@@ -234,7 +248,7 @@ def resolve_face_landmarker_task_path():
     search_text = ", ".join(str(path) for path in searched)
     raise FileNotFoundError(
         "FaceLandmarker task model missing. Expected face_landmarker.task. "
-        + f"Oldcam v9/v10 cannot run. Searched: {search_text}"
+        + f"Oldcam v9/v10/v11/v12 cannot run. Searched: {search_text}"
     )
 
 
@@ -257,6 +271,8 @@ def get_dynamic_region_masks(image, state):
         state["face_landmarker_task_path"] = str(task_path)
         state["face_landmarker_task_searched"] = [str(path) for path in searched_paths]
         print(f"FaceLandmarker task model: {task_path}")
+
+
 
     rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
@@ -498,24 +514,56 @@ def apply_soft_rolling_shutter(image, state, rng):
 def apply_global_awb_drift(image, state, rng):
     drift = float(state.get("awb_drift", 0.0))
     drift += float(rng.normal(0.0, 0.05))
-    drift = float(np.clip(drift, -2.0, 2.0))
+    drift = float(np.clip(drift, -1.5, 1.5))
     state["awb_drift"] = drift
     image_f = image.astype(np.float32)
-    image_f[:, :, 2] += drift * 0.35
-    image_f[:, :, 1] += drift * 0.15
+    image_f += drift
     return np.clip(image_f, 0, 255).astype(np.uint8)
 
 
-def apply_soft_background_texture(image, focus_mask, strength=0.18):
-    if strength <= 0:
-        return image
-    inverse_mask = 1.0 - focus_mask
-    h, w = image.shape[:2]
-    small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
-    restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
-    blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
-    out = (image.astype(np.float32) * focus_mask + blended_bg.astype(np.float32) * inverse_mask)
-    return np.clip(out, 0, 255).astype(np.uint8)
+# V12: rPPG removed entirely.
+# synchronize_base_frequency() and apply_synchronized_spatial_fluctuation() were
+# deleted because modern Presentation Attack Detection (PAD) systems detect 2D
+# synthetic color pulses as a spoofing signature. 3D-CNN-based liveness models
+# track how blood propagates through facial geometry — a 2D mask of green-channel
+# oscillation lacks the sub-surface scattering signature of real tissue and
+# actively flags the video as synthetic.
+
+
+# def apply_soft_background_texture(image, focus_mask, strength=0.08):
+#     # Disabled: standard webcams/phone front-cameras have deep focal length with no optical
+#     # background separation. Applying blur here creates an artificial portrait-mode look.
+#     strength = max(0.0, min(strength, 1.0))
+#     if strength == 0:
+#         return image
+#     tight_mask = focus_mask * focus_mask  # squaring pulls blur boundary inward, preventing face bleed
+#     inverse_mask = 1.0 - tight_mask
+#     h, w = image.shape[:2]
+#     small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
+#     restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+#     blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
+#     out = (image.astype(np.float32) * tight_mask + blended_bg.astype(np.float32) * inverse_mask)
+#     return np.clip(out, 0, 255).astype(np.uint8)
+
+
+# def apply_dynamic_relighting(image, state):
+#     # Disabled: cinematic 3D specular shift requires a lens with optical depth.
+#     # Standard webcam/front-camera has flat, even illumination; this effect looks processed.
+#     """Shift highlights opposite OIS jitter to simulate scene relighting."""
+#     ois_x = state.get("ois_x", 0.0)
+#     ois_y = state.get("ois_y", 0.0)
+#     if abs(ois_x) < 0.1 and abs(ois_y) < 0.1:
+#         return image
+#     h, w = image.shape[:2]
+#     x_grid = state.get("x_grid") if state.get("x_grid") is not None else np.meshgrid(np.linspace(-1, 1, w), np.linspace(-1, 1, h))[0]
+#     y_grid = state.get("y_grid") if state.get("y_grid") is not None else np.meshgrid(np.linspace(-1, 1, w), np.linspace(-1, 1, h))[1]
+#     light_shift = (x_grid * -ois_x + y_grid * -ois_y) * 1.5
+#     light_shift = np.stack([light_shift] * 3, axis=-1).astype(np.float32)
+#     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+#     highlight_mask = (cv2.GaussianBlur(gray, (15, 15), 0) / 255.0) ** 2
+#     highlight_mask = np.stack([highlight_mask] * 3, axis=-1).astype(np.float32)
+#     relit = image.astype(np.float32) + (light_shift * highlight_mask)
+#     return relit.clip(0, 255).astype(np.uint8)
 
 
 def apply_jpeg_pass(image, quality):
@@ -539,31 +587,40 @@ def blend_with_previous_frame(current_frame, previous_frame, ghosting):
 def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
     rng = rng or np.random.default_rng()
     state = {} if state is None else state
-    _ = get_dynamic_region_masks(image, state)
-    full_face_mask = state.get("full_face_mask")
 
+    # V12: pristine hardware-only pipeline.
+    # - No rPPG (synthetic 2D color pulse flagged by modern PAD/liveness models).
+    # - No global LUT (was injecting a global red boost → sepia tint).
+    # - No dynamic tone mapping (CLAHE was crushing local shadows/highlights).
+    # - No HSV saturation tweak (preserve Kling's source color science).
+    # - No MediaPipe face detection: nothing downstream consumes face masks in V12.
+    #   fpn and adjusted_vignette_mask are pre-computed in naturalize_video state init.
+
+    # 1. Physics & Motion
     image = apply_soft_ois_jitter(image, state, rng)
     image = apply_soft_rolling_shutter(image, state, rng)
-    image = apply_subtle_af_breathing(image, state, rng)
 
-    image = apply_global_awb_drift(image, state, rng)
+    # 2. Exposure & Highlights
     image = apply_ae_stepping(image, state)
-    image = apply_dynamic_tone_mapping(image)
     image = apply_highlight_blooming(image, threshold=232, strength=0.055)
 
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * getattr(args, "saturation", 1.02), 0, 255)
-    image = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    # 3. Global Luma Drift
+    image = apply_global_awb_drift(image, state, rng)
 
-    image = cv2.LUT(image, create_neutral_phone_lut() if lut is None else lut)
-    image = apply_modern_sensor_noise(image, getattr(args, "grain", 1.0), rng, state=state, fpn_mask=state.get("fpn"))
+    # 4. Sensor Imperfections (No LUT, No Tone Mapping, No HSV, No Sharpening)
+    image = apply_modern_sensor_noise(
+        image, getattr(args, "grain", 1.0), rng, state=state, fpn_mask=state.get("fpn")
+    )
     image = apply_radial_chromatic_aberration(image, scale=0.0006)
-    image = apply_soft_background_texture(image, full_face_mask, strength=0.18)
 
-    vignette_strength = getattr(args, "vignette_strength", 0.55)
-    if vignette_mask is not None and vignette_strength > 0:
-        adjusted_mask = 1.0 - ((1.0 - vignette_mask) * vignette_strength)
-        image = np.clip(image.astype(np.float32) * adjusted_mask, 0, 255).astype(np.uint8)
+    # 5. Vignette
+    adjusted_vignette = state.get("adjusted_vignette_mask")
+    if adjusted_vignette is None and vignette_mask is not None:
+        vignette_strength = getattr(args, "vignette_strength", 0.55)
+        if vignette_strength > 0:
+            adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * vignette_strength)).astype(np.float32)
+    if adjusted_vignette is not None:
+        image = np.clip(image.astype(np.float32) * adjusted_vignette, 0, 255).astype(np.uint8)
 
     return image
 
@@ -572,13 +629,13 @@ def naturalize_image(input_path, output_path, args):
     image = open_media(input_path)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     height, width = image.shape[:2]
-    lut = create_neutral_phone_lut()
     vignette_mask = create_vignette_mask(height, width)
     rng = np.random.default_rng()
     state = {"fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32)}
 
     try:
-        processed = process_frame(image, lut, vignette_mask, args, rng, state)
+        # V12: lut unused — global LUT removed from process_frame
+        processed = process_frame(image, None, vignette_mask, args, rng, state)
         if args.preview:
             processed = build_preview_frame(image, processed)
 
@@ -660,12 +717,14 @@ def naturalize_video(input_path, output_path, args):
     height, width = test_frame.shape[:2]
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    lut = create_neutral_phone_lut()
+    # V12: no LUT — global color manipulation removed (sepia tint elimination).
     vignette_mask = create_vignette_mask(height, width)
     rng = np.random.default_rng()
+    _vignette_strength = getattr(args, "vignette_strength", 0.55)
+    _adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * _vignette_strength)).astype(np.float32) if _vignette_strength > 0 else None
     state = {
         "fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32),
-        "stutter_budget": 0,
+        "adjusted_vignette_mask": _adjusted_vignette,
     }
 
     temp_output = build_temp_video_path(output_path)
@@ -687,18 +746,11 @@ def naturalize_video(input_path, output_path, args):
                 break
 
             frame = correct_rotation(frame, rotation)
-            if state.get("stutter_budget", 0) > 0 and previous_processed is not None:
-                state["stutter_budget"] -= 1
-                processed = previous_processed
-            else:
-                current_processed = process_frame(frame, lut, vignette_mask, args, rng, state)
-                processed = blend_with_previous_frame(
-                    current_processed, previous_processed, args.ghosting
-                )
-                previous_processed = current_processed
-
-                if state.get("ae_stepped", False) or rng.random() < 0.002:
-                    state["stutter_budget"] = int(rng.integers(1, 3))
+            current_processed = process_frame(frame, None, vignette_mask, args, rng, state)
+            processed = blend_with_previous_frame(
+                current_processed, previous_processed, args.ghosting
+            )
+            previous_processed = current_processed
 
             if args.preview:
                 processed = build_preview_frame(frame, processed)
@@ -739,13 +791,9 @@ def build_parser():
     parser.add_argument(
         "--codec", choices=("h264", "copy"), default="h264", help="FFmpeg video codec. Default: h264"
     )
-    parser.add_argument(
-        "--sharpen", type=float, default=0.8, help="Sharpening blur radius. Default: 0.8"
-    )
-    parser.add_argument(
-        "--saturation", type=float, default=1.12, help="Saturation multiplier. Default: 1.12"
-    )
+    # --sharpen and --saturation removed in V12: no HSV tweak and no sharpening pass.
     parser.add_argument("--grain", type=int, default=1, help="Sensor-grain strength. Default: 1")
+    # "--background-texture-strength" removed: flat-sensor mode, no depth separation
     parser.add_argument(
         "--ghosting",
         type=bounded_ghosting,

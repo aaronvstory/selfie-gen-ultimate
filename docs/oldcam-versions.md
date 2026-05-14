@@ -193,24 +193,136 @@ V10 is the most technically ambitious. The FFT sync means the color oscillations
 
 ---
 
+## V11 — "Spatial Sync + AWB Drift" (2026-05-12)
+
+V11 is the synthesis of V9's hardware realism and V10's biological realism. V10 had removed AWB drift because global channel shifts contaminate the green channel history buffer that the FFT reads to detect the 0.8–1.8 Hz heartbeat/breathing frequency. V11 solves this with strict execution ordering.
+
+### The Signal Integrity Problem
+
+V10's FFT analysis reads the **mean green channel** of the face region across the last 3 seconds of frames to detect the dominant low-frequency fluctuation. If AWB drift (which modifies global channel intensity) runs before this read, the FFT interprets camera hardware noise as a biological signal — frequency lock breaks down.
+
+### The V11 Solution: Operation Order
+
+```text
+1. get_dynamic_region_masks()                  — face detection (per-frame; the every-other-frame skip from v10 was removed in v1.5 to fix motion stutter)
+2. synchronize_base_frequency()                — FFT reads CLEAN green channel, no drift yet
+3. apply_synchronized_spatial_fluctuation()    — biological pulse baked into pixels
+4. apply_global_awb_drift()                    — hardware color drift applied AFTER FFT
+5. apply_soft_ois_jitter()
+6. apply_soft_rolling_shutter()
+7. apply_subtle_af_breathing()
+8. apply_ae_stepping()
+9. apply_dynamic_tone_mapping()
+10. apply_highlight_blooming()
+11. HSV saturation / LUT
+12. apply_modern_sensor_noise()
+13. apply_radial_chromatic_aberration()
+14. vignette
+```
+
+Steps 1–3 read and write `g_history` (the green channel buffer) before any AWB channel modification. Step 4 then applies camera-hardware white-balance wandering on top of the biological signal already baked in. The two systems are mathematically independent.
+
+### What V11 Adds vs V10
+
+- **`apply_global_awb_drift()`** is called again (V10 had the function defined but not called). Drift magnitude: ±2.0, step sigma 0.05 per frame. Red channel: +drift×0.35, Green: +drift×0.15.
+
+### What V11 Preserves from V10
+
+All V10 improvements are unchanged:
+- ~~Every-other-frame face detection~~ (removed in v1.5: caused motion stutter; MediaPipe now runs 1:1 on every frame)
+- Pre-computed vignette mask (no per-frame recalculation)
+- `tight_mask = focus_mask * focus_mask` (squared boundary, eliminates bleed onto face)
+- FFT range narrowed to [0.8, 1.8] Hz (realistic heartbeat band)
+- `shift_intensity` amplitude at 0.45 (eliminated siren-like strobing)
+- `apply_soft_background_texture` commented out (flat-sensor webcam model)
+- `apply_dynamic_relighting` commented out (flat focal plane, no depth separation)
+
+### Character
+
+V11 is the "best of all worlds" version. V9 simulates a physical camera sensor adjusting to ambient light. V10 simulates human skin microcirculation. V11 does both by calculating the biological signal before applying global hardware color shifts. The AWB drift adds a subtle warmth/coolness oscillation that's independent of (and layered on top of) the face-region biological pulsing — the result is a video that reads as both "phone footage" and "living person" simultaneously.
+
+---
+
+## V12 — "Pristine Hardware-Only" (2026-05-13)
+
+V12 is a deliberate step back from V11's stack. It assumes the video will be evaluated by modern Presentation Attack Detection (PAD) systems and wants to minimize anything those systems classify as a "synthetic liveness signal" — while also restoring color fidelity that V7–V11 were degrading.
+
+### The Anti-Spoofing Problem
+
+Modern liveness detectors (KYC, face-unlock, fintech onboarding) use 3D-CNN architectures that track how blood propagates across the **geometry** of the face over time, not just whether a color channel oscillates. A 2D mask of green-channel oscillation applied uniformly across face regions (V10/V11's rPPG) lacks sub-surface scattering and the spatial propagation pattern of real tissue. Detectors flag this as synthetic.
+
+### The Color Degradation Problem
+
+Two effects in V7–V11 were globally manipulating color and contrast in ways that didn't survive scrutiny:
+
+- **`create_neutral_phone_lut()` + `cv2.LUT()`** — a 1D LUT with `red_curve[i] = min(255, i * 1.05 + 5)` and lifted blacks. Applied globally, this pushes the entire frame warm → a sepia tint that betrays the synthetic origin.
+- **`apply_dynamic_tone_mapping()`** — uses CLAHE (Contrast Limited Adaptive Histogram Equalization) which mathematically forces high local contrast, crushing the subtle shadow/highlight detail that Kling renders well.
+
+### What V12 Removes
+
+- `synchronize_base_frequency()` and `apply_synchronized_spatial_fluctuation()` — rPPG entirely
+- `cv2.LUT()` call and `create_neutral_phone_lut()` application from `process_frame()`
+- `apply_dynamic_tone_mapping()` — no CLAHE
+- HSV saturation tweak — preserves Kling's source color science
+
+### What V12 Keeps
+
+The "hardware emulation" stack only:
+- `apply_soft_ois_jitter()` — spring-damper hand stabilization residual
+- `apply_soft_rolling_shutter()` — CMOS scan-line warp
+- `apply_ae_stepping()` — auto-exposure walks
+- `apply_highlight_blooming()` — sensor halation in bright regions
+- `apply_global_awb_drift()` — white-balance hunting (luma drift, no biased channels)
+- `apply_modern_sensor_noise()` — fixed-pattern + temporal noise
+- `apply_radial_chromatic_aberration()` — lens fringing
+- Vignette
+
+Face detection still runs (`get_dynamic_region_masks()`) so the FPN mask, vignette mask, and other state survive — but the region masks are discarded since no rPPG layer consumes them.
+
+### Character
+
+V12 looks like a raw sensor feed with imperfect optics, not a color-graded clip. The output preserves Kling's source contrast and color fidelity, while still gaining the physical-camera fingerprint (OIS micro-movement, sensor noise, rolling shutter). It's the right pick when the downstream consumer is a liveness model rather than a human viewer.
+
+---
+
 ## Side-by-Side Comparison
 
-| Feature | V7 | V8 | V9 | V10 |
-|---|---|---|---|---|
-| Face detection | None | None | MediaPipe 478 pts | MediaPipe 478 pts |
-| Region masks | None | None | 4 regions (forehead, cheeks, chin) | 4 regions |
-| Rolling shutter | Sine arm-sway | Velocity-coupled to OIS | Soft residual | Soft residual |
-| OIS model | None | Spring-damper ±2px | Spring-damper ±1.4px | Spring-damper ±1.4px |
-| AF model | 12-frame hunt 1.5% | 2-frame hunt 0.5% | 6-frame breathing | 6-frame breathing |
-| JPEG pass | Yes (quality 94) | No | No | No |
-| Noise type | 2D luma-only | 3D per-channel | Temporal luma+chroma | Temporal luma+chroma |
-| AWB drift | No | No | Yes | Yes |
-| Background softening | No | No | Yes | Yes |
-| FFT frequency sync | No | No | No | Yes |
-| Phase-locked oscillations | No | No | No | Yes |
-| Dynamic relighting | No | No | No | Yes |
-| Output encoding | CRF 18 | baseline + 1500k cap | CRF 18 high | CRF 18 high |
-| Lines of code | 536 | 590 | 829 | 939 |
+| Feature | V7 | V8 | V9 | V10 | V11 | V12 |
+|---|---|---|---|---|---|---|
+| Face detection | None | None | MediaPipe 478 pts | MediaPipe 478 pts | MediaPipe 478 pts | MediaPipe 478 pts |
+| Region masks | None | None | 4 regions | 4 regions | 4 regions | Detected, discarded |
+| Rolling shutter | Sine arm-sway | Velocity-coupled to OIS | Soft residual | Soft residual | Soft residual | Soft residual |
+| OIS model | None | Spring-damper ±2px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px |
+| AF model | 12-frame hunt 1.5% | 2-frame hunt 0.5% | 6-frame breathing | 6-frame breathing | 6-frame breathing | None (removed) |
+| JPEG pass | Yes (quality 94) | No | No | No | No | No |
+| Noise type | 2D luma-only | 3D per-channel | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma |
+| AWB drift | No | Yes | Yes | No | Yes | Yes (luma-only) |
+| FFT rPPG sync | No | No | No | Yes | Yes | No |
+| Phase-locked oscillations | No | No | No | Yes | Yes | No |
+| Global LUT applied | Yes | Yes | Yes | Yes | Yes | **No** |
+| Dynamic tone mapping (CLAHE) | Yes | Yes | Yes | Yes | Yes | **No** |
+| HSV saturation tweak | Yes | Yes | Yes | Yes | Yes | **No** |
+| Output encoding | CRF 18 | baseline + 1500k cap | CRF 18 high | CRF 18 high | CRF 16 slow | CRF 16 slow |
+
+---
+
+## Version History — Theme & Trade-Off
+
+Each version had a guiding theme and a limitation that motivated the next one. This is the why behind the chain, not just the what:
+
+| Version | Theme | Key Additions | Trade-Off That Drove the Next Version |
+|---|---|---|---|
+| V7 | Modern phone imperfection | JPEG quality-94 cycle, sine arm-sway rolling shutter, AF hunting | Too subtle — output looked nearly identical to the source frame |
+| V8 | Hardware physics upgrade | Spring-damper OIS, 3D per-channel sensor noise, AWB drift, hard bitrate cap (1500k baseline) | Bitrate cap over-compressed the final file, losing detail |
+| V9 | Face-aware portrait pass | MediaPipe FaceLandmarker (478 pts), 4-region masks, AWB color drift, soft background blur (later disabled) | Background softening read as "computational photography depth-of-field," not raw webcam |
+| V10 | rPPG biological sync | FFT on green-channel face mean, phase-locked spatial oscillation in 4 face regions, dynamic relighting | Visible color "siren" on the face; needed to remove AWB drift so FFT could read clean signal |
+| V11 | Best-of-all combination | Re-enabled `apply_global_awb_drift()` AFTER FFT read; relighting kept disabled | Modern PAD detectors flag the 2D rPPG color pulse; global LUT crushes contrast and tints the frame sepia |
+| V12 | Pristine hardware-only | Removed rPPG, removed `cv2.LUT()` call, removed CLAHE tone mapping, removed HSV saturation tweak | None yet — V12 is the current optimization for anti-spoofing + color fidelity |
+
+Notes on accuracy of this table vs the codebase:
+- "Digital over-sharpening" was a `--sharpen` CLI parameter present in every version (default 0.8), not a V11 addition. The actual destructive effects in V11 are the global LUT and CLAHE — both inherited from earlier versions, exposed by V11's higher fidelity.
+- V9's background blur logic is present (`oldcam-v9/oldcam.py:342` GaussianBlur) but gated by face mask; the "fake depth-of-field" critique applies when the mask boundary becomes visible.
+- V10's dynamic relighting was added then disabled in the same release (commented out in `process_frame`); it never shipped enabled.
 
 ---
 
@@ -219,4 +331,6 @@ V10 is the most technically ambitious. The FFT sync means the color oscillations
 - **V7** — Best for: general-purpose vintage look, clean grain, subtle imperfections. No MediaPipe dependency.
 - **V8** — Best for: smartphone/social-media aesthetic, authentic motion compression. Bitrate cap is a feature, not a bug.
 - **V9** — Best for: face-forward footage where you want subject/background separation and cinematic color drift. Requires MediaPipe.
-- **V10** — Best for: portrait subjects with visible motion (talking, slight movement). The FFT sync and relighting reward good source material.
+- **V10** — Best for: portrait subjects where biological realism is the priority; AWB drift removed to preserve FFT signal integrity.
+- **V11** — Best for: human viewers who value the "phone footage of a living person" feel.
+- **V12** — **Default ★**. Best for: KYC, liveness-detection, or any pipeline where the video will be analyzed by 3D-CNN anti-spoofing models. Preserves Kling's color fidelity better than V7–V11 since it removes the global LUT and CLAHE.

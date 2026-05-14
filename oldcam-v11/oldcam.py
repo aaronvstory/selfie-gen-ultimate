@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-oldcam.py - V9 "Dynamic Mesh Modern" Virtual Hardware Simulator
+oldcam.py - V11 "Spatial Sync + AWB Drift" Virtual Hardware Simulator
 
 Optimized for modern handheld selfie videos. Prioritizes temporal camera
 behavior: OIS micro-jitter, random velocity rolling shutter, chroma sensor
@@ -15,6 +15,7 @@ import subprocess
 import sys
 import traceback
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import mediapipe as mp
@@ -67,12 +68,12 @@ def create_vignette_mask(height, width, strength=0.04):
 
 def build_default_output_path(input_path):
     path = Path(input_path)
-    return str(path.with_name(f"{path.stem}-oldcam-v9{path.suffix}"))
+    return str(path.with_name(f"{path.stem}-oldcam-v11{path.suffix}"))
 
 
 def build_preview_output_path(input_path):
     path = Path(input_path)
-    return str(path.with_name(f"{path.stem}-preview-v9{path.suffix}"))
+    return str(path.with_name(f"{path.stem}-preview-v11{path.suffix}"))
 
 
 def build_temp_video_path(output_path):
@@ -122,7 +123,7 @@ def build_preview_frame(original, processed):
     )
     cv2.putText(
         preview,
-        "Oldcam V9",
+        "Oldcam V11",
         (original.shape[1] + 16, 32),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.9,
@@ -234,7 +235,7 @@ def resolve_face_landmarker_task_path():
     search_text = ", ".join(str(path) for path in searched)
     raise FileNotFoundError(
         "FaceLandmarker task model missing. Expected face_landmarker.task. "
-        + f"Oldcam v9/v10 cannot run. Searched: {search_text}"
+        + f"Oldcam v9/v10/v11 cannot run. Searched: {search_text}"
     )
 
 
@@ -248,8 +249,22 @@ def create_face_landmarker(task_path):
     return vision.FaceLandmarker.create_from_options(options)
 
 
-def get_dynamic_region_masks(image, state):
-    """Extracts temporally-stabilized, optically blended boolean masks for focal regions."""
+def get_dynamic_region_masks(image: np.ndarray, state: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    """Extracts temporally-stabilized, optically blended masks for each REGION_INDICES region.
+
+    Args:
+        image: BGR uint8 frame (H, W, 3).
+        state: Mutable per-video state dict. Relevant keys written/read:
+            'face_landmarker' (MediaPipe FaceLandmarker, lazily created),
+            'prev_landmarks' (List[Tuple[float, float]], smoothed landmark coords),
+            'last_masks' (Dict[str, np.ndarray], previous frame masks as (H,W,3) float32),
+            'last_full' (np.ndarray, full-face union mask (H,W,3) float32 in [0,1]),
+            'full_face_mask' (np.ndarray, alias of last_full (H,W,3) float32),
+            'face_detected' (bool), 'miss_count' (int).
+
+    Returns:
+        Dict mapping region name -> (H, W, 3) float32 mask in [0, 1].
+    """
     h, w = image.shape[:2]
     if "face_landmarker" not in state:
         task_path, searched_paths = resolve_face_landmarker_task_path()
@@ -336,7 +351,13 @@ def apply_dynamic_tone_mapping(image):
     return cv2.cvtColor(cv2.merge((cl, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
 
 
-def get_temporal_noise_field(state, shape, rng, strength=1.0, key="temporal_noise"):
+def get_temporal_noise_field(
+    state: Dict[str, Any],
+    shape: Tuple[int, ...],
+    rng: np.random.Generator,
+    strength: float = 1.0,
+    key: str = "temporal_noise",
+) -> np.ndarray:
     previous = state.get(key)
     fresh = rng.normal(0.0, strength, shape).astype(np.float32)
     if previous is None or previous.shape != shape:
@@ -347,7 +368,13 @@ def get_temporal_noise_field(state, shape, rng, strength=1.0, key="temporal_nois
     return field
 
 
-def apply_modern_sensor_noise(image, grain, rng, state=None, fpn_mask=None):
+def apply_modern_sensor_noise(
+    image: np.ndarray,
+    grain: float,
+    rng: np.random.Generator,
+    state: Optional[Dict[str, Any]] = None,
+    fpn_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
     state = {} if state is None else state
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     lum = hsv[:, :, 2].astype(np.float32) / 255.0
@@ -377,7 +404,7 @@ def apply_modern_sensor_noise(image, grain, rng, state=None, fpn_mask=None):
     return np.clip(image_f, 0, 255).astype(np.uint8)
 
 
-def close_face_landmarker_state(state):
+def close_face_landmarker_state(state: Dict[str, Any]) -> None:
     face_landmarker = state.pop("face_landmarker", None)
     if face_landmarker is None:
         return
@@ -498,24 +525,132 @@ def apply_soft_rolling_shutter(image, state, rng):
 def apply_global_awb_drift(image, state, rng):
     drift = float(state.get("awb_drift", 0.0))
     drift += float(rng.normal(0.0, 0.05))
-    drift = float(np.clip(drift, -2.0, 2.0))
+    drift = float(np.clip(drift, -1.5, 1.5))
     state["awb_drift"] = drift
     image_f = image.astype(np.float32)
-    image_f[:, :, 2] += drift * 0.35
-    image_f[:, :, 1] += drift * 0.15
+    image_f += drift
     return np.clip(image_f, 0, 255).astype(np.uint8)
 
 
-def apply_soft_background_texture(image, focus_mask, strength=0.18):
-    if strength <= 0:
-        return image
-    inverse_mask = 1.0 - focus_mask
-    h, w = image.shape[:2]
-    small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
-    restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
-    blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
-    out = (image.astype(np.float32) * focus_mask + blended_bg.astype(np.float32) * inverse_mask)
-    return np.clip(out, 0, 255).astype(np.uint8)
+SPATIAL_PHASE_OFFSETS = {"forehead": 0.0, "left_cheek": 0.15, "right_cheek": 0.15, "chin": 0.25}
+
+
+def synchronize_base_frequency(
+    image: np.ndarray,
+    state: Dict[str, Any],
+    face_mask: np.ndarray,
+    fps: float = 30.0,
+) -> float:
+    """Extracts existing temporal frequency from focal region to sync textures.
+
+    Args:
+        image: BGR uint8 frame (H, W, 3).
+        state: Per-video state dict. Reads/writes 'g_history' (List[float]),
+            'target_hz' (float), 'frame_count' (int), 'face_detected' (bool).
+        face_mask: Full-face mask (H, W, 3) float32; used to isolate green channel mean.
+        fps: Video frame rate for frequency analysis.
+
+    Returns:
+        Dominant temporal frequency in Hz (selected from [0.8, 1.8] range).
+    """
+    if not state.get("face_detected", False):
+        return 1.2
+
+    history = state.get("g_history", [])
+    mean_g = cv2.mean(image[:, :, 1], mask=(face_mask[:, :, 0] > 0).astype(np.uint8))[0]
+    history.append(mean_g)
+    if len(history) > int(fps * 3):
+        history.pop(0)
+    state["g_history"] = history
+
+    target_hz = state.get("target_hz", 1.2)
+    if len(history) >= 60 and state.get("frame_count", 0) % 30 == 0:
+        sig = np.array(history, dtype=np.float32)
+        sig = sig - np.mean(sig)
+        freqs = np.fft.rfftfreq(len(sig), d=1.0 / fps)
+        mags = np.abs(np.fft.rfft(sig))
+        valid = (freqs >= 0.8) & (freqs <= 1.8)
+        if np.any(valid):
+            target_hz = float(freqs[valid][np.argmax(mags[valid])])
+            state["target_hz"] = target_hz
+    return target_hz
+
+
+def apply_synchronized_spatial_fluctuation(
+    image: np.ndarray,
+    state: Dict[str, Any],
+    region_masks: Dict[str, np.ndarray],
+    target_hz: float,
+    fps: float = 30.0,
+) -> np.ndarray:
+    """Applies spatially-delayed fluctuations synchronized to detected base frequency.
+
+    Args:
+        image: BGR uint8 frame (H, W, 3).
+        state: Per-video state dict. Reads/writes 'frame_count' (int).
+        region_masks: Dict mapping region name -> (H, W, 3) float32 mask in [0, 1].
+        target_hz: Dominant frequency from synchronize_base_frequency (Hz).
+        fps: Video frame rate.
+
+    Returns:
+        BGR uint8 frame with spatial fluctuations applied.
+    """
+    frame_count = state.get("frame_count", 0)
+    state["frame_count"] = frame_count + 1
+    t = frame_count / fps
+    envelope = 1.0 + 0.15 * np.sin(t * 2 * np.pi * 0.3)
+
+    ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+    warm_mask = cv2.inRange(ycrcb, np.array([0, 133, 77]), np.array([255, 173, 127])) / 255.0
+    warm_mask = np.stack([warm_mask] * 3, axis=-1).astype(np.float32)
+    img_float = image.astype(np.float32)
+
+    for region, mask in region_masks.items():
+        offset = SPATIAL_PHASE_OFFSETS.get(region, 0.0)
+        phase = (t * 2 * np.pi * target_hz) + offset
+        shift_intensity = np.sin(phase) * envelope * 0.45
+        combined_mask = mask * warm_mask
+        img_float[:, :, 1] += shift_intensity * 1.0 * combined_mask[:, :, 0]
+        img_float[:, :, 2] += shift_intensity * 0.45 * combined_mask[:, :, 0]
+        img_float[:, :, 0] -= shift_intensity * 0.10 * combined_mask[:, :, 0]
+
+    return img_float.clip(0, 255).astype(np.uint8)
+
+
+# def apply_soft_background_texture(image, focus_mask, strength=0.08):
+#     # Disabled: standard webcams/phone front-cameras have deep focal length with no optical
+#     # background separation. Applying blur here creates an artificial portrait-mode look.
+#     strength = max(0.0, min(strength, 1.0))
+#     if strength == 0:
+#         return image
+#     tight_mask = focus_mask * focus_mask  # squaring pulls blur boundary inward, preventing face bleed
+#     inverse_mask = 1.0 - tight_mask
+#     h, w = image.shape[:2]
+#     small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
+#     restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+#     blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
+#     out = (image.astype(np.float32) * tight_mask + blended_bg.astype(np.float32) * inverse_mask)
+#     return np.clip(out, 0, 255).astype(np.uint8)
+
+
+# def apply_dynamic_relighting(image, state):
+#     # Disabled: cinematic 3D specular shift requires a lens with optical depth.
+#     # Standard webcam/front-camera has flat, even illumination; this effect looks processed.
+#     """Shift highlights opposite OIS jitter to simulate scene relighting."""
+#     ois_x = state.get("ois_x", 0.0)
+#     ois_y = state.get("ois_y", 0.0)
+#     if abs(ois_x) < 0.1 and abs(ois_y) < 0.1:
+#         return image
+#     h, w = image.shape[:2]
+#     x_grid = state.get("x_grid") if state.get("x_grid") is not None else np.meshgrid(np.linspace(-1, 1, w), np.linspace(-1, 1, h))[0]
+#     y_grid = state.get("y_grid") if state.get("y_grid") is not None else np.meshgrid(np.linspace(-1, 1, w), np.linspace(-1, 1, h))[1]
+#     light_shift = (x_grid * -ois_x + y_grid * -ois_y) * 1.5
+#     light_shift = np.stack([light_shift] * 3, axis=-1).astype(np.float32)
+#     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+#     highlight_mask = (cv2.GaussianBlur(gray, (15, 15), 0) / 255.0) ** 2
+#     highlight_mask = np.stack([highlight_mask] * 3, axis=-1).astype(np.float32)
+#     relit = image.astype(np.float32) + (light_shift * highlight_mask)
+#     return relit.clip(0, 255).astype(np.uint8)
 
 
 def apply_jpeg_pass(image, quality):
@@ -530,45 +665,70 @@ def apply_jpeg_pass(image, quality):
     return decoded
 
 
-def blend_with_previous_frame(current_frame, previous_frame, ghosting):
+def blend_with_previous_frame(
+    current_frame: np.ndarray, previous_frame: Optional[np.ndarray], ghosting: float
+) -> np.ndarray:
     if previous_frame is None or ghosting <= 0.0:
         return current_frame
     return cv2.addWeighted(current_frame, 1.0 - ghosting, previous_frame, ghosting, 0)
 
 
-def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
+def process_frame(
+    image: np.ndarray,
+    lut: Optional[np.ndarray],
+    vignette_mask: Optional[np.ndarray],
+    args: argparse.Namespace,
+    rng: Optional[np.random.Generator] = None,
+    state: Optional[Dict[str, Any]] = None,
+) -> np.ndarray:
     rng = rng or np.random.default_rng()
     state = {} if state is None else state
-    _ = get_dynamic_region_masks(image, state)
-    full_face_mask = state.get("full_face_mask")
+    h, w = image.shape[:2]
 
+    region_masks = get_dynamic_region_masks(image, state)
+    full_face_mask = state.get("full_face_mask", np.zeros((h, w, 3), dtype=np.float32))
+
+    if state.get("face_detected", False) and region_masks:
+        target_hz = synchronize_base_frequency(image, state, full_face_mask)
+        image = apply_synchronized_spatial_fluctuation(image, state, region_masks, target_hz)
+
+    image = apply_global_awb_drift(image, state, rng)
     image = apply_soft_ois_jitter(image, state, rng)
     image = apply_soft_rolling_shutter(image, state, rng)
     image = apply_subtle_af_breathing(image, state, rng)
-
-    image = apply_global_awb_drift(image, state, rng)
+    # image = apply_dynamic_relighting(image, state)
     image = apply_ae_stepping(image, state)
     image = apply_dynamic_tone_mapping(image)
     image = apply_highlight_blooming(image, threshold=232, strength=0.055)
 
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
+    # Saturation fallback 1.02 is the production-pipeline value (gentle bump);
+    # CLI parser default 1.12 is for standalone CLI use where stronger color
+    # boost looks better. The getattr() lets the production pipeline call
+    # process_frame() with an args namespace that doesn't set --saturation.
     hsv[:, :, 1] = np.clip(hsv[:, :, 1] * getattr(args, "saturation", 1.02), 0, 255)
     image = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
     image = cv2.LUT(image, create_neutral_phone_lut() if lut is None else lut)
     image = apply_modern_sensor_noise(image, getattr(args, "grain", 1.0), rng, state=state, fpn_mask=state.get("fpn"))
+    # Aberration scale 0.0006 is V11's tuned value (subtle fringing); the module
+    # constant ABERRATION_SCALE = 0.0015 is the CLI default exposed in older
+    # versions and kept for backward compatibility with --aberration-scale calls.
     image = apply_radial_chromatic_aberration(image, scale=0.0006)
-    image = apply_soft_background_texture(image, full_face_mask, strength=0.18)
+    # image = apply_soft_background_texture(image, full_face_mask, strength=getattr(args, "background_texture_strength", 0.08))
 
-    vignette_strength = getattr(args, "vignette_strength", 0.55)
-    if vignette_mask is not None and vignette_strength > 0:
-        adjusted_mask = 1.0 - ((1.0 - vignette_mask) * vignette_strength)
-        image = np.clip(image.astype(np.float32) * adjusted_mask, 0, 255).astype(np.uint8)
+    adjusted_vignette = state.get("adjusted_vignette_mask")
+    if adjusted_vignette is None and vignette_mask is not None:
+        vignette_strength = getattr(args, "vignette_strength", 0.55)
+        if vignette_strength > 0:
+            adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * vignette_strength)).astype(np.float32)
+    if adjusted_vignette is not None:
+        image = np.clip(image.astype(np.float32) * adjusted_vignette, 0, 255).astype(np.uint8)
 
     return image
 
 
-def naturalize_image(input_path, output_path, args):
+def naturalize_image(input_path: str, output_path: str, args: argparse.Namespace) -> None:
     image = open_media(input_path)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     height, width = image.shape[:2]
@@ -589,7 +749,7 @@ def naturalize_image(input_path, output_path, args):
         close_face_landmarker_state(state)
 
 
-def finalize_video_output(temp_output, input_path, output_path, codec):
+def finalize_video_output(temp_output: str, input_path: str, output_path: str, codec: str) -> None:
     if not ffmpeg_available():
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(temp_output).replace(output_path)
@@ -640,7 +800,7 @@ def finalize_video_output(temp_output, input_path, output_path, codec):
     print(f"Saved video to: {output_path}")
 
 
-def naturalize_video(input_path, output_path, args):
+def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace) -> None:
     source = ensure_input_exists(input_path)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(str(source))
@@ -663,9 +823,11 @@ def naturalize_video(input_path, output_path, args):
     lut = create_neutral_phone_lut()
     vignette_mask = create_vignette_mask(height, width)
     rng = np.random.default_rng()
+    _vignette_strength = getattr(args, "vignette_strength", 0.55)
+    _adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * _vignette_strength)).astype(np.float32) if _vignette_strength > 0 else None
     state = {
         "fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32),
-        "stutter_budget": 0,
+        "adjusted_vignette_mask": _adjusted_vignette,
     }
 
     temp_output = build_temp_video_path(output_path)
@@ -687,18 +849,11 @@ def naturalize_video(input_path, output_path, args):
                 break
 
             frame = correct_rotation(frame, rotation)
-            if state.get("stutter_budget", 0) > 0 and previous_processed is not None:
-                state["stutter_budget"] -= 1
-                processed = previous_processed
-            else:
-                current_processed = process_frame(frame, lut, vignette_mask, args, rng, state)
-                processed = blend_with_previous_frame(
-                    current_processed, previous_processed, args.ghosting
-                )
-                previous_processed = current_processed
-
-                if state.get("ae_stepped", False) or rng.random() < 0.002:
-                    state["stutter_budget"] = int(rng.integers(1, 3))
+            current_processed = process_frame(frame, lut, vignette_mask, args, rng, state)
+            processed = blend_with_previous_frame(
+                current_processed, previous_processed, args.ghosting
+            )
+            previous_processed = current_processed
 
             if args.preview:
                 processed = build_preview_frame(frame, processed)
@@ -746,6 +901,7 @@ def build_parser():
         "--saturation", type=float, default=1.12, help="Saturation multiplier. Default: 1.12"
     )
     parser.add_argument("--grain", type=int, default=1, help="Sensor-grain strength. Default: 1")
+    # "--background-texture-strength" removed: flat-sensor mode, no depth separation
     parser.add_argument(
         "--ghosting",
         type=bounded_ghosting,

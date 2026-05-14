@@ -2,6 +2,108 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-14 (v1.6)
+
+### Added
+
+- **Oldcam V12 (Pristine Hardware-Only)** — now the default version across CLI, GUI, automation,
+  and all launcher chains. Removes rPPG biological pulse, global LUT, dynamic tone mapping (CLAHE),
+  and HSV saturation. Rationale: modern Presentation Attack Detection (PAD) systems flag synthetic
+  2D color pulses as a spoofing signature (3D-CNN liveness models track blood propagation through
+  facial geometry, which a 2D color overlay cannot replicate). The global LUT was injecting a red
+  boost causing sepia tint; CLAHE was crushing local contrast. V12 keeps physical camera artifacts
+  only: OIS jitter, rolling shutter, AE stepping, highlight blooming, AWB drift, sensor noise,
+  chromatic aberration, and vignette.
+- **V12 launchers** at all 3 levels: `launchers/windows/run_oldcam_v12.bat`,
+  `launchers/macos/run_oldcam_v12.command`, `launchers/run_oldcam_v12.bat`,
+  `launchers/run_oldcam_v12.command`.
+- **Oldcam version (ⓘ) tooltip** rewritten with theme + trade-off thread per version, anchored to
+  fact-checked code citations.
+- **`docs/oldcam-versions.md`** — full V12 section + "Version History Theme & Trade-Off" table.
+- **`docs/oldcam-wiring.md`** — comprehensive checklist for adding new versions (v13+).
+
+### Changed
+
+- **Default Oldcam version** is now **v12** everywhere:
+  - GUI: v12 checkbox checked by default (v11 unchecked)
+  - CLI: `automation_oldcam_version` defaults to `v12`; CLI choice menu lists all v7–v12 + "all"
+  - Launchers: root `run_oldcam.bat`, `launchers/windows/run_oldcam.bat`, and
+    `launchers/macos/run_oldcam.command` all chain into v12
+  - `automation/pipeline.py`: fallback default in logger format strings bumped from `v8` → `v12`
+- **Oldcam GUI strip** restructured: 3-column checkbox grid, "Oldcam: ⓘ" inline label,
+  top-anchored Re-Run column with label-on-top + buttons-below. Strip width stays fixed as
+  versions are added; buttons standardized to font 9 / `padx=8 pady=2 width=2` so the rotate
+  and folder icons render at identical sizes.
+- **`queue_manager.py` Popen cleanup**: bounded `wait(timeout=5)` + explicit `stdout.close()`
+  in TimeoutExpired/Exception branches to prevent pipe-buffer deadlock if the child wrote
+  after our last readline().
+- **Log noise filter** extended to suppress MediaPipe `portable_clearcut_uploader` telemetry
+  errors (`FAILED_PRECONDITION`, `Source Location Trace`, `wireless/android/play/playlog`).
+
+### Fixed
+
+- Updated several v10→v11 (and now v11→v12) stale strings in launcher scripts and error messages.
+- README + CLAUDE.md + AGENTS.md kept in sync with the new default + new wiring doc.
+
+### Distribution
+
+- Release packaging emits `SelfieGenUltimate-v1.6.zip` (canonical) +
+  `SelfieGenUltimate.zip` (latest alias).
+
+### Quality
+
+- **FFmpeg encode bumped to near-lossless across all Oldcam versions** (except v8,
+  which keeps its bitrate-cap "Temporal Smartphone" character):
+  - V7/V9/V10/V11/V12: `-crf 12 -preset slow -profile:v high` (was CRF 16–18,
+    preset medium on V7/V9/V10).
+  - Ping-pong looper (`kling_gui/video_looper.py`) also bumped to CRF 12 / preset
+    slow so the intermediate looped video preserves source quality before Oldcam
+    processing.
+- Result: visually-lossless H.264 throughout the pipeline. Output files are
+  larger but match Kling's source fidelity.
+
+## 2026-05-13 (v1.5)
+
+### Added
+
+- **Oldcam V11 (Spatial Sync + AWB Drift)**: Combines V10's FFT-based biological pulse with V9's
+  AWB (Auto White Balance) drift hardware simulation. Signal ordering enforced: FFT reads the clean
+  green-channel history buffer before AWB drift corrupts global channel values, so the two systems
+  stack without interference. New `oldcam-v11/` standalone folder with Windows `oldcam_launcher.bat`
+  and macOS `oldcam.command`. V11 is now the default version in the GUI and CLI automation pipeline.
+- **V11 launchers**: `launchers/windows/run_oldcam_v11.bat`, `launchers/macos/run_oldcam_v11.command`,
+  `launchers/run_oldcam_v11.bat`, `launchers/run_oldcam_v11.command`.
+- **Generic `run_oldcam` launchers** updated to delegate to V11 (previously V9).
+- **Oldcam version tooltip**: (ⓘ) hover icon added next to the Oldcam version checkboxes in the GUI.
+  Shows a version comparison table (face tracking, biological pulse, AWB drift, MediaPipe, signature).
+- **Oldcam wiring reference** (`docs/oldcam-wiring.md`): complete checklist for adding new Oldcam versions
+  (v12+), covering algorithm folder structure, launchers at all 3 levels, GUI checkbox wiring, mediapipe
+  flag, tests, distribution, and signal pipeline order invariant. Linked from CLAUDE.md, AGENTS.md, README.
+
+### Fixed
+
+- **V11 motion stutter**: Removed every-other-frame MediaPipe frame-skip (`detect_frame_count % 2`)
+  that caused the face mask to freeze one frame while the face moved, creating a 15fps ghost on 30fps
+  video. MediaPipe now runs 1:1 on every frame.
+- **V11 AE stutter**: Removed `stutter_budget` / AE-step frame-repeat logic that intentionally wrote
+  the previous frame instead of the current one. Every input frame now produces a distinct output frame.
+- **V11 sepia/warm tint**: Removed `shift_intensity * 0.5 * mask * 3.0` ambient-warmth line that
+  injected raw red channel values on top of the balanced BGR biological pulse shifts. AWB drift
+  neutralized from red+green bias (`drift*0.35 / drift*0.15`) to equal-channel luma drift (`image_f += drift`).
+- **V11 output quality**: FFmpeg encoding upgraded from CRF 18 + `preset medium` to CRF 16 +
+  `preset slow` for visually lossless output closer to source file size.
+- **Oldcam progress streaming**: `_run_oldcam_version` switched from `subprocess.run(capture_output=True)`
+  (silent until completion) to `Popen` with `readline()` streaming so frame progress (25%, 50%…) appears
+  in the GUI log in real time. Deadline-aware loop prevents silent hangs.
+- **TF/MediaPipe noise filter**: `_is_tf_noise` function added; bare `"mediapipe"` pattern replaced
+  with specific startup-only substrings to avoid masking real import errors.
+- **Layout**: `sash_prompt_split` widened from 50–62% to 54–64% (default 56% → 60%) so the Oldcam
+  version checkboxes row no longer crushes the folder-icon button.
+
+### Changed
+
+- Release packaging emits `SelfieGenUltimate-v1.5.zip` (canonical) + `SelfieGenUltimate.zip` (alias).
+
 ## 2026-05-12 (v1.4)
 
 ### Added

@@ -504,23 +504,43 @@ class ConfigPanel(tk.Frame):
             pady=2,
         )
         self.oldcam_controls_frame.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        # "Oldcam: ⓘ" inline on top of the controls frame — top-anchored
+        _oldcam_label_row = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
+        _oldcam_label_row.pack(side=tk.LEFT, anchor="n", padx=(0, 6))
         tk.Label(
-            self.oldcam_controls_frame,
+            _oldcam_label_row,
             text="Oldcam:",
             font=(FONT_FAMILY, 10),
             bg="#2A1F34",
             fg=COLORS["text_light"],
-        ).pack(side=tk.LEFT, padx=(0, 4))
+        ).pack(side=tk.LEFT)
+        self.oldcam_info_icon = tk.Label(
+            _oldcam_label_row,
+            text="ⓘ",
+            font=(FONT_FAMILY, 11),
+            cursor="question_arrow",
+            bg="#2A1F34",
+            fg=COLORS["text_dim"],
+        )
+        self.oldcam_info_icon.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(self.oldcam_info_icon, self._get_oldcam_version_notes)
         self.oldcam_version_vars = {
             "v7": tk.BooleanVar(value=False),
             "v8": tk.BooleanVar(value=False),
-            "v9": tk.BooleanVar(value=True),
+            "v9": tk.BooleanVar(value=False),
             "v10": tk.BooleanVar(value=False),
+            "v11": tk.BooleanVar(value=False),
+            "v12": tk.BooleanVar(value=True),
         }
+        # 3-column grid — new versions append rows, strip width stays fixed.
+        # 5 versions → 2 rows (3 + 2); 6 versions → 2 rows (3 + 3); 7+ → 3 rows.
+        _OLDCAM_COLS = 3
+        _check_grid = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
+        _check_grid.pack(side=tk.LEFT, anchor="n")
         self.oldcam_version_checks = {}
-        for version in ("v7", "v8", "v9", "v10"):
+        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12")):
             check = tk.Checkbutton(
-                self.oldcam_controls_frame,
+                _check_grid,
                 text=version,
                 variable=self.oldcam_version_vars[version],
                 font=(FONT_FAMILY, 9),
@@ -531,30 +551,37 @@ class ConfigPanel(tk.Frame):
                 activeforeground=COLORS["text_light"],
                 command=self._on_oldcam_versions_changed,
             )
-            check.pack(side=tk.LEFT, padx=(2, 0))
+            check.grid(row=i // _OLDCAM_COLS, column=i % _OLDCAM_COLS, sticky="w", padx=(2, 4), pady=0)
             self.oldcam_version_checks[version] = check
+        # Re-Run column: label on top, [↻] [📂] buttons aligned below — top-anchored
+        # so it doesn't vertically center against the taller checkbox grid.
+        _rerun_col = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
+        _rerun_col.pack(side=tk.LEFT, anchor="n", padx=(10, 0))
         tk.Label(
-            self.oldcam_controls_frame,
+            _rerun_col,
             text="Re-Run:",
-            font=(FONT_FAMILY, 9),
+            font=(FONT_FAMILY, 10),
             bg="#2A1F34",
             fg=COLORS["text_light"],
-        ).pack(side=tk.LEFT, padx=(8, 4))
+        ).pack(anchor="w")
+        _rerun_btn_row = tk.Frame(_rerun_col, bg="#2A1F34")
+        _rerun_btn_row.pack(anchor="w", pady=(2, 0))
         self.oldcam_rerun_btn = tk.Button(
-            self.oldcam_controls_frame,
+            _rerun_btn_row,
             text="↻",
             font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             activebackground=COLORS["bg_main"],
             activeforeground=COLORS["text_light"],
+            width=2,
             padx=8,
             pady=2,
             relief=tk.FLAT,
             borderwidth=0,
             command=self._on_oldcam_rerun_clicked,
         )
-        self.oldcam_rerun_btn.pack(side=tk.LEFT, padx=(0, 2))
+        self.oldcam_rerun_btn.pack(side=tk.LEFT, padx=(0, 4))
         HoverTooltip(
             self.oldcam_rerun_btn,
             lambda: (
@@ -564,20 +591,21 @@ class ConfigPanel(tk.Frame):
             ),
         )
         self.oldcam_pick_btn = tk.Button(
-            self.oldcam_controls_frame,
+            _rerun_btn_row,
             text="📂",
             font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             activebackground=COLORS["bg_main"],
             activeforeground=COLORS["text_light"],
+            width=2,
             padx=8,
             pady=2,
             relief=tk.FLAT,
             borderwidth=0,
             command=self._on_oldcam_pick_rerun_clicked,
         )
-        self.oldcam_pick_btn.pack(side=tk.LEFT, padx=(0, 2))
+        self.oldcam_pick_btn.pack(side=tk.LEFT, padx=(0, 0))
         HoverTooltip(
             self.oldcam_pick_btn,
             lambda: (
@@ -1099,7 +1127,7 @@ class ConfigPanel(tk.Frame):
         for version, var in self.oldcam_version_vars.items():
             var.set(version in selected_versions)
         self.config["oldcam_versions"] = selected_versions
-        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v9"
+        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v11"
 
         # Reprocess options
         self.reprocess_var.set(self.config.get("allow_reprocess", False))
@@ -1312,6 +1340,37 @@ class ConfigPanel(tk.Frame):
 
         return "\n\n".join(sections)
 
+    def _get_oldcam_version_notes(self) -> str:
+        """Return version comparison tooltip for the Oldcam (ⓘ) icon."""
+        lines = [
+            "─── Oldcam Version Comparison ───",
+            "",
+            "v7   Modern phone imperfection",
+            "     JPEG cycle, arm-sway rolling shutter, AF hunting. No face tracking.",
+            "     Trade-off: too subtle — looked nearly identical to source.",
+            "",
+            "v8   Hardware physics upgrade",
+            "     Spring-damper OIS, 3D channel noise, AWB drift, hard bitrate cap.",
+            "     Trade-off: bitrate cap over-compressed and lost detail.",
+            "",
+            "v9   Face-aware portrait pass",
+            "     MediaPipe FaceLandmarker, 4-region masks, AWB drift, soft background.",
+            "     Trade-off: background blur read as fake depth-of-field.",
+            "",
+            "v10  rPPG biological sync",
+            "     FFT on green channel → phase-locked color pulse in 4 face regions.",
+            "     Trade-off: visible color siren; AWB removed to keep FFT signal clean.",
+            "",
+            "v11  Best-of-all combination",
+            "     V10 pulse + V9 AWB, applied AFTER the FFT read.",
+            "     Trade-off: 2D rPPG flagged by modern PAD; global LUT tints sepia.",
+            "",
+            "v12  Pristine hardware-only (anti-spoofing aware)   ★ default",
+            "     No rPPG, no LUT, no CLAHE, no HSV. Pure OIS / AE / noise / vignette.",
+            "     Best for KYC / liveness pipelines; preserves Kling's color fidelity.",
+        ]
+        return "\n".join(lines)
+
     def _update_model_info_icon(self, model: dict = None):
         """Set info icon color: blue when model has notes/info, dim otherwise."""
         if not hasattr(self, "model_info_icon"):
@@ -1405,7 +1464,7 @@ class ConfigPanel(tk.Frame):
             elif legacy in valid_versions:
                 versions = [legacy]
             else:
-                versions = ["v9"]
+                versions = ["v11"]
 
         return sorted(set(versions), key=self._oldcam_version_key)
 
@@ -1418,8 +1477,8 @@ class ConfigPanel(tk.Frame):
         ]
         selected_versions = sorted(set(selected_versions), key=self._oldcam_version_key)
         self.config["oldcam_versions"] = selected_versions
-        # Legacy compatibility key: highest selected version, or v9 default when empty.
-        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v9"
+        # Legacy compatibility key: highest selected version, or v11 default when empty.
+        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v11"
         if selected_versions:
             self._notify_change("Oldcam versions set to " + ", ".join(selected_versions))
         else:

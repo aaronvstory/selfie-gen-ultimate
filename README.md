@@ -82,23 +82,27 @@ macOS compatibility constraints:
 
 The `oldcam` pipeline applies per-version virtual camera effects to generated videos, simulating authentic smartphone camera imperfections.
 
-| Version | Nickname | Key Character |
-| --- | --- | --- |
-| V7 | Modern Imperfection | JPEG artifact texture, rolling shutter arm-sway, light AF hunting, high-quality CRF 18 encoding |
-| V8 | Temporal Smartphone | OIS micro-jitter, velocity-driven rolling shutter, 3D chroma sensor noise, bitrate-limited H.264 |
-| V9 | Dynamic Mesh | MediaPipe face detection, region-aware effect masks, AWB color drift, background blur, temporal smoothing |
-| V10 | Spatial Sync | All of V9 + FFT-based frequency analysis, per-region phase-locked oscillations, dynamic relighting |
+| Version | Nickname | Key Character | Trade-Off |
+| --- | --- | --- | --- |
+| V7 | Modern Imperfection | JPEG cycle, rolling shutter arm-sway, AF hunting, CRF 18 | Too subtle vs source |
+| V8 | Temporal Smartphone | Spring-damper OIS, 3D channel noise, AWB drift, bitrate cap | Over-compressed final file |
+| V9 | Dynamic Mesh | MediaPipe FaceLandmarker, region masks, AWB drift, background blur | Reads as fake depth-of-field |
+| V10 | Spatial Sync | All of V9 + FFT rPPG biological pulse, region phase delays (no AWB) | Visible color siren on face |
+| V11 | Spatial Sync + AWB Drift | V10 + AWB drift reinstated AFTER FFT read | 2D rPPG flagged by modern PAD; global LUT tints sepia |
+| V12 | Pristine Hardware-Only ★ default | No rPPG / LUT / CLAHE / HSV. Pure OIS / AE / noise / vignette. | None yet — anti-spoofing optimized |
 
-Multiple versions can be selected simultaneously in the GUI (Video tab → Oldcam section). Each runs independently and produces a version-tagged output file alongside the source: `clip-oldcam-v9.mp4`, `clip-oldcam-v10.mp4`, etc.
+Multiple versions can be selected simultaneously in the GUI (Video tab → Oldcam section). Each runs independently and produces a version-tagged output file alongside the source: `clip-oldcam-v9.mp4`, `clip-oldcam-v10.mp4`, `clip-oldcam-v11.mp4`, `clip-oldcam-v12.mp4`, etc.
 
 ### Oldcam Requirements
 
 | Versions | Extra Dependencies |
 | --- | --- |
 | V7, V8 | numpy, opencv — already in main requirements |
-| V9, V10 | Also requires `mediapipe==0.10.35` and a `face_landmarker.task` model file |
+| V9, V10, V11, V12 | Also requires `mediapipe==0.10.35` and a `face_landmarker.task` model file |
 
-For V9/V10: place `face_landmarker.task` in the repo root or next to the oldcam directory. Download from [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker).
+For V9/V10/V11/V12: place `face_landmarker.task` in the repo root or next to the oldcam directory. Download from [MediaPipe Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker).
+
+For wiring details when adding a new Oldcam version (v12+), see [docs/oldcam-wiring.md](docs/oldcam-wiring.md).
 
 ### Oldcam Standalone Launchers
 

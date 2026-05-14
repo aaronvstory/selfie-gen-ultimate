@@ -283,6 +283,28 @@ log_drop_max = int(right_section_w * 0.62)
 
 | Sash | Target | Range |
 |------|--------|-------|
-| `sash_prompt_split` (left tabs width) | 56% of window | 50–62% |
+| `sash_prompt_split` (left tabs width) | 60% of window | 54–64% |
 | `sash_queue` (carousel width) | 24% of window | 20–30% |
 | `sash_log_drop_split` (log width within right section) | 52% of right section | 42–62% |
+
+---
+
+## Oldcam Version Wiring
+
+> Full checklist: [`docs/oldcam-wiring.md`](docs/oldcam-wiring.md)
+
+When adding a new Oldcam version (e.g., v12), these are the required touch-points:
+
+| Layer | Where | What to do |
+|-------|-------|-----------|
+| Algorithm | `oldcam-vN/` + `oldcam-vN/macOS/` | Create folder with `oldcam.py`, `launcher.py`, `requirements.txt`, `oldcam_launcher.bat` (CRLF) |
+| Launchers (3 levels) | `launchers/windows/`, `launchers/macos/`, `launchers/` | Add 4 new launcher files (2 `.bat` CRLF, 2 `.command` LF) |
+| GUI checkbox | `kling_gui/config_panel.py` | Add to `oldcam_version_vars` dict (~line 514) and loop tuple (~line 522) |
+| MediaPipe flag | `kling_gui/queue_manager.py` | Add to `requires_mediapipe` set if vN uses face landmarks |
+| Tests | `tests/test_oldcam_versions.py`, `tests/test_launcher_hub_wrappers.py` | Version tuple + output path + mediapipe tests + launcher assertions |
+| Dist | `build_release_zip.py` | Add new launcher file paths explicitly (algorithm folder auto-included) |
+| If new default | `automation/config.py`, root + hub launchers | Set `automation_oldcam_version`, update all 5 `run_oldcam` launchers |
+
+**Auto-discovered (no changes needed):** `_discover_oldcam_versions()` in `queue_manager.py` scans `oldcam-v*` dirs; output filename suffix is generic; face landmarker task searched generically; `automation/pipeline.py` is fully version-agnostic.
+
+**Current default version:** v12. Mediapipe versions: v9, v10, v11, v12.

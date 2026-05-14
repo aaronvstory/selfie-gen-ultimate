@@ -84,10 +84,11 @@ def sanitize_sash_layout(
     drop_max = max(drop_min, int(safe_h * 0.75))
     drop_default = int(safe_h * 0.58)
 
-    # Left tab panel vs right tools/prompt panel — left panel 52-62% of window
-    prompt_min = max(480, int(safe_w * 0.50))
-    prompt_max = max(prompt_min, int(safe_w * 0.62))
-    prompt_default = int(safe_w * 0.56)
+    # Left tab panel vs right tools/prompt panel — left panel 54-64% of window
+    # Widened to prevent Oldcam version checkboxes from crushing the folder icon
+    prompt_min = max(500, int(safe_w * 0.54))
+    prompt_max = max(prompt_min, int(safe_w * 0.64))
+    prompt_default = int(safe_w * 0.60)
 
     # Carousel width: 20-30% of window (narrower carousel = more room for log+drop)
     queue_min = max(200, int(safe_w * 0.20))

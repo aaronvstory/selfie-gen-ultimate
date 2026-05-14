@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import shutil
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional, List, Tuple, Dict
 from pathlib import Path
@@ -269,6 +270,35 @@ def get_duration_options_for_model(model_endpoint: str) -> list:
     
     # Default for unknown models
     return [5, 10]
+
+
+_TF_NOISE_PATTERNS = (
+    "tensorflow/",
+    "onednn",
+    "w0000 ",
+    "tflite",
+    "inference_feedback_manager",
+    "warning:tensorflow",
+    "tf_enable_onednn",
+    "face_landmarker_graph",
+    "xnnpack",
+    "i tensorflow",
+    "mediapipe version",
+    "mediapipe graph",
+    "mediapipe init",
+    "mediapipe info",
+    # MediaPipe clearcut telemetry noise (Android playlog tries to phone home,
+    # fails with FAILED_PRECONDITION on dev machines, and dumps a 3-line trace).
+    "portable_clearcut_uploader",
+    "failed to send to clearcut",
+    "=== source location trace: ===",
+    "wireless/android/play/playlog",
+)
+
+
+def _is_tf_noise(line: str) -> bool:
+    low = line.lower()
+    return any(pat in low for pat in _TF_NOISE_PATTERNS)
 
 
 def get_next_available_path(
@@ -1173,15 +1203,65 @@ class QueueManager:
 
         self.log(f"Applying Oldcam {version} Finish...", "info")
         run_cmd = [sys.executable, "-u", str(launcher_path), video_path]
-        completed = subprocess.run(
-            run_cmd,
-            cwd=str(oldcam_dir),
-            capture_output=True,
-            text=True,
-            timeout=600,
-            check=False,
-        )
-        if completed.returncode == 0:
+        output_lines: list[str] = []
+        returncode = -1
+        process: Optional[subprocess.Popen] = None
+        _TIMEOUT = 600
+        try:
+            process = subprocess.Popen(
+                run_cmd,
+                cwd=str(oldcam_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert process.stdout is not None
+            deadline = time.monotonic() + _TIMEOUT
+            while True:
+                line = process.stdout.readline()
+                if not line:
+                    break
+                if time.monotonic() > deadline:
+                    raise subprocess.TimeoutExpired(run_cmd, _TIMEOUT)
+                line_text = line.rstrip()
+                if line_text:
+                    output_lines.append(line_text)
+                    if not _is_tf_noise(line_text):
+                        self.log(line_text, "info")
+            returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                if process.stdout is not None:
+                    try:
+                        process.stdout.close()
+                    except Exception:
+                        pass
+            self.log(f"Oldcam {version} timed out after 600s", "warning")
+            return None
+        except Exception as exc:
+            if process is not None:
+                if process.poll() is None:
+                    process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                if process.stdout is not None:
+                    try:
+                        process.stdout.close()
+                    except Exception:
+                        pass
+            self.log(f"Oldcam {version} launcher error: {exc}", "warning")
+            return None
+
+        if returncode == 0:
             input_path = Path(video_path)
             oldcam_output = self._build_oldcam_output_path(input_path, version)
             if oldcam_output.exists():
@@ -1190,10 +1270,9 @@ class QueueManager:
             self.log(f"Oldcam {version} process completed but output file was not found", "warning")
             return None
 
-        self.log(f"Oldcam {version} Finish failed (code {completed.returncode})", "warning")
-        err = (completed.stderr or completed.stdout or "").strip()
-        if err:
-            self.log(err.splitlines()[-1], "warning")
+        self.log(f"Oldcam {version} Finish failed (code {returncode})", "warning")
+        if output_lines:
+            self.log(output_lines[-1], "warning")
         return None
 
     def _ensure_oldcam_dependencies(self, oldcam_dir: Path, version: str) -> bool:
@@ -1202,7 +1281,7 @@ class QueueManager:
             return True
 
         required_modules = ["cv2", "numpy"]
-        requires_mediapipe = version in {"v9", "v10"}
+        requires_mediapipe = version in {"v9", "v10", "v11"}
         if requires_mediapipe:
             required_modules.append("mediapipe")
 
@@ -1242,9 +1321,15 @@ class QueueManager:
                     f"Please install them before processing Oldcam jobs: {install_cmd}",
                     "warning",
                 )
-                if version in {"v9", "v10"}:
+                if version in {"v9", "v10", "v11"}:
+                    mp_install = (
+                        f"{sys.executable} -m pip install "
+                        f"--force-reinstall --no-deps mediapipe==0.10.35"
+                    )
                     self.log(
-                        f"Oldcam {version} requires mediapipe tasks + {self._task_model_filename()}. Install guidance: {install_cmd}",
+                        f"Oldcam {version} requires mediapipe + {self._task_model_filename()}. "
+                        f"Step 1: {install_cmd}  "
+                        f"Step 2: {mp_install}",
                         "warning",
                     )
             else:
