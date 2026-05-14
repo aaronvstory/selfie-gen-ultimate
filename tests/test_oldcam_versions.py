@@ -794,3 +794,198 @@ def test_v13_parser_does_not_expose_grain_arg():
     with pytest.raises(SystemExit):
         # argparse exits with non-zero on unknown args
         parser.parse_args(["dummy.mp4", "--grain", "5"])
+
+
+# ---------------------------------------------------------------------------
+# Re-Run loop wiring (PR #18 follow-up): rerun_oldcam_only() must honor the
+# loop_videos config the same way the normal queue path does.
+# ---------------------------------------------------------------------------
+
+
+def test_rerun_oldcam_loop_enabled_re_loops_source_before_oldcam(tmp_path):
+    """When loop_videos=True, rerun_oldcam_only must call _loop_video and
+    pass the looped path to _oldcam_video (matching normal-queue behavior)."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    looped = tmp_path / "clip_looped.mp4"
+    looped.write_bytes(b"looped-video")
+
+    manager, _ = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "loop_videos": True,
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update({"success": success, "src": src, "output": output, "error": error})
+        done.set()
+
+    captured_inputs = []
+
+    def _fake_oldcam(path, _item):
+        captured_inputs.append(path)
+        expected = manager._build_oldcam_output_path(Path(path), "v13")
+        expected.write_bytes(b"done")
+        return str(expected)
+
+    with mock.patch.object(manager, "_loop_video", return_value=str(looped)) as loop_mock, \
+        mock.patch.object(manager, "_oldcam_video", side_effect=_fake_oldcam):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+        manager._oldcam_rerun_thread.join(timeout=2)
+
+        loop_mock.assert_called_once()
+        # _loop_video was called with the un-looped source path string
+        args, _ = loop_mock.call_args
+        assert args[0] == str(source.resolve())
+
+    assert result["success"] is True
+    # The captured Oldcam input must be the looped path (not the un-looped source)
+    assert len(captured_inputs) == 1
+    assert captured_inputs[0] == str(looped.resolve())
+    # Output filename inherits the _looped stem
+    assert "_looped-oldcam-v13" in result["output"]
+
+
+def test_rerun_oldcam_loop_disabled_skips_loop_step(tmp_path):
+    """When loop_videos=False, rerun_oldcam_only must NOT call _loop_video
+    and must pass the un-looped source straight to _oldcam_video."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, _ = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "loop_videos": False,
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update({"success": success, "src": src, "output": output, "error": error})
+        done.set()
+
+    captured_inputs = []
+
+    def _fake_oldcam(path, _item):
+        captured_inputs.append(path)
+        expected = manager._build_oldcam_output_path(Path(path), "v13")
+        expected.write_bytes(b"done")
+        return str(expected)
+
+    with mock.patch.object(manager, "_loop_video") as loop_mock, \
+        mock.patch.object(manager, "_oldcam_video", side_effect=_fake_oldcam):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+        manager._oldcam_rerun_thread.join(timeout=2)
+
+        loop_mock.assert_not_called()
+
+    assert result["success"] is True
+    assert captured_inputs == [str(source.resolve())]
+
+
+def test_rerun_oldcam_loop_enabled_skips_when_source_already_looped(tmp_path):
+    """If the user picks a _looped source while loop_videos=True, skip the
+    loop step so we don't produce ..._looped_looped.mp4."""
+    source = tmp_path / "clip_looped.mp4"
+    source.write_bytes(b"video")
+
+    manager, logs = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "loop_videos": True,
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update({"success": success, "src": src, "output": output, "error": error})
+        done.set()
+
+    captured_inputs = []
+
+    def _fake_oldcam(path, _item):
+        captured_inputs.append(path)
+        expected = manager._build_oldcam_output_path(Path(path), "v13")
+        expected.write_bytes(b"done")
+        return str(expected)
+
+    with mock.patch.object(manager, "_loop_video") as loop_mock, \
+        mock.patch.object(manager, "_oldcam_video", side_effect=_fake_oldcam):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+        manager._oldcam_rerun_thread.join(timeout=2)
+
+        loop_mock.assert_not_called()
+
+    assert result["success"] is True
+    assert captured_inputs == [str(source.resolve())]
+    # A user-visible log line explains the skip
+    assert any("already looped" in message for message, _level in logs)
+
+
+def test_rerun_oldcam_loop_failure_falls_back_to_unlooped_source(tmp_path):
+    """If _loop_video returns None, log a warning and run Oldcam on the
+    original un-looped source rather than aborting the rerun."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, logs = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "loop_videos": True,
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update({"success": success, "src": src, "output": output, "error": error})
+        done.set()
+
+    captured_inputs = []
+
+    def _fake_oldcam(path, _item):
+        captured_inputs.append(path)
+        expected = manager._build_oldcam_output_path(Path(path), "v13")
+        expected.write_bytes(b"done")
+        return str(expected)
+
+    with mock.patch.object(manager, "_loop_video", return_value=None) as loop_mock, \
+        mock.patch.object(manager, "_oldcam_video", side_effect=_fake_oldcam):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+        manager._oldcam_rerun_thread.join(timeout=2)
+
+        loop_mock.assert_called_once()
+
+    assert result["success"] is True
+    # Fell back to the un-looped source
+    assert captured_inputs == [str(source.resolve())]
+    # Warning logged so the user knows the loop step didn't run
+    assert any(
+        level == "warning" and "loop step failed" in message
+        for message, level in logs
+    )

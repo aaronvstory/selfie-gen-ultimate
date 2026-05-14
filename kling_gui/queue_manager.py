@@ -679,6 +679,7 @@ class QueueManager:
             return False
 
         def _worker():
+            nonlocal source_video
             temp_input: Optional[Path] = None
             try:
                 config = self.get_config()
@@ -690,6 +691,32 @@ class QueueManager:
                     if completion_callback:
                         completion_callback(False, str(source_video), None, message)
                     return
+
+                # Mirror the normal queue's loop step (around line 985-988): if the
+                # user has Loop enabled, re-loop the source before Oldcam so the
+                # output is named ..._looped-oldcam-vN.mp4 and built on a fresh
+                # lossless loop intermediate (v1.7 looper uses -crf 0 -tune film
+                # -pix_fmt yuv420p; create_looped_video overwrites by default).
+                # Skip when the input is already a loop (stem ends in _looped) to
+                # avoid ..._looped_looped.mp4.
+                if config.get("loop_videos", False):
+                    if source_video.stem.endswith("_looped"):
+                        self.log(
+                            f"Re-Run: source already looped ({source_video.name}); skipping loop step",
+                            "info",
+                        )
+                    else:
+                        self.log("Re-Run: re-looping source before Oldcam (loop enabled)", "info")
+                        looped_path = self._loop_video(str(source_video), QueueItem(str(source_video)))
+                        if looped_path:
+                            source_video = Path(looped_path).resolve()
+                            self.log(f"Re-Run loop intermediate: {source_video.name}", "info")
+                        else:
+                            self.log(
+                                "Re-Run: loop step failed; falling back to un-looped source",
+                                "warning",
+                            )
+
                 primary_version = max(versions_to_run, key=self._oldcam_version_key)
                 allow_reprocess = bool(config.get("allow_reprocess", False))
                 reprocess_mode = str(config.get("reprocess_mode", "increment") or "increment").lower()

@@ -56,10 +56,23 @@ All notable changes to this project are documented here.
 - `yuv420p` (not `yuv444p`) chosen for OpenCV decode compatibility; stream-copy
   concat rejected to avoid PTS/DTS glitches with reversed-half H.264.
 
+### Fixed
+
+- **Re-Run Oldcam now honors the Loop checkbox.** Previously, the
+  `rerun_oldcam_only()` worker in `kling_gui/queue_manager.py` hardcoded its
+  input to the un-looped source and ignored `config["loop_videos"]`, so users
+  who pressed Re-Run with Loop checked got `..._k25tStd-oldcam-vN.mp4` built
+  directly on the 28 MB Kling source instead of the expected
+  `..._k25tStd_looped-oldcam-vN.mp4` built on a freshly-looped intermediate.
+  The fix mirrors the normal queue path (loop → Oldcam) and overwrites any
+  stale `_looped.mp4` with the v1.7 lossless looper output. Re-Run on a
+  source whose stem already ends in `_looped` skips the loop step to avoid
+  `..._looped_looped.mp4`.
+
 ### Tests
 
-- 3 new V13 tests in `tests/test_oldcam_versions.py`: output suffix, no-MediaPipe
-  preflight, `process_frame` skips noise + AE stepping. Total: **342 pass**.
+- 3 new V13 algorithm tests + 4 new Re-Run loop-wiring tests in
+  `tests/test_oldcam_versions.py`. Total: **346 tests** (345 pass + 1 skip).
 - Updated existing tests for default-switch sites (5 files).
 
 ## 2026-05-14 (v1.6)
