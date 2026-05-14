@@ -713,7 +713,12 @@ class KlingGUIWindow:
             "use_source_folder": True,
             "falai_api_key": "",
             "verbose_logging": True,
-            "verbose_gui_mode": True,  # Verbose GUI logging ON by default
+            # Verbose GUI logging OFF by default — clean panel for new users.
+            # When OFF, "debug"-level emits go to ~/.kling-ui/kling_gui.log
+            # only (raw FFmpeg stderr, subprocess path dumps, structured
+            # duplicate-summary lines). Power users tick "Verbose Mode" in
+            # the Settings panel to surface those lines live.
+            "verbose_gui_mode": False,
             "log_max_mb": 5,
             "log_backups": 3,
             "duplicate_detection": True,
@@ -831,6 +836,9 @@ class KlingGUIWindow:
         # Layer 4: migrate known broken endpoint paths
         self._migrate_endpoints(default_config)
 
+        # Layer 5: one-shot migrations for config keys whose defaults changed.
+        self._migrate_legacy_defaults(default_config)
+
         return default_config
 
     @staticmethod
@@ -844,6 +852,33 @@ class KlingGUIWindow:
         if current in _ENDPOINT_MIGRATIONS:
             config["current_model"] = _ENDPOINT_MIGRATIONS[current]
             print(f"Migrated endpoint: {current} -> {config['current_model']}")
+
+    @staticmethod
+    def _migrate_legacy_defaults(config: dict) -> None:
+        """One-shot migrations for keys whose defaults changed across versions.
+
+        Releases prior to v1.7 shipped `verbose_gui_mode=True`, which makes
+        the in-app log panel show every debug-level line (raw FFmpeg stderr,
+        subprocess path dumps, demoted summary duplicates). The v1.7 default
+        is `False` so the panel stays clean out of the box. Users who saved
+        configs under the old default will keep seeing the noisy panel even
+        though they never explicitly turned verbose mode on — flip them once,
+        then mark migrated so we don't override the user's preference again
+        if they later turn verbose mode back on.
+        """
+        if not config.get("verbose_gui_mode_migrated_v17"):
+            # If the user had the old True default in their saved config, flip
+            # to the clean default. Users who already set False explicitly are
+            # unaffected (already False). Users who explicitly want verbose
+            # can re-enable via the Settings checkbox — we set the migration
+            # flag below so we won't touch their preference again.
+            if config.get("verbose_gui_mode") is True:
+                config["verbose_gui_mode"] = False
+                print(
+                    "Migrated verbose_gui_mode: True -> False (v1.7 default)."
+                    " Use the 'Verbose Mode' checkbox in Settings to re-enable."
+                )
+            config["verbose_gui_mode_migrated_v17"] = True
 
     def _merge_ui_config(self, base: dict, updates: dict) -> dict:
         """Deep-merge UI config dictionaries."""

@@ -1229,3 +1229,150 @@ def test_verbose_mode_panel_routing_simulated():
     assert ("user-facing info 2", "info") in panel_log
     # debug emit becomes panel-visible but rendered with the "info" tag.
     assert ("verbose debug detail 2", "info") in panel_log
+
+
+def test_verbose_gui_mode_default_is_false():
+    """The clean-panel-by-default contract: the boot-time default for
+    verbose_gui_mode must be False so new users get the friendly stream
+    out of the box. Verbose Mode is opt-in via the Settings checkbox."""
+    panel_source = (ROOT / "kling_gui" / "main_window.py").read_text(encoding="utf-8")
+    # The default-config dict in _load_config must declare verbose_gui_mode
+    # as False. We match the literal line that defines it.
+    assert '"verbose_gui_mode": False' in panel_source, (
+        "verbose_gui_mode default must be False (clean panel out of the box). "
+        "Verbose stream is opt-in via the Settings checkbox."
+    )
+    # Belt-and-suspenders: explicitly assert the True default is gone.
+    assert '"verbose_gui_mode": True' not in panel_source, (
+        "Found a legacy 'verbose_gui_mode: True' default; flip to False so "
+        "new installs and migrated configs land on the clean panel."
+    )
+
+
+def test_verbose_gui_mode_legacy_true_migrated_to_false_once():
+    """Existing users who saved configs under the pre-v1.7 True default
+    get flipped once to False; the migration flag prevents us from
+    overriding the user's preference if they later opt back into verbose."""
+    from kling_gui.main_window import KlingGUIWindow
+
+    # Legacy config: had True from old default, no migration flag.
+    legacy = {"verbose_gui_mode": True}
+    KlingGUIWindow._migrate_legacy_defaults(legacy)
+    assert legacy["verbose_gui_mode"] is False
+    assert legacy["verbose_gui_mode_migrated_v17"] is True
+
+    # User opted into verbose AFTER the migration ran: stays True.
+    opted_in = {"verbose_gui_mode": True, "verbose_gui_mode_migrated_v17": True}
+    KlingGUIWindow._migrate_legacy_defaults(opted_in)
+    assert opted_in["verbose_gui_mode"] is True
+
+    # User had False already (either explicit or fresh install): stays False.
+    fresh = {"verbose_gui_mode": False}
+    KlingGUIWindow._migrate_legacy_defaults(fresh)
+    assert fresh["verbose_gui_mode"] is False
+    assert fresh["verbose_gui_mode_migrated_v17"] is True
+
+
+# ---------------------------------------------------------------------------
+# Default-version consistency regression: every layer that picks a default
+# Oldcam version must agree on v13 across CLI, GUI, and launcher chains.
+# ---------------------------------------------------------------------------
+
+
+def test_default_oldcam_version_is_v13_across_all_layers():
+    """If someone adds a new default-version site and forgets to set v13,
+    this test fails. Locks the contract until the next intentional bump."""
+    # CLI / automation default
+    from automation.config import merge_automation_defaults
+    merged = merge_automation_defaults({})
+    assert merged["automation_oldcam_version"] == "v13", (
+        f"automation/config.py default must be v13; got "
+        f"{merged['automation_oldcam_version']!r}"
+    )
+
+    # GUI checkbox default (v13 BooleanVar with value=True)
+    config_panel_src = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
+    assert '"v13": tk.BooleanVar(value=True)' in config_panel_src, (
+        "GUI must ship with v13 checkbox pre-selected"
+    )
+    # Other versions in the dict must be value=False (only v13 starts ticked).
+    for legacy in ("v7", "v8", "v9", "v10", "v11", "v12"):
+        assert f'"{legacy}": tk.BooleanVar(value=True)' not in config_panel_src, (
+            f"Only v13 should be pre-selected; found {legacy} also marked True"
+        )
+
+    # Legacy fallback strings inside config_panel must default to v13.
+    # (Three call sites: load → save, on-change → save, _resolve fallback.)
+    fallback_v13_count = config_panel_src.count('"v13"')
+    assert fallback_v13_count >= 3, (
+        f"Expected at least 3 'v13' fallback strings in config_panel.py; got {fallback_v13_count}"
+    )
+
+    # CLI fallback strings + choice list must include v13 and use it as default.
+    cli_src = (ROOT / "kling_automation_ui.py").read_text(encoding="utf-8")
+    assert cli_src.count("'v13'") + cli_src.count('"v13"') >= 4, (
+        "Expected CLI to default to v13 in ≥3 get(..., 'v13') calls + choice list"
+    )
+    # The choice list must contain v13.
+    assert '"v13"' in cli_src or "'v13'" in cli_src
+    assert '"v7", "v8", "v9", "v10", "v11", "v12", "v13", "all"' in cli_src, (
+        "CLI menu choice list must enumerate v7-v13 plus 'all'"
+    )
+
+    # Launcher chains: root + windows hub + macOS hub must chain to v13.
+    for path in (
+        "run_oldcam.bat",
+        "launchers/windows/run_oldcam.bat",
+    ):
+        text = (ROOT / path).read_text(encoding="utf-8")
+        assert "run_oldcam_v13.bat" in text, f"{path} must chain to run_oldcam_v13.bat"
+
+    macos_chain = (ROOT / "launchers" / "macos" / "run_oldcam.command").read_text(encoding="utf-8")
+    assert "run_oldcam_v13.command" in macos_chain, (
+        "launchers/macos/run_oldcam.command must chain to run_oldcam_v13.command"
+    )
+
+
+def test_oldcam_v13_standalone_files_present_for_both_platforms():
+    """v13 standalone must exist for Windows + macOS so users can run it
+    directly without the GUI. Cross-platform parity is non-negotiable."""
+    expected_files = [
+        # Windows side
+        "oldcam-v13/oldcam.py",
+        "oldcam-v13/launcher.py",
+        "oldcam-v13/oldcam_launcher.bat",
+        "oldcam-v13/requirements.txt",
+        # macOS side
+        "oldcam-v13/macOS/oldcam.py",
+        "oldcam-v13/macOS/oldcam.command",
+        "oldcam-v13/macOS/requirements.txt",
+        # Hub launchers
+        "launchers/windows/run_oldcam_v13.bat",
+        "launchers/macos/run_oldcam_v13.command",
+        "launchers/run_oldcam_v13.bat",
+        "launchers/run_oldcam_v13.command",
+    ]
+    for rel in expected_files:
+        assert (ROOT / rel).exists(), f"Missing v13 standalone file: {rel}"
+
+    # Sanity: macOS .command must use LF endings only (else Bash chokes).
+    for cmd_rel in (
+        "oldcam-v13/macOS/oldcam.command",
+        "launchers/macos/run_oldcam_v13.command",
+        "launchers/run_oldcam_v13.command",
+    ):
+        data = (ROOT / cmd_rel).read_bytes()
+        assert b"\r\n" not in data, (
+            f"{cmd_rel} must use LF endings only (macOS bash rejects CRLF)"
+        )
+
+    # Sanity: Windows .bat must contain CRLF (cmd.exe garbles LF-only batches).
+    for bat_rel in (
+        "oldcam-v13/oldcam_launcher.bat",
+        "launchers/windows/run_oldcam_v13.bat",
+        "launchers/run_oldcam_v13.bat",
+    ):
+        data = (ROOT / bat_rel).read_bytes()
+        assert b"\r\n" in data, (
+            f"{bat_rel} must use CRLF endings (cmd.exe garbles LF-only .bat files)"
+        )

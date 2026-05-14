@@ -119,6 +119,24 @@ All notable changes to this project are documented here.
   instead of ~17. File log content is unchanged (everything still
   recorded at DEBUG level).
 
+- **`verbose_gui_mode` default flipped True → False** with a one-shot
+  migration in `_load_config._migrate_legacy_defaults`. Pre-v1.7 installs
+  shipped Verbose Mode ON, which dumped raw FFmpeg stderr, subprocess
+  path lines, and every demoted summary into the panel — even after the
+  v1.7 logging cleanup, existing users still saw the noisy stream because
+  their saved config explicitly carried the old True. The migration flips
+  legacy `True` → `False` exactly once (stamped via the
+  `verbose_gui_mode_migrated_v17` flag) so users who later opt INTO
+  verbose mode aren't overridden on subsequent boots. New regression test
+  `test_default_oldcam_version_is_v13_across_all_layers` asserts CLI / GUI
+  / launcher chains all agree on v13 across Windows + macOS; another test
+  asserts the verbose default + migration semantics.
+
+- **`Oldcam rerun increment target: <next-name>` line demoted to debug.**
+  Pure preview of the filename Oldcam is about to write; the
+  `Oldcam vN Finish applied: <name>` panel line ~10 s later shows the
+  actual file.
+
 - **In-app log panel decluttered (file log retains everything).** Added a
   `"debug"` level to `KlingGUIWindow._log()` that routes to the rotating
   file handler (`~/.kling-ui/kling_gui.log`) only — never to the user-facing
@@ -149,7 +167,7 @@ All notable changes to this project are documented here.
   with 12 tests covering `_summarize_ffmpeg_error` priority order,
   the canonical `-qp 0` cmd structure (no `-profile:v`, no `-tune`,
   no `-crf`), and the friendly-vs-debug stderr split on failure.
-  Total: **366 tests** all passing.
+  Total: **370 tests** all passing.
 - Updated existing tests for default-switch sites (5 files).
 
 ## 2026-05-14 (v1.6)

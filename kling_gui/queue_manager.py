@@ -780,7 +780,11 @@ class QueueManager:
                         temp_input = self._get_next_incremented_oldcam_input(source_video, versions_to_run)
                         run_input = temp_input
                         expected_output = self._build_oldcam_output_path(run_input, primary_version)
-                        self.log(f"Oldcam rerun increment target: {expected_output.name}", "info")
+                        # Structured event for the file log; the final
+                        # "Oldcam vN Finish applied: <name>" panel line a few
+                        # seconds later shows the user the actual produced
+                        # file, so this preview is verbose noise in the panel.
+                        self.log(f"Oldcam rerun increment target: {expected_output.name}", "debug")
 
                 self.log(
                     "Oldcam-only rerun: source="
