@@ -404,10 +404,15 @@ class ModernGUI(DnDCTk):
         score_frame.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 12))
         score_frame.grid_columnconfigure(0, weight=1)
 
+        # Cache the default score font so the error branch (which shrinks
+        # to mono(10) for the error message) can restore it on the next
+        # state transition. Without this, a single transient error would
+        # leave the score tiny for the rest of the session.
+        self._hero_score_default_font = theme.mono_font(size=30, weight="bold")
         self.hero_score = ctk.CTkLabel(
             score_frame,
             text="—",  # idle placeholder
-            font=theme.mono_font(size=30, weight="bold"),
+            font=self._hero_score_default_font,
             text_color=theme.TEXT_MUTE,
             height=36,
         )
@@ -453,34 +458,41 @@ class ModernGUI(DnDCTk):
           - "no_match": "✖" + NO MATCH (FAIL red) + score
           - "error":    "!" + ERROR (WARN amber) + tooltip with msg
         """
+        # Every non-error branch restores the default mono(30, bold) font so
+        # a prior error state's shrunken font doesn't carry over. Without
+        # this, one transient error would leave the score tiny for the rest
+        # of the session (codex P2 finding on PR #19).
+        default_font = self._hero_score_default_font
         if state == "idle":
             self.hero_icon.configure(text="—", text_color=theme.TEXT_MUTE)
             self.hero_headline.configure(text="R E A D Y", text_color=theme.TEXT_MUTE)
-            self.hero_score.configure(text="—", text_color=theme.TEXT_MUTE)
+            self.hero_score.configure(text="—", text_color=theme.TEXT_MUTE, font=default_font)
             self.hero_threshold_bar.set(0)
         elif state == "running":
             self.hero_icon.configure(text="…", text_color=theme.INFO)
             self.hero_headline.configure(text="C O M P U T I N G", text_color=theme.INFO)
-            self.hero_score.configure(text="—", text_color=theme.TEXT_MUTE)
+            self.hero_score.configure(text="—", text_color=theme.TEXT_MUTE, font=default_font)
             self.hero_threshold_bar.set(0)
         elif state == "match":
             self.hero_icon.configure(text="✓", text_color=theme.OK)
             self.hero_headline.configure(text="M A T C H", text_color=theme.OK)
             if score is not None:
-                self.hero_score.configure(text=f"{score:.1f}%", text_color=theme.OK)
+                self.hero_score.configure(text=f"{score:.1f}%", text_color=theme.OK, font=default_font)
                 self.hero_threshold_bar.configure(progress_color=theme.OK)
                 self.hero_threshold_bar.set(max(0.0, min(1.0, score / 100.0)))
         elif state == "no_match":
             self.hero_icon.configure(text="✖", text_color=theme.FAIL)
             self.hero_headline.configure(text="N O   M A T C H", text_color=theme.FAIL)
             if score is not None:
-                self.hero_score.configure(text=f"{score:.1f}%", text_color=theme.FAIL)
+                self.hero_score.configure(text=f"{score:.1f}%", text_color=theme.FAIL, font=default_font)
                 self.hero_threshold_bar.configure(progress_color=theme.FAIL)
                 self.hero_threshold_bar.set(max(0.0, min(1.0, score / 100.0)))
         elif state == "error":
             self.hero_icon.configure(text="!", text_color=theme.WARN)
             self.hero_headline.configure(text="E R R O R", text_color=theme.WARN)
             short = (error_msg or "")[:48]
+            # Smaller font here so the error message fits in the score slot
+            # without truncation. Restored on next non-error transition above.
             self.hero_score.configure(text=short, text_color=theme.WARN, font=theme.mono_font(size=10))
             self.hero_threshold_bar.set(0)
 
@@ -1083,12 +1095,15 @@ class ModernGUI(DnDCTk):
                 text = f"✓ REAL · {ModernGUI._format_conf_pct(pct)}"
                 color = theme.OK
             else:
-                # Engine says spoof — show (1 - real_conf) as the % spoof
-                # confidence (which is what the antispoof_score is internally
-                # when is_real=False).
+                # Engine says spoof. FAS is ADVISORY ONLY — render in amber
+                # with softened wording so it never visually overrides a
+                # passing similarity verdict (project rule confirmed by
+                # codex P1 + coderabbit on PR #19). Similarity is the gate;
+                # FAS is a heads-up. Strict spoof gating is opt-in via
+                # automation_similarity_require_fas_pass.
                 spoof_conf = (1.0 - real_conf) * 100
-                text = f"✖ SPOOF · {ModernGUI._format_conf_pct(spoof_conf)}"
-                color = theme.FAIL
+                text = f"⚠ POSSIBLE SPOOF · {ModernGUI._format_conf_pct(spoof_conf)}"
+                color = theme.WARN
         elif status == "no_face":
             text = "· no face"
             color = theme.TEXT_MUTE

@@ -123,10 +123,11 @@ class _CTkStub(_WidgetStub):
                 return
             self._after_queue = []
             for cb, args in queue:
-                try:
-                    cb(*args)
-                except Exception:
-                    pass
+                # Don't silence exceptions in tests — unhandled callback
+                # exceptions indicate real bugs that the test should fail on,
+                # not hide. (coderabbit Major finding on PR #19, also flagged
+                # by Ruff as S110 + BLE001.)
+                cb(*args)
 
     def mainloop(self):
         return None
@@ -594,6 +595,24 @@ class TestModernGUI(unittest.TestCase):
         self.assertEqual(app.hero_headline.text, "E R R O R")
         self.assertIn("model load failed", app.hero_score.text)
 
+    def test_hero_score_font_restored_after_error_to_match(self) -> None:
+        """Regression test for codex P2 finding on PR #19: prior to the fix,
+        a transient error left hero_score in a tiny mono(10) font, and that
+        small font carried over to all subsequent successful results because
+        the match/no_match/idle/running branches never reset it. After the
+        fix, every non-error transition explicitly restores the default font.
+        """
+        app = self.gui_module.ModernGUI()
+        # Capture the default font set during build.
+        default_font = app._hero_score_default_font
+        # Drive into error state — font is shrunk for the error message.
+        app._update_hero_verdict(state="error", error_msg="boom")
+        # Now transition back to a successful match — font must be restored.
+        app._update_hero_verdict(state="match", score=88.0)
+        self.assertEqual(app.hero_score.kwargs.get("font"), default_font)
+        # And the text + color reflect the match state, not the error.
+        self.assertEqual(app.hero_score.text, "88.0%")
+
     def test_per_image_fas_badge_real(self) -> None:
         # Engine says is_real=True with high real_conf → green REAL badge.
         app = self.gui_module.ModernGUI()
@@ -606,16 +625,23 @@ class TestModernGUI(unittest.TestCase):
 
     def test_per_image_fas_badge_spoof(self) -> None:
         # Engine says is_real=False with high real_conf=0.0001 (i.e., 99.99%
-        # confident SPOOF) → red SPOOF badge with the SPOOF confidence shown.
-        # This is the regression case for the Driver's License bug.
+        # confident SPOOF) → AMBER ADVISORY badge ("POSSIBLE SPOOF") with the
+        # SPOOF confidence shown. FAS is advisory only per project policy
+        # (codex P1 + coderabbit Major on PR #19): never hard-fail red, since
+        # the similarity verdict is the actual gate. This is the regression
+        # case for the Driver's License bug — the engine still detects it,
+        # the UI just doesn't claim authority over the comparison verdict.
+        from src import theme
         app = self.gui_module.ModernGUI()
         app._set_per_image_fas_badge(
             app.zone2_fas_label, is_real=False, real_conf=0.0001, status="ok",
         )
-        self.assertIn("SPOOF", app.zone2_fas_label.text)
+        self.assertIn("POSSIBLE SPOOF", app.zone2_fas_label.text)
         # 1 - 0.0001 = 0.9999 → 99.99% confident SPOOF
         self.assertIn("99.99%", app.zone2_fas_label.text)
-        self.assertIn("✖", app.zone2_fas_label.text)
+        self.assertIn("⚠", app.zone2_fas_label.text)
+        # Amber, not red — FAS is advisory.
+        self.assertEqual(app.zone2_fas_label.text_color, theme.WARN)
 
     def test_per_image_fas_badge_no_face(self) -> None:
         app = self.gui_module.ModernGUI()

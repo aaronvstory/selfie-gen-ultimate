@@ -601,10 +601,14 @@ class ImageCarousel(tk.Frame):
             )
             return
         if verdict == "fail":
-            # v4: red chip with definitive ✖ — fail is the engine's verdict
-            # ("is_real=False" + spoof_detected=True), not "we're unsure".
-            # Prior amber LIVE ? understated a definitive spoof signal.
-            text, fg, bg, border = "  LIVE ✖  ", "#FFFFFF", "#E5484D", "#7A1115"
+            # FAS is ADVISORY ONLY — keep the chip amber, never red. The
+            # similarity verdict is the actual gate; the chip says "heads-up,
+            # the liveness model flagged this side", not "this comparison
+            # failed". Reverted from v4's red chip after codex + coderabbit
+            # bot review on PR #19 reminded us of the project's advisory-only
+            # FAS policy. Use ⚠ glyph (not ?) so the signal is still clear
+            # without overstating it.
+            text, fg, bg, border = "  LIVE ⚠  ", "#3A2A00", "#FFC107", "#C99500"
         else:
             text, fg, bg, border = "  LIVE ✓  ", "#0B2A12", "#A6E3A1", "#5DB075"
         self.fas_label.config(
@@ -973,13 +977,24 @@ class ImageCarousel(tk.Frame):
         if verdict == "unavailable":
             return ""
         verdict_word = "PASS" if verdict == "pass" else "advisory"
-        ref_score = summary.get("ref_score")
-        tgt_score = summary.get("target_score")
+        # Use the engine-interpreted real_conf (already folds is_real into the
+        # score), NOT the raw antispoof_score — otherwise spoofs flagged with
+        # is_real=False, antispoof_score=0.99 log as "99% real" instead of
+        # "1% real" (coderabbit finding on PR #19, same class of bug as the
+        # standalone GUI had before the v4 engine fix). Fall back to raw
+        # ref_score only if real_conf is missing for some reason — keeps
+        # back-compat with any older diagnostics blocks.
+        ref_real_conf = summary.get("ref_real_conf")
+        tgt_real_conf = summary.get("target_real_conf")
+        if not isinstance(ref_real_conf, (int, float)):
+            ref_real_conf = summary.get("ref_score")
+        if not isinstance(tgt_real_conf, (int, float)):
+            tgt_real_conf = summary.get("target_score")
         score_bits = []
-        if isinstance(ref_score, (int, float)):
-            score_bits.append(f"ref={float(ref_score) * 100:.1f}% real")
-        if isinstance(tgt_score, (int, float)):
-            score_bits.append(f"target={float(tgt_score) * 100:.1f}% real")
+        if isinstance(ref_real_conf, (int, float)):
+            score_bits.append(f"ref={float(ref_real_conf) * 100:.1f}% real")
+        if isinstance(tgt_real_conf, (int, float)):
+            score_bits.append(f"target={float(tgt_real_conf) * 100:.1f}% real")
         if score_bits:
             return f"liveness={verdict_word} ({', '.join(score_bits)})"
         return f"liveness={verdict_word}"

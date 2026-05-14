@@ -1460,3 +1460,67 @@ def test_pipeline_oldcam_falls_back_to_existing_video_when_manifest_video_is_sta
     stats = runner.run([record])
     assert stats["completed"] == 1
     assert called["video"] == str(existing_video)
+
+
+def _make_runner_for_bool_test(automation_overrides: dict, tmp_path: Path) -> AutoPipelineRunner:
+    """Helper: build a minimal AutoPipelineRunner for direct _read_bool tests."""
+    config = merge_automation_defaults({
+        "falai_api_key": "x",
+        "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "prompt"},
+        "current_prompt_slot": 1,
+        **automation_overrides,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "manifest.json", tmp_path, {})
+    return AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+
+
+def test_read_bool_treats_string_false_as_false(tmp_path: Path):
+    """Coderabbit Major finding on PR #19: bool('false') is True in Python.
+    The prior bool(self.automation.get(...)) at automation/pipeline.py:663
+    would silently enable strict spoof gating whenever a user wrote "false"
+    (string) in their config — opposite of the intended behavior. _read_bool
+    routes through face_similarity._parse_bool to handle string inputs
+    correctly."""
+    runner = _make_runner_for_bool_test({
+        "automation_similarity_require_fas_pass": "false",
+    }, tmp_path)
+    assert runner._read_bool("automation_similarity_require_fas_pass", True) is False
+
+
+def test_read_bool_treats_string_true_as_true(tmp_path: Path):
+    runner = _make_runner_for_bool_test({
+        "automation_similarity_require_fas_pass": "true",
+    }, tmp_path)
+    assert runner._read_bool("automation_similarity_require_fas_pass", False) is True
+
+
+def test_read_bool_returns_default_for_unknown_string(tmp_path: Path):
+    runner = _make_runner_for_bool_test({
+        "automation_similarity_require_fas_pass": "garbage",
+    }, tmp_path)
+    # _parse_bool returns None for unparseable strings → fall back to default.
+    assert runner._read_bool("automation_similarity_require_fas_pass", True) is True
+    assert runner._read_bool("automation_similarity_require_fas_pass", False) is False
+
+
+def test_read_bool_passes_through_actual_booleans(tmp_path: Path):
+    runner = _make_runner_for_bool_test({
+        "automation_similarity_require_fas_pass": True,
+    }, tmp_path)
+    assert runner._read_bool("automation_similarity_require_fas_pass", False) is True
+
+    runner2 = _make_runner_for_bool_test({
+        "automation_similarity_require_fas_pass": False,
+    }, tmp_path)
+    assert runner2._read_bool("automation_similarity_require_fas_pass", True) is False

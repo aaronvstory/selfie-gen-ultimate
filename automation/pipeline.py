@@ -130,6 +130,22 @@ class AutoPipelineRunner:
             return default
         return value
 
+    def _read_bool(self, key: str, default: bool) -> bool:
+        """Read an automation_* config flag as a strict bool.
+
+        Reuses face_similarity._parse_bool (already the canonical helper for
+        config-string-to-bool coercion) so a JSON value of "false" is treated
+        as False, not True. Raw bool(...) on a non-empty string returns True
+        — that's the bug coderabbit flagged on PR #19 for
+        automation_similarity_require_fas_pass, which would have silently
+        enabled strict spoof gating whenever the user typed "false" in the
+        config file.
+        """
+        from face_similarity import _parse_bool
+        raw = self.automation.get(key, default)
+        parsed = _parse_bool(raw)
+        return parsed if parsed is not None else bool(default)
+
     def _report(self, message: str, level: str = "info") -> None:
         if self.progress_cb:
             self.progress_cb(message, level)
@@ -660,7 +676,7 @@ class AutoPipelineRunner:
         model_endpoints = list(self.automation.get("automation_selfie_models", ["fal-ai/nano-banana-2/edit"]))
         selfie_prompt_ctx = self.resolve_selfie_prompt()
         threshold = self._read_int("automation_similarity_threshold", 80)
-        require_fas_pass = bool(self.automation.get("automation_similarity_require_fas_pass", False))
+        require_fas_pass = self._read_bool("automation_similarity_require_fas_pass", False)
         max_attempts = max(1, self._read_int("automation_selfie_max_attempts_per_model", 1))
         self.logger.info(
             "case %s selfie config models=%s prompt_slot=%s prompt_source=%s threshold=%s",

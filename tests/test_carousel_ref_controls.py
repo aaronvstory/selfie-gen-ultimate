@@ -160,5 +160,60 @@ class CarouselRefControlsTests(unittest.TestCase):
         self.assertFalse(any("Added to carousel" in msg for msg in messages))
 
 
+class CarouselFasSummaryTests(unittest.TestCase):
+    """Coverage for ImageCarousel._fas_summary_from_diag — the Processing Log
+    string that summarizes liveness per side.
+
+    Regression test for coderabbit Major finding on PR #19: the prior
+    implementation read raw ref_score / target_score (the antispoof_score
+    whose meaning depends on is_real) and rendered them as "% real"
+    unconditionally — so a spoofed image with antispoof_score=0.99 logged
+    as "99% real". After the fix we use ref_real_conf / target_real_conf
+    which the engine has already inverted when needed.
+    """
+
+    def test_spoofed_side_logs_low_real_percentage(self):
+        diag = {"anti_spoofing": {
+            "ref": {
+                "status": "ok",
+                "spoof_detected": True,
+                "faces": [{"is_real": False, "antispoof_score": 0.99}],
+            },
+            "target": {
+                "status": "ok",
+                "spoof_detected": False,
+                "faces": [{"is_real": True, "antispoof_score": 0.97}],
+            },
+        }}
+        result = ImageCarousel._fas_summary_from_diag(diag)
+        # ref was 99% confident SPOOF → real_conf ≈ 0.01 → "1.0% real"
+        self.assertIn("ref=1.0% real", result)
+        # target was 97% confident REAL → real_conf ≈ 0.97 → "97.0% real"
+        self.assertIn("target=97.0% real", result)
+        self.assertIn("liveness=advisory", result)
+
+    def test_both_real_logs_high_real_percentages(self):
+        diag = {"anti_spoofing": {
+            "ref": {
+                "status": "ok",
+                "spoof_detected": False,
+                "faces": [{"is_real": True, "antispoof_score": 0.95}],
+            },
+            "target": {
+                "status": "ok",
+                "spoof_detected": False,
+                "faces": [{"is_real": True, "antispoof_score": 0.92}],
+            },
+        }}
+        result = ImageCarousel._fas_summary_from_diag(diag)
+        self.assertIn("ref=95.0% real", result)
+        self.assertIn("target=92.0% real", result)
+        self.assertIn("liveness=PASS", result)
+
+    def test_unavailable_returns_empty_string(self):
+        self.assertEqual(ImageCarousel._fas_summary_from_diag(None), "")
+        self.assertEqual(ImageCarousel._fas_summary_from_diag({}), "")
+
+
 if __name__ == "__main__":
     unittest.main()

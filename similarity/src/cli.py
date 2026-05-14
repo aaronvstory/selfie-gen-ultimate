@@ -42,9 +42,11 @@ def _format_fas_line(prefix: str, summary: dict, *, side: str) -> str:
     if status == "ok" and isinstance(is_real, bool) and isinstance(real_conf, (int, float)):
         rc = max(0.0, min(1.0, float(real_conf)))
         if is_real:
-            return f"  {prefix} [green bold]✓ REAL[/green bold]   {_format_conf_pct(rc * 100)} confidence"
+            return f"  {prefix} [green bold]✓ REAL[/green bold]            {_format_conf_pct(rc * 100)} confidence"
+        # FAS is advisory only — amber wording, not red hard-fail. Mirrors
+        # the standalone GUI badge after codex/coderabbit bot review on PR #19.
         spoof_conf = (1.0 - rc) * 100
-        return f"  {prefix} [red bold]✖ SPOOF[/red bold]  {_format_conf_pct(spoof_conf)} confidence"
+        return f"  {prefix} [yellow bold]⚠ POSSIBLE SPOOF[/yellow bold]  {_format_conf_pct(spoof_conf)} confidence"
     if status == "no_face":
         return f"  {prefix} [dim]· no face detected[/dim]"
     if status == "not_active":
