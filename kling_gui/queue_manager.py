@@ -714,8 +714,9 @@ class QueueManager:
                 # Mirror the normal queue's loop step (around line 985-988): if the
                 # user has Loop enabled, re-loop the source before Oldcam so the
                 # output is named ..._looped-oldcam-vN.mp4 and built on a fresh
-                # lossless loop intermediate (v1.7 looper uses -crf 0 -tune film
-                # -pix_fmt yuv420p; create_looped_video overwrites by default).
+                # lossless loop intermediate (v1.7 looper uses -qp 0 -preset slow
+                # -pix_fmt yuv420p — canonical libx264 lossless idiom;
+                # create_looped_video overwrites by default).
                 # Skip when the input is already a loop (stem ends in _looped) to
                 # avoid ..._looped_looped.mp4.
                 if config.get("loop_videos", False):

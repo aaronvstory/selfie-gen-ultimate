@@ -81,7 +81,7 @@ All notable changes to this project are documented here.
   larger than `-crf 0` but Oldcam re-encodes it immediately, so size of
   the throwaway intermediate is irrelevant.
 
-### Quality
+### Logging & UX
 
 - **Verbose Mode checkbox now properly gates panel verbosity.** The
   existing "Verbose Mode" checkbox in the config panel previously only

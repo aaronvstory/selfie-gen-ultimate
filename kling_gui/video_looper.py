@@ -32,7 +32,7 @@ def _summarize_ffmpeg_error(stderr: str) -> str:
         return "FFmpeg permission denied (close any program holding the file open)"
     if "conversion failed" in lower:
         return "FFmpeg conversion failed (see kling_gui.log for details)"
-    first_line = next((l.strip() for l in stderr.splitlines() if l.strip()), "")
+    first_line = next((line.strip() for line in stderr.splitlines() if line.strip()), "")
     if len(first_line) > 160:
         return first_line[:160] + "…"
     return first_line or "Unknown error (see kling_gui.log for details)"
