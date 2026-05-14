@@ -120,7 +120,10 @@ def test_pipeline_fas_strict_gate_routes_to_manual_review(tmp_path: Path, monkey
                 "mode": "normalized_crop",
                 "anti_spoofing": {
                     "ref": {"status": "ok", "spoof_detected": False, "faces": [{"is_real": True, "antispoof_score": 0.91}]},
-                    "target": {"status": "ok", "spoof_detected": True, "faces": [{"is_real": False, "antispoof_score": 0.12}]},
+                    # Realistic DeepFace shape: spoof verdicts come back with
+                    # HIGH confidence numbers, not low ones. The score is the
+                    # model's certainty in is_real, not real-ness.
+                    "target": {"status": "ok", "spoof_detected": True, "faces": [{"is_real": False, "antispoof_score": 0.99}]},
                 },
             },
         },
@@ -176,7 +179,7 @@ def test_pipeline_fas_log_only_does_not_block_when_require_fas_pass_false(tmp_pa
                 "mode": "normalized_crop",
                 "anti_spoofing": {
                     "ref": {"status": "ok", "spoof_detected": False, "faces": []},
-                    "target": {"status": "ok", "spoof_detected": True, "faces": [{"is_real": False, "antispoof_score": 0.10}]},
+                    "target": {"status": "ok", "spoof_detected": True, "faces": [{"is_real": False, "antispoof_score": 0.97}]},
                 },
             },
         },

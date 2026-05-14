@@ -92,7 +92,14 @@ def test_face_similarity_details_passes_through_spoof_warning_in_diagnostics():
                 "diagnostics": {
                     "mode": "normalized_crop",
                     "anti_spoofing": {
-                        "ref": {"status": "ok", "spoof_detected": True, "faces": [{"is_real": False, "antispoof_score": 0.11}]},
+                        # Realistic DeepFace shape: antispoof_score is the
+                        # model's CONFIDENCE in its is_real verdict, so spoofs
+                        # come back with HIGH scores (the model is highly
+                        # confident the face is fake), not low ones. The v3
+                        # fixture used 0.11 here, which doesn't match real
+                        # DeepFace output and would mask the score-inversion
+                        # bug from regression coverage.
+                        "ref": {"status": "ok", "spoof_detected": True, "faces": [{"is_real": False, "antispoof_score": 0.99}]},
                         "target": {"status": "ok", "spoof_detected": False, "faces": [{"is_real": True, "antispoof_score": 0.91}]},
                     },
                 },

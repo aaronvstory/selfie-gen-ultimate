@@ -432,13 +432,73 @@ class FaceEngine:
         return {"status": "ok", "spoof_detected": spoof_detected, "faces": records}
 
     @staticmethod
-    def _side_antispoof_score(side: Optional[Dict[str, Any]]) -> Optional[float]:
-        """Reduce a side's per-face antispoof_score list to a single number.
+    def _side_real_confidence(side: Optional[Dict[str, Any]]) -> Optional[float]:
+        """Reduce a side's per-face FAS records to a single real-confidence number on [0,1].
 
-        Uses the MIN across detected faces — i.e., the least-confidently-real
-        face on the image, which is the most informative value for "is this
-        image trustworthy?". Returns None if no scores are available.
+        DeepFace returns `{is_real: bool, antispoof_score: float}` per face,
+        where the score's MEANING flips with the boolean:
+          - is_real=True  -> score = confidence the face is REAL
+          - is_real=False -> score = confidence the face is a SPOOF
+
+        Renderers historically forwarded `antispoof_score` raw and rendered it
+        as "% real" unconditionally — which displayed a definitively-spoofed DL
+        (is_real=False, score=0.9999) as "99.99% real". This helper folds the
+        boolean into a single derived dimension `real_conf = score if is_real
+        else (1 - score)` so downstream code consumes one unambiguous number.
+
+        Returns the MIN real_conf across detected faces (the
+        least-confidently-real face is the most informative for "is this image
+        trustworthy?"). Returns None if no records are available.
+
+        Faces without an `is_real` key are skipped (they pre-date FAS being
+        active and would taint the min).
         """
+        if not isinstance(side, dict):
+            return None
+        faces = side.get("faces") or []
+        confs: List[float] = []
+        for face in faces:
+            if not isinstance(face, dict):
+                continue
+            score = face.get("antispoof_score")
+            is_real = face.get("is_real")
+            if not isinstance(score, (int, float)) or not isinstance(is_real, bool):
+                continue
+            real_conf = float(score) if is_real else (1.0 - float(score))
+            real_conf = max(0.0, min(1.0, real_conf))
+            confs.append(real_conf)
+        if not confs:
+            return None
+        return min(confs)
+
+    @staticmethod
+    def _side_is_real(side: Optional[Dict[str, Any]]) -> Optional[bool]:
+        """Return the side's overall is_real verdict.
+
+        If ANY face on the side was flagged is_real=False, the side is False
+        (spoof present). Otherwise True if at least one face was checked.
+        Returns None when no FAS records are available.
+        """
+        if not isinstance(side, dict):
+            return None
+        faces = side.get("faces") or []
+        any_checked = False
+        for face in faces:
+            if not isinstance(face, dict):
+                continue
+            is_real = face.get("is_real")
+            if not isinstance(is_real, bool):
+                continue
+            any_checked = True
+            if is_real is False:
+                return False
+        return True if any_checked else None
+
+    # Backward-compat alias — some external callers may still use the old name.
+    # Returns the raw antispoof_score (un-inverted), which is what the old
+    # behavior produced. New code should use _side_real_confidence instead.
+    @staticmethod
+    def _side_antispoof_score(side: Optional[Dict[str, Any]]) -> Optional[float]:
         if not isinstance(side, dict):
             return None
         faces = side.get("faces") or []
@@ -457,14 +517,19 @@ class FaceEngine:
     def summarize_fas_pair(diag: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Reduce per-side FAS records into a single, consistent UI verdict.
 
-        Returns {verdict, message, color_hint, ref_status, target_status,
-                 ref_score, target_score} where:
-          - verdict ∈ {"pass", "fail", "unavailable"}
-          - color_hint ∈ {"green", "amber", "muted"}
-          - message:   user-facing text (verdict line only)
+        Returns a dict with these fields:
+          - verdict: "pass" | "fail" | "unavailable"
+          - color_hint: "green" | "amber" | "muted"
+          - message: user-facing text (verdict line only)
           - ref_status / target_status: per-side status from _check_anti_spoofing
-          - ref_score / target_score: per-image antispoof_score (0.0–1.0, higher=more real)
-                                       or None when not available
+          - ref_real_conf / target_real_conf: float in [0,1], 1.0 = certainly
+            real, 0.0 = certainly spoof. ALREADY interpreted — renderers can
+            just multiply by 100 to get a "% real" number directly.
+          - ref_is_real / target_is_real: bool|None engine verdict per side
+            (None if unknown). Renderers should switch on this boolean to pick
+            "PASS (Real)" vs "FAIL (Spoof)" labels, NOT on score magnitude.
+          - ref_score / target_score: raw antispoof_score (back-compat). NOT
+            for display — its meaning depends on is_real. Use real_conf.
 
         Renderers (carousel chip, standalone GUI label, CLI Rich panel) should
         ALL go through this helper so the same input always produces the same
@@ -478,6 +543,10 @@ class FaceEngine:
             "target_status": "missing",
             "ref_score": None,
             "target_score": None,
+            "ref_real_conf": None,
+            "target_real_conf": None,
+            "ref_is_real": None,
+            "target_is_real": None,
         }
         if not isinstance(diag, dict):
             return muted
@@ -492,6 +561,10 @@ class FaceEngine:
         tgt_ok = tgt_status == "ok"
         ref_score = FaceEngine._side_antispoof_score(ref)
         tgt_score = FaceEngine._side_antispoof_score(tgt)
+        ref_real_conf = FaceEngine._side_real_confidence(ref)
+        tgt_real_conf = FaceEngine._side_real_confidence(tgt)
+        ref_is_real = FaceEngine._side_is_real(ref)
+        tgt_is_real = FaceEngine._side_is_real(tgt)
         # If EITHER side lacks ok-status FAS data, treat the whole verdict as
         # unavailable — never report a partial ref-only or target-only reading,
         # which is what was confusing the user.
@@ -509,6 +582,10 @@ class FaceEngine:
                 "target_status": tgt_status,
                 "ref_score": ref_score,
                 "target_score": tgt_score,
+                "ref_real_conf": ref_real_conf,
+                "target_real_conf": tgt_real_conf,
+                "ref_is_real": ref_is_real,
+                "target_is_real": tgt_is_real,
             }
         # Both sides have ok FAS data — render the verdict.
         ref_spoof = bool((ref or {}).get("spoof_detected"))
@@ -527,6 +604,10 @@ class FaceEngine:
                 "target_status": "ok",
                 "ref_score": ref_score,
                 "target_score": tgt_score,
+                "ref_real_conf": ref_real_conf,
+                "target_real_conf": tgt_real_conf,
+                "ref_is_real": ref_is_real,
+                "target_is_real": tgt_is_real,
             }
         return {
             "verdict": "pass",
@@ -536,6 +617,10 @@ class FaceEngine:
             "target_status": "ok",
             "ref_score": ref_score,
             "target_score": tgt_score,
+            "ref_real_conf": ref_real_conf,
+            "target_real_conf": tgt_real_conf,
+            "ref_is_real": ref_is_real,
+            "target_is_real": tgt_is_real,
         }
 
     def _score_from_distance(self, distance: float) -> Tuple[float, bool]:

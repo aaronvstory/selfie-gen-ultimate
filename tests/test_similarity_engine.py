@@ -403,6 +403,118 @@ class SimilarityEngineTests(unittest.TestCase):
             s = se.FaceEngine.summarize_fas_pair(diag)
             self.assertEqual(s["verdict"], "unavailable", f"failed on {diag!r}")
 
+    # ── Score-semantics regression coverage (v4 fix) ─────────────────────
+    # The DeepFace antispoof_score is the model's confidence in its is_real
+    # verdict, NOT real-ness. score=0.99 with is_real=False means "99% sure
+    # this is a SPOOF". Renderers used to display that as "99% real" — these
+    # tests lock the new derived `real_conf` field so that bug can never
+    # silently come back.
+
+    def test_summarize_fas_pair_real_conf_inverted_when_spoofed(self):
+        """is_real=False, antispoof_score=0.99 → real_conf must be ≈0.01,
+        is_real boolean must be False. This is the DL-detected-as-spoof case
+        that the v4 fix exists for.
+        """
+        diag = {"anti_spoofing": {
+            "ref": {
+                "status": "ok",
+                "spoof_detected": True,
+                "faces": [{"is_real": False, "antispoof_score": 0.99}],
+            },
+            "target": {
+                "status": "ok",
+                "spoof_detected": False,
+                "faces": [{"is_real": True, "antispoof_score": 0.97}],
+            },
+        }}
+        s = se.FaceEngine.summarize_fas_pair(diag)
+        self.assertEqual(s["verdict"], "fail")
+        self.assertIs(s["ref_is_real"], False)
+        self.assertIs(s["target_is_real"], True)
+        # ref was 99% confident SPOOF → real_conf ≈ 0.01
+        self.assertIsNotNone(s["ref_real_conf"])
+        self.assertLess(s["ref_real_conf"], 0.05)
+        # target was 97% confident REAL → real_conf ≈ 0.97
+        self.assertIsNotNone(s["target_real_conf"])
+        self.assertGreater(s["target_real_conf"], 0.95)
+
+    def test_summarize_fas_pair_real_conf_passthrough_when_real(self):
+        """is_real=True, antispoof_score=0.97 → real_conf should be ≈0.97
+        (passthrough), is_real boolean should be True."""
+        diag = {"anti_spoofing": {
+            "ref": {
+                "status": "ok",
+                "spoof_detected": False,
+                "faces": [{"is_real": True, "antispoof_score": 0.97}],
+            },
+            "target": {
+                "status": "ok",
+                "spoof_detected": False,
+                "faces": [{"is_real": True, "antispoof_score": 0.93}],
+            },
+        }}
+        s = se.FaceEngine.summarize_fas_pair(diag)
+        self.assertEqual(s["verdict"], "pass")
+        self.assertIs(s["ref_is_real"], True)
+        self.assertIs(s["target_is_real"], True)
+        self.assertAlmostEqual(s["ref_real_conf"], 0.97, places=2)
+        self.assertAlmostEqual(s["target_real_conf"], 0.93, places=2)
+
+    def test_summarize_fas_pair_includes_is_real_booleans(self):
+        """All four new keys must always be present in the returned dict, even
+        for unavailable verdicts — renderers should be able to read them
+        without KeyError."""
+        for diag in (None, {}, {"anti_spoofing": {}}):
+            s = se.FaceEngine.summarize_fas_pair(diag)
+            for key in ("ref_real_conf", "target_real_conf", "ref_is_real", "target_is_real"):
+                self.assertIn(key, s, f"missing {key} for diag={diag!r}")
+                self.assertIsNone(s[key], f"{key} should be None for diag={diag!r}")
+
+    def test_side_real_confidence_returns_min_across_faces(self):
+        """When multiple faces are present, the most pessimistic real_conf
+        wins (the least-confidently-real face is the most informative)."""
+        side = {
+            "status": "ok",
+            "faces": [
+                {"is_real": True, "antispoof_score": 0.99},   # real_conf=0.99
+                {"is_real": False, "antispoof_score": 0.80},  # real_conf=0.20
+                {"is_real": True, "antispoof_score": 0.95},   # real_conf=0.95
+            ],
+        }
+        # Min real_conf = 0.20 from the spoofed face.
+        self.assertAlmostEqual(se.FaceEngine._side_real_confidence(side), 0.20, places=3)
+
+    def test_side_real_confidence_skips_faces_without_is_real(self):
+        """Faces that lack the is_real key (FAS not run on them) must be
+        excluded from the min — otherwise their absence would taint the
+        confidence floor."""
+        side = {
+            "status": "ok",
+            "faces": [
+                {"antispoof_score": 0.50},  # no is_real → skipped
+                {"is_real": True, "antispoof_score": 0.85},  # real_conf=0.85
+            ],
+        }
+        self.assertAlmostEqual(se.FaceEngine._side_real_confidence(side), 0.85, places=3)
+
+    def test_side_is_real_any_spoof_returns_false(self):
+        side = {"faces": [
+            {"is_real": True, "antispoof_score": 0.95},
+            {"is_real": False, "antispoof_score": 0.99},
+        ]}
+        self.assertIs(se.FaceEngine._side_is_real(side), False)
+
+    def test_side_is_real_all_real_returns_true(self):
+        side = {"faces": [
+            {"is_real": True, "antispoof_score": 0.95},
+            {"is_real": True, "antispoof_score": 0.88},
+        ]}
+        self.assertIs(se.FaceEngine._side_is_real(side), True)
+
+    def test_side_is_real_no_records_returns_none(self):
+        self.assertIsNone(se.FaceEngine._side_is_real({"faces": []}))
+        self.assertIsNone(se.FaceEngine._side_is_real({"faces": [{"antispoof_score": 0.5}]}))
+
 
 if __name__ == "__main__":
     unittest.main()
