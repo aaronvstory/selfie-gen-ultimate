@@ -4,6 +4,16 @@ AI media generation toolkit for face cropping, portrait analysis, selfie generat
 
 ![Kling UI](kling_ui_preview.png)
 
+## What's New in v1.7
+
+- **Oldcam V13 "High-End Daylight"** is the new default across CLI, GUI, automation, and every launcher chain on Windows + macOS. No sensor noise, no auto-exposure walk, no ghosting, no MediaPipe dependency — pure optical / geometric hardware emulation tuned for flagship-phone-in-bright-sun footage. V12 remains available as an opt-in checkbox.
+- **Lossless ping-pong looper.** The intermediate `_looped.mp4` file is now encoded with `-qp 0 -preset slow -pix_fmt yuv420p` (canonical libx264 lossless idiom), so 100% of Kling's source detail survives into Oldcam. Fixed the `-profile:v high -crf 0` combination that crashed on strict libx264 builds with `Could not open encoder before EOF`.
+- **Re-Run honors the Loop checkbox.** Previously `rerun_oldcam_only()` ignored `loop_videos` and ran Oldcam directly on the un-looped source. It now re-loops first and overwrites any stale lossy `_looped.mp4`.
+- **Clean log panel by default; Verbose Mode for diagnostics.** The Settings checkbox now toggles the full diagnostic stream (raw FFmpeg stderr, subprocess path dumps, structured summaries) on/off. Off by default. File log (`~/.kling-ui/kling_gui.log`) always records everything.
+- **370 tests passing.** Cross-platform default-version regression guard locks v13 consistency across all layers.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full v1.7 entry.
+
 ## What It Does
 
 | Tab | Purpose |
