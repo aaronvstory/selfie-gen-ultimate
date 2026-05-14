@@ -43,7 +43,7 @@ except ImportError:
     _MEDIAPIPE_AVAILABLE = False
 
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
-ABERRATION_SCALE = 0.0015
+ABERRATION_SCALE = 0.0006  # V13 tuned value (matches process_frame); was 0.0015 in earlier versions
 TASK_MODEL_FILENAME = "face_landmarker.task"
 
 
@@ -642,7 +642,7 @@ def process_frame(
     image = apply_global_awb_drift(image, state, rng)
 
     # 4. Optics (no sensor noise — flagship phone in bright daylight is grain-free)
-    image = apply_radial_chromatic_aberration(image, scale=0.0006)
+    image = apply_radial_chromatic_aberration(image, scale=ABERRATION_SCALE)
 
     # 5. Vignette
     adjusted_vignette = state.get("adjusted_vignette_mask")
@@ -662,7 +662,9 @@ def naturalize_image(input_path: str, output_path: str, args: argparse.Namespace
     height, width = image.shape[:2]
     vignette_mask = create_vignette_mask(height, width)
     rng = np.random.default_rng()
-    state = {"fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32)}
+    # V13: fpn dropped — apply_modern_sensor_noise no longer called and --grain
+    # was removed from the parser, so reading args.grain would AttributeError.
+    state = {}
 
     try:
         # V12: lut param kept for signature compatibility with other versions but unused
@@ -753,8 +755,8 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
     rng = np.random.default_rng()
     _vignette_strength = getattr(args, "vignette_strength", 0.55)
     _adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * _vignette_strength)).astype(np.float32) if _vignette_strength > 0 else None
+    # V13: fpn dropped — apply_modern_sensor_noise no longer called.
     state = {
-        "fpn": rng.normal(0.0, args.grain * 1.2, (height, width, 3)).astype(np.float32),
         "adjusted_vignette_mask": _adjusted_vignette,
     }
 
@@ -828,8 +830,8 @@ def build_parser():
     parser.add_argument(
         "--ghosting",
         type=bounded_ghosting,
-        default=0.08,
-        help="Blend 0.0-0.5 of previous frame. Default: 0.08",
+        default=0.0,
+        help="Ignored in V13 (ghosting hardcoded to 0.0 for razor-sharp frames). Kept for CLI compatibility with other versions.",
     )
     return parser
 

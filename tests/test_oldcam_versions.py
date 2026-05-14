@@ -8,6 +8,7 @@ import types
 import sys
 
 import numpy as np
+import pytest
 
 from kling_gui.queue_manager import QueueItem, QueueManager
 
@@ -757,3 +758,39 @@ def test_v13_process_frame_skips_noise_and_ae_stepping():
 
     assert "noise" not in called, "V13 must not call apply_modern_sensor_noise (pristine daylight)"
     assert "ae" not in called, "V13 must not call apply_ae_stepping (stable daylight assumption)"
+
+
+def test_v13_naturalize_image_does_not_reference_args_grain(tmp_path):
+    """Regression test: removing --grain from V13 parser left args.grain reads in
+    naturalize_image / naturalize_video state init, which would AttributeError
+    when the CLI parser path (not test-mocked Namespace) was used. Caught by
+    Gemini on PR #18.
+
+    This test exercises the actual parser → naturalize_image path with a
+    tiny synthetic image to ensure no AttributeError.
+    """
+    import cv2
+    oldcam_v13 = load_module(ROOT / "oldcam-v13" / "oldcam.py", "oldcam_v13_cli_path")
+
+    # Build parser as the real CLI does, parse with only an input path
+    src_img = tmp_path / "tiny.png"
+    cv2.imwrite(str(src_img), np.full((16, 16, 3), 128, dtype=np.uint8))
+    out_img = tmp_path / "out.png"
+
+    parser = oldcam_v13.build_parser()
+    args = parser.parse_args([str(src_img)])
+
+    # If args.grain is read anywhere, this raises AttributeError.
+    # We're not asserting visual output, just that the call doesn't crash.
+    oldcam_v13.naturalize_image(str(src_img), str(out_img), args)
+    assert out_img.exists(), "V13 naturalize_image did not produce output"
+
+
+def test_v13_parser_does_not_expose_grain_arg():
+    """V13 parser must not accept --grain (it's dead in the daylight pipeline)."""
+    import argparse
+    oldcam_v13 = load_module(ROOT / "oldcam-v13" / "oldcam.py", "oldcam_v13_parser_check")
+    parser = oldcam_v13.build_parser()
+    with pytest.raises(SystemExit):
+        # argparse exits with non-zero on unknown args
+        parser.parse_args(["dummy.mp4", "--grain", "5"])
