@@ -83,6 +83,42 @@ All notable changes to this project are documented here.
 
 ### Quality
 
+- **Verbose Mode checkbox now properly gates panel verbosity.** The
+  existing "Verbose Mode" checkbox in the config panel previously only
+  controlled per-frame generator progress callbacks (a small slice of
+  logging). `KlingGUIWindow._log()` now consults `verbose_gui_mode`: when
+  OFF (default), `"debug"`-level emits stay out of the panel and go only
+  to `kling_gui.log`; when ON, the panel ALSO shows the debug stream
+  (raw FFmpeg stderr, subprocess path dumps, all the demoted duplicates
+  below) so power users can see everything without opening the log file.
+
+- **5 more panel duplicates removed/demoted to debug:**
+  - `video_looper.py`: dropped the second `Creating looped video: <name>`
+    line (queue_manager already prints a friendlier `Creating looped
+    video...` immediately before it) and demoted the `Running FFmpeg...`
+    beat to file-only.
+  - `queue_manager._loop_video`: the wrapper's basename-only
+    `Looped video saved: <name>` emit is now debug-level; the looper
+    itself already prints the user-facing `Looped video saved: <name>
+    (X.Y MB)` success line with file size.
+  - `queue_manager` Re-Run path: `Re-Run loop intermediate: <name>` is
+    now debug — the user just saw the looper's success line for the
+    same file one line above.
+  - `queue_manager._oldcam_video`: `Oldcam selected: running v13`
+    demoted to debug — the per-version `Applying Oldcam vN Finish...`
+    and `Oldcam vN Finish applied: <name>` panel pair already conveys
+    which version ran.
+  - `queue_manager._oldcam_video`: the success-summary line
+    `Oldcam summary: requested versions=...; succeeded versions=...;
+    primary output=<full path>` is now debug — `Oldcam vN Finish
+    applied: <name>` (already in the panel) plus `main_window`'s
+    final `Oldcam-only rerun complete: <src> → <output>` cover the
+    user-facing summary without the full-path noise.
+
+  Net effect: a Re-Run with Loop + V13 now produces ~9 panel lines
+  instead of ~17. File log content is unchanged (everything still
+  recorded at DEBUG level).
+
 - **In-app log panel decluttered (file log retains everything).** Added a
   `"debug"` level to `KlingGUIWindow._log()` that routes to the rotating
   file handler (`~/.kling-ui/kling_gui.log`) only — never to the user-facing
@@ -113,7 +149,7 @@ All notable changes to this project are documented here.
   with 12 tests covering `_summarize_ffmpeg_error` priority order,
   the canonical `-qp 0` cmd structure (no `-profile:v`, no `-tune`,
   no `-crf`), and the friendly-vs-debug stderr split on failure.
-  Total: **362 tests** all passing.
+  Total: **366 tests** all passing.
 - Updated existing tests for default-switch sites (5 files).
 
 ## 2026-05-14 (v1.6)

@@ -729,7 +729,10 @@ class QueueManager:
                         looped_path = self._loop_video(str(source_video), QueueItem(str(source_video)))
                         if looped_path:
                             source_video = Path(looped_path).resolve()
-                            self.log(f"Re-Run loop intermediate: {source_video.name}", "info")
+                            # "Looped video saved: <name> (X.Y MB)" already
+                            # told the user the loop succeeded; this is just
+                            # the structured event for the file log.
+                            self.log(f"Re-Run loop intermediate: {source_video.name}", "debug")
                         else:
                             self.log(
                                 "Re-Run: loop step failed; falling back to un-looped source",
@@ -1203,12 +1206,16 @@ class QueueManager:
             )
 
             if looped_path:
+                # Note: video_looper.create_looped_video already emits the
+                # user-facing "Looped video saved: <name> (X.Y MB)" success
+                # line via log_callback. Mirror it to the file log only so we
+                # have the structured event without duplicating the panel.
                 self.log(
-                    f"Looped video saved: {os.path.basename(looped_path)}", "success"
+                    f"Looped video saved: {os.path.basename(looped_path)}", "debug"
                 )
                 return looped_path
             else:
-                self.log(f"Failed to create looped video", "warning")
+                self.log("Failed to create looped video", "warning")
                 return None
 
         except ImportError:
@@ -1471,7 +1478,10 @@ class QueueManager:
         del item  # Reserved for future per-item status hooks
         try:
                 versions_to_run = self._get_oldcam_versions_to_run()
-                self.log("Oldcam selected: running " + ", ".join(versions_to_run), "info")
+                # The per-version "Applying Oldcam vN Finish..." line that
+                # follows shortly tells the user which version is running;
+                # this overview is a structured event for the file log only.
+                self.log("Oldcam selected: running " + ", ".join(versions_to_run), "debug")
                 outputs: List[Tuple[str, str]] = []
                 failures: List[Tuple[str, str]] = []
                 for version in versions_to_run:
@@ -1504,6 +1514,11 @@ class QueueManager:
                     "failed_versions": failures,
                     "primary_output": primary[1],
                 }
+                # Structured success summary for the file log. The user-facing
+                # panel already saw "Oldcam vN Finish applied: <name>" for each
+                # successful version, and main_window emits a final friendly
+                # "Oldcam-only rerun complete: <src> -> <output>" line; no
+                # need to duplicate the version list + full path here.
                 self.log(
                     "Oldcam summary: requested versions="
                     + ",".join(requested)
@@ -1513,7 +1528,7 @@ class QueueManager:
                     + ",".join(f"{version} ({reason})" for version, reason in failures)
                     + "; primary output="
                     + primary[1],
-                    "info",
+                    "debug",
                 )
                 return primary[1]
         except Exception as e:

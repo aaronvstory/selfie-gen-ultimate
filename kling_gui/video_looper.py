@@ -125,7 +125,10 @@ def create_looped_video(
         log(ffmpeg_msg, "error")
         return None
 
-    log(f"Creating looped video: {input_file.name}", "info")
+    # The caller (queue_manager._loop_video) already emits a friendly
+    # "Creating looped video..." line; include filename only in the file
+    # log to avoid a panel duplicate.
+    log(f"Creating looped video: {input_file.name}", "debug")
 
     # Build FFmpeg command
     # Filter: play forward, then reversed, concatenated
@@ -173,7 +176,9 @@ def create_looped_video(
     ]
 
     try:
-        log(f"Running FFmpeg...", "info")
+        # Step beat — file log only; the saved-file line a few seconds later
+        # gives the user the meaningful "done" signal.
+        log("Running FFmpeg...", "debug")
 
         # Run FFmpeg
         result = subprocess.run(

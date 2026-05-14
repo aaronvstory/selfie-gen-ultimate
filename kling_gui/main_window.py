@@ -2872,11 +2872,21 @@ class KlingGUIWindow:
         """Log a message to the log display.
 
         Levels:
-        - "info" / "success" / "warning" / "error": panel + file
-        - "debug": file only (skipped from the user-facing panel)
+        - "info" / "success" / "warning" / "error": always panel + file
+        - "debug": file only by default; ALSO shown in panel when the user
+          has enabled "Verbose Mode" (config["verbose_gui_mode"] == True).
+
+        The Verbose Mode checkbox lives in the Settings/Logging section of
+        the config panel and lets power users see the full diagnostic
+        stream (raw FFmpeg stderr, subprocess path dumps, demoted summary
+        duplicates) without having to open kling_gui.log.
         """
-        if level != "debug" and hasattr(self, "log_display"):
-            self.log_display.log(message, level)
+        show_in_panel = level != "debug" or bool(self.config.get("verbose_gui_mode", False))
+        if show_in_panel and hasattr(self, "log_display"):
+            # Render debug lines with the "info" tag in the panel so they
+            # stay legible (the panel's "debug" tag would otherwise be
+            # undefined; "info" is the neutral default).
+            self.log_display.log(message, "info" if level == "debug" else level)
         if self.logger:
             level_map = {
                 "info": self.logger.info,

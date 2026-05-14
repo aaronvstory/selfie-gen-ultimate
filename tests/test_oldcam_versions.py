@@ -1079,3 +1079,153 @@ def test_rerun_oldcam_summary_demoted_to_debug_level(tmp_path):
             f"Basename-only 'rerun complete' must be debug; main_window emits "
             f"the user-facing arrow form. Got level={level!r} for: {message}"
         )
+
+
+def test_oldcam_summary_and_selected_lines_demoted_to_debug(tmp_path):
+    """Inside _oldcam_video the structured 'Oldcam selected: running ...'
+    and 'Oldcam summary:' lines are now debug-level to avoid duplicating
+    the per-version 'Oldcam vN Finish applied: ...' panel messages."""
+    source = tmp_path / "clip_looped.mp4"
+    source.write_bytes(b"video")
+
+    manager, logs = make_queue_manager(
+        {
+            "oldcam_version": "v13",
+            "allow_reprocess": True,
+            "reprocess_mode": "overwrite",
+        }
+    )
+
+    # Stub _run_oldcam_version so _oldcam_video runs end-to-end without
+    # spawning a real Oldcam subprocess.
+    def _fake_run(_path, version):
+        produced = manager._build_oldcam_output_path(Path(_path), version)
+        produced.write_bytes(b"done")
+        return str(produced)
+
+    with mock.patch.object(manager, "_run_oldcam_version", side_effect=_fake_run):
+        result = manager._oldcam_video(str(source), QueueItem(str(source)))
+
+    assert result is not None and result.endswith(".mp4")
+
+    # "Oldcam selected: running v13" -> must be debug now.
+    selected_logs = [
+        (msg, lvl) for msg, lvl in logs if msg.startswith("Oldcam selected: running")
+    ]
+    assert selected_logs, "Expected at least one 'Oldcam selected: running' emit"
+    for msg, lvl in selected_logs:
+        assert lvl == "debug", (
+            f"'Oldcam selected: running ...' must be debug (file-only); the "
+            f"per-version 'Applying' / 'Finish applied' lines convey the same "
+            f"info to the panel. Got level={lvl!r} for: {msg}"
+        )
+
+    # "Oldcam summary: ..." -> must also be debug (the success summary).
+    summary_logs = [
+        (msg, lvl) for msg, lvl in logs if msg.startswith("Oldcam summary: requested versions=")
+    ]
+    assert summary_logs, "Expected at least one 'Oldcam summary:' emit"
+    for msg, lvl in summary_logs:
+        assert lvl == "debug", (
+            f"'Oldcam summary:' must be debug (file-only); per-version 'Finish "
+            f"applied' lines + main_window's final 'rerun complete' arrow line "
+            f"cover the user-facing summary. Got level={lvl!r} for: {msg}"
+        )
+
+
+def test_loop_video_wrapper_emits_saved_line_at_debug_level(tmp_path):
+    """QueueManager._loop_video should NOT duplicate the looper's
+    'Looped video saved: <name> (X.Y MB)' panel success line; its own
+    basename-only 'Looped video saved: <name>' emit must be debug."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, logs = make_queue_manager({"loop_videos": True})
+
+    # Mock the looper to return a sentinel path without invoking ffmpeg.
+    fake_looped = tmp_path / "clip_looped.mp4"
+    fake_looped.write_bytes(b"loop-output")
+
+    with mock.patch(
+        "kling_gui.video_looper.create_looped_video",
+        return_value=str(fake_looped),
+    ):
+        result = manager._loop_video(str(source), QueueItem(str(source)))
+
+    assert result == str(fake_looped)
+
+    saved_logs = [
+        (msg, lvl) for msg, lvl in logs if msg.startswith("Looped video saved:")
+    ]
+    # The wrapper emits its own "Looped video saved: <name>" event; verify
+    # the wrapper's emit is debug-level (file only). The looper itself
+    # emits the panel-facing success line with file size and is not under
+    # test here.
+    assert saved_logs, "Expected the wrapper to emit a 'Looped video saved' event"
+    for msg, lvl in saved_logs:
+        assert lvl == "debug", (
+            f"Wrapper's 'Looped video saved: <name>' must be debug to avoid "
+            f"duplicating the looper's '... (X.Y MB)' panel success line. "
+            f"Got level={lvl!r} for: {msg}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Verbose Mode checkbox: when enabled, "debug" lines also appear in the panel.
+# ---------------------------------------------------------------------------
+
+
+def test_verbose_mode_routing_logic_present_in_log_method():
+    """`KlingGUIWindow._log` must read `verbose_gui_mode` from config when
+    deciding whether to surface a 'debug' line in the panel."""
+    from kling_gui.main_window import KlingGUIWindow
+    import inspect
+
+    src = inspect.getsource(KlingGUIWindow._log)
+
+    # The method must consult the verbose_gui_mode config to decide whether
+    # to render debug emits in the panel.
+    assert "verbose_gui_mode" in src, (
+        "_log must read config['verbose_gui_mode'] to decide whether to "
+        "show debug-level lines in the panel"
+    )
+    # The default path (verbose OFF) must still suppress debug from the panel.
+    assert 'level != "debug"' in src or "level == \"debug\"" in src, (
+        "_log must explicitly branch on level == 'debug' so the panel is "
+        "clean when Verbose Mode is off"
+    )
+    # debug must still reach the file logger via logger.debug.
+    assert "logger.debug" in src, "debug-level emits must still go to logger.debug for the file log"
+
+
+def test_verbose_mode_panel_routing_simulated():
+    """Simulate the _log routing logic (without booting Tkinter) and verify:
+    - verbose OFF: debug lines skip the panel, info lines show
+    - verbose ON: both debug and info show in the panel
+    File logger always sees both, regardless of verbose setting.
+    """
+    panel_log: list = []
+    file_log: list = []
+
+    def simulate_log(message: str, level: str, *, verbose_gui_mode: bool):
+        # Mirror the production routing in KlingGUIWindow._log.
+        show_in_panel = level != "debug" or verbose_gui_mode
+        if show_in_panel:
+            panel_log.append((message, "info" if level == "debug" else level))
+        # File logger always sees the line.
+        file_log.append((message, level))
+
+    # Default (verbose OFF)
+    simulate_log("user-facing info", "info", verbose_gui_mode=False)
+    simulate_log("verbose debug detail", "debug", verbose_gui_mode=False)
+    assert ("user-facing info", "info") in panel_log
+    assert all(m != "verbose debug detail" for m, _ in panel_log)
+    assert ("verbose debug detail", "debug") in file_log
+
+    # Verbose ON
+    panel_log.clear()
+    simulate_log("user-facing info 2", "info", verbose_gui_mode=True)
+    simulate_log("verbose debug detail 2", "debug", verbose_gui_mode=True)
+    assert ("user-facing info 2", "info") in panel_log
+    # debug emit becomes panel-visible but rendered with the "info" tag.
+    assert ("verbose debug detail 2", "info") in panel_log
