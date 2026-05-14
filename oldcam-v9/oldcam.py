@@ -547,7 +547,12 @@ def apply_soft_background_texture(image, focus_mask, strength=0.08):
     small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
     restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
     blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
-    out = (image.astype(np.float32) * tight_mask + blended_bg.astype(np.float32) * inverse_mask)
+    # Explicit .astype(np.float32) on image/blended_bg is redundant — tight_mask
+    # is already float32 (focus_mask is float32 from full_face_mask construction
+    # in get_dynamic_region_masks), so NumPy auto-promotes uint8 * float32 →
+    # float32. Saves two unnecessary intermediate allocations per frame
+    # (gemini-code-assist nit on PR #20).
+    out = image * tight_mask + blended_bg * inverse_mask
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
