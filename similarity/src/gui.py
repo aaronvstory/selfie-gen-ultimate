@@ -45,10 +45,18 @@ class ModernGUI(DnDCTk):
         self.img2_path: Optional[str] = None
         self.extraction_src_path: Optional[str] = None
         self.extraction_out_path: Optional[str] = None
+        # Cached face bboxes from the most recent comparison — drives the
+        # "Show face detection boxes" overlay toggle without re-running compare.
+        self._last_ref_bbox: Optional[dict] = None
+        self._last_target_bbox: Optional[dict] = None
 
         self.title("Face Similarity Pro")
-        self.geometry("900x680")
-        self.minsize(780, 620)
+        # Bumped from 900x680 in v1.8 follow-up: input images were getting
+        # vertically clipped at the previous size before the user could see
+        # the controls below. 920x880 fits two 250x250 image zones + controls
+        # + result label + per-image FAS line + comfortable padding.
+        self.geometry("920x880")
+        self.minsize(820, 800)
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
@@ -73,6 +81,9 @@ class ModernGUI(DnDCTk):
         self.set_ui_state("disabled")
         self.sim_result_label.configure(text="Initializing ML Models... Please wait.", text_color="yellow")
         self.ext_result_label.configure(text="Initializing ML Models... Please wait.", text_color="yellow")
+        # Switch sim_progressbar to indeterminate mode for the startup pulse
+        # (it goes back to determinate when a comparison starts).
+        self.sim_progressbar.configure(mode="indeterminate")
         self.sim_progressbar.grid()
         self.ext_progressbar.grid()
         self.sim_progressbar.start()
@@ -170,19 +181,50 @@ class ModernGUI(DnDCTk):
         )
         self.anti_spoof_checkbox.grid(row=0, column=0, pady=(4, 6))
 
+        # Show face boxes overlay toggle. OFF by default — opt-in diagnostic.
+        # Pure UI redraw on toggle, no recompute. Reads cached bboxes from the
+        # last comparison's diagnostics (saved on _on_comparison_complete).
+        self.show_face_box_var = tk.BooleanVar(value=False)
+        self.show_face_box_checkbox = ctk.CTkCheckBox(
+            self.sim_controls,
+            text="Show face detection boxes",
+            variable=self.show_face_box_var,
+            onvalue=True,
+            offvalue=False,
+            command=self._on_show_face_box_toggle,
+        )
+        self.show_face_box_checkbox.grid(row=0, column=1, padx=(20, 0), pady=(4, 6))
+        self.sim_controls.grid_columnconfigure(1, weight=1)
+
         self.btn_run = ctk.CTkButton(
             self.sim_controls,
             text="Run Similarity Comparison",
             font=ctk.CTkFont(size=16, weight="bold"),
             command=self.start_comparison,
-            height=40,
+            height=44,
+            corner_radius=10,
         )
-        self.btn_run.grid(row=1, column=0, pady=8)
+        self.btn_run.grid(row=1, column=0, columnspan=2, pady=(8, 4))
 
-        self.sim_progressbar = ctk.CTkProgressBar(self.sim_controls, mode="indeterminate")
-        self.sim_progressbar.grid(row=2, column=0, pady=(0, 10), sticky="ew")
+        # Determinate progress bar — drives 0-100% from a phase-milestone timer
+        # while the comparison thread runs. Snaps to 100% when the thread returns.
+        self.sim_progressbar = ctk.CTkProgressBar(
+            self.sim_controls, mode="determinate", height=10, corner_radius=5
+        )
+        self.sim_progressbar.grid(row=2, column=0, columnspan=2, pady=(8, 2), sticky="ew", padx=20)
         self.sim_progressbar.set(0)
         self.sim_progressbar.grid_remove()
+
+        # Live transient status text — updated from the phase-milestone timer.
+        # "Detecting faces (RetinaFace)... 25%"
+        self.sim_status_label = ctk.CTkLabel(
+            self.sim_controls,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color="#9DA3AE",
+        )
+        self.sim_status_label.grid(row=3, column=0, columnspan=2, pady=(0, 6))
+        self.sim_status_label.grid_remove()
 
         self.sim_result_label = ctk.CTkLabel(
             self.sim_controls,
@@ -190,7 +232,7 @@ class ModernGUI(DnDCTk):
             font=ctk.CTkFont(size=18),
             wraplength=760,
         )
-        self.sim_result_label.grid(row=3, column=0)
+        self.sim_result_label.grid(row=4, column=0, columnspan=2, pady=(8, 0))
 
         self.fas_result_label = ctk.CTkLabel(
             self.sim_controls,
@@ -198,7 +240,7 @@ class ModernGUI(DnDCTk):
             font=ctk.CTkFont(size=14, weight="bold"),
             wraplength=760,
         )
-        self.fas_result_label.grid(row=4, column=0, pady=(4, 0))
+        self.fas_result_label.grid(row=5, column=0, columnspan=2, pady=(4, 0))
 
     def _build_extraction_tab(self):
         self.extraction_tab.grid_columnconfigure(0, weight=1)
@@ -322,10 +364,12 @@ class ModernGUI(DnDCTk):
     def _clear_similarity_image_zone(self, zone: int):
         if zone == 1:
             self.img1_path = None
+            self._last_ref_bbox = None
             self.img1_display.configure(image=None, text="No Image Selected")
             self.img1_display.image = None
             return
         self.img2_path = None
+        self._last_target_bbox = None
         self.img2_display.configure(image=None, text="No Image Selected")
         self.img2_display.image = None
 
@@ -502,6 +546,20 @@ class ModernGUI(DnDCTk):
 
         self._load_extraction_source_image(file_path)
 
+    # Phase milestones for the determinate progress bar — chosen so the bar moves
+    # at roughly the rate the underlying DeepFace pipeline finishes each step.
+    # (Pure UX — the engine doesn't emit progress events; this is a believable
+    # cadence that matches typical 600ms-1.5s comparison durations.)
+    _PROGRESS_PHASES = [
+        (0.05, "Loading models…"),
+        (0.15, "Detecting faces (RetinaFace)…"),
+        (0.30, "Cropping & aligning…"),
+        (0.50, "Computing ArcFace embedding…"),
+        (0.70, "Computing Facenet512 embedding (ensemble)…"),
+        (0.85, "Anti-spoof liveness check…"),
+        (0.95, "Computing similarity score…"),
+    ]
+
     def start_comparison(self):
         if not self.img1_path or not self.img2_path:
             self.sim_result_label.configure(
@@ -511,15 +569,62 @@ class ModernGUI(DnDCTk):
             return
 
         self.set_ui_state("disabled")
-        self.sim_result_label.configure(text="Processing... Detecting and comparing faces...", text_color="cyan")
+        # Clear previous result lines so the user sees only fresh in-progress UI.
+        self.sim_result_label.configure(text="", text_color="white")
+        self.fas_result_label.configure(text="", text_color="#888888")
+        # Stop any leftover indeterminate animation (from startup) and switch
+        # to determinate mode for the phase-milestone driver.
+        try:
+            self.sim_progressbar.stop()
+        except Exception:
+            pass
+        self.sim_progressbar.configure(mode="determinate")
         self.sim_progressbar.grid()
-        self.sim_progressbar.start()
+        self.sim_progressbar.set(0)
+        self.sim_status_label.grid()
+        self.sim_status_label.configure(text="Starting…  0%", text_color="#9DA3AE")
+        # Phase-milestone driver state.
+        self._progress_done = False
+        self._progress_phase_idx = 0
+        # Kick off the milestone timer; advances the bar smoothly through phases
+        # while the comparison thread runs. Cancelled when the result lands.
+        self.after(60, self._tick_progress)
 
         threading.Thread(
             target=self._compare_thread,
             args=(self.img1_path, self.img2_path),
             daemon=True,
         ).start()
+
+    def _tick_progress(self):
+        """Advance the determinate progress bar through phase milestones.
+
+        Pure UX — runs entirely on the Tk thread. Phase pacing is calibrated
+        for typical 600ms–1.5s comparison runs; if the real comparison
+        finishes faster (cached models) or slower (cold start), the bar
+        either jumps to 100% (fast path) or holds at 95% (slow path) until
+        _on_comparison_complete snaps it home.
+        """
+        if self._progress_done:
+            return
+        target_pct, label = self._PROGRESS_PHASES[
+            min(self._progress_phase_idx, len(self._PROGRESS_PHASES) - 1)
+        ]
+        # Smoothly walk the bar toward the next phase target so the motion is
+        # visually pleasant rather than steppy.
+        try:
+            current = float(self.sim_progressbar.get())
+        except Exception:
+            current = 0.0
+        if current < target_pct:
+            current = min(target_pct, current + 0.015)
+            self.sim_progressbar.set(current)
+            self.sim_status_label.configure(text=f"{label}  {int(current * 100)}%")
+        else:
+            # Reached this phase's milestone — advance to next on the next tick.
+            if self._progress_phase_idx < len(self._PROGRESS_PHASES) - 1:
+                self._progress_phase_idx += 1
+        self.after(60, self._tick_progress)
 
     def _compare_thread(self, path1: str, path2: str):
         try:
@@ -530,9 +635,27 @@ class ModernGUI(DnDCTk):
         self.after(0, self._on_comparison_complete, result)
 
     def _on_comparison_complete(self, result: dict):
-        self.sim_progressbar.stop()
-        self.sim_progressbar.grid_remove()
+        # Halt the phase-milestone timer and snap the bar to 100% so the user
+        # gets a definitive "done" beat before the bar fades.
+        self._progress_done = True
+        self.sim_progressbar.set(1.0)
+        if result.get("error"):
+            self.sim_status_label.configure(text="Failed", text_color="#FF4444")
+        else:
+            self.sim_status_label.configure(text="Done  100%", text_color="#5DB075")
+        # Remove the bar + status after a short beat so the result reads cleanly.
+        self.after(450, self._hide_progress_ui)
         self.set_ui_state("normal")
+
+        # Cache per-side bboxes from this comparison so the "Show face boxes"
+        # toggle can re-render the displayed images without re-running compare.
+        diag = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
+        boxes = (diag or {}).get("selected_face_boxes") or {}
+        self._last_ref_bbox = boxes.get("ref") if isinstance(boxes, dict) else None
+        self._last_target_bbox = boxes.get("target") if isinstance(boxes, dict) else None
+        # If the toggle is currently on, redraw both images with the new bboxes.
+        if self.show_face_box_var.get():
+            self._redraw_images_with_bbox()
 
         if result.get("error"):
             self.sim_result_label.configure(text=f"Error: {result['error']}", text_color="red")
@@ -559,6 +682,77 @@ class ModernGUI(DnDCTk):
         )
         self.sim_result_label.configure(text=output_msg, text_color=color)
         self._render_fas(result)
+
+    def _hide_progress_ui(self):
+        """Hide the progress bar + status label after a comparison completes."""
+        try:
+            self.sim_progressbar.grid_remove()
+            self.sim_status_label.grid_remove()
+        except Exception:
+            pass
+
+    def _on_show_face_box_toggle(self):
+        """Toggle the face-bbox overlay on both image displays. Pure UI redraw."""
+        if self.show_face_box_var.get():
+            self._redraw_images_with_bbox()
+        else:
+            # Toggle OFF — reload the original images without overlay.
+            if getattr(self, "img1_path", None):
+                self._refresh_similarity_image(1, draw_bbox=False)
+            if getattr(self, "img2_path", None):
+                self._refresh_similarity_image(2, draw_bbox=False)
+
+    def _redraw_images_with_bbox(self):
+        """Re-render both image zones with their cached face bboxes overlaid."""
+        if getattr(self, "img1_path", None):
+            self._refresh_similarity_image(1, draw_bbox=True)
+        if getattr(self, "img2_path", None):
+            self._refresh_similarity_image(2, draw_bbox=True)
+
+    def _refresh_similarity_image(self, zone: int, *, draw_bbox: bool):
+        """Reload a zone's image, optionally overlaying its cached face bbox."""
+        path = self.img1_path if zone == 1 else self.img2_path
+        bbox = self._last_ref_bbox if zone == 1 else self._last_target_bbox
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            with Image.open(path) as opened:
+                img = opened.copy()
+            if draw_bbox and isinstance(bbox, dict):
+                img = self._overlay_face_bbox(img, bbox)
+            ctk_image = self._build_preview_image(
+                img, max_width=SIMILARITY_PREVIEW_MAX_SIZE[0], max_height=SIMILARITY_PREVIEW_MAX_SIZE[1]
+            )
+            display = self.img1_display if zone == 1 else self.img2_display
+            display.configure(image=ctk_image, text="")
+            display.image = ctk_image
+        except Exception as exc:
+            logging.exception("Failed to refresh image with bbox overlay: %s", exc)
+
+    @staticmethod
+    def _overlay_face_bbox(img: Image.Image, bbox: dict) -> Image.Image:
+        """Return a copy of `img` with a green rectangle drawn at `bbox`.
+
+        bbox = {"x", "y", "w", "h"} in original-image coordinates (the same
+        coordinate space DeepFace returned). Draws a 3px green outline that's
+        proportionate to image size so it stays visible at any preview scale.
+        """
+        from PIL import ImageDraw
+        try:
+            x = int(bbox.get("x", 0))
+            y = int(bbox.get("y", 0))
+            w = int(bbox.get("w", 0))
+            h = int(bbox.get("h", 0))
+        except (TypeError, ValueError):
+            return img
+        if w <= 0 or h <= 0:
+            return img
+        out = img.copy().convert("RGB")
+        draw = ImageDraw.Draw(out)
+        # Stroke width scales with image size so the box is visible at preview scale.
+        stroke = max(2, int(min(out.width, out.height) * 0.005))
+        draw.rectangle((x, y, x + w, y + h), outline=(93, 176, 117), width=stroke)
+        return out
 
     def _render_fas(self, result: dict):
         """Render the LIVENESS check from a comparison result diagnostics block.

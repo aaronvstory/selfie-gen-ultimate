@@ -137,6 +137,10 @@ class ImageCarousel(tk.Frame):
         self._sim_busy: bool = False
         self._auto_var = tk.BooleanVar(value=True)
         self._anti_spoof_var = tk.BooleanVar(value=True)
+        # Show/hide green face-bounding-box overlay on the active carousel image.
+        # OFF by default — opt-in so the carousel stays clean for users who don't
+        # need the diagnostic.
+        self._show_face_box_var = tk.BooleanVar(value=False)
         self._last_known_count: int = 0
         self._suppress_auto_calc: bool = False
 
@@ -330,6 +334,24 @@ class ImageCarousel(tk.Frame):
             padx=2,
         )
         self._anti_spoof_chk.pack(side=tk.RIGHT, padx=(12, 6))
+
+        # Toggle: overlay a green rectangle on the active carousel image showing
+        # the face bbox the engine matched against. Pure UI — no recompute on
+        # toggle, just redraws the active panel from cached entry.face_bbox.
+        self._show_face_box_chk = tk.Checkbutton(
+            sim_row,
+            text="Boxes",
+            variable=self._show_face_box_var,
+            command=self._on_show_face_box_toggle,
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["text_light"],
+            padx=2,
+        )
+        self._show_face_box_chk.pack(side=tk.RIGHT, padx=(0, 6))
 
         # Metadata row (resolution + filesize on left, similarity on right)
         self.meta_frame = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
@@ -597,7 +619,13 @@ class ImageCarousel(tk.Frame):
     # ── Image rendering helper ──────────────────────────────────────
 
     def _show_image_on_canvas(self, canvas: tk.Canvas, path: str, attr_name: str):
-        """Load and display an image on a canvas, aspect-fitted with EXIF + rotation."""
+        """Load and display an image on a canvas, aspect-fitted with EXIF + rotation.
+
+        When the 'Boxes' toggle is on, also draws a green rectangle around the
+        face the engine selected for similarity scoring (read from the cached
+        entry.face_bbox). The bbox is in original image coordinates so we
+        scale by the same ratio used for the image fit.
+        """
         try:
             from PIL import Image, ImageTk, ImageOps
 
@@ -617,6 +645,8 @@ class ImageCarousel(tk.Frame):
             cw = max(1, canvas.winfo_width() - 4)
             ch = max(1, canvas.winfo_height() - 4)
 
+            # `ratio` is computed against the (post-EXIF, post-rotation) image
+            # dimensions, which is also the coordinate space DeepFace's bbox is in.
             ratio = min(cw / img.width, ch / img.height)
             new_w = max(1, int(img.width * ratio))
             new_h = max(1, int(img.height * ratio))
@@ -624,9 +654,47 @@ class ImageCarousel(tk.Frame):
 
             photo = ImageTk.PhotoImage(img, master=canvas)
             setattr(self, attr_name, photo)
-            canvas.create_image(
-                cw // 2 + 2, ch // 2 + 2, image=photo, anchor=tk.CENTER
-            )
+            cx, cy = cw // 2 + 2, ch // 2 + 2
+            canvas.create_image(cx, cy, image=photo, anchor=tk.CENTER)
+
+            # Draw face bbox overlay if toggle is on AND we have a cached bbox.
+            # NOTE: bbox is in pre-rotation, post-EXIF coordinates from DeepFace.
+            # When the user has applied a manual rotation we skip the overlay
+            # (would need full rotation math) — better to be silent than show
+            # a misaligned box.
+            # Guard against test stubs that bypass _build_panel and don't have the var.
+            show_box_var = getattr(self, "_show_face_box_var", None)
+            if show_box_var is not None and show_box_var.get() and entry and not entry.rotation:
+                bbox = getattr(entry, "face_bbox", None)
+                if isinstance(bbox, dict):
+                    try:
+                        bx = int(bbox.get("x", 0))
+                        by = int(bbox.get("y", 0))
+                        bw = int(bbox.get("w", 0))
+                        bh = int(bbox.get("h", 0))
+                    except (TypeError, ValueError):
+                        bx = by = bw = bh = 0
+                    if bw > 0 and bh > 0:
+                        # Project original-image coords into on-canvas coords.
+                        # The PIL image was placed CENTER-anchored at (cx, cy)
+                        # with dimensions (new_w, new_h), so its top-left corner
+                        # on the canvas is (cx - new_w/2, cy - new_h/2).
+                        img_left = cx - new_w / 2
+                        img_top = cy - new_h / 2
+                        x0 = img_left + bx * ratio
+                        y0 = img_top + by * ratio
+                        x1 = img_left + (bx + bw) * ratio
+                        y1 = img_top + (by + bh) * ratio
+                        # Clamp to image bounds so partial-detection bboxes stay tidy.
+                        x0 = max(img_left, min(img_left + new_w, x0))
+                        y0 = max(img_top, min(img_top + new_h, y0))
+                        x1 = max(img_left, min(img_left + new_w, x1))
+                        y1 = max(img_top, min(img_top + new_h, y1))
+                        canvas.create_rectangle(
+                            x0, y0, x1, y1,
+                            outline="#5DB075",
+                            width=2,
+                        )
             return True
         except ImportError:
             cw = max(1, canvas.winfo_width())
@@ -865,7 +933,23 @@ class ImageCarousel(tk.Frame):
         entry.update_similarity(score)
         # Stash full diagnostics so the FAS chip can render PASS/FAIL alongside the score.
         diag = (details or {}).get("diagnostics") if details else None
-        setattr(entry, "similarity_diagnostics", diag if isinstance(diag, dict) else None)
+        diag_dict = diag if isinstance(diag, dict) else None
+        setattr(entry, "similarity_diagnostics", diag_dict)
+        # Cache the per-image face bbox for the optional bbox overlay toggle.
+        # `entry` is always the TARGET in the comparison call; the REF entry gets
+        # its own bbox written via the ref-side branch below.
+        if diag_dict:
+            boxes = diag_dict.get("selected_face_boxes") or {}
+            target_box = boxes.get("target") if isinstance(boxes, dict) else None
+            ref_box = boxes.get("ref") if isinstance(boxes, dict) else None
+            setattr(entry, "face_bbox", target_box if isinstance(target_box, dict) else None)
+            # Push the ref-side bbox onto the ref entry too — single comparison
+            # produces both, no point recomputing later.
+            ref_entry, _ref_source = self.image_session.get_effective_similarity_ref()
+            if ref_entry is not None and isinstance(ref_box, dict):
+                setattr(ref_entry, "face_bbox", ref_box)
+        else:
+            setattr(entry, "face_bbox", None)
         self.image_session._notify()
         if score is not None:
             fas_chip = self._fas_summary_from_diag(diag)
@@ -897,6 +981,17 @@ class ImageCarousel(tk.Frame):
         if score_bits:
             return f"liveness={verdict_word} ({', '.join(score_bits)})"
         return f"liveness={verdict_word}"
+
+    def _on_show_face_box_toggle(self):
+        """Toggle the face-bbox overlay. Pure redraw — no recompute."""
+        # Clear the cached PhotoImage attrs so _show_image_on_canvas re-renders
+        # with the new overlay state on the next _update_panel pass.
+        if hasattr(self, "_photo"):
+            try:
+                delattr(self, "_photo")
+            except AttributeError:
+                pass
+        self._update_display()
 
     def _on_anti_spoof_toggle(self):
         """Apply checkbox state to the engine and recompute scores in-place."""

@@ -66,6 +66,10 @@ class _WidgetStub:
     def set(self, value):
         self.value = value
 
+    def get(self):
+        # Stubbed for CTkProgressBar.get() — used by the determinate-mode tick.
+        return self.value if isinstance(self.value, (int, float)) else 0.0
+
     def start(self):
         return None
 
@@ -100,7 +104,29 @@ class _CTkStub(_WidgetStub):
         return None
 
     def after(self, _delay, callback, *args):
-        callback(*args)
+        # In real Tk, after() schedules; in tests we executed synchronously.
+        # That broke when the standalone GUI's progress tick reschedules itself
+        # — synchronous execution = infinite recursion. Queue callbacks instead;
+        # tests that need to drive the loop can drain via _drain_after_calls().
+        self._after_queue = getattr(self, "_after_queue", [])
+        self._after_queue.append((callback, args))
+
+    def _drain_after_calls(self, max_iterations: int = 5):
+        """Run pending after() callbacks up to max_iterations times.
+
+        Simulates Tk's event loop just enough for tests to observe one round
+        of scheduled work without falling into reschedule recursion.
+        """
+        for _ in range(max_iterations):
+            queue = getattr(self, "_after_queue", [])
+            if not queue:
+                return
+            self._after_queue = []
+            for cb, args in queue:
+                try:
+                    cb(*args)
+                except Exception:
+                    pass
 
     def mainloop(self):
         return None
@@ -417,7 +443,10 @@ class TestModernGUI(unittest.TestCase):
         self.assertEqual(thread.args, ("img1.png", "img2.png"))
         self.assertTrue(thread.daemon)
         self.assertEqual(app.btn_run.state, "disabled")
-        self.assertIn("Processing...", app.sim_result_label.text)
+        # v1.8 follow-up: result label is cleared on start (was "Processing…");
+        # progress feedback now lives in the dedicated sim_status_label which
+        # the phase-milestone timer drives — assert it shows the starting beat.
+        self.assertIn("0%", app.sim_status_label.text)
 
     def test_on_comparison_complete_renders_expected_success_text(self) -> None:
         app = self.gui_module.ModernGUI()
@@ -436,6 +465,9 @@ class TestModernGUI(unittest.TestCase):
         app = self.gui_module.ModernGUI()
         with patch.object(app.engine, "compare_images", side_effect=ValueError("compare failed")):
             app._compare_thread("img1.png", "img2.png")
+        # _compare_thread calls self.after(0, _on_comparison_complete, result) —
+        # the queueing after() stub now collects callbacks; drain to run them.
+        app._drain_after_calls()
         self.assertEqual(app.sim_result_label.text, "Error: compare failed")
         self.assertEqual(app.sim_result_label.text_color, "red")
 
