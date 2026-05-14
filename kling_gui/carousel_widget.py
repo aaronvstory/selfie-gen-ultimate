@@ -601,8 +601,10 @@ class ImageCarousel(tk.Frame):
             )
             return
         if verdict == "fail":
-            # Amber chip — FAS is advisory; never red, never contradicts a passing SIM badge.
-            text, fg, bg, border = "  LIVE ?  ", "#3A2A00", "#FFC107", "#C99500"
+            # v4: red chip with definitive ✖ — fail is the engine's verdict
+            # ("is_real=False" + spoof_detected=True), not "we're unsure".
+            # Prior amber LIVE ? understated a definitive spoof signal.
+            text, fg, bg, border = "  LIVE ✖  ", "#FFFFFF", "#E5484D", "#7A1115"
         else:
             text, fg, bg, border = "  LIVE ✓  ", "#0B2A12", "#A6E3A1", "#5DB075"
         self.fas_label.config(

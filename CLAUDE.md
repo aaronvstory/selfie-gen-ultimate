@@ -365,8 +365,8 @@ The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, 
 |-------|---------|-------|-------|
 | Root wrapper | `run_<name>.bat` | `run_<name>.command` | Two-line passthrough |
 | Hub wrapper | `launchers/run_<name>.bat` | `launchers/run_<name>.command` | Hop to platform layer |
-| Platform impl | `launchers/windows/run_<name>.bat` (CRLF, `echo(` for blanks) | `launchers/macos/run_<name>.command` (LF) | Real venv/dep/exec logic |
-| Standalone subproject | `similarity/run_<name>.{bat,command}` | same | Used by hub wrappers `launchers/{windows,macos}/run_similarity_*` |
+| Platform impl | `launchers/windows/run_<name>.bat` (CRLF, `echo(` for blanks) | `launchers/macos/run_<name>.command` (LF — Apple writes the OS as "macOS") | Real venv/dep/exec logic |
+| Standalone subproject | `similarity/run_<name>.{bat,command}` | same | Used by hub wrappers `launchers/{windows,macos}/run_similarity_*` (path stays lowercase, OS name in prose stays "macOS") |
 | Build pipeline | `distribution/release_prep.py:copy_sanitized_tree` | same | Walks tree → auto-included unless excluded |
 
 ### E. Pre-flight checklist (run BEFORE every similarity-stack commit)

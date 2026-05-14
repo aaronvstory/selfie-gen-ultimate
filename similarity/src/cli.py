@@ -16,6 +16,41 @@ from src.engine import FaceEngine
 
 console = Console()
 
+
+def _format_conf_pct(pct: float) -> str:
+    """Adaptive precision: ≥99.9% gets 2 decimals so '99.99%' isn't lost to
+    rounding ('100.0%' obscures how confident the model was)."""
+    if pct >= 99.9:
+        return f"{pct:.2f}%"
+    return f"{pct:.1f}%"
+
+
+def _format_fas_line(prefix: str, summary: dict, *, side: str) -> str:
+    """Build one per-image FAS line for the CLI output panel.
+
+    Mirrors the standalone GUI's per-image badge format but uses Rich
+    color tags. Switches on the engine's is_real boolean — NOT score
+    magnitude — so the same result that the GUI shows in red as SPOOF
+    also shows here in red as SPOOF.
+
+    Returns "" when the side has no usable FAS data so the caller can
+    suppress the line entirely.
+    """
+    is_real = summary.get(f"{side}_is_real")
+    real_conf = summary.get(f"{side}_real_conf")
+    status = summary.get(f"{side}_status", "missing")
+    if status == "ok" and isinstance(is_real, bool) and isinstance(real_conf, (int, float)):
+        rc = max(0.0, min(1.0, float(real_conf)))
+        if is_real:
+            return f"  {prefix} [green bold]✓ REAL[/green bold]   {_format_conf_pct(rc * 100)} confidence"
+        spoof_conf = (1.0 - rc) * 100
+        return f"  {prefix} [red bold]✖ SPOOF[/red bold]  {_format_conf_pct(spoof_conf)} confidence"
+    if status == "no_face":
+        return f"  {prefix} [dim]· no face detected[/dim]"
+    if status == "not_active":
+        return f"  {prefix} [dim]· liveness off[/dim]"
+    return ""
+
 class ProCLI:
     """
     Command Line Interface for the Face Similarity Application.
@@ -616,36 +651,37 @@ class ProCLI:
         except (TypeError, ValueError):
             score_display = str(result.get("score", "?"))
         is_match = result["match"]
-        color = "green" if is_match else "red"
-        status = "are" if is_match else "are not"
+        verdict_color = "green" if is_match else "red"
+        verdict_word = "MATCH" if is_match else "NO MATCH"
+        verdict_glyph = "✓" if is_match else "✖"
         # Route FAS rendering through the canonical verdict helper so CLI, standalone
-        # GUI, and main GUI carousel all show the same message for the same input.
+        # GUI, and main GUI carousel all show the same is_real-aware result.
         try:
             from src.engine import FaceEngine
         except ImportError:
             from similarity_engine import FaceEngine  # fallback when run as module
         diag = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
         fas_summary = FaceEngine.summarize_fas_pair(diag)
-        fas_verdict = fas_summary.get("verdict", "unavailable")
-        fas_message = fas_summary.get("message", "")
-        fas_line = ""
-        if fas_message:
-            rich_color = {"pass": "green", "fail": "yellow", "unavailable": "dim"}.get(fas_verdict, "dim")
-            fas_line = f"\n[{rich_color} bold]{fas_message}[/{rich_color} bold]"
-            # Per-image antispoof_score on a separate line when available.
-            ref_score = fas_summary.get("ref_score")
-            tgt_score = fas_summary.get("target_score")
-            score_bits = []
-            if isinstance(ref_score, (int, float)):
-                score_bits.append(f"Image 1 (ref): {float(ref_score) * 100:.1f}% real")
-            if isinstance(tgt_score, (int, float)):
-                score_bits.append(f"Image 2 (target): {float(tgt_score) * 100:.1f}% real")
-            if score_bits:
-                fas_line += f"\n[{rich_color}]  " + "   |   ".join(score_bits) + f"[/{rich_color}]"
+
+        # ── Per-image FAS lines — switch on is_real (not score magnitude) ──
+        # Mirrors the standalone GUI's per-image badges. The wide center FAS
+        # line is gone (replaced with these lines + the hero verdict above).
+        ref_line = _format_fas_line("Image 1 (ref):   ", fas_summary, side="ref")
+        tgt_line = _format_fas_line("Image 2 (target):", fas_summary, side="target")
+        fas_block = ""
+        if ref_line or tgt_line:
+            fas_block = "\n" + "\n".join([line for line in (ref_line, tgt_line) if line])
+        # When the verdict is "unavailable" (e.g., liveness disabled), still
+        # surface the why-line so the user knows liveness wasn't checked.
+        if fas_summary.get("verdict") == "unavailable":
+            fas_block += f"\n[dim]{fas_summary.get('message', '')}[/dim]"
+
+        # Hero-style verdict line: large glyph + headline + score on its own line.
         console.print(Panel(
-            f"Face similarity ratio: [{color} bold]{score_display}%[/{color} bold], "
-            f"The two photos [{color} bold]{status}[/{color} bold] the same person.{fas_line}",
-            border_style=color,
+            f"[{verdict_color} bold]{verdict_glyph}  {verdict_word}[/{verdict_color} bold]\n"
+            f"[{verdict_color} bold]{score_display}%[/{verdict_color} bold] [dim]similarity score[/dim]"
+            f"{fas_block}",
+            border_style=verdict_color,
             expand=False,
         ))
 
