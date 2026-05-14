@@ -1646,7 +1646,7 @@ class KlingAutomationUI:
         print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
         print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 3")
         print(f"  Kling prompt slot: {before['kling_prompt_slot']} -> 4")
-        print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> v8 / required")
+        print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> v13 / required")
         print(f"  max cases per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
         print("\nCurrent recommended state:")
         print("  front expand: bfl / percent / 70 / preserve_seamless")
@@ -1655,7 +1655,7 @@ class KlingAutomationUI:
         print("  video model: Kling 2.5 Turbo Standard")
         print("  selfie prompt slot: 3")
         print("  Kling prompt slot: 4")
-        print("  oldcam: v8 / required")
+        print("  oldcam: v13 / required")
         print(f"  max cases per run: {self._read_max_cases_setting()}")
         self.pause_continue("\nPress Enter to continue...")
 

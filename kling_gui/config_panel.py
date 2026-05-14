@@ -1128,7 +1128,7 @@ class ConfigPanel(tk.Frame):
         for version, var in self.oldcam_version_vars.items():
             var.set(version in selected_versions)
         self.config["oldcam_versions"] = selected_versions
-        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v11"
+        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v13"
 
         # Reprocess options
         self.reprocess_var.set(self.config.get("allow_reprocess", False))
@@ -1464,13 +1464,13 @@ class ConfigPanel(tk.Frame):
             return sorted(set(versions), key=self._oldcam_version_key)
 
         if not versions:
-            legacy = str(self.config.get("oldcam_version", "v9")).lower()
+            legacy = str(self.config.get("oldcam_version", "v13")).lower()
             if legacy == "all":
                 versions = list(valid_versions)
             elif legacy in valid_versions:
                 versions = [legacy]
             else:
-                versions = ["v11"]
+                versions = ["v13"]
 
         return sorted(set(versions), key=self._oldcam_version_key)
 
@@ -1483,8 +1483,8 @@ class ConfigPanel(tk.Frame):
         ]
         selected_versions = sorted(set(selected_versions), key=self._oldcam_version_key)
         self.config["oldcam_versions"] = selected_versions
-        # Legacy compatibility key: highest selected version, or v11 default when empty.
-        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v11"
+        # Legacy compatibility key: highest selected version, or v13 default when empty.
+        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v13"
         if selected_versions:
             self._notify_change("Oldcam versions set to " + ", ".join(selected_versions))
         else:
