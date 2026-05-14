@@ -186,25 +186,8 @@ class ImageCarousel(tk.Frame):
         )
         self.counter_label.pack(side=tk.LEFT, padx=(8, 8))
 
-        # v5: Boxes checkbox moved here from sim_row per user request — sits
-        # on the SAME ROW as the IMAGE CAROUSEL counter (right-aligned), so
-        # it doesn't crowd the action-button row below. Compact font matches
-        # the counter's visual weight.
-        self._show_face_box_chk = tk.Checkbutton(
-            header,
-            text="Boxes",
-            variable=self._show_face_box_var,
-            command=self._on_show_face_box_toggle,
-            font=(FONT_FAMILY, 8),
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"],
-            activebackground=COLORS["bg_panel"],
-            activeforeground=COLORS["text_light"],
-            padx=2,
-        )
-        self._show_face_box_chk.pack(side=tk.RIGHT, padx=(0, 4))
-
+        # NOTE: "Boxes" face-bbox toggle now lives in meta_frame next to the
+        # recalc button (v5.2 per user request) — see meta_frame build below.
         controls = tk.Frame(header, bg=COLORS["bg_panel"])
         controls.pack(side=tk.RIGHT)
 
@@ -322,8 +305,20 @@ class ImageCarousel(tk.Frame):
         )
         self._auto_chk.pack(side=tk.RIGHT, padx=(0, 4))
 
+        # NOTE: "Anti-spoof" toggle moved to a dedicated bottom row below
+        # meta_frame in v5.2 per user request — see bottom_row build below.
+        # Sim_row now only carries action buttons (★ Ref, Compare, Auto,
+        # 📂 folder) so the per-image FAS preview row stays uncluttered.
+
+        # v5.2 bottom row: Anti-spoof toggle pinned at the very bottom.
+        # Packed BEFORE meta_frame (both side=BOTTOM) so bottom_row sits
+        # BELOW meta_frame — Tk stacks BOTTOM-packed widgets from bottom up
+        # in pack-call order. Anti-spoof is OFF by default (main carousel
+        # is a generative-content workflow, not strict KYC).
+        bottom_row = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
+        bottom_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 4))
         self._anti_spoof_chk = tk.Checkbutton(
-            sim_row,
+            bottom_row,
             text="Anti-spoof",
             variable=self._anti_spoof_var,
             command=self._on_anti_spoof_toggle,
@@ -335,14 +330,11 @@ class ImageCarousel(tk.Frame):
             activeforeground=COLORS["text_light"],
             padx=2,
         )
-        self._anti_spoof_chk.pack(side=tk.RIGHT, padx=(12, 6))
+        self._anti_spoof_chk.pack(side=tk.LEFT, padx=(0, 6))
 
-        # NOTE: "Boxes" face-bbox toggle moved to header row (next to the
-        # IMAGE CAROUSEL counter) in v5 per user request — see header build
-        # above. Keeping this comment as a wayfinding marker for future
-        # editors who go looking for it where it used to live.
-
-        # Metadata row (resolution + filesize on left, similarity on right)
+        # Metadata row (resolution + filesize on left, similarity on right).
+        # Packed AFTER bottom_row (both side=BOTTOM) so meta_frame sits
+        # ABOVE bottom_row.
         self.meta_frame = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
         self.meta_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
 
@@ -352,14 +344,34 @@ class ImageCarousel(tk.Frame):
         )
         self.meta_label.pack(side=tk.LEFT)
 
-        # v5: Recalc moved here from sim_row as an icon-only ⟳ button per user
-        # request. pack(side=tk.RIGHT) order = right-to-left visually, so to
-        # have visual order [...LIVE, SIM, ⟳], pack ⟳ FIRST (rightmost), then
-        # SIM, then LIVE. Same height as the chips so the trio reads as a
-        # cohesive control strip.
+        # v5.2 control strip in meta_frame, packed RIGHT (right-to-left
+        # visual order). To get final layout [LIVE, SIM, ↻, ☐ Boxes] we
+        # pack RIGHTMOST FIRST: Boxes → recalc → SIM → LIVE.
+        #
+        # Boxes checkbox (rightmost — toggles face-bbox overlay).
+        self._show_face_box_chk = tk.Checkbutton(
+            self.meta_frame,
+            text="Boxes",
+            variable=self._show_face_box_var,
+            command=self._on_show_face_box_toggle,
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["text_light"],
+            padx=2,
+        )
+        self._show_face_box_chk.pack(side=tk.RIGHT, padx=(6, 0))
+
+        # Recalc — icon-only round-feel button. Glyph is ↻ (U+21BB
+        # CLOCKWISE OPEN CIRCLE ARROW) which is universally present in
+        # Segoe UI / SF Symbols / DejaVu Sans. Earlier glyph ⟳ (U+27F3
+        # HEAVY CLOCKWISE ARROW) renders as ? in default Tk fonts on
+        # Windows because it's only in symbol-specific fonts.
         self.recalc_btn = tk.Button(
             self.meta_frame,
-            text="⟳",
+            text="↻",
             command=debounce_command(
                 lambda: self.recalc_all_similarity_now(reason="manual recalc button"),
                 key="carousel_recalc",

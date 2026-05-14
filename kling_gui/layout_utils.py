@@ -90,30 +90,34 @@ def sanitize_sash_layout(
     prompt_max = max(prompt_min, int(safe_w * 0.64))
     prompt_default = int(safe_w * 0.60)
 
-    # Carousel width: 22-32% of window, default 22%.
-    # v5.1: default lowered from 26% back to 22% to match the user's actual
-    # tested preference (356px in their 1621px window = 22.0%). Keeping the
-    # 22-32% clamp range so users can still widen if desired, but the default
-    # respects what they're actually using day-to-day.
+    # Carousel width: 22-32% of window, default 25%.
+    # v5.2: bumped from 22% to 25% per repeated user request ("carousel a bit
+    # wider"). At 1621px window this gives ~405px carousel (was ~356px).
     queue_min = max(200, int(safe_w * 0.22))
     queue_max = max(queue_min, int(safe_w * 0.32))
-    queue_default = int(safe_w * 0.22)
+    queue_default = int(safe_w * 0.25)
 
     log_min = 110
     log_max = max(log_min, int(safe_h * 0.42))
     log_default = int(safe_h * 0.22)
 
-    # Log vs drop zone: clamp relative to the right section width (safe_w - clamped queue)
-    # so saved values from a different window size don't blow past the pane boundary.
-    # v5.1: default lowered from 68% back to 55% to match the user's actual
-    # tested preference (695px log within the ~1265px right section at 1621w
-    # = 54.9%). Keeping the 55-78% floor so the log always wins over the drop
-    # zone but doesn't claim quite as aggressive a majority by default.
+    # Log vs drop zone: sash_log_drop_split is the X coordinate of the sash
+    # measured from the LEFT edge of the right-section paned widget. Since
+    # log_panel is .add()ed FIRST (left side) and drop_zone SECOND (right),
+    # this value IS the log panel's width. Clamp relative to the right
+    # section width (safe_w - clamped queue) so saved values from a different
+    # window size don't blow past the pane boundary.
+    #
+    # v5.2: default bumped from 55% to 71% per repeated user request ("drop
+    # zone too wide, log can be wider"). At 1621w with ~405px carousel,
+    # right_section ≈ 1216, log_default ≈ 863, leaving ~353px for the drop
+    # zone (was ~570px). Ceiling 78%→82% so user can collapse drop zone
+    # further if desired.
     clamped_queue = max(queue_min, min(int(sash_queue) if sash_queue else queue_default, queue_max))
     right_section_w = max(400, safe_w - clamped_queue)
     log_drop_min = max(220, int(right_section_w * 0.55))
-    log_drop_max = max(log_drop_min, int(right_section_w * 0.78))
-    log_drop_default = int(right_section_w * 0.55)
+    log_drop_max = max(log_drop_min, int(right_section_w * 0.82))
+    log_drop_default = int(right_section_w * 0.71)
 
     sanitized = {
         "sash_dropzone": _clamp_int(sash_dropzone, drop_min, drop_max, drop_default),

@@ -55,10 +55,12 @@ class LayoutSizingTests(unittest.TestCase):
         self.assertGreaterEqual(sash["sash_log"], 110)
         self.assertLessEqual(sash["sash_log"], int(900 * 0.42))
         # log_drop_split is clamped relative to the right section, not the full window.
+        # v5.2: ceiling bumped from 0.78 to 0.82 so user can collapse drop zone
+        # further if they want to maximize log space.
         clamped_queue = sash["sash_queue"]
         right_w = 1100 - clamped_queue
         self.assertGreaterEqual(sash["sash_log_drop_split"], max(220, int(right_w * 0.55)))
-        self.assertLessEqual(sash["sash_log_drop_split"], int(right_w * 0.78))
+        self.assertLessEqual(sash["sash_log_drop_split"], int(right_w * 0.82))
 
     def test_sane_values_remain_unchanged(self):
         window, geometry, changed_window = sanitize_window_layout(

@@ -620,12 +620,16 @@ class KlingGUIWindow:
             self._layout_corrections_pending = True
 
         # Pre-sanitize sash values against initial window size before widgets render.
+        # v5.2 fallback values match new defaults (carousel 25% / log_drop 71%
+        # of right section) — see layout_utils.sanitize_sash_layout for the
+        # canonical clamp logic. Computed for ~1621px window (the user's tested
+        # size): sash_queue=405, sash_log_drop_split=863.
         pre_sash, pre_sash_changed = sanitize_sash_layout(
             sash_dropzone=self.config.get("sash_dropzone", 500),
             sash_prompt_split=self.config.get("sash_prompt_split", 760),
-            sash_queue=self.config.get("sash_queue", 320),
+            sash_queue=self.config.get("sash_queue", 405),
             sash_log=self.config.get("sash_log", 150),
-            sash_log_drop_split=self.config.get("sash_log_drop_split", 360),
+            sash_log_drop_split=self.config.get("sash_log_drop_split", 863),
             root_width=sanitized_window["width"],
             root_height=sanitized_window["height"],
         )
@@ -769,9 +773,9 @@ class KlingGUIWindow:
             # Window layout persistence
             "window_geometry": "",  # Empty = use default
             "sash_dropzone": 500,  # Height of top pane
-            "sash_queue": 356,  # Width of left bottom pane (carousel ~22%, user-tested at 1621w)
+            "sash_queue": 405,  # Width of left bottom pane (carousel 25%, user-tested at 1621w)
             "sash_log": 150,  # Height of log pane (before history)
-            "sash_log_drop_split": 655,  # Width of LOG pane (~52% of right section, user-tested layout)
+            "sash_log_drop_split": 863,  # Width of LOG pane (~71% of right section, user-tested at 1621w)
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)
@@ -3845,12 +3849,17 @@ class KlingGUIWindow:
             # Ensure all widgets are rendered before placing sashes
             self.root.update_idletasks()
 
+            # Fallback values match v5.2 defaults (carousel 25% / log_drop 71%
+            # of right section). The sanitize_sash_layout call below clamps
+            # these against the actual current window size, so the literal
+            # numbers here just keep the runtime path defined when no config
+            # value exists.
             sash_values, changed = sanitize_sash_layout(
                 sash_dropzone=self.config.get("sash_dropzone", 500),
                 sash_prompt_split=self.config.get("sash_prompt_split", 760),
-                sash_queue=self.config.get("sash_queue", 320),
+                sash_queue=self.config.get("sash_queue", 405),
                 sash_log=self.config.get("sash_log", 150),
-                sash_log_drop_split=self.config.get("sash_log_drop_split", 360),
+                sash_log_drop_split=self.config.get("sash_log_drop_split", 863),
                 root_width=self.root.winfo_width(),
                 root_height=self.root.winfo_height(),
             )
