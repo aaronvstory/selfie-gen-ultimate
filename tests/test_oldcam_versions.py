@@ -396,7 +396,7 @@ def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
     panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
     assert 'text="Oldcam Finish"' not in panel_source
     assert 'text="Oldcam:"' in panel_source
-    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12"))' in panel_source
+    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13"))' in panel_source
 
 
 def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
@@ -701,3 +701,59 @@ def test_v12_process_frame_skips_rppg_lut_and_tone_mapping():
     assert "tone" not in called, "V12 must not call apply_dynamic_tone_mapping"
     assert "lut" not in called, "V12 must not call create_neutral_phone_lut from process_frame"
     assert "mediapipe" not in called, "V12 must not call get_dynamic_region_masks (wasted compute)"
+
+
+def test_v13_default_output_path_uses_v13_suffix():
+    oldcam_v13 = load_module(ROOT / "oldcam-v13" / "oldcam.py", "oldcam_v13")
+    assert oldcam_v13.build_default_output_path("sample.mp4").endswith("sample-oldcam-v13.mp4")
+
+
+def test_oldcam_dependency_preflight_does_not_require_mediapipe_for_v13(tmp_path):
+    """V13 High-End Daylight — like V12, no MediaPipe; missing mediapipe must be OK."""
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v13"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "requirements.txt").write_text("numpy>=1.24\nopencv-python-headless>=4.8\n", encoding="utf-8")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("No module named mediapipe")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v13") is True
+
+
+def test_v13_process_frame_skips_noise_and_ae_stepping():
+    """V13 must not call apply_modern_sensor_noise or apply_ae_stepping in process_frame."""
+    oldcam_v13 = load_module(ROOT / "oldcam-v13" / "oldcam.py", "oldcam_v13_daylight")
+
+    called = []
+
+    def mark(name):
+        def _wrapped(*args, **kwargs):
+            called.append(name)
+            return args[0]
+        return _wrapped
+
+    image = np.full((32, 32, 3), 128, dtype=np.uint8)
+    state = {
+        "face_detected": False,
+        "fpn": np.zeros((32, 32, 3), dtype=np.float32),
+        "adjusted_vignette_mask": np.ones((32, 32, 1), dtype=np.float32),
+        "last_masks": {},
+    }
+
+    import argparse
+    args = argparse.Namespace(vignette_strength=0.55)
+
+    with (
+        mock.patch.object(oldcam_v13, "apply_modern_sensor_noise", side_effect=mark("noise")),
+        mock.patch.object(oldcam_v13, "apply_ae_stepping", side_effect=mark("ae")),
+    ):
+        oldcam_v13.process_frame(image, None, None, args, rng=np.random.default_rng(0), state=state)
+
+    assert "noise" not in called, "V13 must not call apply_modern_sensor_noise (pristine daylight)"
+    assert "ae" not in called, "V13 must not call apply_ae_stepping (stable daylight assumption)"

@@ -1,20 +1,21 @@
 # Oldcam Version Wiring Reference
 
-> How to add a new Oldcam version (e.g., v12) to every layer of the project.
+> How to add a new Oldcam version (e.g., v13) to every layer of the project.
 > All steps are required unless marked "auto-discovered."
 
 ---
 
 ## Version Comparison Table
 
-| Version | Face Track | Biological Pulse | AWB Drift | MediaPipe | Signature |
-|---------|:----------:|:----------------:|:---------:|:---------:|-----------|
-| v7      | No         | No               | No        | No        | Basic sensor noise + film LUT |
-| v8      | No         | No               | Yes       | No        | + AWB color drift |
-| v9      | Yes        | No               | Yes       | Yes       | + Face-aware masking, temporal mesh |
-| v10     | Yes        | Yes              | No        | Yes       | + FFT biological sync (AWB removed) |
-| v11     | Yes        | Yes              | Yes       | Yes       | + AWB after FFT — best of all ★ default |
-| v12     | Yes        | No               | Yes       | Yes       | Pristine hardware-only (anti-spoofing aware): no rPPG, no LUT, no CLAHE |
+| Version | Face Track | Biological Pulse | AWB Drift | Sensor Noise | AE Stepping | MediaPipe | Signature |
+|---------|:----------:|:----------------:|:---------:|:------------:|:-----------:|:---------:|-----------|
+| v7      | No         | No               | No        | Yes          | Yes         | No        | Basic sensor noise + film LUT |
+| v8      | No         | No               | Yes       | Yes          | Yes         | No        | + AWB color drift |
+| v9      | Yes        | No               | Yes       | Yes          | Yes         | Yes       | + Face-aware masking, temporal mesh |
+| v10     | Yes        | Yes              | No        | Yes          | Yes         | Yes       | + FFT biological sync (AWB removed) |
+| v11     | Yes        | Yes              | Yes       | Yes          | Yes         | Yes       | + AWB after FFT — best of all |
+| v12     | No         | No               | Yes       | Yes          | Yes         | No        | Pristine hardware-only (anti-spoofing aware): no rPPG, no LUT, no CLAHE |
+| v13     | No         | No               | Yes       | **No**       | **No**      | No        | High-end daylight ★ default: no noise / AE / ghosting, pure optics |
 
 ---
 
@@ -103,7 +104,7 @@ self.oldcam_version_vars = {
 }
 
 # ~line 530 — add to enumerate tuple (checkboxes use grid(), _OLDCAM_COLS=3)
-for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "vN")):  # ← add "vN"
+for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "vN")):  # ← add "vN"
 # The grid layout auto-wraps: new versions add rows, never widen the strip.
 # _OLDCAM_COLS = 3 is defined just before the loop. With 5 versions it shows 2 rows
 # (3 + 2); 6 versions → 2 even rows (3 + 3); 7+ → 3 rows. Change to 4 if going wider.

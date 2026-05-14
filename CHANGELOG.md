@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-14 (v1.7) — Oldcam V13 "High-End Daylight" (new default)
+
+### Added
+
+- **Oldcam V13 (High-End Daylight)** — new default version. Pristine pipeline tuned for
+  flagship-phone-in-bright-sun footage. Strips the remaining noise / AE / ghosting layers
+  that V12 still applied, leaving only the geometric and optical signatures a physical
+  device imposes: sub-pixel OIS jitter, CMOS rolling shutter scan-warp, highlight blooming,
+  micro-luma AWB drift, radial chromatic aberration, and vignette.
+
+  Rationale: in stable bright daylight a high-end CMOS sensor produces a flawlessly clean
+  image — its ISP cleans away the FPN and temporal grain before the encoded frame ever
+  reaches you. V12's `apply_modern_sensor_noise` and `apply_ae_stepping` passes were
+  re-introducing degradation signals that flagship daylight footage simply doesn't carry.
+  V13 also hardcodes ghosting to 0.0 (razor-sharp frames) and drops the `--grain` CLI arg.
+
+- Four new launchers: `launchers/{windows,macos}/run_oldcam_v13.{bat,command}` plus
+  hub-level chain shims. Generic `run_oldcam` launchers across all three levels now
+  delegate to V13.
+
+### Changed
+
+- **Default oldcam version: V12 → V13.** GUI ships with V13 checked by default in the
+  Video tab; CLI default is `automation_oldcam_version="v13"`. V12 remains available
+  via checkbox / `--oldcam-version v12` for users who prefer the low-light realism
+  profile.
+- **Performance:** V13 skips per-frame FPN + temporal noise generation. Combined with
+  v1.6's CRF 12 quality bump, output is both sharper *and* faster to encode than V12.
+- Release stamp bumped to v1.7; release zip is `dist/SelfieGenUltimate-v1.7.zip` with
+  `dist/SelfieGenUltimate.zip` alias.
+
+### Behavioral notes
+
+- Users upgrading from v1.6 will see V13 checked by default in the Video tab. To keep
+  v1.6 behavior, uncheck V13 and check V12.
+- V13 ignores `--ghosting` (hardcoded to 0.0) and does not accept `--grain` (arg removed
+  from V13 parser only; V7–V12 parsers unchanged).
+- V13 does not require MediaPipe — same dependency story as V12. MediaPipe-required
+  versions remain V9, V10, V11.
+
+### Tests
+
+- 3 new V13 tests in `tests/test_oldcam_versions.py`: output suffix, no-MediaPipe
+  preflight, `process_frame` skips noise + AE stepping. Total: **340 pass** (337 baseline + 3).
+- Updated existing tests for default-switch sites (5 files).
+
 ## 2026-05-14 (v1.6)
 
 ### Added

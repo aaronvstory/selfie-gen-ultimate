@@ -530,7 +530,8 @@ class ConfigPanel(tk.Frame):
             "v9": tk.BooleanVar(value=False),
             "v10": tk.BooleanVar(value=False),
             "v11": tk.BooleanVar(value=False),
-            "v12": tk.BooleanVar(value=True),
+            "v12": tk.BooleanVar(value=False),
+            "v13": tk.BooleanVar(value=True),
         }
         # 3-column grid — new versions append rows, strip width stays fixed.
         # 5 versions → 2 rows (3 + 2); 6 versions → 2 rows (3 + 3); 7+ → 3 rows.
@@ -538,7 +539,7 @@ class ConfigPanel(tk.Frame):
         _check_grid = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
         _check_grid.pack(side=tk.LEFT, anchor="n")
         self.oldcam_version_checks = {}
-        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12")):
+        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13")):
             check = tk.Checkbutton(
                 _check_grid,
                 text=version,
@@ -1365,9 +1366,14 @@ class ConfigPanel(tk.Frame):
             "     V10 pulse + V9 AWB, applied AFTER the FFT read.",
             "     Trade-off: 2D rPPG flagged by modern PAD; global LUT tints sepia.",
             "",
-            "v12  Pristine hardware-only (anti-spoofing aware)   ★ default",
+            "v12  Pristine hardware-only (anti-spoofing aware)",
             "     No rPPG, no LUT, no CLAHE, no HSV. Pure OIS / AE / noise / vignette.",
-            "     Best for KYC / liveness pipelines; preserves Kling's color fidelity.",
+            "     Best for low-light realism; preserves Kling's color fidelity.",
+            "",
+            "v13  High-end daylight (pristine optics)   ★ default",
+            "     No sensor noise, no AE hunting, no ghosting, no MediaPipe.",
+            "     Pure OIS / rolling shutter / blooming / AWB drift / aberration / vignette.",
+            "     Best for bright-daylight footage; renders faster than V12.",
         ]
         return "\n".join(lines)
 
