@@ -527,7 +527,10 @@ def synchronize_base_frequency(image, state, face_mask, fps=30.0):
         sig = sig - np.mean(sig)
         freqs = np.fft.rfftfreq(len(sig), d=1.0 / fps)
         mags = np.abs(np.fft.rfft(sig))
-        valid = (freqs >= 0.7) & (freqs <= 4.0)
+        # Narrowed from [0.7, 4.0] to [0.8, 1.8] — heartbeat is 0.8-1.3 Hz
+        # (48-78 BPM); the wider old range let the FFT lock onto AI processing
+        # artifacts and strobe the face at 240 "beats"/min (V10 "siren" effect).
+        valid = (freqs >= 0.8) & (freqs <= 1.8)
         if np.any(valid):
             target_hz = float(freqs[valid][np.argmax(mags[valid])])
             state["target_hz"] = target_hz
@@ -549,25 +552,43 @@ def apply_synchronized_spatial_fluctuation(image, state, region_masks, target_hz
     for region, mask in region_masks.items():
         offset = SPATIAL_PHASE_OFFSETS.get(region, 0.0)
         phase = (t * 2 * np.pi * target_hz) + offset
-        shift_intensity = np.sin(phase) * envelope * 2.0
+        # Wave amplitude reduced 2.0 -> 0.45 (>75% reduction). The 2.0
+        # multiplier on an 8-bit [0-255] channel produces visibly rhythmic
+        # strobing — the V10 "siren" effect. 0.45 is a subtle mathematical
+        # watermark, not a blinking artifact.
+        shift_intensity = np.sin(phase) * envelope * 0.45
         combined_mask = mask * warm_mask
         img_float[:, :, 1] += shift_intensity * 1.0 * combined_mask[:, :, 0]
         img_float[:, :, 2] += shift_intensity * 0.45 * combined_mask[:, :, 0]
         img_float[:, :, 0] -= shift_intensity * 0.10 * combined_mask[:, :, 0]
-        img_float[:, :, 2] += shift_intensity * 0.8 * mask[:, :, 0] * 5.0
+        # Ambient warmth contribution softened 0.8 * mask * 5.0 -> 0.5 * mask
+        # * 3.0 — companion to the wave amplitude fix above so the V10 frame
+        # doesn't visibly pulse warm/cool rhythmically.
+        img_float[:, :, 2] += shift_intensity * 0.5 * mask[:, :, 0] * 3.0
 
     return img_float.clip(0, 255).astype(np.uint8)
 
 
-def apply_soft_background_texture(image, focus_mask, strength=0.18):
+def apply_soft_background_texture(image, focus_mask, strength=0.08):
+    # strength default reduced 0.18 -> 0.08 to stop the soft MediaPipe mask
+    # edges from bleeding 18% blur onto cheeks/forehead and destroying face
+    # detail. tight_mask = focus_mask^2 squares the [0,1] mask values
+    # (e.g. 0.5 -> 0.25), pulling the blur boundary inward and keeping the
+    # face crisp while still softening the background.
     if strength <= 0:
         return image
-    inverse_mask = 1.0 - focus_mask
+    tight_mask = focus_mask * focus_mask
+    inverse_mask = 1.0 - tight_mask
     h, w = image.shape[:2]
     small = cv2.resize(image, (max(1, w // 3), max(1, h // 3)), interpolation=cv2.INTER_LINEAR)
     restored = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
     blended_bg = cv2.addWeighted(image, 1.0 - strength, restored, strength, 0)
-    out = (image.astype(np.float32) * focus_mask + blended_bg.astype(np.float32) * inverse_mask)
+    # Explicit .astype(np.float32) on image/blended_bg is redundant — tight_mask
+    # is already float32 (focus_mask is float32 from full_face_mask construction
+    # in get_dynamic_region_masks), so NumPy auto-promotes uint8 * float32 →
+    # float32. Saves two unnecessary intermediate allocations per frame
+    # (gemini-code-assist nit on PR #20).
+    out = image * tight_mask + blended_bg * inverse_mask
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -635,7 +656,7 @@ def process_frame(image, lut, vignette_mask, args, rng=None, state=None):
     image = cv2.LUT(image, create_neutral_phone_lut() if lut is None else lut)
     image = apply_modern_sensor_noise(image, getattr(args, "grain", 1.0), rng, state=state, fpn_mask=state.get("fpn"))
     image = apply_radial_chromatic_aberration(image, scale=0.0006)
-    image = apply_soft_background_texture(image, full_face_mask, strength=0.18)
+    image = apply_soft_background_texture(image, full_face_mask, strength=0.08)
 
     vignette_strength = getattr(args, "vignette_strength", 0.55)
     if vignette_mask is not None and vignette_strength > 0:
