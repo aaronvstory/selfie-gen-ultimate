@@ -239,6 +239,12 @@ class TestModernGUI(unittest.TestCase):
         tkinter_module.TclError = _TclError
         tkinter_module.filedialog = filedialog_module
 
+        tk_dialogs_module = types.ModuleType("tk_dialogs")
+        tk_dialogs_module.select_open_file = lambda **_kwargs: None
+        tk_dialogs_module.select_open_files = lambda **_kwargs: []
+        tk_dialogs_module.select_directory = lambda **_kwargs: None
+        tk_dialogs_module.select_save_file = lambda **_kwargs: None
+
         class _BooleanVarStub:
             """Minimal tk.BooleanVar replacement for headless GUI tests."""
             def __init__(self, value=False):
@@ -274,6 +280,7 @@ class TestModernGUI(unittest.TestCase):
                 "tkinter": tkinter_module,
                 "tkinter.filedialog": filedialog_module,
                 "tkinterdnd2": _TkinterDnDModuleStub(),
+                "tk_dialogs": tk_dialogs_module,
             },
         )
         patcher.start()
@@ -365,7 +372,7 @@ class TestModernGUI(unittest.TestCase):
     def test_upload_image_button_still_sets_selected_path(self) -> None:
         app = self.gui_module.ModernGUI()
         app._on_models_ready()
-        with patch("src.gui.filedialog.askopenfilename", return_value="C:/tmp/picked.webp"), patch(
+        with patch("src.gui.select_open_file", return_value="C:/tmp/picked.webp"), patch(
             "src.gui.os.path.isfile", return_value=True
         ), patch.object(self.gui_module.Image, "open", return_value=_ImageOpenStub()):
             app.upload_image(2)
@@ -376,7 +383,7 @@ class TestModernGUI(unittest.TestCase):
     def test_upload_image_button_preserves_aspect_ratio(self) -> None:
         app = self.gui_module.ModernGUI()
         app._on_models_ready()
-        with patch("src.gui.filedialog.askopenfilename", return_value="C:/tmp/wide.jpg"), patch(
+        with patch("src.gui.select_open_file", return_value="C:/tmp/wide.jpg"), patch(
             "src.gui.os.path.isfile", return_value=True
         ), patch.object(self.gui_module.Image, "open", return_value=_ImageOpenStub(size=(1200, 600))):
             app.upload_image(1)
