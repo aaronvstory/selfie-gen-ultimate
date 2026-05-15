@@ -28,14 +28,34 @@ fi
 if [ -n "$REPO_ROOT" ]; then STATE_DIR="$REPO_ROOT/.launcher_state"; else STATE_DIR="$(pwd)/.launcher_state"; fi
 mkdir -p "$STATE_DIR"
 
+# Validate that an interpreter is in the supported range (3.9 <= ver < 3.13).
+# Per-candidate guard: stale wrong-version venvs fall through instead of being
+# returned only to trip the post-resolve gate with a misleading error.
+_python_supported() {
+  "$1" -c 'import sys; raise SystemExit(0 if (3, 9) <= sys.version_info[:2] < (3, 13) else 2)' >/dev/null 2>&1
+}
+
 resolve_python() {
+  # Overrides stay permissive at resolve time — post-resolve gate gives a tailored error.
   if [ -n "${SELFIEGEN_PYTHON:-}" ] && [ -x "${SELFIEGEN_PYTHON}" ] && "${SELFIEGEN_PYTHON}" -V >/dev/null 2>&1; then echo "${SELFIEGEN_PYTHON}|SELFIEGEN_PYTHON override"; return 0; fi
   if [ -n "${SELFIEGEN_VENV_DIR:-}" ] && [ -x "${SELFIEGEN_VENV_DIR}/bin/python" ] && "${SELFIEGEN_VENV_DIR}/bin/python" -V >/dev/null 2>&1; then echo "${SELFIEGEN_VENV_DIR}/bin/python|SELFIEGEN_VENV_DIR override"; return 0; fi
-  if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/venv/bin/python" ]; then echo "$REPO_ROOT/venv/bin/python|shared root venv"; return 0; fi
-  if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/.venv/bin/python" ]; then echo "$REPO_ROOT/.venv/bin/python|shared root .venv"; return 0; fi
-  if [ -x ".venv/bin/python" ]; then echo "$(pwd)/.venv/bin/python|local module .venv fallback"; return 0; fi
-  if [ -n "$REPO_ROOT" ]; then pybin="$(command -v python3.12 || command -v python3.11 || command -v python3 || command -v python || true)"; [ -n "$pybin" ] || return 1; "$pybin" -m venv "$REPO_ROOT/venv" || return 1; echo "$REPO_ROOT/venv/bin/python|created shared root venv"; return 0; fi
-  pybin="$(command -v python3.12 || command -v python3.11 || command -v python3 || command -v python || true)"; [ -n "$pybin" ] || return 1; "$pybin" -m venv .venv || return 1; echo "$(pwd)/.venv/bin/python|created local module .venv fallback"
+  if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/venv/bin/python" ] && _python_supported "$REPO_ROOT/venv/bin/python"; then echo "$REPO_ROOT/venv/bin/python|shared root venv"; return 0; fi
+  if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/.venv311/bin/python" ] && _python_supported "$REPO_ROOT/.venv311/bin/python"; then echo "$REPO_ROOT/.venv311/bin/python|shared root .venv311"; return 0; fi
+  if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/.venv/bin/python" ] && _python_supported "$REPO_ROOT/.venv/bin/python"; then echo "$REPO_ROOT/.venv/bin/python|shared root .venv"; return 0; fi
+  if [ -x ".venv/bin/python" ] && _python_supported "$(pwd)/.venv/bin/python"; then echo "$(pwd)/.venv/bin/python|local module .venv fallback"; return 0; fi
+  # macOS Python — prefer python3.11 first per CLAUDE.md (only Homebrew Python with bundled _tkinter).
+  if [ -n "$REPO_ROOT" ]; then
+    pybin="$(command -v python3.11 || command -v python3.12 || command -v python3 || command -v python || true)"
+    [ -n "$pybin" ] || return 1
+    _python_supported "$pybin" || { echo "[ERROR] No supported Python (3.9-3.12) on PATH (found: $pybin). Install python3.11 (brew install python@3.11) and retry." >&2; return 1; }
+    "$pybin" -m venv "$REPO_ROOT/venv" || return 1
+    echo "$REPO_ROOT/venv/bin/python|created shared root venv"; return 0
+  fi
+  pybin="$(command -v python3.11 || command -v python3.12 || command -v python3 || command -v python || true)"
+  [ -n "$pybin" ] || return 1
+  _python_supported "$pybin" || { echo "[ERROR] No supported Python (3.9-3.12) on PATH (found: $pybin). Install python3.11 (brew install python@3.11) and retry." >&2; return 1; }
+  "$pybin" -m venv .venv || return 1
+  echo "$(pwd)/.venv/bin/python|created local module .venv fallback"
 }
 
 resolved="$(resolve_python)"
@@ -49,7 +69,12 @@ ENV_KIND="${resolved#*|}"
 
 echo "[INFO] Using $ENV_KIND: $PYTHON_BIN"
 if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if (3, 9) <= sys.version_info[:2] < (3, 13) else 2)' >/dev/null 2>&1; then
-  echo "[ERROR] Unsupported Python version. Similarity requires Python 3.9-3.12."
+  PY_ACTUAL="$("$PYTHON_BIN" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || echo unknown)"
+  if [ -n "${SELFIEGEN_PYTHON:-}" ] || [ -n "${SELFIEGEN_VENV_DIR:-}" ]; then
+    echo "[ERROR] Your SELFIEGEN_PYTHON / SELFIEGEN_VENV_DIR override points at Python ${PY_ACTUAL}, but Similarity requires 3.9-3.12. Unset the override or point it at a supported interpreter."
+  else
+    echo "[ERROR] Resolved Python is ${PY_ACTUAL}, outside the supported range 3.9-3.12 (resolver bug — please file an issue with this log)."
+  fi
   [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
   exit 1
 fi
