@@ -47,7 +47,7 @@ All notable changes to this project are documented here.
 
 - **User-facing similarity log line now includes the raw cosine distance,
   threshold, and per-model breakdown:**
-  ```
+  ```text
   [Nano Banana 2 Edit] Similarity: 92% (cosine_distance=0.083, threshold=0.68, models=ArcFace+Facenet512)
   ```
   Previously only the mapped score was logged, so a 99% reading was

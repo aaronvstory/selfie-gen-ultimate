@@ -176,7 +176,7 @@ class ProCLI:
             ) from exc
         return select_open_file(
             title=title,
-            filetypes=[("Image Files", "*.png *.jpg *.jpeg *.bmp *.webp")],
+            filetypes=[("Image Files", "*.png *.jpg *.jpeg *.bmp *.webp *.gif *.tiff *.tif")],
         )
 
     def prompt_for_directory(self, title: str) -> Optional[str]:

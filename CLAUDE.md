@@ -95,7 +95,7 @@ python3.11 -m venv .venv311
 
 ### 7. The macOS launcher chain (don't break links silently)
 
-```
+```text
 run_gui.command (root)
   → launchers/run_gui.command         (compatibility wrapper)
     → launchers/macos/run_gui.command (logs + dep-chmod + invokes run_gui.sh)

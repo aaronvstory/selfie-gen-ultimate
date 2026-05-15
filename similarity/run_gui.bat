@@ -12,7 +12,7 @@ if defined REPO_ROOT (
 ) else (
   set "STATE_DIR=%CD%\.launcher_state"
 )
-if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >/dev/null 2>&1
+if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
 set "LOG_FILE=%STATE_DIR%\similarity_gui.log"
 
 rem --- Timestamp banner
@@ -33,7 +33,7 @@ set "PYTHON_BIN="
 set "ENV_KIND="
 rem Override stays permissive at resolve-time; gate at line ~95 catches bad versions with a tailored msg.
 if not "%SELFIEGEN_PYTHON%"=="" (
-  "%SELFIEGEN_PYTHON%" -V >/dev/null 2>&1
+  "%SELFIEGEN_PYTHON%" -V >nul 2>&1
   if not errorlevel 1 ( set "PYTHON_BIN=%SELFIEGEN_PYTHON%" & set "ENV_KIND=SELFIEGEN_PYTHON override" )
 )
 if "!PYTHON_BIN!"=="" if not "%SELFIEGEN_VENV_DIR%"=="" call :check_py "%SELFIEGEN_VENV_DIR%\Scripts\python.exe" "SELFIEGEN_VENV_DIR override" permissive
@@ -43,10 +43,10 @@ if "!PYTHON_BIN!"=="" if defined REPO_ROOT call :check_py "%REPO_ROOT%\.venv\Scr
 if "!PYTHON_BIN!"=="" call :check_py ".venv\Scripts\python.exe" "local .venv fallback" strict
 if "!PYTHON_BIN!"=="" (
   if defined REPO_ROOT (
-    py -3.11 -m venv "%REPO_ROOT%\venv" >/dev/null 2>&1 || py -3.12 -m venv "%REPO_ROOT%\venv" >/dev/null 2>&1 || python -m venv "%REPO_ROOT%\venv" >/dev/null 2>&1
+    py -3.11 -m venv "%REPO_ROOT%\venv" >nul 2>&1 || py -3.12 -m venv "%REPO_ROOT%\venv" >nul 2>&1 || python -m venv "%REPO_ROOT%\venv" >nul 2>&1
     call :check_py "%REPO_ROOT%\venv\Scripts\python.exe" "created shared root venv" strict
   ) else (
-    py -3.11 -m venv .venv >/dev/null 2>&1 || py -3.12 -m venv .venv >/dev/null 2>&1 || python -m venv .venv >/dev/null 2>&1
+    py -3.11 -m venv .venv >nul 2>&1 || py -3.12 -m venv .venv >nul 2>&1 || python -m venv .venv >nul 2>&1
     call :check_py ".venv\Scripts\python.exe" "created local .venv" strict
   )
 )
@@ -60,11 +60,13 @@ echo   [%LAUNCH_TS%] Python: !ENV_KIND! -- !PYTHON_BIN!
 >>"%LOG_FILE%" echo [INFO] Using !ENV_KIND!: !PYTHON_BIN!
 
 rem --- Defense-in-depth version gate (also catches SELFIEGEN_PYTHON pointing at unsupported python)
-"!PYTHON_BIN!" -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >/dev/null 2>&1
+"!PYTHON_BIN!" -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >nul 2>&1
 if errorlevel 1 (
   for /f "delims=" %%V in ('"!PYTHON_BIN!" -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2^>nul') do set "PY_ACTUAL=%%V"
   if not "%SELFIEGEN_PYTHON%"=="" (
     echo   [%LAUNCH_TS%] ERROR: SELFIEGEN_PYTHON points at Python !PY_ACTUAL!, but Similarity requires 3.9-3.12. Unset it or point at python3.11.
+  ) else if not "%SELFIEGEN_VENV_DIR%"=="" (
+    echo   [%LAUNCH_TS%] ERROR: SELFIEGEN_VENV_DIR points at Python !PY_ACTUAL!, but Similarity requires 3.9-3.12. Unset it or point at python3.11.
   ) else (
     echo   [%LAUNCH_TS%] ERROR: Resolved Python is !PY_ACTUAL!, outside supported range 3.9-3.12 (resolver bug; please file an issue).
   )
@@ -74,7 +76,7 @@ if errorlevel 1 (
 )
 
 rem --- tkinter check
-"!PYTHON_BIN!" -c "import tkinter" >/dev/null 2>&1
+"!PYTHON_BIN!" -c "import tkinter" >nul 2>&1
 if errorlevel 1 (
   echo   [%LAUNCH_TS%] ERROR: tkinter missing. Use a Python build with tkinter for GUI mode.
   >>"%LOG_FILE%" echo [ERROR] tkinter missing.
@@ -92,7 +94,7 @@ set "STAMP_FILE=%STATE_DIR%\similarity_gui_%STAMP_KEY:~0,60%.ok"
 
 set "NEED_PIP=1"
 if exist "!STAMP_FILE!" (
-  "!PYTHON_BIN!" -c "import cv2, numpy; from PIL import Image; import tkinter" >/dev/null 2>&1
+  "!PYTHON_BIN!" -c "import cv2, numpy; from PIL import Image; import tkinter" >nul 2>&1
   if not errorlevel 1 set "NEED_PIP=0"
 )
 if "!NEED_PIP!"=="0" (
@@ -109,7 +111,7 @@ if "!NEED_PIP!"=="0" (
     if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
     exit /b 1
   )
-  for %%F in ("%STATE_DIR%\similarity_gui_*.ok") do del "%%F" >/dev/null 2>&1
+  for %%F in ("%STATE_DIR%\similarity_gui_*.ok") do del "%%F" >nul 2>&1
   >>"!STAMP_FILE!" echo %LAUNCH_TS%
   echo   [%LAUNCH_TS%] Dependencies installed. Stamp written.
   echo(
@@ -138,10 +140,10 @@ rem ============================================================
 :check_py
 if not exist %1 exit /b 1
 if /i "%~3"=="permissive" (
-  %1 -V >/dev/null 2>&1
+  %1 -V >nul 2>&1
   if errorlevel 1 exit /b 1
 ) else (
-  %1 -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >/dev/null 2>&1
+  %1 -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >nul 2>&1
   if errorlevel 1 exit /b 1
 )
 set "PYTHON_BIN=%~1"

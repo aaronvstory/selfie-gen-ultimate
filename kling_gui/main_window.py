@@ -1998,7 +1998,7 @@ class KlingGUIWindow:
             self._add_input_images_to_session(files)
 
     def _best_picker_parent(self) -> tk.Misc:
-        """Return the live drop-zone window if visible, else the root window.
+        """Return the live drop-zone window if actually visible, else the root window.
 
         On macOS the file picker hangs when its parent gets withdrawn or
         destroyed mid-dialog; preferring the drop-zone window keeps the
@@ -2006,10 +2006,12 @@ class KlingGUIWindow:
         win = getattr(self, "_drop_zone_window", None)
         if win is not None:
             try:
-                if win.winfo_exists():
+                if win.winfo_exists() and win.winfo_viewable():
                     return win
-            except Exception:
-                pass
+            except tk.TclError as exc:
+                logging.getLogger(__name__).warning(
+                    "Drop-zone picker parent probe failed: %s", exc
+                )
         return self.root
 
     def _apply_ui_config(self):

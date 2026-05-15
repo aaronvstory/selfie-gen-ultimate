@@ -13,7 +13,10 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${ROOT_DIR}"
+cd "${ROOT_DIR}" || {
+  printf 'Failed to cd to repo root: %s\n' "${ROOT_DIR}" >&2
+  exit 1
+}
 
 failures=0
 
@@ -27,7 +30,7 @@ crlf_offenders="$(
 if [[ -n "${crlf_offenders}" ]]; then
   printf 'CRLF line terminators in shell scripts (must be LF):\n%s\n\n' "${crlf_offenders}" >&2
   printf 'Fix: tr -d "\\r" < <file> > <file>.tmp && mv <file>.tmp <file> && git add --renormalize <file>\n\n' >&2
-  failures=1
+  ((failures+=1))
 fi
 
 # Rule 1b — index agrees with .gitattributes eol=lf
@@ -37,7 +40,7 @@ index_eol_offenders="$(
 )"
 if [[ -n "${index_eol_offenders}" ]]; then
   printf 'Files where git index/working-tree EOL is not LF (.gitattributes pins eol=lf):\n%s\n\n' "${index_eol_offenders}" >&2
-  failures=1
+  ((failures+=1))
 fi
 
 # Rule 2 — every .command / .sh is 100755 in the index
@@ -48,7 +51,7 @@ mode_offenders="$(
 if [[ -n "${mode_offenders}" ]]; then
   printf '.command / .sh files NOT marked executable in git index (need 100755):\n%s\n\n' "${mode_offenders}" >&2
   printf 'Fix: chmod +x <file> && git update-index --chmod=+x <file>\n\n' >&2
-  failures=1
+  ((failures+=1))
 fi
 
 if [[ ${failures} -eq 0 ]]; then
