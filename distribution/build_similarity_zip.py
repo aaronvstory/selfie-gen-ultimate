@@ -29,6 +29,18 @@ DIST_DIR = REPO_ROOT / "dist"
 STAGING_DIR = DIST_DIR / "similarity-staging"
 CHANGELOG = SIM_ROOT / "CHANGELOG.md"
 
+# Engine modules that live at the REPO ROOT but are imported by the standalone
+# via similarity/src/engine.py (a shim that walks one level UP from similarity/
+# and imports them). The shim works in BOTH the dev repo (parent of similarity/
+# is the repo root) AND in the standalone unzipped layout (parent of similarity/
+# is the staging root) — provided we copy these files to the staging root at
+# build time. Without this list, the zip ships a broken shim that crashes with
+# `ModuleNotFoundError: similarity_engine` on the recipient's first launch.
+ENGINE_DEPS = (
+    "similarity_engine.py",  # FaceEngine (ArcFace / Facenet512 / FAS)
+    "face_similarity.py",    # _parse_bool helper + compute_face_similarity_details adapter
+)
+
 # Path components to skip during the walk. Matched against any path segment
 # (case-insensitive on Windows by default since Path comparison is OS-aware).
 SKIP_DIRS = {
@@ -173,8 +185,10 @@ def _write_readme(staging_root: Path, version: str) -> None:
         "    Subsequent runs are fast (models cached in ~/.deepface/).\n"
         "  - macOS: if Gatekeeper blocks the .command file, right-click -> Open.\n\n"
         "WHAT'S IN THE BOX\n"
+        "  similarity_engine.py          Core ML engine (ArcFace + Facenet512 + FAS)\n"
+        "  face_similarity.py            Adapter (parse_bool helper, etc.)\n"
         "  similarity/main.py            Entry point (dispatches to GUI or CLI)\n"
-        "  similarity/src/               Engine, GUI, CLI source\n"
+        "  similarity/src/               GUI, CLI, theme, engine shim\n"
         "  similarity/extract_face.py    Standalone face extraction tool\n"
         "  similarity/requirements.txt   Python dependencies (auto-installed)\n"
         "  similarity/README.md          Full documentation\n"
@@ -189,6 +203,40 @@ def _write_readme(staging_root: Path, version: str) -> None:
         "  See similarity/README.md for full project details.\n"
     )
     (staging_root / "README_FIRST.txt").write_text(text, encoding="utf-8", newline="\n")
+
+
+def _copy_engine_deps(repo_root: Path, staging_root: Path) -> int:
+    """Copy root-level engine modules into the staging root.
+
+    The standalone subproject's import path (``similarity/src/engine.py``) is a
+    shim that does ``from similarity_engine import FaceEngine`` after adding
+    the parent of ``similarity/`` to ``sys.path``. In the dev repo, that parent
+    is the repo root and these modules live there. In the standalone unzip,
+    that parent is the staging root — so we have to copy them there at build
+    time, otherwise the recipient's first launch crashes with
+    ``ModuleNotFoundError: No module named 'similarity_engine'``.
+
+    Args:
+        repo_root: Path to the repo root (source of the engine modules).
+        staging_root: Path to the staging directory (parent of ``similarity/``
+            in the unzipped layout).
+
+    Returns:
+        Count of engine files copied. Raises ``FileNotFoundError`` if any
+        required dependency is missing from the repo (so the build fails
+        loudly rather than producing a silently-broken zip).
+    """
+    copied = 0
+    for name in ENGINE_DEPS:
+        src = repo_root / name
+        if not src.is_file():
+            raise FileNotFoundError(
+                f"Required engine dependency missing from repo: {src}. "
+                f"Cannot build a working standalone zip without it."
+            )
+        shutil.copy2(src, staging_root / name)
+        copied += 1
+    return copied
 
 
 def main() -> int:
@@ -217,17 +265,22 @@ def main() -> int:
         shutil.rmtree(STAGING_DIR)
     STAGING_DIR.mkdir(parents=True)
 
-    print(f"[1/4] Copying similarity/ -> staging at {STAGING_DIR}...")
+    print(f"[1/5] Copying similarity/ -> staging at {STAGING_DIR}...")
     file_count = _copy_subproject(SIM_ROOT, STAGING_DIR)
     if file_count == 0:
         print("ERROR: zero files copied — SKIP rules may be too aggressive", file=sys.stderr)
         return 2
     print(f"      copied {file_count} files")
 
-    print(f"[2/4] Writing README_FIRST.txt at staging root...")
+    print(f"[2/5] Copying engine modules to staging root...")
+    engine_count = _copy_engine_deps(REPO_ROOT, STAGING_DIR)
+    print(f"      copied {engine_count} engine files: {', '.join(ENGINE_DEPS)}")
+    file_count += engine_count
+
+    print(f"[3/5] Writing README_FIRST.txt at staging root...")
     _write_readme(STAGING_DIR, version)
 
-    print(f"[3/4] Creating zip {zip_dest}...")
+    print(f"[4/5] Creating zip {zip_dest}...")
     if zip_dest.exists():
         zip_dest.unlink()
     # shutil.make_archive appends ".zip" automatically when format="zip".
@@ -238,7 +291,7 @@ def main() -> int:
     )
     archive = Path(archive_path)
 
-    print(f"[4/4] Cleaning staging directory...")
+    print(f"[5/5] Cleaning staging directory...")
     shutil.rmtree(STAGING_DIR)
 
     size_mb = archive.stat().st_size / (1024 * 1024)
