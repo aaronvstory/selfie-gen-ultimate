@@ -273,19 +273,27 @@ Saved sash values from `kling_config.json` are applied by `_restore_sash_positio
 `log_drop_paned` lives inside the space to the right of the carousel (`safe_w - sash_queue`). Clamping it as a % of `safe_w` allows values larger than the pane itself. Always compute the right-section width first:
 
 ```python
-clamped_queue = max(queue_min, min(int(sash_queue or queue_default), queue_max))
+clamped_queue = max(queue_min, min(int(sash_queue) if sash_queue else queue_default, queue_max))
 right_section_w = max(400, safe_w - clamped_queue)
-log_drop_min = int(right_section_w * 0.42)
-log_drop_max = int(right_section_w * 0.62)
+log_drop_min = max(220, int(right_section_w * 0.55))
+log_drop_max = max(log_drop_min, int(right_section_w * 0.82))
+log_drop_default = int(right_section_w * 0.71)
 ```
 
 ### Current target proportions (1600px-wide window)
 
+> **Single source of truth:** `kling_gui/layout_utils.py::sanitize_sash_layout()`.
+> These proportions are tuned per direct user feedback and are intentionally
+> revised over time (current values reflect the v5.2 layout pass: wider
+> carousel + wider log at the drop zone's expense). When they change, update
+> this table to match the code — do **not** treat the code as drifting from
+> this table.
+
 | Sash | Target | Range |
 |------|--------|-------|
 | `sash_prompt_split` (left tabs width) | 60% of window | 54–64% |
-| `sash_queue` (carousel width) | 24% of window | 20–30% |
-| `sash_log_drop_split` (log width within right section) | 52% of right section | 42–62% |
+| `sash_queue` (carousel width) | 25% of window | 22–32% |
+| `sash_log_drop_split` (log width within right section) | 71% of right section | 55–82% |
 
 ---
 
@@ -308,3 +316,78 @@ When adding a new Oldcam version (e.g., v12), these are the required touch-point
 **Auto-discovered (no changes needed):** `_discover_oldcam_versions()` in `queue_manager.py` scans `oldcam-v*` dirs; output filename suffix is generic; face landmarker task searched generically; `automation/pipeline.py` is fully version-agnostic.
 
 **Current default version:** v13. Mediapipe versions: v9, v10, v11.
+
+---
+
+## Similarity Stack Wiring (NON-NEGOTIABLE — full surface coverage)
+
+The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, automation CLI pipeline, standalone subproject (own GUI + own CLI), Windows + macOS launchers (per surface), PyInstaller frozen build, dist release zip, and tests. Touching it without updating ALL applicable surfaces ships a broken release.
+
+**Engine layer (single source of truth — DO NOT duplicate):**
+
+| Concern | File |
+|---------|------|
+| Engine class + scoring math | `similarity_engine.py` (root) |
+| Standalone shim | `similarity/src/engine.py` re-exports `from similarity_engine import FaceEngine` |
+| App-facing adapter (singleton + config overrides) | `face_similarity.py` (root) |
+| Pipeline import | `from face_similarity import compute_face_similarity_details` in `automation/pipeline.py` |
+| Main GUI import | `from face_similarity import compute_face_similarity_details` in `kling_gui/carousel_widget.py` |
+| Standalone GUI/CLI import | `from src.engine import FaceEngine` in `similarity/src/{gui,cli}.py` |
+
+### A. Adding a new ML dependency (e.g., torch, onnxruntime)
+
+| Layer | File | Action |
+|-------|------|--------|
+| Main requirements | `requirements.txt` | `+ pkg>=X,<Y` |
+| Standalone subproject requirements | `similarity/requirements.txt` | `+ pkg>=X,<Y` |
+| Dep-checker registry | `dependency_checker.py:DEPENDENCIES` | Add `Dependency(name=…, import_name=…, pip_name=…, required=False, description=…)` |
+| Auto-repair set | `dependency_checker.py:REPAIRABLE_RUNTIME_IMPORTS` | `+ "import_name"` |
+| Frozen build hidden imports | `kling_gui_direct.spec:hiddenimports` | `+ 'pkg'` and optionally `collect_submodules('pkg')` |
+| Dep stamps (auto-busted) | `.launcher_state/deps_*.ok` and `similarity/.launcher_state/similarity_*.ok` | Auto-busted on `requirements.txt` mtime/size change; manual `rm` if needed |
+
+### B. Adding a similarity GUI control (checkbox/button/etc.)
+
+| Layer | File | Action |
+|-------|------|--------|
+| Main carousel widget | `kling_gui/carousel_widget.py::_build_panel` | Add widget in `sim_row` (controls) or `meta_frame` (status chips) |
+| Bind to engine | `_on_<control>_toggle` method on `ImageCarousel` | Apply to `_get_engine().<attr>` then call `recalc_all_similarity_now(reason=...)` |
+| Standalone GUI mirror | `similarity/src/gui.py` | Add `ctk.CTkCheckBox` / `ctk.CTkSwitch` with the same name |
+| Standalone CLI mirror | `similarity/src/cli.py::apply_runtime_config` + `similarity/main.py` argparse | Add `--<flag>` with `argparse.BooleanOptionalAction` |
+| Config persistence | `kling_config.json` defaults + `face_similarity._apply_config_overrides` | New `automation_similarity_<name>` key |
+| Test stubs (main carousel) | `tests/test_carousel_ref_controls.py` `_FakeButton()` block | Add new attribute on the `tab` instance if `_update_panel` reads it |
+| Test stubs (standalone GUI) | `similarity/tests/test_gui.py::_CTkModuleStub` | Add new widget class to the stub registry |
+
+### C. Adding a new `automation_similarity_*` config key
+
+| Layer | File | Action |
+|-------|------|--------|
+| Default value | `kling_config.json` | Add key with sensible default |
+| Loader | `face_similarity._apply_config_overrides` | Read with `_parse_bool(...)` for booleans (handles `"true"`/`"false"` strings), `str(...).strip()` for strings |
+| Pipeline gate | `automation/pipeline.py` | Read via `self.automation.get("automation_similarity_<key>", default)` |
+| Standalone CLI flag | `similarity/main.py` argparse + `similarity/src/cli.py::apply_runtime_config` | Mirror as a CLI flag |
+| Tests | `tests/test_automation_pipeline.py`, `tests/test_similarity_canonical_path.py` | New gating + adapter tests |
+
+### D. Adding a new launcher (Windows + macOS, GUI + CLI)
+
+| Layer | Windows | macOS | Notes |
+|-------|---------|-------|-------|
+| Root wrapper | `run_<name>.bat` | `run_<name>.command` | Two-line passthrough |
+| Hub wrapper | `launchers/run_<name>.bat` | `launchers/run_<name>.command` | Hop to platform layer |
+| Platform impl | `launchers/windows/run_<name>.bat` (CRLF, `echo(` for blanks) | `launchers/macos/run_<name>.command` (LF — Apple writes the OS as "macOS") | Real venv/dep/exec logic |
+| Standalone subproject | `similarity/run_<name>.{bat,command}` | same | Used by hub wrappers `launchers/{windows,macos}/run_similarity_*` (path stays lowercase, OS name in prose stays "macOS") |
+| Build pipeline | `distribution/release_prep.py:copy_sanitized_tree` | same | Walks tree → auto-included unless excluded |
+
+### E. Pre-flight checklist (run BEFORE every similarity-stack commit)
+
+- [ ] `requirements.txt` updated if new pip dep
+- [ ] `similarity/requirements.txt` updated if new pip dep
+- [ ] `dependency_checker.py` (DEPENDENCIES + REPAIRABLE_RUNTIME_IMPORTS) updated
+- [ ] `kling_gui_direct.spec` hiddenimports updated if new module imported lazily
+- [ ] CLI flag in `similarity/main.py` argparse if user-controllable
+- [ ] CTk stub in `similarity/tests/test_gui.py:_CTkModuleStub` if new widget class used
+- [ ] `_FakeButton` stubs in `tests/test_carousel_ref_controls.py` if `_update_panel` reads new widget
+- [ ] `python -m pytest tests/ similarity/tests/test_cli.py similarity/tests/test_gui.py -q` (all green)
+- [ ] Line endings match per-file convention (`requirements.txt` LF, `kling_gui/main_window.py` CRLF — check with `python -c "..."` snippet from prior commits)
+- [ ] Smoke-tested both real GUI (`launchers/windows/run_gui.bat`) AND standalone GUI (`launchers/windows/run_similarity_gui.bat`)
+
+**Default config keys (current):** `automation_similarity_threshold` (80), `automation_similarity_use_ensemble` (true), `automation_similarity_secondary_model` ("Facenet512"), `automation_similarity_anti_spoofing` (true), `automation_similarity_require_fas_pass` (false).

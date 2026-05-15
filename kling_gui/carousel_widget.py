@@ -136,6 +136,15 @@ class ImageCarousel(tk.Frame):
         self._sim_lock = threading.Lock()
         self._sim_busy: bool = False
         self._auto_var = tk.BooleanVar(value=True)
+        # Anti-spoof default OFF — user-confirmed preference. The standalone
+        # similarity GUI defaults Anti-spoof ON for strict KYC use; the main
+        # carousel runs in a more generative-content workflow where the
+        # liveness signal usually isn't relevant.
+        self._anti_spoof_var = tk.BooleanVar(value=False)
+        # Show/hide green face-bounding-box overlay on the active carousel image.
+        # ON by default — user-confirmed preference. Helpful at-a-glance for
+        # the carousel preview; pure UI redraw on toggle, no recompute cost.
+        self._show_face_box_var = tk.BooleanVar(value=True)
         self._last_known_count: int = 0
         self._suppress_auto_calc: bool = False
 
@@ -177,6 +186,8 @@ class ImageCarousel(tk.Frame):
         )
         self.counter_label.pack(side=tk.LEFT, padx=(8, 8))
 
+        # NOTE: "Boxes" face-bbox toggle now lives in meta_frame next to the
+        # recalc button (v5.2 per user request) — see meta_frame build below.
         controls = tk.Frame(header, bg=COLORS["bg_panel"])
         controls.pack(side=tk.RIGHT)
 
@@ -266,6 +277,11 @@ class ImageCarousel(tk.Frame):
         )
         self.compare_btn.pack(side=tk.LEFT, padx=(6, 0))
 
+        # NOTE: manual recompute "Recalc" button moved to meta_frame (next
+        # to the SIM badge) as an icon-only ⟳ button in v5 per user request.
+        # See meta_frame build below for the new widget. Comment kept as a
+        # wayfinding marker for future editors.
+
         self.open_active_folder_btn = ttk.Button(
             sim_row,
             text="📂",
@@ -275,20 +291,73 @@ class ImageCarousel(tk.Frame):
         )
         self.open_active_folder_btn.pack(side=tk.LEFT, padx=(6, 0))
 
-        self._auto_chk = tk.Checkbutton(
-            sim_row,
-            text="Auto",
-            variable=self._auto_var,
-            font=(FONT_FAMILY, 7),
+        # NOTE: All three toggle checkboxes (Auto, Anti-spoof, Boxes) moved
+        # to a single dedicated bottom_row below meta_frame in v5.4 per user
+        # request — see bottom_row build below. Sim_row now only carries
+        # action buttons (★ Ref, Compare, 📂 folder).
+
+        # v5.5 bottom row: ALL THREE toggle checkboxes RIGHT-ALIGNED on one
+        # line: [..............☐ Auto | ☐ Anti-spoof | ☐ Boxes]. Packed
+        # BEFORE meta_frame (both side=BOTTOM) so bottom_row sits BELOW
+        # meta_frame — Tk stacks BOTTOM-packed widgets from bottom up in
+        # pack-call order. pady=(0, 2) keeps the row compact so the carousel
+        # canvas above gets maximum vertical real-estate. Defaults:
+        # Auto=ON (auto-recalc), Anti-spoof=OFF (advisory opt-in),
+        # Boxes=ON (face-bbox overlay).
+        #
+        # pack(side=tk.RIGHT) order is right-to-left visually, so to get
+        # display order [Auto | Anti-spoof | Boxes] left-to-right, we pack
+        # rightmost (Boxes) FIRST, then Anti-spoof, then Auto.
+        bottom_row = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
+        bottom_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
+
+        self._show_face_box_chk = tk.Checkbutton(
+            bottom_row,
+            text="Boxes",
+            variable=self._show_face_box_var,
+            command=self._on_show_face_box_toggle,
+            font=(FONT_FAMILY, 8),
             bg=COLORS["bg_panel"],
-            fg=COLORS["text_dim"],
+            fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
+            padx=2,
         )
-        self._auto_chk.pack(side=tk.RIGHT)
+        self._show_face_box_chk.pack(side=tk.RIGHT, padx=(0, 0))
 
-        # Metadata row (resolution + filesize on left, similarity on right)
+        self._anti_spoof_chk = tk.Checkbutton(
+            bottom_row,
+            text="Anti-spoof",
+            variable=self._anti_spoof_var,
+            command=self._on_anti_spoof_toggle,
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["text_light"],
+            padx=2,
+        )
+        self._anti_spoof_chk.pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._auto_chk = tk.Checkbutton(
+            bottom_row,
+            text="Auto",
+            variable=self._auto_var,
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["text_light"],
+            padx=2,
+        )
+        self._auto_chk.pack(side=tk.RIGHT, padx=(0, 8))
+
+        # Metadata row (resolution + filesize on left, similarity on right).
+        # Packed AFTER bottom_row (both side=BOTTOM) so meta_frame sits
+        # ABOVE bottom_row.
         self.meta_frame = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
         self.meta_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
 
@@ -297,6 +366,17 @@ class ImageCarousel(tk.Frame):
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor=tk.W,
         )
         self.meta_label.pack(side=tk.LEFT)
+
+        # v5.4: meta_frame now ONLY carries the result chips [LIVE, SIM].
+        # The Boxes/Auto/Anti-spoof checkboxes all live on bottom_row above.
+        # The recalc button was removed in v5.3.
+
+        # NOTE: Manual recalc button removed in v5.3 per user request — the
+        # method recalc_all_similarity_now() below stays in place because the
+        # auto-recalc paths (post-restore, post anti-spoof toggle, post
+        # session-rebuild) still call it programmatically. Only the visible
+        # button widget is gone. Visual order in meta_frame is now just
+        # [LIVE | SIM | ☐ Boxes].
 
         self.sim_label = tk.Label(
             self.meta_frame,
@@ -313,7 +393,32 @@ class ImageCarousel(tk.Frame):
         )
         self.sim_label.pack(side=tk.RIGHT)
 
-        # Info label (type tag + name) — pack second = just above meta
+        # FAS (anti-spoof) PASS/FAIL chip — appears LEFT of sim_label when active.
+        # v5: font + padding bumped to size 11 bold + padx=8 to match SIM badge
+        # exactly. Previously this chip was font 8 + padx=4 which read as
+        # "ugly tiny chip next to nice big SIM" — they should be a matched pair.
+        # width=8 chars enforces equal visual footprint with "SIM 100%" / "LIVE ⚠".
+        self.fas_label = tk.Label(
+            self.meta_frame,
+            text="",
+            font=(FONT_FAMILY, 11, "bold"),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+            anchor=tk.CENTER,
+            bd=0,
+            relief=tk.FLAT,
+            padx=0,
+            pady=0,
+            highlightthickness=0,
+            width=8,
+        )
+        self.fas_label.pack(side=tk.RIGHT, padx=(0, 6))
+
+        # v5.5: info_label is ALWAYS packed (constant row height) so the
+        # canvas doesn't resize/jump when an image is added or removed.
+        # When empty: shows "Add images to start" (replaces the
+        # canvas-internal hint that previously rendered there). When
+        # populated: shows "★ tag filename" of the active image.
         self.info_label = tk.Label(
             self.panel_frame,
             text="",
@@ -415,18 +520,13 @@ class ImageCarousel(tk.Frame):
 
         if n == 0:
             self.counter_label.config(text="0/0")
+            # v5.5: info_label stays packed (constant row height) and just
+            # shows the "Add images to start" hint when empty so the canvas
+            # above doesn't resize when images are added/removed. The
+            # canvas itself is left blank in the empty state.
             self.info_label.config(text="Add images to start", fg=COLORS["text_dim"])
             self.meta_label.config(text="")
             self.sim_label.config(text="")
-            cw = max(1, self.canvas.winfo_width())
-            ch = max(1, self.canvas.winfo_height())
-            self.canvas.create_text(
-                cw // 2,
-                ch // 2,
-                text="Add images to start",
-                fill=COLORS["text_dim"],
-                font=(FONT_FAMILY, 10),
-            )
             return
         self.counter_label.config(text=f"{session.current_index + 1}/{n}")
 
@@ -434,7 +534,7 @@ class ImageCarousel(tk.Frame):
         if entry and entry.exists:
             self._show_image_on_canvas(self.canvas, entry.path, "_photo")
 
-            # Type-colored info label (line 1: tag + truncated filename)
+            # Type-colored info label (line 1: tag + truncated filename).
             tag, color_key = derive_display_tag(entry)
             color = COLORS.get(color_key, COLORS["text_dim"])
             display_name = _truncate_filename(entry.filename)
@@ -490,15 +590,70 @@ class ImageCarousel(tk.Frame):
                     padx=0,
                     pady=0,
                 )
+            # FAS PASS/FAIL chip — only renders when the engine returned anti_spoofing data.
+            self._render_fas_chip(getattr(entry, "similarity_diagnostics", None))
         elif entry:
             self.info_label.config(text="File not found", fg=COLORS["error"])
             self.meta_label.config(text="")
             self.sim_label.config(text="")
+            self._render_fas_chip(None)
+
+    def _render_fas_chip(self, diag):
+        # Single source of truth for FAS verdict — see similarity_engine.summarize_fas_pair.
+        # Three possible verdicts: pass / fail / unavailable. Same diag → same chip,
+        # always (no more "ref+target sometimes, target only sometimes" drift).
+        try:
+            from similarity_engine import FaceEngine
+            summary = FaceEngine.summarize_fas_pair(diag)
+        except Exception:
+            summary = {"verdict": "unavailable", "color_hint": "muted"}
+        verdict = summary.get("verdict", "unavailable")
+        if verdict == "unavailable":
+            # Hide the chip entirely when FAS isn't assessable — full message
+            # surfaces in the Processing Log instead, keeping the carousel tidy.
+            self.fas_label.config(
+                text="",
+                bg=COLORS["bg_panel"],
+                fg=COLORS["text_dim"],
+                highlightthickness=0,
+                padx=0,
+            )
+            return
+        if verdict == "fail":
+            # FAS is ADVISORY ONLY — amber chip, never red. The similarity
+            # verdict is the actual gate; the chip says "heads-up, the
+            # liveness model flagged this side", not "this comparison failed"
+            # (codex + coderabbit on PR #19 reaffirmed advisory-only policy).
+            text, fg, bg, border = "LIVE ⚠", "#3A2A00", "#FFC107", "#C99500"
+        else:
+            # v5: green colors aligned to SIM 100% palette (#0B5D1E bg /
+            # #F4FFF6 fg / #2B8A3E border) so a passing LIVE chip and a
+            # passing SIM badge read as a coherent matched pair instead of
+            # two unrelated greens.
+            text, fg, bg, border = "LIVE ✓", "#F4FFF6", "#0B5D1E", "#2B8A3E"
+        # Padding matches SIM badge exactly (padx=8 pady=2) so the two chips
+        # have identical height and visual weight.
+        self.fas_label.config(
+            text=text,
+            fg=fg,
+            bg=bg,
+            highlightthickness=1,
+            highlightbackground=border,
+            highlightcolor=border,
+            padx=8,
+            pady=2,
+        )
 
     # ── Image rendering helper ──────────────────────────────────────
 
     def _show_image_on_canvas(self, canvas: tk.Canvas, path: str, attr_name: str):
-        """Load and display an image on a canvas, aspect-fitted with EXIF + rotation."""
+        """Load and display an image on a canvas, aspect-fitted with EXIF + rotation.
+
+        When the 'Boxes' toggle is on, also draws a green rectangle around the
+        face the engine selected for similarity scoring (read from the cached
+        entry.face_bbox). The bbox is in original image coordinates so we
+        scale by the same ratio used for the image fit.
+        """
         try:
             from PIL import Image, ImageTk, ImageOps
 
@@ -518,6 +673,8 @@ class ImageCarousel(tk.Frame):
             cw = max(1, canvas.winfo_width() - 4)
             ch = max(1, canvas.winfo_height() - 4)
 
+            # `ratio` is computed against the (post-EXIF, post-rotation) image
+            # dimensions, which is also the coordinate space DeepFace's bbox is in.
             ratio = min(cw / img.width, ch / img.height)
             new_w = max(1, int(img.width * ratio))
             new_h = max(1, int(img.height * ratio))
@@ -525,9 +682,47 @@ class ImageCarousel(tk.Frame):
 
             photo = ImageTk.PhotoImage(img, master=canvas)
             setattr(self, attr_name, photo)
-            canvas.create_image(
-                cw // 2 + 2, ch // 2 + 2, image=photo, anchor=tk.CENTER
-            )
+            cx, cy = cw // 2 + 2, ch // 2 + 2
+            canvas.create_image(cx, cy, image=photo, anchor=tk.CENTER)
+
+            # Draw face bbox overlay if toggle is on AND we have a cached bbox.
+            # NOTE: bbox is in pre-rotation, post-EXIF coordinates from DeepFace.
+            # When the user has applied a manual rotation we skip the overlay
+            # (would need full rotation math) — better to be silent than show
+            # a misaligned box.
+            # Guard against test stubs that bypass _build_panel and don't have the var.
+            show_box_var = getattr(self, "_show_face_box_var", None)
+            if show_box_var is not None and show_box_var.get() and entry and not entry.rotation:
+                bbox = getattr(entry, "face_bbox", None)
+                if isinstance(bbox, dict):
+                    try:
+                        bx = int(bbox.get("x", 0))
+                        by = int(bbox.get("y", 0))
+                        bw = int(bbox.get("w", 0))
+                        bh = int(bbox.get("h", 0))
+                    except (TypeError, ValueError):
+                        bx = by = bw = bh = 0
+                    if bw > 0 and bh > 0:
+                        # Project original-image coords into on-canvas coords.
+                        # The PIL image was placed CENTER-anchored at (cx, cy)
+                        # with dimensions (new_w, new_h), so its top-left corner
+                        # on the canvas is (cx - new_w/2, cy - new_h/2).
+                        img_left = cx - new_w / 2
+                        img_top = cy - new_h / 2
+                        x0 = img_left + bx * ratio
+                        y0 = img_top + by * ratio
+                        x1 = img_left + (bx + bw) * ratio
+                        y1 = img_top + (by + bh) * ratio
+                        # Clamp to image bounds so partial-detection bboxes stay tidy.
+                        x0 = max(img_left, min(img_left + new_w, x0))
+                        y0 = max(img_top, min(img_top + new_h, y0))
+                        x1 = max(img_left, min(img_left + new_w, x1))
+                        y1 = max(img_top, min(img_top + new_h, y1))
+                        canvas.create_rectangle(
+                            x0, y0, x1, y1,
+                            outline="#48DB7A",  # brighter green for visibility
+                            width=3,
+                        )
             return True
         except ImportError:
             cw = max(1, canvas.winfo_width())
@@ -685,8 +880,14 @@ class ImageCarousel(tk.Frame):
             self._last_known_count = self.image_session.count
 
     def _sim_log(self, msg: str, lvl: str = "debug"):
-        """Thread-safe log wrapper for similarity — routes to Processing Log."""
-        self.after(0, lambda: self.log(f"Sim: {msg}", lvl))
+        """Thread-safe log wrapper for similarity — routes to Processing Log.
+
+        face_similarity._log already prefixes its messages with "Sim: ", so we
+        only add the prefix when the message arrived without one (e.g. our own
+        carousel-internal calls like "anti-spoof = True").
+        """
+        prefixed = msg if msg.startswith("Sim:") else f"Sim: {msg}"
+        self.after(0, lambda: self.log(prefixed, lvl))
 
     def _toggle_sim_ref(self):
         """Toggle the similarity reference on/off for the active image."""
@@ -758,19 +959,127 @@ class ImageCarousel(tk.Frame):
             score = details.get("score")
         entry.similarity_recalculating = False
         entry.update_similarity(score)
+        # Stash full diagnostics so the FAS chip can render PASS/FAIL alongside the score.
+        diag = (details or {}).get("diagnostics") if details else None
+        diag_dict = diag if isinstance(diag, dict) else None
+        setattr(entry, "similarity_diagnostics", diag_dict)
+        # Cache the per-image face bbox for the optional bbox overlay toggle.
+        # `entry` is always the TARGET in the comparison call; the REF entry gets
+        # its own bbox written via the ref-side branch below.
+        if diag_dict:
+            boxes = diag_dict.get("selected_face_boxes") or {}
+            target_box = boxes.get("target") if isinstance(boxes, dict) else None
+            ref_box = boxes.get("ref") if isinstance(boxes, dict) else None
+            setattr(entry, "face_bbox", target_box if isinstance(target_box, dict) else None)
+            # Push the ref-side bbox onto the ref entry too — single comparison
+            # produces both, no point recomputing later.
+            ref_entry, _ref_source = self.image_session.get_effective_similarity_ref()
+            if ref_entry is not None and isinstance(ref_box, dict):
+                setattr(ref_entry, "face_bbox", ref_box)
+        else:
+            setattr(entry, "face_bbox", None)
         self.image_session._notify()
         if score is not None:
-            self._sim_log(f"result: {score}%", "info")
+            fas_chip = self._fas_summary_from_diag(diag)
+            self._sim_log(f"result: {score}%{(' ' + fas_chip) if fas_chip else ''}", "info")
 
-    def _calc_all_similarity(self, auto_triggered: bool = False, reason: str = "manual recalc"):
-        """Compute similarity for all non-ref generated images."""
+    @staticmethod
+    def _fas_summary_from_diag(diag):
+        """Return a short 'liveness=… (ref=X% real, target=Y% real)' string.
+
+        Routes through similarity_engine.summarize_fas_pair so the Processing Log,
+        the LIVE chip, and the standalone GUI all agree on the verdict and scores.
+        """
+        try:
+            from similarity_engine import FaceEngine
+            summary = FaceEngine.summarize_fas_pair(diag)
+        except Exception:
+            return ""
+        verdict = summary.get("verdict", "unavailable")
+        if verdict == "unavailable":
+            return ""
+        verdict_word = "PASS" if verdict == "pass" else "advisory"
+        # Use the engine-interpreted real_conf (already folds is_real into the
+        # score), NOT the raw antispoof_score — otherwise spoofs flagged with
+        # is_real=False, antispoof_score=0.99 log as "99% real" instead of
+        # "1% real" (coderabbit finding on PR #19, same class of bug as the
+        # standalone GUI had before the v4 engine fix). Fall back to raw
+        # ref_score only if real_conf is missing for some reason — keeps
+        # back-compat with any older diagnostics blocks.
+        ref_real_conf = summary.get("ref_real_conf")
+        tgt_real_conf = summary.get("target_real_conf")
+        if not isinstance(ref_real_conf, (int, float)):
+            ref_real_conf = summary.get("ref_score")
+        if not isinstance(tgt_real_conf, (int, float)):
+            tgt_real_conf = summary.get("target_score")
+        score_bits = []
+        if isinstance(ref_real_conf, (int, float)):
+            score_bits.append(f"ref={float(ref_real_conf) * 100:.1f}% real")
+        if isinstance(tgt_real_conf, (int, float)):
+            score_bits.append(f"target={float(tgt_real_conf) * 100:.1f}% real")
+        if score_bits:
+            return f"liveness={verdict_word} ({', '.join(score_bits)})"
+        return f"liveness={verdict_word}"
+
+    def _on_show_face_box_toggle(self):
+        """Toggle the face-bbox overlay. Pure redraw — no recompute."""
+        # Clear the cached PhotoImage attrs so _show_image_on_canvas re-renders
+        # with the new overlay state on the next _update_panel pass.
+        if hasattr(self, "_photo"):
+            try:
+                delattr(self, "_photo")
+            except AttributeError:
+                pass
+        self._update_display()
+
+    def _on_anti_spoof_toggle(self):
+        """Apply checkbox state to the engine and recompute scores in-place."""
+        try:
+            from face_similarity import _get_engine
+            engine = _get_engine(report_cb=self._sim_log)
+            if engine is not None:
+                engine.anti_spoofing = bool(self._anti_spoof_var.get())
+                self._sim_log(
+                    f"anti-spoof = {engine.anti_spoofing} (recomputing all)", "info"
+                )
+        except Exception as exc:
+            self._sim_log(f"anti-spoof toggle failed: {exc!r}", "warning")
+            return
+        # Trigger a fresh batch recompute so the displayed scores reflect the new setting.
+        self._calc_all_similarity(auto_triggered=False, reason="anti-spoof toggle")
+
+    def recalc_all_similarity_now(self, reason: str = "manual recalc") -> bool:
+        """Public entry to force a batch similarity recompute.
+
+        Returns True if a recompute was kicked off, False if there was nothing to do
+        (no reference image, no targets, etc). Always emits a Processing Log line so
+        the user can see *why* a request didn't recompute.
+        """
+        return self._calc_all_similarity(auto_triggered=False, reason=reason)
+
+    def _calc_all_similarity(self, auto_triggered: bool = False, reason: str = "manual recalc") -> bool:
+        """Compute similarity for all non-ref generated images. Returns True if work started.
+
+        `auto_triggered` is preserved in the signature for callers that distinguish
+        auto vs manual triggers; the log line is now always at info level so the
+        Processing Log shows recompute activity in both cases.
+        """
+        del auto_triggered  # keep signature stable; opt out of unused-parameter warning
         ref, ref_source = self.image_session.get_effective_similarity_ref()
         if not ref:
-            return
+            self._sim_log(
+                f"recalc skipped ({reason}): no similarity reference set — pick one with the ★ Ref button.",
+                "warning",
+            )
+            return False
         targets = [e for e in self.image_session.images
                    if e.source_type != "input" and e is not ref and e.exists]
         if not targets:
-            return
+            self._sim_log(
+                f"recalc skipped ({reason}): no eligible targets (need at least one generated/outpaint image other than the reference).",
+                "warning",
+            )
+            return False
         ref_name = os.path.basename(ref.path)
         source_label = {
             "manual_star_ref": "manual ★ Ref",
@@ -779,9 +1088,12 @@ class ImageCarousel(tk.Frame):
             "auto_first_input": "auto first-input fallback",
             "none": "none",
         }.get(ref_source, ref_source or "unknown")
+        # Always log batch start at info level so the user can see recompute activity in
+        # the Processing Log (the previous "debug only when manual" gating made the new
+        # post-restore recompute completely invisible).
         self._sim_log(
             f"batch start: {len(targets)} images, ref={ref_name}, source={source_label}, reason={reason}",
-            "info" if auto_triggered else "debug",
+            "info",
         )
             
         for t in targets:
@@ -818,6 +1130,7 @@ class ImageCarousel(tk.Frame):
             self.after(0, lambda: self._sim_log("batch complete", "info"))
 
         threading.Thread(target=_worker, daemon=True).start()
+        return True
 
     # ── Hover preview ───────────────────────────────────────────────
 

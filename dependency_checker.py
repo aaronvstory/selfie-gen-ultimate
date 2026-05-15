@@ -101,6 +101,13 @@ PYTHON_DEPENDENCIES = [
         required=False,
         description="Image loading for InsightFace face analysis"
     ),
+    Dependency(
+        name="PyTorch",
+        import_name="torch",
+        pip_name="torch>=2.2,<3",
+        required=False,
+        description="Required by DeepFace anti-spoofing (MiniFASNetV2). Without it FAS fails."
+    ),
 ]
 
 
@@ -128,7 +135,7 @@ EXTERNAL_TOOLS = [
     ),
 ]
 
-REPAIRABLE_RUNTIME_IMPORTS = {"tensorflow", "tf_keras", "deepface", "retinaface"}
+REPAIRABLE_RUNTIME_IMPORTS = {"tensorflow", "tf_keras", "deepface", "retinaface", "torch"}
 
 
 class DependencyChecker:

@@ -66,6 +66,10 @@ class _WidgetStub:
     def set(self, value):
         self.value = value
 
+    def get(self):
+        # Stubbed for CTkProgressBar.get() — used by the determinate-mode tick.
+        return self.value if isinstance(self.value, (int, float)) else 0.0
+
     def start(self):
         return None
 
@@ -100,7 +104,30 @@ class _CTkStub(_WidgetStub):
         return None
 
     def after(self, _delay, callback, *args):
-        callback(*args)
+        # In real Tk, after() schedules; in tests we executed synchronously.
+        # That broke when the standalone GUI's progress tick reschedules itself
+        # — synchronous execution = infinite recursion. Queue callbacks instead;
+        # tests that need to drive the loop can drain via _drain_after_calls().
+        self._after_queue = getattr(self, "_after_queue", [])
+        self._after_queue.append((callback, args))
+
+    def _drain_after_calls(self, max_iterations: int = 5):
+        """Run pending after() callbacks up to max_iterations times.
+
+        Simulates Tk's event loop just enough for tests to observe one round
+        of scheduled work without falling into reschedule recursion.
+        """
+        for _ in range(max_iterations):
+            queue = getattr(self, "_after_queue", [])
+            if not queue:
+                return
+            self._after_queue = []
+            for cb, args in queue:
+                # Don't silence exceptions in tests — unhandled callback
+                # exceptions indicate real bugs that the test should fail on,
+                # not hide. (coderabbit Major finding on PR #19, also flagged
+                # by Ruff as S110 + BLE001.)
+                cb(*args)
 
     def mainloop(self):
         return None
@@ -131,6 +158,7 @@ class _CTkModuleStub(types.ModuleType):
         self.CTkLabel = _WidgetStub
         self.CTkButton = _WidgetStub
         self.CTkProgressBar = _WidgetStub
+        self.CTkCheckBox = _WidgetStub
         self.CTkImage = _CTkImageStub
         self.CTkFont = lambda *args, **kwargs: {"args": args, "kwargs": kwargs}
         self.set_appearance_mode = lambda *args, **kwargs: None
@@ -159,6 +187,18 @@ class _EngineStub:
 
     def extract_face(self, _src: str, _out: str, padding: float = 0.175):
         return 0.81
+
+    @staticmethod
+    def summarize_fas_pair(_diag):
+        # Mirror the canonical helper's "no diag" return so render code paths
+        # don't crash. Real verdict logic is unit-tested in test_similarity_engine.
+        return {
+            "verdict": "unavailable",
+            "color_hint": "muted",
+            "message": "",
+            "ref_status": "missing",
+            "target_status": "missing",
+        }
 
 
 class _ThreadCaptureBase:
@@ -198,6 +238,17 @@ class TestModernGUI(unittest.TestCase):
         filedialog_module.askopenfilename = lambda *args, **kwargs: ""
         tkinter_module.TclError = _TclError
         tkinter_module.filedialog = filedialog_module
+
+        class _BooleanVarStub:
+            """Minimal tk.BooleanVar replacement for headless GUI tests."""
+            def __init__(self, value=False):
+                self._value = bool(value)
+            def get(self):
+                return self._value
+            def set(self, value):
+                self._value = bool(value)
+
+        tkinter_module.BooleanVar = _BooleanVarStub
 
         parent = self
 
@@ -252,7 +303,7 @@ class TestModernGUI(unittest.TestCase):
         self.assertTrue(thread.daemon)
         self.assertTrue(thread.started)
         self.assertEqual(app.btn_run.state, "disabled")
-        self.assertEqual(app.btn_run.kwargs.get("text"), "Run Similarity Comparison")
+        self.assertEqual(app.btn_run.kwargs.get("text"), "RUN COMPARISON")
 
     def test_on_models_ready_re_enables_controls(self) -> None:
         app = self.gui_module.ModernGUI()
@@ -262,9 +313,18 @@ class TestModernGUI(unittest.TestCase):
         self.assertEqual(app.btn_run.state, "normal")
         self.assertEqual(app.btn_upload_extract.state, "normal")
         self.assertEqual(app.btn_run_extract.state, "normal")
-        self.assertEqual(app.sim_result_label.text, "")
+        # v4: sim_result_label is now a small status line (always has a
+        # placeholder " " when idle so the row reserves height) — never blank.
+        self.assertEqual(app.sim_result_label.text, " ")
         self.assertEqual(app.ext_result_label.text, "")
-        self.assertTrue(app.sim_progressbar.grid_hidden)
+        # v4: hero card resets to idle state on models-ready.
+        self.assertEqual(app.hero_headline.text, "R E A D Y")
+        self.assertEqual(app.hero_score.text, "—")
+        # sim_progressbar stays gridded post-init (layout-stability fix in v1.8
+        # follow-up). It just resets to value=0 and the status label clears.
+        self.assertFalse(app.sim_progressbar.grid_hidden)
+        self.assertEqual(app.sim_progressbar.value, 0)
+        # Extraction bar still hides until used.
         self.assertTrue(app.ext_progressbar.grid_hidden)
         self.assertIn("<<Drop>>", app.zone1_dropzone.dnd_handlers)
         self.assertIn("<<Drop>>", app.zone2_dropzone.dnd_handlers)
@@ -281,7 +341,7 @@ class TestModernGUI(unittest.TestCase):
         self.assertEqual(app.img1_path, os.path.normpath("C:/tmp/photo one.jpg"))
         self.assertEqual(app.img1_display.text, "")
         self.assertIsNotNone(app.img1_display.image)
-        self.assertEqual(app.img1_display.image.kwargs["size"], (250, 250))
+        self.assertEqual(app.img1_display.image.kwargs["size"], (220, 220))
 
     def test_drop_extraction_image_updates_source_and_output(self) -> None:
         app = self.gui_module.ModernGUI()
@@ -311,7 +371,7 @@ class TestModernGUI(unittest.TestCase):
             app.upload_image(2)
         self.assertEqual(app.img2_path, "C:/tmp/picked.webp")
         self.assertIsNotNone(app.img2_display.image)
-        self.assertEqual(app.img2_display.image.kwargs["size"], (250, 250))
+        self.assertEqual(app.img2_display.image.kwargs["size"], (220, 220))
 
     def test_upload_image_button_preserves_aspect_ratio(self) -> None:
         app = self.gui_module.ModernGUI()
@@ -320,7 +380,9 @@ class TestModernGUI(unittest.TestCase):
             "src.gui.os.path.isfile", return_value=True
         ), patch.object(self.gui_module.Image, "open", return_value=_ImageOpenStub(size=(1200, 600))):
             app.upload_image(1)
-        self.assertEqual(app.img1_display.image.kwargs["size"], (250, 125))
+        # v4: SIMILARITY_PREVIEW_MAX_SIZE shrunk 250→220 to free width for
+        # the new center hero verdict column. 1200x600 → 220x110 (2:1 ratio).
+        self.assertEqual(app.img1_display.image.kwargs["size"], (220, 110))
 
     def test_drop_extraction_image_preserves_aspect_ratio(self) -> None:
         app = self.gui_module.ModernGUI()
@@ -393,27 +455,52 @@ class TestModernGUI(unittest.TestCase):
         self.assertEqual(thread.args, ("img1.png", "img2.png"))
         self.assertTrue(thread.daemon)
         self.assertEqual(app.btn_run.state, "disabled")
-        self.assertIn("Processing...", app.sim_result_label.text)
+        # v1.8 follow-up: result label is cleared on start (was "Processing…");
+        # progress feedback now lives in the dedicated sim_status_label which
+        # the phase-milestone timer drives — assert it shows the starting beat.
+        self.assertIn("0%", app.sim_status_label.text)
 
     def test_on_comparison_complete_renders_expected_success_text(self) -> None:
+        # v4: similarity verdict + score live in the hero card, not in
+        # sim_result_label (which is now a small status line that stays empty
+        # for the success path).
         app = self.gui_module.ModernGUI()
         app._on_comparison_complete({"match": True, "score": 98.7, "error": None})
-        self.assertIn("Face similarity ratio: 98.7%", app.sim_result_label.text)
-        self.assertIn("are the same person", app.sim_result_label.text)
-        self.assertEqual(app.sim_result_label.text_color, "#00FF00")
+        # Hero card should show MATCH + green
+        self.assertEqual(app.hero_headline.text, "M A T C H")
+        self.assertEqual(app.hero_score.text, "98.7%")
+        self.assertEqual(app.hero_icon.text, "✓")
+        # Status line stays clean — hero is the source of truth.
+        self.assertEqual(app.sim_result_label.text, " ")
+
+    def test_on_comparison_complete_renders_no_match(self) -> None:
+        # v4: complement to the match test — verifies the no-match branch
+        # renders correctly in the hero card.
+        app = self.gui_module.ModernGUI()
+        app._on_comparison_complete({"match": False, "score": 32.4, "error": None})
+        self.assertEqual(app.hero_headline.text, "N O   M A T C H")
+        self.assertEqual(app.hero_score.text, "32.4%")
+        self.assertEqual(app.hero_icon.text, "✖")
 
     def test_on_comparison_complete_renders_error(self) -> None:
+        # v4: error state goes to the hero card, not sim_result_label.
         app = self.gui_module.ModernGUI()
         app._on_comparison_complete({"match": False, "score": 0, "error": "bad input"})
-        self.assertEqual(app.sim_result_label.text, "Error: bad input")
-        self.assertEqual(app.sim_result_label.text_color, "red")
+        self.assertEqual(app.hero_headline.text, "E R R O R")
+        self.assertEqual(app.hero_icon.text, "!")
+        self.assertIn("bad input", app.hero_score.text)
+        self.assertEqual(app.sim_result_label.text, " ")
 
     def test_compare_thread_converts_engine_exception_to_error_result(self) -> None:
         app = self.gui_module.ModernGUI()
         with patch.object(app.engine, "compare_images", side_effect=ValueError("compare failed")):
             app._compare_thread("img1.png", "img2.png")
-        self.assertEqual(app.sim_result_label.text, "Error: compare failed")
-        self.assertEqual(app.sim_result_label.text_color, "red")
+        # _compare_thread calls self.after(0, _on_comparison_complete, result) —
+        # the queueing after() stub now collects callbacks; drain to run them.
+        app._drain_after_calls()
+        # v4: error surfaces on the hero card.
+        self.assertEqual(app.hero_headline.text, "E R R O R")
+        self.assertIn("compare failed", app.hero_score.text)
 
     def test_start_extraction_spawns_daemon_worker_and_updates_status(self) -> None:
         app = self.gui_module.ModernGUI()
@@ -463,10 +550,124 @@ class TestModernGUI(unittest.TestCase):
     def test_on_init_error_hides_both_progress_bars(self) -> None:
         app = self.gui_module.ModernGUI()
         app._on_init_error("init failed")
-        self.assertTrue(app.sim_progressbar.grid_hidden)
+        # Layout-stability fix: sim_progressbar stays gridded; bar resets to 0
+        # and status text clears. Extraction bar still hides until used.
+        self.assertFalse(app.sim_progressbar.grid_hidden)
+        self.assertEqual(app.sim_progressbar.value, 0)
         self.assertTrue(app.ext_progressbar.grid_hidden)
-        self.assertIn("Initialization Error", app.sim_result_label.text)
+        # v4: init-error story moved off sim_result_label onto the hero card.
+        self.assertEqual(app.hero_headline.text, "E R R O R")
+        self.assertIn("init failed", app.hero_score.text)
+        self.assertEqual(app.sim_result_label.text, " ")
         self.assertIn("Initialization Error", app.ext_result_label.text)
+
+
+    # ── v4 hero verdict + per-image FAS badge tests ─────────────────────
+
+    def test_hero_verdict_idle_state(self) -> None:
+        app = self.gui_module.ModernGUI()
+        app._update_hero_verdict(state="idle")
+        self.assertEqual(app.hero_icon.text, "—")
+        self.assertEqual(app.hero_headline.text, "R E A D Y")
+        self.assertEqual(app.hero_score.text, "—")
+
+    def test_hero_verdict_match_state(self) -> None:
+        app = self.gui_module.ModernGUI()
+        app._update_hero_verdict(state="match", score=87.3)
+        self.assertEqual(app.hero_icon.text, "✓")
+        self.assertEqual(app.hero_headline.text, "M A T C H")
+        self.assertEqual(app.hero_score.text, "87.3%")
+        # Threshold bar fills proportionally to the score.
+        self.assertAlmostEqual(app.hero_threshold_bar.value, 0.873, places=3)
+
+    def test_hero_verdict_no_match_state(self) -> None:
+        app = self.gui_module.ModernGUI()
+        app._update_hero_verdict(state="no_match", score=42.1)
+        self.assertEqual(app.hero_icon.text, "✖")
+        self.assertEqual(app.hero_headline.text, "N O   M A T C H")
+        self.assertEqual(app.hero_score.text, "42.1%")
+        self.assertAlmostEqual(app.hero_threshold_bar.value, 0.421, places=3)
+
+    def test_hero_verdict_error_state(self) -> None:
+        app = self.gui_module.ModernGUI()
+        app._update_hero_verdict(state="error", error_msg="model load failed")
+        self.assertEqual(app.hero_icon.text, "!")
+        self.assertEqual(app.hero_headline.text, "E R R O R")
+        self.assertIn("model load failed", app.hero_score.text)
+
+    def test_hero_score_font_restored_after_error_to_match(self) -> None:
+        """Regression test for codex P2 finding on PR #19: prior to the fix,
+        a transient error left hero_score in a tiny mono(10) font, and that
+        small font carried over to all subsequent successful results because
+        the match/no_match/idle/running branches never reset it. After the
+        fix, every non-error transition explicitly restores the default font.
+        """
+        app = self.gui_module.ModernGUI()
+        # Capture the default font set during build.
+        default_font = app._hero_score_default_font
+        # Drive into error state — font is shrunk for the error message.
+        app._update_hero_verdict(state="error", error_msg="boom")
+        # Now transition back to a successful match — font must be restored.
+        app._update_hero_verdict(state="match", score=88.0)
+        self.assertEqual(app.hero_score.kwargs.get("font"), default_font)
+        # And the text + color reflect the match state, not the error.
+        self.assertEqual(app.hero_score.text, "88.0%")
+
+    def test_per_image_fas_badge_real(self) -> None:
+        # Engine says is_real=True with high real_conf → green REAL badge.
+        app = self.gui_module.ModernGUI()
+        app._set_per_image_fas_badge(
+            app.zone1_fas_label, is_real=True, real_conf=0.97, status="ok",
+        )
+        self.assertIn("REAL", app.zone1_fas_label.text)
+        self.assertIn("97.0%", app.zone1_fas_label.text)
+        self.assertIn("✓", app.zone1_fas_label.text)
+
+    def test_per_image_fas_badge_spoof(self) -> None:
+        # Engine says is_real=False with high real_conf=0.0001 (i.e., 99.99%
+        # confident SPOOF) → AMBER ADVISORY badge ("POSSIBLE SPOOF") with the
+        # SPOOF confidence shown. FAS is advisory only per project policy
+        # (codex P1 + coderabbit Major on PR #19): never hard-fail red, since
+        # the similarity verdict is the actual gate. This is the regression
+        # case for the Driver's License bug — the engine still detects it,
+        # the UI just doesn't claim authority over the comparison verdict.
+        from src import theme
+        app = self.gui_module.ModernGUI()
+        app._set_per_image_fas_badge(
+            app.zone2_fas_label, is_real=False, real_conf=0.0001, status="ok",
+        )
+        self.assertIn("POSSIBLE SPOOF", app.zone2_fas_label.text)
+        # 1 - 0.0001 = 0.9999 → 99.99% confident SPOOF
+        self.assertIn("99.99%", app.zone2_fas_label.text)
+        self.assertIn("⚠", app.zone2_fas_label.text)
+        # Amber, not red — FAS is advisory.
+        self.assertEqual(app.zone2_fas_label.text_color, theme.WARN)
+
+    def test_per_image_fas_badge_no_face(self) -> None:
+        app = self.gui_module.ModernGUI()
+        app._set_per_image_fas_badge(
+            app.zone1_fas_label, is_real=None, real_conf=None, status="no_face",
+        )
+        self.assertIn("no face", app.zone1_fas_label.text.lower())
+
+    def test_per_image_fas_badge_disabled(self) -> None:
+        app = self.gui_module.ModernGUI()
+        app._set_per_image_fas_badge(
+            app.zone1_fas_label, is_real=None, real_conf=None, status="not_active",
+        )
+        self.assertIn("liveness off", app.zone1_fas_label.text.lower())
+
+    def test_set_ui_state_disables_anti_spoof_checkbox(self) -> None:
+        # Bot finding fix (coderabbit, similarity/src/gui.py:210): the
+        # anti_spoof_checkbox must be disabled mid-run so users can't toggle
+        # it and end up with mismatched state.
+        app = self.gui_module.ModernGUI()
+        app.set_ui_state("disabled")
+        self.assertEqual(app.anti_spoof_checkbox.state, "disabled")
+        self.assertEqual(app.show_face_box_checkbox.state, "disabled")
+        app.set_ui_state("normal")
+        self.assertEqual(app.anti_spoof_checkbox.state, "normal")
+        self.assertEqual(app.show_face_box_checkbox.state, "normal")
 
 
 if __name__ == "__main__":

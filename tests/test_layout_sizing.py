@@ -47,12 +47,21 @@ class LayoutSizingTests(unittest.TestCase):
         self.assertLessEqual(sash["sash_dropzone"], int(900 * 0.75))
         self.assertGreaterEqual(sash["sash_prompt_split"], int(1100 * 0.50))
         self.assertLessEqual(sash["sash_prompt_split"], int(1100 * 0.62))
-        self.assertGreaterEqual(sash["sash_queue"], int(1100 * 0.20))
-        self.assertLessEqual(sash["sash_queue"], int(1100 * 0.30))
+        # v5.2 (intentional): carousel 22-32% / default 25%; log_drop split
+        # 55-82% / default 71% — per repeated user request to widen the
+        # carousel + give the log more space at the drop zone's expense.
+        # Source of truth: kling_gui/layout_utils.py::sanitize_sash_layout().
+        self.assertGreaterEqual(sash["sash_queue"], max(200, int(1100 * 0.22)))
+        self.assertLessEqual(sash["sash_queue"], int(1100 * 0.32))
         self.assertGreaterEqual(sash["sash_log"], 110)
         self.assertLessEqual(sash["sash_log"], int(900 * 0.42))
-        self.assertGreaterEqual(sash["sash_log_drop_split"], 200)
-        self.assertLessEqual(sash["sash_log_drop_split"], int((1100 - int(1100 * 0.20)) * 0.62))
+        # log_drop_split is clamped relative to the right section, not the full window.
+        # v5.2: floor 0.55, ceiling 0.82 (so the user can collapse the drop
+        # zone further to maximize log space). Default 0.71.
+        clamped_queue = sash["sash_queue"]
+        right_w = 1100 - clamped_queue
+        self.assertGreaterEqual(sash["sash_log_drop_split"], max(220, int(right_w * 0.55)))
+        self.assertLessEqual(sash["sash_log_drop_split"], int(right_w * 0.82))
 
     def test_sane_values_remain_unchanged(self):
         window, geometry, changed_window = sanitize_window_layout(
@@ -68,24 +77,26 @@ class LayoutSizingTests(unittest.TestCase):
         self.assertEqual(window["min_height"], 620)
         self.assertEqual(geometry, "1100x880+300+20")
 
-        # Values within new ranges: queue=270 (20-30% of 1100=220-330),
-        # prompt_split=620 (50-62% of 1100=550-682),
-        # log_drop_split=440: right_section=1100-270=830, range=max(200,830*0.42)..830*0.62=349..515
+        # v5.2 ranges at root_width=1100:
+        #   queue: 22-32% = 242-352, default 25% = 275
+        #   prompt_split: 54-64% of 1100 = 594-704
+        #   log_drop_split: right_section = 1100 - clamped_queue
+        #     at queue=286 → right=814 → 55-82% = 447-667, default 71%
         sash, changed_sash = sanitize_sash_layout(
             sash_dropzone=500,
             sash_prompt_split=620,
-            sash_queue=270,
+            sash_queue=286,
             sash_log=150,
-            sash_log_drop_split=440,
+            sash_log_drop_split=520,
             root_width=1100,
             root_height=900,
         )
         self.assertFalse(changed_sash)
         self.assertEqual(sash["sash_dropzone"], 500)
         self.assertEqual(sash["sash_prompt_split"], 620)
-        self.assertEqual(sash["sash_queue"], 270)
+        self.assertEqual(sash["sash_queue"], 286)
         self.assertEqual(sash["sash_log"], 150)
-        self.assertEqual(sash["sash_log_drop_split"], 440)
+        self.assertEqual(sash["sash_log_drop_split"], 520)
 
 
 if __name__ == "__main__":

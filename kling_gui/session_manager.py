@@ -256,6 +256,8 @@ def save_session(
         "session_kind": kind,
         "project_key": effective_project_key,
         "session_version": SESSION_VERSION,
+        # Stamp the engine version so loaders can detect & invalidate stale (pre-v1.8) scores.
+        "similarity_engine_version": "1.8",
         "session": image_session.to_dict(),
         "config_snapshot": _build_config_snapshot(config),
     }

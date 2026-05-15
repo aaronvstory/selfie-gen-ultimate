@@ -3,6 +3,8 @@ tensorflow==2.16.2; sys_platform != "win32"
 tensorflow-intel==2.16.2; sys_platform == "win32"
 tf-keras==2.16.0
 retina-face==0.0.17
+# Required by DeepFace anti-spoofing (MiniFASNetV2). Without it FAS fails ALL comparisons.
+torch>=2.2,<3
 customtkinter==5.2.2
 rich==13.7.1
 opencv-python==4.10.0.84

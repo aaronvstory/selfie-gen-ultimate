@@ -38,6 +38,9 @@ class FaceEngine:
     model_name = "ArcFace"
     detector_backend = "retinaface"
     threshold = 0.68
+    secondary_model_name = "Facenet512"
+    use_ensemble = True
+    anti_spoofing = True
     normalized_face_size = (224, 224)
     normalized_face_padding = 0.30
     models_dir = ""
@@ -66,6 +69,9 @@ class FaceEngine:
         self.model_name = "ArcFace"
         self.detector_backend = "retinaface"
         self.threshold = 0.68
+        self.secondary_model_name = "Facenet512"
+        self.use_ensemble = True
+        self.anti_spoofing = True
         self.normalized_face_size = (224, 224)
         self.normalized_face_padding = 0.30
 
@@ -90,9 +96,18 @@ class FaceEngine:
         self._initialized = True
 
     def initialize_models(self) -> None:
-        """Warm heavy ArcFace model in memory."""
+        """Warm primary + (when ensemble enabled) secondary embedding models in memory."""
         try:
             DeepFace.build_model(model_name=self.model_name)
+            if self.use_ensemble:
+                try:
+                    DeepFace.build_model(model_name=self.secondary_model_name)
+                except Exception as exc:
+                    logger.warning(
+                        "Secondary model warmup failed (%s); ensemble will fall back at runtime: %s",
+                        self.secondary_model_name,
+                        exc,
+                    )
         except Exception as exc:
             raise RuntimeError(f"Failed to initialize Face Models: {exc}") from exc
 
@@ -250,30 +265,53 @@ class FaceEngine:
             or "symbolic placeholder" in lowered
         )
 
-    def _represent_face(self, face_input: Any) -> np.ndarray:
+    def _represent_face_with_model(self, face_input: Any, model_name: str) -> np.ndarray:
         representations = DeepFace.represent(
             img_path=face_input,
-            model_name=self.model_name,
+            model_name=model_name,
             detector_backend="skip",
             enforce_detection=False,
             align=False,
         )
         if not representations:
-            raise ValueError("Could not generate a face embedding.")
-        embedding = representations[0].get("embedding")
+            raise ValueError(f"Could not generate embedding via {model_name}.")
+        first = representations[0]
+        if isinstance(first, list):
+            if not first:
+                raise ValueError(f"{model_name} returned empty representation list.")
+            first = first[0]
+        embedding = first.get("embedding") if isinstance(first, dict) else None
         if not embedding:
-            raise ValueError("DeepFace did not return an embedding.")
+            raise ValueError(f"{model_name} did not return an embedding.")
         return np.asarray(embedding, dtype=float)
 
-    def _represent_full_image_with_detection(self, img_path: str) -> List[Dict[str, Any]]:
-        reps = DeepFace.represent(
+    def _represent_face(self, face_input: Any) -> np.ndarray:
+        return self._represent_face_with_model(face_input, self.model_name)
+
+    def _represent_full_image_with_detection_with_model(
+        self, img_path: str, model_name: str
+    ) -> List[Dict[str, Any]]:
+        kwargs: Dict[str, Any] = dict(
             img_path=img_path,
-            model_name=self.model_name,
+            model_name=model_name,
             detector_backend=self.detector_backend,
             enforce_detection=True,
             align=True,
         )
-        return reps or []
+        if self.anti_spoofing:
+            kwargs["anti_spoofing"] = True
+        reps = DeepFace.represent(**kwargs) or []
+        # Normalize: some DeepFace builds return List[List[Dict]] when multiple embeddings/models.
+        if reps and isinstance(reps[0], list):
+            flat: List[Dict[str, Any]] = []
+            for inner in reps:
+                if isinstance(inner, list):
+                    flat.extend([item for item in inner if isinstance(item, dict)])
+            return flat
+        return [item for item in reps if isinstance(item, dict)]
+
+    def _represent_full_image_with_detection(self, img_path: str) -> List[Dict[str, Any]]:
+        return self._represent_full_image_with_detection_with_model(img_path, self.model_name)
 
     @staticmethod
     def _cosine_distance(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
@@ -285,21 +323,336 @@ class FaceEngine:
         similarity = max(-1.0, min(1.0, similarity))
         return 1.0 - similarity
 
+    def _embed_reference_for_ensemble(
+        self, face_input: Any
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Compute primary (and optionally secondary) embeddings for a reference face.
+
+        Returns (primary_emb, secondary_emb_or_None). Used by callers that compare a
+        single reference against many targets — embedding the reference once and
+        reusing it avoids 2N redundant DeepFace inference calls when ensemble is on.
+        """
+        primary_emb = self._represent_face_with_model(face_input, self.model_name)
+        if not self.use_ensemble:
+            return primary_emb, None
+        try:
+            secondary_emb = self._represent_face_with_model(face_input, self.secondary_model_name)
+            return primary_emb, secondary_emb
+        except Exception as exc:
+            logger.warning(
+                "Secondary model %s failed for reference: %s", self.secondary_model_name, exc
+            )
+            return primary_emb, None
+
+    def _distance_against_cached_ref(
+        self,
+        target_face: Any,
+        ref_primary: np.ndarray,
+        ref_secondary: Optional[np.ndarray],
+    ) -> Tuple[float, Dict[str, float]]:
+        """Distance between a target face and a pre-computed reference embedding pair.
+
+        Mirrors `_ensemble_distance_pair` semantics (avg of two model distances when
+        ensemble is on, primary-only fallback if secondary errors), but skips the
+        cost of re-embedding the reference. Use when comparing one ref against
+        many candidates.
+        """
+        per_model: Dict[str, float] = {}
+        target_primary = self._represent_face_with_model(target_face, self.model_name)
+        primary_dist = self._cosine_distance(ref_primary, target_primary)
+        per_model[self.model_name] = float(primary_dist)
+
+        if ref_secondary is None:
+            return primary_dist, per_model
+
+        try:
+            target_secondary = self._represent_face_with_model(target_face, self.secondary_model_name)
+            sec_dist = self._cosine_distance(ref_secondary, target_secondary)
+            per_model[self.secondary_model_name] = float(sec_dist)
+            return (primary_dist + sec_dist) / 2.0, per_model
+        except Exception as exc:
+            logger.warning(
+                "Secondary model %s failed for target: %s", self.secondary_model_name, exc
+            )
+            return primary_dist, per_model
+
+    def _ensemble_distance_pair(
+        self, face_input1: Any, face_input2: Any
+    ) -> Tuple[float, Dict[str, float]]:
+        """Average cosine distance across primary + secondary models.
+
+        Returns (avg_distance, {model_name: distance}).
+        Falls back to primary-only if secondary model errors out.
+
+        For one-ref-against-many-targets workflows, prefer
+        `_embed_reference_for_ensemble` + `_distance_against_cached_ref` to avoid
+        re-embedding the reference on every call.
+        """
+        ref_primary, ref_secondary = self._embed_reference_for_ensemble(face_input1)
+        return self._distance_against_cached_ref(face_input2, ref_primary, ref_secondary)
+
+    def _check_anti_spoofing(
+        self, faces: List[Dict[str, Any]], image_label: str
+    ) -> Dict[str, Any]:
+        """Inspect FAS verdicts on extracted faces. LOG-ONLY — never raises.
+
+        ALWAYS returns a dict so the UI can render a consistent message per side.
+        The `status` field tells callers WHY FAS data is or isn't available:
+
+          - status="ok":          spoof_detected + faces populated normally
+          - status="no_face":     no face was detected on this image
+          - status="not_active":  FAS was disabled at extraction time (no is_real key)
+          - status="error":       unexpected shape from DeepFace
+
+        This replaces the prior None return that made it impossible for the UI
+        to distinguish "we don't know" from "this side wasn't checked", causing
+        asymmetric ref=None / target={...} renderings.
+        """
+        if not faces:
+            return {"status": "no_face", "spoof_detected": None, "faces": []}
+        has_fas_data = any(
+            isinstance(f, dict) and "is_real" in f for f in faces
+        )
+        if not has_fas_data:
+            return {"status": "not_active", "spoof_detected": None, "faces": []}
+        records: List[Dict[str, Any]] = []
+        spoof_detected = False
+        for face in faces:
+            if not isinstance(face, dict):
+                continue
+            is_real = face.get("is_real")
+            score = face.get("antispoof_score")
+            records.append({"is_real": is_real, "antispoof_score": score})
+            if is_real is False:
+                spoof_detected = True
+        if spoof_detected:
+            logger.warning(
+                "Anti-spoofing flagged possible spoof in %s: %s", image_label, records
+            )
+        return {"status": "ok", "spoof_detected": spoof_detected, "faces": records}
+
+    @staticmethod
+    def _side_real_confidence(side: Optional[Dict[str, Any]]) -> Optional[float]:
+        """Reduce a side's per-face FAS records to a single real-confidence number on [0,1].
+
+        DeepFace returns `{is_real: bool, antispoof_score: float}` per face,
+        where the score's MEANING flips with the boolean:
+          - is_real=True  -> score = confidence the face is REAL
+          - is_real=False -> score = confidence the face is a SPOOF
+
+        Renderers historically forwarded `antispoof_score` raw and rendered it
+        as "% real" unconditionally — which displayed a definitively-spoofed DL
+        (is_real=False, score=0.9999) as "99.99% real". This helper folds the
+        boolean into a single derived dimension `real_conf = score if is_real
+        else (1 - score)` so downstream code consumes one unambiguous number.
+
+        Returns the MIN real_conf across detected faces (the
+        least-confidently-real face is the most informative for "is this image
+        trustworthy?"). Returns None if no records are available.
+
+        Faces without an `is_real` key are skipped (they pre-date FAS being
+        active and would taint the min).
+        """
+        if not isinstance(side, dict):
+            return None
+        faces = side.get("faces") or []
+        confs: List[float] = []
+        for face in faces:
+            if not isinstance(face, dict):
+                continue
+            score = face.get("antispoof_score")
+            is_real = face.get("is_real")
+            if not isinstance(score, (int, float)) or not isinstance(is_real, bool):
+                continue
+            real_conf = float(score) if is_real else (1.0 - float(score))
+            real_conf = max(0.0, min(1.0, real_conf))
+            confs.append(real_conf)
+        if not confs:
+            return None
+        return min(confs)
+
+    @staticmethod
+    def _side_is_real(side: Optional[Dict[str, Any]]) -> Optional[bool]:
+        """Return the side's overall is_real verdict.
+
+        If ANY face on the side was flagged is_real=False, the side is False
+        (spoof present). Otherwise True if at least one face was checked.
+        Returns None when no FAS records are available.
+        """
+        if not isinstance(side, dict):
+            return None
+        faces = side.get("faces") or []
+        any_checked = False
+        for face in faces:
+            if not isinstance(face, dict):
+                continue
+            is_real = face.get("is_real")
+            if not isinstance(is_real, bool):
+                continue
+            any_checked = True
+            if is_real is False:
+                return False
+        return True if any_checked else None
+
+    # Backward-compat alias — some external callers may still use the old name.
+    # Returns the raw antispoof_score (un-inverted), which is what the old
+    # behavior produced. New code should use _side_real_confidence instead.
+    @staticmethod
+    def _side_antispoof_score(side: Optional[Dict[str, Any]]) -> Optional[float]:
+        if not isinstance(side, dict):
+            return None
+        faces = side.get("faces") or []
+        scores = []
+        for face in faces:
+            if not isinstance(face, dict):
+                continue
+            v = face.get("antispoof_score")
+            if isinstance(v, (int, float)):
+                scores.append(float(v))
+        if not scores:
+            return None
+        return min(scores)
+
+    @staticmethod
+    def summarize_fas_pair(diag: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Reduce per-side FAS records into a single, consistent UI verdict.
+
+        Returns a dict with these fields:
+          - verdict: "pass" | "fail" | "unavailable"
+          - color_hint: "green" | "amber" | "muted"
+          - message: user-facing text (verdict line only)
+          - ref_status / target_status: per-side status from _check_anti_spoofing
+          - ref_real_conf / target_real_conf: float in [0,1], 1.0 = certainly
+            real, 0.0 = certainly spoof. ALREADY interpreted — renderers can
+            just multiply by 100 to get a "% real" number directly.
+          - ref_is_real / target_is_real: bool|None engine verdict per side
+            (None if unknown). Renderers should switch on this boolean to pick
+            "PASS (Real)" vs "FAIL (Spoof)" labels, NOT on score magnitude.
+          - ref_score / target_score: raw antispoof_score (back-compat). NOT
+            for display — its meaning depends on is_real. Use real_conf.
+
+        Renderers (carousel chip, standalone GUI label, CLI Rich panel) should
+        ALL go through this helper so the same input always produces the same
+        output — no more "ref+target sometimes, target only sometimes" drift.
+        """
+        muted = {
+            "verdict": "unavailable",
+            "color_hint": "muted",
+            "message": "Liveness (anti-spoof): not assessed",
+            "ref_status": "missing",
+            "target_status": "missing",
+            "ref_score": None,
+            "target_score": None,
+            "ref_real_conf": None,
+            "target_real_conf": None,
+            "ref_is_real": None,
+            "target_is_real": None,
+        }
+        if not isinstance(diag, dict):
+            return muted
+        fas = diag.get("anti_spoofing")
+        if not isinstance(fas, dict):
+            return muted
+        ref = fas.get("ref") if isinstance(fas.get("ref"), dict) else None
+        tgt = fas.get("target") if isinstance(fas.get("target"), dict) else None
+        ref_status = (ref or {}).get("status", "missing") if ref else "missing"
+        tgt_status = (tgt or {}).get("status", "missing") if tgt else "missing"
+        ref_ok = ref_status == "ok"
+        tgt_ok = tgt_status == "ok"
+        ref_score = FaceEngine._side_antispoof_score(ref)
+        tgt_score = FaceEngine._side_antispoof_score(tgt)
+        ref_real_conf = FaceEngine._side_real_confidence(ref)
+        tgt_real_conf = FaceEngine._side_real_confidence(tgt)
+        ref_is_real = FaceEngine._side_is_real(ref)
+        tgt_is_real = FaceEngine._side_is_real(tgt)
+        # If EITHER side lacks ok-status FAS data, treat the whole verdict as
+        # unavailable — never report a partial ref-only or target-only reading,
+        # which is what was confusing the user.
+        if not (ref_ok and tgt_ok):
+            reasons = []
+            if not ref_ok:
+                reasons.append(f"ref={ref_status}")
+            if not tgt_ok:
+                reasons.append(f"target={tgt_status}")
+            return {
+                "verdict": "unavailable",
+                "color_hint": "muted",
+                "message": f"Liveness (anti-spoof): not assessed ({', '.join(reasons)})",
+                "ref_status": ref_status,
+                "target_status": tgt_status,
+                "ref_score": ref_score,
+                "target_score": tgt_score,
+                "ref_real_conf": ref_real_conf,
+                "target_real_conf": tgt_real_conf,
+                "ref_is_real": ref_is_real,
+                "target_is_real": tgt_is_real,
+            }
+        # Both sides have ok FAS data — render the verdict.
+        ref_spoof = bool((ref or {}).get("spoof_detected"))
+        tgt_spoof = bool((tgt or {}).get("spoof_detected"))
+        if ref_spoof or tgt_spoof:
+            flagged = []
+            if ref_spoof:
+                flagged.append("ref")
+            if tgt_spoof:
+                flagged.append("target")
+            return {
+                "verdict": "fail",
+                "color_hint": "amber",
+                "message": f"Liveness (anti-spoof): possible synthetic input on {' & '.join(flagged)} (advisory only)",
+                "ref_status": "ok",
+                "target_status": "ok",
+                "ref_score": ref_score,
+                "target_score": tgt_score,
+                "ref_real_conf": ref_real_conf,
+                "target_real_conf": tgt_real_conf,
+                "ref_is_real": ref_is_real,
+                "target_is_real": tgt_is_real,
+            }
+        return {
+            "verdict": "pass",
+            "color_hint": "green",
+            "message": "Liveness (anti-spoof): both images look real",
+            "ref_status": "ok",
+            "target_status": "ok",
+            "ref_score": ref_score,
+            "target_score": tgt_score,
+            "ref_real_conf": ref_real_conf,
+            "target_real_conf": tgt_real_conf,
+            "ref_is_real": ref_is_real,
+            "target_is_real": tgt_is_real,
+        }
+
     def _score_from_distance(self, distance: float) -> Tuple[float, bool]:
         distance = max(0.0, min(1.0, distance))
         epsilon = 1e-6
         safe_threshold = max(epsilon, min(1.0 - epsilon, float(self.threshold)))
         if distance <= safe_threshold:
-            return 100.0 - ((distance / safe_threshold) * 20.0), True
-        return max(0.0, 79.0 - (((distance - safe_threshold) / (1.0 - safe_threshold)) * 79.0)), False
+            ratio = distance / safe_threshold
+            curved_score = 80.0 + (20.0 * (1.0 - math.pow(ratio, 2.5)))
+            return curved_score, True
+        fail_ratio = (distance - safe_threshold) / (1.0 - safe_threshold)
+        fail_score = max(0.0, 79.0 * (1.0 - math.pow(fail_ratio, 0.5)))
+        return fail_score, False
 
     def _extract_faces(self, img_path: str) -> List[Dict[str, Any]]:
-        return DeepFace.extract_faces(
+        kwargs: Dict[str, Any] = dict(
             img_path=img_path,
             detector_backend=self.detector_backend,
             enforce_detection=True,
             align=True,
-        ) or []
+        )
+        if self.anti_spoofing:
+            kwargs["anti_spoofing"] = True
+        faces = DeepFace.extract_faces(**kwargs) or []
+        # Normalize: some DeepFace builds may wrap in nested lists.
+        if faces and isinstance(faces[0], list):
+            flat: List[Dict[str, Any]] = []
+            for inner in faces:
+                if isinstance(inner, list):
+                    flat.extend([item for item in inner if isinstance(item, dict)])
+            return flat
+        return [item for item in faces if isinstance(item, dict)]
 
     def _clip_box(self, box: Dict[str, int], width: int, height: int) -> Dict[str, int]:
         x = max(0, min(int(box.get("x", 0)), max(0, width - 1)))
@@ -359,6 +712,8 @@ class FaceEngine:
             "raw_cosine_distance": None,
             "mapped_score": None,
             "fallback_reason": None,
+            "per_model_distances": None,
+            "anti_spoofing": None,
         }
 
     def _mode_result(
@@ -395,16 +750,23 @@ class FaceEngine:
         diag["selected_face_boxes"]["ref"] = self._face_bbox(face1)
         diag["selected_face_confidence"]["ref"] = self._face_confidence(face1)
 
-        emb1 = self._represent_face(face1["face"])
-        best_distance = None
-        best_face = None
+        # Embed the reference face ONCE (primary + optional secondary). With ensemble on
+        # this is the single biggest perf win: previously we re-embedded the ref against
+        # both ArcFace AND Facenet512 for every target face, scaling 2N inference calls
+        # per multi-face image. This collapses it to 2 + N (ensemble) or 1 + N (primary-only).
+        ref_primary, ref_secondary = self._embed_reference_for_ensemble(face1["face"])
+        best_distance: Optional[float] = None
+        best_face: Optional[Dict[str, Any]] = None
+        best_per_model: Dict[str, float] = {}
         for face2 in faces2:
             try:
-                emb2 = self._represent_face(face2["face"])
-                dist = self._cosine_distance(emb1, emb2)
+                dist, per_model = self._distance_against_cached_ref(
+                    face2["face"], ref_primary, ref_secondary
+                )
                 if best_distance is None or dist < best_distance:
                     best_distance = dist
                     best_face = face2
+                    best_per_model = per_model
             except Exception:
                 continue
         if best_distance is None or best_face is None:
@@ -413,13 +775,18 @@ class FaceEngine:
         diag["selected_face_boxes"]["target"] = self._face_bbox(best_face)
         diag["selected_face_confidence"]["target"] = self._face_confidence(best_face)
         diag["raw_cosine_distance"] = round(float(best_distance), 6)
+        diag["per_model_distances"] = {k: round(float(v), 6) for k, v in best_per_model.items()}
+        diag["anti_spoofing"] = {
+            "ref": self._check_anti_spoofing(faces1, "image 1"),
+            "target": self._check_anti_spoofing(faces2, "image 2"),
+        }
         score, match = self._score_from_distance(float(best_distance))
         return self._mode_result(self.MODE_EXISTING, score, match, None, diag)
 
     def _compare_full_image_align(self, img1_path: str, img2_path: str) -> Dict[str, Any]:
         diag = self._base_mode_diag(self.MODE_FULL_IMAGE_ALIGN, img1_path, img2_path)
-        reps1 = self._represent_full_image_with_detection(img1_path)
-        reps2 = self._represent_full_image_with_detection(img2_path)
+        reps1 = self._represent_full_image_with_detection_with_model(img1_path, self.model_name)
+        reps2 = self._represent_full_image_with_detection_with_model(img2_path, self.model_name)
         diag["face_counts"] = {"ref": len(reps1), "target": len(reps2)}
         src_img = cv2.imread(img1_path)
         tgt_img = cv2.imread(img2_path)
@@ -430,13 +797,46 @@ class FaceEngine:
 
         emb1 = np.asarray(src.get("embedding"), dtype=float)
         emb2 = np.asarray(tgt.get("embedding"), dtype=float)
-        dist = self._cosine_distance(emb1, emb2)
+        primary_dist = self._cosine_distance(emb1, emb2)
+        per_model: Dict[str, float] = {self.model_name: float(primary_dist)}
+
+        dist = primary_dist
+        if self.use_ensemble:
+            try:
+                reps1_sec = self._represent_full_image_with_detection_with_model(
+                    img1_path, self.secondary_model_name
+                )
+                reps2_sec = self._represent_full_image_with_detection_with_model(
+                    img2_path, self.secondary_model_name
+                )
+                src_sec = self._select_prominent_face(
+                    reps1_sec, "image 1 (sec)", (src_img.shape[1], src_img.shape[0])
+                )
+                tgt_sec = self._select_prominent_face(
+                    reps2_sec, "image 2 (sec)", (tgt_img.shape[1], tgt_img.shape[0])
+                )
+                emb1_sec = np.asarray(src_sec.get("embedding"), dtype=float)
+                emb2_sec = np.asarray(tgt_sec.get("embedding"), dtype=float)
+                sec_dist = self._cosine_distance(emb1_sec, emb2_sec)
+                per_model[self.secondary_model_name] = float(sec_dist)
+                dist = (primary_dist + sec_dist) / 2.0
+            except Exception as exc:
+                logger.warning(
+                    "Secondary model %s failed in full-image mode: %s",
+                    self.secondary_model_name,
+                    exc,
+                )
 
         diag["selected_face_boxes"]["ref"] = self._face_bbox(src)
         diag["selected_face_boxes"]["target"] = self._face_bbox(tgt)
         diag["selected_face_confidence"]["ref"] = self._face_confidence(src)
         diag["selected_face_confidence"]["target"] = self._face_confidence(tgt)
         diag["raw_cosine_distance"] = round(float(dist), 6)
+        diag["per_model_distances"] = {k: round(float(v), 6) for k, v in per_model.items()}
+        diag["anti_spoofing"] = {
+            "ref": self._check_anti_spoofing(reps1, "image 1"),
+            "target": self._check_anti_spoofing(reps2, "image 2"),
+        }
 
         score, match = self._score_from_distance(float(dist))
         return self._mode_result(self.MODE_FULL_IMAGE_ALIGN, score, match, None, diag)
@@ -465,10 +865,13 @@ class FaceEngine:
         diag["crop_dimensions"]["ref"] = src_diag["crop_dimensions"]
         diag["crop_dimensions"]["target"] = tgt_diag["crop_dimensions"]
 
-        emb1 = self._represent_face(src_norm)
-        emb2 = self._represent_face(tgt_norm)
-        dist = self._cosine_distance(emb1, emb2)
+        dist, per_model = self._ensemble_distance_pair(src_norm, tgt_norm)
         diag["raw_cosine_distance"] = round(float(dist), 6)
+        diag["per_model_distances"] = {k: round(float(v), 6) for k, v in per_model.items()}
+        diag["anti_spoofing"] = {
+            "ref": self._check_anti_spoofing(faces1, "image 1"),
+            "target": self._check_anti_spoofing(faces2, "image 2"),
+        }
 
         score, match = self._score_from_distance(float(dist))
         return self._mode_result(self.MODE_NORMALIZED_CROP, score, match, None, diag)
@@ -501,6 +904,8 @@ class FaceEngine:
                 "normalized_w": self.normalized_face_size[0],
                 "normalized_h": self.normalized_face_size[1],
             }
+            diag["per_model_distances"] = {self.model_name: round(float(dist), 6)}
+            diag["anti_spoofing"] = {"ref": None, "target": None}
             return self._mode_result(self.MODE_FALLBACK, score, match, None, diag)
         finally:
             for tmp_path in (fallback1, fallback2):

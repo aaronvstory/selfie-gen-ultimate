@@ -94,6 +94,34 @@ hiddenimports = [
 hiddenimports += collect_submodules('selenium')
 hiddenimports += collect_submodules('webdriver_manager')
 
+# Similarity engine ML stack — DeepFace + ArcFace + Facenet512 + anti-spoofing.
+# These pull in tensorflow + tf-keras + retinaface + torch (FAS classifier).
+# PyInstaller can't statically trace DeepFace's lazy model loading, so collect_submodules
+# is required to ensure the frozen build can run face similarity at runtime.
+hiddenimports += [
+    'similarity_engine',
+    'face_similarity',
+    'deepface',
+    'tf_keras',
+    'retinaface',
+    'torch',
+]
+try:
+    hiddenimports += collect_submodules('deepface')
+except Exception:
+    pass
+try:
+    hiddenimports += collect_submodules('retinaface')
+except Exception:
+    pass
+# torch submodules can be heavy; collect only what FAS needs.
+hiddenimports += [
+    'torch.nn',
+    'torch.nn.functional',
+    'torch.utils',
+    'torch.utils.data',
+]
+
 # -----------------------------------------------------------------------
 # Data files (non-Python resources)
 # -----------------------------------------------------------------------

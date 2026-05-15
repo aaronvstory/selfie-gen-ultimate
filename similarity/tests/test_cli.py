@@ -103,6 +103,24 @@ class TestProCLI(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "padding_ratio"):
             self.cli.apply_runtime_config(padding_ratio=2.0)
 
+    def test_apply_runtime_config_anti_spoofing_true_sets_engine_flag(self) -> None:
+        self.cli.engine.anti_spoofing = False
+        self.cli.apply_runtime_config(anti_spoofing=True)
+        self.assertTrue(self.cli.engine.anti_spoofing)
+        self.assertTrue(self.cli.config["anti_spoofing"])
+
+    def test_apply_runtime_config_anti_spoofing_false_sets_engine_flag(self) -> None:
+        self.cli.engine.anti_spoofing = True
+        self.cli.apply_runtime_config(anti_spoofing=False)
+        self.assertFalse(self.cli.engine.anti_spoofing)
+        self.assertFalse(self.cli.config["anti_spoofing"])
+
+    def test_apply_runtime_config_anti_spoofing_none_leaves_engine_unchanged(self) -> None:
+        self.cli.engine.anti_spoofing = True
+        self.cli.apply_runtime_config(anti_spoofing=None)
+        self.assertTrue(self.cli.engine.anti_spoofing)
+        self.assertNotIn("anti_spoofing", self.cli.config)
+
     def test_validate_padding_ratio_accepts_bounds(self) -> None:
         self.assertEqual(self.cli._validate_padding_ratio(0.0), 0.0)
         self.assertEqual(self.cli._validate_padding_ratio(1.0), 1.0)

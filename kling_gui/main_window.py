@@ -620,12 +620,16 @@ class KlingGUIWindow:
             self._layout_corrections_pending = True
 
         # Pre-sanitize sash values against initial window size before widgets render.
+        # v5.2 fallback values match new defaults (carousel 25% / log_drop 71%
+        # of right section) — see layout_utils.sanitize_sash_layout for the
+        # canonical clamp logic. Computed for ~1621px window (the user's tested
+        # size): sash_queue=405, sash_log_drop_split=863.
         pre_sash, pre_sash_changed = sanitize_sash_layout(
             sash_dropzone=self.config.get("sash_dropzone", 500),
             sash_prompt_split=self.config.get("sash_prompt_split", 760),
-            sash_queue=self.config.get("sash_queue", 320),
+            sash_queue=self.config.get("sash_queue", 405),
             sash_log=self.config.get("sash_log", 150),
-            sash_log_drop_split=self.config.get("sash_log_drop_split", 360),
+            sash_log_drop_split=self.config.get("sash_log_drop_split", 863),
             root_width=sanitized_window["width"],
             root_height=sanitized_window["height"],
         )
@@ -769,9 +773,9 @@ class KlingGUIWindow:
             # Window layout persistence
             "window_geometry": "",  # Empty = use default
             "sash_dropzone": 500,  # Height of top pane
-            "sash_queue": 220,  # Width of left bottom pane (carousel narrow ~24%)
+            "sash_queue": 405,  # Width of left bottom pane (carousel 25%, user-tested at 1621w)
             "sash_log": 150,  # Height of log pane (before history)
-            "sash_log_drop_split": 380,  # Width split in log pane (log | permanent drop zone)
+            "sash_log_drop_split": 863,  # Width of LOG pane (~71% of right section, user-tested at 1621w)
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)
@@ -3845,12 +3849,17 @@ class KlingGUIWindow:
             # Ensure all widgets are rendered before placing sashes
             self.root.update_idletasks()
 
+            # Fallback values match v5.2 defaults (carousel 25% / log_drop 71%
+            # of right section). The sanitize_sash_layout call below clamps
+            # these against the actual current window size, so the literal
+            # numbers here just keep the runtime path defined when no config
+            # value exists.
             sash_values, changed = sanitize_sash_layout(
                 sash_dropzone=self.config.get("sash_dropzone", 500),
                 sash_prompt_split=self.config.get("sash_prompt_split", 760),
-                sash_queue=self.config.get("sash_queue", 320),
+                sash_queue=self.config.get("sash_queue", 405),
                 sash_log=self.config.get("sash_log", 150),
-                sash_log_drop_split=self.config.get("sash_log_drop_split", 360),
+                sash_log_drop_split=self.config.get("sash_log_drop_split", 863),
                 root_width=self.root.winfo_width(),
                 root_height=self.root.winfo_height(),
             )
@@ -3997,6 +4006,16 @@ class KlingGUIWindow:
         self.carousel.suppress_auto_calc(True)
         self.session_controller.autosave_suspended = True
         loaded_count = 0
+        # Version-gate: invalidate similarity scores produced by the v1.7 linear formula
+        # so v1.8's polynomial + ensemble + FAS recomputes them. Sessions saved by v1.8+
+        # carry "similarity_engine_version": "1.8" at the top-level of the JSON.
+        session_engine_ver = str(data.get("similarity_engine_version", ""))
+        invalidate_legacy_scores = session_engine_ver != "1.8"
+        if invalidate_legacy_scores and any(img.get("similarity_score") is not None for img in images):
+            self._log(
+                "Session predates v1.8 KYC scoring — clearing legacy scores so the new engine recomputes.",
+                "info",
+            )
         try:
             # Clear and re-populate the LIVE session (preserves tab references)
             self.image_session.clear()
@@ -4005,14 +4024,25 @@ class KlingGUIWindow:
                 if not os.path.isfile(path):
                     self._log(f"Skipped missing: {os.path.basename(path)}", "warning")
                     continue
+                # Drop legacy similarity (set to None) when loading a pre-v1.8 session.
+                # Manual user overrides are always preserved.
+                is_override = bool(img.get("similarity_override", False))
+                if invalidate_legacy_scores and not is_override:
+                    sim_value = None
+                    sim_score_value = None
+                    sim_pass_value = None
+                else:
+                    sim_value = img.get("similarity")
+                    sim_score_value = img.get("similarity_score")
+                    sim_pass_value = img.get("similarity_pass")
                 self.image_session.add_image(
                     path,
                     img.get("source_type", "input"),
                     label=img.get("label", ""),
-                    similarity=img.get("similarity"),
-                    similarity_score=img.get("similarity_score"),
-                    similarity_pass=img.get("similarity_pass"),
-                    similarity_override=bool(img.get("similarity_override", False)),
+                    similarity=sim_value,
+                    similarity_score=sim_score_value,
+                    similarity_pass=sim_pass_value,
+                    similarity_override=is_override,
                     similarity_override_note=img.get("similarity_override_note", ""),
                     similarity_override_ts=img.get("similarity_override_ts"),
                     ops=img.get("ops", {}),
@@ -4036,6 +4066,26 @@ class KlingGUIWindow:
         self._refresh_session_dependent_ui()
         self._queue_autosave(reason="session_load")
         self._log(f"Session restored: {loaded_count} images loaded", "success")
+        # ALWAYS kick off a batch recompute after restore so the user sees engine
+        # activity in the Processing Log — never silent.
+        # The carousel's auto-calc path is dead post-restore (suppress lifts AFTER
+        # _last_known_count is updated, so n > _last_known_count is False forever),
+        # and the legacy-score invalidation gate previously gated this call too —
+        # producing the silent failure where v1.8 autosaves never recomputed.
+        # recalc_all_similarity_now() handles all three cases with visible logs:
+        #   - work started:       "Sim: batch start: N images, ref=..., reason=..."
+        #   - no reference set:   "Sim: recalc skipped (...): no similarity reference"
+        #   - no eligible targets: "Sim: recalc skipped (...): no eligible targets"
+        if loaded_count > 0:
+            recalc_reason = (
+                "post-restore v1.8 KYC migration"
+                if invalidate_legacy_scores
+                else "post-restore engine refresh"
+            )
+            self.root.after(
+                250,
+                lambda r=recalc_reason: self.carousel.recalc_all_similarity_now(reason=r),
+            )
 
     # ── Auto-save timer ───────────────────────────────────────────────────────
 

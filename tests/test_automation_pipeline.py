@@ -86,6 +86,124 @@ def test_pipeline_success_case(tmp_path: Path, monkeypatch):
     assert manifest.data["cases"]["case-a"]["status"] == "complete"
 
 
+def test_pipeline_fas_strict_gate_routes_to_manual_review(tmp_path: Path, monkeypatch):
+    """When automation_similarity_require_fas_pass=true and FAS flags a spoof,
+    the pipeline must route to manual_review even with a passing similarity score."""
+    case_dir = tmp_path / "case-fas"
+    case_dir.mkdir()
+    front = case_dir / "front.jpeg"
+    Image.new("RGB", (64, 64), (2, 2, 2)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-fas")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x",
+        "bfl_api_key": "bfl-token",
+        "automation_oldcam_required": False,
+        "automation_similarity_require_fas_pass": True,  # KEY UNDER TEST
+        "saved_prompts": {"1": "prompt"},
+        "current_prompt_slot": 1,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+
+    # Score is 95 (passing), but target image is flagged as spoofed.
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop",
+                        lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr(
+        "automation.pipeline.compute_face_similarity_details",
+        lambda *a, **kw: {
+            "score": 95,
+            "pass": True,
+            "error": None,
+            "match": True,
+            "diagnostics": {
+                "mode": "normalized_crop",
+                "anti_spoofing": {
+                    "ref": {"status": "ok", "spoof_detected": False, "faces": [{"is_real": True, "antispoof_score": 0.91}]},
+                    # Realistic DeepFace shape: spoof verdicts come back with
+                    # HIGH confidence numbers, not low ones. The score is the
+                    # model's certainty in is_real, not real-ness.
+                    "target": {"status": "ok", "spoof_detected": True, "faces": [{"is_real": False, "antispoof_score": 0.99}]},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["manual_review"] == 1
+    assert manifest.data["cases"]["case-fas"]["status"] == "manual_review"
+
+
+def test_pipeline_fas_log_only_does_not_block_when_require_fas_pass_false(tmp_path: Path, monkeypatch):
+    """When automation_similarity_require_fas_pass=false (default), FAS spoof_detected
+    is log-only and a passing similarity score still routes the case to selfie_expand."""
+    case_dir = tmp_path / "case-fas-log"
+    case_dir.mkdir()
+    front = case_dir / "front.jpeg"
+    Image.new("RGB", (64, 64), (3, 3, 3)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-fas-log")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x",
+        "bfl_api_key": "bfl-token",
+        "automation_oldcam_required": False,
+        "automation_similarity_require_fas_pass": False,  # default
+        "saved_prompts": {"1": "prompt"},
+        "current_prompt_slot": 1,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop",
+                        lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr(
+        "automation.pipeline.compute_face_similarity_details",
+        lambda *a, **kw: {
+            "score": 95,
+            "pass": True,
+            "error": None,
+            "match": True,
+            "diagnostics": {
+                "mode": "normalized_crop",
+                "anti_spoofing": {
+                    "ref": {"status": "ok", "spoof_detected": False, "faces": []},
+                    "target": {"status": "ok", "spoof_detected": True, "faces": [{"is_real": False, "antispoof_score": 0.97}]},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    # Spoof was detected but require_fas_pass=False, so case did NOT get gated by FAS.
+    # It will likely complete or hit a downstream stub (expand/video); the key assertion
+    # is that manual_review is NOT 1 due to FAS — we proved log-only behavior.
+    assert stats.get("manual_review", 0) == 0
+
+
 def test_pipeline_similarity_manual_review(tmp_path: Path, monkeypatch):
     case_dir = tmp_path / "case-b"
     case_dir.mkdir()
@@ -1342,3 +1460,67 @@ def test_pipeline_oldcam_falls_back_to_existing_video_when_manifest_video_is_sta
     stats = runner.run([record])
     assert stats["completed"] == 1
     assert called["video"] == str(existing_video)
+
+
+def _make_runner_for_bool_test(automation_overrides: dict, tmp_path: Path) -> AutoPipelineRunner:
+    """Helper: build a minimal AutoPipelineRunner for direct _read_bool tests."""
+    config = merge_automation_defaults({
+        "falai_api_key": "x",
+        "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "prompt"},
+        "current_prompt_slot": 1,
+        **automation_overrides,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "manifest.json", tmp_path, {})
+    return AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+
+
+def test_read_bool_treats_string_false_as_false(tmp_path: Path):
+    """Coderabbit Major finding on PR #19: bool('false') is True in Python.
+    The prior bool(self.automation.get(...)) at automation/pipeline.py:663
+    would silently enable strict spoof gating whenever a user wrote "false"
+    (string) in their config — opposite of the intended behavior. _read_bool
+    routes through face_similarity._parse_bool to handle string inputs
+    correctly."""
+    runner = _make_runner_for_bool_test({
+        "automation_similarity_require_fas_pass": "false",
+    }, tmp_path)
+    assert runner._read_bool("automation_similarity_require_fas_pass", True) is False
+
+
+def test_read_bool_treats_string_true_as_true(tmp_path: Path):
+    runner = _make_runner_for_bool_test({
+        "automation_similarity_require_fas_pass": "true",
+    }, tmp_path)
+    assert runner._read_bool("automation_similarity_require_fas_pass", False) is True
+
+
+def test_read_bool_returns_default_for_unknown_string(tmp_path: Path):
+    runner = _make_runner_for_bool_test({
+        "automation_similarity_require_fas_pass": "garbage",
+    }, tmp_path)
+    # _parse_bool returns None for unparseable strings → fall back to default.
+    assert runner._read_bool("automation_similarity_require_fas_pass", True) is True
+    assert runner._read_bool("automation_similarity_require_fas_pass", False) is False
+
+
+def test_read_bool_passes_through_actual_booleans(tmp_path: Path):
+    runner = _make_runner_for_bool_test({
+        "automation_similarity_require_fas_pass": True,
+    }, tmp_path)
+    assert runner._read_bool("automation_similarity_require_fas_pass", False) is True
+
+    runner2 = _make_runner_for_bool_test({
+        "automation_similarity_require_fas_pass": False,
+    }, tmp_path)
+    assert runner2._read_bool("automation_similarity_require_fas_pass", True) is False

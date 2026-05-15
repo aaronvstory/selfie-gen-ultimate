@@ -130,6 +130,22 @@ class AutoPipelineRunner:
             return default
         return value
 
+    def _read_bool(self, key: str, default: bool) -> bool:
+        """Read an automation_* config flag as a strict bool.
+
+        Reuses face_similarity._parse_bool (already the canonical helper for
+        config-string-to-bool coercion) so a JSON value of "false" is treated
+        as False, not True. Raw bool(...) on a non-empty string returns True
+        — that's the bug coderabbit flagged on PR #19 for
+        automation_similarity_require_fas_pass, which would have silently
+        enabled strict spoof gating whenever the user typed "false" in the
+        config file.
+        """
+        from face_similarity import _parse_bool
+        raw = self.automation.get(key, default)
+        parsed = _parse_bool(raw)
+        return parsed if parsed is not None else bool(default)
+
     def _report(self, message: str, level: str = "info") -> None:
         if self.progress_cb:
             self.progress_cb(message, level)
@@ -660,6 +676,7 @@ class AutoPipelineRunner:
         model_endpoints = list(self.automation.get("automation_selfie_models", ["fal-ai/nano-banana-2/edit"]))
         selfie_prompt_ctx = self.resolve_selfie_prompt()
         threshold = self._read_int("automation_similarity_threshold", 80)
+        require_fas_pass = self._read_bool("automation_similarity_require_fas_pass", False)
         max_attempts = max(1, self._read_int("automation_selfie_max_attempts_per_model", 1))
         self.logger.info(
             "case %s selfie config models=%s prompt_slot=%s prompt_source=%s threshold=%s",
@@ -743,15 +760,76 @@ class AutoPipelineRunner:
         if not isinstance(diag, dict):
             diag = {}
         self.logger.info(
-            "case %s similarity summary score=%s mode=%s distance=%s fallback=%s",
+            "case %s similarity summary score=%s mode=%s distance=%s fallback=%s per_model=%s",
             case_key,
             best_similarity_meta.get("score"),
             diag.get("mode"),
             diag.get("raw_cosine_distance"),
             diag.get("fallback_reason"),
+            diag.get("per_model_distances"),
         )
+        # Route through summarize_fas_pair so the gate decision uses the same
+        # verdict the GUI/CLI shows the user. The strict-pass gate ONLY blocks
+        # on verdict="fail" (both sides have ok FAS data + at least one spoof
+        # flagged). Verdict "unavailable" (one side missing FAS) NEVER blocks —
+        # there's nothing to enforce against.
+        fas_pair = None
+        ref_spoof = None
+        tgt_spoof = None
+        spoof_blocking = False
+        try:
+            from similarity_engine import FaceEngine as _FaceEngine
+            fas_pair = _FaceEngine.summarize_fas_pair(diag if isinstance(diag, dict) else None)
+        except Exception:
+            fas_pair = None
+        if isinstance(fas_pair, dict):
+            verdict = fas_pair.get("verdict")
+            ref_status = fas_pair.get("ref_status")
+            tgt_status = fas_pair.get("target_status")
+            # Pull raw spoof flags for log readability (when ok-status).
+            fas = diag.get("anti_spoofing") if isinstance(diag, dict) else None
+            if isinstance(fas, dict):
+                ref_fas = fas.get("ref") if isinstance(fas.get("ref"), dict) else {}
+                tgt_fas = fas.get("target") if isinstance(fas.get("target"), dict) else {}
+                ref_spoof = (ref_fas or {}).get("spoof_detected")
+                tgt_spoof = (tgt_fas or {}).get("spoof_detected")
+            if verdict == "fail":
+                if require_fas_pass:
+                    self.logger.warning(
+                        "case %s anti-spoofing FAILED ref=%s target=%s (require_fas_pass=true; routing to manual_review)",
+                        case_key,
+                        ref_spoof,
+                        tgt_spoof,
+                    )
+                    spoof_blocking = True
+                else:
+                    self.logger.warning(
+                        "case %s anti-spoofing advisory ref=%s target=%s (log-only; gate unchanged)",
+                        case_key,
+                        ref_spoof,
+                        tgt_spoof,
+                    )
+            elif verdict == "unavailable":
+                self.logger.info(
+                    "case %s anti-spoofing not assessable (ref_status=%s target_status=%s) — gate unchanged",
+                    case_key,
+                    ref_status,
+                    tgt_status,
+                )
         if self.verbose_logging:
             self.logger.debug("case %s similarity diagnostics=%s", case_key, best_similarity_meta)
+        if spoof_blocking:
+            spoof_reason = f"anti-spoofing failed (ref_spoof={ref_spoof}, target_spoof={tgt_spoof})"
+            self.manifest.update_step(
+                case_key,
+                "similarity_gate",
+                "manual_review",
+                output=best_path,
+                error=spoof_reason,
+                meta=best_similarity_meta,
+            )
+            self.last_case_results[case_key] = {"status": "manual_review", "reason": spoof_reason}
+            return self._finalize_case(case_entry, "manual_review")
         if best_similarity_meta.get("error"):
             similarity_error = str(best_similarity_meta.get("error"))
             self.manifest.update_step(
