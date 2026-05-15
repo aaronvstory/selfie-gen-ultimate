@@ -623,13 +623,29 @@ class FaceEngine:
             "target_is_real": tgt_is_real,
         }
 
+    # Polynomial-easing exponent for the pass curve (distance <= threshold).
+    # v1.8 used 2.5, which compressed the entire 0.0-0.20 distance band into
+    # 99-100% — making AI-generated selfies (typical distance 0.05-0.15) read
+    # as visually indistinguishable from pixel-identical inputs. v1.9 uses 0.5
+    # (square root) to spread that band across 95-91% so the score conveys
+    # meaningful gradation. Reference points (threshold=0.68):
+    #   distance 0.00 -> 100.00%  (identical)
+    #   distance 0.05 ->  94.58%  (typical AI selfie, identity preserved)
+    #   distance 0.10 ->  92.33%
+    #   distance 0.15 ->  90.61%
+    #   distance 0.20 ->  89.15%  (visible variance)
+    #   distance 0.30 ->  86.72%
+    #   distance 0.50 ->  82.85%
+    #   distance 0.68 ->  80.00%  (ArcFace official threshold)
+    PASS_CURVE_EXPONENT: float = 0.5
+
     def _score_from_distance(self, distance: float) -> Tuple[float, bool]:
         distance = max(0.0, min(1.0, distance))
         epsilon = 1e-6
         safe_threshold = max(epsilon, min(1.0 - epsilon, float(self.threshold)))
         if distance <= safe_threshold:
             ratio = distance / safe_threshold
-            curved_score = 80.0 + (20.0 * (1.0 - math.pow(ratio, 2.5)))
+            curved_score = 80.0 + (20.0 * (1.0 - math.pow(ratio, self.PASS_CURVE_EXPONENT)))
             return curved_score, True
         fail_ratio = (distance - safe_threshold) / (1.0 - safe_threshold)
         fail_score = max(0.0, 79.0 * (1.0 - math.pow(fail_ratio, 0.5)))

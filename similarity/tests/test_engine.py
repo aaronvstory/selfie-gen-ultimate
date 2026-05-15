@@ -149,10 +149,12 @@ class TestFaceEngine(unittest.TestCase):
 
         self.assertIsNone(result["error"])
         self.assertTrue(result["match"])
-        # v1.8 polynomial easing curve: cosine distance 0.2 (between [1,0,0]
-        # and [0.8,0.6,0]) maps to ~99.06 instead of the pre-v1.8 ~94.12.
+        # v1.9 recalibrated easing curve (exponent 0.5): cosine distance 0.2
+        # (between [1,0,0] and [0.8,0.6,0]) now maps to ~89.15. v1.8 (exponent
+        # 2.5) mapped this to ~99.06; v1.9 spreads AI-edit-typical distances
+        # 0.05-0.20 across 95-89% so 99% no longer pegs and obscures variance.
         # See similarity/CLAUDE.md "Key Mathematical Decision".
-        self.assertAlmostEqual(result["score"], 99.06, places=2)
+        self.assertAlmostEqual(result["score"], 89.15, places=2)
         self.assertEqual(len(_DeepFaceRecorder.extract_calls), 2)
         self.assertEqual(len(_DeepFaceRecorder.represent_calls), 2)
         self.assertTrue(

@@ -235,6 +235,36 @@ class SimilarityEngineTests(unittest.TestCase):
         self.assertLess(score, 80.0)
         self.assertFalse(match)
 
+    def test_v1_9_curve_spreads_ai_edit_distances_across_meaningful_band(self):
+        """v1.9 PASS_CURVE_EXPONENT=0.5 calibration check.
+
+        AI-generated selfies (Nano Banana 2 Edit, FLUX Kontext, etc.) typically
+        produce cosine distances 0.05-0.15 against the source crop. v1.8's
+        exponent 2.5 mapped that whole band to 99-100% — useless for grading.
+        v1.9 spreads it across 95-91%. Pin the reference points so future
+        recalibration is intentional, not accidental.
+        """
+        engine = se.FaceEngine()
+        # (distance, expected_score) — derived from 80 + 20*(1 - sqrt(d/0.68))
+        # at threshold=0.68. Tolerances reflect rounding for human-readable
+        # comments; the math is exact, the tolerance is for documentation drift.
+        cases = [
+            (0.00, 100.00),  # identical: pegged
+            (0.05,  94.58),  # AI edit, near-perfect identity preservation
+            (0.10,  92.33),
+            (0.15,  90.61),
+            (0.20,  89.15),  # visible variance, still clearly same person
+            (0.30,  86.72),
+            (0.50,  82.85),
+            (0.68,  80.00),  # ArcFace official threshold
+        ]
+        for distance, expected in cases:
+            with self.subTest(distance=distance):
+                score, match = engine._score_from_distance(distance)
+                self.assertAlmostEqual(score, expected, places=2,
+                    msg=f"distance={distance} expected ~{expected}, got {score:.2f}")
+                self.assertTrue(match)
+
     def test_ensemble_distance_pair_averages_two_models(self):
         engine = se.FaceEngine()
         engine.use_ensemble = True

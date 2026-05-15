@@ -7,9 +7,23 @@ This project was initiated as an "Enterprise-Grade Local Face Similarity Applica
 
 ### Key Mathematical Decision (Cosine Distance Mapping)
 ArcFace utilizes Cosine Distance. The threshold for ArcFace is officially `0.68`. Any distance <= 0.68 is considered the same person.
-However, end-users requested an easy-to-understand 0-100% UI where an 80% represents the cutoff. 
-Because of this, `engine.py` contains a dynamic mathematical curve that maps `distance 0.0 -> threshold 0.68` to `score 100.0% -> 80.0%`. 
-Do **not** overwrite this math with a standard `(1 - distance) * 100` formula, as that will fail mathematically accurate matches.
+
+End-users requested an easy-to-understand 0-100% UI where 80% represents the
+cutoff. `similarity_engine._score_from_distance` maps `distance 0.0 -> 0.68`
+to `score 100% -> 80%` via a polynomial easing curve.
+
+**v1.9 calibration (current):** `PASS_CURVE_EXPONENT = 0.5` (square root).
+This was chosen so AI-generated selfies (which typically land at cosine
+distance 0.05-0.15 because modern edit models preserve identity strongly)
+read as 91-95% rather than 99-100%. The 99% pegged read in v1.8 (exponent
+2.5) was indistinguishable from a degenerate fallback and obscured real
+variance. Reference points listed in the source comment above the constant.
+
+Do **not** replace the curve with a standard `(1 - distance) * 100`
+formula, as that linearization fails mathematically accurate matches at
+the 0.40-0.68 distance band (true matches scoring as 32-60% would be
+discarded). Tune the exponent if calibration intent changes; do not
+swap the formula.
 
 ### Directory Structure Requirements
 - `main.py` serves as the sole entry point, passing control to `cli.py` or `gui.py`.
