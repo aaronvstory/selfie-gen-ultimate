@@ -273,19 +273,27 @@ Saved sash values from `kling_config.json` are applied by `_restore_sash_positio
 `log_drop_paned` lives inside the space to the right of the carousel (`safe_w - sash_queue`). Clamping it as a % of `safe_w` allows values larger than the pane itself. Always compute the right-section width first:
 
 ```python
-clamped_queue = max(queue_min, min(int(sash_queue or queue_default), queue_max))
+clamped_queue = max(queue_min, min(int(sash_queue) if sash_queue else queue_default, queue_max))
 right_section_w = max(400, safe_w - clamped_queue)
-log_drop_min = int(right_section_w * 0.42)
-log_drop_max = int(right_section_w * 0.62)
+log_drop_min = max(220, int(right_section_w * 0.55))
+log_drop_max = max(log_drop_min, int(right_section_w * 0.82))
+log_drop_default = int(right_section_w * 0.71)
 ```
 
 ### Current target proportions (1600px-wide window)
 
+> **Single source of truth:** `kling_gui/layout_utils.py::sanitize_sash_layout()`.
+> These proportions are tuned per direct user feedback and are intentionally
+> revised over time (current values reflect the v5.2 layout pass: wider
+> carousel + wider log at the drop zone's expense). When they change, update
+> this table to match the code — do **not** treat the code as drifting from
+> this table.
+
 | Sash | Target | Range |
 |------|--------|-------|
 | `sash_prompt_split` (left tabs width) | 60% of window | 54–64% |
-| `sash_queue` (carousel width) | 24% of window | 20–30% |
-| `sash_log_drop_split` (log width within right section) | 52% of right section | 42–62% |
+| `sash_queue` (carousel width) | 25% of window | 22–32% |
+| `sash_log_drop_split` (log width within right section) | 71% of right section | 55–82% |
 
 ---
 
