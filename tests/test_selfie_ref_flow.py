@@ -28,13 +28,25 @@ class _FakeSelfieGenerator(SelfieGenerator):
             handle.write(b"x")
         return True
 
-    def _compute_similarity_percent(
+    def _compute_similarity_result(
         self,
         source_image_path: str,
         generated_image_path: str,
     ):
         self.sim_calls.append((source_image_path, generated_image_path))
-        return self._sim_scores[len(self.sim_calls) - 1]
+        score = self._sim_scores[len(self.sim_calls) - 1]
+        return {
+            "score": score,
+            "pass": score >= 80,
+            "error": None,
+            "match": True,
+            "diagnostics": {
+                "raw_cosine_distance": 0.1,
+                "per_model_distances": {"ArcFace": 0.1},
+                "ref_path": source_image_path,
+                "target_path": generated_image_path,
+            },
+        }
 
 
 class SelfieReferenceFlowTests(unittest.TestCase):
