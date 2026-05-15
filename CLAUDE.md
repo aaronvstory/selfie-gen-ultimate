@@ -6,6 +6,115 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Kling UI is an AI media generation toolkit using fal.ai and BFL APIs. It provides a 5-tab Tkinter GUI for face cropping, portrait analysis, selfie generation, image outpainting, and batch video generation, plus a CLI mode via Rich.
 
+## macOS Portability — MANDATORY (Windows agents read this first)
+
+This repo runs on **both Windows and macOS**. Most contributors edit on Windows, and CI is Windows-leaning. Several macOS-runtime issues recur — agents working on this codebase MUST guard against them on every change that touches shell scripts, launchers, file dialogs, or path handling.
+
+### 1. Line endings — `.sh` and `.command` must be LF
+
+`.gitattributes` pins `*.sh` and `*.command` to `eol=lf`. **Windows editors still write CRLF, and the index can drift out of sync with the attribute.** A CRLF shebang resolves to `#!/usr/bin/env bash\r`, which on macOS makes `env` fail with `env: bash\r: No such file or directory` and exit 127.
+
+When you create or edit any `.sh` / `.command` file:
+
+```bash
+# Verify EOL in working tree + index
+git ls-files --eol <file>          # both columns must show "lf"
+file <file>                        # must NOT mention "CRLF line terminators"
+
+# If wrong:
+tr -d '\r' < <file> > <file>.tmp && mv <file>.tmp <file>
+git add --renormalize <file>
+```
+
+### 2. Executable bit — `.command` and `.sh` must be `100755` in git
+
+`.command` files cannot be double-clicked from Finder unless they have the exec bit. Git stores mode independently of the working-tree perm; a file can be `chmod +x` locally but still committed as `100644`. Both must be `100755`.
+
+```bash
+# Verify
+git ls-files --stage <file>        # leading number must be 100755
+
+# Fix both working tree and index:
+chmod +x <file>
+git update-index --chmod=+x <file>
+```
+
+### 3. File dialogs — never use raw `tkinter.filedialog`
+
+The macOS Tk root has a fragile lifecycle. The repo wraps every dialog in `tk_dialogs.py` (`select_directory`, `select_open_file`, `select_open_files`, `select_save_file`, `select_directory_cli_safe`). These handle ephemeral root creation, withdrawal, and destruction across Win/macOS/Linux.
+
+```python
+# WRONG — raw filedialog can hang the dialog and leak Tk roots on macOS
+from tkinter import filedialog
+path = filedialog.askopenfilename(title="Pick")
+
+# RIGHT — pass parent= when a live Tk window exists, omit for CLI flows
+from tk_dialogs import select_open_file
+path = select_open_file(parent=self.root, title="Pick")          # GUI
+path = select_open_file(title="Pick")                            # CLI (uses ephemeral root + osascript on darwin)
+```
+
+When a GUI has a live secondary window (drop-zone, modal, etc.), prefer that over the main root — see `_best_picker_parent()` in `kling_gui/main_window.py`. macOS pickers stall when their parent is withdrawn mid-dialog.
+
+### 4. Path-separator assertions are platform-bound
+
+`os.path.join("F:\\foo", "bar.bat")` returns `"F:\\foo/bar.bat"` on POSIX (forward slash) but `"F:\\foo\\bar.bat"` on Windows. Tests that assert on the result of any path-join with backslash inputs are intrinsically Windows-only:
+
+```python
+@pytest.mark.skipif(os.name != "nt", reason="asserts win32 backslash joins")
+def test_windows_launcher_uses_comspec_then_fallback(): ...
+```
+
+### 5. Test module-mock gotchas (sys.modules caching)
+
+When a test stubs `sys.modules` to inject fakes for `tkinter`, `deepface`, `cv2`, `mediapipe`, etc., it MUST also evict any submodules the production code re-imports later. `patch.dict(sys.modules, {"mediapipe": fake})` only intercepts `import mediapipe`; it does NOT intercept `from mediapipe.tasks.python import vision` because that goes through `__import__("mediapipe.tasks.python", ...)`.
+
+```python
+for cached in ("mediapipe", "mediapipe.tasks", "mediapipe.tasks.python", "mediapipe.tasks.python.vision"):
+    monkeypatch.delitem(sys.modules, cached, raising=False)
+
+def fake_import(name, *a, **k):
+    if name == "mediapipe":
+        return fake_mp
+    if name.startswith("mediapipe."):
+        raise ImportError(f"mocked: {name} unavailable")
+    return real_import(name, *a, **k)
+```
+
+Same trap for `similarity/src/engine.py`, which is a shim that does `from similarity_engine import FaceEngine`. Tests reloading `src.engine` MUST pop **both** `src.engine` AND `similarity_engine` from `sys.modules`, otherwise the previously-bound (real) `DeepFace` stays in scope.
+
+### 6. macOS Python — use `python3.11`, not `python3.12`+
+
+Homebrew's `python3.12` and `python3.13` ship without `_tkinter`. Tests that import `tkinter` (transitively, anything touching the GUI or `tk_dialogs`) will fail to collect on those interpreters. Use `python3.11`:
+
+```bash
+python3.11 -m venv .venv311
+.venv311/bin/python -m pytest tests/ similarity/tests/ -q   # use python -m pytest, not pytest directly,
+                                                            # so the project root is on sys.path
+```
+
+### 7. The macOS launcher chain (don't break links silently)
+
+```
+run_gui.command (root)
+  → launchers/run_gui.command         (compatibility wrapper)
+    → launchers/macos/run_gui.command (logs + dep-chmod + invokes run_gui.sh)
+      → run_gui.sh                    (calls setup_macos.sh, then runs gui_launcher.py)
+        → setup_macos.sh              (creates .venv-macos and installs requirements.txt)
+```
+
+If you touch any link in that chain: chain-test it via `bash run_gui.command` once before pushing. Same chain exists for `run_cli.command` and the eight `run_oldcam_v*.command` variants.
+
+### 8. Pre-push macOS portability check
+
+Run before pushing any change that touches `*.sh`, `*.command`, `tk_dialogs.py`, or anything under `launchers/`, `similarity/src/`, or `kling_gui/main_window.py` picker code:
+
+```bash
+bash scripts/check_macos_portability.sh
+```
+
+Exits non-zero on CRLF in shell scripts, or `.command`/`.sh` files committed without the exec bit. Source: `scripts/check_macos_portability.sh`.
+
 ## Commands
 
 ```bash

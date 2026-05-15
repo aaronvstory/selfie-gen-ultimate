@@ -17,6 +17,33 @@
 - Treat end-to-end GitHub handling as expected default behavior for agents in this repo.
 - Use `gh` CLI only as a fallback when app coverage is unavailable for a specific action.
 
+## macOS Portability — MANDATORY (Windows agents read this first)
+
+This repo runs on **both Windows and macOS**. Most editing happens on Windows; macOS-runtime issues recur and the user has paid for them in lost time. Every change touching shell scripts, launchers, file dialogs, path handling, or test mocks MUST be checked against the rules below.
+
+| # | Rule | Why | How to verify / fix |
+|---|---|---|---|
+| 1 | `.sh` and `.command` files MUST be LF-terminated | A CRLF shebang resolves to `#!/usr/bin/env bash\r` → `env: bash\r: No such file or directory` (exit 127) on macOS | `file <f>` shows no "CRLF"; `git ls-files --eol <f>` shows `i/lf w/lf`. Fix: `tr -d '\r' < f > f.tmp && mv f.tmp f && git add --renormalize f` |
+| 2 | `.command` and `.sh` files MUST be `100755` in git | `100644` files cannot be Finder-double-clicked on macOS | `git ls-files --stage <f>` starts with `100755`. Fix: `chmod +x f && git update-index --chmod=+x f` |
+| 3 | Use `tk_dialogs` wrappers, never raw `tkinter.filedialog` | macOS Tk root has a fragile lifecycle; raw `filedialog` calls hang or leak Tk roots | Import `select_directory` / `select_open_file` / `select_open_files` / `select_save_file` from `tk_dialogs`. Pass `parent=` when a live window exists |
+| 4 | Don't assert on `os.path.join` output cross-platform | `os.path.join("F:\\foo", "bar")` is `"F:\\foo/bar"` on POSIX, `"F:\\foo\\bar"` on Windows | Mark Windows-only tests `@pytest.mark.skipif(os.name != "nt", reason="...")` |
+| 5 | Stub ALL submodules when mocking `sys.modules` | `patch.dict(sys.modules, {"x": fake})` does NOT intercept `from x.y import z`; that goes through `__import__("x.y", ...)` separately | Pop cached submodules with `monkeypatch.delitem(sys.modules, "x.y", raising=False)`; broaden the importer mock to match `x.*` |
+| 6 | When reloading `src.engine`, also pop `similarity_engine` | `src/engine.py` is a thin shim that does `from similarity_engine import FaceEngine`; a prior test leaves real `DeepFace` bound | `sys.modules.pop("src.engine", None); sys.modules.pop("similarity_engine", None)` in `setUp` |
+| 7 | macOS Python = `python3.11` (Tk-capable) | Homebrew `python3.12+` ships without `_tkinter`; everything that imports `tkinter` fails to collect | Use `python3.11 -m venv .venv311`. Run pytest as `python -m pytest ...` so cwd is on `sys.path` (no root `conftest.py`) |
+| 8 | Don't break the macOS launcher chain | `run_gui.command → launchers/run_gui.command → launchers/macos/run_gui.command → run_gui.sh → setup_macos.sh → gui_launcher.py`. Same shape for `run_cli` and `run_oldcam_v*` | After any link change: `bash run_gui.command` (or `run_cli.command`) once before pushing |
+
+### Pre-push verification
+
+Run before any push that touches `*.sh`, `*.command`, `tk_dialogs.py`, `launchers/`, `similarity/src/`, or `kling_gui/main_window.py` picker code:
+
+```bash
+bash scripts/check_macos_portability.sh
+```
+
+Exits non-zero on CRLF in shell scripts or `.command`/`.sh` files committed without the exec bit.
+
+When the user says **"ensure this works on macOS"** while you are editing on Windows, your minimum bar is rules 1, 2, 3, and 8 — re-read them, then run `scripts/check_macos_portability.sh`.
+
 ## Quick Reference
 
 ### Build/Run Commands
