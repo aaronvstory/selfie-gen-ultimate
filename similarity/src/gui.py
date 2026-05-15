@@ -3,7 +3,7 @@ import threading
 import json
 import logging
 import tkinter as tk
-from tkinter import filedialog
+from tk_dialogs import select_open_file
 from typing import List, Optional, Tuple
 
 import customtkinter as ctk
@@ -767,7 +767,8 @@ class ModernGUI(DnDCTk):
         return "break"
 
     def upload_image(self, zone: int):
-        file_path = filedialog.askopenfilename(
+        file_path = select_open_file(
+            parent=self,
             title=f"Select Image {zone}",
             filetypes=IMAGE_FILETYPES,
         )
@@ -815,7 +816,8 @@ class ModernGUI(DnDCTk):
         return self._next_extracted_path(source_path)
 
     def upload_extraction_image(self):
-        file_path = filedialog.askopenfilename(
+        file_path = select_open_file(
+            parent=self,
             title="Select Image for Extraction",
             filetypes=IMAGE_FILETYPES,
         )
