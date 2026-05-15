@@ -20,11 +20,13 @@ cd "${ROOT_DIR}" || {
 
 failures=0
 
-# Rule 1 — no CRLF in shell scripts (working tree)
+# Rule 1 — no CRLF in shell scripts (working tree).
+# Source the candidate list from `git ls-files` (matches rules 1b/2 below) so
+# untracked/scratch shell files in a contributor's local tree don't trip the
+# pre-push gate with false positives.
 crlf_offenders="$(
-  find . \( -name "*.sh" -o -name "*.command" \) \
-    -not -path "./.venv*" -not -path "./.git/*" \
-    -exec file {} + 2>/dev/null \
+  git ls-files -z "*.sh" "*.command" 2>/dev/null \
+  | xargs -0 file 2>/dev/null \
   | awk -F: '/CRLF/ {print $1}'
 )"
 if [[ -n "${crlf_offenders}" ]]; then
