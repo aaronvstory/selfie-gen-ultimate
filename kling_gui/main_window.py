@@ -1997,7 +1997,7 @@ class KlingGUIWindow:
         if files:
             self._add_input_images_to_session(files)
 
-    def _best_picker_parent(self):
+    def _best_picker_parent(self) -> tk.Misc:
         """Return the live drop-zone window if visible, else the root window.
 
         On macOS the file picker hangs when its parent gets withdrawn or

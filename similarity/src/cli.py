@@ -13,7 +13,6 @@ from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
 from src.engine import FaceEngine
-from tk_dialogs import select_directory, select_open_file
 
 console = Console()
 
@@ -163,12 +162,31 @@ class ProCLI:
                     sys.exit(1)
 
     def prompt_for_file(self, title: str) -> Optional[str]:
+        # Local import keeps the CLI runnable in headless environments where
+        # tkinter (loaded by tk_dialogs at import time) is unavailable. The
+        # CLI only reaches this method when the user requests an interactive
+        # picker, so a missing tkinter at import time would block legitimate
+        # path-arg usage; deferring the import preserves both modes.
+        try:
+            from tk_dialogs import select_open_file
+        except ImportError as exc:
+            raise RuntimeError(
+                "Tk file dialogs are unavailable in this Python environment. "
+                "Pass explicit paths on the CLI or install Python with Tk support."
+            ) from exc
         return select_open_file(
             title=title,
             filetypes=[("Image Files", "*.png *.jpg *.jpeg *.bmp *.webp")],
         )
 
     def prompt_for_directory(self, title: str) -> Optional[str]:
+        try:
+            from tk_dialogs import select_directory
+        except ImportError as exc:
+            raise RuntimeError(
+                "Tk file dialogs are unavailable in this Python environment. "
+                "Pass explicit paths on the CLI or install Python with Tk support."
+            ) from exc
         return select_directory(title=title)
 
     def run(self, img1_path: Optional[str] = None, img2_path: Optional[str] = None) -> None:
