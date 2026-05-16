@@ -134,23 +134,28 @@ def create_looped_video(
     # Filter: play forward, then reversed, concatenated
     filter_complex = "[0:v]reverse[rv];[0:v][rv]concat=n=2:v=1:a=0[outv]"
 
-    # Intermediate looped file: mathematically lossless H.264 so the forward+
-    # reverse halves carry 100% of Kling's source detail into Oldcam. Oldcam's
-    # own encoder (CRF 12 / preset slow / profile high) does the final size-
-    # conscious encode downstream — the intermediate can be large.
+    # Intermediate looped file: visually-lossless H.264 (CRF 12). This is
+    # perceptually identical to Kling's source, plays in every standard player,
+    # and stays ~1-1.6x the source size.
     #
-    # Use -qp 0 (constant quantizer 0) rather than -crf 0: it's the canonical
-    # libx264 lossless idiom and works on every libx264 build. -crf 0 combined
-    # with -profile:v high crashes on strict libx264 builds because true H.264
-    # lossless requires the High 4:4:4 Predictive profile, but we need yuv420p
-    # downstream (yuv444p breaks OpenCV decode paths). -qp 0 sidesteps the
-    # profile-compatibility trap entirely; libx264 picks the appropriate
-    # profile internally based on the chosen pix_fmt and quantizer.
+    # Why CRF 12 and NOT -qp 0 / -crf 0 (true mathematically-lossless):
+    # - True-lossless H.264 of AI-generated video (high fine detail/noise)
+    #   produces 5-10x the source size and a bitrate most players + seek
+    #   preview choke on — the loop became a 100MB+ file that wouldn't play.
+    # - Oldcam re-encodes this loop at CRF 14 downstream
+    #   (oldcam-v*/oldcam.py), so a true-lossless intermediate buys ZERO
+    #   perceptible quality at the final output — it only bloats the file and
+    #   makes the Loop-WITHOUT-Oldcam path produce a giant unplayable result.
+    # - CRF 12 is the proven original setting (used for years pre-v1.7).
     #
-    # -tune film and -profile:v also dropped: -tune film's psy-rd/psy-trellis
-    # are mathematically meaningless under lossless coding, and explicit
-    # -profile:v constraints conflict with libx264's internal lossless path.
+    # -profile:v high is SAFE with CRF 12. The v1.7 "Could not open encoder"
+    # crash was specific to *true-lossless* (-crf 0 / -qp 0), which requires
+    # the High 4:4:4 Predictive profile while we force yuv420p downstream for
+    # OpenCV decode compatibility. CRF 12 is lossy-but-imperceptible, so
+    # libx264 stays on plain High + yuv420p — the exact combo that never
+    # crashed before the lossless experiment.
     #
+    # yuv420p kept: yuv444p breaks OpenCV decode paths and standard players.
     # Stream-copy concat rejected: PTS/DTS glitches when concatenating a
     # reversed H.264 half.
     cmd = [
@@ -164,10 +169,12 @@ def create_looped_video(
         "[outv]",
         "-c:v",
         "libx264",
+        "-profile:v",
+        "high",
         "-preset",
         "slow",
-        "-qp",
-        "0",
+        "-crf",
+        "12",
         "-pix_fmt",
         "yuv420p",
         "-movflags",

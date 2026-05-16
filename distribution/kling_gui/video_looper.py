@@ -12,6 +12,32 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 
+def _summarize_ffmpeg_error(stderr: str) -> str:
+    """Reduce a multi-line FFmpeg stderr blob to one user-friendly line.
+
+    Looks for the most informative signal in priority order; falls back to
+    a generic message. Full stderr is preserved separately in the file log
+    via a "debug" level emit, so diagnostics are never lost.
+    """
+    if not stderr:
+        return "FFmpeg returned no output (encoder may have failed to start)"
+    lower = stderr.lower()
+    if "could not open encoder" in lower:
+        return "FFmpeg could not open the H.264 encoder (libx264 init failed)"
+    if "invalid argument" in lower:
+        return "FFmpeg rejected the encoder configuration (invalid argument)"
+    if "no such file" in lower or "no such directory" in lower:
+        return "FFmpeg could not find the input file"
+    if "permission denied" in lower:
+        return "FFmpeg permission denied (close any program holding the file open)"
+    if "conversion failed" in lower:
+        return "FFmpeg conversion failed (see kling_gui.log for details)"
+    first_line = next((line.strip() for line in stderr.splitlines() if line.strip()), "")
+    if len(first_line) > 160:
+        return first_line[:160] + "…"
+    return first_line or "Unknown error (see kling_gui.log for details)"
+
+
 def check_ffmpeg_available() -> Tuple[bool, str]:
     """
     Check if FFmpeg is available in PATH.
@@ -99,12 +125,39 @@ def create_looped_video(
         log(ffmpeg_msg, "error")
         return None
 
-    log(f"Creating looped video: {input_file.name}", "info")
+    # The caller (queue_manager._loop_video) already emits a friendly
+    # "Creating looped video..." line; include filename only in the file
+    # log to avoid a panel duplicate.
+    log(f"Creating looped video: {input_file.name}", "debug")
 
     # Build FFmpeg command
     # Filter: play forward, then reversed, concatenated
     filter_complex = "[0:v]reverse[rv];[0:v][rv]concat=n=2:v=1:a=0[outv]"
 
+    # Intermediate looped file: visually-lossless H.264 (CRF 12). This is
+    # perceptually identical to Kling's source, plays in every standard player,
+    # and stays ~1-1.6x the source size.
+    #
+    # Why CRF 12 and NOT -qp 0 / -crf 0 (true mathematically-lossless):
+    # - True-lossless H.264 of AI-generated video (high fine detail/noise)
+    #   produces 5-10x the source size and a bitrate most players + seek
+    #   preview choke on — the loop became a 100MB+ file that wouldn't play.
+    # - Oldcam re-encodes this loop at CRF 14 downstream
+    #   (oldcam-v*/oldcam.py), so a true-lossless intermediate buys ZERO
+    #   perceptible quality at the final output — it only bloats the file and
+    #   makes the Loop-WITHOUT-Oldcam path produce a giant unplayable result.
+    # - CRF 12 is the proven original setting (used for years pre-v1.7).
+    #
+    # -profile:v high is SAFE with CRF 12. The v1.7 "Could not open encoder"
+    # crash was specific to *true-lossless* (-crf 0 / -qp 0), which requires
+    # the High 4:4:4 Predictive profile while we force yuv420p downstream for
+    # OpenCV decode compatibility. CRF 12 is lossy-but-imperceptible, so
+    # libx264 stays on plain High + yuv420p — the exact combo that never
+    # crashed before the lossless experiment.
+    #
+    # yuv420p kept: yuv444p breaks OpenCV decode paths and standard players.
+    # Stream-copy concat rejected: PTS/DTS glitches when concatenating a
+    # reversed H.264 half.
     cmd = [
         "ffmpeg",
         "-y" if overwrite else "-n",  # Overwrite or fail if exists
@@ -116,17 +169,23 @@ def create_looped_video(
         "[outv]",
         "-c:v",
         "libx264",
+        "-profile:v",
+        "high",
         "-preset",
-        "medium",
+        "slow",
         "-crf",
-        "23",
+        "12",
+        "-pix_fmt",
+        "yuv420p",
         "-movflags",
         "+faststart",
         str(output_file),
     ]
 
     try:
-        log(f"Running FFmpeg...", "info")
+        # Step beat — file log only; the saved-file line a few seconds later
+        # gives the user the meaningful "done" signal.
+        log("Running FFmpeg...", "debug")
 
         # Run FFmpeg
         result = subprocess.run(
@@ -148,8 +207,12 @@ def create_looped_video(
                 log("FFmpeg completed but output file not found", "error")
                 return None
         else:
-            error_msg = result.stderr[-500:] if result.stderr else "Unknown error"
-            log(f"FFmpeg error: {error_msg}", "error")
+            full_stderr = (result.stderr or "").strip()
+            # Verbose dump → file log only (preserves diagnostics).
+            if full_stderr:
+                log(f"FFmpeg stderr (full): {full_stderr}", "debug")
+            # Friendly one-liner → panel.
+            log(f"Loop encode failed: {_summarize_ffmpeg_error(full_stderr)}", "error")
             return None
 
     except subprocess.TimeoutExpired:
