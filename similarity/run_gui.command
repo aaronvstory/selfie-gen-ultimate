@@ -51,6 +51,7 @@ resolve_python() {
   if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/venv/bin/python" ] && _python_supported "$REPO_ROOT/venv/bin/python"; then echo "$REPO_ROOT/venv/bin/python|shared root venv"; return 0; fi
   if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/.venv311/bin/python" ] && _python_supported "$REPO_ROOT/.venv311/bin/python"; then echo "$REPO_ROOT/.venv311/bin/python|shared root .venv311"; return 0; fi
   if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/.venv/bin/python" ] && _python_supported "$REPO_ROOT/.venv/bin/python"; then echo "$REPO_ROOT/.venv/bin/python|shared root .venv"; return 0; fi
+  if [ -x ".venv311/bin/python" ] && _python_supported "$(pwd)/.venv311/bin/python"; then echo "$(pwd)/.venv311/bin/python|local module .venv311 fallback"; return 0; fi
   if [ -x ".venv/bin/python" ] && _python_supported "$(pwd)/.venv/bin/python"; then echo "$(pwd)/.venv/bin/python|local module .venv fallback"; return 0; fi
   # macOS Python — prefer python3.11 first per CLAUDE.md (only Homebrew Python with bundled _tkinter).
   if [ -n "$REPO_ROOT" ]; then
@@ -64,6 +65,10 @@ resolve_python() {
   pybin="$(command -v python3.11 || command -v python3.12 || command -v python3 || command -v python || true)"
   [ -n "$pybin" ] || return 1
   _python_supported "$pybin" || { echo "[ERROR] No supported Python (3.9-3.12) on PATH (found: $pybin). Install python3.11 (brew install python@3.11) and retry." >&2; return 1; }
+  # Prefer .venv311 per CLAUDE.md Rule 6 — canonical macOS venv name.
+  if "$pybin" -m venv .venv311 && [ -x ".venv311/bin/python" ]; then
+    echo "$(pwd)/.venv311/bin/python|created local module .venv311 fallback"; return 0
+  fi
   "$pybin" -m venv .venv || return 1
   [ -x ".venv/bin/python" ] || return 1
   echo "$(pwd)/.venv/bin/python|created local module .venv fallback"

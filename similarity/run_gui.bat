@@ -138,12 +138,13 @@ rem     so the post-resolve gate can give a tailored override-specific error).
 rem   - On success: sets PYTHON_BIN and ENV_KIND.
 rem ============================================================
 :check_py
-if not exist %1 exit /b 1
+if "%~1"=="" exit /b 1
+if not exist "%~1" exit /b 1
 if /i "%~3"=="permissive" (
-  %1 -V >nul 2>&1
+  "%~1" -V >nul 2>&1
   if errorlevel 1 exit /b 1
 ) else (
-  %1 -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >nul 2>&1
+  "%~1" -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >nul 2>&1
   if errorlevel 1 exit /b 1
 )
 set "PYTHON_BIN=%~1"

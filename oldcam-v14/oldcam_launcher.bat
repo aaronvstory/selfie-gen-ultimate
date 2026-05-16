@@ -22,23 +22,46 @@ echo   [%LAUNCH_TS%] Launch started
 echo   Script: %SCRIPT_DIR%
 echo(
 
-rem --- Locate Python
-set "PYTHON_CMD="
-if not "%SELFIEGEN_PYTHON%"=="" ("%SELFIEGEN_PYTHON%" -V >nul 2>&1 && set "PYTHON_CMD=%SELFIEGEN_PYTHON%")
-if not defined PYTHON_CMD if not "%SELFIEGEN_VENV_DIR%"=="" if exist "%SELFIEGEN_VENV_DIR%\Scripts\python.exe" set "PYTHON_CMD=%SELFIEGEN_VENV_DIR%\Scripts\python.exe"
-if not defined PYTHON_CMD if exist "%REPO_ROOT%\venv\Scripts\python.exe" set "PYTHON_CMD=%REPO_ROOT%\venv\Scripts\python.exe"
-if not defined PYTHON_CMD if exist "%REPO_ROOT%\.venv\Scripts\python.exe" set "PYTHON_CMD=%REPO_ROOT%\.venv\Scripts\python.exe"
-if not defined PYTHON_CMD if exist ".venv\Scripts\python.exe" set "PYTHON_CMD=.venv\Scripts\python.exe"
-if not defined PYTHON_CMD (
-  py -3.12 -m venv "%REPO_ROOT%\venv" >nul 2>&1 || py -3.11 -m venv "%REPO_ROOT%\venv" >nul 2>&1 || python -m venv "%REPO_ROOT%\venv" >nul 2>&1
-  if exist "%REPO_ROOT%\venv\Scripts\python.exe" set "PYTHON_CMD=%REPO_ROOT%\venv\Scripts\python.exe"
+rem --- Locate Python (Rule 9: per-candidate version validation via :check_py)
+set "PYTHON_BIN="
+set "ENV_KIND="
+rem Overrides stay permissive at resolve time; post-resolve gate gives a tailored error if they point at unsupported python.
+if not "%SELFIEGEN_PYTHON%"=="" (
+  "%SELFIEGEN_PYTHON%" -V >nul 2>&1
+  if not errorlevel 1 ( set "PYTHON_BIN=%SELFIEGEN_PYTHON%" & set "ENV_KIND=SELFIEGEN_PYTHON override" )
 )
-if not defined PYTHON_CMD (
-  echo   [%LAUNCH_TS%] ERROR: Could not find usable Python interpreter.
+if "!PYTHON_BIN!"=="" if not "%SELFIEGEN_VENV_DIR%"=="" call :check_py "%SELFIEGEN_VENV_DIR%\Scripts\python.exe" "SELFIEGEN_VENV_DIR override" permissive
+if "!PYTHON_BIN!"=="" call :check_py "%REPO_ROOT%\venv\Scripts\python.exe" "shared root venv" strict
+if "!PYTHON_BIN!"=="" call :check_py "%REPO_ROOT%\.venv311\Scripts\python.exe" "shared root .venv311" strict
+if "!PYTHON_BIN!"=="" call :check_py "%REPO_ROOT%\.venv\Scripts\python.exe" "shared root .venv" strict
+if "!PYTHON_BIN!"=="" call :check_py ".venv\Scripts\python.exe" "local .venv fallback" strict
+if "!PYTHON_BIN!"=="" (
+  rem Prefer py launcher 3.11 first per CLAUDE.md Rule 6 spirit.
+  py -3.11 -m venv "%REPO_ROOT%\venv" >nul 2>&1 || py -3.12 -m venv "%REPO_ROOT%\venv" >nul 2>&1 || python -m venv "%REPO_ROOT%\venv" >nul 2>&1
+  call :check_py "%REPO_ROOT%\venv\Scripts\python.exe" "created shared root venv" strict
+)
+if "!PYTHON_BIN!"=="" (
+  echo   [%LAUNCH_TS%] ERROR: No supported Python (3.9-3.12) found. Install python3.11 (https://www.python.org/downloads/release/python-3119/) and retry.
   set "HAD_ERRORS=1"
   goto DONE
 )
-echo   [%LAUNCH_TS%] Python: %PYTHON_CMD%
+set "PYTHON_CMD=!PYTHON_BIN!"
+echo   [%LAUNCH_TS%] Python: !PYTHON_CMD! (!ENV_KIND!)
+
+rem --- Defense-in-depth version gate (also catches SELFIEGEN_PYTHON pointing at unsupported python)
+"!PYTHON_CMD!" -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >nul 2>&1
+if errorlevel 1 (
+  for /f "delims=" %%V in ('"!PYTHON_CMD!" -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2^>nul') do set "PY_ACTUAL=%%V"
+  if not "%SELFIEGEN_PYTHON%"=="" (
+    echo   [%LAUNCH_TS%] ERROR: SELFIEGEN_PYTHON points at Python !PY_ACTUAL!, but Oldcam v14 requires 3.9-3.12. Unset it or point at python3.11.
+  ) else if not "%SELFIEGEN_VENV_DIR%"=="" (
+    echo   [%LAUNCH_TS%] ERROR: SELFIEGEN_VENV_DIR points at Python !PY_ACTUAL!, but Oldcam v14 requires 3.9-3.12. Unset it or point at python3.11.
+  ) else (
+    echo   [%LAUNCH_TS%] ERROR: Resolved Python is !PY_ACTUAL!, outside supported range 3.9-3.12 (resolver bug; please file an issue).
+  )
+  set "HAD_ERRORS=1"
+  goto DONE
+)
 
 rem --- V14 needs no MediaPipe / face_landmarker.task: forensic daylight pipeline.
 
@@ -110,3 +133,26 @@ popd >nul
 set "FINAL_EXIT=0"
 if defined HAD_ERRORS set "FINAL_EXIT=1"
 endlocal & exit /b %FINAL_EXIT%
+
+rem ============================================================
+rem :check_py "<path>" "<kind>" [permissive|strict]
+rem   - Verifies <path> exists.
+rem   - In strict mode (default) also requires Python 3.9-3.12.
+rem   - In permissive mode skips the version probe (used for SELFIEGEN_*
+rem     overrides so the user gets a clear "your override is wrong" message
+rem     vs. a generic resolver bug).
+rem   - On success: sets PYTHON_BIN and ENV_KIND.
+rem ============================================================
+:check_py
+if "%~1"=="" exit /b 1
+if not exist "%~1" exit /b 1
+if /i "%~3"=="permissive" (
+  "%~1" -V >nul 2>&1
+  if errorlevel 1 exit /b 1
+) else (
+  "%~1" -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >nul 2>&1
+  if errorlevel 1 exit /b 1
+)
+set "PYTHON_BIN=%~1"
+set "ENV_KIND=%~2"
+exit /b 0
