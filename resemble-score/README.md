@@ -15,14 +15,14 @@ does not modify or depend on the main app at runtime.
 
 ### Windows
 
-```
+```bat
 resemble-score\run_gui.bat      :: graphical app
 resemble-score\run_cli.bat      :: terminal app
 ```
 
 ### macOS
 
-```
+```bash
 resemble-score/run_gui.command  # graphical app
 resemble-score/run_cli.command  # terminal app
 ```
@@ -35,13 +35,16 @@ The launchers create/reuse a Python environment and install
 `resemble-score` looks for `RESEMBLE_API_KEY` in this order:
 
 1. `resemble-score/.env` (create it — it is gitignored and never committed)
-2. `C:\claude\Resemble\resemble\.env` (best-effort Windows convenience; ignored
-   if absent)
+2. external `.env` path(s): the `RESEMBLE_EXTERNAL_ENV` env var
+   (`os.pathsep`-separated) if set, otherwise the built-in best-effort
+   defaults `C:\claude\Resemble\resemble\.env` /
+   `F:\claude\Resemble\resemble\.env` — each read only if it exists, so
+   absence is harmless on any machine
 3. the `RESEMBLE_API_KEY` environment variable
 
 `.env` format:
 
-```
+```dotenv
 RESEMBLE_API_KEY=your-key-here
 ```
 
@@ -64,7 +67,7 @@ with a stack trace for a missing key.
 
 ## CLI examples
 
-```
+```bash
 python resemble-score/main.py --cli --folder "F:\videos" --recursive
 python resemble-score/main.py --cli --folder "F:\videos" --all
 python resemble-score/main.py --cli --folder "F:\videos" --select "g:oldcam"

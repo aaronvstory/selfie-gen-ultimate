@@ -134,6 +134,47 @@ def test_resolve_api_key_missing_raises_clean_message(monkeypatch):
     assert "environment variable" in msg
 
 
+def test_external_env_paths_defaults_when_no_override(monkeypatch):
+    monkeypatch.delenv("RESEMBLE_EXTERNAL_ENV", raising=False)
+    paths = client._external_env_paths()
+    assert paths == client._DEFAULT_EXTERNAL_ENV_PATHS
+    assert len(paths) >= 1
+
+
+def test_external_env_paths_override_replaces_defaults(tmp_path, monkeypatch):
+    import os
+
+    a = tmp_path / "a.env"
+    b = tmp_path / "b.env"
+    monkeypatch.setenv(
+        "RESEMBLE_EXTERNAL_ENV", os.pathsep.join([str(a), str(b)])
+    )
+    paths = client._external_env_paths()
+    assert [str(p) for p in paths] == [str(a), str(b)]
+    # The dev-box defaults must NOT leak in when overridden (portability).
+    assert client._DEFAULT_EXTERNAL_ENV_PATHS[0] not in paths
+
+
+def test_external_env_paths_override_ignores_empty_segments(monkeypatch):
+    import os
+
+    monkeypatch.setenv(
+        "RESEMBLE_EXTERNAL_ENV", os.pathsep + "  " + os.pathsep
+    )
+    # All-blank override falls back to defaults rather than yielding junk.
+    assert client._external_env_paths() == client._DEFAULT_EXTERNAL_ENV_PATHS
+
+
+def test_load_env_chain_reads_overridden_external_file(tmp_path, monkeypatch):
+    """An override .env that exists is actually applied by load_env_chain."""
+    monkeypatch.delenv("RESEMBLE_API_KEY", raising=False)
+    ext = tmp_path / "ext.env"
+    ext.write_text("RESEMBLE_API_KEY=from-external-override\n")
+    monkeypatch.setenv("RESEMBLE_EXTERNAL_ENV", str(ext))
+    client.load_env_chain()
+    assert os.environ.get("RESEMBLE_API_KEY") == "from-external-override"
+
+
 def test_apply_env_file_setdefault_does_not_override(tmp_path, monkeypatch):
     monkeypatch.setenv("RESEMBLE_API_KEY", "already-set")
     env = tmp_path / ".env"

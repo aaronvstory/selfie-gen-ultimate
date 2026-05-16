@@ -154,3 +154,49 @@ def test_score_with_missing_score_field_is_error(tmp_path, monkeypatch):
     results = scoring.score_items(items, "key")
     assert results[0].status == "error"
     assert "no video_metrics.score" in results[0].error
+
+
+def test_keyboardinterrupt_preserves_scored_items(tmp_path, monkeypatch):
+    """Ctrl-C mid-run keeps already-scored results and stops cleanly so the
+    caller can still rank + write a report (CodeRabbit/Codex finding)."""
+    items = _items(
+        tmp_path,
+        ["a-oldcam-v9.mp4", "b-oldcam-v14.mp4", "c_kling.mp4"],
+    )
+
+    def fake(path, key):
+        if Path(path).name == "b-oldcam-v14.mp4":
+            raise KeyboardInterrupt
+        return _fake_trimmed(0.3)
+
+    monkeypatch.setattr(client, "detect_video", fake)
+    cancel = threading.Event()
+    results = scoring.score_items(items, "key", cancel_event=cancel)
+
+    # First item scored; second recorded as cancelled; loop stopped (no 3rd).
+    assert len(results) == 2
+    assert results[0].name == "a-oldcam-v9.mp4"
+    assert results[0].status == "ok"
+    assert results[1].name == "b-oldcam-v14.mp4"
+    assert results[1].status == "cancelled"
+    assert cancel.is_set()
+    # Partial results are still rankable / reportable.
+    json_path, _ = scoring.write_reports(tmp_path, results)
+    payload = json.loads(json_path.read_text())
+    assert payload["winner"]["filename"] == "a-oldcam-v9.mp4"
+
+
+def test_score_items_narrowed_exceptions_still_catch_runtimeerror(
+    tmp_path, monkeypatch
+):
+    """RuntimeError (e.g. API success=false) must remain a recorded per-item
+    error after narrowing the broad `except Exception`."""
+    items = _items(tmp_path, ["x-oldcam-v9.mp4"])
+    monkeypatch.setattr(
+        client,
+        "detect_video",
+        lambda p, k: (_ for _ in ()).throw(RuntimeError("api said no")),
+    )
+    results = scoring.score_items(items, "key")
+    assert results[0].status == "error"
+    assert "api said no" in results[0].error

@@ -15,8 +15,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+import requests
+
 from . import client
 from .discovery import VideoItem
+
+# Operational failures we expect per-item and record (continue-on-error),
+# rather than letting a bare `except Exception` also swallow real defects.
+_SCORE_ERRORS = (
+    requests.exceptions.RequestException,
+    json.JSONDecodeError,
+    RuntimeError,
+    OSError,
+)
 
 REPORT_JSON_NAME = "resemble_results.json"
 REPORT_CSV_NAME = "resemble_results.csv"
@@ -111,7 +122,19 @@ def score_items(
                     result.error = "no video_metrics.score in response"
                 else:
                     result.status = "ok"
-            except Exception as exc:  # network / API / IO — record, continue
+            except KeyboardInterrupt:
+                # Preserve everything scored so far: record this item as
+                # cancelled, stop, and return the partial results so the
+                # caller can still rank + write a report.
+                result.status = "cancelled"
+                result.error = "interrupted"
+                results.append(result)
+                if progress_cb is not None:
+                    progress_cb(index + 1, total, result)
+                if cancel_event is not None:
+                    cancel_event.set()
+                break
+            except _SCORE_ERRORS as exc:  # expected operational failure
                 result.status = "error"
                 result.error = str(exc)
 

@@ -30,13 +30,37 @@ MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS
 DIRECT_UPLOAD_LIMIT = 150 * 1024 * 1024  # 150 MB per API constraints
 
 API_KEY_ENV = "RESEMBLE_API_KEY"
+# Point this at an extra .env to read as a best-effort key source (e.g. a
+# shared standalone client's .env). os.pathsep-separated for multiple paths.
+EXTERNAL_ENV_OVERRIDE = "RESEMBLE_EXTERNAL_ENV"
 
-# Best-effort Windows convenience: the original standalone client keeps its key
-# here. We read it ONLY if it exists; its absence is never an error.
-_EXTERNAL_ENV_PATHS = (
+# Default best-effort convenience locations (the original standalone Resemble
+# client keeps its key here on the dev box). These are read ONLY if they
+# exist; absence is never an error, so they are harmless on other machines.
+# Override entirely via the RESEMBLE_EXTERNAL_ENV env var.
+_DEFAULT_EXTERNAL_ENV_PATHS = (
     Path(r"C:\claude\Resemble\resemble\.env"),
     Path(r"F:\claude\Resemble\resemble\.env"),  # C:/F: junction on the dev box
 )
+
+
+def _external_env_paths() -> tuple[Path, ...]:
+    """Resolve the external .env search paths.
+
+    ``RESEMBLE_EXTERNAL_ENV`` (os.pathsep-separated) fully replaces the
+    built-in defaults when set, so the tool is portable: other machines just
+    set the var (or rely on their own ``resemble-score/.env``) instead of
+    inheriting dev-box-specific paths.
+    """
+    override = os.environ.get(EXTERNAL_ENV_OVERRIDE, "")
+    parsed = tuple(
+        Path(p.strip())
+        for p in override.split(os.pathsep)
+        if p.strip()
+    )
+    # "set but only blank segments" is treated like "not set" → defaults,
+    # so a stray empty var never silently disables the convenience paths.
+    return parsed or _DEFAULT_EXTERNAL_ENV_PATHS
 
 
 def _apply_env_file(path: Path) -> None:
@@ -60,13 +84,14 @@ def load_env_chain() -> None:
     """Populate the environment from, in priority order:
 
     1. ``resemble-score/.env`` (gitignored; the canonical place for the key)
-    2. an external standalone ``.env`` if one happens to exist (Windows only)
+    2. external ``.env`` path(s) from :func:`_external_env_paths` if any
+       exist (``RESEMBLE_EXTERNAL_ENV`` override, else built-in defaults)
     3. whatever is already in the process environment (untouched — wins via
        ``setdefault``)
     """
     own_env = Path(__file__).resolve().parent.parent / ".env"
     _apply_env_file(own_env)
-    for ext in _EXTERNAL_ENV_PATHS:
+    for ext in _external_env_paths():
         _apply_env_file(ext)
 
 
@@ -142,9 +167,12 @@ def _flatten_video_children(children: Any) -> list[dict]:
     out: list[dict] = []
     if not isinstance(children, list):
         return out
-    stack = list(children)
+    # O(1) pop()/extend() with reversed lists preserves the original
+    # breadth-then-depth ordering of the pop(0)+(nested+stack) form while
+    # avoiding the O(N) list-head pop and per-iteration list rebuild.
+    stack = list(reversed(children))
     while stack:
-        node = stack.pop(0)
+        node = stack.pop()
         if not isinstance(node, dict):
             continue
         out.append(
@@ -157,7 +185,7 @@ def _flatten_video_children(children: Any) -> list[dict]:
         )
         nested = node.get("children")
         if isinstance(nested, list):
-            stack = nested + stack
+            stack.extend(reversed(nested))
     return out
 
 

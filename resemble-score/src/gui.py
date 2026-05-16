@@ -56,9 +56,14 @@ class ResembleScoreGUI:
             bar, text="Pick Folder…", command=self._pick_folder
         )
         self.pick_btn.pack(side="left")
-        ttk.Checkbutton(
-            bar, text="Recursive", variable=self.recursive
-        ).pack(side="left", padx=8)
+        # Re-run discovery when the mode changes so the list never goes stale.
+        self.recursive_cb = ttk.Checkbutton(
+            bar,
+            text="Recursive",
+            variable=self.recursive,
+            command=self._on_recursive_toggle,
+        )
+        self.recursive_cb.pack(side="left", padx=8)
         self.folder_lbl = ttk.Label(
             bar, text="(no folder selected)", style="Muted.TLabel"
         )
@@ -133,28 +138,60 @@ class ResembleScoreGUI:
             return
         self.folder = Path(picked)
         self.folder_lbl.configure(text=str(self.folder))
-        self._refresh_tree()
+        self._start_discovery()
 
-    def _refresh_tree(self) -> None:
+    def _on_recursive_toggle(self) -> None:
+        # Toggling the mode after a folder is picked must re-scan, else the
+        # displayed list no longer matches the selected recursion mode.
+        if self.folder is not None:
+            self._start_discovery()
+
+    def _start_discovery(self) -> None:
+        """Scan the folder on a worker thread (rglob on a large tree would
+        otherwise freeze the UI), then repopulate the tree via root.after."""
+        if self._worker and self._worker.is_alive():
+            return
+        if not self.folder:
+            return
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         self._rows.clear()
-        if not self.folder:
-            return
-        try:
-            self.items = discover(
-                self.folder, recursive=self.recursive.get()
-            )
-        except (NotADirectoryError, FileNotFoundError) as e:
-            messagebox.showerror("Discovery failed", str(e))
-            return
+        self._set_controls(busy=True)
+        self.status_lbl.configure(text="Scanning folder…")
+        folder = self.folder
+        recursive = self.recursive.get()
+        self._worker = threading.Thread(
+            target=self._discovery_run,
+            args=(folder, recursive),
+            daemon=True,
+        )
+        self._worker.start()
 
-        if not self.items:
+    def _discovery_run(self, folder: Path, recursive: bool) -> None:
+        try:
+            items = discover(folder, recursive=recursive)
+        except (NotADirectoryError, FileNotFoundError) as e:
+            self.root.after(0, self._on_discovery_error, str(e))
+            return
+        except OSError as e:  # unexpected FS error — surface, don't crash
+            self.root.after(0, self._on_discovery_error, str(e))
+            return
+        self.root.after(0, self._populate_tree, items)
+
+    def _on_discovery_error(self, msg: str) -> None:
+        self._set_controls(busy=False)
+        self.status_lbl.configure(text="Discovery failed.")
+        messagebox.showerror("Discovery failed", msg)
+
+    def _populate_tree(self, items: list[VideoItem]) -> None:
+        self.items = items
+        self._set_controls(busy=False)
+        if not items:
             self.status_lbl.configure(text="No videos found in this folder.")
             return
 
         groups: dict[str, str] = {}
-        for it in self.items:
+        for it in items:
             if it.group not in groups:
                 gid = self.tree.insert(
                     "", "end", text=it.group, values=("", "", "", ""),
@@ -169,8 +206,7 @@ class ResembleScoreGUI:
             )
             self._rows[row] = [it, True]
         self.status_lbl.configure(
-            text=f"{len(self.items)} video(s) found. "
-            "Pick which to score."
+            text=f"{len(items)} video(s) found. Pick which to score."
         )
 
     # ---- checkbox handling ------------------------------------------------
@@ -233,6 +269,11 @@ class ResembleScoreGUI:
             )
             return
 
+        # Clear stale winner/error styling from ALL rows (a prior winner may
+        # be outside this selection and must not stay starred/highlighted).
+        for row, (item, checked) in self._rows.items():
+            mark = CHECK_ON if checked else CHECK_OFF
+            self.tree.item(row, text=f"  {mark}  {item.name}", tags=())
         # Reset result columns for the selected rows.
         for row, item in selected:
             self.tree.item(
@@ -308,7 +349,7 @@ class ResembleScoreGUI:
                 self.folder, results
             )
             written = f"  Reports: {json_path.name}, {csv_path.name}"
-        except Exception as exc:
+        except OSError as exc:
             written = f"  (report write failed: {exc})"
 
         ok = sum(1 for x in results if x.status == "ok")

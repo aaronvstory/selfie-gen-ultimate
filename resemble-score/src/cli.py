@@ -185,17 +185,20 @@ def run_cli(
                 f"  [{done}/{total}] [red]✗[/red] {r.name}  {r.error}"
             )
 
-    try:
-        results = scoring.score_items(
-            chosen,
-            api_key,
-            progress_cb=progress,
-            cancel_event=cancel_event,
+    # score_items handles KeyboardInterrupt internally and returns the
+    # partial results, so a Ctrl-C still yields a ranked, written report.
+    results = scoring.score_items(
+        chosen,
+        api_key,
+        progress_cb=progress,
+        cancel_event=cancel_event,
+    )
+    interrupted = any(r.status == "cancelled" for r in results)
+    if interrupted:
+        console.print(
+            "\n[yellow]Interrupted — writing report for completed "
+            "videos.[/yellow]"
         )
-    except KeyboardInterrupt:
-        cancel_event.set()
-        console.print("\n[yellow]Interrupted — writing partial report.[/yellow]")
-        results = []
 
     if not results:
         return 1
@@ -203,10 +206,14 @@ def run_cli(
     console.print()
     _print_ranked(results)
 
-    json_path, csv_path = scoring.write_reports(root, results)
-    console.print(
-        f"\nReports written:\n  {json_path}\n  {csv_path}"
-    )
+    try:
+        json_path, csv_path = scoring.write_reports(root, results)
+        console.print(f"\nReports written:\n  {json_path}\n  {csv_path}")
+    except OSError as e:
+        console.print(
+            f"\n[red]Could not write reports to {root}: {e}[/red]"
+        )
+        return 1
 
     errored = any(r.status == "error" for r in results)
-    return 1 if errored else 0
+    return 1 if (errored or interrupted) else 0

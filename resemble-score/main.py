@@ -94,8 +94,15 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # --no-recursive is a CLI-only flag; passing it must route to the CLI,
+    # not silently launch the GUI. (--recursive is the default, so only the
+    # explicit negation counts as a CLI trigger.)
     cli_requested = bool(
-        args.cli or args.folder or args.select_all or args.select
+        args.cli
+        or args.folder
+        or args.select_all
+        or args.select
+        or (args.recursive is False)
     )
 
     if not cli_requested:
