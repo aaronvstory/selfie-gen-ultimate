@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, Set
 
@@ -172,12 +173,17 @@ def _write_top_level_launchers(bundle_root: Path) -> None:
         Creates `Start GUI/CLI` launcher files and applies execute permission
         to generated `.command` scripts.
     """
+    # newline="\r\n" is MANDATORY: a release built on macOS/Linux would
+    # otherwise emit LF-only .bat files, which cmd.exe garbles on Windows
+    # ('"tokens=1" is not recognized'). .bat must be CRLF regardless of the
+    # host OS the release is built on (symmetric to the .command LF rule below).
     (bundle_root / "Start GUI.bat").write_text(
         "@echo off\n"
         "setlocal\n"
         "cd /d \"%~dp0\"\n"
         "call launchers\\windows\\run_gui.bat\n",
         encoding="utf-8",
+        newline="\r\n",
     )
     (bundle_root / "Start CLI.bat").write_text(
         "@echo off\n"
@@ -185,8 +191,13 @@ def _write_top_level_launchers(bundle_root: Path) -> None:
         "cd /d \"%~dp0\"\n"
         "call launchers\\windows\\run_cli.bat\n",
         encoding="utf-8",
+        newline="\r\n",
     )
 
+    # newline="\n" is MANDATORY: without it, write_text() on Windows translates
+    # \n -> \r\n, producing a CRLF shebang (#!/usr/bin/env bash\r) that fails on
+    # macOS with `env: bash\r: No such file or directory`. .command must be LF
+    # regardless of the host OS the release is built on.
     (bundle_root / "Start GUI.command").write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
@@ -196,6 +207,7 @@ def _write_top_level_launchers(bundle_root: Path) -> None:
         "fi\n"
         "exec /bin/bash ./run_gui.sh\n",
         encoding="utf-8",
+        newline="\n",
     )
     (bundle_root / "Start CLI.command").write_text(
         "#!/usr/bin/env bash\n"
@@ -206,9 +218,38 @@ def _write_top_level_launchers(bundle_root: Path) -> None:
         "fi\n"
         "exec /bin/bash ./run_cli.sh\n",
         encoding="utf-8",
+        newline="\n",
     )
     for name in ("Start GUI.command", "Start CLI.command"):
         os.chmod(bundle_root / name, 0o755)
+
+
+def _make_zip_preserving_exec_bits(staging_root: Path, zip_path: Path) -> None:
+    """Zip ``staging_root`` so ``.command``/``.sh`` files keep their exec bit.
+
+    ``shutil.make_archive`` (and zipfile defaults) on Windows store a generic
+    0o666 mode, so every ``.command`` in the release would extract on macOS
+    WITHOUT the execute bit — Finder then opens it in a text editor instead of
+    running it. We set ``ZipInfo.external_attr`` explicitly: 0o755 for shell
+    launchers, 0o644 for everything else. This makes the zip correct regardless
+    of the host OS the release is built on.
+
+    Args:
+        staging_root: Directory whose contents become the zip root.
+        zip_path: Destination ``.zip`` path.
+    """
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(staging_root.rglob("*")):
+            if path.is_dir():
+                continue
+            arcname = path.relative_to(staging_root).as_posix()
+            info = zipfile.ZipInfo(arcname)
+            data = path.read_bytes()
+            info.compress_type = zipfile.ZIP_DEFLATED
+            is_exec = path.suffix in (".command", ".sh")
+            # high 16 bits = Unix mode; 0o755 for launchers, 0o644 otherwise
+            info.external_attr = (0o755 if is_exec else 0o644) << 16
+            zf.writestr(info, data)
 
 
 def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
@@ -240,12 +281,8 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
     for path in (versioned_zip_path, latest_alias_zip_path):
         if path.exists():
             path.unlink()
-    archive_path = shutil.make_archive(
-        str(versioned_zip_path.with_suffix("")),
-        "zip",
-        root_dir=staging_root,
-    )
-    shutil.copy2(archive_path, latest_alias_zip_path)
-    created = [Path(archive_path), latest_alias_zip_path]
+    _make_zip_preserving_exec_bits(staging_root, versioned_zip_path)
+    shutil.copy2(versioned_zip_path, latest_alias_zip_path)
+    created = [versioned_zip_path, latest_alias_zip_path]
     shutil.rmtree(dist_root / "_staging", ignore_errors=True)
     return created

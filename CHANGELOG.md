@@ -2,6 +2,58 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-16 (v2.0) — Oldcam V14 "Forensic Daylight" (new default)
+
+Oldcam **V14 "Forensic Daylight"** lands as the new default version — a
+physics-corrected successor to V13 that fixes the mathematically incorrect
+optics a forensic review flagged, while keeping V13's no-rPPG / no-face /
+no-biological-liveness red-team-physics-only design. V13 stays selectable but
+is no longer pre-selected anywhere.
+
+### Fixed
+
+- **AWB is now true white balance, not exposure drift.** V13's
+  `apply_global_awb_drift` did `image_f += drift` — a flat scalar added to all
+  BGR channels, which is a luma/exposure shift. V14 uses a multiplicative
+  color-temperature drift: Red and Blue gains move inversely while Green stays
+  anchored, driven by a mean-reverting stochastic walk (not a perfect sine).
+- **Synthetic pixel stasis eliminated.** V13's perfectly-static pixels between
+  OIS micro-jitters are a forensic dead-giveaway for SNR/PAD detectors. V14 adds
+  `apply_daylight_sensor_floor` — a sub-perceptual, luma-dominant,
+  signal-dependent read/shot noise floor (max ≤ ~2/255, mean < 0.2/255) that is
+  invisible to humans and survives H.264 without shatter, but breaks the
+  artificial cleanliness.
+- **Double-lossy encode removed.** V13 wrote the temp video with OpenCV `mp4v`
+  (lossy) and then re-encoded to H.264, destroying sub-perceptual effects before
+  FFmpeg ever saw them. V14 writes a lossless **FFV1** MKV temp (with graceful
+  **MJPG → mp4v** fallback for limited OpenCV builds), so the sensor floor and
+  AWB survive to the single final H.264 encode.
+- **Highlight bloom no longer flickers.** V13's binary `cv2.threshold` mask
+  shimmered as highlights crossed the boundary frame-to-frame. V14 uses a
+  smoothstep ramp from threshold to white (continuous, no flicker).
+- **Truncation darkening bias fixed.** All uint8 casts now `np.rint()` before
+  casting instead of truncating (V13's `astype(np.uint8)` biased the image
+  darker over a clip).
+- **Original audio preserved.** V13 ran `highpass/lowpass/volume/acompressor`
+  filters on the audio for no camera-realism reason; V14 stream-copies it.
+- **V13 vignette-cache bug fixed (carried into V14):** the adjusted vignette
+  mask is now actually cached in `state` (V13 recomputed it every frame but
+  never stored it).
+
+### Changed
+
+- **Oldcam default is now V14** across every layer: `automation/config.py`,
+  the GUI checkbox (`config_panel.py`), the CLI menu (`kling_automation_ui.py`),
+  and the Windows + macOS root launcher chains. V13 remains a selectable option.
+- **New CLI knobs on V14:** `--read-noise` (0.22), `--shot-noise` (0.16),
+  `--chroma-noise-ratio` (0.08), `--crf` (14, clamped 10–24). The sensor-floor
+  args are clamped to sub-perceptual ranges post-parse.
+- **App release version bumped v1.9 → v2.0.** The accumulated forensic optics
+  overhaul + new default is a milestone.
+- Standalone `oldcam-v14/` subproject ships for Windows + macOS (full launcher
+  chain, both algorithm twins) with a dedicated
+  `distribution/build_oldcam_v14_zip.py` bundle builder.
+
 ## 2026-05-15 (v1.9) — macOS launcher resilience + recalibrated similarity curve
 
 ### Fixed

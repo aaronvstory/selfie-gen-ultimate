@@ -429,6 +429,27 @@ If stamp exists → `goto :launch` (skip all pip/dep work). Only run dep sync wh
 
 Always filter mediapipe out of requirements files before the main pip install, then install it separately. Letting pip resolve mediapipe deps causes conflicts.
 
+### 7. After editing ANY tracked text file, verify the diff is your change ONLY (autocrlf trap)
+
+**This box has an autocrlf-like behavior: many tracked files are `i/lf` in git but the `Write`/`Edit` tools (and the working tree) are CRLF.** Editing such a file with `Edit`/`Write` and committing flips the **entire file** LF→CRLF in the committed blob — a silent regression that ships broken/garbled files and wastes a full cycle reverting. This already happened once (`release_prep.py`, PR #22) and must not recur.
+
+**MANDATORY pre-commit check after every `Edit`/`Write` on a tracked file:**
+
+```bash
+git diff --stat <file>          # insertions/deletions must ≈ your logical change
+git diff <file> | grep -c '^[+-]' # not hundreds-of-lines for a 1-line edit
+```
+
+If `--stat` shows the whole file changed (e.g. "288 insertions, 251 deletions" for a 5-line edit), the line endings flipped. **Before committing**, restore the file's committed eol:
+
+```bash
+git show HEAD:<file> > /tmp/orig && \
+python -c "import sys;p=sys.argv[1];b=open(p,'rb').read();open(p,'wb').write(b.replace(b'\r\n',b'\n'))" <file> && \
+git add <file> && git ls-files --eol <file>   # confirm i/lf restored
+```
+
+Authoritative eol checks (working-tree `\r` scans give false positives here): `git ls-files --eol <file>` (both columns) and `git show HEAD:<file> | tr -cd '\r' | wc -c` (committed blob CR bytes — 0 = LF). **A file's committed eol must match its siblings** (e.g. `distribution/*.py` are all `i/lf` — keep them LF). This rule is general (not launcher-only): it applies to `.py`, `.md`, `.json`, `.txt`, anything tracked.
+
 ---
 
 ## Hard Rules — GUI Sash Layout
@@ -493,7 +514,7 @@ When adding a new Oldcam version (e.g., v12), these are the required touch-point
 
 **Auto-discovered (no changes needed):** `_discover_oldcam_versions()` in `queue_manager.py` scans `oldcam-v*` dirs; output filename suffix is generic; face landmarker task searched generically; `automation/pipeline.py` is fully version-agnostic.
 
-**Current default version:** v13. Mediapipe versions: v9, v10, v11.
+**Current default version:** v14 (Forensic Daylight; superseded v13). Mediapipe versions: v9, v10, v11. v14 does **not** use mediapipe.
 
 ---
 

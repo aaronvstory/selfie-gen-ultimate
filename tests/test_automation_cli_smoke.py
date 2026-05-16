@@ -613,7 +613,7 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_similarity_threshold"] == 80
     assert ui.config["automation_video_enabled"] is True
     assert ui.config["automation_oldcam_enabled"] is True
-    assert ui.config["automation_oldcam_version"] == "v13"
+    assert ui.config["automation_oldcam_version"] == "v14"
     assert ui.config["automation_oldcam_required"] is True
     assert ui.config["automation_max_cases_per_run"] == "all"
     assert ui.config["falai_api_key"] == "keep-fal-key"

@@ -443,6 +443,23 @@ $crlf = $content -replace "`r`n","`n" -replace "`n","`r`n"
 
 Verify: `CRLF=True`, `LFonly=False`. macOS `.sh`/`.command` files use LF — `Write`/`Edit` are fine for those.
 
+### After editing ANY tracked text file — verify the diff is your change only
+
+This box is autocrlf-like: many tracked files are `i/lf` in git but `Write`/`Edit` write CRLF. Editing such a file and committing flips the **whole file** LF→CRLF in the blob — a silent regression that ships garbled files and costs a full revert cycle (happened on `release_prep.py`, PR #22). **MANDATORY after every `Edit`/`Write` on a tracked file, before committing:**
+
+```bash
+git diff --stat <file>   # must ≈ your logical change, NOT the whole file
+```
+
+If `--stat` shows hundreds of lines for a small edit, eol flipped. Restore committed eol before commit:
+
+```bash
+python -c "p='<file>';b=open(p,'rb').read();open(p,'wb').write(b.replace(b'\r\n',b'\n'))" && git add <file>
+git ls-files --eol <file>   # confirm i/lf (or i/crlf) matches siblings
+```
+
+Authoritative checks (working-tree `\r` scans false-positive here): `git ls-files --eol <f>` + `git show HEAD:<f> | tr -cd '\r' | wc -c`. Match the file's committed eol to its siblings (`distribution/*.py` are all `i/lf`). General rule — applies to `.py`/`.md`/`.json`/`.txt`, not just launchers.
+
 ### Blank lines — use `echo(` not `echo.`
 
 `echo.` causes `'. was unexpected at this time'` with `enabledelayedexpansion`. Use `echo(` unconditionally for blank lines.
