@@ -1728,6 +1728,27 @@ def test_v15_parser_exposes_ghosting_and_crf_but_not_noise_args():
         parser.parse_args(["dummy.mp4", "--ghosting", "0.9"])
 
 
+def test_v15_parser_exposes_vignette_strength_with_safe_default():
+    """V15 exposes --vignette-strength (process_frame/naturalize_video read
+    it via getattr); the default must equal the historic getattr fallback
+    (0.55) so adding the knob changes no existing behaviour, and main()
+    clamps it to 0.0-1.0."""
+    oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15_vig")
+    parser = oldcam_v15.build_parser()
+    ns = parser.parse_args(["clip.mp4"])
+    assert hasattr(ns, "vignette_strength")
+    assert abs(float(ns.vignette_strength) - 0.55) < 1e-9, (
+        "default must match the existing getattr(..., 0.55) fallback exactly"
+    )
+    ns2 = parser.parse_args(["clip.mp4", "--vignette-strength", "0.3"])
+    assert abs(float(ns2.vignette_strength) - 0.3) < 1e-9
+    # main() clamps to [0.0, 1.0]
+    ns3 = oldcam_v15.build_parser().parse_args(["clip.mp4", "--vignette-strength", "5"])
+    ns3.crf = 14
+    ns3.vignette_strength = max(0.0, min(float(ns3.vignette_strength), 1.0))
+    assert ns3.vignette_strength == 1.0
+
+
 def test_v15_awb_is_multiplicative_not_scalar_add():
     """V15 inherits V14's corrected multiplicative AWB drift verbatim."""
     for rel in ("oldcam-v15/oldcam.py", "oldcam-v15/macOS/oldcam.py"):
