@@ -36,6 +36,7 @@ resolve_py() {
   if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/venv/bin/python" ] && _python_supported "$REPO_ROOT/venv/bin/python"; then echo "$REPO_ROOT/venv/bin/python|shared root venv"; return 0; fi
   if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/.venv311/bin/python" ] && _python_supported "$REPO_ROOT/.venv311/bin/python"; then echo "$REPO_ROOT/.venv311/bin/python|shared root .venv311"; return 0; fi
   if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/.venv/bin/python" ] && _python_supported "$REPO_ROOT/.venv/bin/python"; then echo "$REPO_ROOT/.venv/bin/python|shared root .venv"; return 0; fi
+  if [ -x "$SCRIPT_DIR/.venv311/bin/python" ] && _python_supported "$SCRIPT_DIR/.venv311/bin/python"; then echo "$SCRIPT_DIR/.venv311/bin/python|local module .venv311"; return 0; fi
   if [ -x "$SCRIPT_DIR/.venv/bin/python" ] && _python_supported "$SCRIPT_DIR/.venv/bin/python"; then echo "$SCRIPT_DIR/.venv/bin/python|local module .venv"; return 0; fi
   # macOS Python — prefer python3.11 first per CLAUDE.md Rule 6.
   pybin="$(command -v python3.11 || command -v python3.12 || command -v python3 || command -v python || true)"
@@ -45,6 +46,10 @@ resolve_py() {
     "$pybin" -m venv "$REPO_ROOT/venv" >/dev/null 2>&1 || return 1
     [ -x "$REPO_ROOT/venv/bin/python" ] || return 1
     echo "$REPO_ROOT/venv/bin/python|created shared root venv"; return 0
+  fi
+  # Prefer .venv311 per CLAUDE.md Rule 6 — canonical macOS venv name.
+  if "$pybin" -m venv "$SCRIPT_DIR/.venv311" >/dev/null 2>&1 && [ -x "$SCRIPT_DIR/.venv311/bin/python" ]; then
+    echo "$SCRIPT_DIR/.venv311/bin/python|created local module .venv311"; return 0
   fi
   "$pybin" -m venv "$SCRIPT_DIR/.venv" >/dev/null 2>&1 || return 1
   [ -x "$SCRIPT_DIR/.venv/bin/python" ] || return 1
