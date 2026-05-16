@@ -532,7 +532,8 @@ class ConfigPanel(tk.Frame):
             "v11": tk.BooleanVar(value=False),
             "v12": tk.BooleanVar(value=False),
             "v13": tk.BooleanVar(value=False),
-            "v14": tk.BooleanVar(value=True),
+            "v14": tk.BooleanVar(value=False),
+            "v15": tk.BooleanVar(value=True),
         }
         # 3-column grid — new versions append rows, strip width stays fixed.
         # 5 versions → 2 rows (3 + 2); 6 versions → 2 rows (3 + 3); 7+ → 3 rows.
@@ -540,7 +541,7 @@ class ConfigPanel(tk.Frame):
         _check_grid = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
         _check_grid.pack(side=tk.LEFT, anchor="n")
         self.oldcam_version_checks = {}
-        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14")):
+        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15")):
             check = tk.Checkbutton(
                 _check_grid,
                 text=version,
@@ -1129,7 +1130,7 @@ class ConfigPanel(tk.Frame):
         for version, var in self.oldcam_version_vars.items():
             var.set(version in selected_versions)
         self.config["oldcam_versions"] = selected_versions
-        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v14"
+        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v15"
 
         # Reprocess options
         self.reprocess_var.set(self.config.get("allow_reprocess", False))
@@ -1376,10 +1377,16 @@ class ConfigPanel(tk.Frame):
             "     Pure OIS / rolling shutter / blooming / AWB drift / aberration / vignette.",
             "     Trade-off: scalar-add AWB, static pixels, double-lossy encode (V14 fixes these).",
             "",
-            "v14  Forensic daylight (physics-corrected)   ★ default",
+            "v14  Forensic daylight (physics-corrected)",
             "     V13 optics + true multiplicative AWB, sub-perceptual sensor floor,",
             "     smoothstep bloom, lossless temp encode, audio-preserving.",
-            "     Best for daylight footage that must withstand forensic / PAD analysis.",
+            "     Trade-off: the preserved sensor floor is a frequency-detector tell",
+            "     (Resemble testing) — V15 removes it and restores ghosting.",
+            "",
+            "v15  Temporal Mute (synthesis)   ★ default",
+            "     V14 math/encoding + V13 noise-free philosophy + V12 temporal blend.",
+            "     No sensor noise; --ghosting 0.18 bleeds the previous frame to",
+            "     defeat consistency detectors. Best Resemble-API result.",
         ]
         return "\n".join(lines)
 
@@ -1470,13 +1477,13 @@ class ConfigPanel(tk.Frame):
             return sorted(set(versions), key=self._oldcam_version_key)
 
         if not versions:
-            legacy = str(self.config.get("oldcam_version", "v14")).lower()
+            legacy = str(self.config.get("oldcam_version", "v15")).lower()
             if legacy == "all":
                 versions = list(valid_versions)
             elif legacy in valid_versions:
                 versions = [legacy]
             else:
-                versions = ["v14"]
+                versions = ["v15"]
 
         return sorted(set(versions), key=self._oldcam_version_key)
 
@@ -1489,8 +1496,8 @@ class ConfigPanel(tk.Frame):
         ]
         selected_versions = sorted(set(selected_versions), key=self._oldcam_version_key)
         self.config["oldcam_versions"] = selected_versions
-        # Legacy compatibility key: highest selected version, or v14 default when empty.
-        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v14"
+        # Legacy compatibility key: highest selected version, or v15 default when empty.
+        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v15"
         if selected_versions:
             self._notify_change("Oldcam versions set to " + ", ".join(selected_versions))
         else:

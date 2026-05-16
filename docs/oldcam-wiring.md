@@ -16,12 +16,15 @@
 | v11     | Yes        | Yes              | Yes       | Yes          | Yes         | Yes       | + AWB after FFT — best of all |
 | v12     | No         | No               | Yes       | Yes          | Yes         | No        | Pristine hardware-only (anti-spoofing aware): no rPPG, no LUT, no CLAHE |
 | v13     | No         | No               | Yes       | **No**       | **No**      | No        | High-end daylight: no noise / AE / ghosting, pure optics (superseded by v14) |
-| v14     | No         | No               | Yes (mult.)| Floor*      | **No**      | No        | Forensic daylight ★ default: multiplicative AWB, sub-perceptual sensor floor, smoothstep bloom, lossless temp encode, audio-preserving |
+| v14     | No         | No               | Yes (mult.)| Floor*      | **No**      | No        | Forensic daylight: multiplicative AWB, sub-perceptual sensor floor, smoothstep bloom, lossless temp encode, audio-preserving (superseded by v15) |
+| v15     | No         | No               | Yes (mult.)| **No**       | **No**      | No        | Temporal Mute ★ default: V14 math/encoding + V13 noise-free + V12 ghosting (--ghosting 0.18). No sensor floor (it was V14's frequency-detector tell). Best Resemble-API result |
 
 \* **Floor** = a sub-perceptual read/shot sensor *floor* (max ≈ 2/255), not the
 visible ISO grain v7–v11 add. It defeats SNR/PAD detectors without altering the
-look. **Current default version: v14** (superseded v13). Mediapipe versions:
-v9, v10, v11 — v14 does not use mediapipe.
+look. v15 removes the floor entirely (Resemble testing showed the preserved
+floor is itself a frequency-detector tell) and restores V12 temporal blending.
+**Current default version: v15** (superseded v14). Mediapipe versions:
+v9, v10, v11 — v14/v15 do not use mediapipe.
 
 ---
 
@@ -62,9 +65,10 @@ oldcam-vN/
 > (Python-version validation on every venv candidate) and Rule 10 (`set -euo
 > pipefail` parity). Copying from them silently reintroduces the resolver bug
 > that bites users with a stale `.venv` symlinked to an unsupported Python
-> (3.13+). **Use `oldcam-v14/macOS/oldcam.command` and
-> `oldcam-v14/oldcam_launcher.bat` as your reference templates** — they ship
-> with `_python_supported()` / `:check_py` per-candidate gates.
+> (3.13+). **Use `oldcam-v15/macOS/oldcam.command` and
+> `oldcam-v15/oldcam_launcher.bat` (or the identical v14 pair) as your
+> reference templates** — they ship with `_python_supported()` / `:check_py`
+> per-candidate gates.
 >
 > For non-launcher files (`oldcam.py`, `launcher.py`, `requirements.txt`),
 > copying from the previous version is fine and conventional.
@@ -223,18 +227,18 @@ grep -q 'set -euo pipefail' launchers/macos/run_oldcam_vN.command     # MUST mat
 grep -q 'set -euo pipefail' launchers/run_oldcam_vN.command           # MUST match
 ```
 
-**The portability gate (`scripts/check_macos_portability.sh`) catches CRLF in shell scripts and missing exec bits, but NOT `/dev/null` in `.bat` files, NOT Rule 9 resolver-validation absence, NOT Rule 10 set-flag drift** — those are only caught by the greps above, by `tests/test_oldcam_launcher_resolver.py` (Rule 9 static-text gate for v14), or by code review. See `AGENTS.md` "Hard Rules — Windows Launchers" for the full set of `.bat` traps (`/dev/null`, `echo.` vs `echo(`, redirect operator order, override env-var naming), and CLAUDE.md macOS Rules 9–10 for the full resolver pattern with its reasoning.
+**The portability gate (`scripts/check_macos_portability.sh`) catches CRLF in shell scripts and missing exec bits, but NOT `/dev/null` in `.bat` files, NOT Rule 9 resolver-validation absence, NOT Rule 10 set-flag drift** — those are only caught by the greps above, by `tests/test_oldcam_launcher_resolver.py` (Rule 9 static-text gate for v14 and v15), or by code review. See `AGENTS.md` "Hard Rules — Windows Launchers" for the full set of `.bat` traps (`/dev/null`, `echo.` vs `echo(`, redirect operator order, override env-var naming), and CLAUDE.md macOS Rules 9–10 for the full resolver pattern with its reasoning.
 
 ### 9. Known defect — pre-v14 launchers do not implement Rule 9/10
 
 This is a deliberate carve-out, not an instruction to follow the same pattern:
 
-- All 8 of `oldcam-v7/...v14/macOS/oldcam.command` (except v14 after this PR ships) start with `set -u` instead of `set -euo pipefail`, in violation of CLAUDE.md macOS Rule 10.
-- All 8 of `oldcam-v7/...v14/oldcam_launcher.bat` (except v14 after this PR ships) lack the `:check_py` subroutine and silently accept any `.venv` candidate without validating the Python version, in violation of CLAUDE.md macOS Rule 9.
+- `oldcam-v7/...v13/macOS/oldcam.command` start with `set -u` instead of `set -euo pipefail`, in violation of CLAUDE.md macOS Rule 10. (v14 and v15 are compliant.)
+- `oldcam-v7/...v13/oldcam_launcher.bat` lack the `:check_py` subroutine and silently accept any `.venv` candidate without validating the Python version, in violation of CLAUDE.md macOS Rule 9. (v14 and v15 are compliant.)
 
 These versions ship and work for users on stock Python installs because no user has yet hit the failure-case Python-version drift. **Do not "fix" them in unrelated PRs.** If you need to retrofit them, do it in a dedicated PR with explicit live testing on each version, because mediapipe-using versions (v9 / v10 / v11) have additional Python-version constraints (mediapipe wheels are only built for a narrow range) and need careful smoke-testing on a clean venv.
 
-The blessed reference for new vN+1 launchers is **v14 only** — explicitly stated in §1 above.
+The blessed reference for new vN+1 launchers is **v14 or v15** (their launcher pairs are identical Rule 9/10-compliant templates) — explicitly stated in §1 above.
 
 ---
 

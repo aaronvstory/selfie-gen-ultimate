@@ -78,7 +78,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_video_aspect_ratio": "3:4",
     "automation_video_use_existing_prompt": True,
     "automation_oldcam_enabled": True,
-    "automation_oldcam_version": "v14",
+    "automation_oldcam_version": "v15",
     "automation_oldcam_required": True,
     "automation_recommended_defaults_version": 1,
     "automation_verbose_logging": True,

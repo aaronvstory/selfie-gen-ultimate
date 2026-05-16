@@ -7,9 +7,10 @@ the resolver returned that bad python and `pip install` failed because
 `numpy<2` has no python3.13+ wheels — confusing failure mode because supported
 pythons WERE installed, just never tried.
 
-v14 is the first oldcam version to adopt the `_python_supported()` /
-`:check_py` pattern that similarity got in afe0540b. These tests pin the
-pattern in place so the next oldcam version (v15+) doesn't regress by
+v14 was the first oldcam version to adopt the `_python_supported()` /
+`:check_py` pattern that similarity got in afe0540b. v15 inherits it verbatim
+(copied from the v14 blessed template). These tests pin the pattern in place
+for both v14 and v15 so the next oldcam version doesn't regress by
 copy-pasting from v7-v13. See `docs/oldcam-wiring.md §1` for the canonical
 template instruction and §9 for the v7-v13 known-defect carve-out.
 """
@@ -157,4 +158,72 @@ def test_all_v14_launchers_share_supported_version_range():
         f"version range diverged across launchers — bash: {bash_normalized!r}, "
         f"cmd: {cmd_normalized!r}. They must match so the user-facing error "
         "message is the same on both platforms."
+    )
+
+
+# --- V15 launchers: must inherit the v14 Rule 9/10 resolver verbatim ---
+#
+# V15's launchers were copied from v14 (the blessed template per
+# docs/oldcam-wiring.md §1). These guards ensure a future edit can't silently
+# regress v15 back to the v7-v13 unguarded resolver.
+
+
+def test_macos_v15_algorithm_launcher_defines_python_supported_helper():
+    src = _read("oldcam-v15/macOS/oldcam.command")
+    assert "_python_supported()" in src, (
+        "oldcam-v15/macOS/oldcam.command missing _python_supported() (Rule 9)"
+    )
+
+
+def test_macos_v15_algorithm_launcher_gates_every_candidate():
+    src = _read("oldcam-v15/macOS/oldcam.command")
+    count = src.count("_python_supported")
+    assert count >= 6, (
+        f"v15 _python_supported invocations dropped (count={count}); "
+        "every candidate venv must be guarded."
+    )
+
+
+def test_macos_v15_algorithm_launcher_uses_strict_set_flags():
+    src = _read("oldcam-v15/macOS/oldcam.command")
+    assert "set -euo pipefail" in src, (
+        "Rule 10 violation: oldcam-v15/macOS/oldcam.command must use set -euo pipefail"
+    )
+
+
+def test_macos_v15_hub_and_platform_launchers_use_strict_set_flags():
+    for path in (
+        "launchers/macos/run_oldcam_v15.command",
+        "launchers/run_oldcam_v15.command",
+    ):
+        src = _read(path)
+        assert "set -euo pipefail" in src, (
+            f"{path}: Rule 10 violation — must use `set -euo pipefail`."
+        )
+
+
+def test_windows_v15_bat_launcher_uses_check_py_subroutine():
+    src = _read("oldcam-v15/oldcam_launcher.bat")
+    assert ":check_py" in src, "oldcam-v15/oldcam_launcher.bat missing :check_py (Rule 9)"
+    count = src.count("call :check_py")
+    assert count >= 5, (
+        f"v15 call :check_py count={count} — expected at least 5 candidates"
+    )
+
+
+def test_windows_v15_bat_launcher_includes_venv311_candidate():
+    src = _read("oldcam-v15/oldcam_launcher.bat")
+    assert ".venv311" in src, "v15 Windows launcher missing .venv311 candidate"
+
+
+def test_all_v15_launchers_share_supported_version_range():
+    import re
+
+    bash_src = _read("oldcam-v15/macOS/oldcam.command")
+    cmd_src = _read("oldcam-v15/oldcam_launcher.bat")
+    bash_m = re.search(VERSION_PROBE_RE_BASH, bash_src)
+    cmd_m = re.search(VERSION_PROBE_RE_CMD, cmd_src)
+    assert bash_m and cmd_m, "v15 version-range expression missing in one launcher"
+    assert re.sub(r"\s+", "", bash_m.group(0)) == re.sub(r"\s+", "", cmd_m.group(0)), (
+        "v15 version range diverged across macOS/Windows launchers"
     )

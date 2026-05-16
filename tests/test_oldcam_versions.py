@@ -397,7 +397,7 @@ def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
     panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
     assert 'text="Oldcam Finish"' not in panel_source
     assert 'text="Oldcam:"' in panel_source
-    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"))' in panel_source
+    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"))' in panel_source
 
 
 def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
@@ -1292,59 +1292,60 @@ def test_verbose_gui_mode_legacy_true_migrated_to_false_once():
 # ---------------------------------------------------------------------------
 
 
-def test_default_oldcam_version_is_v14_across_all_layers():
-    """If someone adds a new default-version site and forgets to set v14,
+def test_default_oldcam_version_is_v15_across_all_layers():
+    """If someone adds a new default-version site and forgets to set v15,
     this test fails. Locks the contract until the next intentional bump.
-    (V14 "Forensic Daylight" superseded V13 as the default — V13 stays
+    (V15 "Temporal Mute" superseded V14 as the default — V14 stays
     selectable but is no longer pre-selected anywhere.)"""
     # CLI / automation default
     from automation.config import merge_automation_defaults
     merged = merge_automation_defaults({})
-    assert merged["automation_oldcam_version"] == "v14", (
-        f"automation/config.py default must be v14; got "
+    assert merged["automation_oldcam_version"] == "v15", (
+        f"automation/config.py default must be v15; got "
         f"{merged['automation_oldcam_version']!r}"
     )
 
-    # GUI checkbox default (v14 BooleanVar with value=True)
+    # GUI checkbox default (v15 BooleanVar with value=True)
     config_panel_src = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
-    assert '"v14": tk.BooleanVar(value=True)' in config_panel_src, (
-        "GUI must ship with v14 checkbox pre-selected"
+    assert '"v15": tk.BooleanVar(value=True)' in config_panel_src, (
+        "GUI must ship with v15 checkbox pre-selected"
     )
-    # Every other version in the dict must be value=False (only v14 starts ticked).
-    for legacy in ("v7", "v8", "v9", "v10", "v11", "v12", "v13"):
+    # Every other version in the dict must be value=False (only v15 starts
+    # ticked). v14 is now demoted alongside v7-v13.
+    for legacy in ("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"):
         assert f'"{legacy}": tk.BooleanVar(value=True)' not in config_panel_src, (
-            f"Only v14 should be pre-selected; found {legacy} also marked True"
+            f"Only v15 should be pre-selected; found {legacy} also marked True"
         )
 
-    # Legacy fallback strings inside config_panel must default to v14.
+    # Legacy fallback strings inside config_panel must default to v15.
     # (Three call sites: load → save, on-change → save, _resolve fallback.)
-    fallback_v14_count = config_panel_src.count('"v14"')
-    assert fallback_v14_count >= 3, (
-        f"Expected at least 3 'v14' fallback strings in config_panel.py; got {fallback_v14_count}"
+    fallback_v15_count = config_panel_src.count('"v15"')
+    assert fallback_v15_count >= 3, (
+        f"Expected at least 3 'v15' fallback strings in config_panel.py; got {fallback_v15_count}"
     )
 
-    # CLI fallback strings + choice list must include v14 and use it as default.
+    # CLI fallback strings + choice list must include v15 and use it as default.
     cli_src = (ROOT / "kling_automation_ui.py").read_text(encoding="utf-8")
-    assert cli_src.count("'v14'") + cli_src.count('"v14"') >= 4, (
-        "Expected CLI to default to v14 in ≥3 get(..., 'v14') calls + choice list"
+    assert cli_src.count("'v15'") + cli_src.count('"v15"') >= 4, (
+        "Expected CLI to default to v15 in ≥3 get(..., 'v15') calls + choice list"
     )
-    # The choice list must contain v14 (and still list v13 as a pickable option).
-    assert '"v14"' in cli_src or "'v14'" in cli_src
-    assert '"v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "all"' in cli_src, (
-        "CLI menu choice list must enumerate v7-v14 plus 'all'"
+    # The choice list must contain v15 (and still list v14 as a pickable option).
+    assert '"v15"' in cli_src or "'v15'" in cli_src
+    assert '"v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "all"' in cli_src, (
+        "CLI menu choice list must enumerate v7-v15 plus 'all'"
     )
 
-    # Launcher chains: root + windows hub + macOS hub must chain to v14.
+    # Launcher chains: root + windows hub + macOS hub must chain to v15.
     for path in (
         "run_oldcam.bat",
         "launchers/windows/run_oldcam.bat",
     ):
         text = (ROOT / path).read_text(encoding="utf-8")
-        assert "run_oldcam_v14.bat" in text, f"{path} must chain to run_oldcam_v14.bat"
+        assert "run_oldcam_v15.bat" in text, f"{path} must chain to run_oldcam_v15.bat"
 
     macos_chain = (ROOT / "launchers" / "macos" / "run_oldcam.command").read_text(encoding="utf-8")
-    assert "run_oldcam_v14.command" in macos_chain, (
-        "launchers/macos/run_oldcam.command must chain to run_oldcam_v14.command"
+    assert "run_oldcam_v15.command" in macos_chain, (
+        "launchers/macos/run_oldcam.command must chain to run_oldcam_v15.command"
     )
 
 
@@ -1596,3 +1597,235 @@ def test_oldcam_v14_standalone_files_present_for_both_platforms():
         assert b"\r\n" in data, (
             f"{bat_rel} must use CRLF endings (cmd.exe garbles LF-only .bat files)"
         )
+
+
+# ---------------------------------------------------------------------------
+# V15 "Temporal Mute" — V14 math/encoding + V13 noise-free + V12 ghosting
+# (new default; superseded V14 per Resemble deepfake-API benchmarking)
+# ---------------------------------------------------------------------------
+
+
+def test_v15_default_output_path_uses_v15_suffix():
+    oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15")
+    assert oldcam_v15.build_default_output_path("sample.mp4").endswith("sample-oldcam-v15.mp4")
+
+
+def test_oldcam_dependency_preflight_does_not_require_mediapipe_for_v15(tmp_path):
+    """V15 Temporal Mute — like V14/V13/V12, no MediaPipe; missing mediapipe must be OK."""
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v15"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "requirements.txt").write_text("numpy>=1.24\nopencv-python-headless>=4.8\n", encoding="utf-8")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("No module named mediapipe")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v15") is True
+
+
+def test_v15_process_frame_skips_noise_ae_and_sensor_floor():
+    """V15 keeps V13/V14's no-AE/no-old-noise contract AND additionally must
+    NOT call apply_daylight_sensor_floor (the V14 frequency-detector tell that
+    Resemble testing flagged — removed entirely in V15)."""
+    oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15_mute")
+
+    called = []
+
+    def mark(name):
+        def _wrapped(*args, **kwargs):
+            called.append(name)
+            return args[0]
+        return _wrapped
+
+    image = np.full((32, 32, 3), 128, dtype=np.uint8)
+    state = {
+        "face_detected": False,
+        "fpn": np.zeros((32, 32, 3), dtype=np.float32),
+        "adjusted_vignette_mask": np.ones((32, 32, 1), dtype=np.float32),
+        "last_masks": {},
+    }
+
+    import argparse
+    args = argparse.Namespace(vignette_strength=0.55, ghosting=0.18)
+
+    # apply_daylight_sensor_floor must not even exist on the v15 module.
+    assert not hasattr(oldcam_v15, "apply_daylight_sensor_floor"), (
+        "V15 must delete apply_daylight_sensor_floor entirely (it was V14's "
+        "frequency-detector tell)"
+    )
+    with (
+        mock.patch.object(oldcam_v15, "apply_modern_sensor_noise", side_effect=mark("noise")),
+        mock.patch.object(oldcam_v15, "apply_ae_stepping", side_effect=mark("ae")),
+    ):
+        oldcam_v15.process_frame(image, None, None, args, rng=np.random.default_rng(0), state=state)
+
+    assert "noise" not in called, "V15 must not call apply_modern_sensor_noise"
+    assert "ae" not in called, "V15 must not call apply_ae_stepping"
+
+
+def test_v15_has_no_sensor_floor_code():
+    """V15 must not DEFINE the V14 sensor-floor function nor REGISTER its
+    --read/shot/chroma-noise CLI args.
+
+    The static half only asserts the function `def` is gone — the V15 parser
+    comment legitimately names the removed knobs to explain the change, so a
+    bare substring check would false-positive. The authoritative check that
+    the flags are truly unregistered is the runtime parse-rejection below.
+    """
+    for rel in ("oldcam-v15/oldcam.py", "oldcam-v15/macOS/oldcam.py"):
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        assert "def apply_daylight_sensor_floor" not in src, (
+            f"{rel}: V14 sensor-floor function must be deleted in V15"
+        )
+
+    oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15_nofloor")
+    parser = oldcam_v15.build_parser()
+    for bad in ("--read-noise", "--shot-noise", "--chroma-noise-ratio"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["dummy.mp4", bad, "0.1"])
+
+
+def test_v15_restores_ghosting_from_args():
+    """V15 must reintroduce V12-style temporal blending: naturalize_video
+    passes args.ghosting (NOT the hardcoded 0.0 of V13/V14) to
+    blend_with_previous_frame, and the parser defaults --ghosting to 0.18."""
+    for rel in ("oldcam-v15/oldcam.py", "oldcam-v15/macOS/oldcam.py"):
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        import re
+        body = re.search(r"def naturalize_video.*?(?=\ndef )", src, re.S).group(0)
+        assert "previous_processed, args.ghosting" in body, (
+            f"{rel}: naturalize_video must pass args.ghosting (V12 temporal blend restored)"
+        )
+        assert "previous_processed, 0.0" not in body, (
+            f"{rel}: V13/V14 hardcoded 0.0 ghosting must be gone in V15"
+        )
+
+    oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15_ghost")
+    ns = oldcam_v15.build_parser().parse_args(["clip.mp4"])
+    assert abs(float(ns.ghosting) - 0.18) < 1e-9, (
+        f"V15 --ghosting default must be 0.18; got {ns.ghosting}"
+    )
+
+
+def test_v15_parser_exposes_ghosting_and_crf_but_not_noise_args():
+    """V15 CLI: --ghosting + --crf present; the V14 --read-noise/--shot-noise/
+    --chroma-noise-ratio and the long-dead --grain must all be rejected."""
+    oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15_parser")
+    parser = oldcam_v15.build_parser()
+    ns = parser.parse_args(["clip.mp4", "--ghosting", "0.3", "--crf", "12"])
+    assert hasattr(ns, "ghosting") and hasattr(ns, "crf")
+    assert abs(float(ns.ghosting) - 0.3) < 1e-9
+    for bad in ("--read-noise", "--shot-noise", "--chroma-noise-ratio", "--grain"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["dummy.mp4", bad, "5"])
+    # bounded_ghosting must still reject out-of-range values
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dummy.mp4", "--ghosting", "0.9"])
+
+
+def test_v15_awb_is_multiplicative_not_scalar_add():
+    """V15 inherits V14's corrected multiplicative AWB drift verbatim."""
+    for rel in ("oldcam-v15/oldcam.py", "oldcam-v15/macOS/oldcam.py"):
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        import ast as _ast
+        tree = _ast.parse(src)
+        fn = next(
+            n for n in _ast.walk(tree)
+            if isinstance(n, _ast.FunctionDef) and n.name == "apply_global_awb_drift"
+        )
+        stmts = fn.body[1:] if (
+            fn.body and isinstance(fn.body[0], _ast.Expr)
+            and isinstance(getattr(fn.body[0], "value", None), _ast.Constant)
+        ) else fn.body
+        code = "\n".join(_ast.get_source_segment(src, s) for s in stmts)
+        assert "image_f += drift" not in code, f"{rel}: scalar-add AWB bug present"
+        assert "image_f[:, :, 2] *= 1.0 + drift" in code, f"{rel}: Red gain missing"
+        assert "image_f[:, :, 0] *= 1.0 - drift" in code, f"{rel}: Blue gain missing"
+        assert "np.rint(np.clip(image_f, 0, 255))" in code, f"{rel}: must round, not truncate"
+
+
+def test_v15_bloom_is_smoothstep_and_temp_is_lossless_audio_copied():
+    """V15 inherits V14's smoothstep bloom + lossless FFV1 temp + audio copy."""
+    for rel in ("oldcam-v15/oldcam.py", "oldcam-v15/macOS/oldcam.py"):
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        import re
+        body = re.search(r"def apply_highlight_blooming.*?(?=\ndef )", src, re.S).group(0)
+        assert "cv2.THRESH_BINARY" not in body, f"{rel}: binary-threshold bloom present"
+        assert "3.0 - 2.0 * mask" in body, f"{rel}: smoothstep ramp missing"
+        assert ".tmp_lossless.mkv" in src, f"{rel}: lossless mkv temp path missing"
+        assert all(c in src for c in ('"FFV1"', '"MJPG"', '"mp4v"')), (
+            f"{rel}: FFV1->MJPG->mp4v fallback chain missing"
+        )
+        assert '"-c:a",\n            "copy",' in src, f"{rel}: audio must be stream-copied"
+
+
+def test_v15_naturalize_image_runs_via_real_parser(tmp_path):
+    """End-to-end CLI parser -> naturalize_image with the V15 arg set must
+    not AttributeError (no read_noise/shot_noise/chroma attrs to clamp)."""
+    import cv2
+    oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15_cli_path")
+    src_img = tmp_path / "tiny.png"
+    cv2.imwrite(str(src_img), np.full((16, 16, 3), 128, dtype=np.uint8))
+    out_img = tmp_path / "out.png"
+    parser = oldcam_v15.build_parser()
+    args = parser.parse_args([str(src_img)])
+    args.crf = max(10, min(int(args.crf), 24))
+    oldcam_v15.naturalize_image(str(src_img), str(out_img), args)
+    assert out_img.exists(), "V15 naturalize_image did not produce output"
+
+
+def test_oldcam_v15_standalone_files_present_for_both_platforms():
+    """v15 standalone must exist for Windows + macOS so users can run it
+    directly without the GUI. Cross-platform parity is non-negotiable."""
+    expected_files = [
+        # Windows side
+        "oldcam-v15/oldcam.py",
+        "oldcam-v15/launcher.py",
+        "oldcam-v15/oldcam_launcher.bat",
+        "oldcam-v15/requirements.txt",
+        # macOS side
+        "oldcam-v15/macOS/oldcam.py",
+        "oldcam-v15/macOS/oldcam.command",
+        "oldcam-v15/macOS/requirements.txt",
+        # Hub launchers
+        "launchers/windows/run_oldcam_v15.bat",
+        "launchers/macos/run_oldcam_v15.command",
+        "launchers/run_oldcam_v15.bat",
+        "launchers/run_oldcam_v15.command",
+    ]
+    for rel in expected_files:
+        assert (ROOT / rel).exists(), f"Missing v15 standalone file: {rel}"
+
+    # macOS .command must use LF endings only (else Bash chokes).
+    for cmd_rel in (
+        "oldcam-v15/macOS/oldcam.command",
+        "launchers/macos/run_oldcam_v15.command",
+        "launchers/run_oldcam_v15.command",
+    ):
+        data = (ROOT / cmd_rel).read_bytes()
+        assert b"\r\n" not in data, (
+            f"{cmd_rel} must use LF endings only (macOS bash rejects CRLF)"
+        )
+
+    # Windows .bat must contain CRLF (cmd.exe garbles LF-only batches).
+    for bat_rel in (
+        "oldcam-v15/oldcam_launcher.bat",
+        "launchers/windows/run_oldcam_v15.bat",
+        "launchers/run_oldcam_v15.bat",
+    ):
+        data = (ROOT / bat_rel).read_bytes()
+        assert b"\r\n" in data, (
+            f"{bat_rel} must use CRLF endings (cmd.exe garbles LF-only .bat files)"
+        )
+
+
+def test_v15_twins_are_byte_identical():
+    """The Windows and macOS v15 oldcam.py must be byte-for-byte identical."""
+    win = (ROOT / "oldcam-v15" / "oldcam.py").read_bytes()
+    mac = (ROOT / "oldcam-v15" / "macOS" / "oldcam.py").read_bytes()
+    assert win == mac, "oldcam-v15 Windows/macOS oldcam.py twins diverged"
