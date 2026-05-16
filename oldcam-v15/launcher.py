@@ -4,15 +4,24 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
 import oldcam
 
+# tk_dialogs.py lives at the repo root, but this launcher runs with cwd=
+# oldcam-v15/, so only that dir is on sys.path[0]. Without this bootstrap
+# `from tk_dialogs import select_open_files` raises ModuleNotFoundError at
+# import time (the exact trap CLAUDE.md flags for standalone subprojects;
+# fixed for similarity/ in commit afe0540b).
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 try:
-    import tkinter as tk
-    from tkinter import filedialog
+    from tk_dialogs import select_open_files
 except ImportError:  # pragma: no cover - depends on host Python Tk support
-    tk = None
-    filedialog = None
+    select_open_files = None
 
 
 MEDIA_FILETYPES = [
@@ -22,19 +31,15 @@ MEDIA_FILETYPES = [
 
 
 def choose_files() -> list[str]:
-    if tk is None or filedialog is None:
+    # Use the shared tk_dialogs wrapper, never raw tkinter.filedialog: it
+    # handles the fragile macOS Tk root lifecycle (ephemeral root + osascript
+    # on darwin) per CLAUDE.md / AGENTS.md rule 3. parent=None → CLI-safe path.
+    if select_open_files is None:
         return []
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    try:
-        selected = filedialog.askopenfilenames(
-            title="Select media files for Oldcam V15",
-            filetypes=MEDIA_FILETYPES,
-        )
-        return list(selected)
-    finally:
-        root.destroy()
+    return select_open_files(
+        title="Select media files for Oldcam V15",
+        filetypes=MEDIA_FILETYPES,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
