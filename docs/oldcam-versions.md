@@ -1,7 +1,7 @@
 # Oldcam Version Breakdown
 
 > Reference: Code-level breakdown of what each Oldcam version does, how they differ, and what makes each one distinct.
-> Created: 2026-05-12
+> Created: 2026-05-12 · Updated: 2026-05-17 (added V14 "Forensic Daylight", now default)
 
 ---
 
@@ -322,26 +322,84 @@ V13 looks like a high-end smartphone's daylight output: razor-sharp, no visible 
 
 ---
 
+## V14 — "Forensic Daylight" (2026-05-16) — **Default ★**
+
+**File:** `oldcam-v14/oldcam.py` (~1060 lines, cloned from V13)
+**Output encoding:** lossless **FFV1** MKV temp → single H.264 final at CRF 14 (clamped 10–24), original audio stream-copied
+
+V14 is a physics-corrected successor to V13. A forensic review found V13's optics were mathematically wrong in several places — wrong enough that a PAD/SNR detector reading the raw signal could flag them. V14 fixes the math while keeping V13's design philosophy unchanged: **no rPPG, no face tracking, no biological-liveness signals — camera optics and sensor physics only.**
+
+### The Problems V14 Fixes (vs V13)
+
+**1. AWB was exposure drift, not white balance.** V13's `apply_global_awb_drift` did `image_f += drift` — a flat scalar added to all BGR channels. That is a luma/exposure shift, not a color-temperature change. A real AWB algorithm moves the red/blue channel *gains* inversely while green stays anchored.
+
+**2. Synthetic pixel stasis.** V13's pixels were perfectly static between OIS micro-jitters. Real sensors never produce two identical frames — the absence of any read/shot noise floor is a forensic dead-giveaway for SNR/PAD detectors.
+
+**3. Double-lossy encode.** V13 wrote the temp video with OpenCV `mp4v` (lossy) then re-encoded to H.264 — destroying the sub-perceptual effects before FFmpeg ever saw them.
+
+**4. Flickering highlight bloom.** V13's binary `cv2.threshold` bloom mask shimmered as highlights crossed the boundary frame-to-frame.
+
+**5. Truncation darkening.** V13's `astype(np.uint8)` truncated instead of rounding, biasing the whole clip progressively darker.
+
+**6. Pointless audio mangling.** V13 ran `highpass/lowpass/volume/acompressor` on the audio for no camera-realism reason.
+
+**7. V13 vignette-cache bug.** V13 recomputed the adjusted vignette mask every frame but never stored it in `state`.
+
+### What V14 Adds / Changes
+
+- **`apply_global_awb_drift` rewritten as true multiplicative color-temperature drift** — Red and Blue gains move inversely (warm↔cool) around a green anchor, driven by a mean-reverting stochastic walk (not a perfect sine, which would itself be a periodic tell).
+- **`apply_daylight_sensor_floor()` — new.** A sub-perceptual, luma-dominant, signal-dependent read+shot noise floor (max ≤ ~2/255, mean < 0.2/255). Invisible to humans, survives H.264 without shattering, and breaks the artificial cleanliness. Runs **last** in `process_frame` so bloom/CA/vignette don't smooth it away.
+- **Lossless FFV1 MKV temp** (graceful **MJPG → mp4v** fallback for limited OpenCV builds) so the sensor floor and AWB survive to the single final H.264 encode.
+- **Smoothstep bloom ramp** — `apply_highlight_blooming(threshold=232, strength=0.055)` ramps continuously from threshold to white (no binary-edge flicker).
+- **`np.rint()` before every uint8 cast** — eliminates truncation darkening bias.
+- **Audio stream-copied** verbatim.
+- **Vignette mask cached in `state`** (V13 bug fixed, carried into V14).
+- **New CLI knobs:** `--read-noise` (0.22), `--shot-noise` (0.16), `--chroma-noise-ratio` (0.08), `--crf` (14, clamped 10–24).
+
+### Pipeline Order (`process_frame`)
+
+```text
+1. apply_soft_ois_jitter            — physical hand-motion residual
+2. apply_soft_rolling_shutter       — CMOS scan-line warp
+3. apply_highlight_blooming         — smoothstep bloom (no flicker)
+4. apply_radial_chromatic_aberration — lens fringing (kept verbatim from V13)
+5. apply_global_awb_drift           — TRUE multiplicative AWB temperature drift
+6. vignette                         — lens falloff (mask cached, np.rint)
+7. apply_daylight_sensor_floor      — sub-perceptual sensor noise floor, LAST
+```
+
+No face detection, no AE stepping, no ghosting, no rPPG — same red-team-physics-only stance as V13, but with the optics done correctly.
+
+### Character
+
+V14 looks identical to V13 to a human viewer — pristine flagship daylight. The difference is entirely in the raw signal a forensic detector reads: V14's AWB wanders as a real color-temperature drift, the sensor floor gives every frame the micro-variation a real CMOS produces, and nothing is destroyed by a lossy intermediate encode. It is the "looks the same, measures correctly" version.
+
+---
+
 ## Side-by-Side Comparison
 
-| Feature | V7 | V8 | V9 | V10 | V11 | V12 | V13 |
-|---|---|---|---|---|---|---|---|
-| Face detection | None | None | MediaPipe 478 pts | MediaPipe 478 pts | MediaPipe 478 pts | None (lazy import only) | **None** |
-| Region masks | None | None | 4 regions | 4 regions | 4 regions | Discarded | **Not computed** |
-| Rolling shutter | Sine arm-sway | Velocity-coupled to OIS | Soft residual | Soft residual | Soft residual | Soft residual | Soft residual |
-| OIS model | None | Spring-damper ±2px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px |
-| AF model | 12-frame hunt 1.5% | 2-frame hunt 0.5% | 6-frame breathing | 6-frame breathing | 6-frame breathing | None (removed) | None |
-| AE stepping | Yes | Yes | Yes | Yes | Yes | Yes | **No** |
-| JPEG pass | Yes (quality 94) | No | No | No | No | No | No |
-| Sensor noise | 2D luma-only | 3D per-channel | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma | **None** |
-| Ghosting blend | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | **Forced 0.0** |
-| AWB drift | No | Yes | Yes | No | Yes | Yes (luma-only) | Yes (luma-only) |
-| FFT rPPG sync | No | No | No | Yes | Yes | No | No |
-| Phase-locked oscillations | No | No | No | Yes | Yes | No | No |
-| Global LUT applied | Yes | Yes | Yes | Yes | Yes | **No** | No |
-| Dynamic tone mapping (CLAHE) | Yes | Yes | Yes | Yes | Yes | **No** | No |
-| HSV saturation tweak | Yes | Yes | Yes | Yes | Yes | **No** | No |
-| Output encoding | CRF 12 slow | baseline + 1500k cap | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 12 slow |
+| Feature | V7 | V8 | V9 | V10 | V11 | V12 | V13 | V14 |
+|---|---|---|---|---|---|---|---|---|
+| Face detection | None | None | MediaPipe 478 pts | MediaPipe 478 pts | MediaPipe 478 pts | None (lazy import only) | None | **None** |
+| Region masks | None | None | 4 regions | 4 regions | 4 regions | Discarded | Not computed | **Not computed** |
+| Rolling shutter | Sine arm-sway | Velocity-coupled to OIS | Soft residual | Soft residual | Soft residual | Soft residual | Soft residual | Soft residual |
+| OIS model | None | Spring-damper ±2px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px | Spring-damper ±1.4px |
+| AF model | 12-frame hunt 1.5% | 2-frame hunt 0.5% | 6-frame breathing | 6-frame breathing | 6-frame breathing | None (removed) | None | None |
+| AE stepping | Yes | Yes | Yes | Yes | Yes | Yes | No | **No** |
+| JPEG pass | Yes (quality 94) | No | No | No | No | No | No | No |
+| Sensor noise | 2D luma-only | 3D per-channel | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma | Temporal luma+chroma | None | **Sub-perceptual floor** |
+| Ghosting blend | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | `--ghosting` arg | Forced 0.0 | **Forced 0.0** |
+| AWB drift | No | Yes | Yes | No | Yes | Yes (luma-only) | Yes (luma-only ✗) | **Yes (true multiplicative)** |
+| FFT rPPG sync | No | No | No | Yes | Yes | No | No | No |
+| Phase-locked oscillations | No | No | No | Yes | Yes | No | No | No |
+| Global LUT applied | Yes | Yes | Yes | Yes | Yes | **No** | No | No |
+| Dynamic tone mapping (CLAHE) | Yes | Yes | Yes | Yes | Yes | **No** | No | No |
+| HSV saturation tweak | Yes | Yes | Yes | Yes | Yes | **No** | No | No |
+| Highlight bloom | Binary threshold | Binary threshold | Binary threshold | Binary threshold | Binary threshold | Binary threshold | Binary threshold | **Smoothstep ramp** |
+| uint8 cast | Truncate | Truncate | Truncate | Truncate | Truncate | Truncate | Truncate | **np.rint()** |
+| Temp encode | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy ✗) | **FFV1 lossless** |
+| Audio | Filtered | Filtered | Filtered | Filtered | Filtered | Filtered | Filtered ✗ | **Stream-copied** |
+| Output encoding | CRF 12 slow | baseline + 1500k cap | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 14 slow (clamp 10–24) |
 
 ---
 
@@ -357,7 +415,8 @@ Each version had a guiding theme and a limitation that motivated the next one. T
 | V10 | rPPG biological sync | FFT on green-channel face mean, phase-locked spatial oscillation in 4 face regions, dynamic relighting | Visible color "siren" on the face; needed to remove AWB drift so FFT could read clean signal |
 | V11 | Best-of-all combination | Re-enabled `apply_global_awb_drift()` AFTER FFT read; relighting kept disabled | Modern PAD detectors flag the 2D rPPG color pulse; global LUT crushes contrast and tints the frame sepia |
 | V12 | Pristine hardware-only | Removed rPPG, removed `cv2.LUT()` call, removed CLAHE tone mapping, removed HSV saturation tweak | Sensor noise and AE stepping still applied per-frame — degradation signals flagship daylight footage doesn't carry |
-| V13 | High-end daylight | Removed `apply_modern_sensor_noise`, removed `apply_ae_stepping`, hardcoded ghosting to 0.0, dropped `--grain` CLI arg | None yet — flagship daylight is the design floor |
+| V13 | High-end daylight | Removed `apply_modern_sensor_noise`, removed `apply_ae_stepping`, hardcoded ghosting to 0.0, dropped `--grain` CLI arg | Optics were mathematically wrong: AWB was exposure drift not white balance; perfectly-static pixels; double-lossy mp4v→H.264; flickering binary bloom; truncation darkening |
+| V14 | Forensic daylight (physics-corrected) | True multiplicative AWB temperature drift, `apply_daylight_sensor_floor` (sub-perceptual), lossless FFV1 temp, smoothstep bloom, `np.rint` casts, audio stream-copy, vignette-cache fix | None yet — current default |
 
 Notes on accuracy of this table vs the codebase:
 - "Digital over-sharpening" was a `--sharpen` CLI parameter present in every version (default 0.8), not a V11 addition. The actual destructive effects in V11 are the global LUT and CLAHE — both inherited from earlier versions, exposed by V11's higher fidelity.
@@ -374,4 +433,5 @@ Notes on accuracy of this table vs the codebase:
 - **V10** — Best for: portrait subjects where biological realism is the priority; AWB drift removed to preserve FFT signal integrity.
 - **V11** — Best for: human viewers who value the "phone footage of a living person" feel.
 - **V12** — Best for: low-light realism, KYC pipelines that expect visible sensor noise, scenes where AE walk reads as authentic. Preserves Kling's color fidelity better than V7–V11.
-- **V13** — **Default ★**. Best for: bright daylight footage and any scene where Kling's source already looks like high-end smartphone output. No noise, no AE hunting, no temporal smear — preserves Kling's fidelity end-to-end. Renders faster than V12. Same MediaPipe-free dependency story.
+- **V13** — Best for: bright daylight footage where you want V13's exact look and don't need the physics corrections. Superseded by V14 — selectable but no longer pre-selected.
+- **V14** — **Default ★**. Best for: bright daylight footage evaluated by forensic/PAD/SNR detectors. Looks identical to V13 to a human, but the raw signal is physically correct: true multiplicative AWB drift, sub-perceptual sensor floor (no static-pixel tell), lossless intermediate (effects survive to the final encode), no truncation darkening. The "looks the same, measures correctly" version. Same MediaPipe-free dependency story.
