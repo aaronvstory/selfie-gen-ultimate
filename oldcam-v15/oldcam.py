@@ -988,7 +988,7 @@ def main(argv=None):
     # sensor-floor knobs are gone; --ghosting is already clamped by
     # bounded_ghosting.
     args.crf = max(10, min(int(args.crf), 24))
-    args.vignette_strength = max(0.0, min(float(args.vignette_strength), 1.0))
+    args.vignette_strength = max(0.0, min(args.vignette_strength, 1.0))
 
     if args.output and len(args.inputs) > 1:
         parser.error("--output can only be used when processing a single input file.")

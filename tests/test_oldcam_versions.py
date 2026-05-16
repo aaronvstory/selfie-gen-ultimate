@@ -1736,11 +1736,11 @@ def test_v15_parser_exposes_vignette_strength_with_safe_default():
     parser = oldcam_v15.build_parser()
     ns = parser.parse_args(["clip.mp4"])
     assert hasattr(ns, "vignette_strength")
-    assert abs(float(ns.vignette_strength) - 0.55) < 1e-9, (
+    assert ns.vignette_strength == pytest.approx(0.55), (
         "default must match the existing getattr(..., 0.55) fallback exactly"
     )
     ns2 = parser.parse_args(["clip.mp4", "--vignette-strength", "0.3"])
-    assert abs(float(ns2.vignette_strength) - 0.3) < 1e-9
+    assert ns2.vignette_strength == pytest.approx(0.3)
 
 
 def test_v15_main_clamps_out_of_range_vignette_strength(tmp_path):
