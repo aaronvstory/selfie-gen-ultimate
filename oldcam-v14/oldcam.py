@@ -948,7 +948,10 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
     finally:
         close_face_landmarker_state(state)
         capture.release()
-        writer.release()
+        # V14 resolves the writer via a fallback loop (FFV1->MJPG->mp4v), so
+        # guard the release in case a future refactor moves init into the try.
+        if writer is not None:
+            writer.release()
 
     print("Video processing complete.")
     finalize_video_output(temp_output, str(source), output_path, args.codec, args)
