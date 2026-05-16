@@ -71,6 +71,21 @@ def test_launcher_hub_windows_wrappers_preserve_exit_codes():
         assert "exit /b %EXIT_CODE%" in text
 
 
+def test_macos_v14_command_wrappers_use_strict_set_flags():
+    """CLAUDE.md macOS Rule 10 — .command sibling launchers in the v14 chain
+    must all use `set -euo pipefail`. v7-v13 are intentionally NOT covered
+    here per docs/oldcam-wiring.md §9 (known-defect carve-out)."""
+    for path in (
+        "launchers/macos/run_oldcam_v14.command",
+        "launchers/run_oldcam_v14.command",
+    ):
+        text = _read(path)
+        assert "set -euo pipefail" in text, (
+            f"{path}: Rule 10 violation — must use `set -euo pipefail` for "
+            "parity with the algorithm-layer oldcam-v14/macOS/oldcam.command."
+        )
+
+
 def test_windows_root_launchers_install_mediapipe_with_no_deps():
     gui = _read("launchers/windows/run_gui.bat")
     cli = _read("launchers/windows/run_cli.bat")

@@ -50,13 +50,24 @@ For any version that combines FFT biological pulse with AWB drift, the execution
 ```text
 oldcam-vN/
 ├── oldcam.py               ← main algorithm (start from previous version)
-├── launcher.py             ← pass-through launcher (copy from v10/v11)
+├── launcher.py             ← pass-through launcher (Tk filedialog — Windows-only by convention)
 ├── requirements.txt        ← numpy + cv2 (+ mediapipe ONLY if version uses face landmarks)
 ├── oldcam_launcher.bat     ← Windows launcher (CRLF — see bat rules below)
 └── macOS/
     ├── oldcam.py           ← byte-for-byte mirror of Windows oldcam.py
-    └── oldcam.command      ← macOS launcher (LF, copy from v10/v11 and update version strings)
+    └── oldcam.command      ← macOS launcher (LF + 100755)
 ```
+
+> **DO NOT copy launcher files from v7–v13.** They predate CLAUDE.md macOS Rule 9
+> (Python-version validation on every venv candidate) and Rule 10 (`set -euo
+> pipefail` parity). Copying from them silently reintroduces the resolver bug
+> that bites users with a stale `.venv` symlinked to an unsupported Python
+> (3.13+). **Use `oldcam-v14/macOS/oldcam.command` and
+> `oldcam-v14/oldcam_launcher.bat` as your reference templates** — they ship
+> with `_python_supported()` / `:check_py` per-candidate gates.
+>
+> For non-launcher files (`oldcam.py`, `launcher.py`, `requirements.txt`),
+> copying from the previous version is fine and conventional.
 
 ### 2. Launcher files (3 levels)
 
@@ -201,9 +212,29 @@ bash scripts/check_macos_portability.sh
 
 # Windows-launcher hygiene (catches /dev/null POSIX redirects in .bat)
 rg -n --iglob 'oldcam-vN/*.bat' --iglob 'launchers/**/run_oldcam_vN.bat' '/dev/null'   # MUST return empty
+
+# CLAUDE.md macOS Rule 9 — Python-version validation on every venv candidate
+grep -q '_python_supported' oldcam-vN/macOS/oldcam.command     # MUST match
+grep -q ':check_py' oldcam-vN/oldcam_launcher.bat              # MUST match
+
+# CLAUDE.md macOS Rule 10 — set -euo pipefail parity across .command siblings
+grep -q 'set -euo pipefail' oldcam-vN/macOS/oldcam.command            # MUST match
+grep -q 'set -euo pipefail' launchers/macos/run_oldcam_vN.command     # MUST match
+grep -q 'set -euo pipefail' launchers/run_oldcam_vN.command           # MUST match
 ```
 
-**The portability gate (`scripts/check_macos_portability.sh`) catches CRLF in shell scripts and missing exec bits, but NOT `/dev/null` in `.bat` files** — that's only caught by the grep above or by code review. See `AGENTS.md` "Hard Rules — Windows Launchers" for the full set of `.bat` traps (`/dev/null`, `echo.` vs `echo(`, redirect operator order, override env-var naming).
+**The portability gate (`scripts/check_macos_portability.sh`) catches CRLF in shell scripts and missing exec bits, but NOT `/dev/null` in `.bat` files, NOT Rule 9 resolver-validation absence, NOT Rule 10 set-flag drift** — those are only caught by the greps above, by `tests/test_oldcam_launcher_resolver.py` (Rule 9 static-text gate for v14), or by code review. See `AGENTS.md` "Hard Rules — Windows Launchers" for the full set of `.bat` traps (`/dev/null`, `echo.` vs `echo(`, redirect operator order, override env-var naming), and CLAUDE.md macOS Rules 9–10 for the full resolver pattern with its reasoning.
+
+### 9. Known defect — pre-v14 launchers do not implement Rule 9/10
+
+This is a deliberate carve-out, not an instruction to follow the same pattern:
+
+- All 8 of `oldcam-v7/...v14/macOS/oldcam.command` (except v14 after this PR ships) start with `set -u` instead of `set -euo pipefail`, in violation of CLAUDE.md macOS Rule 10.
+- All 8 of `oldcam-v7/...v14/oldcam_launcher.bat` (except v14 after this PR ships) lack the `:check_py` subroutine and silently accept any `.venv` candidate without validating the Python version, in violation of CLAUDE.md macOS Rule 9.
+
+These versions ship and work for users on stock Python installs because no user has yet hit the failure-case Python-version drift. **Do not "fix" them in unrelated PRs.** If you need to retrofit them, do it in a dedicated PR with explicit live testing on each version, because mediapipe-using versions (v9 / v10 / v11) have additional Python-version constraints (mediapipe wheels are only built for a narrow range) and need careful smoke-testing on a clean venv.
+
+The blessed reference for new vN+1 launchers is **v14 only** — explicitly stated in §1 above.
 
 ---
 

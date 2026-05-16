@@ -54,6 +54,33 @@ is no longer pre-selected anywhere.
   chain, both algorithm twins) with a dedicated
   `distribution/build_oldcam_v14_zip.py` bundle builder.
 
+## 2026-05-16 (v2.0 hotfix) — Oldcam V14 launcher Rule 9/10 conformance
+
+### Fixed
+
+- **`oldcam-v14/macOS/oldcam.command` resolver now validates Python version
+  per-candidate** via the same `_python_supported()` helper similarity adopted
+  in v1.9. Previously the resolver silently accepted any `$REPO_ROOT/.venv`
+  candidate without checking — so a stale `.venv` symlinked to python3.14
+  (left behind by a prior session) would be picked, then `pip install
+  numpy<2` would fail because numpy 1.x has no python3.13+ wheels. Now stale
+  venvs fall through and the resolver picks `python3.11` from PATH.
+- **`oldcam-v14/oldcam_launcher.bat` gets the same per-candidate Python
+  validation** via a `:check_py` subroutine (mirrors `similarity/run_gui.bat`).
+- **`set -euo pipefail` parity across all 3 v14 `.command` files** (root hub,
+  platform launcher, algorithm launcher) per CLAUDE.md macOS Rule 10.
+
+### Docs
+
+- `docs/oldcam-wiring.md §1` no longer tells contributors to "copy from
+  v10/v11" launcher templates — those predate Rules 9/10 and silently
+  reintroduce the resolver defect on every new version. **v14 is now the
+  blessed reference template.**
+- New `docs/oldcam-wiring.md §9` documents v7–v13 as known-defect-but-working
+  so future contributors don't trip over the asymmetry or "fix" them in
+  unrelated PRs.
+- `§8` pre-commit checklist gains explicit Rule 9 + Rule 10 grep verifications.
+
 ## 2026-05-15 (v1.9) — macOS launcher resilience + recalibrated similarity curve
 
 ### Fixed
