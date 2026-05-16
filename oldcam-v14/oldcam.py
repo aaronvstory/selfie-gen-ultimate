@@ -839,6 +839,10 @@ def finalize_video_output(
     )
 
     try:
+        # Audited safe: `command` is a list (argv form) and shell defaults to
+        # False, so there is no shell interpretation — command injection is
+        # structurally impossible regardless of the local file paths in it.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
         subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=120)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
