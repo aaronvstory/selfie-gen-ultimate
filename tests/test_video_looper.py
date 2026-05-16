@@ -127,6 +127,18 @@ def test_looper_cmd_uses_profile_v_high(tmp_path):
     assert cmd[cmd.index("-profile:v") + 1] == "high"
 
 
+def test_looper_cmd_uses_preset_slow(tmp_path):
+    """-preset slow trades encode time for compression efficiency.
+
+    A future regression to a faster preset (e.g. medium/veryfast) would
+    enlarge the loop and partially undo this fix's size reduction, so the
+    preset is pinned alongside -crf 12.
+    """
+    cmd = _captured_cmd(tmp_path)
+    assert "-preset" in cmd, f"Missing -preset flag in cmd: {cmd}"
+    assert cmd[cmd.index("-preset") + 1] == "slow"
+
+
 def test_looper_cmd_omits_tune_flag(tmp_path):
     """-tune film's psy-rd settings add no benefit here; keep the cmd minimal."""
     cmd = _captured_cmd(tmp_path)
