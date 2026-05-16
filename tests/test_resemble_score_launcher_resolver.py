@@ -135,3 +135,64 @@ def test_all_four_launchers_share_supported_range():
         assert m, f"{path}: no version-range expression found"
         seen.add(re.sub(r"\s+", "", m.group(0)))
     assert len(seen) == 1, f"version range diverged across launchers: {seen}"
+
+
+# --- Regression guards for the two .bat parser bugs that crashed launch ----
+# (1) literal "(...)" inside an `if (...) else (...)` block prematurely
+#     closes the block -> `found. was unexpected at this time.`
+# (2) `for /f ('"!VAR!" -c "..."')` with a quoted delayed-expansion exe path
+#     and inner quotes fails silently (empty output) -> false version-gate
+#     rejection even though a supported python was resolved.
+
+
+def test_check_py_has_no_if_else_paren_block():
+    """:check_py must use flat goto flow, not `if (...) else (...)`, so the
+    version-probe string's (3,9)/(3,13) parens can't close the block early."""
+    for path in BATS:
+        src = _read(path)
+        # Anchor on the subroutine DEFINITION (a line that is exactly
+        # ":check_py"), not the earlier `call :check_py ...` invocations.
+        m = re.search(r"(?m)^:check_py$", src)
+        assert m, f"{path}: no :check_py subroutine definition"
+        block = src[m.start():]
+        # The buggy form had `) else (` wrapping the version probe inside
+        # the subroutine. The fix routes via labels instead.
+        assert ") else (" not in block, (
+            f"{path}: :check_py subroutine reintroduced an if/else paren-"
+            "block — the version-probe parens will prematurely close it "
+            "(regression of the `found. was unexpected at this time.` crash)."
+        )
+        assert ":check_py_permissive" in block and ":check_py_ok" in block, (
+            f"{path}: :check_py must use the flat goto labels"
+        )
+
+
+def test_no_forf_quoted_python_path_invocation():
+    """`for /f` running a quoted delayed-expansion python path with inner
+    quotes is unreliable in cmd (returns empty). The post-resolve gate must
+    use the direct-exec + errorlevel form instead."""
+    bad = re.compile(r"for /f[^\n]*in \('\"!PYTHON_BIN!\"")
+    for path in BATS:
+        src = _read(path)
+        assert not bad.search(src), (
+            f"{path}: uses the unreliable for/f-quoted-!PYTHON_BIN! form; "
+            "the post-resolve gate must run the probe directly and test "
+            "errorlevel (the for/f form returns empty -> false rejection)."
+        )
+
+
+def test_no_literal_parens_inside_no_python_error_echo():
+    """The 'No supported Python' echo lives inside an `if (...)` block; any
+    literal ( ) in it must be ^-escaped or it closes the block early."""
+    for path in BATS:
+        src = _read(path)
+        for line in src.splitlines():
+            if "No supported Python" in line and line.strip().startswith(
+                "echo"
+            ):
+                # Every ( and ) in the message must be caret-escaped.
+                stripped = line
+                assert "^(" in stripped and "^)" in stripped, (
+                    f"{path}: unescaped parens in the no-python echo "
+                    f"(inside an if-block) -> parser crash. Line: {line}"
+                )

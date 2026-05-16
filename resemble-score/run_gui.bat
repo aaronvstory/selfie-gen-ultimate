@@ -12,7 +12,6 @@ if defined REPO_ROOT (
 if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
 set "LOG_FILE=%STATE_DIR%\resemble_gui.log"
 
-rem --- Timestamp banner
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
 set "WMIC_DT=%WMIC_DT: =_%"
 set "LAUNCH_TS=%WMIC_DT:~0,4%-%WMIC_DT:~4,2%-%WMIC_DT:~6,2% %WMIC_DT:~8,2%:%WMIC_DT:~10,2%:%WMIC_DT:~12,2%"
@@ -24,11 +23,11 @@ echo   [%LAUNCH_TS%] Launch started
 echo(
 >>"%LOG_FILE%" echo(
 >>"%LOG_FILE%" echo ============================================================
->>"%LOG_FILE%" echo [%LAUNCH_TS%] Starting resemble-score GUI
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] Starting resemble-score gui
 
 set "PYTHON_BIN="
 set "ENV_KIND="
-rem Override stays permissive at resolve-time; post-resolve gate catches bad versions with a tailored msg.
+rem Override stays permissive at resolve-time; post-resolve gate catches bad versions.
 if not "%SELFIEGEN_PYTHON%"=="" (
   "%SELFIEGEN_PYTHON%" -V >nul 2>&1
   if not errorlevel 1 ( set "PYTHON_BIN=%SELFIEGEN_PYTHON%" & set "ENV_KIND=SELFIEGEN_PYTHON override" )
@@ -49,26 +48,26 @@ if "!PYTHON_BIN!"=="" (
   )
 )
 if "!PYTHON_BIN!"=="" (
-  echo   [%LAUNCH_TS%] ERROR: No supported Python (3.9-3.12) found. Install python3.11 (https://www.python.org/downloads/release/python-3119/) and retry.
-  >>"%LOG_FILE%" echo [ERROR] No supported Python (3.9-3.12) found.
+  echo   [%LAUNCH_TS%] ERROR: No supported Python ^(3.9-3.12^) found. Install python3.11 from https://www.python.org/downloads/ and retry.
+  >>"%LOG_FILE%" echo [ERROR] No supported Python ^(3.9-3.12^) found.
   if not defined RESEMBLE_LAUNCHED_BY_MAIN pause
   exit /b 1
 )
 echo   [%LAUNCH_TS%] Python: !ENV_KIND! -- !PYTHON_BIN!
 >>"%LOG_FILE%" echo [INFO] Using !ENV_KIND!: !PYTHON_BIN!
 
-rem --- Defense-in-depth version gate (also catches SELFIEGEN_PYTHON pointing at unsupported python)
-"!PYTHON_BIN!" -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >nul 2>&1
+rem --- Defense-in-depth gate: re-run the strict probe via direct exec
+rem (errorlevel form; the for/f-quoted-path form is unreliable in cmd).
+"!PYTHON_BIN!" -c "import sys; raise SystemExit(0 if (3,9) <= sys.version_info[:2] < (3,13) else 2)" >nul 2>&1
 if errorlevel 1 (
-  for /f "delims=" %%V in ('"!PYTHON_BIN!" -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2^>nul') do set "PY_ACTUAL=%%V"
   if not "%SELFIEGEN_PYTHON%"=="" (
-    echo   [%LAUNCH_TS%] ERROR: SELFIEGEN_PYTHON points at Python !PY_ACTUAL!, but resemble-score requires 3.9-3.12. Unset it or point at python3.11.
+    echo   [%LAUNCH_TS%] ERROR: SELFIEGEN_PYTHON points at an unsupported Python. resemble-score requires 3.9-3.12. Unset it or point at python3.11.
   ) else if not "%SELFIEGEN_VENV_DIR%"=="" (
-    echo   [%LAUNCH_TS%] ERROR: SELFIEGEN_VENV_DIR points at Python !PY_ACTUAL!, but resemble-score requires 3.9-3.12. Unset it or point at python3.11.
+    echo   [%LAUNCH_TS%] ERROR: SELFIEGEN_VENV_DIR points at an unsupported Python. resemble-score requires 3.9-3.12. Unset it or point at python3.11.
   ) else (
-    echo   [%LAUNCH_TS%] ERROR: Resolved Python is !PY_ACTUAL!, outside supported range 3.9-3.12 (resolver bug; please file an issue).
+    echo   [%LAUNCH_TS%] ERROR: Resolved Python is outside supported range 3.9-3.12 ^(resolver bug; please file an issue^).
   )
-  >>"%LOG_FILE%" echo [ERROR] Unsupported Python version: !PY_ACTUAL!
+  >>"%LOG_FILE%" echo [ERROR] Unsupported Python version after resolve.
   if not defined RESEMBLE_LAUNCHED_BY_MAIN pause
   exit /b 1
 )
@@ -82,7 +81,6 @@ if errorlevel 1 (
   exit /b 1
 )
 
-rem --- Dep stamp: req date+size (no subprocess hashing)
 set "STAMP_KEY="
 for %%F in ("requirements.txt") do set "STAMP_KEY=%%~tF%%~zF"
 set "STAMP_KEY=%STAMP_KEY: =_%"
@@ -115,8 +113,8 @@ if "!NEED_PIP!"=="0" (
   echo(
 )
 
-echo   [%LAUNCH_TS%] Launching resemble-score GUI...
->>"%LOG_FILE%" echo [INFO] Launching resemble-score GUI...
+echo   [%LAUNCH_TS%] Launching resemble-score gui...
+>>"%LOG_FILE%" echo [INFO] Launching resemble-score gui...
 "!PYTHON_BIN!" main.py
 set "EXIT_CODE=%ERRORLEVEL%"
 
@@ -129,21 +127,20 @@ endlocal & exit /b %EXIT_CODE%
 
 rem ============================================================
 rem :check_py "<path>" "<kind>" [permissive^|strict]
-rem   - Checks <path> exists. Strict (default) also requires Python 3.9-3.12.
-rem   - Permissive skips the version probe (SELFIEGEN_VENV_DIR override so the
-rem     post-resolve gate can give a tailored override-specific error).
-rem   - On success: sets PYTHON_BIN and ENV_KIND.
+rem   Flat goto flow (NO if/else paren-blocks) so the version-probe
+rem   string's (3,9)/(3,13) parens cannot prematurely close a block.
 rem ============================================================
 :check_py
 if "%~1"=="" exit /b 1
 if not exist "%~1" exit /b 1
-if /i "%~3"=="permissive" (
-  "%~1" -V >nul 2>&1
-  if errorlevel 1 exit /b 1
-) else (
-  "%~1" -c "import sys; raise SystemExit(0 if ((3,9) <= sys.version_info[:2] < (3,13)) else 2)" >nul 2>&1
-  if errorlevel 1 exit /b 1
-)
+if /i "%~3"=="permissive" goto :check_py_permissive
+"%~1" -c "import sys; raise SystemExit(0 if (3,9) <= sys.version_info[:2] < (3,13) else 2)" >nul 2>&1
+if errorlevel 1 exit /b 1
+goto :check_py_ok
+:check_py_permissive
+"%~1" -V >nul 2>&1
+if errorlevel 1 exit /b 1
+:check_py_ok
 set "PYTHON_BIN=%~1"
 set "ENV_KIND=%~2"
 exit /b 0

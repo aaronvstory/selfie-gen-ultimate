@@ -1,17 +1,21 @@
 """Tkinter (ttk) GUI: folder pick → grouped checkbox tree → threaded scoring.
 
-Threading model mirrors similarity/src/gui.py: scoring runs on a daemon
-worker thread; **every** widget mutation is marshalled back onto the Tk main
-loop via ``root.after(0, ...)`` so Tk is never touched off-thread.
+Threading model: discovery and scoring run on daemon worker threads. Worker
+threads NEVER touch Tk directly — not even ``root.after()``, which is itself
+not thread-safe (it calls ``tk.createcommand``). Instead workers push
+callables onto a ``queue.Queue`` that a recurring poller, scheduled on the
+**main** thread from ``__init__``, drains and executes. This is the only
+safe cross-thread Tk pattern.
 """
 
 from __future__ import annotations
 
+import queue
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Optional
+from typing import Callable, Optional
 
 from . import client, scoring, theme
 from .discovery import VideoItem, discover
@@ -35,7 +39,34 @@ class ResembleScoreGUI:
         self._worker: Optional[threading.Thread] = None
         self._cancel = threading.Event()
 
+        # Thread-safe hand-off: workers enqueue callables; the poller below
+        # (running on the main thread) drains and runs them. Workers must
+        # never call self.root.after() — that itself is not thread-safe.
+        self._ui_queue: "queue.Queue[Callable[[], None]]" = queue.Queue()
+
         self._build()
+        # Schedule the pump ON the main thread (we are on it here).
+        self.root.after(50, self._drain_ui_queue)
+
+    # ---- thread-safe UI marshalling --------------------------------------
+    def _post(self, fn: Callable, *args) -> None:
+        """Called from worker threads: queue a callable for the main thread."""
+        self._ui_queue.put(lambda: fn(*args))
+
+    def _drain_ui_queue(self) -> None:
+        """Main-thread poller: run queued UI callbacks, then re-arm."""
+        try:
+            while True:
+                cb = self._ui_queue.get_nowait()
+                try:
+                    cb()
+                except Exception:  # a bad callback must not kill the pump
+                    import traceback
+
+                    traceback.print_exc()
+        except queue.Empty:
+            pass
+        self.root.after(50, self._drain_ui_queue)
 
     # ---- layout -----------------------------------------------------------
     def _build(self) -> None:
@@ -171,12 +202,12 @@ class ResembleScoreGUI:
         try:
             items = discover(folder, recursive=recursive)
         except (NotADirectoryError, FileNotFoundError) as e:
-            self.root.after(0, self._on_discovery_error, str(e))
+            self._post(self._on_discovery_error, str(e))
             return
         except OSError as e:  # unexpected FS error — surface, don't crash
-            self.root.after(0, self._on_discovery_error, str(e))
+            self._post(self._on_discovery_error, str(e))
             return
-        self.root.after(0, self._populate_tree, items)
+        self._post(self._populate_tree, items)
 
     def _on_discovery_error(self, msg: str) -> None:
         self._set_controls(busy=False)
@@ -296,9 +327,7 @@ class ResembleScoreGUI:
 
     def _worker_run(self, items, api_key, row_by_path) -> None:
         def progress(done: int, total: int, r: scoring.Result) -> None:
-            self.root.after(
-                0, self._on_progress, done, total, r, row_by_path
-            )
+            self._post(self._on_progress, done, total, r, row_by_path)
 
         try:
             results = scoring.score_items(
@@ -308,9 +337,9 @@ class ResembleScoreGUI:
                 cancel_event=self._cancel,
             )
         except Exception as exc:  # pragma: no cover - safety net
-            self.root.after(0, self._on_fatal, str(exc))
+            self._post(self._on_fatal, str(exc))
             return
-        self.root.after(0, self._on_done, results)
+        self._post(self._on_done, results)
 
     def _on_progress(self, done, total, r, row_by_path) -> None:
         row = row_by_path.get(str(r.path))
