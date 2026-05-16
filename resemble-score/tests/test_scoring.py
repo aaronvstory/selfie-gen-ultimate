@@ -5,6 +5,8 @@ import json
 import threading
 from pathlib import Path
 
+import pytest
+
 from src import client, scoring
 from src.discovery import classify
 
@@ -232,10 +234,93 @@ def test_extract_metrics_aggregates_children_not_top_score():
     assert m["frame_count"] == 2
 
 
+def test_load_existing_result_roundtrip(tmp_path, monkeypatch):
+    """A folder with sidecar JSONs loads results without any API call."""
+    v = tmp_path / "clip-oldcam-v9.mp4"
+    v.write_bytes(b"x")
+    # Write a sidecar exactly as score_items would.
+    side = scoring.sidecar_json_path(v)
+    side.write_text(json.dumps(_fake_trimmed(0.42)), encoding="utf-8")
+
+    # Guard: detect_video must NOT be called by the loader.
+    monkeypatch.setattr(
+        client,
+        "detect_video",
+        lambda *a, **k: pytest.fail("API called during load"),
+    )
+    r = scoring.load_existing_result(v, classify(v).group)
+    assert r is not None
+    assert r.status == "loaded"
+    assert r.ok and r.scored
+    assert abs(r.frame_mean - 0.42) < 1e-9
+    assert r.group == "Oldcam v9"
+
+
+def test_load_existing_result_reads_legacy_sidecar(tmp_path):
+    """Results written before the collision fix used <stem>.json; a
+    re-opened folder must still auto-load them."""
+    v = tmp_path / "front-oldcam-v8.mp4"
+    v.write_bytes(b"x")
+    legacy = v.with_suffix(".json")  # the OLD name
+    legacy.write_text(json.dumps(_fake_trimmed(0.31)), encoding="utf-8")
+    assert not scoring.sidecar_json_path(v).exists()  # new name absent
+
+    r = scoring.load_existing_result(v, "Oldcam v8")
+    assert r is not None and r.ok
+    assert abs(r.frame_mean - 0.31) < 1e-9
+    # Canonical name wins when BOTH exist.
+    scoring.sidecar_json_path(v).write_text(
+        json.dumps(_fake_trimmed(0.99)), encoding="utf-8"
+    )
+    r2 = scoring.load_existing_result(v, "Oldcam v8")
+    assert abs(r2.frame_mean - 0.99) < 1e-9
+
+
+def test_load_existing_result_missing_or_bad_returns_none(tmp_path):
+    v = tmp_path / "x.mp4"
+    v.write_bytes(b"x")
+    assert scoring.load_existing_result(v, "g") is None  # no sidecar
+    scoring.sidecar_json_path(v).write_text("{not json", encoding="utf-8")
+    assert scoring.load_existing_result(v, "g") is None  # corrupt
+    # Valid JSON but no per-frame children -> not comparable -> None.
+    scoring.sidecar_json_path(v).write_text(
+        json.dumps(_fake_trimmed(0.5, with_children=False)),
+        encoding="utf-8",
+    )
+    assert scoring.load_existing_result(v, "g") is None
+
+
+def test_rank_by_metric_and_direction():
+    R = scoring.Result
+    a = R(name="a", group="g", path=Path("a"), status="ok")
+    a.frame_mean, a.frame_min = 0.90, 0.10
+    b = R(name="b", group="g", path=Path("b"), status="ok")
+    b.frame_mean, b.frame_min = 0.20, 0.80
+    # Default: by frame_mean ascending -> b best.
+    assert [r.name for r in scoring.rank([a, b])] == ["b", "a"]
+    # By frame_min ascending -> a best (0.10 < 0.80).
+    o = scoring.rank([a, b], by="frame_min")
+    assert [r.name for r in o] == ["a", "b"]
+    assert o[0].rank == 1
+    # Descending flips order but errored/None still last (none here).
+    o = scoring.rank([a, b], by="frame_mean", descending=True)
+    assert [r.name for r in o] == ["a", "b"]
+    # Unknown metric falls back to the default safely.
+    assert scoring.rank([a, b], by="bogus")[0].name == "b"
+
+
+def test_loaded_result_skipped_by_incremental_logic():
+    """A 'loaded' result counts as scored so incremental runs skip it."""
+    r = scoring.Result(
+        name="x", group="g", path=Path("x"), status="loaded"
+    )
+    r.frame_mean = 0.5
+    assert r.ok is True
+    assert r.scored is True
+
+
 def test_sidecar_json_no_collision_same_stem_diff_ext(tmp_path, monkeypatch):
     """clip.mp4 and clip.mov must NOT both write clip.json (Codex P2)."""
-    from src.discovery import classify
-
     a = tmp_path / "clip.mp4"
     b = tmp_path / "clip.mov"
     a.write_bytes(b"x")

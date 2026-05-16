@@ -67,7 +67,18 @@ class Result:
 
     @property
     def ok(self) -> bool:
-        return self.status == "ok" and self.frame_mean is not None
+        # "loaded" = restored from an existing sidecar JSON; it ranks and
+        # can win exactly like a freshly-scored "ok" result.
+        return (
+            self.status in ("ok", "loaded")
+            and self.frame_mean is not None
+        )
+
+    @property
+    def scored(self) -> bool:
+        """True if this video already has a usable result (fresh or loaded)
+        — used to skip the API for incremental runs."""
+        return self.ok
 
     @property
     def primary(self) -> Optional[float]:
@@ -84,14 +95,34 @@ def _mean(values: Sequence[float]) -> Optional[float]:
 
 
 def sidecar_json_path(video: Path) -> Path:
-    """Per-video result path that never collides on stem.
+    """Canonical per-video result path. ``foo.mp4`` -> ``foo.mp4.json``.
 
-    ``foo.mp4`` -> ``foo.mp4.json`` (NOT ``foo.json``). Without the
-    extension in the name, ``clip.mp4`` and ``clip.mov`` in the same folder
-    would both write ``clip.json`` and silently overwrite each other,
-    losing one video's raw API payload (Codex review).
+    Keeping the extension means ``clip.mp4`` and ``clip.mov`` in one folder
+    don't both write ``clip.json`` and clobber each other (Codex review).
+    New results are always written here.
     """
     return video.with_name(video.name + ".json")
+
+
+def _legacy_sidecar_path(video: Path) -> Path:
+    """Pre-collision-fix sidecar name (``foo.mp4`` -> ``foo.json``).
+
+    Read-only fallback so results from earlier runs still auto-load when a
+    folder is re-opened; new writes never use this form.
+    """
+    return video.with_suffix(".json")
+
+
+def existing_sidecar(video: Path) -> Optional[Path]:
+    """Return the sidecar to read for ``video``: the canonical name if
+    present, else the legacy name, else ``None``."""
+    canonical = sidecar_json_path(video)
+    if canonical.is_file():
+        return canonical
+    legacy = _legacy_sidecar_path(video)
+    if legacy != canonical and legacy.is_file():
+        return legacy
+    return None
 
 
 def extract_metrics(trimmed: dict) -> dict:
@@ -132,20 +163,48 @@ def extract_metrics(trimmed: dict) -> dict:
     }
 
 
-def _sort_key(r: Result) -> tuple:
-    """Ascending by the primary metric (frame mean); errored/None last."""
-    if r.ok and r.primary is not None:
-        return (0, r.primary, r.name.lower())
+# Metrics the table can be ranked by. label -> Result attribute.
+# For all of these, lower = more authentic, so ascending = best first.
+SORT_METRICS: dict[str, str] = {
+    "frame_mean": "frame_mean",
+    "frame_min": "frame_min",
+    "frame_max": "frame_max",
+    "chunk_mean": "chunk_mean",
+}
+DEFAULT_SORT = "frame_mean"
+
+
+def _metric_value(r: Result, by: str) -> Optional[float]:
+    return getattr(r, SORT_METRICS.get(by, DEFAULT_SORT), None)
+
+
+def _sort_key(r: Result, by: str, descending: bool) -> tuple:
+    """Order by the chosen metric; errored/missing always sink to bottom."""
+    v = _metric_value(r, by)
+    if r.ok and v is not None:
+        # Negate for descending so errored rows (group 1) still stay last.
+        return (0, -v if descending else v, r.name.lower())
     return (1, float("inf"), r.name.lower())
 
 
-def rank(results: Sequence[Result]) -> list[Result]:
-    """Return results ordered best→worst with ``rank`` assigned (1 = winner).
+def rank(
+    results: Sequence[Result],
+    *,
+    by: str = DEFAULT_SORT,
+    descending: bool = False,
+) -> list[Result]:
+    """Return results ordered best→worst with ``rank`` assigned (1 = best).
 
-    Only successfully-scored results get a numeric rank; errored ones keep
-    ``rank=None`` and sort last.
+    ``by`` selects the metric (see :data:`SORT_METRICS`); default is
+    ``frame_mean`` ascending (lower = more authentic). Only successfully
+    scored results get a numeric rank; errored/unscored keep ``rank=None``
+    and sort last regardless of direction.
     """
-    ordered = sorted(results, key=_sort_key)
+    if by not in SORT_METRICS:
+        by = DEFAULT_SORT
+    ordered = sorted(
+        results, key=lambda r: _sort_key(r, by, descending)
+    )
     position = 0
     for r in ordered:
         if r.ok:
@@ -154,6 +213,43 @@ def rank(results: Sequence[Result]) -> list[Result]:
         else:
             r.rank = None
     return ordered
+
+
+def load_existing_result(video: Path, group: str) -> Optional[Result]:
+    """Build a :class:`Result` from an already-written sidecar JSON.
+
+    Reads the canonical ``foo.mp4.json`` or, for results written before the
+    collision fix, the legacy ``foo.json``. Returns ``None`` if no sidecar
+    exists or it can't be parsed into a comparable result (so the caller
+    treats the video as un-scored and can run the API on just those). No
+    network involved.
+    """
+    sidecar = existing_sidecar(video)
+    if sidecar is None:
+        return None
+    try:
+        trimmed = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    r = Result(name=video.name, group=group, path=video)
+    r.json_path = sidecar
+    try:
+        m = extract_metrics(trimmed)
+    except Exception:
+        return None
+    r.verdict_label = m["verdict_label"]
+    r.verdict_score = m["verdict_score"]
+    r.certainty = m["certainty"]
+    r.frame_mean = m["frame_mean"]
+    r.frame_min = m["frame_min"]
+    r.frame_max = m["frame_max"]
+    r.chunk_mean = m["chunk_mean"]
+    r.frame_count = m["frame_count"]
+    if r.frame_mean is None:
+        return None
+    r.status = "loaded"  # distinguishes "from disk" vs freshly "ok"
+    return r
 
 
 def score_items(
@@ -249,12 +345,24 @@ def _render_markdown(
     lines: list[str] = []
     lines.append("# resemble-score results")
     lines.append("")
+    podium = [r for r in ordered if r.ok][:3]
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     if winner is not None:
         lines.append(
             f"🏆 **Winner: `{_md_cell(winner.name)}`** "
             f"({_md_cell(winner.group)}) — Frame Mean "
             f"**{_fmt(winner.frame_mean)}**"
         )
+        lines.append("")
+        lines.append("## Top 3")
+        lines.append("")
+        for r in podium:
+            lines.append(
+                f"{medals[r.rank]} **#{r.rank}** `{_md_cell(r.name)}` "
+                f"— {_md_cell(r.group)} · Frame Mean "
+                f"**{_fmt(r.frame_mean)}** "
+                f"(min {_fmt(r.frame_min)})"
+            )
     else:
         lines.append(
             "⚠️ **No video scored successfully** — see the Status column."

@@ -1,11 +1,19 @@
-"""Tkinter (ttk) GUI: folder pick → grouped checkbox tree → threaded scoring.
+"""Tkinter (ttk) GUI: folder pick → ranked comparison table → scoring.
 
-Threading model: discovery and scoring run on daemon worker threads. Worker
-threads NEVER touch Tk directly — not even ``root.after()``, which is itself
-not thread-safe (it calls ``tk.createcommand``). Instead workers push
-callables onto a ``queue.Queue`` that a recurring poller, scheduled on the
-**main** thread from ``__init__``, drains and executes. This is the only
-safe cross-thread Tk pattern.
+Workflow:
+- Picking a folder discovers videos AND auto-loads any existing
+  ``<video>.ext.json`` sidecars (no API calls), so prior runs show up
+  immediately.
+- "Score Selected" only calls the API for selected videos that have no
+  result yet (incremental); rankings recompute over loaded + new.
+- Click any metric column header to re-rank by it (default Frame Mean,
+  ascending = most authentic first). Top 1/2/3 get 🥇🥈🥉.
+
+Threading model: discovery and scoring run on daemon worker threads.
+Worker threads NEVER touch Tk directly — not even ``root.after()``, which
+is itself not thread-safe (``tk.createcommand``). Workers push callables
+onto a ``queue.Queue`` drained by a poller scheduled on the **main** thread
+from ``__init__``. This is the only safe cross-thread Tk pattern.
 """
 
 from __future__ import annotations
@@ -20,73 +28,93 @@ from typing import Callable, Optional
 from . import client, scoring, theme
 from .discovery import VideoItem, discover
 
-CHECK_ON = "☑"   # ☑
-CHECK_OFF = "☐"  # ☐
+CHECK_ON = "☑"
+CHECK_OFF = "☐"
+MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
-# 8 result columns (must match the Treeview `columns=` tuple in _build).
-_BLANK_VALS = ("", "", "", "", "", "", "", "")
+# Metric columns the user can click to re-rank by (col id -> scoring key).
+SORTABLE = {
+    "frame_mean": "frame_mean",
+    "frame_min": "frame_min",
+    "frame_max": "frame_max",
+    "chunk_mean": "chunk_mean",
+}
+_COLS = (
+    "group",
+    "frame_mean",
+    "frame_min",
+    "frame_max",
+    "chunk_mean",
+    "frames",
+    "verdict",
+    "status",
+)
+_HEADINGS = {
+    "group": "Group",
+    "frame_mean": "Frame Mean",
+    "frame_min": "Frame Min",
+    "frame_max": "Frame Max",
+    "chunk_mean": "Chunk Mean",
+    "frames": "Frames",
+    "verdict": "Verdict (raw)",
+    "status": "Status",
+}
 
 
 def _num(v) -> str:
     return "—" if v is None else f"{v:.4f}"
 
 
-def _result_vals(r, *, status_override: str | None = None) -> tuple:
-    """Build the 8-tuple of column values for a scored Result row."""
-    verdict = (
-        f"{r.verdict_label} ({_num(r.verdict_score)})"
-        if r.verdict_label
-        else "—"
-    )
-    return (
-        r.group,
-        _num(r.frame_mean),
-        _num(r.frame_min),
-        _num(r.frame_max),
-        _num(r.chunk_mean),
-        str(r.frame_count or "—"),
-        verdict,
-        status_override or r.status,
-    )
+class _Row:
+    """One video's model state (selection + optional Result)."""
+
+    __slots__ = ("item", "checked", "result")
+
+    def __init__(self, item: VideoItem) -> None:
+        self.item = item
+        self.checked = True
+        self.result: Optional[scoring.Result] = None
+
+    @property
+    def scored(self) -> bool:
+        return self.result is not None and self.result.ok
 
 
 class ResembleScoreGUI:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("resemble-score — deepfake scoring & comparison")
-        self.root.geometry("1080x720")
+        self.root.geometry("1180x740")
+        self.root.minsize(960, 560)
         theme.apply_dark_ttk(self.root)
 
         self.folder: Optional[Path] = None
         self.recursive = tk.BooleanVar(value=True)
-        self.items: list[VideoItem] = []
-        # tree item id -> (VideoItem, checked bool); group rows excluded
-        self._rows: dict[str, list] = {}
+        # path-string -> _Row  (preserves discovery order for grouping)
+        self._rows: dict[str, _Row] = {}
+        # tree-item-id -> path-string  (only for video rows)
+        self._iid_to_path: dict[str, str] = {}
         self._worker: Optional[threading.Thread] = None
         self._cancel = threading.Event()
+        self._sort_by = scoring.DEFAULT_SORT
+        self._sort_desc = False
 
-        # Thread-safe hand-off: workers enqueue callables; the poller below
-        # (running on the main thread) drains and runs them. Workers must
-        # never call self.root.after() — that itself is not thread-safe.
         self._ui_queue: "queue.Queue[Callable[[], None]]" = queue.Queue()
 
         self._build()
-        # Schedule the pump ON the main thread (we are on it here).
         self.root.after(50, self._drain_ui_queue)
 
     # ---- thread-safe UI marshalling --------------------------------------
     def _post(self, fn: Callable, *args) -> None:
-        """Called from worker threads: queue a callable for the main thread."""
         self._ui_queue.put(lambda: fn(*args))
 
     def _drain_ui_queue(self) -> None:
-        """Main-thread poller: run queued UI callbacks, then re-arm."""
         try:
             while True:
                 cb = self._ui_queue.get_nowait()
                 try:
                     cb()
-                except Exception:  # a bad callback must not kill the pump
+                except Exception:
                     import traceback
 
                     traceback.print_exc()
@@ -102,9 +130,7 @@ class ResembleScoreGUI:
             top, text="resemble-score", style="Title.TLabel"
         ).pack(side="left")
         ttk.Label(
-            top,
-            text="deepfake scoring & comparison",
-            style="Muted.TLabel",
+            top, text="deepfake scoring & comparison", style="Muted.TLabel"
         ).pack(side="left", padx=12)
 
         legend = ttk.Frame(self.root, padding=(12, 0, 12, 4))
@@ -113,13 +139,15 @@ class ResembleScoreGUI:
             legend,
             text=(
                 "All scores 0–1 (deepfake probability) — lower = more "
-                "authentic.  Ranked by Frame Mean (🏆 = winner).  "
+                "authentic.  Existing results load automatically; Score "
+                "Selected only calls the API for videos without a result.  "
+                "Click a metric header to re-rank (🥇🥈🥉 = top 3).  "
                 "Verdict is Resemble's raw label and rounds to Fake/1.0 "
                 "for most AI clips, so it can't compare variants — the "
                 "per-frame columns can."
             ),
             style="Muted.TLabel",
-            wraplength=1500,
+            wraplength=1620,
             justify="left",
         ).pack(side="left")
 
@@ -129,7 +157,6 @@ class ResembleScoreGUI:
             bar, text="Pick Folder…", command=self._pick_folder
         )
         self.pick_btn.pack(side="left")
-        # Re-run discovery when the mode changes so the list never goes stale.
         self.recursive_cb = ttk.Checkbutton(
             bar,
             text="Recursive",
@@ -164,44 +191,44 @@ class ResembleScoreGUI:
             command=lambda: self._select_group(oldcam=False),
         )
         self.orig_btn.pack(side="left", padx=6)
-
-        cols = (
-            "group",
-            "frame_mean",
-            "frame_min",
-            "frame_max",
-            "chunk_mean",
-            "frames",
-            "verdict",
-            "status",
+        self.unscored_btn = ttk.Button(
+            selbar,
+            text="Select Unscored",
+            command=self._select_unscored,
         )
+        self.unscored_btn.pack(side="left", padx=6)
+
         tree_wrap = ttk.Frame(self.root, padding=(12, 6))
         tree_wrap.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(
-            tree_wrap, columns=cols, show="tree headings",
+            tree_wrap, columns=_COLS, show="tree headings",
             selectmode="none",
         )
-        self.tree.heading("#0", text="  ☑  File")
-        self.tree.heading("group", text="Group")
-        self.tree.heading("frame_mean", text="Frame Mean ▲")
-        self.tree.heading("frame_min", text="Frame Min")
-        self.tree.heading("frame_max", text="Frame Max")
-        self.tree.heading("chunk_mean", text="Chunk Mean")
-        self.tree.heading("frames", text="Frames")
-        self.tree.heading("verdict", text="Verdict (raw)")
-        self.tree.heading("status", text="Status")
-        self.tree.column("#0", width=380, anchor="w", stretch=True)
+        self.tree.heading("#0", text="  ☑  Rank · File")
+        for col in _COLS:
+            label = _HEADINGS[col]
+            if col in SORTABLE:
+                self.tree.heading(
+                    col,
+                    text=label,
+                    command=lambda c=col: self._on_header_click(c),
+                )
+            else:
+                self.tree.heading(col, text=label)
+        self.tree.column("#0", width=420, anchor="w", stretch=True)
         self.tree.column("group", width=110, anchor="w")
-        self.tree.column("frame_mean", width=104, anchor="e")
+        self.tree.column("frame_mean", width=108, anchor="e")
         self.tree.column("frame_min", width=92, anchor="e")
         self.tree.column("frame_max", width=92, anchor="e")
         self.tree.column("chunk_mean", width=98, anchor="e")
         self.tree.column("frames", width=64, anchor="e")
         self.tree.column("verdict", width=120, anchor="w")
-        self.tree.column("status", width=92, anchor="w")
+        self.tree.column("status", width=88, anchor="w")
         self.tree.tag_configure(
-            "winner", background=theme.WINNER_BG, foreground=theme.WINNER_FG
+            "gold", background=theme.WINNER_BG, foreground=theme.WINNER_FG
         )
+        self.tree.tag_configure("silver", background="#2c3340")
+        self.tree.tag_configure("bronze", background="#33302a")
         self.tree.tag_configure("error", foreground=theme.ERROR_FG)
         self.tree.tag_configure("odd", background=theme.ROW_ALT)
         vsb = ttk.Scrollbar(
@@ -240,14 +267,10 @@ class ResembleScoreGUI:
         self._start_discovery()
 
     def _on_recursive_toggle(self) -> None:
-        # Toggling the mode after a folder is picked must re-scan, else the
-        # displayed list no longer matches the selected recursion mode.
         if self.folder is not None:
             self._start_discovery()
 
     def _start_discovery(self) -> None:
-        """Scan the folder on a worker thread (rglob on a large tree would
-        otherwise freeze the UI), then repopulate the tree via root.after."""
         if self._worker and self._worker.is_alive():
             return
         if not self.folder:
@@ -255,6 +278,7 @@ class ResembleScoreGUI:
         for iid in self.tree.get_children():
             self.tree.delete(iid)
         self._rows.clear()
+        self._iid_to_path.clear()
         self._set_controls(busy=True)
         self.status_lbl.configure(text="Scanning folder…")
         folder = self.folder
@@ -269,77 +293,180 @@ class ResembleScoreGUI:
     def _discovery_run(self, folder: Path, recursive: bool) -> None:
         try:
             items = discover(folder, recursive=recursive)
-        except (NotADirectoryError, FileNotFoundError) as e:
+        except (NotADirectoryError, FileNotFoundError, OSError) as e:
             self._post(self._on_discovery_error, str(e))
             return
-        except OSError as e:  # unexpected FS error — surface, don't crash
-            self._post(self._on_discovery_error, str(e))
-            return
-        self._post(self._populate_tree, items)
+        # Load existing sidecar results on the worker (disk IO, no Tk).
+        loaded: list[tuple[VideoItem, Optional[scoring.Result]]] = []
+        for it in items:
+            try:
+                res = scoring.load_existing_result(it.path, it.group)
+            except Exception:
+                res = None
+            loaded.append((it, res))
+        self._post(self._populate, loaded)
 
     def _on_discovery_error(self, msg: str) -> None:
         self._set_controls(busy=False)
         self.status_lbl.configure(text="Discovery failed.")
         messagebox.showerror("Discovery failed", msg)
 
-    def _populate_tree(self, items: list[VideoItem]) -> None:
-        self.items = items
+    def _populate(self, loaded) -> None:
         self._set_controls(busy=False)
-        if not items:
-            self.status_lbl.configure(text="No videos found in this folder.")
-            return
-
-        groups: dict[str, str] = {}
-        for idx, it in enumerate(items):
-            if it.group not in groups:
-                gid = self.tree.insert(
-                    "", "end", text=it.group, values=_BLANK_VALS,
-                    open=True,
-                )
-                groups[it.group] = gid
-            row = self.tree.insert(
-                groups[it.group],
-                "end",
-                text=f"  {CHECK_ON}  {it.name}",
-                values=(it.group,) + _BLANK_VALS[1:],
-                tags=("odd",) if idx % 2 else (),
+        self._rows.clear()
+        for it, res in loaded:
+            row = _Row(it)
+            row.result = res
+            self._rows[str(it.path)] = row
+        if not self._rows:
+            self.status_lbl.configure(
+                text="No videos found in this folder."
             )
-            self._rows[row] = [it, True]
-        self.status_lbl.configure(
-            text=f"{len(items)} video(s) found. Pick which to score."
+            return
+        self._rebuild_tree()
+        n = len(self._rows)
+        have = sum(1 for r in self._rows.values() if r.scored)
+        msg = f"{n} video(s) found"
+        if have:
+            msg += f" — {have} already have results (loaded)"
+            if have < n:
+                msg += f", {n - have} need scoring"
+        else:
+            msg += " — none scored yet"
+        self.status_lbl.configure(text=msg + ".")
+
+    # ---- tree rendering (single source of truth) -------------------------
+    def _ordered_rows(self) -> list[_Row]:
+        """Scored rows ranked by the active metric, then unscored, grouped."""
+        scored = [r for r in self._rows.values() if r.scored]
+        unscored = [r for r in self._rows.values() if not r.scored]
+        results = [r.result for r in scored if r.result is not None]
+        scoring.rank(
+            results, by=self._sort_by, descending=self._sort_desc
         )
 
-    # ---- checkbox handling ------------------------------------------------
-    def _set_check(self, row: str, checked: bool) -> None:
-        item, _ = self._rows[row]
-        self._rows[row] = [item, checked]
-        mark = CHECK_ON if checked else CHECK_OFF
-        self.tree.item(row, text=f"  {mark}  {item.name}")
+        # rank() set .rank on each Result in place; order rows to match.
+        def _rank_of(r: _Row) -> int:
+            return (
+                r.result.rank
+                if r.result is not None and r.result.rank is not None
+                else 1_000_000
+            )
 
+        scored.sort(key=_rank_of)
+        unscored.sort(
+            key=lambda r: (r.item.group, r.item.name.lower())
+        )
+        return scored + unscored
+
+    def _rebuild_tree(self) -> None:
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+        self._iid_to_path.clear()
+
+        # Heading arrows reflect the active sort.
+        for col in _COLS:
+            base = _HEADINGS[col]
+            if col == self._sort_by:
+                base += " ▼" if self._sort_desc else " ▲"
+            if col in SORTABLE or col in _HEADINGS:
+                self.tree.heading(col, text=base)
+
+        groups: dict[str, str] = {}
+        for idx, row in enumerate(self._ordered_rows()):
+            it = row.item
+            if it.group not in groups:
+                groups[it.group] = self.tree.insert(
+                    "", "end", text=it.group,
+                    values=("",) * len(_COLS), open=True,
+                )
+            res = row.result
+            mark = CHECK_ON if row.checked else CHECK_OFF
+            tags: tuple = ()
+            if res is not None and res.ok:
+                medal = MEDALS.get(res.rank or 0, "")
+                label = (
+                    f"  {mark}  {medal} #{res.rank}  {it.name}"
+                    if medal
+                    else f"  {mark}  #{res.rank}  {it.name}"
+                )
+                verdict = (
+                    f"{res.verdict_label} ({_num(res.verdict_score)})"
+                    if res.verdict_label
+                    else "—"
+                )
+                vals = (
+                    it.group,
+                    _num(res.frame_mean),
+                    _num(res.frame_min),
+                    _num(res.frame_max),
+                    _num(res.chunk_mean),
+                    str(res.frame_count or "—"),
+                    verdict,
+                    "loaded" if res.status == "loaded" else "ok",
+                )
+                if res.rank == 1:
+                    tags = ("gold",)
+                elif res.rank == 2:
+                    tags = ("silver",)
+                elif res.rank == 3:
+                    tags = ("bronze",)
+                elif idx % 2:
+                    tags = ("odd",)
+            else:
+                label = f"  {mark}  {it.name}"
+                status = "—"
+                if res is not None and res.status == "error":
+                    status = "error"
+                    tags = ("error",)
+                elif idx % 2:
+                    tags = ("odd",)
+                vals = (it.group, "", "", "", "", "", "", status)
+
+            iid = self.tree.insert(
+                groups[it.group], "end", text=label, values=vals,
+                tags=tags,
+            )
+            self._iid_to_path[iid] = str(it.path)
+
+    def _on_header_click(self, col: str) -> None:
+        if col not in SORTABLE:
+            return
+        if self._sort_by == col:
+            self._sort_desc = not self._sort_desc
+        else:
+            self._sort_by = col
+            self._sort_desc = False
+        self._rebuild_tree()
+
+    # ---- checkbox handling ------------------------------------------------
     def _on_click(self, event: tk.Event) -> None:
         if self._worker and self._worker.is_alive():
             return
-        row = self.tree.identify_row(event.y)
-        if row in self._rows:
-            _, checked = self._rows[row]
-            self._set_check(row, not checked)
+        iid = self.tree.identify_row(event.y)
+        path = self._iid_to_path.get(iid)
+        if path is None:
+            return
+        row = self._rows[path]
+        row.checked = not row.checked
+        self._rebuild_tree()
 
     def _set_all(self, checked: bool) -> None:
-        for row in self._rows:
-            self._set_check(row, checked)
+        for r in self._rows.values():
+            r.checked = checked
+        self._rebuild_tree()
 
     def _select_group(self, *, oldcam: bool) -> None:
-        for row, (item, _) in list(self._rows.items()):
-            self._set_check(row, (item.version is not None) == oldcam)
+        for r in self._rows.values():
+            r.checked = (r.item.version is not None) == oldcam
+        self._rebuild_tree()
 
-    def _selected_rows(self) -> list[tuple]:
-        return [
-            (row, item)
-            for row, (item, checked) in self._rows.items()
-            if checked
-        ]
+    def _select_unscored(self) -> None:
+        for r in self._rows.values():
+            r.checked = not r.scored
+        self._rebuild_tree()
 
-    # ---- scoring (threaded) ----------------------------------------------
+    # ---- scoring (threaded, incremental) ---------------------------------
     def _set_controls(self, *, busy: bool) -> None:
         state = "disabled" if busy else "normal"
         for btn in (
@@ -348,6 +475,7 @@ class ResembleScoreGUI:
             self.none_btn,
             self.oldcam_btn,
             self.orig_btn,
+            self.unscored_btn,
             self.score_btn,
         ):
             btn.configure(state=state)
@@ -362,46 +490,45 @@ class ResembleScoreGUI:
             messagebox.showerror("Missing API key", str(e))
             return
 
-        selected = self._selected_rows()
+        selected = [r for r in self._rows.values() if r.checked]
         if not selected:
             messagebox.showinfo(
                 "Nothing selected", "Tick at least one video to score."
             )
             return
 
-        # Clear stale winner/error styling from ALL rows (a prior winner may
-        # be outside this selection and must not stay starred/highlighted).
-        for row, (item, checked) in self._rows.items():
-            mark = CHECK_ON if checked else CHECK_OFF
-            self.tree.item(row, text=f"  {mark}  {item.name}", tags=())
-        # Reset result columns for the selected rows.
-        for row, item in selected:
-            self.tree.item(
-                row,
-                values=(item.group,) + _BLANK_VALS[1:-1] + ("queued",),
-                tags=(),
+        # Incremental: only API the selected videos with no result yet.
+        todo = [r for r in selected if not r.scored]
+        already = len(selected) - len(todo)
+        if not todo:
+            messagebox.showinfo(
+                "Nothing to score",
+                f"All {len(selected)} selected video(s) already have "
+                "results. Pick a folder/selection with unscored videos, "
+                "or delete their .json sidecars to force a re-score.",
             )
+            return
 
         self._cancel.clear()
         self._set_controls(busy=True)
-        row_by_path = {
-            str(item.path): row for row, item in selected
-        }
-        items = [item for _, item in selected]
-
+        skip_note = f" ({already} already scored, skipped)" if already else ""
+        self.status_lbl.configure(
+            text=f"Scoring {len(todo)} video(s){skip_note}…"
+        )
+        items = [r.item for r in todo]
         self._worker = threading.Thread(
             target=self._worker_run,
-            args=(items, api_key, row_by_path),
+            args=(items, api_key),
             daemon=True,
         )
         self._worker.start()
 
-    def _worker_run(self, items, api_key, row_by_path) -> None:
+    def _worker_run(self, items, api_key) -> None:
         def progress(done: int, total: int, r: scoring.Result) -> None:
-            self._post(self._on_progress, done, total, r, row_by_path)
+            self._post(self._on_progress, done, total, r)
 
         try:
-            results = scoring.score_items(
+            scoring.score_items(
                 items,
                 api_key,
                 progress_cb=progress,
@@ -410,13 +537,14 @@ class ResembleScoreGUI:
         except Exception as exc:  # pragma: no cover - safety net
             self._post(self._on_fatal, str(exc))
             return
-        self._post(self._on_done, results)
+        self._post(self._on_done)
 
-    def _on_progress(self, done, total, r, row_by_path) -> None:
-        row = row_by_path.get(str(r.path))
+    def _on_progress(self, done, total, r: scoring.Result) -> None:
+        # Fold the fresh result into the model, then re-rank/re-render.
+        row = self._rows.get(str(r.path))
         if row is not None:
-            tags = ("error",) if r.status == "error" else ()
-            self.tree.item(row, values=_result_vals(r), tags=tags)
+            row.result = r
+        self._rebuild_tree()
         self.status_lbl.configure(text=f"Scoring… {done} of {total} done")
 
     def _on_fatal(self, msg: str) -> None:
@@ -424,44 +552,50 @@ class ResembleScoreGUI:
         self.status_lbl.configure(text="Failed.")
         messagebox.showerror("Scoring failed", msg)
 
-    def _on_done(self, results) -> None:
+    def _on_done(self) -> None:
         self._set_controls(busy=False)
-        ordered = scoring.rank(results)
-        winner = next((x for x in ordered if x.ok), None)
-        if winner is not None:
-            for row, (item, _) in self._rows.items():
-                if str(item.path) == str(winner.path):
-                    vals = self.tree.item(row, "values")
-                    self.tree.item(row, values=vals, tags=("winner",))
-                    self.tree.item(
-                        row, text=f"  ★  {item.name}"
-                    )
-                    break
+        self._rebuild_tree()
 
-        try:
-            json_path, csv_path, md_path = scoring.write_reports(
-                self.folder, results
-            )
-            written = (
-                f"  Reports: {json_path.name}, {csv_path.name}, "
-                f"{md_path.name}"
-            )
-        except OSError as exc:
-            written = f"  (report write failed: {exc})"
+        all_results = [
+            r.result for r in self._rows.values() if r.result is not None
+        ]
+        written = ""
+        if all_results and self.folder is not None:
+            try:
+                jp, cp, mp = scoring.write_reports(
+                    self.folder, all_results
+                )
+                written = f"  Reports: {jp.name}, {cp.name}, {mp.name}"
+            except OSError as exc:
+                written = f"  (report write failed: {exc})"
 
-        ok = sum(1 for x in results if x.status == "ok")
-        err = sum(1 for x in results if x.status == "error")
-        cancelled = sum(1 for x in results if x.status == "cancelled")
+        ordered = [
+            r.result
+            for r in self._ordered_rows()
+            if r.result is not None and r.result.ok
+        ]
+        ok = len(ordered)
+        err = sum(
+            1
+            for r in self._rows.values()
+            if r.result is not None and r.result.status == "error"
+        )
+        podium = "  ·  ".join(
+            f"{MEDALS[i + 1]} {res.name} ({_num(res.frame_mean)})"
+            for i, res in enumerate(ordered[:3])
+        )
         summary = f"Done. {ok} scored"
         if err:
             summary += f", {err} failed"
-        if cancelled:
-            summary += f", {cancelled} cancelled"
-        self.status_lbl.configure(text=summary + "." + written)
+        if podium:
+            summary += f".  Top: {podium}"
+        self.status_lbl.configure(text=summary + written)
 
     def _cancel_scoring(self) -> None:
         self._cancel.set()
-        self.status_lbl.configure(text="Cancelling… (finishing current video)")
+        self.status_lbl.configure(
+            text="Cancelling… (finishing current video)"
+        )
 
 
 def run_gui() -> None:

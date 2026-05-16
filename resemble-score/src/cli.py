@@ -71,6 +71,9 @@ def _n(v) -> str:
     return "—" if v is None else f"{v:.4f}"
 
 
+_MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+
 def _print_ranked(results: Sequence[scoring.Result]) -> None:
     ordered = scoring.rank(results)
     console.print(
@@ -79,6 +82,16 @@ def _print_ranked(results: Sequence[scoring.Result]) -> None:
         "label; it rounds to Fake/1.0 for most AI clips so it can't "
         "compare variants — the per-frame columns can.[/dim]"
     )
+    podium = [r for r in ordered if r.ok][:3]
+    if podium:
+        console.print()
+        for r in podium:
+            console.print(
+                f"  {_MEDALS[r.rank]} [bold]#{r.rank}[/bold] "
+                f"[green]{r.name}[/green]  "
+                f"({r.group}, Frame Mean {_n(r.frame_mean)})"
+            )
+        console.print()
     table = Table(
         title="Results — ranked by Frame Mean (★ = winner, lowest)",
         header_style="bold cyan",
