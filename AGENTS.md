@@ -31,6 +31,8 @@ This repo runs on **both Windows and macOS**. Most editing happens on Windows; m
 | 6 | When reloading `src.engine`, also pop `similarity_engine` | `src/engine.py` is a thin shim that does `from similarity_engine import FaceEngine`; a prior test leaves real `DeepFace` bound | `sys.modules.pop("src.engine", None); sys.modules.pop("similarity_engine", None)` in `setUp` |
 | 7 | macOS Python = `python3.11` (Tk-capable) | Homebrew `python3.12+` ships without `_tkinter`; everything that imports `tkinter` fails to collect | Use `python3.11 -m venv .venv311`. Run pytest as `python -m pytest ...` so cwd is on `sys.path` (no root `conftest.py`) |
 | 8 | Don't break the macOS launcher chain | `run_gui.command → launchers/run_gui.command → launchers/macos/run_gui.command → run_gui.sh → setup_macos.sh → gui_launcher.py`. Same shape for `run_cli` and `run_oldcam_v*` | After any link change: `bash run_gui.command` (or `run_cli.command`) once before pushing |
+| 9 | Python resolvers in `.command`/`.bat` MUST version-validate **every** venv candidate (not just `[ -x ]`). `.venv311/` is the canonical macOS venv name and MUST be a tried candidate. | A stale `$REPO_ROOT/.venv` symlinking to python3.14 silently gets returned, then the post-resolve gate aborts with a misleading "Unsupported Python version" error. Fixed in commit `afe0540b`. | Reuse the `_python_supported()` Bash helper at `similarity/run_gui.command:38-40` (or `:check_py` cmd subroutine at `similarity/run_gui.bat:140-151`) and gate every candidate. Add `.venv311/bin/python` (macOS) / `.venv311\Scripts\python.exe` (Windows) explicitly. Static-text test pattern in `tests/test_similarity_launcher_resolver.py`. |
+| 10 | `.command` and `.sh` siblings MUST use **identical** `set` flags | Mismatches like `.command` with `set -uo pipefail` vs `.sh` with `set -euo pipefail` silently change error-handling behavior. CodeRabbit caught this on `launchers/macos/run_gui.command` in PR #21 (fixed in commit `300c88f0`). | Both files use `set -euo pipefail`. The explicit `set +e / set -e` toggle around sub-script invocations is fine — it still scopes errexit OFF for that one call. |
 
 ### Pre-push verification
 
@@ -274,7 +276,7 @@ Quick touch-points when adding vN:
 - `kling_gui/queue_manager.py`: add `"vN"` to `requires_mediapipe` set if vN uses face landmarks
 - `tests/test_oldcam_versions.py`: add vN to version tuple + output-suffix test + mediapipe test
 - `tests/test_launcher_hub_wrappers.py`: add launcher path/target assertions
-- `build_release_zip.py`: add new launcher filenames explicitly (algorithm folder auto-included)
+- `distribution/release_prep.py`: add new launcher filenames explicitly (algorithm folder auto-included via tree walk)
 - If new default: update `automation/config.py` + 5 `run_oldcam` launcher files
 
 **Auto-discovered:** `_discover_oldcam_versions()` scans `oldcam-v*` dirs — no hardcoded version list anywhere in pipeline/automation code.
@@ -478,6 +480,38 @@ Always filter mediapipe from requirements before pip, then install separately:
 "%VENV_PYTHON%" -m pip install --no-deps "mediapipe==0.10.35"
 ```
 
+### POSIX redirects don't work in cmd — use `nul` not `/dev/null`
+
+cmd.exe has no `/dev/null`. A POSIX `>/dev/null 2>&1` redirect silently fails on Windows (cmd interprets `/dev/null` as a path and errors with "the system cannot find the path specified", buried in stderr). I shipped 14 such redirects to `similarity/run_gui.bat` in commit `afe0540b` and CodeRabbit caught it; without that catch, every venv-create / python -V probe / dep-check would have failed on your Windows pull.
+
+```bat
+rem WRONG — POSIX redirect, silently fails on Windows
+"!PYTHON_BIN!" -c "import tkinter" >/dev/null 2>&1
+
+rem CORRECT — cmd-native null device
+"!PYTHON_BIN!" -c "import tkinter" >nul 2>&1
+```
+
+Pre-push grep: `rg -n --iglob '*.bat' --iglob '*.cmd' '/dev/null'` MUST return zero hits.
+
+Also watch for: `&>` (POSIX merged redirect), backticks, `$(...)` command substitution, `[[ ... ]]` tests, Unix-style `/usr` / `/bin` / `/tmp` paths. None of these work in cmd.
+
+### Name override env vars in launcher error messages
+
+Launchers that honor env-var overrides (`SELFIEGEN_PYTHON`, `SELFIEGEN_VENV_DIR`) MUST mention the active override by name in any error message so users know how to unset it. If you add a new override branch, mirror the existing pattern:
+
+```bat
+if not "%SELFIEGEN_PYTHON%"=="" (
+  echo ERROR: SELFIEGEN_PYTHON points at Python !PY_ACTUAL!, but requires X.Y. Unset it or point at supported version.
+) else if not "%SELFIEGEN_VENV_DIR%"=="" (
+  echo ERROR: SELFIEGEN_VENV_DIR points at Python !PY_ACTUAL!, ...
+) else (
+  echo ERROR: resolved Python is !PY_ACTUAL!, ... (resolver bug — file an issue)
+)
+```
+
+Reference implementation: `similarity/run_gui.bat:65-72` (fixed in commit `cb876b44` after CodeRabbit caught that only `SELFIEGEN_PYTHON` was named).
+
 ---
 
 ## Hard Rules — GUI Sash Layout
@@ -599,6 +633,9 @@ The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, 
 | Standalone CLI Rich panel | `similarity/src/cli.py::_display_result` | `f"{float(result['score']):.1f}%"` (engine returns float) |
 | Filename `_simN_` tag | `selfie_generator.py` | `int(round(...))` (no decimal) |
 | Diagnostic logs | `face_similarity._diag_summary` | Raw `mapped=N` (int after adapter) |
+| **User-facing selfie-generation log** | `selfie_generator.py:_format_similarity_diagnostics` (helper at lines 189-213) | `f"Similarity: {N}% (cosine_distance={d:.3f}, threshold={t:.2f}, models={m})"` — MUST include raw distance + threshold; falls back gracefully when diagnostics missing |
+
+**Why the user-facing row matters:** the polynomial mapping in `similarity_engine._score_from_distance` deliberately spreads ArcFace cosine distances 0.0–0.68 across scores 100–80%. A pegged 99% reading from a small distance is mathematically correct, but indistinguishable from a degenerate fallback if the raw distance is hidden. Always emit `_format_similarity_diagnostics(details.get("diagnostics"))` alongside the mapped score. v1.9 calibration with reference table lives in `similarity_engine.py:625-640` (`PASS_CURVE_EXPONENT`). Canonical threshold constant at `face_similarity.RAW_DISTANCE_THRESHOLD` (`= 0.68`). Tests in `tests/test_selfie_generator_similarity_log.py`. Fixed in commits `e7ac7284` + `089d631b`.
 
 ### F. FAS (anti-spoof) display wording
 
