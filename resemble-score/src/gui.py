@@ -23,6 +23,32 @@ from .discovery import VideoItem, discover
 CHECK_ON = "☑"   # ☑
 CHECK_OFF = "☐"  # ☐
 
+# 8 result columns (must match the Treeview `columns=` tuple in _build).
+_BLANK_VALS = ("", "", "", "", "", "", "", "")
+
+
+def _num(v) -> str:
+    return "—" if v is None else f"{v:.4f}"
+
+
+def _result_vals(r, *, status_override: str | None = None) -> tuple:
+    """Build the 8-tuple of column values for a scored Result row."""
+    verdict = (
+        f"{r.verdict_label} ({_num(r.verdict_score)})"
+        if r.verdict_label
+        else "—"
+    )
+    return (
+        r.group,
+        _num(r.frame_mean),
+        _num(r.frame_min),
+        _num(r.frame_max),
+        _num(r.chunk_mean),
+        str(r.frame_count or "—"),
+        verdict,
+        status_override or r.status,
+    )
+
 
 class ResembleScoreGUI:
     def __init__(self, root: tk.Tk) -> None:
@@ -70,16 +96,32 @@ class ResembleScoreGUI:
 
     # ---- layout -----------------------------------------------------------
     def _build(self) -> None:
-        top = ttk.Frame(self.root, padding=10)
+        top = ttk.Frame(self.root, padding=(12, 10, 12, 2))
         top.pack(fill="x")
         ttk.Label(
             top, text="resemble-score", style="Title.TLabel"
         ).pack(side="left")
         ttk.Label(
             top,
-            text="lower score = looks more authentic (winner ★)",
+            text="deepfake scoring & comparison",
             style="Muted.TLabel",
         ).pack(side="left", padx=12)
+
+        legend = ttk.Frame(self.root, padding=(12, 0, 12, 4))
+        legend.pack(fill="x")
+        ttk.Label(
+            legend,
+            text=(
+                "All scores 0–1 (deepfake probability) — lower = more "
+                "authentic.  Ranked by Frame Mean (🏆 = winner).  "
+                "Verdict is Resemble's raw label and rounds to Fake/1.0 "
+                "for most AI clips, so it can't compare variants — the "
+                "per-frame columns can."
+            ),
+            style="Muted.TLabel",
+            wraplength=1500,
+            justify="left",
+        ).pack(side="left")
 
         bar = ttk.Frame(self.root, padding=(10, 0))
         bar.pack(fill="x")
@@ -123,25 +165,51 @@ class ResembleScoreGUI:
         )
         self.orig_btn.pack(side="left", padx=6)
 
-        cols = ("group", "score", "certainty", "status")
+        cols = (
+            "group",
+            "frame_mean",
+            "frame_min",
+            "frame_max",
+            "chunk_mean",
+            "frames",
+            "verdict",
+            "status",
+        )
+        tree_wrap = ttk.Frame(self.root, padding=(12, 6))
+        tree_wrap.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(
-            self.root, columns=cols, show="tree headings", selectmode="none"
+            tree_wrap, columns=cols, show="tree headings",
+            selectmode="none",
         )
         self.tree.heading("#0", text="  ☑  File")
         self.tree.heading("group", text="Group")
-        self.tree.heading("score", text="Score")
-        self.tree.heading("certainty", text="Certainty")
+        self.tree.heading("frame_mean", text="Frame Mean ▲")
+        self.tree.heading("frame_min", text="Frame Min")
+        self.tree.heading("frame_max", text="Frame Max")
+        self.tree.heading("chunk_mean", text="Chunk Mean")
+        self.tree.heading("frames", text="Frames")
+        self.tree.heading("verdict", text="Verdict (raw)")
         self.tree.heading("status", text="Status")
-        self.tree.column("#0", width=520, anchor="w")
-        self.tree.column("group", width=130, anchor="w")
-        self.tree.column("score", width=100, anchor="e")
-        self.tree.column("certainty", width=100, anchor="e")
-        self.tree.column("status", width=110, anchor="w")
+        self.tree.column("#0", width=380, anchor="w", stretch=True)
+        self.tree.column("group", width=110, anchor="w")
+        self.tree.column("frame_mean", width=104, anchor="e")
+        self.tree.column("frame_min", width=92, anchor="e")
+        self.tree.column("frame_max", width=92, anchor="e")
+        self.tree.column("chunk_mean", width=98, anchor="e")
+        self.tree.column("frames", width=64, anchor="e")
+        self.tree.column("verdict", width=120, anchor="w")
+        self.tree.column("status", width=92, anchor="w")
         self.tree.tag_configure(
             "winner", background=theme.WINNER_BG, foreground=theme.WINNER_FG
         )
         self.tree.tag_configure("error", foreground=theme.ERROR_FG)
-        self.tree.pack(fill="both", expand=True, padx=10, pady=6)
+        self.tree.tag_configure("odd", background=theme.ROW_ALT)
+        vsb = ttk.Scrollbar(
+            tree_wrap, orient="vertical", command=self.tree.yview
+        )
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Button-1>", self._on_click)
 
         bottom = ttk.Frame(self.root, padding=10)
@@ -222,10 +290,10 @@ class ResembleScoreGUI:
             return
 
         groups: dict[str, str] = {}
-        for it in items:
+        for idx, it in enumerate(items):
             if it.group not in groups:
                 gid = self.tree.insert(
-                    "", "end", text=it.group, values=("", "", "", ""),
+                    "", "end", text=it.group, values=_BLANK_VALS,
                     open=True,
                 )
                 groups[it.group] = gid
@@ -233,7 +301,8 @@ class ResembleScoreGUI:
                 groups[it.group],
                 "end",
                 text=f"  {CHECK_ON}  {it.name}",
-                values=(it.group, "", "", ""),
+                values=(it.group,) + _BLANK_VALS[1:],
+                tags=("odd",) if idx % 2 else (),
             )
             self._rows[row] = [it, True]
         self.status_lbl.configure(
@@ -308,7 +377,9 @@ class ResembleScoreGUI:
         # Reset result columns for the selected rows.
         for row, item in selected:
             self.tree.item(
-                row, values=(item.group, "", "", "queued"), tags=()
+                row,
+                values=(item.group,) + _BLANK_VALS[1:-1] + ("queued",),
+                tags=(),
             )
 
         self._cancel.clear()
@@ -344,14 +415,8 @@ class ResembleScoreGUI:
     def _on_progress(self, done, total, r, row_by_path) -> None:
         row = row_by_path.get(str(r.path))
         if row is not None:
-            score_txt = "-" if r.score is None else f"{r.score:.4f}"
-            cert_txt = "-" if r.certainty is None else f"{r.certainty:.4f}"
             tags = ("error",) if r.status == "error" else ()
-            self.tree.item(
-                row,
-                values=(r.group, score_txt, cert_txt, r.status),
-                tags=tags,
-            )
+            self.tree.item(row, values=_result_vals(r), tags=tags)
         self.status_lbl.configure(text=f"Scoring… {done} of {total} done")
 
     def _on_fatal(self, msg: str) -> None:

@@ -18,7 +18,42 @@ def _items(tmp_path, names):
     return out
 
 
-def _fake_trimmed(score, certainty=0.9):
+def _fake_trimmed(frame_mean, certainty=0.9, *, with_children=True):
+    """Build a realistic trimmed video result.
+
+    ``frame_mean`` controls the per-frame children scores (the metric the
+    ranking uses); the top-level score is the rounded Fake/1.0 verdict the
+    real API returns, which must NOT drive ranking.
+    """
+    children = []
+    if with_children:
+        children = [
+            {
+                "type": "VideoResult",
+                "conclusion": "Fake",
+                "score": 1.0,
+                "certainty": certainty,
+            },
+            {
+                "type": "VideoChunkResult",
+                "conclusion": "Fake",
+                "score": frame_mean,
+                "certainty": certainty,
+            },
+            # Two frames whose mean == frame_mean.
+            {
+                "type": "VideoFrameResult",
+                "conclusion": "Fake",
+                "score": frame_mean - 0.02,
+                "certainty": certainty,
+            },
+            {
+                "type": "VideoFrameResult",
+                "conclusion": "Fake",
+                "score": frame_mean + 0.02,
+                "certainty": certainty,
+            },
+        ]
     return {
         "success": True,
         "item": {
@@ -28,9 +63,9 @@ def _fake_trimmed(score, certainty=0.9):
             "intelligence": {"description": "d"},
             "metrics": {},
             "video_metrics": {
-                "score": score,
+                "score": 1.0,  # rounded verdict — must not be ranked on
                 "certainty": certainty,
-                "children": [],
+                "children": children,
             },
         },
     }
@@ -76,11 +111,18 @@ def test_score_items_writes_per_video_json_and_reports(tmp_path, monkeypatch):
     assert md_path.name == "resemble_results.md"
     assert md_path.exists()
     md = md_path.read_text(encoding="utf-8")
-    # Winner callout + GFM table header + the winning file all present.
+    # Winner callout + the labelled metric table + explainer all present.
     assert "# resemble-score results" in md
     assert "Winner:" in md
-    assert "| Rank | Group | File | Score | Certainty | Status |" in md
+    assert "Frame Mean" in md
+    assert "## What the numbers mean" in md
+    assert (
+        "| Rank | Group | File | Frame Mean | Frame Min | Frame Max "
+        "| Chunk Mean | Frames | Verdict | Status |" in md
+    )
     assert "b-oldcam-v14.mp4" in md
+    # The raw rounded verdict is shown but clearly separate from the metric.
+    assert "Fake (1.0000)" in md
 
     payload = json.loads(json_path.read_text())
     # Winner = lowest score (the v14).
@@ -97,12 +139,23 @@ def test_score_items_writes_per_video_json_and_reports(tmp_path, monkeypatch):
         "rank",
         "filename",
         "group",
-        "score",
+        "frame_mean",
+        "frame_min",
+        "frame_max",
+        "chunk_mean",
+        "frame_count",
+        "verdict_label",
+        "verdict_score",
         "certainty",
         "status",
     ]
     assert rows[1][1] == "b-oldcam-v14.mp4"
     assert rows[1][0] == "1"
+    # Verdict (raw rounded) is recorded but is NOT the ranked column.
+    assert rows[1][8] == "Fake"
+    assert float(rows[1][9]) == 1.0
+    # The ranked metric (frame_mean) reflects the lowest input.
+    assert abs(float(rows[1][3]) - 0.12) < 1e-6
 
 
 def test_score_items_records_errors_without_aborting(tmp_path, monkeypatch):
@@ -149,19 +202,31 @@ def test_cancel_event_marks_remaining_cancelled(tmp_path, monkeypatch):
     assert all(r.rank is None for r in ordered)
 
 
-def test_score_with_missing_score_field_is_error(tmp_path, monkeypatch):
+def test_no_per_frame_children_is_error(tmp_path, monkeypatch):
+    """A response without per-frame children can't be compared -> error."""
     items = _items(tmp_path, ["x-oldcam-v9.mp4"])
     monkeypatch.setattr(
         client,
         "detect_video",
-        lambda p, k: {
-            "success": True,
-            "item": {"media_type": "video", "video_metrics": {}},
-        },
+        lambda p, k: _fake_trimmed(0.5, with_children=False),
     )
     results = scoring.score_items(items, "key")
     assert results[0].status == "error"
-    assert "no video_metrics.score" in results[0].error
+    assert "no per-frame scores" in results[0].error
+    assert results[0].frame_mean is None
+
+
+def test_extract_metrics_aggregates_children_not_top_score():
+    """The rounded top-level 1.0 verdict must NOT become the ranked score;
+    frame_mean is the mean of VideoFrameResult children."""
+    trimmed = _fake_trimmed(0.30)  # frames at 0.28 and 0.32 -> mean 0.30
+    m = scoring.extract_metrics(trimmed)
+    assert m["verdict_score"] == 1.0          # raw rounded verdict
+    assert m["verdict_label"] == "Fake"
+    assert abs(m["frame_mean"] - 0.30) < 1e-9  # the real differentiator
+    assert abs(m["frame_min"] - 0.28) < 1e-9
+    assert abs(m["frame_max"] - 0.32) < 1e-9
+    assert m["frame_count"] == 2
 
 
 def test_keyboardinterrupt_preserves_scored_items(tmp_path, monkeypatch):

@@ -67,37 +67,61 @@ def _parse_selection(
     return chosen
 
 
+def _n(v) -> str:
+    return "—" if v is None else f"{v:.4f}"
+
+
 def _print_ranked(results: Sequence[scoring.Result]) -> None:
     ordered = scoring.rank(results)
+    console.print(
+        "[dim]All scores 0–1 (deepfake probability) — lower = more "
+        "authentic. Ranked by Frame Mean. 'Verdict' is Resemble's raw "
+        "label; it rounds to Fake/1.0 for most AI clips so it can't "
+        "compare variants — the per-frame columns can.[/dim]"
+    )
     table = Table(
-        title="Results — lower score = more authentic (winner ★)",
+        title="Results — ranked by Frame Mean (★ = winner, lowest)",
         header_style="bold cyan",
     )
     table.add_column("Rank", justify="right")
     table.add_column("Group", style="magenta")
     table.add_column("File")
-    table.add_column("Score", justify="right")
-    table.add_column("Certainty", justify="right")
+    table.add_column("Frame\nMean", justify="right", style="bold")
+    table.add_column("Frame\nMin", justify="right")
+    table.add_column("Frame\nMax", justify="right")
+    table.add_column("Chunk\nMean", justify="right")
+    table.add_column("Frames", justify="right")
+    table.add_column("Verdict (raw)")
     table.add_column("Status")
     for r in ordered:
         is_winner = r.rank == 1 and r.ok
-        rank_txt = "★ 1" if is_winner else ("" if r.rank is None else str(r.rank))
-        score_txt = "-" if r.score is None else f"{r.score:.4f}"
-        cert_txt = "-" if r.certainty is None else f"{r.certainty:.4f}"
+        rank_txt = (
+            "★ 1" if is_winner else ("" if r.rank is None else str(r.rank))
+        )
+        verdict = (
+            f"{r.verdict_label} ({_n(r.verdict_score)})"
+            if r.verdict_label
+            else "—"
+        )
         style = (
             "bold green"
             if is_winner
             else ("red" if r.status == "error" else "")
         )
+        status_txt = (
+            f"[red]{r.status}[/red]" if r.status == "error" else r.status
+        )
         table.add_row(
             rank_txt,
             r.group,
             r.name,
-            score_txt,
-            cert_txt,
-            r.status if r.status == "ok" else f"[red]{r.status}[/red]"
-            if r.status == "error"
-            else r.status,
+            _n(r.frame_mean),
+            _n(r.frame_min),
+            _n(r.frame_max),
+            _n(r.chunk_mean),
+            str(r.frame_count or "—"),
+            verdict,
+            status_txt,
             style=style or None,
         )
     console.print(table)
@@ -173,8 +197,8 @@ def run_cli(
         if r.status == "ok":
             console.print(
                 f"  [{done}/{total}] [green]✓[/green] {r.name}  "
-                f"score={r.score:.4f} certainty="
-                f"{('-' if r.certainty is None else f'{r.certainty:.4f}')}"
+                f"frame_mean={_n(r.frame_mean)} "
+                f"min={_n(r.frame_min)} verdict={r.verdict_label or '—'}"
             )
         elif r.status == "cancelled":
             console.print(

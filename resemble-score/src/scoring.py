@@ -36,31 +36,95 @@ REPORT_MD_NAME = "resemble_results.md"
 
 @dataclass
 class Result:
-    """One scored (or failed) video."""
+    """One scored (or failed) video.
+
+    The Resemble API's top-level ``video_metrics.score`` is a coarse
+    classification verdict that rounds to 1.0 ("Fake") for almost any
+    AI-derived clip, so it cannot differentiate variants. The real signal
+    is the per-frame / per-chunk children scores; ``frame_mean`` is the
+    primary ranked metric (lower = looks more authentic to the detector).
+    """
 
     name: str
     group: str
     path: Path
-    score: Optional[float] = None
-    certainty: Optional[float] = None
     status: str = "pending"  # "ok" | "error" | "cancelled"
     error: str = ""
     json_path: Optional[Path] = None
     rank: Optional[int] = field(default=None)
 
+    # Raw API verdict (kept auditable, not used for ranking).
+    verdict_label: str = ""           # "Fake" / "Real" / ""
+    verdict_score: Optional[float] = None      # rounded top-level score
+    certainty: Optional[float] = None          # top-level certainty
+
+    # The metrics that actually differentiate videos.
+    frame_mean: Optional[float] = None
+    frame_min: Optional[float] = None
+    frame_max: Optional[float] = None
+    chunk_mean: Optional[float] = None
+    frame_count: int = 0
+
     @property
     def ok(self) -> bool:
-        return self.status == "ok" and self.score is not None
+        return self.status == "ok" and self.frame_mean is not None
+
+    @property
+    def primary(self) -> Optional[float]:
+        """The metric the ranking/winner is based on (frame mean)."""
+        return self.frame_mean
 
 
 # (done_count, total, latest_result) -> None
 ProgressCb = Callable[[int, int, Result], None]
 
 
+def _mean(values: Sequence[float]) -> Optional[float]:
+    return sum(values) / len(values) if values else None
+
+
+def extract_metrics(trimmed: dict) -> dict:
+    """Pull comparable metrics out of a trimmed Resemble video result.
+
+    Walks ``video_metrics.children`` (already flattened by the client) and
+    aggregates the per-frame / per-chunk scores, since the top-level score
+    is just a rounded Fake/Real verdict.
+    """
+    item = (trimmed or {}).get("item") or {}
+    vm = item.get("video_metrics") or {}
+    children = vm.get("children") or []
+
+    frame_scores: list[float] = []
+    chunk_scores: list[float] = []
+    verdict_label = ""
+    for c in children:
+        if not isinstance(c, dict):
+            continue
+        s = c.get("score")
+        ctype = c.get("type")
+        if ctype == "VideoFrameResult" and isinstance(s, (int, float)):
+            frame_scores.append(float(s))
+        elif ctype == "VideoChunkResult" and isinstance(s, (int, float)):
+            chunk_scores.append(float(s))
+        elif ctype == "VideoResult" and not verdict_label:
+            verdict_label = str(c.get("conclusion") or "")
+
+    return {
+        "verdict_label": verdict_label,
+        "verdict_score": vm.get("score"),
+        "certainty": vm.get("certainty"),
+        "frame_mean": _mean(frame_scores),
+        "frame_min": min(frame_scores) if frame_scores else None,
+        "frame_max": max(frame_scores) if frame_scores else None,
+        "chunk_mean": _mean(chunk_scores),
+        "frame_count": len(frame_scores),
+    }
+
+
 def _sort_key(r: Result) -> tuple:
-    """Ascending by score; errored/None sink to the bottom, stable by name."""
-    if r.ok and r.score is not None:
-        return (0, r.score, r.name.lower())
+    """Ascending by the primary metric (frame mean); errored/None last."""
+    if r.ok and r.primary is not None:
+        return (0, r.primary, r.name.lower())
     return (1, float("inf"), r.name.lower())
 
 
@@ -110,17 +174,26 @@ def score_items(
         else:
             try:
                 trimmed = client.detect_video(item.path, api_key)
-                vm = (trimmed.get("item") or {}).get("video_metrics") or {}
-                result.score = vm.get("score")
-                result.certainty = vm.get("certainty")
+                m = extract_metrics(trimmed)
+                result.verdict_label = m["verdict_label"]
+                result.verdict_score = m["verdict_score"]
+                result.certainty = m["certainty"]
+                result.frame_mean = m["frame_mean"]
+                result.frame_min = m["frame_min"]
+                result.frame_max = m["frame_max"]
+                result.chunk_mean = m["chunk_mean"]
+                result.frame_count = m["frame_count"]
                 out_path = item.path.with_suffix(".json")
                 out_path.write_text(
                     json.dumps(trimmed, indent=2), encoding="utf-8"
                 )
                 result.json_path = out_path
-                if result.score is None:
+                if result.frame_mean is None:
                     result.status = "error"
-                    result.error = "no video_metrics.score in response"
+                    result.error = (
+                        "no per-frame scores in response "
+                        "(cannot compare this video)"
+                    )
                 else:
                     result.status = "ok"
             except KeyboardInterrupt:
@@ -167,31 +240,64 @@ def _render_markdown(
     if winner is not None:
         lines.append(
             f"🏆 **Winner: `{_md_cell(winner.name)}`** "
-            f"({_md_cell(winner.group)}) — score **{_fmt(winner.score)}** "
-            f"(certainty {_fmt(winner.certainty)})"
-        )
-        lines.append("")
-        lines.append(
-            "_Lower deepfake score = looks more authentic to the detector._"
+            f"({_md_cell(winner.group)}) — Frame Mean "
+            f"**{_fmt(winner.frame_mean)}**"
         )
     else:
         lines.append(
-            "⚠️ **No video scored successfully** — see the status column."
+            "⚠️ **No video scored successfully** — see the Status column."
         )
     lines.append("")
     lines.append(f"- **Folder:** `{_md_cell(str(root))}`")
     lines.append(f"- **Generated:** {generated_at}")
     lines.append(f"- **Videos:** {len(ordered)}")
     lines.append("")
-    lines.append("| Rank | Group | File | Score | Certainty | Status |")
-    lines.append("| ---: | :--- | :--- | ---: | ---: | :--- |")
+    lines.append("## What the numbers mean")
+    lines.append("")
+    lines.append(
+        "All scores are 0–1 deepfake probability — **lower = looks more "
+        "authentic** to the detector. Resemble's raw verdict almost always "
+        "rounds to `1.000 / Fake` for AI-derived clips, so it can't tell "
+        "variants apart; the **per-frame** aggregates below are what "
+        "actually differentiate them."
+    )
+    lines.append("")
+    lines.append(
+        "- **Frame Mean** — average across all analysed frames "
+        "(primary ranking metric)"
+    )
+    lines.append("- **Frame Min** — most authentic-looking single frame")
+    lines.append("- **Frame Max** — least authentic single frame")
+    lines.append("- **Chunk Mean** — average across video chunks")
+    lines.append(
+        "- **Verdict** — Resemble's raw label + rounded score "
+        "(audit only, not ranked)"
+    )
+    lines.append("")
+    header = (
+        "| Rank | Group | File | Frame Mean | Frame Min | Frame Max "
+        "| Chunk Mean | Frames | Verdict | Status |"
+    )
+    lines.append(header)
+    lines.append(
+        "| ---: | :--- | :--- | ---: | ---: | ---: | ---: | ---: "
+        "| :--- | :--- |"
+    )
     for r in ordered:
         rank_txt = "🏆 1" if (r.rank == 1 and r.ok) else (
             "" if r.rank is None else str(r.rank)
         )
+        verdict = (
+            f"{_md_cell(r.verdict_label)} ({_fmt(r.verdict_score)})"
+            if r.verdict_label
+            else "—"
+        )
         lines.append(
             f"| {rank_txt} | {_md_cell(r.group)} | {_md_cell(r.name)} "
-            f"| {_fmt(r.score)} | {_fmt(r.certainty)} | {_md_cell(r.status)} |"
+            f"| {_fmt(r.frame_mean)} | {_fmt(r.frame_min)} "
+            f"| {_fmt(r.frame_max)} | {_fmt(r.chunk_mean)} "
+            f"| {r.frame_count or '—'} | {verdict} "
+            f"| {_md_cell(r.status)} |"
         )
     lines.append("")
     return "\n".join(lines)
@@ -214,13 +320,19 @@ def write_reports(
     payload = {
         "root": str(root),
         "generated_at": generated_at,
-        "score_semantics": "lower is better (0-1 deepfake probability)",
+        "score_semantics": (
+            "All values are 0-1 deepfake probability; lower = more "
+            "authentic. Ranked by frame_mean. The raw Resemble verdict "
+            "(verdict_label/verdict_score) rounds to Fake/1.0 for most "
+            "AI clips and is kept for audit only, not ranking."
+        ),
+        "ranked_by": "frame_mean",
         "winner": (
             {
                 "filename": winner.name,
                 "group": winner.group,
-                "score": winner.score,
-                "certainty": winner.certainty,
+                "frame_mean": winner.frame_mean,
+                "frame_min": winner.frame_min,
             }
             if winner
             else None
@@ -230,7 +342,13 @@ def write_reports(
                 "rank": r.rank,
                 "filename": r.name,
                 "group": r.group,
-                "score": r.score,
+                "frame_mean": r.frame_mean,
+                "frame_min": r.frame_min,
+                "frame_max": r.frame_max,
+                "chunk_mean": r.chunk_mean,
+                "frame_count": r.frame_count,
+                "verdict_label": r.verdict_label,
+                "verdict_score": r.verdict_score,
                 "certainty": r.certainty,
                 "status": r.status,
                 "error": r.error,
@@ -241,19 +359,42 @@ def write_reports(
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     csv_path = root / REPORT_CSV_NAME
+
+    def _c(v):
+        return "" if v is None else v
+
     with csv_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(
-            ["rank", "filename", "group", "score", "certainty", "status"]
+            [
+                "rank",
+                "filename",
+                "group",
+                "frame_mean",
+                "frame_min",
+                "frame_max",
+                "chunk_mean",
+                "frame_count",
+                "verdict_label",
+                "verdict_score",
+                "certainty",
+                "status",
+            ]
         )
         for r in ordered:
             writer.writerow(
                 [
-                    "" if r.rank is None else r.rank,
+                    _c(r.rank),
                     r.name,
                     r.group,
-                    "" if r.score is None else r.score,
-                    "" if r.certainty is None else r.certainty,
+                    _c(r.frame_mean),
+                    _c(r.frame_min),
+                    _c(r.frame_max),
+                    _c(r.chunk_mean),
+                    r.frame_count,
+                    r.verdict_label,
+                    _c(r.verdict_score),
+                    _c(r.certainty),
                     r.status,
                 ]
             )
