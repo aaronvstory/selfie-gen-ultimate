@@ -1,0 +1,23 @@
+# Secrets — never commit the Resemble API key
+.env
+
+# Python virtual environments
+.venv/
+.venv311/
+**/.venv/
+venv/
+**/venv/
+
+# Python cache/artifacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Launcher / crash logs
+crash.log
+launcher_runtime.log
+.launcher_state/
+
+# Local-only workspace files
+.DS_Store
+for-testing/
