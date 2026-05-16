@@ -69,10 +69,19 @@ def _apply_env_file(path: Path) -> None:
     Exact line-parser ported from detect.py:load_env. Existing environment
     values always win (setdefault), so an explicitly-exported key is never
     overwritten by a file.
+
+    Best-effort: a path that is missing, a directory, or unreadable is
+    skipped silently. A bad ``RESEMBLE_EXTERNAL_ENV`` (e.g. pointing at a
+    folder) must NOT crash startup — it should fall through to the clean
+    "missing API key" error instead of an uncaught OSError.
     """
-    if not path.exists():
+    try:
+        if not path.is_file():
+            return
+        text = path.read_text(encoding="utf-8")
+    except OSError:
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

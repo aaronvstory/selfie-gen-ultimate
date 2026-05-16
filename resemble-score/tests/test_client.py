@@ -185,3 +185,24 @@ def test_apply_env_file_setdefault_does_not_override(tmp_path, monkeypatch):
 
 def test_apply_env_file_missing_is_noop(tmp_path):
     client._apply_env_file(tmp_path / "does-not-exist.env")  # no raise
+
+
+def test_apply_env_file_directory_is_noop_not_crash(tmp_path):
+    """A path that is a directory must be skipped, not raise OSError
+    (Codex P2: bad RESEMBLE_EXTERNAL_ENV must not crash startup)."""
+    d = tmp_path / "envdir"
+    d.mkdir()
+    client._apply_env_file(d)  # must not raise
+
+
+def test_resolve_api_key_clean_error_when_external_env_is_dir(
+    tmp_path, monkeypatch
+):
+    """RESEMBLE_EXTERNAL_ENV pointing at a directory -> clean missing-key
+    RuntimeError, not an uncaught OSError crash."""
+    monkeypatch.delenv("RESEMBLE_API_KEY", raising=False)
+    bad = tmp_path / "not-a-file"
+    bad.mkdir()
+    monkeypatch.setenv("RESEMBLE_EXTERNAL_ENV", str(bad))
+    with pytest.raises(RuntimeError, match="RESEMBLE_API_KEY is not set"):
+        client.resolve_api_key()

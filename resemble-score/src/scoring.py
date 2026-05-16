@@ -83,6 +83,17 @@ def _mean(values: Sequence[float]) -> Optional[float]:
     return sum(values) / len(values) if values else None
 
 
+def sidecar_json_path(video: Path) -> Path:
+    """Per-video result path that never collides on stem.
+
+    ``foo.mp4`` -> ``foo.mp4.json`` (NOT ``foo.json``). Without the
+    extension in the name, ``clip.mp4`` and ``clip.mov`` in the same folder
+    would both write ``clip.json`` and silently overwrite each other,
+    losing one video's raw API payload (Codex review).
+    """
+    return video.with_name(video.name + ".json")
+
+
 def extract_metrics(trimmed: dict) -> dict:
     """Pull comparable metrics out of a trimmed Resemble video result.
 
@@ -154,8 +165,9 @@ def score_items(
 ) -> list[Result]:
     """Score ``items`` one at a time (sequential — safest for rate limits).
 
-    For each item: submit to Resemble, write ``<video>.json`` next to it
-    (the trimmed shape detect.py persists), and invoke ``progress_cb`` with
+    For each item: submit to Resemble, write ``<video>.<ext>.json`` next to
+    it (trimmed shape; see :func:`sidecar_json_path`) and call ``progress_cb``
+    with
     the running done-count and the just-finished :class:`Result`.
 
     ``cancel_event`` is checked before each item; once set, the remaining
@@ -183,7 +195,7 @@ def score_items(
                 result.frame_max = m["frame_max"]
                 result.chunk_mean = m["chunk_mean"]
                 result.frame_count = m["frame_count"]
-                out_path = item.path.with_suffix(".json")
+                out_path = sidecar_json_path(item.path)
                 out_path.write_text(
                     json.dumps(trimmed, indent=2), encoding="utf-8"
                 )

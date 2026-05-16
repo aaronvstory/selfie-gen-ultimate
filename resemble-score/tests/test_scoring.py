@@ -98,9 +98,12 @@ def test_score_items_writes_per_video_json_and_reports(tmp_path, monkeypatch):
     assert [s[0] for s in seen] == [1, 2, 3]
     assert all(s[1] == 3 for s in seen)
 
-    # Per-video JSON written next to each video, trimmed shape.
+    # Per-video JSON written next to each video, trimmed shape. The sidecar
+    # name keeps the original extension (foo.mp4 -> foo.mp4.json) so
+    # same-stem/different-ext inputs never collide.
     for it in items:
-        jp = it.path.with_suffix(".json")
+        jp = scoring.sidecar_json_path(it.path)
+        assert jp.name.endswith(".mp4.json")
         assert jp.exists()
         data = json.loads(jp.read_text())
         assert data["item"]["media_type"] == "video"
@@ -227,6 +230,35 @@ def test_extract_metrics_aggregates_children_not_top_score():
     assert abs(m["frame_min"] - 0.28) < 1e-9
     assert abs(m["frame_max"] - 0.32) < 1e-9
     assert m["frame_count"] == 2
+
+
+def test_sidecar_json_no_collision_same_stem_diff_ext(tmp_path, monkeypatch):
+    """clip.mp4 and clip.mov must NOT both write clip.json (Codex P2)."""
+    from src.discovery import classify
+
+    a = tmp_path / "clip.mp4"
+    b = tmp_path / "clip.mov"
+    a.write_bytes(b"x")
+    b.write_bytes(b"x")
+    items = [classify(a), classify(b)]
+
+    scores = {"clip.mp4": 0.20, "clip.mov": 0.80}
+    monkeypatch.setattr(
+        client,
+        "detect_video",
+        lambda path, key: _fake_trimmed(scores[Path(path).name]),
+    )
+    results = scoring.score_items(items, "key")
+
+    p_mp4 = scoring.sidecar_json_path(a)
+    p_mov = scoring.sidecar_json_path(b)
+    assert p_mp4.name == "clip.mp4.json"
+    assert p_mov.name == "clip.mov.json"
+    assert p_mp4 != p_mov
+    assert p_mp4.exists() and p_mov.exists()
+    # Each sidecar holds ITS OWN payload — no silent overwrite.
+    assert json.loads(p_mp4.read_text())["item"]["filename"]
+    assert all(r.status == "ok" for r in results)
 
 
 def test_keyboardinterrupt_preserves_scored_items(tmp_path, monkeypatch):
