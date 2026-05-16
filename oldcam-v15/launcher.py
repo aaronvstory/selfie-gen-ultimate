@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-platform launcher for Oldcam V14 inside the Creative Suite."""
+"""Cross-platform launcher for Oldcam V15 inside the Creative Suite."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def choose_files() -> list[str]:
     root.attributes("-topmost", True)
     try:
         selected = filedialog.askopenfilenames(
-            title="Select media files for Oldcam V14",
+            title="Select media files for Oldcam V15",
             filetypes=MEDIA_FILETYPES,
         )
         return list(selected)
@@ -39,7 +39,7 @@ def choose_files() -> list[str]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Launch Oldcam V14 with a file picker when no input files are provided."
+        description="Launch Oldcam V15 with a file picker when no input files are provided."
     )
     parser.add_argument("inputs", nargs="*", help="Optional input files")
     parser.add_argument(

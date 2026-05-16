@@ -113,9 +113,10 @@ def build_preview_output_path(input_path):
 
 
 def build_temp_video_path(output_path):
-    # V14: lossless FFV1 MKV temp (was mp4v .mp4 in V13). Writing the temp
+    # V15: lossless FFV1 MKV temp (was mp4v .mp4 in V13). Writing the temp
     # losslessly stops the V13 double-lossy pipeline (mp4v then H.264) from
-    # erasing the sub-perceptual sensor floor before FFmpeg ever sees it.
+    # erasing the subtle optical signatures (smoothstep bloom, multiplicative
+    # AWB drift, chromatic aberration) before FFmpeg ever sees them.
     path = Path(output_path)
     return str(path.with_name(f"{path.stem}.tmp_lossless.mkv"))
 
@@ -843,7 +844,8 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
 
     output_size = (width * 2, height) if args.preview else (width, height)
 
-    # V14: try lossless FFV1 first so the sub-perceptual effects survive to the
+    # V15: try lossless FFV1 first so the subtle optical signatures (smoothstep
+    # bloom, multiplicative AWB drift, chromatic aberration) survive to the
     # final H.264 encode. Gracefully degrade (MJPG, then V13's mp4v) on OpenCV
     # builds that lack FFV1 — never hard-fail just because the codec is missing.
     out_stem = Path(output_path).stem
