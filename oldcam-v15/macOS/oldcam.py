@@ -959,6 +959,16 @@ def build_parser():
         default=14,
         help="H.264 CRF for the final encode (10-24, lower is cleaner). Default: 14",
     )
+    # process_frame / naturalize_video already read this via
+    # getattr(args, "vignette_strength", 0.55); expose it so the lens-falloff
+    # strength is user-controllable instead of silently fixed. Default matches
+    # the existing getattr fallback exactly → no behaviour change unless set.
+    parser.add_argument(
+        "--vignette-strength",
+        type=float,
+        default=0.55,
+        help="Lens vignette (corner darkening) strength, 0.0-1.0. Default: 0.55",
+    )
     return parser
 
 
@@ -974,9 +984,11 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # V15: only the final-encode CRF needs clamping. The V14 sensor-floor
-    # knobs are gone; --ghosting is already clamped by bounded_ghosting.
+    # V15: clamp the numeric encode/effect knobs to sane ranges. The V14
+    # sensor-floor knobs are gone; --ghosting is already clamped by
+    # bounded_ghosting.
     args.crf = max(10, min(int(args.crf), 24))
+    args.vignette_strength = max(0.0, min(args.vignette_strength, 1.0))
 
     if args.output and len(args.inputs) > 1:
         parser.error("--output can only be used when processing a single input file.")

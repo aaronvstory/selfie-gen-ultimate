@@ -1728,6 +1728,56 @@ def test_v15_parser_exposes_ghosting_and_crf_but_not_noise_args():
         parser.parse_args(["dummy.mp4", "--ghosting", "0.9"])
 
 
+def test_v15_parser_exposes_vignette_strength_with_safe_default():
+    """V15 exposes --vignette-strength (process_frame/naturalize_video read
+    it via getattr); the default must equal the historic getattr fallback
+    (0.55) so adding the knob changes no existing behaviour."""
+    oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15_vig")
+    parser = oldcam_v15.build_parser()
+    ns = parser.parse_args(["clip.mp4"])
+    assert hasattr(ns, "vignette_strength")
+    assert ns.vignette_strength == pytest.approx(0.55), (
+        "default must match the existing getattr(..., 0.55) fallback exactly"
+    )
+    ns2 = parser.parse_args(["clip.mp4", "--vignette-strength", "0.3"])
+    assert ns2.vignette_strength == pytest.approx(0.3)
+
+
+def test_v15_main_clamps_out_of_range_vignette_strength(tmp_path):
+    """main() must clamp --vignette-strength into [0.0, 1.0] on the REAL
+    code path. Spies on process_input to capture the args object main()
+    actually forwards downstream, so the assertion targets the production
+    clamp directly (not a re-implemented formula, not fragile image math):
+    deleting/breaking the clamp at the production site fails this test.
+    """
+    oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15_vig_clamp")
+    src_img = tmp_path / "tiny.png"
+    src_img.write_bytes(b"not-real-media")  # process_input is stubbed; never opened
+
+    captured = {}
+
+    def spy_process_input(input_path, output_path, args):
+        captured["vignette_strength"] = args.vignette_strength
+        captured["crf"] = args.crf
+
+    with mock.patch.object(oldcam_v15, "process_input", side_effect=spy_process_input):
+        # Over-range high (5.0) and a separate over-range low (-3.0) run.
+        oldcam_v15.main([str(src_img), "-o", str(tmp_path / "o1.png"),
+                         "--vignette-strength", "5"])
+        assert captured["vignette_strength"] == 1.0, (
+            f"main() did not clamp 5.0 -> 1.0 (got {captured['vignette_strength']}); "
+            "production clamp at oldcam.py main() missing/broken"
+        )
+        # crf clamp still applied alongside (regression guard on the shared block)
+        assert 10 <= captured["crf"] <= 24
+
+        oldcam_v15.main([str(src_img), "-o", str(tmp_path / "o2.png"),
+                         "--vignette-strength", "-3"])
+        assert captured["vignette_strength"] == 0.0, (
+            f"main() did not clamp -3.0 -> 0.0 (got {captured['vignette_strength']})"
+        )
+
+
 def test_v15_awb_is_multiplicative_not_scalar_add():
     """V15 inherits V14's corrected multiplicative AWB drift verbatim."""
     for rel in ("oldcam-v15/oldcam.py", "oldcam-v15/macOS/oldcam.py"):
