@@ -2,6 +2,60 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-17 (v2.1) — Oldcam V15 "Temporal Mute" (new default)
+
+Oldcam **V15 "Temporal Mute"** lands as the new default version — a synthesis
+profile driven by Resemble deepfake-API benchmarking. V12 and V13 vastly
+outperformed every other version: V12's temporal blending (ghosting) hid the
+AI's frame-to-frame flicker, and V13's lack of synthetic noise avoided
+spatial/frequency detectors. V14 regressed on that benchmark — its
+sub-perceptual sensor floor, perfectly preserved by the lossless intermediate,
+is itself a periodic signal frequency detectors lock onto. V15 combines the
+winning traits. V14 stays selectable but is no longer pre-selected anywhere.
+
+### Added
+
+- **`oldcam-v15/` "Temporal Mute"** (Windows + macOS twins, fully wired):
+  standalone launchers, CLI automation, GUI checkbox, all 3 launcher levels,
+  tests, docs. Cloned from the V14 blessed launcher template (Rule 9/10
+  compliant `_python_supported()` / `:check_py` resolvers).
+- **`--ghosting` restored as a real knob** (default **0.18**, `bounded_ghosting`
+  clamps 0.0–0.5). V13/V14 hardcoded ghosting to 0.0; V15's `naturalize_video`
+  now passes `args.ghosting` to `blend_with_previous_frame`, bleeding 18% of the
+  previous frame to defeat temporal-consistency detectors (V12 behavior).
+
+### Kept from V14 (verbatim)
+
+- True multiplicative AWB color-temperature drift, smoothstep highlight bloom,
+  lossless FFV1 temp encode (MJPG/mp4v fallback), original-audio stream-copy,
+  `np.rint` casts (no darkening bias), cached vignette mask.
+
+### Removed (vs V14)
+
+- **`apply_daylight_sensor_floor()` deleted entirely** plus its `--read-noise`
+  / `--shot-noise` / `--chroma-noise-ratio` CLI args and `main()` clamps. The
+  sub-perceptual floor was V14's frequency-detector tell (V13 noise-free
+  philosophy restored: V15 applies **no** sensor noise of any kind).
+
+### Changed
+
+- **Oldcam default is now V15** across every layer: `automation/config.py`,
+  the GUI checkbox (`config_panel.py`), the CLI menu + reset
+  (`kling_automation_ui.py`), and the Windows + macOS root launcher chains.
+  V14 (and v7–v13) remain selectable options.
+- `RELEASE_VERSION` `v2.0` → `v2.1`. Docs updated: `docs/oldcam-versions.md`
+  (new V15 section + comparison column), `docs/oldcam-wiring.md` (v15 row,
+  default note, blessed-template now v14 **and** v15), `CLAUDE.md`.
+
+### Tests
+
+- Default-version lock flipped `v14` → `v15` (v14 now in the demoted set).
+  New v15 coverage: output suffix, no-MediaPipe preflight, process_frame skips
+  noise/AE/**sensor-floor**, no-sensor-floor static+runtime guard, ghosting
+  restored (0.18, not 0.0), parser accepts `--ghosting`/`--crf` but rejects the
+  removed noise flags, inherited AWB/bloom/lossless-temp, byte-identical twins,
+  standalone-files presence, Rule 9/10 resolver guards for the v15 launchers.
+
 ## 2026-05-16 (v2.0) — Oldcam V14 "Forensic Daylight" (new default)
 
 Oldcam **V14 "Forensic Daylight"** lands as the new default version — a
