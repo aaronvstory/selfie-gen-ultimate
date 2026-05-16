@@ -1,0 +1,4 @@
+# resemble-score dependencies
+# Core runtime (required). Tkinter ships with the Python stdlib (GUI mode).
+requests>=2.31,<3
+rich>=13.0,<14
