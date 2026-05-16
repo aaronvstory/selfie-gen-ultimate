@@ -61,9 +61,13 @@ with a stack trace for a missing key.
    numbered multi-select in the CLI — `1,3`, `g:oldcam`, `g:original`, `all`).
 4. **Score.** Videos are submitted one at a time on a background worker so the
    UI stays responsive, with live `N of M` progress.
-5. **Compare.** A ranked table (lowest score = winner, highlighted) plus:
+5. **Compare.** A ranked table (lowest score = winner, highlighted) plus
+   these files written into the scanned folder:
    - `<video>.json` next to each scored video (trimmed Resemble result)
-   - `resemble_results.json` + `resemble_results.csv` in the scanned folder
+   - `resemble_results.json` — combined ranked data
+   - `resemble_results.csv` — ranked table for spreadsheets
+   - `resemble_results.md` — human-readable report: winner callout, run
+     metadata, and a ranked Markdown table (paste-ready into notes/PRs)
 
 ## CLI examples
 

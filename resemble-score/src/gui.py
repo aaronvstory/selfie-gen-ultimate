@@ -374,10 +374,13 @@ class ResembleScoreGUI:
                     break
 
         try:
-            json_path, csv_path = scoring.write_reports(
+            json_path, csv_path, md_path = scoring.write_reports(
                 self.folder, results
             )
-            written = f"  Reports: {json_path.name}, {csv_path.name}"
+            written = (
+                f"  Reports: {json_path.name}, {csv_path.name}, "
+                f"{md_path.name}"
+            )
         except OSError as exc:
             written = f"  (report write failed: {exc})"
 

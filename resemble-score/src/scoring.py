@@ -31,6 +31,7 @@ _SCORE_ERRORS = (
 
 REPORT_JSON_NAME = "resemble_results.json"
 REPORT_CSV_NAME = "resemble_results.csv"
+REPORT_MD_NAME = "resemble_results.md"
 
 
 @dataclass
@@ -145,11 +146,64 @@ def score_items(
     return results
 
 
-def write_reports(root: Path, results: Sequence[Result]) -> tuple[Path, Path]:
-    """Write the combined ``resemble_results.json`` + ``.csv`` into ``root``.
+def _fmt(value: Optional[float]) -> str:
+    return "—" if value is None else f"{value:.4f}"
 
-    Returns the two written paths. Results are ranked (ascending score) before
-    writing so both files share the winner-first ordering.
+
+def _md_cell(text: str) -> str:
+    """Escape pipes/newlines so a filename can't break the MD table."""
+    return str(text).replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _render_markdown(
+    root: Path,
+    generated_at: str,
+    ordered: Sequence[Result],
+    winner: Optional[Result],
+) -> str:
+    lines: list[str] = []
+    lines.append("# resemble-score results")
+    lines.append("")
+    if winner is not None:
+        lines.append(
+            f"🏆 **Winner: `{_md_cell(winner.name)}`** "
+            f"({_md_cell(winner.group)}) — score **{_fmt(winner.score)}** "
+            f"(certainty {_fmt(winner.certainty)})"
+        )
+        lines.append("")
+        lines.append(
+            "_Lower deepfake score = looks more authentic to the detector._"
+        )
+    else:
+        lines.append(
+            "⚠️ **No video scored successfully** — see the status column."
+        )
+    lines.append("")
+    lines.append(f"- **Folder:** `{_md_cell(str(root))}`")
+    lines.append(f"- **Generated:** {generated_at}")
+    lines.append(f"- **Videos:** {len(ordered)}")
+    lines.append("")
+    lines.append("| Rank | Group | File | Score | Certainty | Status |")
+    lines.append("| ---: | :--- | :--- | ---: | ---: | :--- |")
+    for r in ordered:
+        rank_txt = "🏆 1" if (r.rank == 1 and r.ok) else (
+            "" if r.rank is None else str(r.rank)
+        )
+        lines.append(
+            f"| {rank_txt} | {_md_cell(r.group)} | {_md_cell(r.name)} "
+            f"| {_fmt(r.score)} | {_fmt(r.certainty)} | {_md_cell(r.status)} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_reports(
+    root: Path, results: Sequence[Result]
+) -> tuple[Path, Path, Path]:
+    """Write ``resemble_results.json`` + ``.csv`` + ``.md`` into ``root``.
+
+    Returns ``(json_path, csv_path, md_path)``. Results are ranked (ascending
+    score) before writing so all three files share the winner-first ordering.
     """
     root = Path(root)
     ordered = rank(results)
@@ -204,4 +258,10 @@ def write_reports(root: Path, results: Sequence[Result]) -> tuple[Path, Path]:
                 ]
             )
 
-    return json_path, csv_path
+    md_path = root / REPORT_MD_NAME
+    md_path.write_text(
+        _render_markdown(root, generated_at, ordered, winner),
+        encoding="utf-8",
+    )
+
+    return json_path, csv_path, md_path

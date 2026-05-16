@@ -70,9 +70,17 @@ def test_score_items_writes_per_video_json_and_reports(tmp_path, monkeypatch):
         data = json.loads(jp.read_text())
         assert data["item"]["media_type"] == "video"
 
-    json_path, csv_path = scoring.write_reports(tmp_path, results)
+    json_path, csv_path, md_path = scoring.write_reports(tmp_path, results)
     assert json_path.name == "resemble_results.json"
     assert csv_path.name == "resemble_results.csv"
+    assert md_path.name == "resemble_results.md"
+    assert md_path.exists()
+    md = md_path.read_text(encoding="utf-8")
+    # Winner callout + GFM table header + the winning file all present.
+    assert "# resemble-score results" in md
+    assert "Winner:" in md
+    assert "| Rank | Group | File | Score | Certainty | Status |" in md
+    assert "b-oldcam-v14.mp4" in md
 
     payload = json.loads(json_path.read_text())
     # Winner = lowest score (the v14).
@@ -181,7 +189,7 @@ def test_keyboardinterrupt_preserves_scored_items(tmp_path, monkeypatch):
     assert results[1].status == "cancelled"
     assert cancel.is_set()
     # Partial results are still rankable / reportable.
-    json_path, _ = scoring.write_reports(tmp_path, results)
+    json_path, _, _ = scoring.write_reports(tmp_path, results)
     payload = json.loads(json_path.read_text())
     assert payload["winner"]["filename"] == "a-oldcam-v9.mp4"
 

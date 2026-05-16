@@ -207,8 +207,10 @@ def run_cli(
     _print_ranked(results)
 
     try:
-        json_path, csv_path = scoring.write_reports(root, results)
-        console.print(f"\nReports written:\n  {json_path}\n  {csv_path}")
+        json_path, csv_path, md_path = scoring.write_reports(root, results)
+        console.print(
+            f"\nReports written:\n  {json_path}\n  {csv_path}\n  {md_path}"
+        )
     except OSError as e:
         console.print(
             f"\n[red]Could not write reports to {root}: {e}[/red]"
