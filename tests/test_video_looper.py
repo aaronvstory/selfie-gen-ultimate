@@ -1,7 +1,10 @@
 """Tests for kling_gui/video_looper.py.
 
 Covers:
-- FFmpeg command structure for the canonical libx264 lossless idiom (-qp 0).
+- FFmpeg command structure for the visually-lossless idiom (-profile:v high
+  -crf 12): perceptually identical to source, plays everywhere, ~1-1.6x size.
+  (True-lossless -qp 0/-crf 0 was reverted: 5-10x bloat + unplayable output;
+  Oldcam re-encodes at CRF 14 downstream so lossless buys nothing.)
 - _summarize_ffmpeg_error: priority-ordered friendly one-liner for the panel.
 - Failure path: friendly message goes to panel ("error"), full stderr to file ("debug").
 """
@@ -96,33 +99,38 @@ def _captured_cmd(tmp_path: Path) -> list:
     return captured["cmd"]
 
 
-def test_looper_cmd_uses_qp0_canonical_lossless(tmp_path):
-    """The cmd must use -qp 0, NOT -crf 0, for libx264 lossless compatibility."""
+def test_looper_cmd_uses_crf12_visually_lossless(tmp_path):
+    """The cmd must use -crf 12 (visually lossless), NOT -qp 0/-crf 0.
+
+    True-lossless (-qp 0 / -crf 0) bloats AI-generated loops 5-10x and makes
+    the Loop-without-Oldcam output unplayable. CRF 12 is perceptually
+    identical to the source and Oldcam re-encodes at CRF 14 downstream
+    anyway, so lossless buys zero final quality.
+    """
     cmd = _captured_cmd(tmp_path)
-    assert "-qp" in cmd, f"Missing -qp flag in cmd: {cmd}"
-    qp_value = cmd[cmd.index("-qp") + 1]
-    assert qp_value == "0", f"Expected -qp 0, got -qp {qp_value}"
+    assert "-crf" in cmd, f"Missing -crf flag in cmd: {cmd}"
+    crf_value = cmd[cmd.index("-crf") + 1]
+    assert crf_value == "12", f"Expected -crf 12, got -crf {crf_value}"
+    assert "-qp" not in cmd, "Cmd must use -crf 12, not -qp 0 (true-lossless bloat)"
 
 
-def test_looper_cmd_omits_profile_v_flag(tmp_path):
-    """-profile:v high + -qp 0 crashes on strict libx264 builds; both must be absent."""
+def test_looper_cmd_uses_profile_v_high(tmp_path):
+    """-profile:v high is safe + required with CRF 12.
+
+    The v1.7 "Could not open encoder" crash was specific to *true-lossless*
+    (-crf 0 / -qp 0), which needs the High 4:4:4 Predictive profile while we
+    force yuv420p downstream. CRF 12 is lossy-but-imperceptible, so plain
+    High + yuv420p is the proven crash-free combo used for years.
+    """
     cmd = _captured_cmd(tmp_path)
-    assert "-profile:v" not in cmd, (
-        "Cmd must not specify -profile:v with lossless libx264; "
-        "the encoder picks the profile internally based on pix_fmt + qp"
-    )
+    assert "-profile:v" in cmd, f"Missing -profile:v flag in cmd: {cmd}"
+    assert cmd[cmd.index("-profile:v") + 1] == "high"
 
 
 def test_looper_cmd_omits_tune_flag(tmp_path):
-    """-tune film's psy-rd settings are meaningless under lossless coding."""
+    """-tune film's psy-rd settings add no benefit here; keep the cmd minimal."""
     cmd = _captured_cmd(tmp_path)
-    assert "-tune" not in cmd, "Cmd must not specify -tune with lossless libx264"
-
-
-def test_looper_cmd_omits_crf_flag(tmp_path):
-    """-crf 0 is the broken combination we replaced with -qp 0."""
-    cmd = _captured_cmd(tmp_path)
-    assert "-crf" not in cmd, "Cmd must use -qp 0, not -crf 0, for lossless"
+    assert "-tune" not in cmd, "Cmd must not specify -tune"
 
 
 def test_looper_cmd_preserves_yuv420p_pix_fmt(tmp_path):
