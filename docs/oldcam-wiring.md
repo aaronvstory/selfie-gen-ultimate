@@ -15,7 +15,13 @@
 | v10     | Yes        | Yes              | No        | Yes          | Yes         | Yes       | + FFT biological sync (AWB removed) |
 | v11     | Yes        | Yes              | Yes       | Yes          | Yes         | Yes       | + AWB after FFT — best of all |
 | v12     | No         | No               | Yes       | Yes          | Yes         | No        | Pristine hardware-only (anti-spoofing aware): no rPPG, no LUT, no CLAHE |
-| v13     | No         | No               | Yes       | **No**       | **No**      | No        | High-end daylight ★ default: no noise / AE / ghosting, pure optics |
+| v13     | No         | No               | Yes       | **No**       | **No**      | No        | High-end daylight: no noise / AE / ghosting, pure optics (superseded by v14) |
+| v14     | No         | No               | Yes (mult.)| Floor*      | **No**      | No        | Forensic daylight ★ default: multiplicative AWB, sub-perceptual sensor floor, smoothstep bloom, lossless temp encode, audio-preserving |
+
+\* **Floor** = a sub-perceptual read/shot sensor *floor* (max ≈ 2/255), not the
+visible ISO grain v7–v11 add. It defeats SNR/PAD detectors without altering the
+look. **Current default version: v14** (superseded v13). Mediapipe versions:
+v9, v10, v11 — v14 does not use mediapipe.
 
 ---
 
