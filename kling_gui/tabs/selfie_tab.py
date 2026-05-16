@@ -33,6 +33,8 @@ try:
 except Exception:
     DEFAULT_GENDER = "female"
 
+DEFAULT_ASPECT_RATIO_NAME = "Portrait (9:16)"
+
 
 class SelfieTab(tk.Frame):
     """Tab 2: Generate selfie from identity reference."""
@@ -518,7 +520,7 @@ class SelfieTab(tk.Frame):
 
         # Aspect Ratio (replaces manual Width/Height)
         self._aspect_ratios = {
-            "Portrait (9:16)": (720, 1280),
+            DEFAULT_ASPECT_RATIO_NAME: (720, 1280),
             "Portrait (3:4)": (896, 1152),
             "Landscape (16:9)": (1280, 720),
             "Square (1:1)": (1024, 1024),
@@ -532,7 +534,7 @@ class SelfieTab(tk.Frame):
         ).grid(row=0, column=2, sticky="w", padx=(12, 0))
 
         # Determine saved selection from config dimensions
-        default_ratio_name = "Portrait (9:16)"
+        default_ratio_name = DEFAULT_ASPECT_RATIO_NAME
         default_w, default_h = self._aspect_ratios[default_ratio_name]
         try:
             saved_w = int(self.config.get("selfie_width", default_w))
@@ -916,7 +918,7 @@ class SelfieTab(tk.Frame):
 
     def _get_selected_dimensions(self) -> tuple:
         """Return (width, height) for the currently selected aspect ratio."""
-        return self._aspect_ratios.get(self.aspect_var.get(), self._aspect_ratios["Portrait (9:16)"])
+        return self._aspect_ratios.get(self.aspect_var.get(), self._aspect_ratios[DEFAULT_ASPECT_RATIO_NAME])
 
     def _get_prompt_template_text(self) -> str:
         """Return current text box content (may be resolved or raw template)."""
