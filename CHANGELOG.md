@@ -2,6 +2,58 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-15 (v1.9) — macOS launcher resilience + recalibrated similarity curve
+
+### Fixed
+
+- **Standalone Similarity GUI no longer dies on macOS with "Unsupported Python
+  version" when the repo has a stale `.venv/` symlinking to python3.13+.** The
+  resolver in `similarity/run_gui.command`, `similarity/run_cli.command`, and
+  `similarity/run_gui.bat` now version-validates *every* candidate venv (and the
+  auto-create path) instead of accepting the first executable interpreter found.
+  Adds `.venv311/` as an explicit candidate (the venv name CLAUDE.md prescribes
+  on macOS), reorders the macOS fallback chain to prefer `python3.11` first
+  (only Homebrew Python with bundled `_tkinter`), and split the post-resolve
+  error message to distinguish override-pointing-at-bad-python from resolver
+  bugs.
+- **`similarity/main.py` now adds the repo root to `sys.path`** so the
+  standalone Similarity app can import shared modules (`tk_dialogs`,
+  `similarity_engine`, `face_similarity`) that live one directory up. Without
+  this, launching the standalone GUI crashed at import time with
+  `No module named 'tk_dialogs'`.
+- **`launchers/macos/run_gui.command` shebang aligned to siblings** —
+  `#!/bin/bash` → `#!/usr/bin/env bash` (parity with `run_cli.command`,
+  per CodeRabbit review on PR #21).
+
+### Changed
+
+- **Recalibrated similarity polynomial curve.** `PASS_CURVE_EXPONENT` lowered
+  from `2.5` (v1.8) to `0.5` (square root). Reference points (threshold 0.68):
+  - distance 0.05 → **94.58%** (was 99.97%)
+  - distance 0.10 → **92.33%** (was 99.83%)
+  - distance 0.15 → **90.61%** (was 99.55%)
+  - distance 0.20 → **89.15%** (was 99.06%)
+  - distance 0.30 → **86.72%** (was 97.42%)
+  - distance 0.50 → **82.85%** (was 90.71%)
+  - distance 0.68 → 80.00% (unchanged — ArcFace official threshold pin)
+
+  Rationale: modern AI edit models (Nano Banana 2 Edit, FLUX Kontext) preserve
+  identity strongly enough that the typical post-generation cosine distance
+  sits in 0.05–0.15. v1.8's exponent 2.5 compressed that whole band into
+  99–100%, making the score visually indistinguishable from a degenerate
+  fallback. v1.9 spreads the band across 95–91% so the score conveys
+  meaningful gradation while still guaranteeing 100% at distance 0 and 80% at
+  the official threshold. Updated `similarity/CLAUDE.md` accordingly.
+
+- **User-facing similarity log line now includes the raw cosine distance,
+  threshold, and per-model breakdown:**
+  ```text
+  [Nano Banana 2 Edit] Similarity: 92% (cosine_distance=0.083, threshold=0.68, models=ArcFace+Facenet512)
+  ```
+  Previously only the mapped score was logged, so a 99% reading was
+  indistinguishable from a degenerate fallback. Falls back to bare
+  `Similarity: NN%` when diagnostics are absent (DeepFace unavailable).
+
 ## 2026-05-14 (v1.8) — KYC-grade similarity scoring
 
 ### Added (v1.8 follow-up — full-stack FAS toggle integration)

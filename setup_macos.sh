@@ -191,6 +191,16 @@ if [[ "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
   grep -E -vi '^[[:space:]]*mediapipe($|[[:space:]]|==|>=|<=|~=|!=)' "${REQUIREMENTS_FILE}" > "${FILTERED_REQUIREMENTS_FILE}" || true
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check -r "${FILTERED_REQUIREMENTS_FILE}"
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --force-reinstall --no-deps "mediapipe==0.10.35"
+  # mediapipe was installed with --no-deps to keep pip from upgrading deepface's
+  # numpy/opencv-python pins. But mediapipe.tasks.python.vision still imports
+  # matplotlib (drawing_utils) at module-load time and uses opencv-contrib-python
+  # + sounddevice at runtime, so the validator below would crash on a clean
+  # install. Install just those three explicitly while pinning numpy<2 so the
+  # transitive dep chain (matplotlib → contourpy → numpy) cannot upgrade numpy
+  # and break tensorflow. opencv-contrib-python pinned <4.12 because newer
+  # builds declare numpy>=2 and pip will refuse to install otherwise.
+  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check \
+    "matplotlib" "opencv-contrib-python<4.12" "sounddevice" "numpy>=1.26,<2.0"
   if ! "${VENV_DIR}/bin/python" -c "${MP_VALIDATE_CMD}" >/dev/null 2>&1; then
     printf 'MediaPipe installed but Tasks FaceLandmarker API unavailable. Oldcam v9/v10 cannot run.\n' >&2
     printf 'Close Python/GUI processes, delete/rebuild venv, and retry.\n' >&2

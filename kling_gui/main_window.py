@@ -1987,6 +1987,7 @@ class KlingGUIWindow:
     def _browse_and_add_images(self):
         """Open file dialog and add selected images to carousel."""
         files = select_open_files(
+            parent=self._best_picker_parent(),
             title="Select Images to Add",
             filetypes=[
                 ("Image files", "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tiff *.tif"),
@@ -1995,6 +1996,23 @@ class KlingGUIWindow:
         )
         if files:
             self._add_input_images_to_session(files)
+
+    def _best_picker_parent(self) -> tk.Misc:
+        """Return the live drop-zone window if actually visible, else the root window.
+
+        On macOS the file picker hangs when its parent gets withdrawn or
+        destroyed mid-dialog; preferring the drop-zone window keeps the
+        picker anchored to the actual user-facing surface."""
+        win = getattr(self, "_drop_zone_window", None)
+        if win is not None:
+            try:
+                if win.winfo_exists() and win.winfo_viewable():
+                    return win
+            except tk.TclError as exc:
+                logging.getLogger(__name__).warning(
+                    "Drop-zone picker parent probe failed: %s", exc
+                )
+        return self.root
 
     def _apply_ui_config(self):
         """Apply UI layout configuration to existing widgets."""

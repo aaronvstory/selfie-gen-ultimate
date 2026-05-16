@@ -131,25 +131,6 @@ class ProCLI:
             )
         return padding_ratio
 
-    def _create_file_dialog_root(self):
-        error_message = (
-            "Tk file dialogs are unavailable in this Python environment. "
-            "Pass explicit paths on the CLI or install Python with Tk support."
-        )
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-        except ImportError as exc:
-            raise RuntimeError(error_message) from exc
-
-        try:
-            root = tk.Tk()
-        except tk.TclError as exc:
-            raise RuntimeError(error_message) from exc
-        root.withdraw()
-        root.attributes('-topmost', True)
-        return root, filedialog
-
     def _display_current_settings(self):
         table = Table(title="Current Active Settings", box=None, show_header=False, padding=(0, 2))
         table.add_column("Key", style="cyan")
@@ -181,23 +162,32 @@ class ProCLI:
                     sys.exit(1)
 
     def prompt_for_file(self, title: str) -> Optional[str]:
-        root, filedialog = self._create_file_dialog_root()
+        # Local import keeps the CLI runnable in headless environments where
+        # tkinter (loaded by tk_dialogs at import time) is unavailable. The
+        # CLI only reaches this method when the user requests an interactive
+        # picker, so a missing tkinter at import time would block legitimate
+        # path-arg usage; deferring the import preserves both modes.
         try:
-            file_path = filedialog.askopenfilename(
-                title=title,
-                filetypes=[("Image Files", "*.png *.jpg *.jpeg *.bmp *.webp")]
-            )
-        finally:
-            root.destroy()
-        return file_path if file_path else None
+            from tk_dialogs import select_open_file
+        except ImportError as exc:
+            raise RuntimeError(
+                "Tk file dialogs are unavailable in this Python environment. "
+                "Pass explicit paths on the CLI or install Python with Tk support."
+            ) from exc
+        return select_open_file(
+            title=title,
+            filetypes=[("Image Files", "*.png *.jpg *.jpeg *.bmp *.webp *.gif *.tiff *.tif")],
+        )
 
     def prompt_for_directory(self, title: str) -> Optional[str]:
-        root, filedialog = self._create_file_dialog_root()
         try:
-            dir_path = filedialog.askdirectory(title=title)
-        finally:
-            root.destroy()
-        return dir_path if dir_path else None
+            from tk_dialogs import select_directory
+        except ImportError as exc:
+            raise RuntimeError(
+                "Tk file dialogs are unavailable in this Python environment. "
+                "Pass explicit paths on the CLI or install Python with Tk support."
+            ) from exc
+        return select_directory(title=title)
 
     def run(self, img1_path: Optional[str] = None, img2_path: Optional[str] = None) -> None:
         console.print(Panel.fit("[bold cyan]Face Similarity Pro CLI[/bold cyan]", border_style="cyan"))

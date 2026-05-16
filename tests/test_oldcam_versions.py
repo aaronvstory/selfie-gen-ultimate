@@ -486,11 +486,24 @@ def test_v9_apply_modern_sensor_noise_accepts_3d_fpn_mask():
     assert processed.shape == image.shape
 
 
-def test_validate_mediapipe_tasks_api_missing_facelandmarker_fails(tmp_path):
+def test_validate_mediapipe_tasks_api_missing_facelandmarker_fails(tmp_path, monkeypatch):
     manager, _ = make_queue_manager({})
+    # If mediapipe.tasks.python is already cached in sys.modules (e.g. another
+    # test imported it), Python skips __import__ and the mock never fires —
+    # evict it so the patched importer below actually decides what gets returned.
+    for cached in ("mediapipe", "mediapipe.tasks", "mediapipe.tasks.python", "mediapipe.tasks.python.vision"):
+        monkeypatch.delitem(sys.modules, cached, raising=False)
     real_import = builtins.__import__
     fake_mp = types.SimpleNamespace(__file__="x/mediapipe.py", __version__="0")
-    with mock.patch("builtins.__import__", side_effect=lambda name, *a, **k: fake_mp if name == "mediapipe" else real_import(name, *a, **k)):
+
+    def fake_import(name, *a, **k):
+        if name == "mediapipe":
+            return fake_mp
+        if name.startswith("mediapipe."):
+            raise ImportError(f"mocked: {name} unavailable")
+        return real_import(name, *a, **k)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
         oldcam_dir = tmp_path / "oldcam-v10"
         oldcam_dir.mkdir()
         ok, diagnostics = manager._validate_mediapipe_tasks_api(oldcam_dir)

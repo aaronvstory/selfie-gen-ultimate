@@ -5,6 +5,11 @@ import os
 from typing import Optional, Callable, Dict, Any
 
 SIMILARITY_PASS_THRESHOLD = 80
+# Raw ArcFace cosine-distance threshold (per similarity/CLAUDE.md). Distances
+# at or below this map to >= 80% via the polynomial curve in similarity_engine.
+# Mirrored as a public constant so log lines and downstream UI can show it
+# alongside the mapped score without re-deriving from engine internals.
+RAW_DISTANCE_THRESHOLD = 0.68
 _ENGINE = None
 _ENGINE_ERROR: Optional[str] = None
 

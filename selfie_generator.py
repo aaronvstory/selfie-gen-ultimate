@@ -185,17 +185,49 @@ class SelfieGenerator:
             output_path = os.path.join(output_folder, f"{prefix}{next_index:03d}.png")
         return output_path
 
-    def _compute_similarity_percent(
+    @staticmethod
+    def _format_similarity_diagnostics(diag: Optional[Dict[str, Any]]) -> str:
+        """Render the ' (cosine_distance=..., threshold=..., models=...)' suffix.
+
+        The polynomial mapping in ``similarity_engine`` deliberately spreads
+        ArcFace cosine distances 0.0-0.68 across scores 100-80 (per
+        ``similarity/CLAUDE.md``). Without surfacing the underlying distance
+        the user cannot tell whether a 99% reading is a real match or a
+        degenerate fallback — this helper exposes the raw signal.
+
+        Returns "" when diagnostics are absent (e.g., DeepFace unavailable),
+        so the user-facing log line gracefully falls back to bare percentage.
+        """
+        if not isinstance(diag, dict):
+            return ""
+        from face_similarity import RAW_DISTANCE_THRESHOLD
+        parts: List[str] = []
+        dist = diag.get("raw_cosine_distance")
+        if isinstance(dist, (int, float)):
+            parts.append(f"cosine_distance={float(dist):.3f}")
+            parts.append(f"threshold={RAW_DISTANCE_THRESHOLD:.2f}")
+        per_model = diag.get("per_model_distances")
+        if isinstance(per_model, dict) and per_model:
+            parts.append(f"models={'+'.join(sorted(per_model.keys()))}")
+        return f" ({', '.join(parts)})" if parts else ""
+
+    def _compute_similarity_result(
         self,
         source_image_path: str,
         generated_image_path: str,
-    ) -> Optional[int]:
-        """Compute face similarity using the shared app similarity adapter.
+    ) -> Dict[str, Any]:
+        """Compute face similarity and return the full details dict (score + diagnostics).
 
-        Delegates to the standalone ``face_similarity`` module.
+        Delegates to the standalone ``face_similarity`` module. Returns the dict so
+        callers can surface the raw cosine distance + per-model breakdown alongside
+        the mapped score — without that visibility, a 99% reading on a polynomial-
+        mapped score (deliberate per ``similarity/CLAUDE.md``) looks indistinguishable
+        from a degenerate fallback.
         """
-        from face_similarity import compute_face_similarity
-        return compute_face_similarity(source_image_path, generated_image_path, report_cb=self._report)
+        from face_similarity import compute_face_similarity_details
+        return compute_face_similarity_details(
+            source_image_path, generated_image_path, report_cb=self._report
+        )
 
     @classmethod
     def _build_payload(
@@ -395,12 +427,14 @@ class SelfieGenerator:
             f"target={os.path.basename(temp_output_path)}",
             "debug",
         )
-        similarity = self._compute_similarity_percent(image_path, temp_output_path)
+        sim_details = self._compute_similarity_result(image_path, temp_output_path)
+        similarity = None if sim_details.get("error") else sim_details.get("score")
         if similarity is None:
             self._report(f"[{resolved_label}] Similarity: n/a", "info")
             similarity_tag = "simna"
         else:
-            self._report(f"[{resolved_label}] Similarity: {similarity}%", "info")
+            sim_suffix = self._format_similarity_diagnostics(sim_details.get("diagnostics"))
+            self._report(f"[{resolved_label}] Similarity: {similarity}%{sim_suffix}", "info")
             similarity_tag = f"sim{similarity}"
 
         final_prefix = f"{stem}_{model_short}_{similarity_tag}_"

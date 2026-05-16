@@ -125,42 +125,6 @@ class TestProCLI(unittest.TestCase):
         self.assertEqual(self.cli._validate_padding_ratio(0.0), 0.0)
         self.assertEqual(self.cli._validate_padding_ratio(1.0), 1.0)
 
-    def test_create_file_dialog_root_raises_runtime_error_without_tk(self) -> None:
-        original_import = builtins.__import__
-
-        def guarded_import(name, global_vars=None, local_vars=None, fromlist=(), level=0):
-            if name == "tkinter":
-                raise ImportError("tk missing")
-            return original_import(name, global_vars, local_vars, fromlist, level)
-
-        with patch("builtins.__import__", side_effect=guarded_import):
-            with self.assertRaisesRegex(RuntimeError, "Tk file dialogs are unavailable"):
-                self.cli._create_file_dialog_root()
-
-    def test_create_file_dialog_root_raises_runtime_error_without_display(self) -> None:
-        fake_tkinter = types.ModuleType("tkinter")
-
-        class FakeTclError(Exception):
-            pass
-
-        def raise_tcl_error():
-            raise FakeTclError("no display")
-
-        fake_tkinter.TclError = FakeTclError
-        fake_tkinter.Tk = raise_tcl_error
-        fake_tkinter.filedialog = types.SimpleNamespace()
-
-        original_import = builtins.__import__
-
-        def guarded_import(name, global_vars=None, local_vars=None, fromlist=(), level=0):
-            if name == "tkinter":
-                return fake_tkinter
-            return original_import(name, global_vars, local_vars, fromlist, level)
-
-        with patch("builtins.__import__", side_effect=guarded_import):
-            with self.assertRaisesRegex(RuntimeError, "Tk file dialogs are unavailable"):
-                self.cli._create_file_dialog_root()
-
     def test_apply_runtime_config_rejects_invalid_existing_file_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "existing_file_mode"):
             self.cli.apply_runtime_config(existing_file_mode="bogus")

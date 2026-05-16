@@ -137,6 +137,10 @@ def test_similarity_fallback_commands_non_windows_uses_python_only():
     assert commands == [["python", "main.py"], ["python3", "main.py"]]
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="Test asserts Windows backslash path joins; os.path.join uses / on POSIX even when other inputs use backslashes",
+)
 def test_windows_launcher_uses_comspec_then_fallback():
     module = importlib.import_module("kling_gui.main_window")
     window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)

@@ -151,9 +151,9 @@ def test_vN_process_frame_applies_awb_drift_after_spatial_fluctuation():
 
 ### 7. Distribution
 
-`build_release_zip.py` auto-includes `oldcam-v*/` via glob — no change needed for the algorithm folder.
+`distribution/release_prep.py` auto-includes `oldcam-v*/` via tree walk — no change needed for the algorithm folder.
 
-New launcher files **must** be added explicitly to the launcher include list in `build_release_zip.py`:
+New launcher files **must** be added explicitly to the launcher include list in `distribution/release_prep.py`:
 ```python
 # Existing pattern — add new filenames:
 "launchers/windows/run_oldcam_vN.bat",
@@ -161,6 +161,43 @@ New launcher files **must** be added explicitly to the launcher include list in 
 "launchers/run_oldcam_vN.bat",
 "launchers/run_oldcam_vN.command",
 ```
+
+### 8. Pre-commit portability checklist (mandatory for every new vN)
+
+The macOS portability rules in `CLAUDE.md` and `AGENTS.md` bite hard when adding a new oldcam version because you're introducing **8 new launcher files at once**. Run this verification BEFORE pushing:
+
+**Per-file line-ending + exec-bit requirements:**
+
+| File | Line endings | Exec bit | How to write |
+|---|---|---|---|
+| `oldcam-vN/oldcam_launcher.bat` | **CRLF** | n/a | PowerShell `[System.IO.File]::WriteAllText` with explicit CRLF; never use `Write`/`Edit` tools |
+| `oldcam-vN/macOS/oldcam.command` | **LF** | **100755** | `Write`/`Edit` is OK for content (LF default); then `chmod +x f && git update-index --chmod=+x f` |
+| `launchers/windows/run_oldcam_vN.bat` | **CRLF** | n/a | PowerShell with explicit CRLF |
+| `launchers/macos/run_oldcam_vN.command` | **LF** | **100755** | Same as `oldcam.command` above |
+| `launchers/run_oldcam_vN.bat` | **CRLF** | n/a | PowerShell with explicit CRLF |
+| `launchers/run_oldcam_vN.command` | **LF** | **100755** | Same as above |
+
+**Verification commands (run for every new file):**
+
+```bash
+# Line endings — must match table above for every file
+git ls-files --eol oldcam-vN/oldcam_launcher.bat                          # i/crlf w/crlf
+git ls-files --eol oldcam-vN/macOS/oldcam.command                          # i/lf   w/lf
+git ls-files --eol launchers/{windows,macos,/}/run_oldcam_vN.{bat,command} # match table per row
+
+# Exec bit on .command files — must be 100755
+git ls-files --stage oldcam-vN/macOS/oldcam.command                        # 100755 ...
+git ls-files --stage launchers/macos/run_oldcam_vN.command                 # 100755 ...
+git ls-files --stage launchers/run_oldcam_vN.command                       # 100755 ...
+
+# Whole-tree pre-push gate (catches CRLF in .sh/.command and missing exec bits)
+bash scripts/check_macos_portability.sh
+
+# Windows-launcher hygiene (catches /dev/null POSIX redirects in .bat)
+rg -n --iglob 'oldcam-vN/*.bat' --iglob 'launchers/**/run_oldcam_vN.bat' '/dev/null'   # MUST return empty
+```
+
+**The portability gate (`scripts/check_macos_portability.sh`) catches CRLF in shell scripts and missing exec bits, but NOT `/dev/null` in `.bat` files** — that's only caught by the grep above or by code review. See `AGENTS.md` "Hard Rules — Windows Launchers" for the full set of `.bat` traps (`/dev/null`, `echo.` vs `echo(`, redirect operator order, override env-var naming).
 
 ---
 

@@ -2,6 +2,16 @@ import argparse
 import os
 import sys
 import traceback
+from pathlib import Path
+
+# Make the repo root importable so the standalone Similarity app can pull in
+# shared modules (tk_dialogs, similarity_engine, face_similarity) that live
+# at the parent of the similarity/ subproject. Without this, launching the
+# standalone GUI crashes at import time on `from tk_dialogs ...` because
+# sys.path[0] only contains similarity/ itself when run via main.py.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 
 def _write_crash_log(exc: Exception) -> str:
