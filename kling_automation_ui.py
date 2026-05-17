@@ -28,6 +28,13 @@ except ModuleNotFoundError:
         os.environ["TF_USE_LEGACY_KERAS"] = "1"
         os.environ["KERAS_BACKEND"] = "tensorflow"
 
+# Shared Rich console for every CLI render in this module. Reusing one
+# instance avoids the cost of re-creating Console() on every banner / table
+# / view-all-settings call in the questionary editor, and keeps styling +
+# output config (file, color depth, force_terminal) centralized in one spot.
+_RICH_CONSOLE = Console()
+
+
 try:
     # questionary is declared required=True in dependency_checker.py and is
     # installed via requirements.txt by every launcher (setup_macos.sh,
@@ -1898,8 +1905,7 @@ class KlingAutomationUI:
                 row["manifest_status"],
                 row["planned"],
             )
-        console = Console()
-        console.print(table)
+        _RICH_CONSOLE.print(table)
         if len(records) > 60:
             print(f"\nShowing first 60/{len(records)} cases.")
         else:
@@ -2108,7 +2114,7 @@ class KlingAutomationUI:
 
         # Banner shown once when the editor opens. Keeps the section list
         # visually grounded vs. just a bare select prompt.
-        Console().print(
+        _RICH_CONSOLE.print(
             Panel.fit(
                 "[bold cyan]Automation Settings[/bold cyan]\n"
                 "[dim]Pick a section to edit. Each section only asks about its own fields.[/dim]",
@@ -2242,7 +2248,7 @@ class KlingAutomationUI:
             if len(sval) > 100:
                 sval = sval[:97] + "..."
             table.add_row(key, sval)
-        Console().print(table)
+        _RICH_CONSOLE.print(table)
         input("\nPress Enter to return to the section picker...")
 
     # ── Per-section editors ──────────────────────────────────────────
@@ -2252,23 +2258,33 @@ class KlingAutomationUI:
         body = f"[bold cyan]{title}[/bold cyan]"
         if description:
             body += f"\n[dim]{description}[/dim]"
-        Console().print(Panel.fit(body, border_style="cyan"))
+        _RICH_CONSOLE.print(Panel.fit(body, border_style="cyan"))
 
     def _qs_text(self, message: str, key: str, default: Optional[str] = None,
                  validator=None) -> None:
-        """Edit a single text/str setting. Empty input keeps current."""
+        """Edit a string setting. Live-validates the stripped value via
+        questionary's `validate=` so trailing whitespace doesn't trip the
+        validator (the stored value is also stripped). Empty input keeps
+        current."""
         current = self.config.get(key, default)
+
+        def _live_validate(text: str):
+            t = text.strip()
+            if not t:
+                return True  # empty == keep current
+            if validator and not validator(t):
+                return f"Value not accepted for {key}."
+            return True
+
         answer = questionary.text(
             message,
             qmark="◆",
             instruction=f"(current: {current} · Enter keeps)",
             default="",
+            validate=_live_validate,
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
-        if answer is None or answer.strip() == "":
-            return
-        if validator and not validator(answer):
-            print(f"  ✗ Invalid value for {key}; keeping current.")
+        if answer is None or not answer.strip():
             return
         self.config[key] = answer.strip()
 
@@ -2586,12 +2602,15 @@ class KlingAutomationUI:
                 self.config["automation_selfie_prompt_slot"] = int(slot_raw.strip())
         elif prompt_action == "edit":
             new_prompt = questionary.text(
-                "New prompt text:",
+                "New prompt text (submit empty to clear):",
                 qmark="◆",
                 default=current_prompt,
                 style=KLING_QUESTIONARY_STYLE,
             ).ask()
-            if new_prompt is not None and new_prompt.strip():
+            # Only `None` means the user aborted (Ctrl-C / ESC). Empty string
+            # is a deliberate clear — system falls back to defaults in
+            # _get_selected_selfie_prompt when the slot is blank.
+            if new_prompt is not None:
                 self.config["automation_selfie_prompts"][str(current_slot)] = new_prompt.strip()
         elif prompt_action == "reset":
             defaults = merge_automation_defaults({}).get("automation_selfie_prompts", {})
@@ -2778,7 +2797,7 @@ class KlingAutomationUI:
         table.add_column("Reason")
         for key, result in sorted(runner.last_case_results.items(), key=lambda item: item[0].lower()):
             table.add_row(key, str(result.get("status", "")), str(result.get("reason", "")))
-        Console().print(table)
+        _RICH_CONSOLE.print(table)
         self._write_automation_summary(manifest, runner.last_case_results, stats)
         self.pause_review("\nPress Enter to continue...")
 
