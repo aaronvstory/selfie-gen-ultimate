@@ -781,7 +781,7 @@ def apply_resolution_roundtrip(image: np.ndarray) -> np.ndarray:
         restored.astype(np.float32), 1.0 + amount,
         blurred.astype(np.float32), -amount, 0.0,
     )
-    return np.clip(sharp, 0, 255).astype(np.uint8)
+    return np.rint(np.clip(sharp, 0, 255)).astype(np.uint8)
 
 
 def process_frame(
@@ -1015,9 +1015,9 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
                 _temporal_buf.append(processed.astype(np.float32))
                 if len(_temporal_buf) > _tw:
                     _temporal_buf.pop(0)
-                processed = np.clip(
+                processed = np.rint(np.clip(
                     np.mean(_temporal_buf, axis=0), 0, 255
-                ).astype(np.uint8)
+                )).astype(np.uint8)
 
             if args.preview:
                 processed = build_preview_frame(frame, processed)
