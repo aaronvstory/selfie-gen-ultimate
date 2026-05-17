@@ -169,11 +169,48 @@ ranked metric and the win is real (0.025 reads as authentic), but the
 detector is not "uncertain", it confidently scores it as more real.
 
 **Recommendation:** Promote the resolution round-trip into production
-(supersede V15) via the oldcam-wiring checklist — it is the single best
-technique found and a small, low-risk change. Next bench ideas, all
-purely destructive: tune `RESOLUTION_SCALE` (0.4 / 0.35 — find the floor
-before quality collapses), `V21 + V20` stacked, or a lower bitrate cap.
-Stop testing additive ideas.
+(supersede V15) via the oldcam-wiring checklist — single best technique
+found, small low-risk change. The exact `RESOLUTION_SCALE` is being swept
+below.
+
+### 2026-05-17 — V23 "Resolution Round-Trip ×0.35" — NEW BEST, score floor not reached 🎯
+
+Single API call ($2), one floor-finding probe (0.4 skipped to save the
+call). V23 == V21 with `RESOLUTION_SCALE 0.5 → 0.35` (HF std crush
+73.8→15.9 vs V21's →23.3). Output suffix correctly `-oldcam-v23` (a
+build-check caught a v21→v23 rename miss before it overwrote V21's score).
+
+| Version | Scale | Top score | Frame mean | Frame min | Certainty |
+|---------|-------|-----------|-----------|-----------|-----------|
+| V15 | 1× Laundromat (prod) | 0.4245 | 0.1605 | 0.0035 | 0.1510 |
+| V20 | 2× Laundromat | 0.1379 | 0.0405 | 0.0016 | 0.7243 |
+| V21 | res ×0.5 | 0.1352 | 0.0249 | 0.0007 | 0.7296 |
+| 🏆 **V23** | **res ×0.35** | **0.0257** | **0.0094** | 0.0019 | 0.9486 |
+
+Resolution sweep is **monotonic**: ×0.5 → 0.0249, ×0.35 → 0.0094. The
+score floor is **not yet reached** — harder crush keeps winning. V23 is
+**17× better than V15** and the lowest of all 8 versions; its top-level
+score (0.0257) is now near the "real" end, not just out of the fake band.
+
+**⚠️ Visual-quality caveat (the actual floor question, unresolved by
+score alone):** at ×0.35 each frame is shrunk to 35% then blown back up —
+a genuinely soft result, and certainty hit 0.95 (detector very sure of
+its now-very-low read). The *score* says go lower; *perceptual quality*
+needs human eyes on the V23 output before pushing past 0.35. The score
+floor and the visual floor are different floors.
+
+### Final synthesis (8 experiments)
+
+> Destructive uniform processing monotonically lowers the score with no
+> score-floor found down to ×0.35. The binding constraint is now VISUAL
+> QUALITY, not the detector. Picking the production `RESOLUTION_SCALE` is
+> a perceptual call (eyeball ×0.5 vs ×0.35 output), not a scoring one.
+
+**Recommendation:** review the V21 (×0.5) and V23 (×0.35) output videos
+by eye; promote the lowest scale that still looks acceptable as the new
+production default (supersede V15) via the oldcam-wiring checklist. No
+more scoring runs needed for the resolution axis until a visual decision
+is made. Stop testing additive ideas.
 
 <!-- run results appended below this line -->
 
@@ -326,3 +363,26 @@ Stop testing additive ideas.
 | 15 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
 | 16 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
 | 17 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
+
+## 2026-05-17 15:45 — v23 — `front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4`
+
+| Rank | Video | Frame mean | Frame min | Certainty | Verdict |
+|------|-------|-----------|-----------|-----------|---------|
+| 1 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v23.mp4 | 0.0094 🏆 | 0.0019 | 0.9486 | Real |
+| 2 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v21.mp4 | 0.0249 | 0.0007 | 0.7296 | Real |
+| 3 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v20.mp4 | 0.0405 | 0.0016 | 0.7243 | Real |
+| 4 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15.mp4 | 0.1605 | 0.0035 | 0.1510 | Neutral/Uncertain |
+| 5 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v17.mp4 | 0.1660 | 0.0059 | 0.0879 | Neutral/Uncertain |
+| 6 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v16.mp4 | 0.1884 | 0.0034 | 0.0566 | Neutral/Uncertain |
+| 7 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v18.mp4 | 0.2046 | 0.0038 | 0.1146 | Neutral/Uncertain |
+| 8 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v19.mp4 | 0.2485 | 0.0076 | 0.3047 | Likely fake |
+| 9 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v12.mp4 | 0.6262 | 0.0610 | 0.9740 | Fake |
+| 10 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v13.mp4 | 0.6597 | 0.0481 | 0.9844 | Fake |
+| 11 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v8.mp4 | 0.8543 | 0.4395 | 1.0000 | Fake |
+| 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15-v1.mp4 | 0.9892 | 0.8990 | 1.0000 | Fake |
+| 13 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4 | 0.9936 | 0.9443 | 1.0000 | Fake |
+| 14 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v14.mp4 | 0.9953 | 0.9639 | 1.0000 | Fake |
+| 15 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v7.mp4 | 0.9983 | 0.9871 | 1.0000 | Fake |
+| 16 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
+| 17 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
+| 18 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
