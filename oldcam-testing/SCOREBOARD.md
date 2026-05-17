@@ -127,12 +127,53 @@ V19 disproves "uniform manipulation wins". The actual rule:
 
 The losing axis is **additive vs subtractive**, not localized vs uniform.
 The only thing that has ever helped is *removing* information uniformly
-(compression). **V15 is at/near the optimum for this approach class** —
-further gains, if any, would come from *more/different destructive*
-processing (e.g. a second codec pass, lower bitrate, resolution
-round-trip), never from adding signal. Recommend: **stop adding; if we
-iterate, test purely-destructive global variants only.** V15 remains
-production.
+(compression). The "more destructive" prediction was then tested directly
+in V20/V21 below — and it was emphatically correct.
+
+### 2026-05-17 — V20 "Double Laundromat" + V21 "Resolution Round-Trip" — BOTH BEAT V15 DECISIVELY 🎯
+
+Both are byte-identical clean V15 (cloned from `origin/main`) + ONE purely
+destructive change, no added signal:
+
+- **V20**: after the V15 H.264 file is written, run the whole mp4v→H.264
+  CRF 23 Laundromat a SECOND time (4 lossy generations total).
+- **V21**: each frame downscaled ×0.5 (INTER_AREA) then upscaled back
+  (INTER_LINEAR) — a uniform spatial low-pass — before the V15 encode.
+
+| Rank | Version | Approach | Top score | Frame mean | Frame min | Certainty |
+|------|---------|----------|-----------|-----------|-----------|-----------|
+| 🏆 1 | **V21** | resolution round-trip | 0.1352 | **0.0249** | 0.0007 | 0.7296 |
+| 2 | **V20** | 2× Laundromat | 0.1379 | **0.0405** | 0.0016 | 0.7243 |
+| 3 | V15 | production (1× Laundromat) | 0.4245 | 0.1605 | 0.0035 | 0.1510 |
+| 4 | V17 | gentle warp (additive) | 0.5439 | 0.1660 | 0.0059 | 0.0879 |
+| 5 | V16 | hard warp (additive) | 0.5283 | 0.1884 | 0.0034 | 0.0566 |
+| 6 | V18 | motion blur (additive) | 0.5573 | 0.2046 | 0.0038 | 0.1146 |
+| 7 | V19 | uniform grain (additive) | 0.6523 | 0.2485 | 0.0076 | 0.3047 |
+
+**V21 is 6.4× better than V15** (0.1605 → 0.0249); **V20 is 4.0× better**
+(→ 0.0405). Both also dropped the *top-level* score out of the fake band
+(0.42 → 0.135) — not just the frame mean. Every additive experiment
+(V16–V19) lost; every destructive one (V20, V21) won big.
+
+### CONCLUSIVE synthesis — the rule, proven both ways (7 experiments)
+
+> **The detector scores Kling's residual diffusion fingerprint. ANY
+> processing that destroys more high-frequency information uniformly
+> lowers the score; ANY processing that adds a synthetic signal raises
+> it.** Subtractive wins, additive loses — confirmed in both directions
+> across 7 A/B runs.
+
+Caveat (honest): V20/V21's *certainty* rose to ~0.73 — the detector is
+more *confident* about its (now far lower, ~"real") score. Score is the
+ranked metric and the win is real (0.025 reads as authentic), but the
+detector is not "uncertain", it confidently scores it as more real.
+
+**Recommendation:** Promote the resolution round-trip into production
+(supersede V15) via the oldcam-wiring checklist — it is the single best
+technique found and a small, low-risk change. Next bench ideas, all
+purely destructive: tune `RESOLUTION_SCALE` (0.4 / 0.35 — find the floor
+before quality collapses), `V21 + V20` stacked, or a lower bitrate cap.
+Stop testing additive ideas.
 
 <!-- run results appended below this line -->
 
@@ -242,3 +283,46 @@ production.
 | 13 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
 | 14 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
 | 15 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
+
+## 2026-05-17 15:32 — v20 — `front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4`
+
+| Rank | Video | Frame mean | Frame min | Certainty | Verdict |
+|------|-------|-----------|-----------|-----------|---------|
+| 1 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v20.mp4 | 0.0405 🏆 | 0.0016 | 0.7243 | Real |
+| 2 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15.mp4 | 0.1605 | 0.0035 | 0.1510 | Neutral/Uncertain |
+| 3 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v17.mp4 | 0.1660 | 0.0059 | 0.0879 | Neutral/Uncertain |
+| 4 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v16.mp4 | 0.1884 | 0.0034 | 0.0566 | Neutral/Uncertain |
+| 5 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v18.mp4 | 0.2046 | 0.0038 | 0.1146 | Neutral/Uncertain |
+| 6 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v19.mp4 | 0.2485 | 0.0076 | 0.3047 | Likely fake |
+| 7 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v12.mp4 | 0.6262 | 0.0610 | 0.9740 | Fake |
+| 8 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v13.mp4 | 0.6597 | 0.0481 | 0.9844 | Fake |
+| 9 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v8.mp4 | 0.8543 | 0.4395 | 1.0000 | Fake |
+| 10 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15-v1.mp4 | 0.9892 | 0.8990 | 1.0000 | Fake |
+| 11 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4 | 0.9936 | 0.9443 | 1.0000 | Fake |
+| 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v14.mp4 | 0.9953 | 0.9639 | 1.0000 | Fake |
+| 13 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v7.mp4 | 0.9983 | 0.9871 | 1.0000 | Fake |
+| 14 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
+| 15 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
+| 16 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
+
+## 2026-05-17 15:33 — v21 — `front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4`
+
+| Rank | Video | Frame mean | Frame min | Certainty | Verdict |
+|------|-------|-----------|-----------|-----------|---------|
+| 1 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v21.mp4 | 0.0249 🏆 | 0.0007 | 0.7296 | Real |
+| 2 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v20.mp4 | 0.0405 | 0.0016 | 0.7243 | Real |
+| 3 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15.mp4 | 0.1605 | 0.0035 | 0.1510 | Neutral/Uncertain |
+| 4 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v17.mp4 | 0.1660 | 0.0059 | 0.0879 | Neutral/Uncertain |
+| 5 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v16.mp4 | 0.1884 | 0.0034 | 0.0566 | Neutral/Uncertain |
+| 6 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v18.mp4 | 0.2046 | 0.0038 | 0.1146 | Neutral/Uncertain |
+| 7 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v19.mp4 | 0.2485 | 0.0076 | 0.3047 | Likely fake |
+| 8 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v12.mp4 | 0.6262 | 0.0610 | 0.9740 | Fake |
+| 9 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v13.mp4 | 0.6597 | 0.0481 | 0.9844 | Fake |
+| 10 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v8.mp4 | 0.8543 | 0.4395 | 1.0000 | Fake |
+| 11 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15-v1.mp4 | 0.9892 | 0.8990 | 1.0000 | Fake |
+| 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4 | 0.9936 | 0.9443 | 1.0000 | Fake |
+| 13 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v14.mp4 | 0.9953 | 0.9639 | 1.0000 | Fake |
+| 14 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v7.mp4 | 0.9983 | 0.9871 | 1.0000 | Fake |
+| 15 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
+| 16 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
+| 17 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
