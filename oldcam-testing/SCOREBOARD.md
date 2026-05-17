@@ -460,7 +460,7 @@ oldcam-wiring checklist. Decision is now visual, not scoring.
 | 2 | face_crop_nano-banana-2-edit_sim86_001_k25tStd_p5_1-oldcam-v15.mp4 | 1.0000 | 1.0000 | 1.0000 | Fake |
 | 3 | face_crop_nano-banana-2-edit_sim86_001_k25tStd_p5_1.mp4 | 1.0000 | 1.0000 | 1.0000 | Fake |
 
-## 2026-05-17 — V25 "Temporal Resmooth" — the difficult clip is UNREACHABLE by oldcam
+### 2026-05-17 — V25 "Temporal Resmooth" — the difficult clip is UNREACHABLE by oldcam
 
 V25 = V24 (resolution crush + Laundromat) + a uniform 5-frame rolling
 temporal average on every output frame (the temporal analog of V24's
