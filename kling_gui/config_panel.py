@@ -533,7 +533,8 @@ class ConfigPanel(tk.Frame):
             "v12": tk.BooleanVar(value=False),
             "v13": tk.BooleanVar(value=False),
             "v14": tk.BooleanVar(value=False),
-            "v15": tk.BooleanVar(value=True),
+            "v15": tk.BooleanVar(value=False),
+            "v24": tk.BooleanVar(value=True),
         }
         # 3-column grid — new versions append rows, strip width stays fixed.
         # 5 versions → 2 rows (3 + 2); 6 versions → 2 rows (3 + 3); 7+ → 3 rows.
@@ -541,7 +542,7 @@ class ConfigPanel(tk.Frame):
         _check_grid = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
         _check_grid.pack(side=tk.LEFT, anchor="n")
         self.oldcam_version_checks = {}
-        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15")):
+        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24")):
             check = tk.Checkbutton(
                 _check_grid,
                 text=version,
@@ -1130,7 +1131,7 @@ class ConfigPanel(tk.Frame):
         for version, var in self.oldcam_version_vars.items():
             var.set(version in selected_versions)
         self.config["oldcam_versions"] = selected_versions
-        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v15"
+        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v24"
 
         # Reprocess options
         self.reprocess_var.set(self.config.get("allow_reprocess", False))
@@ -1383,10 +1384,16 @@ class ConfigPanel(tk.Frame):
             "     Trade-off: the preserved sensor floor is a frequency-detector tell",
             "     (Resemble testing) — V15 removes it and restores ghosting.",
             "",
-            "v15  Temporal Mute (synthesis)   ★ default",
+            "v15  Temporal Mute (synthesis)",
             "     V14 math/encoding + V13 noise-free philosophy + V12 temporal blend.",
             "     No sensor noise; --ghosting 0.18 bleeds the previous frame to",
-            "     defeat consistency detectors. Best Resemble-API result.",
+            "     defeat consistency detectors. Superseded as default by v24.",
+            "",
+            "v24  Crush Laundromat (synthesis)   ★ default",
+            "     V15 + a uniform resolution round-trip (downscale x0.40 ->",
+            "     Lanczos upscale + light unsharp) before the encode. Destroys",
+            "     the AI fingerprint uniformly; ~9x better Resemble-API score",
+            "     than v15 while staying visually sharp. Best result.",
         ]
         return "\n".join(lines)
 
@@ -1477,13 +1484,13 @@ class ConfigPanel(tk.Frame):
             return sorted(set(versions), key=self._oldcam_version_key)
 
         if not versions:
-            legacy = str(self.config.get("oldcam_version", "v15")).lower()
+            legacy = str(self.config.get("oldcam_version", "v24")).lower()
             if legacy == "all":
                 versions = list(valid_versions)
             elif legacy in valid_versions:
                 versions = [legacy]
             else:
-                versions = ["v15"]
+                versions = ["v24"]
 
         return sorted(set(versions), key=self._oldcam_version_key)
 
@@ -1496,8 +1503,8 @@ class ConfigPanel(tk.Frame):
         ]
         selected_versions = sorted(set(selected_versions), key=self._oldcam_version_key)
         self.config["oldcam_versions"] = selected_versions
-        # Legacy compatibility key: highest selected version, or v15 default when empty.
-        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v15"
+        # Legacy compatibility key: highest selected version, or v24 default when empty.
+        self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v24"
         if selected_versions:
             self._notify_change("Oldcam versions set to " + ", ".join(selected_versions))
         else:

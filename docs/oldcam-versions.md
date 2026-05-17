@@ -322,7 +322,47 @@ V13 looks like a high-end smartphone's daylight output: razor-sharp, no visible 
 
 ---
 
-## V15 — "Temporal Mute" (2026-05-17) — **Default ★**
+## V24 — "Crush Laundromat" (2026-05-17) — **Default ★**
+
+**File:** `oldcam-v24/oldcam.py` (cloned from V15 + one destructive change)
+**Output encoding:** uniform resolution round-trip (×0.40 downscale → Lanczos upscale + light unsharp) per frame, then V15's lossy **mp4v** temp → H.264 CRF 23, original audio stream-copied
+
+> App version numbers jump V15 → V24. V16–V23 were **rejected
+> oldcam-testing bench experiments**, never app versions. Full A/B
+> history and the conclusive "destructive wins / additive loses" rule:
+> `oldcam-testing/SCOREBOARD.md`; future-work guide:
+> `oldcam-testing/RESUME.md`.
+
+V24 is the bench winner. The Resemble deepfake-API sweep established:
+the detector scores Kling's residual diffusion fingerprint —
+*destroying* high-frequency information **uniformly** lowers the score;
+*adding* any synthetic signal (warp/blur/grain) raises it. V15's
+"Laundromat" was already destructive (frame_mean 0.16). V24 destroys
+more, the same way on every frame, and adds nothing:
+
+- **Resolution round-trip** before the V15 encode: each frame
+  downscaled ×0.40 (`cv2.INTER_AREA`) then upscaled back
+  (`cv2.INTER_LANCZOS4`). Annihilates the AI fingerprint's
+  high-frequency band, identically every frame, no added signal.
+- **Light unsharp-mask** restores *perceived* crispness — it amplifies
+  the real structure that survived; it cannot reinvent the destroyed
+  fingerprint. Real phone ISPs sharpen post-readout, so this is
+  physically faithful.
+
+Bench result on the reference clip: **frame_mean 0.018, ~9× better than
+V15's 0.16**, while staying visually sharp. On a fully-saturated source
+(where V15 couldn't move the score off 1.0000 at all) V24 still pulled
+it to 0.45 — it improves clips V15 was useless on.
+
+`process_frame` is V15's with the round-trip as the only change. Two
+review-bot safety fixes vs the bench file: `--output` == input is
+refused (no in-place source overwrite); the ffmpeg encode timeout is
+configurable (`--ffmpeg-timeout`, default 600). Windows + macOS twins
+byte-identical; Rule 9/10-compliant launchers.
+
+---
+
+## V15 — "Temporal Mute" (2026-05-17) — superseded as default by V24
 
 **File:** `oldcam-v15/oldcam.py` (~1000 lines, cloned from V14)
 **Output encoding:** lossy **mp4v** temp → single H.264 final at CRF 23 (clamped 10–28), original audio stream-copied
@@ -468,7 +508,8 @@ Each version had a guiding theme and a limitation that motivated the next one. T
 | V12 | Pristine hardware-only | Removed rPPG, removed `cv2.LUT()` call, removed CLAHE tone mapping, removed HSV saturation tweak | Sensor noise and AE stepping still applied per-frame — degradation signals flagship daylight footage doesn't carry |
 | V13 | High-end daylight | Removed `apply_modern_sensor_noise`, removed `apply_ae_stepping`, hardcoded ghosting to 0.0, dropped `--grain` CLI arg | Optics were mathematically wrong: AWB was exposure drift not white balance; perfectly-static pixels; double-lossy mp4v→H.264; flickering binary bloom; truncation darkening |
 | V14 | Forensic daylight (physics-corrected) | True multiplicative AWB temperature drift, `apply_daylight_sensor_floor` (sub-perceptual), lossless FFV1 temp, smoothstep bloom, `np.rint` casts, audio stream-copy, vignette-cache fix | Resemble API showed the preserved sensor floor is itself a stationary frequency-detector tell; V12/V13 (ghosting + zero noise) outperformed it |
-| V15 | Temporal Mute (Resemble-tuned synthesis) | Kept V14 AWB/bloom/audio/np.rint; **removed** `apply_daylight_sensor_floor` + its CLI knobs; **restored** `--ghosting` 0.18 (V12 temporal blend); **hotfix:** reverted lossless FFV1 → double-lossy mp4v + CRF 23 (Resemble flagged lossless preservation as the new tell) | None yet — current default |
+| V15 | Temporal Mute (Resemble-tuned synthesis) | Kept V14 AWB/bloom/audio/np.rint; **removed** `apply_daylight_sensor_floor` + its CLI knobs; **restored** `--ghosting` 0.18 (V12 temporal blend); **hotfix:** reverted lossless FFV1 → double-lossy mp4v + CRF 23 (Resemble flagged lossless preservation as the new tell) | Superseded as default by V24 |
+| V24 | Crush Laundromat (bench-winning synthesis) | V15 + a uniform resolution round-trip (×0.40 downscale → Lanczos upscale + light unsharp) before the encode; ~9× better Resemble frame-mean than V15, cracks fully-saturated sources V15 could not move | None yet — **current default ★** |
 
 Notes on accuracy of this table vs the codebase:
 - "Digital over-sharpening" was a `--sharpen` CLI parameter present in every version (default 0.8), not a V11 addition. The actual destructive effects in V11 are the global LUT and CLAHE — both inherited from earlier versions, exposed by V11's higher fidelity.
@@ -487,4 +528,5 @@ Notes on accuracy of this table vs the codebase:
 - **V12** — Best for: low-light realism, KYC pipelines that expect visible sensor noise, scenes where AE walk reads as authentic. Preserves Kling's color fidelity better than V7–V11.
 - **V13** — Best for: bright daylight footage where you want V13's exact look and don't need the physics corrections. Superseded — selectable but no longer pre-selected.
 - **V14** — Best for: cases where you specifically want the sub-perceptual sensor floor (it defeats *naive* SNR-stasis checks). Superseded by V15 after Resemble benchmarking — the preserved floor turned out to be a frequency-detector tell. Selectable but no longer pre-selected.
-- **V15** — **Default ★**. Best for: footage scored by the Resemble deepfake API (the benchmark it was tuned against) and consistency/frequency detectors generally. Keeps V14's correct per-frame optics, drops the sensor floor entirely, restores V12's `--ghosting` (0.18) so per-frame AI consistency is smeared without visible motion blur, and (Laundromat hotfix) runs a deliberate double-lossy mp4v → H.264 CRF 23 pass so Kling's diffusion artifacts are crushed into ordinary web-compression blocks. The empirically-best version on the metric that matters. Same MediaPipe-free dependency story.
+- **V24** — **Default ★**. Best for: virtually everything — the bench-winning profile. Everything V15 does plus a uniform per-frame resolution round-trip (×0.40 downscale → Lanczos upscale + light unsharp) that destroys Kling's high-frequency fingerprint while staying visually sharp. ~9× better Resemble frame-mean than V15, and it improves fully-saturated sources V15 could not move at all. MediaPipe-free. The empirically-best version on the metric that matters.
+- **V15** — Superseded as default by **V24** (still selectable). Best for: a milder, sharper result if V24's resolution crush is visually too soft for a given clip. Keeps V14's correct per-frame optics, drops the sensor floor, restores V12's `--ghosting` (0.18), and runs the double-lossy mp4v → H.264 CRF 23 "Laundromat" pass. MediaPipe-free.

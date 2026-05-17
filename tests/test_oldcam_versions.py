@@ -397,7 +397,7 @@ def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
     panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
     assert 'text="Oldcam Finish"' not in panel_source
     assert 'text="Oldcam:"' in panel_source
-    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"))' in panel_source
+    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24"))' in panel_source
 
 
 def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
@@ -1292,60 +1292,65 @@ def test_verbose_gui_mode_legacy_true_migrated_to_false_once():
 # ---------------------------------------------------------------------------
 
 
-def test_default_oldcam_version_is_v15_across_all_layers():
-    """If someone adds a new default-version site and forgets to set v15,
+def test_default_oldcam_version_is_v24_across_all_layers():
+    """If someone adds a new default-version site and forgets to set v24,
     this test fails. Locks the contract until the next intentional bump.
-    (V15 "Temporal Mute" superseded V14 as the default — V14 stays
-    selectable but is no longer pre-selected anywhere.)"""
+    (V24 "Crush Laundromat" superseded V15 as the default — V15 stays
+    selectable but is no longer pre-selected anywhere. App version numbers
+    skip v16-v23: those were rejected oldcam-testing bench experiments,
+    not app versions; see oldcam-testing/SCOREBOARD.md.)"""
     # CLI / automation default
     from automation.config import merge_automation_defaults
     merged = merge_automation_defaults({})
-    assert merged["automation_oldcam_version"] == "v15", (
-        f"automation/config.py default must be v15; got "
+    assert merged["automation_oldcam_version"] == "v24", (
+        f"automation/config.py default must be v24; got "
         f"{merged['automation_oldcam_version']!r}"
     )
 
-    # GUI checkbox default (v15 BooleanVar with value=True)
+    # GUI checkbox default (v24 BooleanVar with value=True)
     config_panel_src = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
-    assert '"v15": tk.BooleanVar(value=True)' in config_panel_src, (
-        "GUI must ship with v15 checkbox pre-selected"
+    assert '"v24": tk.BooleanVar(value=True)' in config_panel_src, (
+        "GUI must ship with v24 checkbox pre-selected"
     )
-    # Every other version in the dict must be value=False (only v15 starts
-    # ticked). v14 is now demoted alongside v7-v13.
-    for legacy in ("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14"):
+    # Every other version in the dict must be value=False (only v24 starts
+    # ticked). v15 is now demoted alongside v7-v14.
+    for legacy in ("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15"):
         assert f'"{legacy}": tk.BooleanVar(value=True)' not in config_panel_src, (
-            f"Only v15 should be pre-selected; found {legacy} also marked True"
+            f"Only v24 should be pre-selected; found {legacy} also marked True"
         )
 
-    # Legacy fallback strings inside config_panel must default to v15.
+    # Legacy fallback strings inside config_panel must default to v24.
     # (Three call sites: load → save, on-change → save, _resolve fallback.)
-    fallback_v15_count = config_panel_src.count('"v15"')
-    assert fallback_v15_count >= 3, (
-        f"Expected at least 3 'v15' fallback strings in config_panel.py; got {fallback_v15_count}"
+    fallback_v24_count = config_panel_src.count('"v24"')
+    assert fallback_v24_count >= 3, (
+        f"Expected at least 3 'v24' fallback strings in config_panel.py; got {fallback_v24_count}"
     )
 
-    # CLI fallback strings + choice list must include v15 and use it as default.
+    # CLI fallback strings + choice list must include v24 and use it as default.
     cli_src = (ROOT / "kling_automation_ui.py").read_text(encoding="utf-8")
-    assert cli_src.count("'v15'") + cli_src.count('"v15"') >= 4, (
-        "Expected CLI to default to v15 in ≥3 get(..., 'v15') calls + choice list"
+    assert cli_src.count("'v24'") + cli_src.count('"v24"') >= 4, (
+        "Expected CLI to default to v24 in ≥3 get(..., 'v24') calls + choice list"
     )
-    # The choice list must contain v15 (and still list v14 as a pickable option).
-    assert '"v15"' in cli_src or "'v15'" in cli_src
-    assert '"v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "all"' in cli_src, (
-        "CLI menu choice list must enumerate v7-v15 plus 'all'"
+    # The choice list must contain v24 (and still list v15 as a pickable option).
+    assert '"v24"' in cli_src or "'v24'" in cli_src
+    assert '"v15"' in cli_src or "'v15'" in cli_src, (
+        "v15 must remain a selectable CLI option (demoted, not removed)"
+    )
+    assert '"v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"' in cli_src, (
+        "CLI menu choice list must enumerate v7-v15 + v24 plus 'all'"
     )
 
-    # Launcher chains: root + windows hub + macOS hub must chain to v15.
+    # Launcher chains: root + windows hub + macOS hub must chain to v24.
     for path in (
         "run_oldcam.bat",
         "launchers/windows/run_oldcam.bat",
     ):
         text = (ROOT / path).read_text(encoding="utf-8")
-        assert "run_oldcam_v15.bat" in text, f"{path} must chain to run_oldcam_v15.bat"
+        assert "run_oldcam_v24.bat" in text, f"{path} must chain to run_oldcam_v24.bat"
 
     macos_chain = (ROOT / "launchers" / "macos" / "run_oldcam.command").read_text(encoding="utf-8")
-    assert "run_oldcam_v15.command" in macos_chain, (
-        "launchers/macos/run_oldcam.command must chain to run_oldcam_v15.command"
+    assert "run_oldcam_v24.command" in macos_chain, (
+        "launchers/macos/run_oldcam.command must chain to run_oldcam_v24.command"
     )
 
 
@@ -1924,3 +1929,94 @@ def test_v15_twins_are_byte_identical():
     win = (ROOT / "oldcam-v15" / "oldcam.py").read_bytes()
     mac = (ROOT / "oldcam-v15" / "macOS" / "oldcam.py").read_bytes()
     assert win == mac, "oldcam-v15 Windows/macOS oldcam.py twins diverged"
+
+
+# ---------------------------------------------------------------------------
+# V24 "Crush Laundromat" — V15 + uniform resolution round-trip (new default;
+# superseded V15 per Resemble deepfake-API benchmarking, oldcam-testing bench)
+# ---------------------------------------------------------------------------
+
+
+def test_v24_default_output_path_uses_v24_suffix():
+    oldcam_v24 = load_module(ROOT / "oldcam-v24" / "oldcam.py", "oldcam_v24")
+    assert oldcam_v24.build_default_output_path("sample.mp4").endswith(
+        "sample-oldcam-v24.mp4"
+    )
+
+
+def test_v24_twins_are_byte_identical():
+    """The Windows and macOS v24 oldcam.py must be byte-for-byte identical."""
+    win = (ROOT / "oldcam-v24" / "oldcam.py").read_bytes()
+    mac = (ROOT / "oldcam-v24" / "macOS" / "oldcam.py").read_bytes()
+    assert win == mac, "oldcam-v24 Windows/macOS oldcam.py twins diverged"
+
+
+def test_v24_applies_resolution_roundtrip_in_process_frame():
+    """V24's one change vs V15: a uniform downscale→Lanczos-upscale +
+    light unsharp, applied in process_frame. RESOLUTION_SCALE 1.0 == V15."""
+    oldcam_v24 = load_module(ROOT / "oldcam-v24" / "oldcam.py", "oldcam_v24_rt")
+    assert hasattr(oldcam_v24, "apply_resolution_roundtrip")
+    assert 0.0 < oldcam_v24.RESOLUTION_SCALE < 1.0, (
+        f"RESOLUTION_SCALE must be in (0,1); got {oldcam_v24.RESOLUTION_SCALE}"
+    )
+    src = (ROOT / "oldcam-v24" / "oldcam.py").read_text(encoding="utf-8")
+    assert "apply_resolution_roundtrip(image)" in src, (
+        "process_frame must call apply_resolution_roundtrip"
+    )
+    assert "INTER_LANCZOS4" in src, "upscale must use Lanczos (anti-smudge)"
+    # round-trip must preserve frame dimensions (writer depends on it)
+    img = np.full((120, 160, 3), 128, dtype=np.uint8)
+    out = oldcam_v24.apply_resolution_roundtrip(img)
+    assert out.shape == img.shape and out.dtype == np.uint8
+
+
+def test_v24_refuses_output_equal_to_input(tmp_path):
+    """CodeRabbit-flagged safety fix: --output == input must fail fast,
+    never overwrite the source media in place."""
+    oldcam_v24 = load_module(ROOT / "oldcam-v24" / "oldcam.py", "oldcam_v24_safe")
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"not-real-media")
+    with pytest.raises(SystemExit):
+        oldcam_v24.main([str(src), "-o", str(src)])
+
+
+def test_v24_exposes_configurable_ffmpeg_timeout():
+    """Gemini-flagged fix: the 120s ffmpeg timeout is now --ffmpeg-timeout
+    (default 600, floored at 30) so long/high-res clips don't false-fail."""
+    oldcam_v24 = load_module(ROOT / "oldcam-v24" / "oldcam.py", "oldcam_v24_to")
+    ns = oldcam_v24.build_parser().parse_args(["x.mp4"])
+    assert ns.ffmpeg_timeout == 600
+    src = (ROOT / "oldcam-v24" / "oldcam.py").read_text(encoding="utf-8")
+    assert 'int(getattr(args, "ffmpeg_timeout", 600))' in src, (
+        "finalize must read the configurable ffmpeg_timeout"
+    )
+    assert "timeout=ff_timeout" in src, (
+        "the configurable ffmpeg_timeout must be passed to subprocess.run"
+    )
+    # The transient-failure retry + honest degradation message must exist
+    # (a silent mp4v-only fallback ships an inferior, score-worse file).
+    assert "FFmpeg finalize FAILED" in src and "for attempt in (1, 2)" in src, (
+        "finalize must retry once on transient failure and warn loudly "
+        "when it ultimately falls back to the mp4v-only output"
+    )
+
+
+def test_oldcam_dependency_preflight_does_not_require_mediapipe_for_v24(tmp_path):
+    """V24, like V15, is MediaPipe-free (no face landmarks); a missing
+    mediapipe must NOT block the v24 preflight."""
+    manager, _ = make_queue_manager({})
+    oldcam_dir = tmp_path / "oldcam-v24"
+    oldcam_dir.mkdir()
+    (oldcam_dir / "requirements.txt").write_text(
+        "numpy>=1.24\nopencv-python-headless>=4.8\n", encoding="utf-8"
+    )
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mediapipe":
+            raise ImportError("No module named mediapipe")
+        return real_import(name, *args, **kwargs)
+
+    with mock.patch("builtins.__import__", side_effect=fake_import):
+        assert manager._ensure_oldcam_dependencies(oldcam_dir, "v24") is True
