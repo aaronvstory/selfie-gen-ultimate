@@ -91,8 +91,55 @@ def main() -> None:
         help='Non-interactive selection: e.g. "1,3", "g:oldcam", '
         '"g:original", "all" (CLI mode).',
     )
+    parser.add_argument(
+        "--forensics",
+        action="store_true",
+        help="Offline temporal-forensics pre-test on --folder: predicts "
+        "whether oldcam/V24 will help each clip WITHOUT any API call "
+        "(no cost). Spatial-tell clips are worth scoring; "
+        "temporally-broken clips need a re-generated source instead.",
+    )
 
     args = parser.parse_args()
+
+    if args.forensics:
+        if not args.folder:
+            parser.error("--forensics requires --folder.")
+        try:
+            from src.forensics import analyze_clip, format_line
+        except ImportError as e:
+            print(f"Failed to load forensics module: {e}")
+            sys.exit(1)
+        from pathlib import Path as _P
+        root = _P(args.folder)
+        if not root.is_dir():
+            print(f"Not a folder: {root}")
+            sys.exit(2)
+        walker = root.rglob("*") if args.recursive else root.iterdir()
+        vids = sorted(
+            p for p in walker
+            if p.is_file()
+            and p.suffix.lower() in {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+        )
+        if not vids:
+            print(f"No videos under {root}")
+            sys.exit(1)
+        counts = {"spatial": 0, "temporal": 0, "uncertain": 0, "skipped": 0}
+        print(f"Temporal forensics — {len(vids)} clip(s), 0 API calls:\n")
+        for v in vids:
+            r = analyze_clip(v)
+            if r is None:
+                counts["skipped"] += 1
+                print(f"  skipped   (unreadable/too short)  {v.name}")
+                continue
+            counts[r.verdict] += 1
+            print("  " + format_line(r))
+        print(
+            f"\nSummary: {counts['spatial']} spatial (score these), "
+            f"{counts['temporal']} temporal (re-generate; V24 won't help), "
+            f"{counts['uncertain']} uncertain, {counts['skipped']} skipped."
+        )
+        sys.exit(0)
 
     # --no-recursive is a CLI-only flag; passing it must route to the CLI,
     # not silently launch the GUI. (--recursive is the default, so only the
