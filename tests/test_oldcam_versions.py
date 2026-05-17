@@ -1987,8 +1987,17 @@ def test_v24_exposes_configurable_ffmpeg_timeout():
     ns = oldcam_v24.build_parser().parse_args(["x.mp4"])
     assert ns.ffmpeg_timeout == 600
     src = (ROOT / "oldcam-v24" / "oldcam.py").read_text(encoding="utf-8")
-    assert 'timeout=int(getattr(args, "ffmpeg_timeout"' in src, (
-        "finalize encode must use the configurable ffmpeg_timeout"
+    assert 'int(getattr(args, "ffmpeg_timeout", 600))' in src, (
+        "finalize must read the configurable ffmpeg_timeout"
+    )
+    assert "timeout=ff_timeout" in src, (
+        "the configurable ffmpeg_timeout must be passed to subprocess.run"
+    )
+    # The transient-failure retry + honest degradation message must exist
+    # (a silent mp4v-only fallback ships an inferior, score-worse file).
+    assert "FFmpeg finalize FAILED" in src and "for attempt in (1, 2)" in src, (
+        "finalize must retry once on transient failure and warn loudly "
+        "when it ultimately falls back to the mp4v-only output"
     )
 
 

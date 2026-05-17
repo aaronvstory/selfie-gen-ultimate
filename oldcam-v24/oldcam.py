@@ -74,6 +74,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -890,30 +891,72 @@ def finalize_video_output(
         ]
     )
 
-    try:
-        # Audited safe: `command` is a list (argv form) and shell defaults to
-        # False, so there is no shell interpretation — command injection is
-        # structurally impossible regardless of the local file paths in it.
-        # Timeout is configurable (--ffmpeg-timeout): the 120s default is too
-        # short for long / high-res clips through the H.264 'slow' preset.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
-        subprocess.run(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-            timeout=int(getattr(args, "ffmpeg_timeout", 600)),
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    ff_timeout = int(getattr(args, "ffmpeg_timeout", 600))
+    last_err = ""
+    finalized = False
+    # Retry once on transient failure. On Windows, OpenCV's mp4v
+    # VideoWriter.release() can return before the OS has fully flushed/closed
+    # the temp file handle, so ffmpeg occasionally opens a still-locked or
+    # truncated temp on the first attempt and fails. A short settle + one
+    # retry recovers it instead of silently shipping the inferior mp4v-only
+    # output (which skips the score-critical H.264 Laundromat pass).
+    for attempt in (1, 2):
+        try:
+            # Audited safe: `command` is a list (argv form) and shell defaults
+            # to False — command injection is structurally impossible.
+            # stderr is captured (not DEVNULL) so a failure is diagnosable.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+            subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                check=True,
+                timeout=ff_timeout,
+            )
+            finalized = True
+            break
+        except subprocess.TimeoutExpired:
+            last_err = (
+                f"timed out after {ff_timeout}s "
+                f"(raise --ffmpeg-timeout for long / high-res clips)"
+            )
+            break  # a timeout won't fix itself on retry
+        except subprocess.CalledProcessError as exc:
+            err_tail = ""
+            if exc.stderr:
+                tail = exc.stderr.decode("utf-8", "replace").strip().splitlines()
+                err_tail = " | ".join(tail[-2:])
+            last_err = f"ffmpeg exit {exc.returncode}: {err_tail}"
+            if attempt == 1:
+                print(
+                    "  FFmpeg finalize failed (attempt 1) — likely a temp-file "
+                    "flush race; settling 1.5s and retrying..."
+                )
+                time.sleep(1.5)
+                continue
+            break
+
+    if not finalized:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(temp_output).replace(output_path)
-        print(f"FFmpeg finalize failed. Saved video without audio to: {output_path}")
-        return
-    finally:
         try:
             Path(temp_output).unlink(missing_ok=True)
         except OSError:
             pass
+        print(
+            f"WARNING: FFmpeg finalize FAILED ({last_err}).\n"
+            f"  Saved the mp4v-only temp to: {output_path}\n"
+            f"  This is NOT a proper V24 result — the H.264 'Laundromat'\n"
+            f"  pass (the score-critical step) was SKIPPED and there is no\n"
+            f"  audio. Re-run; raise --ffmpeg-timeout if it timed out.",
+            file=sys.stderr,
+        )
+        return
+
+    try:
+        Path(temp_output).unlink(missing_ok=True)
+    except OSError:
+        pass
     print(f"Saved video to: {output_path}")
 
 
@@ -1008,6 +1051,26 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
         # guard the release in case a future refactor moves init into the try.
         if writer is not None:
             writer.release()
+
+    # Proactively let the OS flush/close the mp4v temp before ffmpeg opens
+    # it. On Windows, cv2.VideoWriter.release() can return before the handle
+    # is fully closed; without this, ffmpeg sometimes opens a locked /
+    # truncated temp on the first try (finalize then retries — see below).
+    if temp_output and os.path.isfile(temp_output):
+        last_size, stable = -1, 0
+        for _ in range(20):  # up to ~2s; exits early once size stops growing
+            try:
+                sz = os.path.getsize(temp_output)
+            except OSError:
+                sz = -1
+            if sz == last_size and sz >= 0:
+                stable += 1
+                if stable >= 2:
+                    break
+            else:
+                stable = 0
+            last_size = sz
+            time.sleep(0.1)
 
     print("Video processing complete.")
     finalize_video_output(temp_output, str(source), output_path, args.codec, args)
