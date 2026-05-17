@@ -148,6 +148,33 @@ class SessionManagerTests(unittest.TestCase):
             # Idempotent: a second pass finds only the rolling file, removes nothing.
             self.assertEqual(sm.collapse_legacy_autosaves(app_dir), 0)
 
+    def test_purge_legacy_autosaves_is_filename_scoped(self):
+        # Hot-path purge must (a) only touch the target project's autosaves,
+        # (b) keep the rolling file, (c) leave manual saves alone, and
+        # (d) not depend on JSON contents (corrupt files still get purged).
+        with self._workspace() as app_dir:
+            sessions_dir = os.path.join(app_dir, "sessions")
+            os.makedirs(sessions_dir, exist_ok=True)
+            keep = os.path.join(sessions_dir, "alpha_autosave.json")
+            others = [
+                "alpha_autosave_20260101_010101.json",
+                "alpha_autosave_20260102_010101_2.json",
+                "beta_autosave_20260101_010101.json",   # different project
+                "alpha_manual.json",                     # manual save
+            ]
+            for fn in [os.path.basename(keep), *others]:
+                with open(os.path.join(sessions_dir, fn), "w", encoding="utf-8") as h:
+                    h.write("not even valid json {{{")  # contents must not matter
+
+            removed = sm._purge_legacy_autosaves(app_dir, "alpha", keep)
+            self.assertEqual(removed, 2)  # the two timestamped alpha autosaves
+            remaining = sorted(os.listdir(sessions_dir))
+            self.assertEqual(
+                remaining,
+                ["alpha_autosave.json", "alpha_manual.json",
+                 "beta_autosave_20260101_010101.json"],
+            )
+
     def test_infer_project_key_handles_no_timestamp_autosave(self):
         self.assertEqual(
             sm._infer_project_key({}, "myproj_autosave.json"), "myproj"

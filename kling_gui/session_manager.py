@@ -144,24 +144,46 @@ def compute_session_fingerprint(image_session) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _legacy_autosave_pattern(project_key: str) -> "re.Pattern":
+    """Filename regex for a project's autosave files (rolling + timestamped).
+
+    Matches ``{key}_autosave.json`` and ``{key}_autosave_YYYYMMDD_HHMMSS.json``
+    (and the ``_N`` collision-counter variant) without opening any file.
+    """
+    return re.compile(
+        rf"^{re.escape(_sanitize_name(project_key))}_autosave"
+        r"(?:_\d{8}_\d{6}(?:_\d+)?)?\.json$",
+        re.IGNORECASE,
+    )
+
+
 def _purge_legacy_autosaves(app_dir: str, project_key: str, keep_path: str) -> int:
     """Delete every autosave for ``project_key`` except the rolling file.
 
+    Filename-only matching (no JSON parsing) so this stays cheap on the
+    autosave hot path even when the directory holds many manual sessions.
     Case-insensitive path compare (Windows) so the rolling file is never
     deleted as its own legacy sibling. Manual saves are untouched.
     """
     removed = 0
+    sessions_dir = _get_sessions_dir(app_dir)
     keep_norm = os.path.normcase(os.path.abspath(keep_path))
-    for rec in list_sessions(app_dir):
-        if rec.session_kind != SESSION_KIND_AUTOSAVE or rec.project_key != project_key:
+    pattern = _legacy_autosave_pattern(project_key)
+    try:
+        entries = list(os.scandir(sessions_dir))
+    except OSError as exc:
+        logger.warning("Failed scanning sessions dir %s: %s", sessions_dir, exc)
+        return 0
+    for entry in entries:
+        if not entry.is_file() or not pattern.match(entry.name):
             continue
-        if os.path.normcase(os.path.abspath(rec.path)) == keep_norm:
+        if os.path.normcase(os.path.abspath(entry.path)) == keep_norm:
             continue
         try:
-            os.remove(rec.path)
+            os.remove(entry.path)
             removed += 1
         except Exception as exc:
-            logger.warning("Failed purging legacy autosave %s: %s", rec.path, exc)
+            logger.warning("Failed purging legacy autosave %s: %s", entry.path, exc)
     return removed
 
 
@@ -171,6 +193,10 @@ def collapse_legacy_autosaves(app_dir: str) -> int:
     For every project that still has timestamped autosaves, keep the newest,
     rewrite it to the deterministic rolling path, and delete the rest.
     Idempotent — safe to call repeatedly. Returns the number of files removed.
+
+    One ``list_sessions`` scan up front (this runs once, on first dialog open,
+    so parsing is acceptable); the per-project purge is filename-only, so the
+    overall cost is O(N), not O(N²).
     """
     removed = 0
     autosaves = [r for r in list_sessions(app_dir) if r.session_kind == SESSION_KIND_AUTOSAVE]
@@ -209,15 +235,19 @@ def build_session_from_folder(folder: str, max_images: int = 500) -> Optional[di
     when no recognized images are found.
     """
     files: List[str] = []
+    truncated = False
+    # Stop walking as soon as the cap is hit — a user who points this at a
+    # huge tree (or a drive root) shouldn't hang the UI enumerating it all.
     for root, _dirs, names in os.walk(folder):
         for n in names:
             if os.path.splitext(n)[1].lower() in VALID_EXTENSIONS:
                 files.append(os.path.join(root, n))
+                if len(files) >= max_images:
+                    truncated = True
+                    break
+        if truncated:
+            break
     files.sort(key=lambda p: p.lower())
-    truncated = False
-    if len(files) > max_images:
-        files = files[:max_images]
-        truncated = True
     if not files:
         return None
     now_iso = _now_iso()
