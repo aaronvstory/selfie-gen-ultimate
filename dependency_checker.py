@@ -108,6 +108,13 @@ PYTHON_DEPENDENCIES = [
         required=False,
         description="Required by DeepFace anti-spoofing (MiniFASNetV2). Without it FAS fails."
     ),
+    Dependency(
+        name="Questionary",
+        import_name="questionary",
+        pip_name="questionary>=2.0,<3",
+        required=False,
+        description="Interactive sectioned menus for kling_automation_ui.py settings editor (graceful fallback if absent)."
+    ),
 ]
 
 

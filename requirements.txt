@@ -4,6 +4,10 @@ requests>=2.31,<3
 fal-client>=0.7,<1
 Pillow>=10.0,<12
 rich>=13.0,<14
+# Interactive CLI menus for kling_automation_ui.py settings editor.
+# Replaces the 44-prompt linear walker with sectioned navigation. Graceful
+# fallback to plain input() if questionary import fails or stdin is non-TTY.
+questionary>=2.0,<3
 opencv-python-headless>=4.8.1.78
 mediapipe==0.10.35
 deepface==0.0.92

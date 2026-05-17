@@ -70,6 +70,7 @@ def run_oldcam_version(
         return None
 
     cmd = [sys.executable, "-u", str(launcher), str(video_path)]
+    _report(progress_cb, f"Oldcam {version} launching: {sys.executable} {launcher} {video_path}", "info")
     output_lines: List[str] = []
     try:
         process = subprocess.Popen(
@@ -96,8 +97,13 @@ def run_oldcam_version(
         _report(progress_cb, f"Oldcam {version} launcher error: {exc}", "warning")
         return None
     if completed_returncode != 0:
-        err = output_lines[-1] if output_lines else ""
-        _report(progress_cb, f"Oldcam {version} failed ({completed_returncode}): {err}", "warning")
+        tail = output_lines[-15:] if output_lines else []
+        _report(progress_cb, f"Oldcam {version} failed (exit={completed_returncode}):", "warning")
+        if tail:
+            for line in tail:
+                _report(progress_cb, f"  {line}", "warning")
+        else:
+            _report(progress_cb, "  (no stdout/stderr captured)", "warning")
         return None
 
     output_path = build_oldcam_output_path(video_path, version)

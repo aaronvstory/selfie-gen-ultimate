@@ -6,6 +6,7 @@ from typing import Callable, Optional
 import os
 import platform
 import logging
+import sys
 import threading
 import subprocess
 
@@ -131,6 +132,11 @@ class ImageCarousel(tk.Frame):
 
         # Re-entrancy guard
         self._updating: bool = False
+
+        # Paths that have already failed to render. Prevents per-resize log
+        # spam (Configure events re-fire _update_display) and avoids
+        # re-tripping the same PIL recursion on the same bad PNG.
+        self._render_failed_paths: set[str] = set()
 
         # Similarity computation state
         self._sim_lock = threading.Lock()
@@ -442,6 +448,10 @@ class ImageCarousel(tk.Frame):
     # ── Session change handler ──────────────────────────────────────
 
     def _on_session_change(self):
+        # Clear render-failure memo so re-added or re-saved paths get a fresh
+        # try (the memo exists to stop per-resize spam, not to permanently
+        # blacklist a path).
+        self._render_failed_paths.clear()
         self._update_display()
         self.after(50, self._update_display)
         # Auto-calc similarity for newly added images
@@ -654,6 +664,31 @@ class ImageCarousel(tk.Frame):
         entry.face_bbox). The bbox is in original image coordinates so we
         scale by the same ratio used for the image fit.
         """
+        # Skip paths we've already failed on — Configure events re-fire this
+        # on every window resize, so without the memo a single bad PNG floods
+        # the log and re-trips the same PIL recursion repeatedly.
+        # getattr() keeps tests that bypass __init__ (ImageCarousel.__new__) green.
+        failed_paths = getattr(self, "_render_failed_paths", None)
+        if failed_paths is None:
+            self._render_failed_paths = set()
+            failed_paths = self._render_failed_paths
+        if path in failed_paths:
+            cw = max(1, canvas.winfo_width())
+            ch = max(1, canvas.winfo_height())
+            canvas.create_text(
+                cw // 2, ch // 2,
+                text="(render skipped — see earlier error)",
+                fill=COLORS["text_dim"],
+                font=(FONT_FAMILY, 9),
+            )
+            return False
+
+        # PIL ancillary-chunk chains can exceed Python's default 1000 frame
+        # recursion limit on some PNGs (e.g. our BFL-composited front_exp.png).
+        # Raise to 5000 for the duration of this render; restore on exit.
+        _prior_limit = sys.getrecursionlimit()
+        if _prior_limit < 5000:
+            sys.setrecursionlimit(5000)
         try:
             from PIL import Image, ImageTk, ImageOps
 
@@ -736,7 +771,27 @@ class ImageCarousel(tk.Frame):
             self.log("Carousel render failed: PIL not available", "error")
             logger.exception("Carousel render failed: PIL not available for path=%s", path)
             return False
+        except RecursionError as e:
+            # Memo this path so we don't retry on every window resize.
+            self._render_failed_paths.add(path)
+            cw = max(1, canvas.winfo_width())
+            ch = max(1, canvas.winfo_height())
+            canvas.create_text(
+                cw // 2, ch // 2,
+                text="Cannot load: image too deeply nested (PIL recursion)",
+                fill=COLORS["error"],
+                font=(FONT_FAMILY, 9),
+            )
+            self.log(
+                f"Carousel render failed: {os.path.basename(path)} (RecursionError — path memoed, will not retry)",
+                "error",
+            )
+            logger.exception("Carousel render failed path=%s (RecursionError)", path)
+            return False
         except Exception as e:
+            # Memo to avoid re-spam on Configure events; non-recursion failures
+            # are usually permanent (corrupt file, wrong format) for the same path.
+            self._render_failed_paths.add(path)
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
             canvas.create_text(
@@ -751,6 +806,8 @@ class ImageCarousel(tk.Frame):
             )
             logger.exception("Carousel render failed path=%s", path)
             return False
+        finally:
+            sys.setrecursionlimit(_prior_limit)
 
     # ── Actions ─────────────────────────────────────────────────────
 

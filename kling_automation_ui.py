@@ -28,6 +28,13 @@ except ModuleNotFoundError:
         os.environ["TF_USE_LEGACY_KERAS"] = "1"
         os.environ["KERAS_BACKEND"] = "tensorflow"
 
+try:
+    import questionary
+    _QUESTIONARY_AVAILABLE = True
+except ImportError:
+    questionary = None  # type: ignore[assignment]
+    _QUESTIONARY_AVAILABLE = False
+
 ensure_ml_backend_env()
 
 # Import path utilities for frozen exe compatibility
@@ -1887,6 +1894,30 @@ class KlingAutomationUI:
         self.pause_review("\nPress Enter to continue...")
 
     def _edit_automation_settings(self):
+        """Dispatch: questionary-based UX when available + interactive TTY,
+        otherwise fall back to the legacy linear input() walker so tests and
+        non-TTY callers (CI, piped stdin) keep working."""
+        use_legacy = (
+            not _QUESTIONARY_AVAILABLE
+            or not sys.stdin.isatty()
+            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
+        )
+        if use_legacy:
+            return self._edit_automation_settings_legacy()
+        try:
+            return self._edit_automation_settings_questionary()
+        except (KeyboardInterrupt, EOFError):
+            # User bailed out of questionary; persist whatever they edited so far.
+            self.save_config()
+            print("\nSettings editor cancelled. Edits to this point have been saved.")
+        except Exception as exc:
+            # Last-resort safety net: if questionary blows up unexpectedly
+            # (terminal incompatibility, etc.), drop to the legacy path so the
+            # user can still configure things.
+            self.print_red(f"Interactive settings UI failed ({exc}); falling back to legacy walker.")
+            return self._edit_automation_settings_legacy()
+
+    def _edit_automation_settings_legacy(self):
         def _ask(prompt: str, key: str, cast_fn, validator=None):
             current = self.config.get(key)
             raw = input(f"{prompt} (current: {current}) [Enter keep]: ").strip()
@@ -2036,6 +2067,382 @@ class KlingAutomationUI:
     def _edit_automation_settings_quick(self):
         """Backwards-compatible alias for older tests/callers."""
         self._edit_automation_settings()
+
+    # ── Questionary-based settings editor (interactive sectioned UX) ──
+
+    def _edit_automation_settings_questionary(self):
+        """Sectioned, scrollable settings editor.
+
+        Replaces the 44-prompt linear walker. The user picks a section,
+        edits only the fields in that section, and returns to the section
+        list — no need to Enter through every other setting.
+        """
+        assert questionary is not None  # for type-checkers; dispatch already gated
+
+        while True:
+            summary = self._questionary_section_summary()
+            choice = questionary.select(
+                "Edit which section? (↑/↓ to move, Enter to pick, Ctrl-C to abort)",
+                choices=[
+                    questionary.Choice(f"Paths           — {summary['paths']}", "paths"),
+                    questionary.Choice(f"Run scope       — {summary['run']}", "run"),
+                    questionary.Choice(f"Front expand    — {summary['front']}", "front"),
+                    questionary.Choice(f"Portrait crop   — {summary['portrait']}", "portrait"),
+                    questionary.Choice(f"Selfie gen      — {summary['selfie']}", "selfie"),
+                    questionary.Choice(f"Selfie expand   — {summary['selfie_expand']}", "selfie_expand"),
+                    questionary.Choice(f"Video           — {summary['video']}", "video"),
+                    questionary.Choice(f"Oldcam          — {summary['oldcam']}", "oldcam"),
+                    questionary.Choice(f"Logging         — {summary['logging']}", "logging"),
+                    questionary.Choice("─" * 40, "_sep", disabled=" "),
+                    questionary.Choice("View all settings (read-only table)", "_view"),
+                    questionary.Choice("Save and return", "_done"),
+                ],
+                default="_done",
+            ).ask()
+
+            if choice in (None, "_done"):
+                break
+            if choice == "_view":
+                self._print_all_automation_settings()
+                continue
+            handler = {
+                "paths": self._qs_section_paths,
+                "run": self._qs_section_run,
+                "front": self._qs_section_front_expand,
+                "portrait": self._qs_section_portrait,
+                "selfie": self._qs_section_selfie,
+                "selfie_expand": self._qs_section_selfie_expand,
+                "video": self._qs_section_video,
+                "oldcam": self._qs_section_oldcam,
+                "logging": self._qs_section_logging,
+            }.get(choice)
+            if handler:
+                handler()
+
+        self.save_config()
+        print("Settings saved.")
+
+    def _questionary_section_summary(self) -> Dict[str, str]:
+        """Per-section one-line summary shown in the section picker so the
+        user can see at a glance what's set without opening the section."""
+        c = self.config
+        root = self.automation_root_folder or "(not set)"
+        # Truncate root for the picker label
+        if len(root) > 40:
+            root = "..." + root[-37:]
+        return {
+            "paths": f"root={root}",
+            "run": f"max_cases={self._read_max_cases_setting()}, reprocess={c.get('automation_reprocess_mode', 'skip')}",
+            "front": (
+                f"enabled={'y' if c.get('automation_front_expand_enabled') else 'n'}, "
+                f"provider={c.get('automation_front_expand_provider', 'auto')}, "
+                f"mode={c.get('automation_front_expand_mode', 'document_3x4')}"
+            ),
+            "portrait": (
+                f"enabled={'y' if c.get('automation_extract_enabled') else 'n'}, "
+                f"multiplier={c.get('automation_crop_multiplier', 1.5)}"
+            ),
+            "selfie": (
+                f"enabled={'y' if c.get('automation_selfie_enabled') else 'n'}, "
+                f"models={len(c.get('automation_selfie_models', []))}, "
+                f"threshold={c.get('automation_similarity_threshold', 80)}%"
+            ),
+            "selfie_expand": (
+                f"enabled={'y' if c.get('automation_selfie_expand_enabled') else 'n'}, "
+                f"provider={c.get('automation_selfie_expand_provider', 'auto')}, "
+                f"mode={c.get('automation_selfie_expand_mode', 'percent')}"
+            ),
+            "video": (
+                f"enabled={'y' if c.get('automation_video_enabled') else 'n'}, "
+                f"aspect={c.get('automation_video_aspect_ratio', '3:4')}"
+            ),
+            "oldcam": (
+                f"enabled={'y' if c.get('automation_oldcam_enabled') else 'n'}, "
+                f"version={c.get('automation_oldcam_version', 'v24')}, "
+                f"required={'y' if c.get('automation_oldcam_required') else 'n'}"
+            ),
+            "logging": (
+                f"verbose={'y' if c.get('automation_verbose_logging') else 'n'}, "
+                f"max_bytes={c.get('automation_log_max_bytes', 5_000_000)}"
+            ),
+        }
+
+    def _print_all_automation_settings(self):
+        """Render every automation_* setting in one Rich Table — gives the
+        user the "see all options at a glance" view they asked for."""
+        table = Table(title="All automation settings", show_lines=False)
+        table.add_column("Setting", style="cyan", no_wrap=True)
+        table.add_column("Value", style="white")
+        table.add_row("automation_root_folder", str(self.automation_root_folder or "(not set)"))
+        for key in sorted(k for k in self.config if str(k).startswith("automation_")):
+            val = self.config.get(key)
+            # Truncate giant prompt blobs so the table stays readable.
+            sval = str(val)
+            if len(sval) > 100:
+                sval = sval[:97] + "..."
+            table.add_row(key, sval)
+        Console().print(table)
+        input("\nPress Enter to return to the section picker...")
+
+    # ── Per-section editors ──────────────────────────────────────────
+
+    def _qs_text(self, message: str, key: str, default: Optional[str] = None,
+                 validator=None) -> None:
+        """Edit a single text/str setting. Empty input keeps current."""
+        current = self.config.get(key, default)
+        answer = questionary.text(
+            f"{message}  (current: {current})",
+            default="",
+        ).ask()
+        if answer is None or answer.strip() == "":
+            return
+        if validator and not validator(answer):
+            print(f"Invalid value for {key}; keeping current.")
+            return
+        self.config[key] = answer.strip()
+
+    def _qs_int(self, message: str, key: str, default: int = 0,
+                validator=None) -> None:
+        current = self.config.get(key, default)
+        answer = questionary.text(
+            f"{message}  (current: {current})",
+            default="",
+        ).ask()
+        if answer is None or answer.strip() == "":
+            return
+        try:
+            val = int(answer.strip())
+        except ValueError:
+            print(f"Invalid integer for {key}; keeping current.")
+            return
+        if validator and not validator(val):
+            print(f"Invalid value for {key}; keeping current.")
+            return
+        self.config[key] = val
+
+    def _qs_float(self, message: str, key: str, default: float = 0.0,
+                  validator=None) -> None:
+        current = self.config.get(key, default)
+        answer = questionary.text(
+            f"{message}  (current: {current})",
+            default="",
+        ).ask()
+        if answer is None or answer.strip() == "":
+            return
+        try:
+            val = float(answer.strip())
+        except ValueError:
+            print(f"Invalid number for {key}; keeping current.")
+            return
+        if validator and not validator(val):
+            print(f"Invalid value for {key}; keeping current.")
+            return
+        self.config[key] = val
+
+    def _qs_bool(self, message: str, key: str, default: bool = False) -> None:
+        current = bool(self.config.get(key, default))
+        answer = questionary.confirm(
+            f"{message}  (current: {'yes' if current else 'no'})",
+            default=current,
+        ).ask()
+        if answer is None:
+            return
+        self.config[key] = bool(answer)
+
+    def _qs_choice(self, message: str, key: str, choices: List[str],
+                   default: Optional[str] = None) -> None:
+        current = str(self.config.get(key, default if default is not None else choices[0]))
+        if current not in choices:
+            current = default if default in choices else choices[0]
+        answer = questionary.select(
+            f"{message}  (current: {current})",
+            choices=choices,
+            default=current,
+        ).ask()
+        if answer is None:
+            return
+        self.config[key] = answer
+
+    def _qs_section_paths(self):
+        print("\n— Paths & discovery —")
+        # Root folder gets special handling: validate it exists.
+        current_root = self.automation_root_folder or ""
+        raw = questionary.text(
+            f"Automation root path  (current: {current_root or '(not set)'})",
+            default="",
+        ).ask()
+        if raw and raw.strip():
+            root_path = Path(raw.strip()).expanduser()
+            if root_path.exists() and root_path.is_dir():
+                self.automation_root_folder = str(root_path)
+                self.config["automation_root_folder"] = self.automation_root_folder
+            else:
+                print("Root path invalid; keeping previous value.")
+        self._qs_text(
+            "Manifest filename",
+            "automation_manifest_name",
+            default="automation_manifest.json",
+            validator=lambda v: len(v) > 0 and v.endswith(".json") and Path(v).name == v,
+        )
+        self._qs_choice(
+            "Max cases per run",
+            "automation_max_cases_per_run",
+            choices=["1", "5", "10", "all"],
+            default="all",
+        )
+
+    def _qs_section_run(self):
+        print("\n— Run scope flags —")
+        self._qs_bool("Skip completed cases", "automation_skip_completed", default=True)
+        self._qs_bool("Skip if selfie exists", "automation_skip_if_selfie_exists", default=True)
+        self._qs_bool("Skip if video exists", "automation_skip_if_video_exists", default=True)
+        self._qs_bool("Allow reprocess", "automation_allow_reprocess", default=False)
+        self._qs_choice(
+            "Reprocess mode",
+            "automation_reprocess_mode",
+            choices=["skip", "overwrite", "increment"],
+            default="skip",
+        )
+
+    def _qs_section_front_expand(self):
+        print("\n— Front expansion —")
+        self._qs_bool("Front expand enabled", "automation_front_expand_enabled", default=True)
+        self._qs_choice("Front expand provider", "automation_front_expand_provider",
+                        choices=["auto", "bfl", "fal"], default="auto")
+        self._qs_choice("Front expand mode", "automation_front_expand_mode",
+                        choices=["document_3x4", "percent"], default="document_3x4")
+        self._qs_choice("Front composite mode", "automation_front_expand_composite_mode",
+                        choices=["preserve_seamless", "feathered", "hard", "none"],
+                        default="preserve_seamless")
+        self._qs_int("Front expand percent", "automation_front_expand_percent",
+                     default=30, validator=lambda v: v >= 0)
+        self._qs_choice("Front expand passes", "automation_front_expand_passes",
+                        choices=["1", "2"], default="2")
+        # The choice above stores a string; coerce back to int to keep types consistent.
+        if isinstance(self.config.get("automation_front_expand_passes"), str):
+            self.config["automation_front_expand_passes"] = int(self.config["automation_front_expand_passes"])
+        self._qs_bool("Front edge seal enabled", "automation_front_edge_seal_enabled", default=False)
+        self._qs_int("Front edge seal px", "automation_front_edge_seal_px",
+                     default=12, validator=lambda v: v >= 0)
+        self._qs_text("Front output filename", "automation_front_output_name",
+                      default="front-expanded.png",
+                      validator=lambda v: len(v) > 0)
+
+    def _qs_section_portrait(self):
+        print("\n— Portrait extraction —")
+        self._qs_bool("Portrait extraction enabled", "automation_extract_enabled", default=True)
+        self._qs_text("Extract output filename", "automation_extract_output_name",
+                      default="extracted.png",
+                      validator=lambda v: len(v) > 0)
+        self._qs_float("Crop multiplier", "automation_crop_multiplier",
+                       default=1.5, validator=lambda v: v > 0)
+
+    def _qs_section_selfie(self):
+        print("\n— Selfie generation —")
+        self._qs_bool("Selfie generation enabled", "automation_selfie_enabled", default=True)
+        current_models = list(self.config.get("automation_selfie_models", []))
+        preset = questionary.select(
+            f"Selfie model set  (current: {current_models})",
+            choices=[
+                questionary.Choice("Nano Banana 2 Edit only", "nano"),
+                questionary.Choice("GPT Image 2 Edit only", "gpt"),
+                questionary.Choice("Both (Nano Banana + GPT Image 2)", "both"),
+                questionary.Choice("Custom comma-separated endpoints", "custom"),
+                questionary.Choice("Keep current", "_keep"),
+            ],
+            default="_keep",
+        ).ask()
+        if preset == "nano":
+            self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
+        elif preset == "gpt":
+            self.config["automation_selfie_models"] = ["openai/gpt-image-2/edit"]
+        elif preset == "both":
+            self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit", "openai/gpt-image-2/edit"]
+        elif preset == "custom":
+            raw = questionary.text("Custom endpoints (comma-separated):").ask()
+            if raw:
+                models = [m.strip() for m in raw.split(",") if m.strip()]
+                if models:
+                    self.config["automation_selfie_models"] = models
+        self._qs_choice("Selfie model policy", "automation_selfie_model_policy",
+                        choices=["first_pass", "all"], default="first_pass")
+        self._qs_int("Max attempts per model", "automation_selfie_max_attempts_per_model",
+                     default=1, validator=lambda v: v > 0)
+        self._qs_int("Similarity threshold (0-100)", "automation_similarity_threshold",
+                     default=80, validator=lambda v: 0 <= v <= 100)
+
+        # Prompt slot — only ask if user wants to touch it.
+        self._ensure_selfie_prompt_slots()
+        current_slot = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
+        current_prompt = str(self.config.get("automation_selfie_prompts", {}).get(str(current_slot), "") or "")
+        preview = (current_prompt[:80] + "...") if len(current_prompt) > 80 else current_prompt
+        prompt_action = questionary.select(
+            f"Selfie prompt: slot {current_slot} — \"{preview}\"",
+            choices=[
+                questionary.Choice("Keep slot and prompt as-is", "_keep"),
+                questionary.Choice("Switch to a different slot (1-10)", "switch"),
+                questionary.Choice("Edit the active prompt text", "edit"),
+                questionary.Choice("Reset the active slot to its default prompt", "reset"),
+            ],
+            default="_keep",
+        ).ask()
+        if prompt_action == "switch":
+            slot_raw = questionary.text("New slot [1-10]:").ask()
+            if slot_raw and slot_raw.strip().isdigit():
+                v = int(slot_raw.strip())
+                if 1 <= v <= 10:
+                    self.config["automation_selfie_prompt_slot"] = v
+        elif prompt_action == "edit":
+            new_prompt = questionary.text("New prompt text:", default=current_prompt).ask()
+            if new_prompt is not None and new_prompt.strip():
+                self.config["automation_selfie_prompts"][str(current_slot)] = new_prompt.strip()
+        elif prompt_action == "reset":
+            defaults = merge_automation_defaults({}).get("automation_selfie_prompts", {})
+            self.config["automation_selfie_prompts"][str(current_slot)] = defaults.get(
+                str(current_slot), defaults.get("1", "")
+            )
+
+    def _qs_section_selfie_expand(self):
+        print("\n— Selfie expansion —")
+        self._qs_bool("Selfie expansion enabled", "automation_selfie_expand_enabled", default=True)
+        self._qs_choice("Selfie expand provider", "automation_selfie_expand_provider",
+                        choices=["auto", "bfl", "fal"], default="auto")
+        self._qs_choice("Selfie expand mode", "automation_selfie_expand_mode",
+                        choices=["percent", "centered_3x4"], default="percent")
+        self._qs_choice("Selfie composite mode", "automation_selfie_expand_composite_mode",
+                        choices=["preserve_seamless", "feathered", "hard", "none"],
+                        default="preserve_seamless")
+        self._qs_int("Selfie expand percent", "automation_selfie_expand_percent",
+                     default=30, validator=lambda v: v >= 0)
+
+    def _qs_section_video(self):
+        print("\n— Video generation —")
+        self._qs_bool("Video generation enabled", "automation_video_enabled", default=True)
+        self._qs_text("Video aspect ratio (e.g. 3:4)", "automation_video_aspect_ratio",
+                      default="3:4", validator=lambda v: ":" in v)
+        self._qs_bool("Use existing video prompt", "automation_video_use_existing_prompt", default=True)
+
+    def _qs_section_oldcam(self):
+        print("\n— Oldcam —")
+        self._qs_bool("Oldcam enabled", "automation_oldcam_enabled", default=True)
+        # v24 is the current production default per CLAUDE.md. Keep the static
+        # list aligned with the legacy walker so behavior matches.
+        self._qs_choice(
+            "Oldcam version",
+            "automation_oldcam_version",
+            choices=["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"],
+            default="v24",
+        )
+        self._qs_bool("Oldcam required (fail case on oldcam failure)",
+                      "automation_oldcam_required", default=False)
+
+    def _qs_section_logging(self):
+        print("\n— Logging —")
+        self._qs_bool("Verbose automation logging", "automation_verbose_logging", default=False)
+        self._qs_int("Log max bytes (rotation size)", "automation_log_max_bytes",
+                     default=5_000_000, validator=lambda v: v > 0)
+        self._qs_int("Log backup count", "automation_log_backup_count",
+                     default=3, validator=lambda v: v >= 1)
 
     def _dry_run_automation(self):
         if not self.automation_root_folder:
