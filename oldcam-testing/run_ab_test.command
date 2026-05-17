@@ -25,7 +25,11 @@ resolve_py() {
       echo "$candidate"; return 0
     fi
   done
-  for bin in python3.11 python3.12 python3 python; do
+  # PATH probe order must cover the full _python_supported range
+  # (3.9 <= ver < 3.13). 3.11 leads per CLAUDE.md Rule 6 (Tk on Homebrew),
+  # then descending. macOS setups that only ship python3.10 or python3.9
+  # (no python3 shim) hit the versioned probes — fixed per Codex review.
+  for bin in python3.11 python3.12 python3.10 python3.9 python3 python; do
     if command -v "$bin" >/dev/null 2>&1 && _python_supported "$(command -v "$bin")"; then
       command -v "$bin"; return 0
     fi
