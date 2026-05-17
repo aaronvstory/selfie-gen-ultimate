@@ -269,6 +269,9 @@ class FolderPreviewDialog(tk.Toplevel):
 class SessionManagerDialog(tk.Toplevel):
     """Dialog for browsing, loading, and managing saved sessions."""
 
+    DLG_W = 920
+    DLG_H = 560
+
     def __init__(self, parent, app_dir, image_session, config, save_config_fn, log_fn):
         super().__init__(parent)
         self.title("Session Manager")
@@ -290,7 +293,9 @@ class SessionManagerDialog(tk.Toplevel):
         self._refresh_list()
 
         # Center and grab
-        self.geometry("680x520")
+        w, h = self.DLG_W, self.DLG_H
+        self.geometry(f"{w}x{h}")
+        self.minsize(760, 460)
         self.update_idletasks()
         # Ensure parent geometry is current before reading dimensions
         parent.update_idletasks()
@@ -298,11 +303,11 @@ class SessionManagerDialog(tk.Toplevel):
         ph = parent.winfo_height()
         # Fallback if parent hasn't been mapped yet (returns 1)
         if pw < 10:
-            pw = parent.winfo_reqwidth() or 680
+            pw = parent.winfo_reqwidth() or w
         if ph < 10:
-            ph = parent.winfo_reqheight() or 520
-        x = parent.winfo_rootx() + (pw - 680) // 2
-        y = parent.winfo_rooty() + (ph - 520) // 2
+            ph = parent.winfo_reqheight() or h
+        x = parent.winfo_rootx() + (pw - w) // 2
+        y = parent.winfo_rooty() + (ph - h) // 2
         self.geometry(f"+{max(0, x)}+{max(0, y)}")
         self.grab_set()
         self.focus_set()
@@ -315,21 +320,25 @@ class SessionManagerDialog(tk.Toplevel):
         )
         header.pack(fill=tk.X, padx=16, pady=(12, 6))
 
-        # Listbox with scrollbar
+        # Listbox with vertical + horizontal scrollbars (long names no longer
+        # silently truncate — the user can scroll to read the full name).
         list_frame = tk.Frame(self, bg=COLORS["bg_main"])
         list_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 6))
 
-        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        xscrollbar = tk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
+        xscrollbar.pack(side=tk.BOTTOM, fill=tk.X)
 
         self._listbox = tk.Listbox(
             list_frame, bg=COLORS["bg_input"], fg=COLORS["text_light"],
             selectbackground=COLORS["accent_blue"], selectforeground="white",
             font=("Consolas", 10), yscrollcommand=scrollbar.set,
-            activestyle="none",
+            xscrollcommand=xscrollbar.set, activestyle="none",
         )
         self._listbox.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self._listbox.yview)
+        xscrollbar.config(command=self._listbox.xview)
         self._listbox.bind("<<ListboxSelect>>", self._on_select)
         self._listbox.bind("<Double-Button-1>", lambda e: self._on_load())
 
@@ -373,37 +382,98 @@ class SessionManagerDialog(tk.Toplevel):
         interval_menu.pack(side=tk.LEFT)
         interval_menu.bind("<<ComboboxSelected>>", lambda e: self._on_autosave_changed())
 
-        # Button bar
+        # Hint clarifying the two save buttons (they look similar but differ).
+        tk.Label(
+            self,
+            text="Save = overwrite selected session   ·   Save As New… = create a new session file",
+            font=(FONT_FAMILY, 8), bg=COLORS["bg_main"], fg=COLORS["text_dim"],
+            anchor="w",
+        ).pack(fill=tk.X, padx=16, pady=(0, 4))
+
+        # Button bar — grouped: destructive (left) · save current state ·
+        # load (right). Buttons that need a selection are tracked so they can
+        # be disabled until a row is picked (clearer than a silent no-op).
         btn_frame = tk.Frame(self, bg=COLORS["bg_main"])
         btn_frame.pack(fill=tk.X, padx=16, pady=(0, 12))
 
-        for text, style_name, cmd in [
-            ("Delete", TTK_BTN_DANGER, self._on_delete),
-            ("Clear Project Sessions", TTK_BTN_SECONDARY, self._on_clear_project),
-            ("Overwrite Save", TTK_BTN_PRIMARY, self._on_overwrite),
-            ("Save New", TTK_BTN_SUCCESS, self._on_save_new),
-        ]:
-            create_action_button(
-                btn_frame, text=text, command=cmd, style=style_name
-            ).pack(side=tk.LEFT, padx=(0, 6))
+        self._selection_buttons = []
+
+        del_btn = create_action_button(
+            btn_frame, text="Delete", command=self._on_delete, style=TTK_BTN_DANGER
+        )
+        del_btn.pack(side=tk.LEFT, padx=(0, 6))
+        clear_btn = create_action_button(
+            btn_frame, text="Clear Project", command=self._on_clear_project,
+            style=TTK_BTN_SECONDARY,
+        )
+        clear_btn.pack(side=tk.LEFT, padx=(0, 18))
+        save_btn = create_action_button(
+            btn_frame, text="Save", command=self._on_overwrite, style=TTK_BTN_PRIMARY
+        )
+        save_btn.pack(side=tk.LEFT, padx=(0, 6))
+        create_action_button(
+            btn_frame, text="Save As New…", command=self._on_save_new,
+            style=TTK_BTN_SUCCESS,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        self._selection_buttons = [del_btn, clear_btn, save_btn]
 
         create_action_button(
             btn_frame, text="Close", command=self.destroy, style=TTK_BTN_SECONDARY
         ).pack(side=tk.RIGHT)
 
-        create_action_button(
+        self._load_btn = create_action_button(
             btn_frame, text="Load", command=self._on_load, style=TTK_BTN_PRIMARY
+        )
+        self._load_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        self._selection_buttons.append(self._load_btn)
+        create_action_button(
+            btn_frame, text="Load Folder…", command=self._on_load_folder,
+            style=TTK_BTN_SECONDARY,
         ).pack(side=tk.RIGHT, padx=(0, 6))
 
+        self._sync_button_states()
+
+    def _sync_button_states(self):
+        """Enable selection-dependent buttons only when a row is selected."""
+        state = tk.NORMAL if self._selected_record else tk.DISABLED
+        for btn in getattr(self, "_selection_buttons", []):
+            try:
+                btn.configure(state=state)
+            except tk.TclError:
+                pass
+
     def _refresh_list(self):
-        from .session_manager import list_sessions
+        from .session_manager import list_sessions, collapse_legacy_autosaves
+        # One-shot migration: collapse the legacy timestamped autosave pile to
+        # a single rolling file per project the first time this dialog opens
+        # after the update. Guarded by a config flag so it runs exactly once.
+        if not self._config.get("session_autosave_collapsed_v1"):
+            try:
+                removed = collapse_legacy_autosaves(self._app_dir)
+                if removed:
+                    self._log_fn(f"Tidied {removed} legacy autosave file(s)", "info")
+            except Exception as e:
+                self._log_fn(f"Autosave tidy skipped: {e}", "warning")
+            self._config["session_autosave_collapsed_v1"] = True
+            try:
+                self._save_config_fn()
+            except Exception:
+                pass
         self._sessions = list_sessions(self._app_dir)
         self._listbox.delete(0, tk.END)
+        if not self._sessions:
+            self._listbox.insert(
+                tk.END,
+                "  (no saved sessions — work on a project or use “Load Folder…”)",
+            )
+            self._sync_button_states()
+            return
         for rec in self._sessions:
             ts = rec.updated_at[:16].replace("T", " ") if rec.updated_at else "?"
             badge = "[AUTOSAVE]" if rec.session_kind == "autosave" else "[MANUAL]"
             row = f"  {badge:<10s} {rec.project_key:<20s} {ts}  {rec.image_count:>3d} imgs  {rec.name}"
             self._listbox.insert(tk.END, row)
+        self._sync_button_states()
 
     def _on_select(self, event=None):
         sel = self._listbox.curselection()
@@ -411,6 +481,7 @@ class SessionManagerDialog(tk.Toplevel):
             self._selected_path = None
             self._selected_record = None
             self._detail_label.config(text="Select a session to view details")
+            self._sync_button_states()
             return
         rec = self._sessions[sel[0]]
         self._selected_record = rec
@@ -420,6 +491,7 @@ class SessionManagerDialog(tk.Toplevel):
         self._detail_label.config(
             text=f"Selected: {rec.name} — {kind} — project {rec.project_key} — saved {ts} — {rec.image_count} images"
         )
+        self._sync_button_states()
 
     def _on_load(self):
         if not self._selected_path:
@@ -432,6 +504,37 @@ class SessionManagerDialog(tk.Toplevel):
             self.destroy()
         except Exception as e:
             self._log_fn(f"Failed to load session: {e}", "error")
+
+    def _on_load_folder(self):
+        """Scan any chosen folder for recognized images and load them.
+
+        Recovery path for a renamed/moved project: the saved session's
+        absolute image paths are dead, but the images still exist under a new
+        folder name. The scanned folder is turned into an ad-hoc session that
+        the normal restore path consumes unchanged.
+        """
+        from .session_manager import build_session_from_folder
+        folder = select_directory(parent=self, title="Select a project folder to load")
+        if not folder:
+            return
+        try:
+            data = build_session_from_folder(folder)
+        except Exception as e:
+            self._log_fn(f"Folder scan failed: {e}", "error")
+            return
+        if not data:
+            self._log_fn("No recognized images in that folder", "warning")
+            return
+        count = len(data.get("session", {}).get("images", []))
+        if data.get("_folder_scan_truncated"):
+            self._log_fn(
+                f"Folder has many images — loading the first {count}", "warning"
+            )
+        self._loaded_session_data = data
+        self._log_fn(
+            f"Loaded {count} image(s) from folder: {data.get('name', '?')}", "success"
+        )
+        self.destroy()
 
     def _on_delete(self):
         if not self._selected_path:
