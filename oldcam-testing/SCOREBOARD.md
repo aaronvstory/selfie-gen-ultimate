@@ -54,9 +54,49 @@ V17 recovered most of V16's regression (0.1884 → 0.1660) but is still
 shear/translation adds peak artifacts faster than it masks the AI's. The
 mean improves only because the still frames dominate the average — the
 detector still spikes harder on the head-turn frames. **V15 remains the
-production champion.** Next idea to bench: a motion-gated **blur** (V18) —
-blur masks structural failure WITHOUT adding geometric distortion, so it
-shouldn't raise the peak the way warp does.
+production champion.**
+
+### 2026-05-17 — V18 "Dynamic Blur" — WORST so far (rejected)
+
+Clean V15 (baseline un-coupled OIS/RS) + a motion-gated Gaussian blur
+(`MOTION_BLUR_MAX_KERNEL = 15`, kernel scales with the same
+motion_multiplier; ~no-op when still). Hypothesis: blur masks the AI's
+structural failure during the head turn *without* the geometric tearing
+that sank V16/V17.
+
+| | Top score | Frame mean | Frame min | Frame max |
+|--|-----------|-----------|-----------|-----------|
+| **V15** (champion) | 0.4245 | **0.1605** 🏆 | 0.0035 | 0.4245 |
+| V17 (gentle warp) | 0.5439 | 0.1660 | 0.0059 | 0.5597 |
+| V16 (hard warp) | 0.5283 | 0.1884 | 0.0034 | 0.5374 |
+| **V18 (blur k=15)** | 0.5573 | **0.2046** | 0.0038 | 0.5797 |
+
+**V18 is the WORST of all four experiments** (+0.044 vs V15; peak 0.58).
+The hypothesis was wrong: the Resemble detector keys on each frame's
+*frequency profile*. A Gaussian blur strips high-frequency detail, which
+reads as "artificially smeared / low quality" — it deviates from a natural
+frequency profile just as much as warp does, only in the other direction,
+so it *raises* the score the same way.
+
+### Synthesis — the real lesson (4 experiments, 4 API calls)
+
+| Approach | Frame mean | vs V15 |
+|----------|-----------|--------|
+| **V15 — uniform double-lossy, every frame identical** | **0.1605** | — (best) |
+| V17 — localized gentle warp on motion | 0.1660 | +0.0055 |
+| V16 — localized hard warp on motion | 0.1884 | +0.028 |
+| V18 — localized blur on motion | 0.2046 | +0.044 |
+
+**Every localized, motion-gated per-frame manipulation lost** — warp *and*
+blur, gentle *and* hard. They all create a frame whose frequency profile
+deviates locally, which is exactly the anomaly the detector is built to
+spot. V15 wins **because it treats every frame identically** (uniform
+mp4v→CRF23 crush): there is no localized signature to flag. The losing
+premise is "fix the head-turn frames *specifically*", not any one
+technique. Future ideas should be **global / uniform** (e.g. different
+global codec/bitrate, a uniform film-grain-like dither, temporal
+re-timing) — not motion-gated. **V15 stays the production champion;**
+PR #30 (the V15 hotfix) should ship as-is.
 
 <!-- run results appended below this line -->
 
@@ -127,3 +167,22 @@ shouldn't raise the peak the way warp does.
 | 11 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
 | 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
 | 13 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
+
+## 2026-05-17 14:58 — v18 — `front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4`
+
+| Rank | Video | Frame mean | Frame min | Certainty | Verdict |
+|------|-------|-----------|-----------|-----------|---------|
+| 1 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15.mp4 | 0.1605 🏆 | 0.0035 | 0.1510 | Neutral/Uncertain |
+| 2 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v17.mp4 | 0.1660 | 0.0059 | 0.0879 | Neutral/Uncertain |
+| 3 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v16.mp4 | 0.1884 | 0.0034 | 0.0566 | Neutral/Uncertain |
+| 4 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v18.mp4 | 0.2046 | 0.0038 | 0.1146 | Neutral/Uncertain |
+| 5 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v12.mp4 | 0.6262 | 0.0610 | 0.9740 | Fake |
+| 6 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v13.mp4 | 0.6597 | 0.0481 | 0.9844 | Fake |
+| 7 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v8.mp4 | 0.8543 | 0.4395 | 1.0000 | Fake |
+| 8 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15-v1.mp4 | 0.9892 | 0.8990 | 1.0000 | Fake |
+| 9 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4 | 0.9936 | 0.9443 | 1.0000 | Fake |
+| 10 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v14.mp4 | 0.9953 | 0.9639 | 1.0000 | Fake |
+| 11 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v7.mp4 | 0.9983 | 0.9871 | 1.0000 | Fake |
+| 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
+| 13 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
+| 14 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
