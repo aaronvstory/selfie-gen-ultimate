@@ -1936,7 +1936,11 @@ class KlingAutomationUI:
         except Exception as exc:
             # Last-resort safety net: if questionary blows up unexpectedly
             # (terminal incompatibility, etc.), drop to the legacy path so the
-            # user can still configure things.
+            # user can still configure things. Log the full traceback so we
+            # don't silently swallow real bugs or environment issues.
+            logging.getLogger(__name__).exception(
+                "questionary settings editor failed; falling back to legacy walker"
+            )
             self.print_red(f"Interactive settings UI failed ({exc}); falling back to legacy walker.")
             return self._edit_automation_settings_legacy()
 
@@ -2112,6 +2116,21 @@ class KlingAutomationUI:
             )
         )
 
+        # Section → handler map. Defined once outside the while-loop so it's
+        # not rebuilt on every section pick.
+        section_handlers = {
+            "paths": self._qs_section_paths,
+            "run": self._qs_section_run,
+            "front": self._qs_section_front_expand,
+            "portrait": self._qs_section_portrait,
+            "selfie": self._qs_section_selfie,
+            "selfie_expand": self._qs_section_selfie_expand,
+            "video": self._qs_section_video,
+            "oldcam": self._qs_section_oldcam,
+            "logging": self._qs_section_logging,
+        }
+
+        cancelled = False
         while True:
             summary = self._questionary_section_summary()
             choice = questionary.select(
@@ -2136,27 +2155,26 @@ class KlingAutomationUI:
                 style=KLING_QUESTIONARY_STYLE,
             ).ask()
 
-            if choice in (None, "_done"):
+            # questionary returns None when the user aborts (Ctrl-C, ESC).
+            # Distinguish that from an explicit "_done" so the closing message
+            # accurately reflects what happened.
+            if choice is None:
+                cancelled = True
+                break
+            if choice == "_done":
                 break
             if choice == "_view":
                 self._print_all_automation_settings()
                 continue
-            handler = {
-                "paths": self._qs_section_paths,
-                "run": self._qs_section_run,
-                "front": self._qs_section_front_expand,
-                "portrait": self._qs_section_portrait,
-                "selfie": self._qs_section_selfie,
-                "selfie_expand": self._qs_section_selfie_expand,
-                "video": self._qs_section_video,
-                "oldcam": self._qs_section_oldcam,
-                "logging": self._qs_section_logging,
-            }.get(choice)
+            handler = section_handlers.get(choice)
             if handler:
                 handler()
 
         self.save_config()
-        print("Settings saved.")
+        if cancelled:
+            print("Settings editor cancelled. Edits to this point have been saved.")
+        else:
+            print("Settings saved.")
 
     def _questionary_section_summary(self) -> Dict[str, str]:
         """Per-section one-line summary shown in the section picker so the
@@ -2211,6 +2229,10 @@ class KlingAutomationUI:
         table.add_column("Value", style="white")
         table.add_row("automation_root_folder", str(self.automation_root_folder or "(not set)"))
         for key in sorted(k for k in self.config if str(k).startswith("automation_")):
+            # Skip the field we already rendered explicitly above so the
+            # table doesn't show two rows for the same setting.
+            if key == "automation_root_folder":
+                continue
             val = self.config.get(key)
             # Truncate giant prompt blobs so the table stays readable.
             sval = str(val)
@@ -2304,7 +2326,12 @@ class KlingAutomationUI:
         self.config[key] = bool(answer)
 
     def _qs_choice(self, message: str, key: str, choices: List[str],
-                   default: Optional[str] = None) -> None:
+                   default: Optional[str] = None,
+                   cast_fn: Optional[Any] = None) -> None:
+        """Single-choice picker. Optional `cast_fn` converts the selected
+        string to a typed value before persisting (e.g. `int` for choices
+        like ["1", "2"] that should land in config as integers). Without
+        cast_fn, the raw string from `choices` is stored."""
         current = str(self.config.get(key, default if default is not None else choices[0]))
         if current not in choices:
             current = default if default in choices else choices[0]
@@ -2318,7 +2345,14 @@ class KlingAutomationUI:
         ).ask()
         if answer is None:
             return
-        self.config[key] = answer
+        if cast_fn is not None:
+            try:
+                self.config[key] = cast_fn(answer)
+            except Exception:
+                print(f"  ✗ Could not cast {answer!r} for {key}; keeping current.")
+                return
+        else:
+            self.config[key] = answer
 
     def _qs_directory(self, message: str, current_value: Optional[str],
                       picker_title: str) -> Optional[str]:
@@ -2432,10 +2466,7 @@ class KlingAutomationUI:
         self._qs_int("Expand percent:", "automation_front_expand_percent",
                      default=30, validator=lambda v: v >= 0)
         self._qs_choice("Expand passes:", "automation_front_expand_passes",
-                        choices=["1", "2"], default="2")
-        # The choice above stores a string; coerce back to int to keep types consistent.
-        if isinstance(self.config.get("automation_front_expand_passes"), str):
-            self.config["automation_front_expand_passes"] = int(self.config["automation_front_expand_passes"])
+                        choices=["1", "2"], default="2", cast_fn=int)
         self._qs_bool("Edge seal enabled?", "automation_front_edge_seal_enabled", default=False)
         self._qs_int("Edge seal px:", "automation_front_edge_seal_px",
                      default=12, validator=lambda v: v >= 0)

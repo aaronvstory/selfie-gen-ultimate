@@ -108,6 +108,11 @@ class ImageCarousel(tk.Frame):
     Same constructor signature as before so main_window.py needs minimal changes.
     """
 
+    # Class-level default so tests that bypass __init__ via ImageCarousel.__new__
+    # still see an empty set instead of AttributeError. __init__ replaces this
+    # with a fresh instance-level set so each carousel tracks its own failures.
+    _render_failed_paths: set = set()
+
     def __init__(
         self,
         parent,
@@ -676,12 +681,9 @@ class ImageCarousel(tk.Frame):
         # Skip paths we've already failed on — Configure events re-fire this
         # on every window resize, so without the memo a single bad PNG floods
         # the log and re-trips the same PIL recursion repeatedly.
-        # getattr() keeps tests that bypass __init__ (ImageCarousel.__new__) green.
-        failed_paths = getattr(self, "_render_failed_paths", None)
-        if failed_paths is None:
-            self._render_failed_paths = set()
-            failed_paths = self._render_failed_paths
-        if path in failed_paths:
+        # _render_failed_paths has a class-level default so tests that bypass
+        # __init__ via __new__ get an empty set instead of AttributeError.
+        if path in self._render_failed_paths:
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
             canvas.create_text(

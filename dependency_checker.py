@@ -193,10 +193,25 @@ class DependencyChecker:
         return True
 
     @staticmethod
-    def _get_installed_package_version(pip_name: str) -> Optional[str]:
+    def _strip_pip_specifier(pip_name: str) -> str:
+        """Strip version specifiers from a pip name so importlib.metadata can resolve it.
+
+        pip_name fields may carry full requirement strings (e.g. "torch>=2.2,<3",
+        "questionary>=2.0,<3") so the same value drives both pip install repair
+        hints (which want the pinned version) and metadata lookups (which want a
+        bare distribution name). Strip on the first comparator/separator char.
+        """
+        for sep in ("<", ">", "=", "!", "~", ","):
+            idx = pip_name.find(sep)
+            if idx != -1:
+                pip_name = pip_name[:idx]
+        return pip_name.strip()
+
+    @classmethod
+    def _get_installed_package_version(cls, pip_name: str) -> Optional[str]:
         """Return installed metadata version, or None when the package is absent."""
         try:
-            return importlib.metadata.version(pip_name)
+            return importlib.metadata.version(cls._strip_pip_specifier(pip_name))
         except importlib.metadata.PackageNotFoundError:
             return None
 
@@ -222,7 +237,7 @@ class DependencyChecker:
             try:
                 dep.version = getattr(module, '__version__', None)
                 if dep.version is None:
-                    dep.version = importlib.metadata.version(dep.pip_name)
+                    dep.version = importlib.metadata.version(self._strip_pip_specifier(dep.pip_name))
             except Exception:
                 dep.version = "unknown"
             return True
