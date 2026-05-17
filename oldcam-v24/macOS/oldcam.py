@@ -335,6 +335,14 @@ def resolve_face_landmarker_task_path():
 
 
 def create_face_landmarker(task_path):
+    # V24 (like V15) never calls this — kept module-level only for backward
+    # compat with external importers. Fail fast with a clear message instead
+    # of an opaque AttributeError on the None mediapipe stubs.
+    if not _MEDIAPIPE_AVAILABLE or vision is None or mp_python is None:
+        raise RuntimeError(
+            "MediaPipe is not installed. Install mediapipe==0.10.35 to use "
+            "the face-landmarker helpers (V24's own pipeline does not need them)."
+        )
     options = vision.FaceLandmarkerOptions(
         base_options=mp_python.BaseOptions(model_asset_path=str(task_path)),
         num_faces=1,
@@ -963,60 +971,68 @@ def finalize_video_output(
 def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace) -> None:
     source = ensure_input_exists(input_path)
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    # Pre-bind so the single finally can null-guard both releases even if an
+    # exception (metadata read, VideoWriter init, etc.) fires before they're
+    # assigned — no leaked OpenCV handles on any failure path.
+    capture = None
+    writer = None
+    state: Dict[str, Any] = {}  # always a dict so the finally cleanup is safe
     capture = cv2.VideoCapture(str(source))
     if not capture.isOpened():
+        capture.release()
         raise RuntimeError(f"Could not open video: {source}")
 
-    rotation = get_video_rotation(str(source))
-    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
-
-    ok, test_frame = capture.read()
-    if not ok:
-        capture.release()
-        raise RuntimeError(f"Could not read the first frame from: {source}")
-    capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-    test_frame = correct_rotation(test_frame, rotation)
-    height, width = test_frame.shape[:2]
-    total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    # V12: no LUT — global color manipulation removed (sepia tint elimination).
-    vignette_mask = create_vignette_mask(height, width)
-    rng = np.random.default_rng()
-    _vignette_strength = getattr(args, "vignette_strength", 0.55)
-    _adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * _vignette_strength)).astype(np.float32) if _vignette_strength > 0 else None
-    # V13: fpn dropped — apply_modern_sensor_noise no longer called.
-    state = {
-        "adjusted_vignette_mask": _adjusted_vignette,
-    }
-
-    output_size = (width * 2, height) if args.preview else (width, height)
-
-    # V15 hotfix ("Laundromat"): pure lossy mp4v temp — NO FFV1/MJPG fallback.
-    # The deliberate mp4v -> H.264 "double-lossy" chain is the whole point: it
-    # crushes Kling's diffusion artifacts and bakes the temporal ghosting into
-    # the macro-blocks so a frequency detector reads it as natural motion blur,
-    # not a math overlay. Lossless preservation defeated that and scored poorly.
-    temp_output = build_temp_video_path(output_path)
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(temp_output, fourcc, fps, output_size)
-    if not writer.isOpened():
-        # Release both handles before bailing so a batch run (main() loops
-        # over many files) never accumulates open writers / locked files.
-        capture.release()
-        writer.release()
-        raise RuntimeError(
-            f"Could not create mp4v video writer for: {temp_output}. "
-            "The 'Laundromat' double-lossy pipeline requires OpenCV's mp4v "
-            "encoder (the long-standing default); install an OpenCV build "
-            "with mp4v support."
-        )
-
-    frame_num = 0
-    next_pct = 25.0
-    previous_processed = None
-
+    # One try/finally spans EVERYTHING after the capture opens (metadata
+    # read, VideoWriter init, the frame loop) so capture+writer are always
+    # released — even on an unexpected exception before the loop. (Gemini
+    # PR #32: previously a failure in this window leaked the OpenCV handle.)
     try:
+        rotation = get_video_rotation(str(source))
+        fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+
+        ok, test_frame = capture.read()
+        if not ok:
+            raise RuntimeError(f"Could not read the first frame from: {source}")
+        capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+        test_frame = correct_rotation(test_frame, rotation)
+        height, width = test_frame.shape[:2]
+        total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # V12: no LUT — global color manipulation removed (sepia tint elimination).
+        vignette_mask = create_vignette_mask(height, width)
+        rng = np.random.default_rng()
+        _vignette_strength = getattr(args, "vignette_strength", 0.55)
+        _adjusted_vignette = (1.0 - ((1.0 - vignette_mask) * _vignette_strength)).astype(np.float32) if _vignette_strength > 0 else None
+        # V13: fpn dropped — apply_modern_sensor_noise no longer called.
+        state = {
+            "adjusted_vignette_mask": _adjusted_vignette,
+        }
+
+        output_size = (width * 2, height) if args.preview else (width, height)
+
+        # V15 hotfix ("Laundromat"): pure lossy mp4v temp — NO FFV1/MJPG
+        # fallback. The deliberate mp4v -> H.264 "double-lossy" chain is the
+        # whole point: it crushes Kling's diffusion artifacts and bakes the
+        # temporal ghosting into the macro-blocks so a frequency detector
+        # reads it as natural motion blur, not a math overlay. Lossless
+        # preservation defeated that and scored poorly.
+        temp_output = build_temp_video_path(output_path)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(temp_output, fourcc, fps, output_size)
+        if not writer.isOpened():
+            # The outer finally releases both handles; just bail clearly.
+            raise RuntimeError(
+                f"Could not create mp4v video writer for: {temp_output}. "
+                "The 'Laundromat' double-lossy pipeline requires OpenCV's mp4v "
+                "encoder (the long-standing default); install an OpenCV build "
+                "with mp4v support."
+            )
+
+        frame_num = 0
+        next_pct = 25.0
+        previous_processed = None
+
         while True:
             ok, frame = capture.read()
             if not ok:
@@ -1045,10 +1061,13 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
                     print(f"[Oldcam] Processing: {int(next_pct)}% complete...", flush=True)
                     next_pct += 25.0
     finally:
+        # state is pre-bound to {} so this is always safe even if the
+        # exception fired before the real state dict was built.
         close_face_landmarker_state(state)
-        capture.release()
-        # writer is created before the try (pure mp4v, no fallback loop);
-        # guard the release in case a future refactor moves init into the try.
+        # Null-guard BOTH: an exception before either was assigned must not
+        # itself raise AttributeError out of the finally (Gemini PR #32).
+        if capture is not None:
+            capture.release()
         if writer is not None:
             writer.release()
 
