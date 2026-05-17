@@ -1,0 +1,6 @@
+# Generated HTML reports (regenerated per run; not source) — never commit.
+reports/
+# Legacy per-run folders (older harness layout).
+runs/
+__pycache__/
+*.pyc
