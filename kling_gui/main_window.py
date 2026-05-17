@@ -448,18 +448,31 @@ class SessionManagerDialog(tk.Toplevel):
         # a single rolling file per project the first time this dialog opens
         # after the update. Guarded by a config flag so it runs exactly once.
         if not self._config.get("session_autosave_collapsed_v1"):
+            migrated = False
             try:
                 removed = collapse_legacy_autosaves(self._app_dir)
                 if removed:
                     self._log_fn(f"Tidied {removed} legacy autosave file(s)", "info")
+                migrated = True
             except Exception as e:
+                # Don't set the flag — a transient failure must be retried on
+                # the next open, not permanently suppressed.
                 self._log_fn(f"Autosave tidy skipped: {e}", "warning")
-            self._config["session_autosave_collapsed_v1"] = True
-            try:
-                self._save_config_fn()
-            except Exception:
-                pass
+            if migrated:
+                self._config["session_autosave_collapsed_v1"] = True
+                try:
+                    self._save_config_fn()
+                except Exception as e:
+                    self._log_fn(
+                        f"Failed to persist autosave migration flag: {e}", "warning"
+                    )
         self._sessions = list_sessions(self._app_dir)
+        # Clear stale selection before repopulating: an action that triggers a
+        # refresh (overwrite / save-new / delete) can leave _selected_path
+        # pointing at a row that is gone or no longer visibly selected.
+        self._selected_path = None
+        self._selected_record = None
+        self._detail_label.config(text="Select a session to view details")
         self._listbox.delete(0, tk.END)
         if not self._sessions:
             self._listbox.insert(

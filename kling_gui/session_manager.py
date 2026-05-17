@@ -141,7 +141,7 @@ def compute_session_fingerprint(image_session) -> str:
         # Never let fingerprinting break a save; fall back to a unique value
         # so the caller treats it as "changed" and writes.
         return _now_iso()
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _purge_legacy_autosaves(app_dir: str, project_key: str, keep_path: str) -> int:
@@ -408,8 +408,14 @@ def save_session(
                     ):
                         logger.debug("Autosave skipped (no change): %s", fpath)
                         return None
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Corrupt/unreadable rolling file: surface it, then fall
+                    # through and overwrite with a fresh snapshot.
+                    logger.warning(
+                        "Autosave read failed, rewriting rolling file %s: %s",
+                        fpath,
+                        exc,
+                    )
         else:
             safe = _sanitize_name(session_name)
             fpath = os.path.join(sessions_dir, f"{safe}.json")
