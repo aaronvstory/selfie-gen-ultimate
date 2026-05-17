@@ -34,8 +34,29 @@ coupling *raised* the peak frame score (0.42 → 0.54): the aggressive
 geometric warping during the head turn introduced its own detectable
 artifacts instead of masking the AI's. Both still crush everything else
 (next best, v12, is 0.63). **Decision: V15 stays the production champion.**
-Next idea to bench here: gentler motion gains (e.g. ×2 / ×1.5) or a
-motion-gated *blur* instead of geometric shear/translation.
+
+### 2026-05-17 — V17 "Dynamic Stress (Gentle)" — ≈V15, marginally worse (rejected)
+
+Same mechanism as V16 with much gentler gains
+(`MOTION_OIS_GAIN 8.0 → 2.0`, `MOTION_RS_GAIN 5.0 → 1.5`).
+
+| | Top score | Frame mean | Frame min | Frame max |
+|--|-----------|-----------|-----------|-----------|
+| **V15** (champion) | 0.4245 | **0.1605** 🏆 | 0.0035 | 0.4245 |
+| V16 (×8 / ×5) | 0.5283 | 0.1884 | 0.0034 | 0.5374 |
+| **V17 (×2 / ×1.5)** | 0.5439 | 0.1660 | 0.0059 | 0.5597 |
+
+V17 recovered most of V16's regression (0.1884 → 0.1660) but is still
+**+0.0055 frame-mean above V15** — and the *peak* frame kept climbing
+(0.42 → 0.56) even at gentle gains, while frame-min slightly worsened.
+
+**Verdict: any motion-coupled geometric warp is a dead end.** Even gentle,
+shear/translation adds peak artifacts faster than it masks the AI's. The
+mean improves only because the still frames dominate the average — the
+detector still spikes harder on the head-turn frames. **V15 remains the
+production champion.** Next idea to bench: a motion-gated **blur** (V18) —
+blur masks structural failure WITHOUT adding geometric distortion, so it
+shouldn't raise the peak the way warp does.
 
 <!-- run results appended below this line -->
 
@@ -71,3 +92,38 @@ motion-gated *blur* instead of geometric shear/translation.
 | 10 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
 | 11 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
 | 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
+
+## 2026-05-17 14:45 — v17 — `front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4`
+
+| Rank | Video | Frame mean | Frame min | Certainty | Verdict |
+|------|-------|-----------|-----------|-----------|---------|
+| 1 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15.mp4 | 0.1605 🏆 | 0.0035 | 0.1510 | Neutral/Uncertain |
+| 2 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v16.mp4 | 0.1884 | 0.0034 | 0.0566 | Neutral/Uncertain |
+| 3 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v12.mp4 | 0.6262 | 0.0610 | 0.9740 | Fake |
+| 4 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v13.mp4 | 0.6597 | 0.0481 | 0.9844 | Fake |
+| 5 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v8.mp4 | 0.8543 | 0.4395 | 1.0000 | Fake |
+| 6 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15-v1.mp4 | 0.9892 | 0.8990 | 1.0000 | Fake |
+| 7 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4 | 0.9936 | 0.9443 | 1.0000 | Fake |
+| 8 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v14.mp4 | 0.9953 | 0.9639 | 1.0000 | Fake |
+| 9 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v7.mp4 | 0.9983 | 0.9871 | 1.0000 | Fake |
+| 10 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
+| 11 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
+| 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
+
+## 2026-05-17 14:46 — v17 — `front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4`
+
+| Rank | Video | Frame mean | Frame min | Certainty | Verdict |
+|------|-------|-----------|-----------|-----------|---------|
+| 1 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15.mp4 | 0.1605 🏆 | 0.0035 | 0.1510 | Neutral/Uncertain |
+| 2 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v17.mp4 | 0.1660 | 0.0059 | 0.0879 | Neutral/Uncertain |
+| 3 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v16.mp4 | 0.1884 | 0.0034 | 0.0566 | Neutral/Uncertain |
+| 4 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v12.mp4 | 0.6262 | 0.0610 | 0.9740 | Fake |
+| 5 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v13.mp4 | 0.6597 | 0.0481 | 0.9844 | Fake |
+| 6 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v8.mp4 | 0.8543 | 0.4395 | 1.0000 | Fake |
+| 7 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15-v1.mp4 | 0.9892 | 0.8990 | 1.0000 | Fake |
+| 8 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4 | 0.9936 | 0.9443 | 1.0000 | Fake |
+| 9 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v14.mp4 | 0.9953 | 0.9639 | 1.0000 | Fake |
+| 10 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v7.mp4 | 0.9983 | 0.9871 | 1.0000 | Fake |
+| 11 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
+| 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
+| 13 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
