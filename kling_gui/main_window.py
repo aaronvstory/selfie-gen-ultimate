@@ -1122,6 +1122,23 @@ class KlingGUIWindow:
             foreground=COLORS["text_light"],
             borderwidth=1,
             font=(FONT_FAMILY, 8, "bold"),
+            relief="flat",
+        )
+        # Without explicit active/pressed maps, ttk falls back to the OS
+        # default — a pale hover background that wipes out the light heading
+        # text and makes the active sort column unreadable on both Win and
+        # macOS. Lock both states to the dark palette + accent foreground.
+        style.map(
+            "Treeview.Heading",
+            background=[
+                ("pressed", COLORS["bg_hover"]),
+                ("active", COLORS["bg_hover"]),
+            ],
+            foreground=[
+                ("pressed", COLORS["accent_blue"]),
+                ("active", COLORS["accent_blue"]),
+            ],
+            relief=[("pressed", "sunken"), ("active", "flat")],
         )
         style.map(
             "Treeview",

@@ -62,8 +62,30 @@ def apply_dark_ttk(root) -> None:
             background=BG,
             foreground=FG,
             font=FONT_BOLD,
+            relief="flat",
+            borderwidth=1,
         )
-        style.map("Treeview", background=[("selected", ACCENT)])
+        # Without explicit active/pressed maps, ttk falls back to the OS
+        # default (a near-white hover background that washes out the white
+        # heading text). Lock both states to our dark palette so the column
+        # title stays legible while the user is sorting.
+        style.map(
+            "Treeview.Heading",
+            background=[
+                ("pressed", BG_PANEL),
+                ("active", BG_PANEL),
+            ],
+            foreground=[
+                ("pressed", ACCENT),
+                ("active", ACCENT),
+            ],
+            relief=[("pressed", "sunken"), ("active", "flat")],
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", ACCENT)],
+            foreground=[("selected", "#ffffff")],
+        )
     except Exception:
         # GUI theming is cosmetic; a failure here must not block the app.
         pass
