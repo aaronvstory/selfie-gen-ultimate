@@ -35,6 +35,16 @@ except ModuleNotFoundError:
 _RICH_CONSOLE = Console()
 
 
+class _QuestionarySectionAbort(Exception):
+    """Raised inside a section editor when the user hits Ctrl-C / ESC.
+
+    questionary.ask() returns None on cancellation. The _qs_* helpers convert
+    that None into this exception so the calling section handler unwinds back
+    to the section picker (rather than silently continuing to the next field
+    and forcing the user to abort every prompt in the section).
+    """
+
+
 try:
     # questionary is declared required=True in dependency_checker.py and is
     # installed via requirements.txt by every launcher (setup_macos.sh,
@@ -2177,7 +2187,14 @@ class KlingAutomationUI:
                 continue
             handler = section_handlers.get(choice)
             if handler:
-                handler()
+                try:
+                    handler()
+                except _QuestionarySectionAbort:
+                    # User pressed Ctrl-C / ESC inside the section — pop back
+                    # to the section picker so they can pick a different
+                    # section or use the explicit "Save and return" option,
+                    # rather than tearing down the whole editor.
+                    print("  (section edit aborted — back to section picker)")
 
         self.save_config()
         if cancelled:
@@ -2289,8 +2306,12 @@ class KlingAutomationUI:
             validate=_live_validate,
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
-        if answer is None or not answer.strip():
-            return
+        if answer is None:
+            # Ctrl-C / ESC — bubble up to the section picker so the user
+            # doesn't have to abort every remaining field in this section.
+            raise _QuestionarySectionAbort()
+        if not answer.strip():
+            return  # empty submit == keep current value
         self.config[key] = answer.strip()
 
     def _qs_int(self, message: str, key: str, default: int = 0,
@@ -2322,8 +2343,10 @@ class KlingAutomationUI:
             validate=_live_validate,
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
-        if answer is None or answer.strip() == "":
-            return
+        if answer is None:
+            raise _QuestionarySectionAbort()
+        if answer.strip() == "":
+            return  # empty submit == keep current value
         # Validator has already passed at the prompt; int() is now guaranteed safe.
         self.config[key] = int(answer.strip())
 
@@ -2355,8 +2378,10 @@ class KlingAutomationUI:
             validate=_live_validate,
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
-        if answer is None or answer.strip() == "":
-            return
+        if answer is None:
+            raise _QuestionarySectionAbort()
+        if answer.strip() == "":
+            return  # empty submit == keep current value
         self.config[key] = float(answer.strip())
 
     def _qs_bool(self, message: str, key: str, default: bool = False) -> None:
@@ -2368,7 +2393,7 @@ class KlingAutomationUI:
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if answer is None:
-            return
+            raise _QuestionarySectionAbort()
         self.config[key] = bool(answer)
 
     def _qs_choice(self, message: str, key: str, choices: List[str],
@@ -2390,7 +2415,7 @@ class KlingAutomationUI:
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if answer is None:
-            return
+            raise _QuestionarySectionAbort()
         if cast_fn is not None:
             try:
                 self.config[key] = cast_fn(answer)

@@ -194,16 +194,19 @@ class DependencyChecker:
 
     @staticmethod
     def _strip_pip_specifier(pip_name: str) -> str:
-        """Strip version specifiers and extras from a pip name so importlib.metadata can resolve it.
+        """Strip version specifiers, extras, and PEP 508 direct refs from a pip name.
 
-        pip_name fields may carry full requirement strings (e.g. "torch>=2.2,<3",
-        "questionary>=2.0,<3", "package[extra]>=1") so the same value drives
-        both pip install repair hints (which want the pinned version + extras)
-        and metadata lookups (which want a bare distribution name). Single-pass
-        scan: cut at the first comparator, separator, or extras bracket.
+        pip_name fields may carry full requirement strings:
+          - version specifiers:   "torch>=2.2,<3", "questionary>=2.0,<3"
+          - extras:               "requests[security]"
+          - PEP 508 direct refs:  "package @ https://..."
+        importlib.metadata.version() wants a bare distribution name, while
+        pip install repair hints want the pinned form — same field drives both.
+        Single-pass scan: cut at the first comparator, separator, extras
+        bracket, whitespace, or @ (direct-ref) char.
         """
         for i, char in enumerate(pip_name):
-            if char in "<>=!~,[]":
+            if char in "<>=!~,[]@ \t":
                 return pip_name[:i].strip()
         return pip_name.strip()
 
