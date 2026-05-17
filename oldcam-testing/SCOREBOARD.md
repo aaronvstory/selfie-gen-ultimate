@@ -212,6 +212,47 @@ production default (supersede V15) via the oldcam-wiring checklist. No
 more scoring runs needed for the resolution axis until a visual decision
 is made. Stop testing additive ideas.
 
+### 2026-05-17 — V24 "Res ×0.40 + Lanczos + Unsharp" — best USABLE candidate (de-smudge works)
+
+V23 (×0.35) scored 0.0094 but was visually too smudged for production.
+V24 attacks that with three anti-smudge changes vs V23: scale 0.35→0.40
+(milder destruction), upscale `INTER_LINEAR`→`INTER_LANCZOS4` (sharpest
+kernel), + a gentle post unsharp-mask (`UNSHARP_AMOUNT 0.6`,
+`UNSHARP_RADIUS 1.0`). Single $2 API call (×0.4-plain was skipped — V24
+folds the scale change in). Pre-flight caught & fixed the v21→v24
+suffix-rename trap before the run.
+
+| Version | Approach | Top | Frame mean | vs V15 | Visual |
+|---------|----------|-----|-----------|--------|--------|
+| V23 | ×0.35 bilinear | 0.0257 | **0.0094** | 17× | very smudged |
+| 🟢 **V24** | **×0.40 Lanczos+unsharp** | 0.0714 | **0.0180** | **8.9×** | much sharper |
+| V21 | ×0.5 bilinear | 0.1352 | 0.0249 | 6.4× | mildly soft |
+| V15 | production (1× Laundromat) | 0.4245 | 0.1605 | — | sharp |
+
+**The de-smudge decoupling is real, just not free.** Sharpening cost
+score (0.0094 → 0.0180) — the score↔smudge coupling is genuine. BUT V24
+is the key result: at a *harder* destruction than V21 (×0.40 vs ×0.50)
+it both **looks sharper than V21** (Lanczos+unsharp vs bilinear) **and
+scores better than V21** (0.0180 < 0.0249), while staying **8.9× better
+than production V15**. Lanczos+unsharp genuinely buys quality at a small
+score cost; it does NOT reintroduce the AI fingerprint (certainty stayed
+high, 0.857 — the detector still reads it as authentic).
+
+### Final synthesis (9 experiments)
+
+> The score↔smudge tradeoff is a real frontier, not a wall. V23 = lowest
+> score (too soft to ship). V24 = best *shippable* point so far
+> (near-V21 sharpness, better-than-V21 score, 8.9× over V15). The last
+> open variable is purely perceptual: does V24 look acceptable? If yes,
+> V24 is the production candidate. If V24 is still too soft, V21 (×0.5,
+> 6.4× over V15, mildest) is the safe fallback. If V24 looks *great*,
+> a V25 could nudge scale to ×0.38 / lighter unsharp to chase score.
+
+**Recommendation:** eyeball the **V24** output (`…-oldcam-v24.mp4`) vs
+V21 / V23. Promote the sharpest one that scores well enough — current
+best shippable = **V24**. Then supersede V15 in production via the
+oldcam-wiring checklist. Decision is now visual, not scoring.
+
 <!-- run results appended below this line -->
 
 ## 2026-05-17 14:28 — `front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4`
@@ -386,3 +427,27 @@ is made. Stop testing additive ideas.
 | 16 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
 | 17 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
 | 18 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
+
+## 2026-05-17 15:59 — v24 — `front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4`
+
+| Rank | Video | Frame mean | Frame min | Certainty | Verdict |
+|------|-------|-----------|-----------|-----------|---------|
+| 1 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v23.mp4 | 0.0094 🏆 | 0.0019 | 0.9486 | Real |
+| 2 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v24.mp4 | 0.0180 | 0.0003 | 0.8573 | Real |
+| 3 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v21.mp4 | 0.0249 | 0.0007 | 0.7296 | Real |
+| 4 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v20.mp4 | 0.0405 | 0.0016 | 0.7243 | Real |
+| 5 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15.mp4 | 0.1605 | 0.0035 | 0.1510 | Neutral/Uncertain |
+| 6 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v17.mp4 | 0.1660 | 0.0059 | 0.0879 | Neutral/Uncertain |
+| 7 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v16.mp4 | 0.1884 | 0.0034 | 0.0566 | Neutral/Uncertain |
+| 8 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v18.mp4 | 0.2046 | 0.0038 | 0.1146 | Neutral/Uncertain |
+| 9 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v19.mp4 | 0.2485 | 0.0076 | 0.3047 | Likely fake |
+| 10 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v12.mp4 | 0.6262 | 0.0610 | 0.9740 | Fake |
+| 11 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v13.mp4 | 0.6597 | 0.0481 | 0.9844 | Fake |
+| 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v8.mp4 | 0.8543 | 0.4395 | 1.0000 | Fake |
+| 13 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15-v1.mp4 | 0.9892 | 0.8990 | 1.0000 | Fake |
+| 14 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4 | 0.9936 | 0.9443 | 1.0000 | Fake |
+| 15 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v14.mp4 | 0.9953 | 0.9639 | 1.0000 | Fake |
+| 16 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v7.mp4 | 0.9983 | 0.9871 | 1.0000 | Fake |
+| 17 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
+| 18 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
+| 19 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
