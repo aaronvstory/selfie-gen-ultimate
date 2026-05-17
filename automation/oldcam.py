@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -70,7 +71,9 @@ def run_oldcam_version(
         return None
 
     cmd = [sys.executable, "-u", str(launcher), str(video_path)]
-    _report(progress_cb, f"Oldcam {version} launching: {sys.executable} {launcher} {video_path}", "info")
+    # Log the exact command via shlex.join so paths with spaces or shell-special
+    # characters render unambiguously and are copy-pasteable into a shell.
+    _report(progress_cb, f"Oldcam {version} launching: {shlex.join(cmd)}", "info")
     output_lines: List[str] = []
     try:
         process = subprocess.Popen(
