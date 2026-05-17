@@ -456,8 +456,10 @@ class ImageCarousel(tk.Frame):
     def _on_session_change(self):
         # Clear render-failure memo so re-added or re-saved paths get a fresh
         # try (the memo exists to stop per-resize spam, not to permanently
-        # blacklist a path).
-        self._render_failed_paths.clear()
+        # blacklist a path). Guard hasattr() so __new__-constructed test
+        # instances that bypass __init__ don't AttributeError here.
+        if hasattr(self, "_render_failed_paths"):
+            self._render_failed_paths.clear()
         self._update_display()
         self.after(50, self._update_display)
         # Auto-calc similarity for newly added images
@@ -790,9 +792,11 @@ class ImageCarousel(tk.Frame):
             logger.exception("Carousel render failed path=%s (RecursionError)", path)
             return False
         except Exception as e:
-            # Memo to avoid re-spam on Configure events; non-recursion failures
-            # are usually permanent (corrupt file, wrong format) for the same path.
-            self._render_failed_paths.add(path)
+            # NOTE: we deliberately do NOT memo generic exceptions here.
+            # Render errors can be transient (file being written, briefly
+            # locked, partial download) and a permanent skip would leave a
+            # never-recovering placeholder. Only RecursionError (above) is
+            # treated as deterministic and added to _render_failed_paths.
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
             canvas.create_text(
