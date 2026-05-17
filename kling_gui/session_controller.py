@@ -109,6 +109,9 @@ class SessionController:
                 session_kind=session_manager.SESSION_KIND_AUTOSAVE,
                 project_key=session_manager.get_project_key(self.image_session),
                 autosave_retention=int(self.config.get("session_autosave_retention", 10)),
+                # One rolling file per project; the write is skipped entirely
+                # when content is unchanged (idle ticks / debounced no-ops).
+                skip_if_unchanged=True,
             )
         except Exception as exc:
             if self._logger:
