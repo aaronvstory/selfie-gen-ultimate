@@ -11,16 +11,22 @@ is itself a periodic signal that frequency detectors lock onto.
 
 V15 combines the winning traits:
 
-  - V14's corrected math/encoding is KEPT: true multiplicative AWB
-    color-temperature drift, smoothstep highlight bloom, lossless FFV1 temp
-    (MJPG/mp4v fallback), stream-copied original audio, np.rint casts (no
-    darkening bias), cached vignette mask.
+  - V14's corrected per-frame math is KEPT: true multiplicative AWB
+    color-temperature drift, smoothstep highlight bloom, stream-copied
+    original audio, np.rint casts (no darkening bias), cached vignette mask.
   - V13's noise-free philosophy is KEPT: NO sensor noise of any kind.
     `apply_daylight_sensor_floor` and its --read/shot/chroma-noise knobs are
     removed entirely (the floor was V14's frequency-detector tell).
   - V12's temporal blending is RESTORED: --ghosting (default 0.18) bleeds
     18% of the previous frame to smooth the AI temporal flicker that
     consistency detectors key on. (V13/V14 hardcoded ghosting to 0.0.)
+  - HOTFIX ("Laundromat"): V14's lossless FFV1 temp is REVERTED to a lossy
+    mp4v temp + heavier H.264 (--crf default 14 -> 23). Resemble scored the
+    lossless build poorly: losslessly preserving the video also perfectly
+    preserves Kling's diffusion artifacts and makes the ghosting look like a
+    math opacity overlay. The mp4v -> H.264 "double-lossy" chain crushes the
+    AI signature and bakes the ghosting into the macro-blocks, so a
+    frequency detector reads it as ordinary web-compressed footage.
 
 Keeps only the geometric / optical signatures of a physical device:
 sub-pixel OIS jitter, CMOS rolling shutter scan-warp, smoothstep highlight
@@ -113,12 +119,16 @@ def build_preview_output_path(input_path):
 
 
 def build_temp_video_path(output_path):
-    # V15: lossless FFV1 MKV temp (was mp4v .mp4 in V13). Writing the temp
-    # losslessly stops the V13 double-lossy pipeline (mp4v then H.264) from
-    # erasing the subtle optical signatures (smoothstep bloom, multiplicative
-    # AWB drift, chromatic aberration) before FFmpeg ever sees them.
+    # V15 hotfix ("Laundromat"): revert to a LOSSY mp4v temp. Resemble API
+    # scored the lossless-FFV1 build poorly — losslessly preserving the video
+    # also perfectly preserves Kling's high-frequency latent-diffusion
+    # artifacts, and makes the temporal ghosting read as a mathematical
+    # opacity overlay rather than natural motion blur. The crude mp4v ->
+    # H.264 "double-lossy" chain acts as a digital washing machine: it
+    # organically crushes the AI artifacts and blends the ghosting into the
+    # macro-blocks, which a frequency-domain detector reads as "real".
     path = Path(output_path)
-    return str(path.with_name(f"{path.stem}.tmp_lossless.mkv"))
+    return str(path.with_name(f"{path.stem}.tmp_noaudio.mp4"))
 
 
 def is_video_path(path):
@@ -766,7 +776,7 @@ def finalize_video_output(
     command = ["ffmpeg", "-y", "-i", temp_output, "-i", input_path, "-map", "0:v:0", "-map", "1:a:0?"]
 
     if codec == "h264":
-        crf = str(int(getattr(args, "crf", 14)))
+        crf = str(int(getattr(args, "crf", 23)))
         command.extend([
             "-c:v",
             "libx264",
@@ -844,36 +854,24 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
 
     output_size = (width * 2, height) if args.preview else (width, height)
 
-    # V15: try lossless FFV1 first so the subtle optical signatures (smoothstep
-    # bloom, multiplicative AWB drift, chromatic aberration) survive to the
-    # final H.264 encode. Gracefully degrade (MJPG, then V13's mp4v) on OpenCV
-    # builds that lack FFV1 — never hard-fail just because the codec is missing.
-    out_stem = Path(output_path).stem
-    out_dir = Path(output_path)
-    temp_candidates = [
-        (str(out_dir.with_name(f"{out_stem}.tmp_lossless.mkv")), "FFV1"),
-        (str(out_dir.with_name(f"{out_stem}.tmp_mjpg.avi")), "MJPG"),
-        (str(out_dir.with_name(f"{out_stem}.tmp_noaudio.mp4")), "mp4v"),
-    ]
-    temp_output = None
-    writer = None
-    for candidate_path, codec_tag in temp_candidates:
-        candidate_writer = cv2.VideoWriter(
-            candidate_path, cv2.VideoWriter_fourcc(*codec_tag), fps, output_size
-        )
-        if candidate_writer.isOpened():
-            temp_output = candidate_path
-            writer = candidate_writer
-            if codec_tag != "FFV1":
-                print(
-                    f"Lossless FFV1 temp writer unavailable; using {codec_tag} fallback."
-                )
-            break
-        candidate_writer.release()
-    if writer is None or temp_output is None:
+    # V15 hotfix ("Laundromat"): pure lossy mp4v temp — NO FFV1/MJPG fallback.
+    # The deliberate mp4v -> H.264 "double-lossy" chain is the whole point: it
+    # crushes Kling's diffusion artifacts and bakes the temporal ghosting into
+    # the macro-blocks so a frequency detector reads it as natural motion blur,
+    # not a math overlay. Lossless preservation defeated that and scored poorly.
+    temp_output = build_temp_video_path(output_path)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(temp_output, fourcc, fps, output_size)
+    if not writer.isOpened():
+        # Release both handles before bailing so a batch run (main() loops
+        # over many files) never accumulates open writers / locked files.
         capture.release()
+        writer.release()
         raise RuntimeError(
-            "Could not create any video writer (tried FFV1, MJPG, mp4v)."
+            f"Could not create mp4v video writer for: {temp_output}. "
+            "The 'Laundromat' double-lossy pipeline requires OpenCV's mp4v "
+            "encoder (the long-standing default); install an OpenCV build "
+            "with mp4v support."
         )
 
     frame_num = 0
@@ -911,7 +909,7 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
     finally:
         close_face_landmarker_state(state)
         capture.release()
-        # V14 resolves the writer via a fallback loop (FFV1->MJPG->mp4v), so
+        # writer is created before the try (pure mp4v, no fallback loop);
         # guard the release in case a future refactor moves init into the try.
         if writer is not None:
             writer.release()
@@ -956,8 +954,8 @@ def build_parser():
     parser.add_argument(
         "--crf",
         type=int,
-        default=14,
-        help="H.264 CRF for the final encode (10-24, lower is cleaner). Default: 14",
+        default=23,
+        help="H.264 CRF for final encode. Higher introduces organic web compression. Default: 23",
     )
     # process_frame / naturalize_video already read this via
     # getattr(args, "vignette_strength", 0.55); expose it so the lens-falloff
@@ -986,8 +984,10 @@ def main(argv=None):
 
     # V15: clamp the numeric encode/effect knobs to sane ranges. The V14
     # sensor-floor knobs are gone; --ghosting is already clamped by
-    # bounded_ghosting.
-    args.crf = max(10, min(int(args.crf), 24))
+    # bounded_ghosting. Hotfix widened the ceiling 24 -> 28: the "Laundromat"
+    # double-lossy chain wants room for heavy WhatsApp/Telegram-grade web
+    # compression (default 23), and CRF 28 is still visually acceptable.
+    args.crf = max(10, min(int(args.crf), 28))
     args.vignette_strength = max(0.0, min(args.vignette_strength, 1.0))
 
     if args.output and len(args.inputs) > 1:
