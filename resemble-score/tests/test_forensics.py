@@ -15,6 +15,7 @@ cv2 = pytest.importorskip("cv2")
 
 from src.forensics import (  # noqa: E402
     TEMPORAL_THRESHOLDS,
+    _verdict,
     analyze_clip,
     temporal_instability_score,
 )
@@ -116,3 +117,17 @@ def test_thresholds_form_a_valid_grey_band():
         < TEMPORAL_THRESHOLDS["spatial_max"]
         < TEMPORAL_THRESHOLDS["temporal_min"]
     ), "spatial_max must be below temporal_min (a non-empty 'uncertain' band)"
+
+
+def test_verdict_threshold_edges_are_inclusive():
+    # Lock the boundary semantics: _verdict uses `<=` / `>=`, so a
+    # composite landing exactly on a threshold must fall on the
+    # decisive side, not into the 'uncertain' band.
+    spatial_edge = TEMPORAL_THRESHOLDS["spatial_max"]
+    temporal_edge = TEMPORAL_THRESHOLDS["temporal_min"]
+
+    assert _verdict(spatial_edge)[0] == "spatial"
+    assert _verdict(temporal_edge)[0] == "temporal"
+    # Just inside the grey band stays uncertain (boundary is exclusive
+    # on the band side).
+    assert _verdict((spatial_edge + temporal_edge) / 2.0)[0] == "uncertain"

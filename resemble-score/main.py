@@ -107,20 +107,18 @@ def main() -> None:
             parser.error("--forensics requires --folder.")
         try:
             from src.forensics import analyze_clip, format_line
+            from src.discovery import discover
         except ImportError as e:
             print(f"Failed to load forensics module: {e}")
             sys.exit(1)
-        from pathlib import Path as _P
-        root = _P(args.folder)
+        root = Path(args.folder)
         if not root.is_dir():
             print(f"Not a folder: {root}")
             sys.exit(2)
-        walker = root.rglob("*") if args.recursive else root.iterdir()
-        vids = sorted(
-            p for p in walker
-            if p.is_file()
-            and p.suffix.lower() in {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
-        )
+        # Reuse the canonical discovery walk so the forensics pre-test
+        # recognises exactly the same video set as the CLI/GUI scorer
+        # (one VIDEO_EXTS source of truth, not a duplicated literal).
+        vids = sorted(Path(it.path) for it in discover(root, recursive=args.recursive))
         if not vids:
             print(f"No videos under {root}")
             sys.exit(1)

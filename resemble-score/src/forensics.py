@@ -201,11 +201,24 @@ def analyze_clip(path: str | Path) -> Optional[TemporalForensics]:
     )
     verdict, recommendation = _verdict(composite)
 
+    frames_analyzed = len(fl) + 1
+    # CAP_PROP_FRAME_COUNT (`total`) is unreliable on many container/codec
+    # combos (returns 0, or fewer frames than actually decodable). When it
+    # is missing or inconsistent with what we actually read, fall back to
+    # the frames we analyzed — those came from real cap.read() calls.
+    if fps > 0:
+        if total > 0 and total >= frames_analyzed:
+            duration_s = total / fps
+        else:
+            duration_s = frames_analyzed / fps
+    else:
+        duration_s = 0.0
+
     return TemporalForensics(
         path=p,
-        frames_analyzed=len(fl) + 1,
+        frames_analyzed=frames_analyzed,
         fps=round(fps, 3),
-        duration_s=round((total / fps) if fps > 0 else 0.0, 2),
+        duration_s=round(duration_s, 2),
         width=width,
         height=height,
         motion_median=round(med, 4),
