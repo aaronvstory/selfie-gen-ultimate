@@ -10,6 +10,10 @@ BG = "#1e1f22"
 BG_PANEL = "#26282c"
 FG = "#e6e6e6"
 FG_MUTED = "#9aa0a6"
+# Pure white on the ACCENT background reads ~1 contrast step crisper than FG
+# (#e6e6e6) — kept distinct from FG so future palette tweaks don't
+# accidentally desaturate selected-row text.
+SELECTED_FG = "#ffffff"
 ACCENT = "#4f8cff"
 WINNER_BG = "#1f4d2a"
 WINNER_FG = "#7ee787"
@@ -47,7 +51,7 @@ def apply_dark_ttk(root) -> None:
         style.map(
             "TButton",
             background=[("active", ACCENT)],
-            foreground=[("active", "#ffffff")],
+            foreground=[("active", SELECTED_FG)],
         )
         style.configure("TCheckbutton", background=BG, foreground=FG)
         style.configure(
@@ -84,7 +88,7 @@ def apply_dark_ttk(root) -> None:
         style.map(
             "Treeview",
             background=[("selected", ACCENT)],
-            foreground=[("selected", "#ffffff")],
+            foreground=[("selected", SELECTED_FG)],
         )
     except Exception:
         # GUI theming is cosmetic; a failure here must not block the app.
