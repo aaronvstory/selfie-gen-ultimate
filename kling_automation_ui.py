@@ -2625,17 +2625,22 @@ class KlingAutomationUI:
         ).ask()
         if prompt_action == "switch":
             slot_raw = questionary.text(
-                "New slot (1-10):",
+                "New slot (1-10, or Enter to keep current):",
                 qmark="◆",
-                # Live-validate so the user can't submit an out-of-range or
-                # non-digit slot; cleaner than printing an error after the fact.
+                # Live-validate: accept either an in-range digit or empty
+                # input. Empty == "I don't actually want to switch" which is
+                # the cancel path for this sub-prompt; we used to reject it
+                # and force the user into Ctrl-C.
                 validate=lambda t: (
-                    True if (t.strip().isdigit() and 1 <= int(t.strip()) <= 10)
+                    True if (not t.strip() or (t.strip().isdigit() and 1 <= int(t.strip()) <= 10))
                     else "Please enter a number between 1 and 10."
                 ),
                 style=KLING_QUESTIONARY_STYLE,
             ).ask()
-            if slot_raw and slot_raw.strip():
+            if slot_raw is None:
+                # Ctrl-C / ESC inside the sub-prompt → abort the whole section.
+                raise _QuestionarySectionAbort()
+            if slot_raw.strip():
                 self.config["automation_selfie_prompt_slot"] = int(slot_raw.strip())
         elif prompt_action == "edit":
             new_prompt = questionary.text(
