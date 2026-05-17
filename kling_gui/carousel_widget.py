@@ -680,6 +680,11 @@ class ImageCarousel(tk.Frame):
         if not hasattr(self, "_render_failed_paths"):
             self._render_failed_paths = set()
         if path in self._render_failed_paths:
+            # Clear any stale items (prior image, bbox overlay, etc.) so the
+            # placeholder is the only thing on this canvas. Mirrors what the
+            # successful-render path does implicitly via create_image replacing
+            # the prior content + the size change clearing overlays.
+            canvas.delete("all")
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
             canvas.create_text(
