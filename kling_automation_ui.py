@@ -2151,7 +2151,10 @@ class KlingAutomationUI:
                     questionary.Choice("👁  View all settings (read-only table)", "_view"),
                     questionary.Choice("💾 Save and return", "_done"),
                 ],
-                default="_done",
+                # Default to the first real section ("paths") rather than
+                # "Save and return" so an accidental Enter doesn't exit the
+                # editor before the user has picked a section to edit.
+                default="paths",
                 style=KLING_QUESTIONARY_STYLE,
             ).ask()
 
@@ -2271,47 +2274,65 @@ class KlingAutomationUI:
 
     def _qs_int(self, message: str, key: str, default: int = 0,
                 validator=None) -> None:
+        """Edit an int setting. Uses questionary's `validate=` so the user
+        gets immediate feedback for non-integer or out-of-range input
+        instead of finding out only after submit. Empty input keeps current."""
         current = self.config.get(key, default)
+
+        def _live_validate(text: str):
+            t = text.strip()
+            if not t:
+                return True  # empty == keep current
+            try:
+                v = int(t)
+            except ValueError:
+                return "Please enter a valid integer."
+            if validator and not validator(v):
+                return "Value is outside the allowed range."
+            return True
+
         answer = questionary.text(
             message,
             qmark="◆",
             instruction=f"(current: {current} · Enter keeps)",
             default="",
+            validate=_live_validate,
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if answer is None or answer.strip() == "":
             return
-        try:
-            val = int(answer.strip())
-        except ValueError:
-            print(f"  ✗ Invalid integer for {key}; keeping current.")
-            return
-        if validator and not validator(val):
-            print(f"  ✗ Invalid value for {key}; keeping current.")
-            return
-        self.config[key] = val
+        # Validator has already passed at the prompt; int() is now guaranteed safe.
+        self.config[key] = int(answer.strip())
 
     def _qs_float(self, message: str, key: str, default: float = 0.0,
                   validator=None) -> None:
+        """Edit a float setting. Live-validates parseable number + optional
+        range check via questionary's `validate=`. Empty input keeps current."""
         current = self.config.get(key, default)
+
+        def _live_validate(text: str):
+            t = text.strip()
+            if not t:
+                return True
+            try:
+                v = float(t)
+            except ValueError:
+                return "Please enter a valid number."
+            if validator and not validator(v):
+                return "Value is outside the allowed range."
+            return True
+
         answer = questionary.text(
             message,
             qmark="◆",
             instruction=f"(current: {current} · Enter keeps)",
             default="",
+            validate=_live_validate,
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if answer is None or answer.strip() == "":
             return
-        try:
-            val = float(answer.strip())
-        except ValueError:
-            print(f"  ✗ Invalid number for {key}; keeping current.")
-            return
-        if validator and not validator(val):
-            print(f"  ✗ Invalid value for {key}; keeping current.")
-            return
-        self.config[key] = val
+        self.config[key] = float(answer.strip())
 
     def _qs_bool(self, message: str, key: str, default: bool = False) -> None:
         current = bool(self.config.get(key, default))
@@ -2553,14 +2574,16 @@ class KlingAutomationUI:
             slot_raw = questionary.text(
                 "New slot (1-10):",
                 qmark="◆",
+                # Live-validate so the user can't submit an out-of-range or
+                # non-digit slot; cleaner than printing an error after the fact.
+                validate=lambda t: (
+                    True if (t.strip().isdigit() and 1 <= int(t.strip()) <= 10)
+                    else "Please enter a number between 1 and 10."
+                ),
                 style=KLING_QUESTIONARY_STYLE,
             ).ask()
-            if slot_raw and slot_raw.strip().isdigit():
-                v = int(slot_raw.strip())
-                if 1 <= v <= 10:
-                    self.config["automation_selfie_prompt_slot"] = v
-                else:
-                    print("  ✗ Slot out of range 1-10; keeping current.")
+            if slot_raw and slot_raw.strip():
+                self.config["automation_selfie_prompt_slot"] = int(slot_raw.strip())
         elif prompt_action == "edit":
             new_prompt = questionary.text(
                 "New prompt text:",

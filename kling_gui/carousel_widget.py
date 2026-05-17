@@ -107,11 +107,6 @@ class ImageCarousel(tk.Frame):
     Same constructor signature as before so main_window.py needs minimal changes.
     """
 
-    # Class-level default so tests that bypass __init__ via ImageCarousel.__new__
-    # still see an empty set instead of AttributeError. __init__ replaces this
-    # with a fresh instance-level set so each carousel tracks its own failures.
-    _render_failed_paths: set = set()
-
     def __init__(
         self,
         parent,
@@ -139,8 +134,10 @@ class ImageCarousel(tk.Frame):
 
         # Paths that have already failed to render. Prevents per-resize log
         # spam (Configure events re-fire _update_display) and avoids
-        # re-tripping the same PIL recursion on the same bad PNG.
-        # NOTE: a class-level default exists for tests bypassing __init__.
+        # re-tripping the same PIL recursion on the same bad PNG. Lazily
+        # re-initialized inside _show_image_on_canvas for any test/instance
+        # that bypassed __init__ via __new__, so we don't need a class-level
+        # mutable default (which would leak failures across instances).
         self._render_failed_paths: set[str] = set()
 
         # NOTE: the sys.setrecursionlimit(5000) bump lives at the GUI entry
@@ -676,8 +673,10 @@ class ImageCarousel(tk.Frame):
         # Skip paths we've already failed on — Configure events re-fire this
         # on every window resize, so without the memo a single bad PNG floods
         # the log and re-trips the same PIL recursion repeatedly.
-        # _render_failed_paths has a class-level default so tests that bypass
-        # __init__ via __new__ get an empty set instead of AttributeError.
+        # Lazy-init for instances built via __new__ (test fixtures) so each
+        # gets its own set instead of sharing a class-level mutable default.
+        if not hasattr(self, "_render_failed_paths"):
+            self._render_failed_paths = set()
         if path in self._render_failed_paths:
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
@@ -689,8 +688,8 @@ class ImageCarousel(tk.Frame):
             )
             return False
 
-        # NOTE: recursion limit was bumped to 5000 in __init__ for the lifetime
-        # of this widget — we no longer touch it per-render.
+        # NOTE: recursion limit is bumped to 5000 once at GUI startup
+        # (see kling_gui.main_window) — we no longer touch it per-render.
         try:
             from PIL import Image, ImageTk, ImageOps
 

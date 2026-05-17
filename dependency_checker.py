@@ -199,12 +199,12 @@ class DependencyChecker:
         pip_name fields may carry full requirement strings (e.g. "torch>=2.2,<3",
         "questionary>=2.0,<3") so the same value drives both pip install repair
         hints (which want the pinned version) and metadata lookups (which want a
-        bare distribution name). Strip on the first comparator/separator char.
+        bare distribution name). Single-pass scan: cut at the first comparator
+        or separator char instead of looping over each separator individually.
         """
-        for sep in ("<", ">", "=", "!", "~", ","):
-            idx = pip_name.find(sep)
-            if idx != -1:
-                pip_name = pip_name[:idx]
+        for i, char in enumerate(pip_name):
+            if char in "<>=!~,":
+                return pip_name[:i].strip()
         return pip_name.strip()
 
     @classmethod
