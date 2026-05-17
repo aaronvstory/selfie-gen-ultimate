@@ -140,7 +140,8 @@ def compute_face_similarity_details(
 
     if error:
         _log(report_cb, str(error), "warning")
-        _log(report_cb, _diag_summary(diagnostics), "warning")
+        # Full diag stays file-only; gated by verbose_gui_mode like the success path.
+        _log(report_cb, _diag_summary(diagnostics), "debug")
     else:
         _log(report_cb, f"score={score}% pass={passed} (threshold={SIMILARITY_PASS_THRESHOLD})", "debug")
         _log(report_cb, _diag_summary(diagnostics), "debug")

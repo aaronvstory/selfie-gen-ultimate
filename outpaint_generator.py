@@ -553,7 +553,7 @@ class OutpaintGenerator:
         try:
             from PIL import ImageFilter, ImageDraw
 
-            self._report(f"Compositing original over AI result (mode={composite_mode})...", "progress")
+            self._report(f"Compositing original over AI result (mode={composite_mode})...", "debug")
             result_img = Image.open(output_path).convert("RGB")
             orig_rgb = orig.convert("RGB")
 
@@ -908,14 +908,6 @@ class OutpaintGenerator:
         )
         expected_w = sim_w + adj_l + adj_r
         expected_h = sim_h + adj_t + adj_b
-        self._report(
-            f"BFL preflight: upload_max={max_upload}px, img≈{sim_w}x{sim_h}, "
-            f"margins L={adj_l} R={adj_r} T={adj_t} B={adj_b}, "
-            f"canvas≈{expected_w}x{expected_h} "
-            f"(safe envelope: {_BFL_MAX_CANVAS_DIM}px / {_BFL_MAX_CANVAS_MP}MP "
-            f"— override via BFL_EXPAND_MAX_MP)",
-            "debug",
-        )
         if max_upload < 2048:
             # Read original dims for scale reporting
             with Image.open(image_path) as _tmp:
@@ -923,9 +915,7 @@ class OutpaintGenerator:
                 _orig_max = max(_tmp_t.size)
             eff_scale = max_upload / _orig_max if _orig_max > 0 else 1.0
             self._report(
-                f"BFL preflight: scaled to {eff_scale:.2f}x (MP limit). "
-                f"Margins L={expand_left}→{adj_l} R={expand_right}→{adj_r} "
-                f"T={expand_top}→{adj_t} B={expand_bottom}→{adj_b}",
+                f"BFL Expand: scaled {eff_scale:.2f}x to fit MP limit",
                 "progress",
             )
 

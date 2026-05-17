@@ -64,6 +64,28 @@ from .layout_utils import (
     sanitize_sash_layout as _sanitize_sash_layout,
 )
 
+def _apply_gui_runtime_settings() -> None:
+    """Apply process-wide interpreter tweaks the GUI needs to run safely.
+
+    Called once at import time so any caller importing `kling_gui.main_window`
+    (the GUI's canonical entry point) gets these applied without having to
+    remember a bootstrap call. Kept in a named function so the side effect is
+    discoverable by `grep` and easy to test/skip in isolation if needed.
+
+    Currently does one thing: raise the CPython recursion limit to 5000.
+    PIL ancillary-chunk chains in BFL-composited PNGs (e.g. front_exp.png)
+    can overflow the default 1000-frame limit and crash the carousel render.
+    5000 is the smallest value that absorbs PIL's worst observed chain plus
+    normal app recursion; memory cost is negligible (~5 KiB of pre-allocated
+    stack space).
+    """
+    if sys.getrecursionlimit() < 5000:
+        sys.setrecursionlimit(5000)
+
+
+_apply_gui_runtime_settings()
+
+
 # Try to import the generator
 try:
     from kling_generator_falai import FalAIKlingGenerator

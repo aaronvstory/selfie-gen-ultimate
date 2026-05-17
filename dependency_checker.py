@@ -108,6 +108,13 @@ PYTHON_DEPENDENCIES = [
         required=False,
         description="Required by DeepFace anti-spoofing (MiniFASNetV2). Without it FAS fails."
     ),
+    Dependency(
+        name="Questionary",
+        import_name="questionary",
+        pip_name="questionary>=2.0,<3",
+        required=True,
+        description="Interactive sectioned menus for the kling_automation_ui.py settings editor; required so launchers fail-fast if missing."
+    ),
 ]
 
 
@@ -186,10 +193,28 @@ class DependencyChecker:
         return True
 
     @staticmethod
-    def _get_installed_package_version(pip_name: str) -> Optional[str]:
+    def _strip_pip_specifier(pip_name: str) -> str:
+        """Strip version specifiers, extras, and PEP 508 direct refs from a pip name.
+
+        pip_name fields may carry full requirement strings:
+          - version specifiers:   "torch>=2.2,<3", "questionary>=2.0,<3"
+          - extras:               "requests[security]"
+          - PEP 508 direct refs:  "package @ https://..."
+        importlib.metadata.version() wants a bare distribution name, while
+        pip install repair hints want the pinned form — same field drives both.
+        Single-pass scan: cut at the first comparator, separator, extras
+        bracket, whitespace, or @ (direct-ref) char.
+        """
+        for i, char in enumerate(pip_name):
+            if char in "<>=!~,[]@ \t":
+                return pip_name[:i].strip()
+        return pip_name.strip()
+
+    @classmethod
+    def _get_installed_package_version(cls, pip_name: str) -> Optional[str]:
         """Return installed metadata version, or None when the package is absent."""
         try:
-            return importlib.metadata.version(pip_name)
+            return importlib.metadata.version(cls._strip_pip_specifier(pip_name))
         except importlib.metadata.PackageNotFoundError:
             return None
 
@@ -215,7 +240,7 @@ class DependencyChecker:
             try:
                 dep.version = getattr(module, '__version__', None)
                 if dep.version is None:
-                    dep.version = importlib.metadata.version(dep.pip_name)
+                    dep.version = importlib.metadata.version(self._strip_pip_specifier(dep.pip_name))
             except Exception:
                 dep.version = "unknown"
             return True

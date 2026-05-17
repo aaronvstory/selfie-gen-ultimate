@@ -132,6 +132,18 @@ class ImageCarousel(tk.Frame):
         # Re-entrancy guard
         self._updating: bool = False
 
+        # Paths that have already failed to render. Prevents per-resize log
+        # spam (Configure events re-fire _update_display) and avoids
+        # re-tripping the same PIL recursion on the same bad PNG. Lazily
+        # re-initialized inside _show_image_on_canvas for any test/instance
+        # that bypassed __init__ via __new__, so we don't need a class-level
+        # mutable default (which would leak failures across instances).
+        self._render_failed_paths: set[str] = set()
+
+        # NOTE: the sys.setrecursionlimit(5000) bump lives at the GUI entry
+        # point (kling_gui/main_window.py module-level) so the side effect is
+        # explicit and centralized rather than buried in a widget constructor.
+
         # Similarity computation state
         self._sim_lock = threading.Lock()
         self._sim_busy: bool = False
@@ -442,6 +454,12 @@ class ImageCarousel(tk.Frame):
     # ── Session change handler ──────────────────────────────────────
 
     def _on_session_change(self):
+        # Clear render-failure memo so re-added or re-saved paths get a fresh
+        # try (the memo exists to stop per-resize spam, not to permanently
+        # blacklist a path). Guard hasattr() so __new__-constructed test
+        # instances that bypass __init__ don't AttributeError here.
+        if hasattr(self, "_render_failed_paths"):
+            self._render_failed_paths.clear()
         self._update_display()
         self.after(50, self._update_display)
         # Auto-calc similarity for newly added images
@@ -654,6 +672,31 @@ class ImageCarousel(tk.Frame):
         entry.face_bbox). The bbox is in original image coordinates so we
         scale by the same ratio used for the image fit.
         """
+        # Skip paths we've already failed on — Configure events re-fire this
+        # on every window resize, so without the memo a single bad PNG floods
+        # the log and re-trips the same PIL recursion repeatedly.
+        # Lazy-init for instances built via __new__ (test fixtures) so each
+        # gets its own set instead of sharing a class-level mutable default.
+        if not hasattr(self, "_render_failed_paths"):
+            self._render_failed_paths = set()
+        if path in self._render_failed_paths:
+            # Clear any stale items (prior image, bbox overlay, etc.) so the
+            # placeholder is the only thing on this canvas. Mirrors what the
+            # successful-render path does implicitly via create_image replacing
+            # the prior content + the size change clearing overlays.
+            canvas.delete("all")
+            cw = max(1, canvas.winfo_width())
+            ch = max(1, canvas.winfo_height())
+            canvas.create_text(
+                cw // 2, ch // 2,
+                text="(render skipped — see earlier error)",
+                fill=COLORS["text_dim"],
+                font=(FONT_FAMILY, 9),
+            )
+            return False
+
+        # NOTE: recursion limit is bumped to 5000 once at GUI startup
+        # (see kling_gui.main_window) — we no longer touch it per-render.
         try:
             from PIL import Image, ImageTk, ImageOps
 
@@ -736,7 +779,29 @@ class ImageCarousel(tk.Frame):
             self.log("Carousel render failed: PIL not available", "error")
             logger.exception("Carousel render failed: PIL not available for path=%s", path)
             return False
+        except RecursionError as e:
+            # Memo this path so we don't retry on every window resize.
+            self._render_failed_paths.add(path)
+            cw = max(1, canvas.winfo_width())
+            ch = max(1, canvas.winfo_height())
+            canvas.create_text(
+                cw // 2, ch // 2,
+                text="Cannot load: image too deeply nested (PIL recursion)",
+                fill=COLORS["error"],
+                font=(FONT_FAMILY, 9),
+            )
+            self.log(
+                f"Carousel render failed: {os.path.basename(path)} (RecursionError — path memoed, will not retry)",
+                "error",
+            )
+            logger.exception("Carousel render failed path=%s (RecursionError)", path)
+            return False
         except Exception as e:
+            # NOTE: we deliberately do NOT memo generic exceptions here.
+            # Render errors can be transient (file being written, briefly
+            # locked, partial download) and a permanent skip would leave a
+            # never-recovering placeholder. Only RecursionError (above) is
+            # treated as deterministic and added to _render_failed_paths.
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
             canvas.create_text(
