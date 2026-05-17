@@ -92,10 +92,18 @@ def make_clip(version: str, source: Path, corpus: Path) -> Path | None:
         return None
     out = corpus / f"{source.stem}-oldcam-{version}{source.suffix}"
     _log(f"  $ python {script.name} {source.name} -o {out.name}")
-    rc = subprocess.run(
-        [sys.executable, str(script), str(source), "-o", str(out)],
-        cwd=str(_REPO_ROOT),
-    ).returncode
+    try:
+        rc = subprocess.run(
+            [sys.executable, str(script), str(source), "-o", str(out)],
+            cwd=str(_REPO_ROOT),
+            # Generous: a long clip through the V15 'slow' H.264 preset (and
+            # V20's second pass) can take minutes; without a cap a stalled
+            # oldcam run would hang the harness indefinitely.
+            timeout=1800,
+        ).returncode
+    except subprocess.TimeoutExpired:
+        _log(f"! {version} oldcam run timed out (>1800s)")
+        return None
     if rc != 0 or not out.is_file():
         _log(f"! {version} oldcam run failed (rc={rc})")
         return None
