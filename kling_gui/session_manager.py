@@ -5,6 +5,7 @@ import json
 import re
 import hashlib
 import logging
+import tempfile
 from datetime import datetime
 from typing import List, Optional, NamedTuple
 
@@ -32,6 +33,33 @@ def _get_sessions_dir(app_dir: str) -> str:
     d = os.path.join(app_dir, "sessions")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _atomic_write_json(path: str, data: dict) -> None:
+    """Write ``data`` as JSON to ``path`` atomically.
+
+    Serialize to a temp file in the same directory, flush+fsync, then
+    ``os.replace`` onto the target — atomic on both Windows and POSIX, so a
+    crash mid-write can never leave the destination (the only rolling
+    autosave) truncated. On any failure the temp file is removed and the
+    pre-existing target is left untouched.
+    """
+    directory = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".tmp_", suffix=".json", dir=directory
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _sanitize_name(name: str) -> str:
@@ -469,12 +497,17 @@ def save_session(
         "config_snapshot": _build_config_snapshot(config),
     }
 
-    with open(fpath, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    # Atomic write: serialize to a temp file in the same directory, then
+    # os.replace() onto the target. The single rolling autosave is now the
+    # only safety net — an in-place write interrupted by a crash would leave
+    # it truncated and unrecoverable. os.replace is atomic on Win + POSIX.
+    _atomic_write_json(fpath, data)
 
     if kind == SESSION_KIND_AUTOSAVE:
         # Single rolling file now; keep the legacy timestamped pile from this
-        # project tidy (purge anything that isn't the rolling file).
+        # project tidy (purge anything that isn't the rolling file). Done only
+        # after the replace above succeeded, so a failed write never destroys
+        # the previous good autosave.
         _purge_legacy_autosaves(app_dir, effective_project_key, fpath)
 
     logger.info("Session saved: %s", fpath)

@@ -114,6 +114,39 @@ class SessionManagerTests(unittest.TestCase):
             )
             self.assertIsNotNone(third)
 
+    def test_failed_write_preserves_previous_autosave(self):
+        # The single rolling file is the only safety net: a write that blows
+        # up mid-serialization must NOT destroy the prior good autosave, and
+        # must not leave a .tmp_ turd behind.
+        import json as _json
+        with self._workspace() as app_dir:
+            session = self._make_session(app_dir, "durable_proj")
+            first = sm.save_session(
+                app_dir, session, config={}, session_kind=sm.SESSION_KIND_AUTOSAVE,
+            )
+            self.assertIsNotNone(first)
+            assert first is not None
+            with open(first, "r", encoding="utf-8") as h:
+                good = _json.load(h)
+
+            # Make json.dump blow up *inside* _atomic_write_json (after the
+            # temp file is opened) by returning a non-serializable object that
+            # still survives fingerprinting (fingerprint catches & falls back).
+            session.to_dict = lambda: {"images": [{"path": object()}]}  # type: ignore[assignment]
+            with self.assertRaises(TypeError):
+                sm.save_session(
+                    app_dir, session, config={},
+                    session_kind=sm.SESSION_KIND_AUTOSAVE,
+                )
+            # Previous autosave intact, no temp files left.
+            with open(first, "r", encoding="utf-8") as h:
+                self.assertEqual(_json.load(h), good)
+            leftovers = [
+                n for n in os.listdir(os.path.join(app_dir, "sessions"))
+                if n.startswith(".tmp_")
+            ]
+            self.assertEqual(leftovers, [])
+
     def test_collapse_legacy_autosaves_keeps_one_newest(self):
         with self._workspace() as app_dir:
             sessions_dir = os.path.join(app_dir, "sessions")
