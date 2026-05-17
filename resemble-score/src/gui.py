@@ -41,6 +41,7 @@ SORTABLE = {
 }
 _COLS = (
     "group",
+    "forensics",
     "frame_mean",
     "frame_min",
     "frame_max",
@@ -51,6 +52,7 @@ _COLS = (
 )
 _HEADINGS = {
     "group": "Group",
+    "forensics": "Pre-test (offline)",
     "frame_mean": "Frame Mean",
     "frame_min": "Frame Min",
     "frame_max": "Frame Max",
@@ -65,15 +67,29 @@ def _num(v) -> str:
     return "—" if v is None else f"{v:.4f}"
 
 
+_FX_ICON = {"spatial": "✅", "temporal": "⛔", "uncertain": "❓"}
+
+
+def _fx_cell(fx) -> str:
+    """Compact forensics-verdict cell text. `fx` is a TemporalForensics
+    or None (pre-test not run yet)."""
+    if fx is None:
+        return ""
+    return f"{_FX_ICON.get(fx.verdict, '?')} {fx.verdict} {fx.composite:.2f}"
+
+
 class _Row:
     """One video's model state (selection + optional Result)."""
 
-    __slots__ = ("item", "checked", "result")
+    __slots__ = ("item", "checked", "result", "forensics")
 
     def __init__(self, item: VideoItem) -> None:
         self.item = item
         self.checked = True
         self.result: Optional[scoring.Result] = None
+        # Offline temporal-forensics pre-test result (no API). Populated by
+        # the "Forensics" button; None until run.
+        self.forensics = None
 
     @property
     def scored(self) -> bool:
@@ -215,8 +231,9 @@ class ResembleScoreGUI:
                 )
             else:
                 self.tree.heading(col, text=label)
-        self.tree.column("#0", width=420, anchor="w", stretch=True)
-        self.tree.column("group", width=110, anchor="w")
+        self.tree.column("#0", width=400, anchor="w", stretch=True)
+        self.tree.column("group", width=104, anchor="w")
+        self.tree.column("forensics", width=168, anchor="w")
         self.tree.column("frame_mean", width=108, anchor="e")
         self.tree.column("frame_min", width=92, anchor="e")
         self.tree.column("frame_max", width=92, anchor="e")
@@ -231,6 +248,10 @@ class ResembleScoreGUI:
         self.tree.tag_configure("bronze", background="#33302a")
         self.tree.tag_configure("error", foreground=theme.ERROR_FG)
         self.tree.tag_configure("odd", background=theme.ROW_ALT)
+        # Forensics pre-test verdict tints (only applied to unscored rows so
+        # they never fight the medal colours of ranked results).
+        self.tree.tag_configure("fx_temporal", foreground="#e0707a")
+        self.tree.tag_configure("fx_spatial", foreground="#6fcf8e")
         vsb = ttk.Scrollbar(
             tree_wrap, orient="vertical", command=self.tree.yview
         )
@@ -241,10 +262,15 @@ class ResembleScoreGUI:
 
         bottom = ttk.Frame(self.root, padding=10)
         bottom.pack(fill="x")
+        self.forensics_btn = ttk.Button(
+            bottom, text="🔍 Pre-test (no API)",
+            command=self._start_forensics,
+        )
+        self.forensics_btn.pack(side="left")
         self.score_btn = ttk.Button(
             bottom, text="Score Selected", command=self._start_scoring
         )
-        self.score_btn.pack(side="left")
+        self.score_btn.pack(side="left", padx=6)
         self.cancel_btn = ttk.Button(
             bottom, text="Cancel", command=self._cancel_scoring,
             state="disabled",
@@ -397,6 +423,7 @@ class ResembleScoreGUI:
                 )
                 vals = (
                     it.group,
+                    _fx_cell(row.forensics),
                     _num(res.frame_mean),
                     _num(res.frame_min),
                     _num(res.frame_max),
@@ -419,9 +446,22 @@ class ResembleScoreGUI:
                 if res is not None and res.status == "error":
                     status = "error"
                     tags = ("error",)
+                elif row.forensics is not None:
+                    # Tint un-scored rows by the pre-test verdict so
+                    # hopeless (temporal) clips stand out at a glance.
+                    v = row.forensics.verdict
+                    if v == "temporal":
+                        tags = ("fx_temporal",)
+                    elif v == "spatial":
+                        tags = ("fx_spatial",)
+                    elif idx % 2:
+                        tags = ("odd",)
                 elif idx % 2:
                     tags = ("odd",)
-                vals = (it.group, "", "", "", "", "", "", status)
+                vals = (
+                    it.group, _fx_cell(row.forensics),
+                    "", "", "", "", "", "", status,
+                )
 
             iid = self.tree.insert(
                 groups[it.group], "end", text=label, values=vals,
@@ -477,6 +517,7 @@ class ResembleScoreGUI:
             self.orig_btn,
             self.unscored_btn,
             self.score_btn,
+            self.forensics_btn,
         ):
             btn.configure(state=state)
         self.cancel_btn.configure(state="normal" if busy else "disabled")
@@ -538,6 +579,84 @@ class ResembleScoreGUI:
             self._post(self._on_fatal, str(exc))
             return
         self._post(self._on_done)
+
+    # ---- offline temporal forensics (no API, threaded) -------------------
+    def _start_forensics(self) -> None:
+        """Run the offline temporal pre-test on ALL discovered videos.
+
+        Zero API cost. Predicts per clip whether oldcam/V24 can help
+        (spatial = worth scoring; temporal = re-generate instead).
+        """
+        if self._worker and self._worker.is_alive():
+            return
+        if not self._rows:
+            messagebox.showinfo(
+                "No videos", "Pick a folder with videos first."
+            )
+            return
+        try:
+            from . import forensics as _fx
+        except ImportError as e:  # pragma: no cover - dep safety net
+            messagebox.showerror("Forensics unavailable", str(e))
+            return
+        self._cancel.clear()
+        self._set_controls(busy=True)
+        rows = list(self._rows.values())
+        self.status_lbl.configure(
+            text=f"Pre-testing {len(rows)} clip(s) offline (no API)…"
+        )
+        self._worker = threading.Thread(
+            target=self._worker_forensics,
+            args=(rows, _fx),
+            daemon=True,
+        )
+        self._worker.start()
+
+    def _worker_forensics(self, rows, fx_mod) -> None:
+        total = len(rows)
+        for i, row in enumerate(rows, 1):
+            if self._cancel.is_set():
+                break
+            try:
+                res = fx_mod.analyze_clip(row.item.path)
+            except Exception:
+                res = None
+            self._post(self._on_forensics_one, str(row.item.path), res,
+                       i, total)
+        self._post(self._on_forensics_done)
+
+    def _on_forensics_one(self, path, res, done, total) -> None:
+        row = self._rows.get(path)
+        if row is not None:
+            row.forensics = res
+        # Re-render incrementally so the user watches verdicts populate.
+        self._rebuild_tree()
+        self.status_lbl.configure(
+            text=f"Pre-test… {done} of {total} (offline, $0)"
+        )
+
+    def _on_forensics_done(self) -> None:
+        self._set_controls(busy=False)
+        self._rebuild_tree()
+        sp = sum(
+            1 for r in self._rows.values()
+            if r.forensics is not None and r.forensics.verdict == "spatial"
+        )
+        tp = sum(
+            1 for r in self._rows.values()
+            if r.forensics is not None and r.forensics.verdict == "temporal"
+        )
+        un = sum(
+            1 for r in self._rows.values()
+            if r.forensics is not None and r.forensics.verdict == "uncertain"
+        )
+        self.status_lbl.configure(
+            text=(
+                f"Pre-test done (no API): {sp} spatial (worth scoring) · "
+                f"{tp} temporal (re-generate; oldcam won't help) · "
+                f"{un} uncertain. Tick & Score the good ones."
+            )
+        )
 
     def _on_progress(self, done, total, r: scoring.Result) -> None:
         # Fold the fresh result into the model, then re-rank/re-render.
