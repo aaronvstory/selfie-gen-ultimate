@@ -92,13 +92,20 @@ def test_path_fallback_covers_full_supported_range():
     the PATH fallback originally only probed python3.11/3.12/python3/python.
     On macOS setups exposing only python3.10 (no python3 shim) this
     misreports "No supported Python found". Lock all four versioned probes.
+
+    Scoped to the `for bin in ...; do` chain body so the assertions can't
+    silently pass on the same string appearing in a comment or docstring
+    (per coderabbitai feedback on PR #33).
     """
     src = _read(LAUNCHER)
+    m = re.search(r"for bin in (.+?);\s*do", src)
+    assert m, "PATH probe loop `for bin in ...; do` not found"
+    chain = m.group(1)
     for ver in ("python3.11", "python3.12", "python3.10", "python3.9"):
-        assert f" {ver} " in src or f" {ver}\n" in src or f"{ver} " in src, (
-            f"PATH fallback missing {ver} — would silently fail on a macOS "
-            "setup that only ships this versioned binary. See Codex review "
-            "on PR #33 commit 4ec2129b."
+        assert ver in chain.split(), (
+            f"PATH fallback chain missing {ver} — would silently fail on a "
+            "macOS setup that only ships this versioned binary. See Codex "
+            "review on PR #33 commit 4ec2129b."
         )
 
 
