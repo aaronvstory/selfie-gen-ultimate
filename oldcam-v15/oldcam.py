@@ -863,8 +863,16 @@ def naturalize_video(input_path: str, output_path: str, args: argparse.Namespace
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(temp_output, fourcc, fps, output_size)
     if not writer.isOpened():
+        # Release both handles before bailing so a batch run (main() loops
+        # over many files) never accumulates open writers / locked files.
         capture.release()
-        raise RuntimeError(f"Could not create video writer for: {temp_output}")
+        writer.release()
+        raise RuntimeError(
+            f"Could not create mp4v video writer for: {temp_output}. "
+            "The 'Laundromat' double-lossy pipeline requires OpenCV's mp4v "
+            "encoder (the long-standing default); install an OpenCV build "
+            "with mp4v support."
+        )
 
     frame_num = 0
     next_pct = 25.0

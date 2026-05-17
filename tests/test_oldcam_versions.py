@@ -1830,19 +1830,33 @@ def test_v15_bloom_is_smoothstep_and_temp_is_double_lossy_audio_copied():
         assert '"-c:a",\n            "copy",' in src, f"{rel}: audio must be stream-copied"
 
 
-def test_v15_crf_default_is_23_clamped_to_28():
+def test_v15_crf_default_is_23_clamped_to_28(tmp_path):
     """Laundromat hotfix: --crf default 14 -> 23, clamp ceiling 24 -> 28
-    (heavier organic web compression to crush the AI signature)."""
+    (heavier organic web compression to crush the AI signature).
+
+    Asserts the clamp *behaviour* via the real main() path (spying on the
+    args main() forwards to process_input) rather than a source-string match,
+    so refactoring the clamp doesn't falsely fail this test.
+    """
     oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15_crf")
     parser = oldcam_v15.build_parser()
     ns = parser.parse_args(["clip.mp4"])
     assert ns.crf == 23, f"V15 --crf default must be 23; got {ns.crf}"
-    # main()'s clamp must accept 28 and cap above it.
-    for rel in ("oldcam-v15/oldcam.py", "oldcam-v15/macOS/oldcam.py"):
-        src = (ROOT / rel).read_text(encoding="utf-8")
-        assert "min(int(args.crf), 28)" in src, (
-            f"{rel}: crf clamp ceiling must be 28"
-        )
+
+    src_img = tmp_path / "tiny.png"
+    src_img.write_bytes(b"not-real-media")  # process_input is stubbed
+    captured = {}
+
+    def spy_process_input(input_path, output_path, args):
+        captured["crf"] = args.crf
+
+    with mock.patch.object(oldcam_v15, "process_input", side_effect=spy_process_input):
+        oldcam_v15.main([str(src_img), "-o", str(tmp_path / "o1.png"), "--crf", "35"])
+        assert captured["crf"] == 28, f"CRF 35 must clamp to 28; got {captured['crf']}"
+        oldcam_v15.main([str(src_img), "-o", str(tmp_path / "o2.png"), "--crf", "5"])
+        assert captured["crf"] == 10, f"CRF 5 must clamp to 10; got {captured['crf']}"
+        oldcam_v15.main([str(src_img), "-o", str(tmp_path / "o3.png"), "--crf", "20"])
+        assert captured["crf"] == 20, f"in-range CRF 20 must be preserved; got {captured['crf']}"
 
 
 def test_v15_naturalize_image_runs_via_real_parser(tmp_path):
