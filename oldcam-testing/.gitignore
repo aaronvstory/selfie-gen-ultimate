@@ -1,4 +1,0 @@
-# Per-run A/B output folders (videos + resemble_results.*) — never commit.
-runs/
-__pycache__/
-*.pyc
