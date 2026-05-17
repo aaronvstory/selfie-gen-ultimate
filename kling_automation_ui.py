@@ -2272,8 +2272,13 @@ class KlingAutomationUI:
             t = text.strip()
             if not t:
                 return True  # empty == keep current
-            if validator and not validator(t):
-                return f"Value not accepted for {key}."
+            if validator:
+                # questionary's validate= can return either bool or str.
+                # Propagate str messages from the caller's validator so each
+                # field can show a specific error instead of a generic one.
+                res = validator(t)
+                if res is not True:
+                    return res if res else f"Value not accepted for {key}."
             return True
 
         answer = questionary.text(
@@ -2303,8 +2308,10 @@ class KlingAutomationUI:
                 v = int(t)
             except ValueError:
                 return "Please enter a valid integer."
-            if validator and not validator(v):
-                return "Value is outside the allowed range."
+            if validator:
+                res = validator(v)
+                if res is not True:
+                    return res if res else "Value is outside the allowed range."
             return True
 
         answer = questionary.text(
@@ -2334,8 +2341,10 @@ class KlingAutomationUI:
                 v = float(t)
             except ValueError:
                 return "Please enter a valid number."
-            if validator and not validator(v):
-                return "Value is outside the allowed range."
+            if validator:
+                res = validator(v)
+                if res is not True:
+                    return res if res else "Value is outside the allowed range."
             return True
 
         answer = questionary.text(
@@ -2385,7 +2394,10 @@ class KlingAutomationUI:
         if cast_fn is not None:
             try:
                 self.config[key] = cast_fn(answer)
-            except Exception:
+            except (TypeError, ValueError):
+                # Narrow catch: only swallow conversion failures. Other
+                # exceptions (bugs inside future cast helpers) propagate so
+                # we don't silently keep stale config.
                 print(f"  ✗ Could not cast {answer!r} for {key}; keeping current.")
                 return
         else:

@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
+
+
+def _format_cmd_for_log(cmd: List[str]) -> str:
+    """Render a command list in a shell-paste-safe form for the current OS.
+
+    POSIX shells parse the output of `shlex.join`; cmd.exe / PowerShell
+    instead need MS-style quoting which `subprocess.list2cmdline` produces.
+    Python's `shlex` docs explicitly warn its quoting is not guaranteed on
+    non-POSIX shells, so the launch-command log line stays copy-pasteable
+    on either platform.
+    """
+    if os.name == "nt":
+        return subprocess.list2cmdline(cmd)
+    return shlex.join(cmd)
 
 
 ProgressCB = Optional[Callable[[str, str], None]]
@@ -71,9 +86,10 @@ def run_oldcam_version(
         return None
 
     cmd = [sys.executable, "-u", str(launcher), str(video_path)]
-    # Log the exact command via shlex.join so paths with spaces or shell-special
-    # characters render unambiguously and are copy-pasteable into a shell.
-    _report(progress_cb, f"Oldcam {version} launching: {shlex.join(cmd)}", "info")
+    # Log the exact command via a platform-aware formatter so paths with spaces
+    # or shell-special characters render unambiguously and copy-paste cleanly
+    # into the host's shell (POSIX → shlex.join, Windows → list2cmdline).
+    _report(progress_cb, f"Oldcam {version} launching: {_format_cmd_for_log(cmd)}", "info")
     output_lines: List[str] = []
     try:
         process = subprocess.Popen(
