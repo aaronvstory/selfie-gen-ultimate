@@ -21,3 +21,6 @@ launcher_runtime.log
 # Local-only workspace files
 .DS_Store
 for-testing/
+
+# transient forensics calibration scratch
+.calib_tmp/

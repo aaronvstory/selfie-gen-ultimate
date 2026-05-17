@@ -78,3 +78,28 @@ python resemble-score/main.py --cli --folder "F:\videos" --select "g:oldcam"
 ```
 
 Run with no arguments to launch the GUI.
+
+## Temporal forensics — free pre-test (no API cost)
+
+```bash
+python resemble-score/main.py --forensics --folder "F:\videos"
+```
+
+Before spending a Resemble API call, this offline pass measures each
+clip's **motion cadence** and predicts whether oldcam (V24) can help:
+
+- **`spatial`** — smooth cadence; the deepfake tell (if any) is the
+  spatial diffusion fingerprint, which V24's resolution crush destroys.
+  *Worth scoring — expect a large improvement.*
+- **`temporal`** — broken motion rhythm (bursts of fast motion + frozen
+  frames + jerky acceleration). The tell is temporal; V24 only alters
+  pixels, so it **cannot** help. *Re-generate the source instead of
+  spending an API call.*
+- **`uncertain`** — calibration grey zone; score it to find out.
+
+Discovered empirically from 3 known-outcome clips and calibrated against
+a 181-clip real corpus (see `FORENSICS.md`). On that corpus ~65% read
+"spatial" (V24 candidates), ~4% "temporal" (don't bother), the rest
+"uncertain". The Signal-relayed `signal-…` clip — V24's only total
+failure — sat at composite 4.97, far above the corpus max of 2.16,
+confirming it as a genuine extreme outlier.
