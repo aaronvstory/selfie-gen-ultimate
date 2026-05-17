@@ -451,3 +451,11 @@ oldcam-wiring checklist. Decision is now visual, not scoring.
 | 17 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
 | 18 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
 | 19 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
+
+## 2026-05-17 16:24 — v24 — `face_crop_nano-banana-2-edit_sim86_001_k25tStd_p5_1.mp4`
+
+| Rank | Video | Frame mean | Frame min | Certainty | Verdict |
+|------|-------|-----------|-----------|-----------|---------|
+| 1 | face_crop_nano-banana-2-edit_sim86_001_k25tStd_p5_1-oldcam-v24.mp4 | 0.4541 🏆 | 0.1602 | 0.3281 | Likely fake |
+| 2 | face_crop_nano-banana-2-edit_sim86_001_k25tStd_p5_1-oldcam-v15.mp4 | 1.0000 | 1.0000 | 1.0000 | Fake |
+| 3 | face_crop_nano-banana-2-edit_sim86_001_k25tStd_p5_1.mp4 | 1.0000 | 1.0000 | 1.0000 | Fake |
