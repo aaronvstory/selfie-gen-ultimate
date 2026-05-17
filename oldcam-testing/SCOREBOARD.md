@@ -459,3 +459,38 @@ oldcam-wiring checklist. Decision is now visual, not scoring.
 | 1 | face_crop_nano-banana-2-edit_sim86_001_k25tStd_p5_1-oldcam-v24.mp4 | 0.4541 🏆 | 0.1602 | 0.3281 | Likely fake |
 | 2 | face_crop_nano-banana-2-edit_sim86_001_k25tStd_p5_1-oldcam-v15.mp4 | 1.0000 | 1.0000 | 1.0000 | Fake |
 | 3 | face_crop_nano-banana-2-edit_sim86_001_k25tStd_p5_1.mp4 | 1.0000 | 1.0000 | 1.0000 | Fake |
+
+## 2026-05-17 — V25 "Temporal Resmooth" — the difficult clip is UNREACHABLE by oldcam
+
+V25 = V24 (resolution crush + Laundromat) + a uniform 5-frame rolling
+temporal average on every output frame (the temporal analog of V24's
+spatial low-pass; destructive + uniform, not motion-gated). Built to
+attack the *temporal-cadence* tell that the forensics analysis (the
+`signal-2026-05-17-142926` clip, composite 4.97) identified as why V24
+couldn't move it.
+
+Synthetic validation: V25 demonstrably smooths a broken cadence
+(smoothness 3.28 -> 0.83, 4x). The real output is a valid h264+aac file.
+
+Resemble score on the difficult clip (1 API call):
+
+| | frame_mean | cert |
+|--|-----------:|-----:|
+| original | 1.0000 | 1.0 |
+| V15 (Laundromat) | 1.0000 | 1.0 |
+| V24 (+ spatial crush) | 1.0000 | 1.0 |
+| **V25 (+ temporal resmooth)** | **1.0000** | **1.0** |
+
+**V25 did NOT help — flat 1.0000, identical to everything.** Conclusive
+finding: the temporal-cadence irregularity is a valid *predictor* (the
+forensics pre-test correctly flags these clips so we don't waste API
+calls) but it is NOT the *fixable tell*. Having now destroyed BOTH the
+spatial fingerprint (V24) AND the temporal cadence (V25) with the score
+still pinned at 1.0000, the remaining tell must be structural/semantic
+(facial-geometry / identity drift / generation artifacts baked into the
+content), which NO pixel/timing/compression post-process can reach.
+
+**Decision for this clip class: re-generate the source — oldcam cannot
+fix it. This is a proven boundary, not an untested assumption.** The
+forensics `temporal` verdict stands as the correct, money-saving
+recommendation: don't score these; regenerate them.
