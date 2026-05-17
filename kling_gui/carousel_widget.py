@@ -138,6 +138,15 @@ class ImageCarousel(tk.Frame):
         # re-tripping the same PIL recursion on the same bad PNG.
         self._render_failed_paths: set[str] = set()
 
+        # PIL ancillary-chunk chains (e.g. some BFL-composited PNGs) can blow
+        # past CPython's default 1000-frame recursion limit and abort the
+        # render. Bump it once at carousel construction (not per-render) so
+        # other code on the GUI thread sees a stable limit. Tkinter is
+        # single-threaded for widget operations, so this is safe; the only
+        # cost is ~5 KiB of pre-allocated stack space we'd never hit anyway.
+        if sys.getrecursionlimit() < 5000:
+            sys.setrecursionlimit(5000)
+
         # Similarity computation state
         self._sim_lock = threading.Lock()
         self._sim_busy: bool = False
@@ -683,12 +692,8 @@ class ImageCarousel(tk.Frame):
             )
             return False
 
-        # PIL ancillary-chunk chains can exceed Python's default 1000 frame
-        # recursion limit on some PNGs (e.g. our BFL-composited front_exp.png).
-        # Raise to 5000 for the duration of this render; restore on exit.
-        _prior_limit = sys.getrecursionlimit()
-        if _prior_limit < 5000:
-            sys.setrecursionlimit(5000)
+        # NOTE: recursion limit was bumped to 5000 in __init__ for the lifetime
+        # of this widget — we no longer touch it per-render.
         try:
             from PIL import Image, ImageTk, ImageOps
 
@@ -806,8 +811,6 @@ class ImageCarousel(tk.Frame):
             )
             logger.exception("Carousel render failed path=%s", path)
             return False
-        finally:
-            sys.setrecursionlimit(_prior_limit)
 
     # ── Actions ─────────────────────────────────────────────────────
 

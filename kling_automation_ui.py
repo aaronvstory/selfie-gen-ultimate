@@ -29,6 +29,13 @@ except ModuleNotFoundError:
         os.environ["KERAS_BACKEND"] = "tensorflow"
 
 try:
+    # questionary is declared required=True in dependency_checker.py and is
+    # installed via requirements.txt by every launcher (setup_macos.sh,
+    # setup_windows.sh). The ImportError handler below is **defense-in-depth**:
+    # if a user has a corrupted venv or runs the module before setup completed,
+    # we degrade to the legacy input() walker instead of crashing. This is also
+    # what keeps non-TTY callers (pytest, CI, piped stdin) working — the
+    # dispatch checks both _QUESTIONARY_AVAILABLE and sys.stdin.isatty().
     import questionary
     from questionary import Style as _QStyle
     _QUESTIONARY_AVAILABLE = True
@@ -2313,14 +2320,17 @@ class KlingAutomationUI:
             return
         self.config[key] = answer
 
-    def _qs_directory(self, message: str, key: str, current_value: Optional[str],
+    def _qs_directory(self, message: str, current_value: Optional[str],
                       picker_title: str) -> Optional[str]:
         """Pick a directory.
 
         Default action: open the native OS folder picker (Finder on macOS via
         osascript, native Explorer on Windows via tkinter.filedialog). User can
         skip the picker and either keep the current value or type a path
-        manually. Returns the new path (or None if unchanged).
+        manually. Returns the new path (or None if unchanged). The caller is
+        responsible for writing the returned value into self.config — this
+        helper is intentionally pure to keep "validate before persist" logic
+        at the call site (e.g. checking `root_path.is_dir()` before commit).
         """
         action = questionary.select(
             message,
@@ -2366,7 +2376,6 @@ class KlingAutomationUI:
         # Manual text entry is a fallback when the user cancels or prefers typing.
         new_root = self._qs_directory(
             "Automation root folder:",
-            key="automation_root_folder",
             current_value=self.automation_root_folder,
             picker_title="Choose automation root folder",
         )
