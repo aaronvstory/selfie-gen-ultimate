@@ -30,9 +30,25 @@ except ModuleNotFoundError:
 
 try:
     import questionary
+    from questionary import Style as _QStyle
     _QUESTIONARY_AVAILABLE = True
+    # Branded style — cyan accents, dim grey instructions, green selections.
+    # Applied to every questionary prompt in the sectioned settings editor.
+    KLING_QUESTIONARY_STYLE = _QStyle([
+        ("qmark", "fg:#00d7ff bold"),         # ? prefix on each prompt
+        ("question", "fg:#ffffff bold"),       # question text
+        ("answer", "fg:#5fffaf bold"),         # final answer rendering
+        ("pointer", "fg:#00d7ff bold"),        # ❯ on selected choice
+        ("highlighted", "fg:#00d7ff bold"),    # currently hovered choice
+        ("selected", "fg:#5fffaf"),            # confirmed choice text
+        ("separator", "fg:#5f5f5f"),           # divider rows
+        ("instruction", "fg:#6c7086 italic"),  # hint text after the question
+        ("text", "fg:#bdbdbd"),                # default body
+        ("disabled", "fg:#5f5f5f italic"),
+    ])
 except ImportError:
     questionary = None  # type: ignore[assignment]
+    KLING_QUESTIONARY_STYLE = None  # type: ignore[assignment]
     _QUESTIONARY_AVAILABLE = False
 
 ensure_ml_backend_env()
@@ -2079,25 +2095,38 @@ class KlingAutomationUI:
         """
         assert questionary is not None  # for type-checkers; dispatch already gated
 
+        # Banner shown once when the editor opens. Keeps the section list
+        # visually grounded vs. just a bare select prompt.
+        Console().print(
+            Panel.fit(
+                "[bold cyan]Automation Settings[/bold cyan]\n"
+                "[dim]Pick a section to edit. Each section only asks about its own fields.[/dim]",
+                border_style="cyan",
+            )
+        )
+
         while True:
             summary = self._questionary_section_summary()
             choice = questionary.select(
-                "Edit which section? (↑/↓ to move, Enter to pick, Ctrl-C to abort)",
+                "Edit which section?",
+                qmark="◆",
+                instruction="(↑/↓ move · Enter pick · Ctrl-C abort)",
                 choices=[
-                    questionary.Choice(f"Paths           — {summary['paths']}", "paths"),
-                    questionary.Choice(f"Run scope       — {summary['run']}", "run"),
-                    questionary.Choice(f"Front expand    — {summary['front']}", "front"),
-                    questionary.Choice(f"Portrait crop   — {summary['portrait']}", "portrait"),
-                    questionary.Choice(f"Selfie gen      — {summary['selfie']}", "selfie"),
-                    questionary.Choice(f"Selfie expand   — {summary['selfie_expand']}", "selfie_expand"),
-                    questionary.Choice(f"Video           — {summary['video']}", "video"),
-                    questionary.Choice(f"Oldcam          — {summary['oldcam']}", "oldcam"),
-                    questionary.Choice(f"Logging         — {summary['logging']}", "logging"),
-                    questionary.Choice("─" * 40, "_sep", disabled=" "),
-                    questionary.Choice("View all settings (read-only table)", "_view"),
-                    questionary.Choice("Save and return", "_done"),
+                    questionary.Choice(f"📁 Paths           {summary['paths']}", "paths"),
+                    questionary.Choice(f"▶  Run scope       {summary['run']}", "run"),
+                    questionary.Choice(f"🖼  Front expand    {summary['front']}", "front"),
+                    questionary.Choice(f"👤 Portrait crop   {summary['portrait']}", "portrait"),
+                    questionary.Choice(f"✨ Selfie gen      {summary['selfie']}", "selfie"),
+                    questionary.Choice(f"➕ Selfie expand   {summary['selfie_expand']}", "selfie_expand"),
+                    questionary.Choice(f"🎬 Video           {summary['video']}", "video"),
+                    questionary.Choice(f"📼 Oldcam          {summary['oldcam']}", "oldcam"),
+                    questionary.Choice(f"🪵 Logging         {summary['logging']}", "logging"),
+                    questionary.Separator("─" * 50),
+                    questionary.Choice("👁  View all settings (read-only table)", "_view"),
+                    questionary.Choice("💾 Save and return", "_done"),
                 ],
                 default="_done",
+                style=KLING_QUESTIONARY_STYLE,
             ).ask()
 
             if choice in (None, "_done"):
@@ -2186,18 +2215,28 @@ class KlingAutomationUI:
 
     # ── Per-section editors ──────────────────────────────────────────
 
+    def _qs_section_banner(self, title: str, description: str = "") -> None:
+        """Print a polished section header before its prompts."""
+        body = f"[bold cyan]{title}[/bold cyan]"
+        if description:
+            body += f"\n[dim]{description}[/dim]"
+        Console().print(Panel.fit(body, border_style="cyan"))
+
     def _qs_text(self, message: str, key: str, default: Optional[str] = None,
                  validator=None) -> None:
         """Edit a single text/str setting. Empty input keeps current."""
         current = self.config.get(key, default)
         answer = questionary.text(
-            f"{message}  (current: {current})",
+            message,
+            qmark="◆",
+            instruction=f"(current: {current} · Enter keeps)",
             default="",
+            style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if answer is None or answer.strip() == "":
             return
         if validator and not validator(answer):
-            print(f"Invalid value for {key}; keeping current.")
+            print(f"  ✗ Invalid value for {key}; keeping current.")
             return
         self.config[key] = answer.strip()
 
@@ -2205,18 +2244,21 @@ class KlingAutomationUI:
                 validator=None) -> None:
         current = self.config.get(key, default)
         answer = questionary.text(
-            f"{message}  (current: {current})",
+            message,
+            qmark="◆",
+            instruction=f"(current: {current} · Enter keeps)",
             default="",
+            style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if answer is None or answer.strip() == "":
             return
         try:
             val = int(answer.strip())
         except ValueError:
-            print(f"Invalid integer for {key}; keeping current.")
+            print(f"  ✗ Invalid integer for {key}; keeping current.")
             return
         if validator and not validator(val):
-            print(f"Invalid value for {key}; keeping current.")
+            print(f"  ✗ Invalid value for {key}; keeping current.")
             return
         self.config[key] = val
 
@@ -2224,26 +2266,31 @@ class KlingAutomationUI:
                   validator=None) -> None:
         current = self.config.get(key, default)
         answer = questionary.text(
-            f"{message}  (current: {current})",
+            message,
+            qmark="◆",
+            instruction=f"(current: {current} · Enter keeps)",
             default="",
+            style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if answer is None or answer.strip() == "":
             return
         try:
             val = float(answer.strip())
         except ValueError:
-            print(f"Invalid number for {key}; keeping current.")
+            print(f"  ✗ Invalid number for {key}; keeping current.")
             return
         if validator and not validator(val):
-            print(f"Invalid value for {key}; keeping current.")
+            print(f"  ✗ Invalid value for {key}; keeping current.")
             return
         self.config[key] = val
 
     def _qs_bool(self, message: str, key: str, default: bool = False) -> None:
         current = bool(self.config.get(key, default))
         answer = questionary.confirm(
-            f"{message}  (current: {'yes' if current else 'no'})",
+            message,
+            qmark="◆",
             default=current,
+            style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if answer is None:
             return
@@ -2255,94 +2302,162 @@ class KlingAutomationUI:
         if current not in choices:
             current = default if default in choices else choices[0]
         answer = questionary.select(
-            f"{message}  (current: {current})",
+            message,
+            qmark="◆",
+            instruction=f"(current: {current})",
             choices=choices,
             default=current,
+            style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if answer is None:
             return
         self.config[key] = answer
 
-    def _qs_section_paths(self):
-        print("\n— Paths & discovery —")
-        # Root folder gets special handling: validate it exists.
-        current_root = self.automation_root_folder or ""
-        raw = questionary.text(
-            f"Automation root path  (current: {current_root or '(not set)'})",
-            default="",
+    def _qs_directory(self, message: str, key: str, current_value: Optional[str],
+                      picker_title: str) -> Optional[str]:
+        """Pick a directory.
+
+        Default action: open the native OS folder picker (Finder on macOS via
+        osascript, native Explorer on Windows via tkinter.filedialog). User can
+        skip the picker and either keep the current value or type a path
+        manually. Returns the new path (or None if unchanged).
+        """
+        action = questionary.select(
+            message,
+            qmark="◆",
+            instruction=f"(current: {current_value or '(not set)'})",
+            choices=[
+                questionary.Choice("📂 Open folder picker (recommended)", "pick"),
+                questionary.Choice("⌨  Type path manually", "type"),
+                questionary.Choice("↩  Keep current", "keep"),
+            ],
+            default="pick",
+            style=KLING_QUESTIONARY_STYLE,
         ).ask()
-        if raw and raw.strip():
-            root_path = Path(raw.strip()).expanduser()
+        if action in (None, "keep"):
+            return None
+        if action == "pick":
+            picked = select_directory_cli_safe(title=picker_title)
+            if not picked:
+                # User cancelled the native picker. Offer manual entry as a
+                # graceful fallback instead of silently bailing.
+                print("  (picker cancelled — falling back to manual entry)")
+                action = "type"
+            else:
+                return picked
+        if action == "type":
+            raw = questionary.text(
+                "Folder path:",
+                qmark="◆",
+                default=current_value or "",
+                style=KLING_QUESTIONARY_STYLE,
+            ).ask()
+            if raw is None or not raw.strip():
+                return None
+            return raw.strip()
+        return None
+
+    def _qs_section_paths(self):
+        self._qs_section_banner(
+            "Paths & discovery",
+            "Where automation looks for case folders, and how many to process per batch.",
+        )
+        # Native folder picker by default — Finder on macOS, Explorer on Windows.
+        # Manual text entry is a fallback when the user cancels or prefers typing.
+        new_root = self._qs_directory(
+            "Automation root folder:",
+            key="automation_root_folder",
+            current_value=self.automation_root_folder,
+            picker_title="Choose automation root folder",
+        )
+        if new_root:
+            root_path = Path(new_root).expanduser()
             if root_path.exists() and root_path.is_dir():
                 self.automation_root_folder = str(root_path)
                 self.config["automation_root_folder"] = self.automation_root_folder
+                print(f"  ✓ Root set to {self.automation_root_folder}")
             else:
-                print("Root path invalid; keeping previous value.")
+                print(f"  ✗ Path does not exist or is not a folder: {new_root}")
         self._qs_text(
-            "Manifest filename",
+            "Manifest filename:",
             "automation_manifest_name",
             default="automation_manifest.json",
             validator=lambda v: len(v) > 0 and v.endswith(".json") and Path(v).name == v,
         )
         self._qs_choice(
-            "Max cases per run",
+            "Max cases per run:",
             "automation_max_cases_per_run",
             choices=["1", "5", "10", "all"],
             default="all",
         )
 
     def _qs_section_run(self):
-        print("\n— Run scope flags —")
-        self._qs_bool("Skip completed cases", "automation_skip_completed", default=True)
-        self._qs_bool("Skip if selfie exists", "automation_skip_if_selfie_exists", default=True)
-        self._qs_bool("Skip if video exists", "automation_skip_if_video_exists", default=True)
-        self._qs_bool("Allow reprocess", "automation_allow_reprocess", default=False)
+        self._qs_section_banner(
+            "Run scope",
+            "Which case folders the next run includes, and how it handles already-processed work.",
+        )
+        self._qs_bool("Skip completed cases?", "automation_skip_completed", default=True)
+        self._qs_bool("Skip if selfie already exists?", "automation_skip_if_selfie_exists", default=True)
+        self._qs_bool("Skip if video already exists?", "automation_skip_if_video_exists", default=True)
+        self._qs_bool("Allow reprocess (overrides skips)?", "automation_allow_reprocess", default=False)
         self._qs_choice(
-            "Reprocess mode",
+            "Reprocess mode:",
             "automation_reprocess_mode",
             choices=["skip", "overwrite", "increment"],
             default="skip",
         )
 
     def _qs_section_front_expand(self):
-        print("\n— Front expansion —")
-        self._qs_bool("Front expand enabled", "automation_front_expand_enabled", default=True)
-        self._qs_choice("Front expand provider", "automation_front_expand_provider",
+        self._qs_section_banner(
+            "Front expansion",
+            "First pipeline stage: outpaint the input photo to a 3:4 / wider canvas before everything else.",
+        )
+        self._qs_bool("Front expand enabled?", "automation_front_expand_enabled", default=True)
+        self._qs_choice("Provider:", "automation_front_expand_provider",
                         choices=["auto", "bfl", "fal"], default="auto")
-        self._qs_choice("Front expand mode", "automation_front_expand_mode",
+        self._qs_choice("Expand mode:", "automation_front_expand_mode",
                         choices=["document_3x4", "percent"], default="document_3x4")
-        self._qs_choice("Front composite mode", "automation_front_expand_composite_mode",
+        self._qs_choice("Composite mode:", "automation_front_expand_composite_mode",
                         choices=["preserve_seamless", "feathered", "hard", "none"],
                         default="preserve_seamless")
-        self._qs_int("Front expand percent", "automation_front_expand_percent",
+        self._qs_int("Expand percent:", "automation_front_expand_percent",
                      default=30, validator=lambda v: v >= 0)
-        self._qs_choice("Front expand passes", "automation_front_expand_passes",
+        self._qs_choice("Expand passes:", "automation_front_expand_passes",
                         choices=["1", "2"], default="2")
         # The choice above stores a string; coerce back to int to keep types consistent.
         if isinstance(self.config.get("automation_front_expand_passes"), str):
             self.config["automation_front_expand_passes"] = int(self.config["automation_front_expand_passes"])
-        self._qs_bool("Front edge seal enabled", "automation_front_edge_seal_enabled", default=False)
-        self._qs_int("Front edge seal px", "automation_front_edge_seal_px",
+        self._qs_bool("Edge seal enabled?", "automation_front_edge_seal_enabled", default=False)
+        self._qs_int("Edge seal px:", "automation_front_edge_seal_px",
                      default=12, validator=lambda v: v >= 0)
-        self._qs_text("Front output filename", "automation_front_output_name",
+        self._qs_text("Output filename:", "automation_front_output_name",
                       default="front-expanded.png",
                       validator=lambda v: len(v) > 0)
 
     def _qs_section_portrait(self):
-        print("\n— Portrait extraction —")
-        self._qs_bool("Portrait extraction enabled", "automation_extract_enabled", default=True)
-        self._qs_text("Extract output filename", "automation_extract_output_name",
+        self._qs_section_banner(
+            "Portrait extraction",
+            "Crops a passport-style face from the front-expanded image for use as the selfie identity reference.",
+        )
+        self._qs_bool("Portrait extraction enabled?", "automation_extract_enabled", default=True)
+        self._qs_text("Output filename:", "automation_extract_output_name",
                       default="extracted.png",
                       validator=lambda v: len(v) > 0)
-        self._qs_float("Crop multiplier", "automation_crop_multiplier",
+        self._qs_float("Crop multiplier:", "automation_crop_multiplier",
                        default=1.5, validator=lambda v: v > 0)
 
     def _qs_section_selfie(self):
-        print("\n— Selfie generation —")
-        self._qs_bool("Selfie generation enabled", "automation_selfie_enabled", default=True)
+        self._qs_section_banner(
+            "Selfie generation",
+            "Generate identity-locked selfies; multiple attempts are gated by the similarity threshold.",
+        )
+        self._qs_bool("Selfie generation enabled?", "automation_selfie_enabled", default=True)
         current_models = list(self.config.get("automation_selfie_models", []))
+        current_label = ", ".join(current_models) if current_models else "(none)"
         preset = questionary.select(
-            f"Selfie model set  (current: {current_models})",
+            "Selfie model set:",
+            qmark="◆",
+            instruction=f"(current: {current_label})",
             choices=[
                 questionary.Choice("Nano Banana 2 Edit only", "nano"),
                 questionary.Choice("GPT Image 2 Edit only", "gpt"),
@@ -2351,6 +2466,7 @@ class KlingAutomationUI:
                 questionary.Choice("Keep current", "_keep"),
             ],
             default="_keep",
+            style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if preset == "nano":
             self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
@@ -2359,16 +2475,20 @@ class KlingAutomationUI:
         elif preset == "both":
             self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit", "openai/gpt-image-2/edit"]
         elif preset == "custom":
-            raw = questionary.text("Custom endpoints (comma-separated):").ask()
+            raw = questionary.text(
+                "Custom endpoints (comma-separated):",
+                qmark="◆",
+                style=KLING_QUESTIONARY_STYLE,
+            ).ask()
             if raw:
                 models = [m.strip() for m in raw.split(",") if m.strip()]
                 if models:
                     self.config["automation_selfie_models"] = models
-        self._qs_choice("Selfie model policy", "automation_selfie_model_policy",
+        self._qs_choice("Model policy:", "automation_selfie_model_policy",
                         choices=["first_pass", "all"], default="first_pass")
-        self._qs_int("Max attempts per model", "automation_selfie_max_attempts_per_model",
+        self._qs_int("Max attempts per model:", "automation_selfie_max_attempts_per_model",
                      default=1, validator=lambda v: v > 0)
-        self._qs_int("Similarity threshold (0-100)", "automation_similarity_threshold",
+        self._qs_int("Similarity threshold (0-100):", "automation_similarity_threshold",
                      default=80, validator=lambda v: 0 <= v <= 100)
 
         # Prompt slot — only ask if user wants to touch it.
@@ -2377,23 +2497,37 @@ class KlingAutomationUI:
         current_prompt = str(self.config.get("automation_selfie_prompts", {}).get(str(current_slot), "") or "")
         preview = (current_prompt[:80] + "...") if len(current_prompt) > 80 else current_prompt
         prompt_action = questionary.select(
-            f"Selfie prompt: slot {current_slot} — \"{preview}\"",
+            "Selfie prompt:",
+            qmark="◆",
+            instruction=f"(slot {current_slot}: \"{preview}\")",
             choices=[
-                questionary.Choice("Keep slot and prompt as-is", "_keep"),
-                questionary.Choice("Switch to a different slot (1-10)", "switch"),
-                questionary.Choice("Edit the active prompt text", "edit"),
-                questionary.Choice("Reset the active slot to its default prompt", "reset"),
+                questionary.Choice("↩  Keep slot and prompt as-is", "_keep"),
+                questionary.Choice("🔢 Switch to a different slot (1-10)", "switch"),
+                questionary.Choice("✏  Edit the active prompt text", "edit"),
+                questionary.Choice("♻  Reset the active slot to its default prompt", "reset"),
             ],
             default="_keep",
+            style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if prompt_action == "switch":
-            slot_raw = questionary.text("New slot [1-10]:").ask()
+            slot_raw = questionary.text(
+                "New slot (1-10):",
+                qmark="◆",
+                style=KLING_QUESTIONARY_STYLE,
+            ).ask()
             if slot_raw and slot_raw.strip().isdigit():
                 v = int(slot_raw.strip())
                 if 1 <= v <= 10:
                     self.config["automation_selfie_prompt_slot"] = v
+                else:
+                    print("  ✗ Slot out of range 1-10; keeping current.")
         elif prompt_action == "edit":
-            new_prompt = questionary.text("New prompt text:", default=current_prompt).ask()
+            new_prompt = questionary.text(
+                "New prompt text:",
+                qmark="◆",
+                default=current_prompt,
+                style=KLING_QUESTIONARY_STYLE,
+            ).ask()
             if new_prompt is not None and new_prompt.strip():
                 self.config["automation_selfie_prompts"][str(current_slot)] = new_prompt.strip()
         elif prompt_action == "reset":
@@ -2401,47 +2535,60 @@ class KlingAutomationUI:
             self.config["automation_selfie_prompts"][str(current_slot)] = defaults.get(
                 str(current_slot), defaults.get("1", "")
             )
+            print(f"  ✓ Slot {current_slot} reset to default.")
 
     def _qs_section_selfie_expand(self):
-        print("\n— Selfie expansion —")
-        self._qs_bool("Selfie expansion enabled", "automation_selfie_expand_enabled", default=True)
-        self._qs_choice("Selfie expand provider", "automation_selfie_expand_provider",
+        self._qs_section_banner(
+            "Selfie expansion",
+            "Outpaint the generated selfie to wider canvas before video generation.",
+        )
+        self._qs_bool("Selfie expansion enabled?", "automation_selfie_expand_enabled", default=True)
+        self._qs_choice("Provider:", "automation_selfie_expand_provider",
                         choices=["auto", "bfl", "fal"], default="auto")
-        self._qs_choice("Selfie expand mode", "automation_selfie_expand_mode",
+        self._qs_choice("Expand mode:", "automation_selfie_expand_mode",
                         choices=["percent", "centered_3x4"], default="percent")
-        self._qs_choice("Selfie composite mode", "automation_selfie_expand_composite_mode",
+        self._qs_choice("Composite mode:", "automation_selfie_expand_composite_mode",
                         choices=["preserve_seamless", "feathered", "hard", "none"],
                         default="preserve_seamless")
-        self._qs_int("Selfie expand percent", "automation_selfie_expand_percent",
+        self._qs_int("Expand percent:", "automation_selfie_expand_percent",
                      default=30, validator=lambda v: v >= 0)
 
     def _qs_section_video(self):
-        print("\n— Video generation —")
-        self._qs_bool("Video generation enabled", "automation_video_enabled", default=True)
-        self._qs_text("Video aspect ratio (e.g. 3:4)", "automation_video_aspect_ratio",
+        self._qs_section_banner(
+            "Video generation",
+            "Kling AI animation from the expanded selfie.",
+        )
+        self._qs_bool("Video generation enabled?", "automation_video_enabled", default=True)
+        self._qs_text("Aspect ratio (e.g. 3:4):", "automation_video_aspect_ratio",
                       default="3:4", validator=lambda v: ":" in v)
-        self._qs_bool("Use existing video prompt", "automation_video_use_existing_prompt", default=True)
+        self._qs_bool("Use existing video prompt slot?", "automation_video_use_existing_prompt", default=True)
 
     def _qs_section_oldcam(self):
-        print("\n— Oldcam —")
-        self._qs_bool("Oldcam enabled", "automation_oldcam_enabled", default=True)
+        self._qs_section_banner(
+            "Oldcam",
+            "Final stage: apply oldcam (analog-degradation) filter to the generated video.",
+        )
+        self._qs_bool("Oldcam enabled?", "automation_oldcam_enabled", default=True)
         # v24 is the current production default per CLAUDE.md. Keep the static
         # list aligned with the legacy walker so behavior matches.
         self._qs_choice(
-            "Oldcam version",
+            "Oldcam version:",
             "automation_oldcam_version",
             choices=["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"],
             default="v24",
         )
-        self._qs_bool("Oldcam required (fail case on oldcam failure)",
+        self._qs_bool("Oldcam required (fail case if oldcam fails)?",
                       "automation_oldcam_required", default=False)
 
     def _qs_section_logging(self):
-        print("\n— Logging —")
-        self._qs_bool("Verbose automation logging", "automation_verbose_logging", default=False)
-        self._qs_int("Log max bytes (rotation size)", "automation_log_max_bytes",
+        self._qs_section_banner(
+            "Logging",
+            "Automation log verbosity and rotation policy.",
+        )
+        self._qs_bool("Verbose automation logging?", "automation_verbose_logging", default=False)
+        self._qs_int("Log max bytes (rotation size):", "automation_log_max_bytes",
                      default=5_000_000, validator=lambda v: v > 0)
-        self._qs_int("Log backup count", "automation_log_backup_count",
+        self._qs_int("Log backup count:", "automation_log_backup_count",
                      default=3, validator=lambda v: v >= 1)
 
     def _dry_run_automation(self):

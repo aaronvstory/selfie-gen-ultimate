@@ -9,6 +9,8 @@ ENV/
 env/
 .venv/
 .venv-macos/
+.venv311/
+crash_log.txt
 
 # IDE
 .idea/

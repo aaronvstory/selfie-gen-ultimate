@@ -112,8 +112,8 @@ PYTHON_DEPENDENCIES = [
         name="Questionary",
         import_name="questionary",
         pip_name="questionary>=2.0,<3",
-        required=False,
-        description="Interactive sectioned menus for kling_automation_ui.py settings editor (graceful fallback if absent)."
+        required=True,
+        description="Interactive sectioned menus for the kling_automation_ui.py settings editor; required so launchers fail-fast if missing."
     ),
 ]
 
