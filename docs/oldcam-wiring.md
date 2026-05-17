@@ -23,8 +23,11 @@
 visible ISO grain v7–v11 add. It defeats SNR/PAD detectors without altering the
 look. v15 removes the floor entirely (Resemble testing showed the preserved
 floor is itself a frequency-detector tell) and restores V12 temporal blending.
-**Current default version: v15** (superseded v14). Mediapipe versions:
-v9, v10, v11 — v14/v15 do not use mediapipe.
+**Current default version: v24** (Crush Laundromat; superseded v15). App
+version numbers skip v16–v23 — those were rejected `oldcam-testing/`
+bench experiments, not app versions (see `oldcam-testing/SCOREBOARD.md`
+and `oldcam-testing/RESUME.md`). Mediapipe versions:
+v9, v10, v11 — v14/v15/v24 do not use mediapipe.
 
 ---
 

@@ -514,7 +514,7 @@ When adding a new Oldcam version (e.g., v12), these are the required touch-point
 
 **Auto-discovered (no changes needed):** `_discover_oldcam_versions()` in `queue_manager.py` scans `oldcam-v*` dirs; output filename suffix is generic; face landmarker task searched generically; `automation/pipeline.py` is fully version-agnostic.
 
-**Current default version:** v15 (Temporal Mute; superseded v14). Mediapipe versions: v9, v10, v11. v14/v15 do **not** use mediapipe.
+**Current default version:** v24 (Crush Laundromat; superseded v15). App version numbers skip v16–v23 — those were rejected `oldcam-testing/` bench experiments, never app versions (see `oldcam-testing/SCOREBOARD.md`). Mediapipe versions: v9, v10, v11. v14/v15/v24 do **not** use mediapipe.
 
 ---
 

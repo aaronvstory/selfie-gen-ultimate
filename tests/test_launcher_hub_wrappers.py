@@ -17,7 +17,8 @@ def test_launcher_hub_wrappers_delegate_targets():
         "launchers/windows/run_oldcam_v13.bat": r'call "%ROOT_DIR%\oldcam-v13\oldcam_launcher.bat" %*',
         "launchers/windows/run_oldcam_v14.bat": r'call "%ROOT_DIR%\oldcam-v14\oldcam_launcher.bat" %*',
         "launchers/windows/run_oldcam_v15.bat": r'call "%ROOT_DIR%\oldcam-v15\oldcam_launcher.bat" %*',
-        "launchers/windows/run_oldcam.bat": r'call "%ROOT_DIR%\launchers\windows\run_oldcam_v15.bat" %*',
+        "launchers/windows/run_oldcam_v24.bat": r'call "%ROOT_DIR%\oldcam-v24\oldcam_launcher.bat" %*',
+        "launchers/windows/run_oldcam.bat": r'call "%ROOT_DIR%\launchers\windows\run_oldcam_v24.bat" %*',
         "launchers/macos/run_similarity_gui.command": 'exec "$ROOT_DIR/similarity/run_gui.command" "$@"',
         "launchers/macos/run_similarity_cli.command": 'exec "$ROOT_DIR/similarity/run_cli.command" "$@"',
         "launchers/macos/run_oldcam_v8.command": 'exec "$ROOT_DIR/oldcam-v8/macOS/oldcam.command" "$@"',
@@ -26,7 +27,8 @@ def test_launcher_hub_wrappers_delegate_targets():
         "launchers/macos/run_oldcam_v13.command": 'exec "$ROOT_DIR/oldcam-v13/macOS/oldcam.command" "$@"',
         "launchers/macos/run_oldcam_v14.command": 'exec "$ROOT_DIR/oldcam-v14/macOS/oldcam.command" "$@"',
         "launchers/macos/run_oldcam_v15.command": 'exec "$ROOT_DIR/oldcam-v15/macOS/oldcam.command" "$@"',
-        "launchers/macos/run_oldcam.command": 'exec "$ROOT_DIR/launchers/macos/run_oldcam_v15.command" "$@"',
+        "launchers/macos/run_oldcam_v24.command": 'exec "$ROOT_DIR/oldcam-v24/macOS/oldcam.command" "$@"',
+        "launchers/macos/run_oldcam.command": 'exec "$ROOT_DIR/launchers/macos/run_oldcam_v24.command" "$@"',
         "launchers/run_similarity_gui.bat": r'call "%ROOT_DIR%\launchers\windows\run_similarity_gui.bat" %*',
         "launchers/run_similarity_cli.bat": r'call "%ROOT_DIR%\launchers\windows\run_similarity_cli.bat" %*',
         "launchers/run_oldcam_v8.bat": r'call "%ROOT_DIR%\launchers\windows\run_oldcam_v8.bat" %*',
@@ -35,6 +37,7 @@ def test_launcher_hub_wrappers_delegate_targets():
         "launchers/run_oldcam_v13.bat": r'call "%ROOT_DIR%\launchers\windows\run_oldcam_v13.bat" %*',
         "launchers/run_oldcam_v14.bat": r'call "%ROOT_DIR%\launchers\windows\run_oldcam_v14.bat" %*',
         "launchers/run_oldcam_v15.bat": r'call "%ROOT_DIR%\launchers\windows\run_oldcam_v15.bat" %*',
+        "launchers/run_oldcam_v24.bat": r'call "%ROOT_DIR%\launchers\windows\run_oldcam_v24.bat" %*',
         "launchers/run_oldcam.bat": r'call "%ROOT_DIR%\launchers\windows\run_oldcam.bat" %*',
         "launchers/run_similarity_gui.command": 'exec "$ROOT_DIR/launchers/macos/run_similarity_gui.command" "$@"',
         "launchers/run_similarity_cli.command": 'exec "$ROOT_DIR/launchers/macos/run_similarity_cli.command" "$@"',
@@ -44,6 +47,7 @@ def test_launcher_hub_wrappers_delegate_targets():
         "launchers/run_oldcam_v13.command": 'exec "$ROOT_DIR/launchers/macos/run_oldcam_v13.command" "$@"',
         "launchers/run_oldcam_v14.command": 'exec "$ROOT_DIR/launchers/macos/run_oldcam_v14.command" "$@"',
         "launchers/run_oldcam_v15.command": 'exec "$ROOT_DIR/launchers/macos/run_oldcam_v15.command" "$@"',
+        "launchers/run_oldcam_v24.command": 'exec "$ROOT_DIR/launchers/macos/run_oldcam_v24.command" "$@"',
         "launchers/run_oldcam.command": 'exec "$ROOT_DIR/launchers/macos/run_oldcam.command" "$@"',
     }
     for path, marker in wrappers.items():
@@ -61,6 +65,7 @@ def test_launcher_hub_windows_wrappers_preserve_exit_codes():
         "launchers/windows/run_oldcam_v13.bat",
         "launchers/windows/run_oldcam_v14.bat",
         "launchers/windows/run_oldcam_v15.bat",
+        "launchers/windows/run_oldcam_v24.bat",
         "launchers/windows/run_oldcam.bat",
         "launchers/run_similarity_gui.bat",
         "launchers/run_similarity_cli.bat",
@@ -70,6 +75,7 @@ def test_launcher_hub_windows_wrappers_preserve_exit_codes():
         "launchers/run_oldcam_v13.bat",
         "launchers/run_oldcam_v14.bat",
         "launchers/run_oldcam_v15.bat",
+        "launchers/run_oldcam_v24.bat",
         "launchers/run_oldcam.bat",
     ):
         text = _read(script)
@@ -77,15 +83,17 @@ def test_launcher_hub_windows_wrappers_preserve_exit_codes():
         assert "exit /b %EXIT_CODE%" in text
 
 
-def test_macos_v14_v15_command_wrappers_use_strict_set_flags():
-    """CLAUDE.md macOS Rule 10 — .command sibling launchers in the v14 and
-    v15 chains must all use `set -euo pipefail`. v7-v13 are intentionally NOT
-    covered here per docs/oldcam-wiring.md §9 (known-defect carve-out)."""
+def test_macos_v14_v15_v24_command_wrappers_use_strict_set_flags():
+    """CLAUDE.md macOS Rule 10 — .command sibling launchers in the v14, v15
+    and v24 chains must all use `set -euo pipefail`. v7-v13 are intentionally
+    NOT covered here per docs/oldcam-wiring.md §9 (known-defect carve-out)."""
     for path in (
         "launchers/macos/run_oldcam_v14.command",
         "launchers/run_oldcam_v14.command",
         "launchers/macos/run_oldcam_v15.command",
         "launchers/run_oldcam_v15.command",
+        "launchers/macos/run_oldcam_v24.command",
+        "launchers/run_oldcam_v24.command",
     ):
         text = _read(path)
         assert "set -euo pipefail" in text, (

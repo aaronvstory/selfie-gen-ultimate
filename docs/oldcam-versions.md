@@ -322,7 +322,47 @@ V13 looks like a high-end smartphone's daylight output: razor-sharp, no visible 
 
 ---
 
-## V15 — "Temporal Mute" (2026-05-17) — **Default ★**
+## V24 — "Crush Laundromat" (2026-05-17) — **Default ★**
+
+**File:** `oldcam-v24/oldcam.py` (cloned from V15 + one destructive change)
+**Output encoding:** uniform resolution round-trip (×0.40 downscale → Lanczos upscale + light unsharp) per frame, then V15's lossy **mp4v** temp → H.264 CRF 23, original audio stream-copied
+
+> App version numbers jump V15 → V24. V16–V23 were **rejected
+> oldcam-testing bench experiments**, never app versions. Full A/B
+> history and the conclusive "destructive wins / additive loses" rule:
+> `oldcam-testing/SCOREBOARD.md`; future-work guide:
+> `oldcam-testing/RESUME.md`.
+
+V24 is the bench winner. The Resemble deepfake-API sweep established:
+the detector scores Kling's residual diffusion fingerprint —
+*destroying* high-frequency information **uniformly** lowers the score;
+*adding* any synthetic signal (warp/blur/grain) raises it. V15's
+"Laundromat" was already destructive (frame_mean 0.16). V24 destroys
+more, the same way on every frame, and adds nothing:
+
+- **Resolution round-trip** before the V15 encode: each frame
+  downscaled ×0.40 (`cv2.INTER_AREA`) then upscaled back
+  (`cv2.INTER_LANCZOS4`). Annihilates the AI fingerprint's
+  high-frequency band, identically every frame, no added signal.
+- **Light unsharp-mask** restores *perceived* crispness — it amplifies
+  the real structure that survived; it cannot reinvent the destroyed
+  fingerprint. Real phone ISPs sharpen post-readout, so this is
+  physically faithful.
+
+Bench result on the reference clip: **frame_mean 0.018, ~9× better than
+V15's 0.16**, while staying visually sharp. On a fully-saturated source
+(where V15 couldn't move the score off 1.0000 at all) V24 still pulled
+it to 0.45 — it improves clips V15 was useless on.
+
+`process_frame` is V15's with the round-trip as the only change. Two
+review-bot safety fixes vs the bench file: `--output` == input is
+refused (no in-place source overwrite); the ffmpeg encode timeout is
+configurable (`--ffmpeg-timeout`, default 600). Windows + macOS twins
+byte-identical; Rule 9/10-compliant launchers.
+
+---
+
+## V15 — "Temporal Mute" (2026-05-17) — superseded as default by V24
 
 **File:** `oldcam-v15/oldcam.py` (~1000 lines, cloned from V14)
 **Output encoding:** lossy **mp4v** temp → single H.264 final at CRF 23 (clamped 10–28), original audio stream-copied
