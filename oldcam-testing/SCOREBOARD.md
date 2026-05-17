@@ -91,12 +91,48 @@ so it *raises* the score the same way.
 blur, gentle *and* hard. They all create a frame whose frequency profile
 deviates locally, which is exactly the anomaly the detector is built to
 spot. V15 wins **because it treats every frame identically** (uniform
-mp4v→CRF23 crush): there is no localized signature to flag. The losing
-premise is "fix the head-turn frames *specifically*", not any one
-technique. Future ideas should be **global / uniform** (e.g. different
-global codec/bitrate, a uniform film-grain-like dither, temporal
-re-timing) — not motion-gated. **V15 stays the production champion;**
-PR #30 (the V15 hotfix) should ship as-is.
+mp4v→CRF23 crush): there is no localized signature to flag.
+
+### 2026-05-17 — V19 "Uniform Grain Dither" — WORST overall (rejected); refutes the "uniform wins" theory
+
+PR #30 (V15 hotfix) is now **MERGED** as production. V19 was the first
+*global/uniform* idea: clean V15 + a static-amplitude integer dither
+(`GRAIN_DITHER_AMPLITUDE = 4`, [-4,+4] per pixel) added IDENTICALLY to
+every frame (no motion gating), placed last so the mp4v→CRF23 Laundromat
+crushes it into macro-blocks. Hypothesis: uniform grain breaks Kling's
+residual diffusion flicker with no localized signature.
+
+| | Top score | Frame mean | Frame min | Frame max | Certainty |
+|--|-----------|-----------|-----------|-----------|-----------|
+| **V15** (champion, merged) | 0.4245 | **0.1605** 🏆 | 0.0035 | 0.4245 | 0.1510 |
+| V17 (gentle warp) | 0.5439 | 0.1660 | 0.0059 | 0.5597 | 0.0879 |
+| V16 (hard warp) | 0.5283 | 0.1884 | 0.0034 | 0.5374 | 0.0566 |
+| V18 (motion blur) | 0.5573 | 0.2046 | 0.0038 | 0.5797 | 0.1146 |
+| **V19 (uniform dither)** | 0.6523 | **0.2485** | 0.0076 | 0.6736 | 0.3047 |
+
+**V19 is the WORST of all five experiments** (+0.088 vs V15) and the
+detector's *certainty rose* (0.15 → 0.30 — it got MORE sure it's fake).
+
+### Refined synthesis — the real rule (5 experiments, 5 API calls)
+
+V19 disproves "uniform manipulation wins". The actual rule:
+
+> **V15 wins because it is purely DESTRUCTIVE — it only removes
+> information (mp4v→CRF23 crush of Kling's artifacts). Any version that
+> ADDS a synthetic signal loses — uniform or localized, lossy-crushed or
+> not.** Additive integer dither has a flat distribution that does not
+> match real sensor photon-shot noise (Poisson, luminance-dependent), so
+> even after the CRF crush it leaves a learnable statistic. This is the
+> same root cause V14 failed on (it added a sensor floor).
+
+The losing axis is **additive vs subtractive**, not localized vs uniform.
+The only thing that has ever helped is *removing* information uniformly
+(compression). **V15 is at/near the optimum for this approach class** —
+further gains, if any, would come from *more/different destructive*
+processing (e.g. a second codec pass, lower bitrate, resolution
+round-trip), never from adding signal. Recommend: **stop adding; if we
+iterate, test purely-destructive global variants only.** V15 remains
+production.
 
 <!-- run results appended below this line -->
 
@@ -186,3 +222,23 @@ PR #30 (the V15 hotfix) should ship as-is.
 | 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
 | 13 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
 | 14 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
+
+## 2026-05-17 15:15 — v19 — `front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4`
+
+| Rank | Video | Frame mean | Frame min | Certainty | Verdict |
+|------|-------|-----------|-----------|-----------|---------|
+| 1 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15.mp4 | 0.1605 🏆 | 0.0035 | 0.1510 | Neutral/Uncertain |
+| 2 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v17.mp4 | 0.1660 | 0.0059 | 0.0879 | Neutral/Uncertain |
+| 3 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v16.mp4 | 0.1884 | 0.0034 | 0.0566 | Neutral/Uncertain |
+| 4 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v18.mp4 | 0.2046 | 0.0038 | 0.1146 | Neutral/Uncertain |
+| 5 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v19.mp4 | 0.2485 | 0.0076 | 0.3047 | Likely fake |
+| 6 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v12.mp4 | 0.6262 | 0.0610 | 0.9740 | Fake |
+| 7 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v13.mp4 | 0.6597 | 0.0481 | 0.9844 | Fake |
+| 8 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v8.mp4 | 0.8543 | 0.4395 | 1.0000 | Fake |
+| 9 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v15-v1.mp4 | 0.9892 | 0.8990 | 1.0000 | Fake |
+| 10 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1.mp4 | 0.9936 | 0.9443 | 1.0000 | Fake |
+| 11 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v14.mp4 | 0.9953 | 0.9639 | 1.0000 | Fake |
+| 12 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v7.mp4 | 0.9983 | 0.9871 | 1.0000 | Fake |
+| 13 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v10.mp4 | 0.9993 | 0.9953 | 1.0000 | Fake |
+| 14 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v9.mp4 | 0.9993 | 0.9926 | 1.0000 | Fake |
+| 15 | front_crop_nano-banana-2-edit_sim83_001_k25tStd_p4_1-oldcam-v11.mp4 | 0.9997 | 0.9980 | 1.0000 | Fake |
