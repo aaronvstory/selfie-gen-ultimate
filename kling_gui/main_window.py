@@ -64,6 +64,17 @@ from .layout_utils import (
     sanitize_sash_layout as _sanitize_sash_layout,
 )
 
+# PIL ancillary-chunk chains in BFL-composited PNGs (e.g. front_exp.png) can
+# overflow CPython's default 1000-frame recursion limit and crash the carousel
+# render. We raise it once here at the GUI entry point — explicit, process-wide,
+# visible — rather than burying the bump in a widget's __init__ where the side
+# effect would be hidden from other components. 5000 frames is the smallest
+# value that absorbs PIL's worst observed chain plus normal app recursion;
+# memory cost is negligible (~5 KiB of pre-allocated stack space).
+if sys.getrecursionlimit() < 5000:
+    sys.setrecursionlimit(5000)
+
+
 # Try to import the generator
 try:
     from kling_generator_falai import FalAIKlingGenerator

@@ -6,7 +6,6 @@ from typing import Callable, Optional
 import os
 import platform
 import logging
-import sys
 import threading
 import subprocess
 
@@ -141,16 +140,12 @@ class ImageCarousel(tk.Frame):
         # Paths that have already failed to render. Prevents per-resize log
         # spam (Configure events re-fire _update_display) and avoids
         # re-tripping the same PIL recursion on the same bad PNG.
+        # NOTE: a class-level default exists for tests bypassing __init__.
         self._render_failed_paths: set[str] = set()
 
-        # PIL ancillary-chunk chains (e.g. some BFL-composited PNGs) can blow
-        # past CPython's default 1000-frame recursion limit and abort the
-        # render. Bump it once at carousel construction (not per-render) so
-        # other code on the GUI thread sees a stable limit. Tkinter is
-        # single-threaded for widget operations, so this is safe; the only
-        # cost is ~5 KiB of pre-allocated stack space we'd never hit anyway.
-        if sys.getrecursionlimit() < 5000:
-            sys.setrecursionlimit(5000)
+        # NOTE: the sys.setrecursionlimit(5000) bump lives at the GUI entry
+        # point (kling_gui/main_window.py module-level) so the side effect is
+        # explicit and centralized rather than buried in a widget constructor.
 
         # Similarity computation state
         self._sim_lock = threading.Lock()
