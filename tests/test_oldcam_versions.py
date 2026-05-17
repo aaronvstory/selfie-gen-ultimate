@@ -1768,8 +1768,9 @@ def test_v15_main_clamps_out_of_range_vignette_strength(tmp_path):
             f"main() did not clamp 5.0 -> 1.0 (got {captured['vignette_strength']}); "
             "production clamp at oldcam.py main() missing/broken"
         )
-        # crf clamp still applied alongside (regression guard on the shared block)
-        assert 10 <= captured["crf"] <= 24
+        # crf clamp still applied alongside (regression guard on the shared
+        # block). Default is 23 post-Laundromat; ceiling widened to 28.
+        assert captured["crf"] == 23 and 10 <= captured["crf"] <= 28
 
         oldcam_v15.main([str(src_img), "-o", str(tmp_path / "o2.png"),
                          "--vignette-strength", "-3"])
@@ -1799,19 +1800,63 @@ def test_v15_awb_is_multiplicative_not_scalar_add():
         assert "np.rint(np.clip(image_f, 0, 255))" in code, f"{rel}: must round, not truncate"
 
 
-def test_v15_bloom_is_smoothstep_and_temp_is_lossless_audio_copied():
-    """V15 inherits V14's smoothstep bloom + lossless FFV1 temp + audio copy."""
+def test_v15_bloom_is_smoothstep_and_temp_is_double_lossy_audio_copied():
+    """V15 keeps V14's smoothstep bloom + audio stream-copy, but the
+    "Laundromat" hotfix REVERTS the lossless FFV1 temp to a deliberate
+    double-lossy mp4v temp (no FFV1/MJPG fallback loop)."""
     for rel in ("oldcam-v15/oldcam.py", "oldcam-v15/macOS/oldcam.py"):
         src = (ROOT / rel).read_text(encoding="utf-8")
         import re
         body = re.search(r"def apply_highlight_blooming.*?(?=\ndef )", src, re.S).group(0)
         assert "cv2.THRESH_BINARY" not in body, f"{rel}: binary-threshold bloom present"
         assert "3.0 - 2.0 * mask" in body, f"{rel}: smoothstep ramp missing"
-        assert ".tmp_lossless.mkv" in src, f"{rel}: lossless mkv temp path missing"
-        assert all(c in src for c in ('"FFV1"', '"MJPG"', '"mp4v"')), (
-            f"{rel}: FFV1->MJPG->mp4v fallback chain missing"
+        # Lossy mp4v temp restored; the FFV1/MJPG *codecs* and the
+        # mkv/avi temp *paths* must be gone from the actual pipeline.
+        # (The words FFV1/MJPG may still appear in the docstring that
+        # explains what the hotfix reverted — that's intentional context,
+        # so assert on the code constructs, not bare substrings.)
+        assert ".tmp_noaudio.mp4" in src, f"{rel}: lossy mp4v temp path missing"
+        assert ".tmp_lossless.mkv" not in src, f"{rel}: stale lossless mkv path present"
+        assert ".tmp_mjpg.avi" not in src, f"{rel}: stale mjpg avi path present"
+        assert 'fourcc(*"FFV1")' not in src and 'fourcc(*"MJPG")' not in src, (
+            f"{rel}: FFV1/MJPG codec writer must be removed"
+        )
+        assert "temp_candidates" not in src, (
+            f"{rel}: the FFV1->MJPG->mp4v fallback loop must be gone"
+        )
+        assert 'cv2.VideoWriter_fourcc(*"mp4v")' in src, (
+            f"{rel}: pure mp4v writer missing"
         )
         assert '"-c:a",\n            "copy",' in src, f"{rel}: audio must be stream-copied"
+
+
+def test_v15_crf_default_is_23_clamped_to_28(tmp_path):
+    """Laundromat hotfix: --crf default 14 -> 23, clamp ceiling 24 -> 28
+    (heavier organic web compression to crush the AI signature).
+
+    Asserts the clamp *behaviour* via the real main() path (spying on the
+    args main() forwards to process_input) rather than a source-string match,
+    so refactoring the clamp doesn't falsely fail this test.
+    """
+    oldcam_v15 = load_module(ROOT / "oldcam-v15" / "oldcam.py", "oldcam_v15_crf")
+    parser = oldcam_v15.build_parser()
+    ns = parser.parse_args(["clip.mp4"])
+    assert ns.crf == 23, f"V15 --crf default must be 23; got {ns.crf}"
+
+    src_img = tmp_path / "tiny.png"
+    src_img.write_bytes(b"not-real-media")  # process_input is stubbed
+    captured = {}
+
+    def spy_process_input(input_path, output_path, args):
+        captured["crf"] = args.crf
+
+    with mock.patch.object(oldcam_v15, "process_input", side_effect=spy_process_input):
+        oldcam_v15.main([str(src_img), "-o", str(tmp_path / "o1.png"), "--crf", "35"])
+        assert captured["crf"] == 28, f"CRF 35 must clamp to 28; got {captured['crf']}"
+        oldcam_v15.main([str(src_img), "-o", str(tmp_path / "o2.png"), "--crf", "5"])
+        assert captured["crf"] == 10, f"CRF 5 must clamp to 10; got {captured['crf']}"
+        oldcam_v15.main([str(src_img), "-o", str(tmp_path / "o3.png"), "--crf", "20"])
+        assert captured["crf"] == 20, f"in-range CRF 20 must be preserved; got {captured['crf']}"
 
 
 def test_v15_naturalize_image_runs_via_real_parser(tmp_path):
@@ -1824,7 +1869,7 @@ def test_v15_naturalize_image_runs_via_real_parser(tmp_path):
     out_img = tmp_path / "out.png"
     parser = oldcam_v15.build_parser()
     args = parser.parse_args([str(src_img)])
-    args.crf = max(10, min(int(args.crf), 24))
+    args.crf = max(10, min(int(args.crf), 28))  # mirrors production clamp
     oldcam_v15.naturalize_image(str(src_img), str(out_img), args)
     assert out_img.exists(), "V15 naturalize_image did not produce output"
 

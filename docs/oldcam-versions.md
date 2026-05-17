@@ -1,7 +1,7 @@
 # Oldcam Version Breakdown
 
 > Reference: Code-level breakdown of what each Oldcam version does, how they differ, and what makes each one distinct.
-> Created: 2026-05-12 · Updated: 2026-05-17 (added V15 "Temporal Mute", now default; V14 demoted)
+> Created: 2026-05-12 · Updated: 2026-05-17 (added V15 "Temporal Mute", now default; V14 demoted; V15 "Laundromat" hotfix: lossless FFV1 → double-lossy mp4v + CRF 23)
 
 ---
 
@@ -324,18 +324,25 @@ V13 looks like a high-end smartphone's daylight output: razor-sharp, no visible 
 
 ## V15 — "Temporal Mute" (2026-05-17) — **Default ★**
 
-**File:** `oldcam-v15/oldcam.py` (~1010 lines, cloned from V14)
-**Output encoding:** lossless **FFV1** MKV temp → single H.264 final at CRF 14 (clamped 10–24), original audio stream-copied
+**File:** `oldcam-v15/oldcam.py` (~1000 lines, cloned from V14)
+**Output encoding:** lossy **mp4v** temp → single H.264 final at CRF 23 (clamped 10–28), original audio stream-copied
 
-V15 is a synthesis profile, driven by **Resemble deepfake-API benchmarking** rather than a forensic-math review. The benchmark verdict: V12 and V13 vastly outperformed every other version. V12's temporal blending (ghosting) hid the AI's frame-to-frame flicker; V13's total absence of synthetic noise avoided spatial/frequency detectors. **V14 regressed** — its sub-perceptual sensor floor, *perfectly preserved* by the lossless FFV1 intermediate, is itself a stationary signal a frequency detector locks onto. V15 keeps V14's corrected optics/encoding but takes the two winning traits and discards the one that backfired.
+V15 is a synthesis profile, driven by **Resemble deepfake-API benchmarking** rather than a forensic-math review. The benchmark verdict: V12 and V13 vastly outperformed every other version. V12's temporal blending (ghosting) hid the AI's frame-to-frame flicker; V13's total absence of synthetic noise avoided spatial/frequency detectors. **V14 regressed** — its sub-perceptual sensor floor, *perfectly preserved* by the lossless FFV1 intermediate, is itself a stationary signal a frequency detector locks onto. V15 keeps V14's corrected per-frame optics but takes the two winning traits and discards the ones that backfired (sensor floor *and* lossless preservation).
+
+### Hotfix — "Laundromat" double-lossy encoding (2026-05-17)
+
+The first Resemble run of V15 scored poorly. Root cause: the **lossless FFV1 temp was a trap**. Losslessly preserving the frames also perfectly preserves Kling's high-frequency latent-diffusion artifacts, and makes the 0.18 temporal ghosting read as a mathematical opacity overlay rather than natural motion blur. The fix reverts to V13's **"double-lossy"** chain: OpenCV `mp4v` temp followed by a heavier FFmpeg H.264 encode (`--crf` default **14 → 23**, clamp ceiling **24 → 28**). The crude double compression acts as a digital washing machine — it organically crushes the AI artifacts and bakes the ghosting into the H.264 macro-blocks, so a frequency-domain detector reads natural compression blocks ("real") instead of pristine math ("fake"). Per-frame optics (`process_frame`) and the 0.18 ghosting are **unchanged**.
 
 ### What V15 Keeps from V14 (verbatim)
 
 - **True multiplicative AWB color-temperature drift** (`apply_global_awb_drift`).
 - **Smoothstep highlight bloom** (`threshold=232, strength=0.055`).
-- **Lossless FFV1 MKV temp** with MJPG → mp4v fallback.
 - **Original audio stream-copied** (no highpass/lowpass/compressor).
 - **`np.rint()` casts** (no truncation darkening) + **cached vignette mask**.
+
+### What the Hotfix Reverts from V14
+
+- **Lossless FFV1 MKV temp + MJPG/mp4v fallback loop → pure lossy `mp4v` temp** (`.tmp_noaudio.mp4`). The FFV1/MJPG fallback chain is gone; the deliberate mp4v → H.264 double-lossy pass is the point. `--crf` default raised 14 → 23 (clamp widened 10–24 → 10–28) for WhatsApp/Telegram-grade web compression.
 
 ### What V15 Restores from V12
 
@@ -362,7 +369,7 @@ No face detection, no AE stepping, no rPPG. The only behavioural difference from
 
 ### Character
 
-V15 looks like V13/V14 to a human but reads differently to a detector: there is no stationary noise floor for a frequency analyzer to lock onto, and the 18% previous-frame bleed smears the AI's tell-tale per-frame consistency without being visible as motion blur on real footage. It is the version tuned to what the Resemble API actually rewards.
+V15 looks like V13/V14 to a human but reads differently to a detector: there is no stationary noise floor for a frequency analyzer to lock onto, the 18% previous-frame bleed smears the AI's tell-tale per-frame consistency without being visible as motion blur on real footage, and the double-lossy mp4v → H.264 (CRF 23) pass crushes Kling's diffusion artifacts into ordinary web-compression macro-blocks. It is the version tuned to what the Resemble API actually rewards.
 
 ---
 
@@ -441,9 +448,9 @@ V14 looks identical to V13 to a human viewer — pristine flagship daylight. The
 | HSV saturation tweak | Yes | Yes | Yes | Yes | Yes | **No** | No | No | No |
 | Highlight bloom | Binary threshold | Binary threshold | Binary threshold | Binary threshold | Binary threshold | Binary threshold | Binary threshold | Smoothstep ramp | **Smoothstep ramp** |
 | uint8 cast | Truncate | Truncate | Truncate | Truncate | Truncate | Truncate | Truncate | np.rint() | **np.rint()** |
-| Temp encode | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy ✗) | FFV1 lossless | **FFV1 lossless** |
+| Temp encode | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy) | mp4v (lossy ✗) | FFV1 lossless | **mp4v (lossy ★)** |
 | Audio | Filtered | Filtered | Filtered | Filtered | Filtered | Filtered | Filtered ✗ | Stream-copied | **Stream-copied** |
-| Output encoding | CRF 12 slow | baseline + 1500k cap | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 14 slow (clamp 10–24) | CRF 14 slow (clamp 10–24) |
+| Output encoding | CRF 12 slow | baseline + 1500k cap | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 12 slow | CRF 14 slow (clamp 10–24) | **CRF 23 slow (clamp 10–28)** |
 
 ---
 
@@ -461,7 +468,7 @@ Each version had a guiding theme and a limitation that motivated the next one. T
 | V12 | Pristine hardware-only | Removed rPPG, removed `cv2.LUT()` call, removed CLAHE tone mapping, removed HSV saturation tweak | Sensor noise and AE stepping still applied per-frame — degradation signals flagship daylight footage doesn't carry |
 | V13 | High-end daylight | Removed `apply_modern_sensor_noise`, removed `apply_ae_stepping`, hardcoded ghosting to 0.0, dropped `--grain` CLI arg | Optics were mathematically wrong: AWB was exposure drift not white balance; perfectly-static pixels; double-lossy mp4v→H.264; flickering binary bloom; truncation darkening |
 | V14 | Forensic daylight (physics-corrected) | True multiplicative AWB temperature drift, `apply_daylight_sensor_floor` (sub-perceptual), lossless FFV1 temp, smoothstep bloom, `np.rint` casts, audio stream-copy, vignette-cache fix | Resemble API showed the preserved sensor floor is itself a stationary frequency-detector tell; V12/V13 (ghosting + zero noise) outperformed it |
-| V15 | Temporal Mute (Resemble-tuned synthesis) | Kept V14 AWB/bloom/lossless-temp/audio/np.rint; **removed** `apply_daylight_sensor_floor` + its CLI knobs; **restored** `--ghosting` 0.18 (V12 temporal blend) | None yet — current default |
+| V15 | Temporal Mute (Resemble-tuned synthesis) | Kept V14 AWB/bloom/audio/np.rint; **removed** `apply_daylight_sensor_floor` + its CLI knobs; **restored** `--ghosting` 0.18 (V12 temporal blend); **hotfix:** reverted lossless FFV1 → double-lossy mp4v + CRF 23 (Resemble flagged lossless preservation as the new tell) | None yet — current default |
 
 Notes on accuracy of this table vs the codebase:
 - "Digital over-sharpening" was a `--sharpen` CLI parameter present in every version (default 0.8), not a V11 addition. The actual destructive effects in V11 are the global LUT and CLAHE — both inherited from earlier versions, exposed by V11's higher fidelity.
@@ -480,4 +487,4 @@ Notes on accuracy of this table vs the codebase:
 - **V12** — Best for: low-light realism, KYC pipelines that expect visible sensor noise, scenes where AE walk reads as authentic. Preserves Kling's color fidelity better than V7–V11.
 - **V13** — Best for: bright daylight footage where you want V13's exact look and don't need the physics corrections. Superseded — selectable but no longer pre-selected.
 - **V14** — Best for: cases where you specifically want the sub-perceptual sensor floor (it defeats *naive* SNR-stasis checks). Superseded by V15 after Resemble benchmarking — the preserved floor turned out to be a frequency-detector tell. Selectable but no longer pre-selected.
-- **V15** — **Default ★**. Best for: footage scored by the Resemble deepfake API (the benchmark it was tuned against) and consistency/frequency detectors generally. Keeps V14's correct optics/encoding, drops the sensor floor entirely, and restores V12's `--ghosting` (0.18) so per-frame AI consistency is smeared without visible motion blur. The empirically-best version on the metric that matters. Same MediaPipe-free dependency story.
+- **V15** — **Default ★**. Best for: footage scored by the Resemble deepfake API (the benchmark it was tuned against) and consistency/frequency detectors generally. Keeps V14's correct per-frame optics, drops the sensor floor entirely, restores V12's `--ghosting` (0.18) so per-frame AI consistency is smeared without visible motion blur, and (Laundromat hotfix) runs a deliberate double-lossy mp4v → H.264 CRF 23 pass so Kling's diffusion artifacts are crushed into ordinary web-compression blocks. The empirically-best version on the metric that matters. Same MediaPipe-free dependency story.
