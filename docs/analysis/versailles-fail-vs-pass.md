@@ -76,6 +76,36 @@ Two extra insights from the table:
   wasted Persona attempts for free and tells the generation step exactly
   what to fix (subject leaving frame / untrackable face → regenerate).
 
+### Second directional signal — outpaint-expansion correlates with FAIL
+
+| group | used outpaint-expand (`_exp_` / `front-expanded2`) |
+|---|---|
+| **PASS** | **0 / 2** (LAURA plain `front_crop`, BRITTANY raw `signal-`) |
+| **FAIL** | **7 / 11** |
+
+Suggestive, not proven (only 2 PASS), but coherent with the visual
+evidence: outpaint-expansion synthesizes extra image area around the
+face crop — more synthetic surface for a liveness detector and a known
+artifact source. The 4 FAILs *without* `_exp_` each have another defect
+(DYLAN/GISELLE track dropouts, ANGIE v14, BRESLEY sim99 anomaly).
+
+### The emergent generation policy (actionable now, even without a perfect discriminator)
+
+Both clips that PASSED share a profile; clips that FAILED violate ≥1 part:
+
+| | PASS profile | FAIL pattern |
+|---|---|---|
+| Source | **non-expanded** crop / raw video | 7/11 outpaint-expanded |
+| Face track | **100% of frames** | 4/11 had dropouts (in source) |
+| Oldcam | **gentle (v13 / v15)** | v24 on 5/11; v24 also worsened tracking |
+
+**Recommended generation policy:** (1) prefer **non-outpaint-expanded**
+sources; (2) **face-track gate the Kling source at 100%** before
+processing — regenerate if it drops; (3) use **gentle oldcam (v13/v15),
+not v24**. This is a *bias-the-odds* policy from a 2-PASS / 11-FAIL
+corpus, not a guarantee — but every lever points the same way and none
+contradict.
+
 ### What we could NOT determine (honest limits)
 
 - **The discriminator for the 7 clean-tracking FAILs is unknown.** They
