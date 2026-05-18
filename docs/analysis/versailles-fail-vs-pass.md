@@ -34,6 +34,44 @@ liveness check, so we can turn fails into passes.
 
 ---
 
+## ✅ Combined policy validated as a predictor (12/13 correct)
+
+The 3-signal policy run as a *classifier* over all 13 personas
+(`persona_prefilter.py`):
+
+| | predicted PASS | predicted FAIL |
+|---|---|---|
+| **actual PASS (2)** | **2** ✓ | 0 |
+| **actual FAIL (11)** | 1 (BRESLEY) | **10** ✓ |
+
+**12/13 correct (92%).** Both PASS correctly cleared; 10/11 FAIL
+correctly rejected. The single miss — BRESLEY — is non-expanded, 100%
+track, v13, yet failed; it carries a *separate* independent red flag
+(sim **99** anomaly + the lowest blink score in the corpus,
+`blink_fail;kinematic_overall_fail`), so even the miss is detectable by
+a different signal.
+
+**Honest caveat:** this is **in-sample** (the policy was derived from
+this corpus) and n=13 with only 2 positives, so 92% is not predictive
+proof. What gives it credibility: each of the three signals is
+*independently mechanistically motivated* (not curve-fit), they never
+contradict each other, and the lone misclassification has its own
+separate anomaly. Treat it as a strong *reject/regenerate* recommender,
+not a certified pass oracle. `persona_prefilter.py` ships it.
+
+### Where it plugs into the pipeline
+
+The automation pipeline runs `… selfie_generate → similarity_gate →
+selfie_expand → video_generate → oldcam`. There is already a gating
+precedent (`similarity_gate`, `automation/pipeline.py`). The face-track
+check belongs **right after `video_generate` (the Kling clip) and before
+`oldcam`** — gate the Kling source: if it drops a face (esp. 5–8s),
+regenerate before spending oldcam + a Persona attempt. Mirror the
+`automation_similarity_*` config-key pattern
+(`automation_facetrack_gate_enabled`, `_min_pct` default 100).
+
+---
+
 ## ⭐ 2026-05-18 BREAKTHROUGH — face-tracking continuity is a usable pre-filter
 
 Ran `face_kinematics` over the **full** labelled corpus (38 clips: every
