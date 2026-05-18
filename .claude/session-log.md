@@ -160,3 +160,9 @@
 - **What changed:** kling_gui/config_panel.py (face-track gate row: Gate enabled + Block-oldcam checkboxes + min% entry + ●advisory/●blocking/●off indicator + tooltip; _on_facetrack_changed + _refresh_facetrack_status + _load_config round-trip to automation_facetrack_* keys); tests/test_config_panel_facetrack.py (new, 5 tests)
 - **Why:** user explicitly asked for the checkable gate in the Tkinter GUI's video tab (stop sub-threshold→oldcam, or indicator-only mode)
 - **Verified:** 154 passed (GUI+automation), 0 regressions; config_panel.py i/crlf preserved (121 add, no flip); new test i/lf 0-CR; no rPPG leak; CodeRabbit review re-triggered. PR #37 @ 34 commits. ~29min to bound.
+
+## 2026-05-18 22:17 - Loop iter: GUI->pipeline contract verified end-to-end
+
+- **What changed:** nothing (verification-only iteration)
+- **Why:** loop mandate — confirm Tkinter gate toggles actually reach the pipeline gate
+- **Finding:** verified correct + empirically proven. merge_automation_defaults does `dict(config)` then fills defaults only `if key not in merged` → GUI-set automation_facetrack_* overrides (enabled=False/required=True/min_pct=88) survive intact through from_app_config→AutomationConfig→pipeline. Contract holds end-to-end; no code needed. CodeRabbit reviewing GUI code (pending). PR #37 @ 35 commits. ~27min to bound.
