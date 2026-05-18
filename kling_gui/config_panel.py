@@ -536,13 +536,18 @@ class ConfigPanel(tk.Frame):
             "v15": tk.BooleanVar(value=False),
             "v24": tk.BooleanVar(value=True),
         }
-        # 3-column grid — new versions append rows, strip width stays fixed.
-        # 5 versions → 2 rows (3 + 2); 6 versions → 2 rows (3 + 3); 7+ → 3 rows.
-        _OLDCAM_COLS = 3
+        # Row-major grid capped at 2 rows — fill left→right across a row,
+        # then wrap; new versions overflow into additional columns to the
+        # RIGHT (vertical space is scarce in this view; horizontal space to
+        # the right is plentiful). 10 versions → 5 cols × 2 rows
+        # (v7-v11 / v12-v24).
+        _oldcam_versions = ("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24")
+        _OLDCAM_ROWS = 2
+        _OLDCAM_COLS = -(-len(_oldcam_versions) // _OLDCAM_ROWS)  # ceil division
         _check_grid = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
         _check_grid.pack(side=tk.LEFT, anchor="n")
         self.oldcam_version_checks = {}
-        for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24")):
+        for i, version in enumerate(_oldcam_versions):
             check = tk.Checkbutton(
                 _check_grid,
                 text=version,
@@ -555,7 +560,7 @@ class ConfigPanel(tk.Frame):
                 activeforeground=COLORS["text_light"],
                 command=self._on_oldcam_versions_changed,
             )
-            check.grid(row=i // _OLDCAM_COLS, column=i % _OLDCAM_COLS, sticky="w", padx=(2, 4), pady=0)
+            check.grid(row=i // _OLDCAM_COLS, column=i % _OLDCAM_COLS, sticky="w", padx=(2, 8), pady=0)
             self.oldcam_version_checks[version] = check
         # Re-Run column: label on top, [↻] [📂] buttons aligned below — top-anchored
         # so it doesn't vertically center against the taller checkbox grid.
@@ -618,6 +623,14 @@ class ConfigPanel(tk.Frame):
                 "Respects Allow reprocessing / Increment settings."
             ),
         )
+
+        # NOTE: The face-track gate GUI controls were removed (2026-05-19).
+        # A large balanced corpus (21 PASS / 23 FAIL, all Kling-from-real-
+        # selfie) showed face-track % does NOT separate Persona PASS from
+        # FAIL — see docs/analysis/versailles_fail_vs_pass.md "DEFINITIVE
+        # LARGE-CORPUS NEGATIVE". The pipeline keys still exist but default
+        # OFF (automation/config.py); the check is an opt-in diagnostic,
+        # not a GUI-promoted quality gate, so it is not surfaced here.
 
         # Allow reprocessing
         rB = tk.Frame(left_col, bg=COLORS["bg_input"])

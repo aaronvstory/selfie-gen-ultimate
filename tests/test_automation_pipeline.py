@@ -1524,3 +1524,166 @@ def test_read_bool_passes_through_actual_booleans(tmp_path: Path):
         "automation_similarity_require_fas_pass": False,
     }, tmp_path)
     assert runner2._read_bool("automation_similarity_require_fas_pass", True) is False
+
+
+# --- Face-track gate (Step 6.5) -------------------------------------------
+# Empirical basis: docs/analysis/versailles_fail_vs_pass.md. The gate runs
+# after video_generate, before oldcam, on the Kling source. It must:
+#  (a) degrade to a non-blocking skip when cv2/mediapipe unavailable,
+#  (b) route to manual_review when sub-threshold + not required,
+#  (c) hard-fail when sub-threshold + required,
+#  (d) skip cleanly when disabled,
+#  (e) let the case complete when the source tracks above threshold.
+
+from automation.face_track_gate import FaceTrackResult
+
+
+def _ft_runner(tmp_path: Path, monkeypatch, overrides: dict):
+    case_dir = tmp_path / "case-ft"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-ft")
+    config = merge_automation_defaults({
+        "falai_api_key": "x", "bfl_api_key": "bfl-token",
+        "automation_oldcam_required": False,
+        "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1,
+        # Face-track gate now defaults OFF (large-corpus negative, see
+        # docs/analysis/versailles_fail_vs_pass.md). These tests exercise
+        # the RETAINED opt-in gate code, so enable it by default here;
+        # a test can still override it back off via overrides.
+        "automation_facetrack_enabled": True,
+        **overrides,
+    })
+    manifest = AutomationManifest.create_or_load(
+        tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop",
+                        lambda **kw: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details",
+                        lambda *a, **k: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kw: None)
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    return runner, record, manifest
+
+
+def test_facetrack_gate_degrades_when_unavailable(tmp_path: Path, monkeypatch):
+    """Tooling unavailable -> gate skips, case still completes (non-blocking)."""
+    monkeypatch.setattr(
+        "automation.face_track_gate.measure_face_track",
+        lambda *a, **k: FaceTrackResult(False, reason="cv2/mediapipe unavailable"),
+    )
+    runner, record, manifest = _ft_runner(tmp_path, monkeypatch, {})
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert manifest.data["cases"]["case-ft"]["steps"]["facetrack_gate"]["status"] == "skipped"
+
+
+def test_facetrack_gate_manual_review_when_sub_threshold(tmp_path: Path, monkeypatch):
+    """Sub-threshold + not required -> manual_review (advisory default)."""
+    monkeypatch.setattr(
+        "automation.face_track_gate.measure_face_track",
+        lambda *a, **k: FaceTrackResult(
+            True, track_pct=70.0, sampled=80, with_face=56,
+            passed=False, reason="face-track 70.0% < 96.0% threshold"),
+    )
+    runner, record, manifest = _ft_runner(
+        tmp_path, monkeypatch, {"automation_facetrack_required": False})
+    stats = runner.run([record])
+    assert stats["manual_review"] == 1
+    assert manifest.data["cases"]["case-ft"]["steps"]["facetrack_gate"]["status"] == "manual_review"
+
+
+def test_facetrack_gate_hard_fail_when_required(tmp_path: Path, monkeypatch):
+    """Sub-threshold + required=true -> failed."""
+    monkeypatch.setattr(
+        "automation.face_track_gate.measure_face_track",
+        lambda *a, **k: FaceTrackResult(
+            True, track_pct=70.0, sampled=80, with_face=56,
+            passed=False, reason="face-track 70.0% < 96.0% threshold"),
+    )
+    runner, record, manifest = _ft_runner(
+        tmp_path, monkeypatch, {"automation_facetrack_required": True})
+    stats = runner.run([record])
+    assert stats["failed"] == 1
+    assert manifest.data["cases"]["case-ft"]["steps"]["facetrack_gate"]["status"] == "failed"
+
+
+def test_facetrack_gate_passes_above_threshold(tmp_path: Path, monkeypatch):
+    """Above threshold -> gate complete, case completes."""
+    monkeypatch.setattr(
+        "automation.face_track_gate.measure_face_track",
+        lambda *a, **k: FaceTrackResult(
+            True, track_pct=100.0, sampled=80, with_face=80, passed=True),
+    )
+    runner, record, manifest = _ft_runner(tmp_path, monkeypatch, {})
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert manifest.data["cases"]["case-ft"]["steps"]["facetrack_gate"]["status"] == "complete"
+
+
+def test_facetrack_gate_skips_when_disabled(tmp_path: Path, monkeypatch):
+    """Disabled -> skipped without invoking the measurer at all."""
+    def _boom(*a, **k):
+        raise AssertionError("measure_face_track must not run when gate disabled")
+    monkeypatch.setattr("automation.face_track_gate.measure_face_track", _boom)
+    runner, record, manifest = _ft_runner(
+        tmp_path, monkeypatch, {"automation_facetrack_enabled": False})
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert manifest.data["cases"]["case-ft"]["steps"]["facetrack_gate"]["status"] == "skipped"
+
+
+def test_facetrack_gate_tolerates_invalid_config(tmp_path: Path, monkeypatch):
+    """Garbage / out-of-range min_pct + fps must fall back to the validated
+    defaults (96.0 / 8.0) via _read_float clamping — never crash a run."""
+    seen = {}
+
+    def _capture(video_path, repo_root, *, sample_fps, min_track_pct, **kw):
+        seen["fps"] = sample_fps
+        seen["min"] = min_track_pct
+        return FaceTrackResult(
+            True, track_pct=100.0, sampled=80, with_face=80, passed=True)
+
+    monkeypatch.setattr(
+        "automation.face_track_gate.measure_face_track", _capture)
+    runner, record, manifest = _ft_runner(tmp_path, monkeypatch, {
+        "automation_facetrack_min_pct": "not-a-number",
+        "automation_facetrack_sample_fps": 999,  # out of [1,30]
+    })
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    # Bad string -> 96.0 default; out-of-range fps -> 8.0 default.
+    assert seen["min"] == 96.0
+    assert seen["fps"] == 8.0
+    assert manifest.data["cases"]["case-ft"]["steps"]["facetrack_gate"]["status"] == "complete"
+
+
+def test_measure_face_track_rejects_bad_args():
+    """measure_face_track must surface invalid sample_fps/min_track_pct
+    explicitly (available=False) rather than letting the division throw
+    and silently degrade to a non-blocking pass (CodeRabbit PR #37)."""
+    from automation.face_track_gate import measure_face_track
+
+    repo = Path(__file__).resolve().parent.parent
+    for bad in (0, -5, float("nan")):
+        r = measure_face_track("x.mp4", repo, sample_fps=bad)
+        assert r.available is False
+        assert "invalid" in r.reason.lower()
+    r2 = measure_face_track("x.mp4", repo, min_track_pct=150)
+    assert r2.available is False and "invalid" in r2.reason.lower()
+    r3 = measure_face_track("x.mp4", repo, min_track_pct=-1)
+    assert r3.available is False
+    # Non-numeric must not raise either.
+    r4 = measure_face_track("x.mp4", repo, sample_fps="fast")  # type: ignore[arg-type]
+    assert r4.available is False

@@ -17,6 +17,7 @@ STEP_NAMES = [
     "similarity_gate",
     "selfie_expand",
     "video_generate",
+    "facetrack_gate",
     "oldcam",
 ]
 STEP_STATUSES = {"pending", "running", "complete", "failed", "manual_review", "skipped", "pending_not_implemented"}

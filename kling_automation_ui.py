@@ -1608,6 +1608,9 @@ class KlingAutomationUI:
             selfie_status,
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
             f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', DEFAULT_KLING_PROMPT_SLOT)}",
+            f"facetrack_gate={'on' if self.config.get('automation_facetrack_enabled', True) else 'off'} "
+            f"min={self.config.get('automation_facetrack_min_pct', 96.0)}% "
+            f"mode={'required(fail+skip oldcam)' if self.config.get('automation_facetrack_required', False) else 'advisory(manual_review)'}",
             f"oldcam version={self.config.get('automation_oldcam_version', 'v24')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
             f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
             f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
@@ -1674,6 +1677,17 @@ class KlingAutomationUI:
         self.config["saved_prompts"] = saved_prompts
         self.config["automation_similarity_threshold"] = 80
         self.config["automation_video_enabled"] = True
+        # Face-track gate is DIAGNOSTIC-ONLY and OFF by default. A large
+        # balanced corpus showed face-track % does NOT separate Persona
+        # PASS from FAIL (the earlier "zero false positives at 96%" was a
+        # small-sample artifact, refuted — see docs/analysis/
+        # versailles_fail_vs_pass.md "DEFINITIVE LARGE-CORPUS NEGATIVE").
+        # Recommended defaults keep it OFF; do not re-enable without a new
+        # corpus demonstrating genuine separation.
+        self.config["automation_facetrack_enabled"] = False
+        self.config["automation_facetrack_min_pct"] = 96.0
+        self.config["automation_facetrack_required"] = False
+        self.config["automation_facetrack_sample_fps"] = 8.0
         self.config["automation_oldcam_enabled"] = True
         self.config["automation_oldcam_version"] = "v24"
         self.config["automation_oldcam_required"] = True
@@ -2097,6 +2111,18 @@ class KlingAutomationUI:
         _ask_bool("Video generation enabled", "automation_video_enabled")
         _ask("Video aspect ratio", "automation_video_aspect_ratio", str, lambda v: ":" in v)
         _ask_bool("Use existing video prompt", "automation_video_use_existing_prompt")
+        print("\n[Face-Track Gate]  (DIAGNOSTIC-ONLY — OFF by default)")
+        print("  A large balanced corpus showed face-track % does NOT separate")
+        print("  Persona PASS from FAIL (earlier '96% zero-false-positive' claim")
+        print("  was a small-sample artifact, refuted — see docs/analysis/")
+        print("  versailles_fail_vs_pass.md). Leave disabled unless your own")
+        print("  current labelled corpus validates a safe threshold. When")
+        print("  enabled: advisory routes to manual_review; 'required' hard-fails")
+        print("  and skips oldcam on a sub-threshold source.")
+        _ask_bool("Face-track gate enabled", "automation_facetrack_enabled")
+        _ask("Face-track min track %", "automation_facetrack_min_pct", float, lambda v: 0.0 <= v <= 100.0)
+        _ask_bool("Face-track required (sub-threshold => fail+skip oldcam)", "automation_facetrack_required")
+        _ask("Face-track sample fps", "automation_facetrack_sample_fps", float, lambda v: 1.0 <= v <= 30.0)
         _ask_bool("Oldcam enabled", "automation_oldcam_enabled")
         _ask_choice("Oldcam version", "automation_oldcam_version", ["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"])
         _ask_bool("Oldcam required", "automation_oldcam_required")
@@ -2886,6 +2912,7 @@ class KlingAutomationUI:
             "similarity_gate": "4 similarity gate",
             "selfie_expand": "5 selfie expand",
             "video_generate": "6 kling video",
+            "facetrack_gate": "6.5 face-track gate",
             "oldcam": "7 loop/oldcam",
         }
 

@@ -64,3 +64,12 @@ oldcam-v9/.venv/
 oldcam-v10/.venv/
 test-material/
 .recovery/
+
+# Scratch frame extracts from analysis (committed copies live in docs/analysis/)
+analysis_frames/
+
+# Corpus measurement outputs contain private persona identifiers
+# (real folder names / SSN-format IDs). Repro: re-run
+# docs/analysis/measure_sourav_*.py to regenerate locally.
+docs/analysis/sourav_facetrack_results.json
+docs/analysis/sourav_kinematic_results.json

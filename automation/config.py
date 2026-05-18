@@ -77,6 +77,21 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_video_enabled": True,
     "automation_video_aspect_ratio": "3:4",
     "automation_video_use_existing_prompt": True,
+    # Face-track-continuity check (runs after video_generate, before oldcam).
+    # DEFAULT OFF (2026-05-19): a large balanced corpus (21 PASS / 23 FAIL,
+    # all Kling-from-real-selfie) showed face-track % does NOT separate
+    # Persona PASS from FAIL — at every threshold 80–100% it loses roughly
+    # as many real PASSes as it catches FAILs, with NO zero-false-positive
+    # point. The earlier "96% = zero false positives" was a small-sample
+    # (2–7 PASS) artifact, now refuted. See docs/analysis/
+    # versailles_fail_vs_pass.md "DEFINITIVE LARGE-CORPUS NEGATIVE".
+    # Keys + pipeline code retained as an OPT-IN diagnostic only; the GUI
+    # controls were removed. Do not re-enable as a default gate without
+    # a new corpus showing genuine separation.
+    "automation_facetrack_enabled": False,
+    "automation_facetrack_min_pct": 96.0,
+    "automation_facetrack_required": False,
+    "automation_facetrack_sample_fps": 8.0,
     "automation_oldcam_enabled": True,
     "automation_oldcam_version": "v24",
     "automation_oldcam_required": True,
