@@ -77,6 +77,23 @@ def measure_face_track(
     Never raises: any tooling problem yields available=False, passed=True
     (non-blocking) so a missing model / cv2 cannot fail a pipeline case.
     """
+    # Validate numeric args up front. A non-positive sample_fps would make
+    # the `src_fps / sample_fps` step math raise, and the except guard
+    # below would silently turn that into available=False/passed=True —
+    # i.e. a bad arg would *disable* gating instead of being reported.
+    # Surface it explicitly instead (CodeRabbit PR #37).
+    try:
+        sample_fps = float(sample_fps)
+        min_track_pct = float(min_track_pct)
+    except (TypeError, ValueError):
+        return FaceTrackResult(False, reason="invalid sample_fps/min_track_pct")
+    if not (sample_fps > 0.0) or not (0.0 <= min_track_pct <= 100.0):
+        return FaceTrackResult(
+            False,
+            reason=f"invalid args: sample_fps={sample_fps} "
+            f"min_track_pct={min_track_pct}",
+        )
+
     try:
         import cv2  # noqa: WPS433 (lazy: optional heavy dep)
         import mediapipe as mp  # noqa: WPS433

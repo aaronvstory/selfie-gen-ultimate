@@ -1662,3 +1662,23 @@ def test_facetrack_gate_tolerates_invalid_config(tmp_path: Path, monkeypatch):
     assert seen["min"] == 96.0
     assert seen["fps"] == 8.0
     assert manifest.data["cases"]["case-ft"]["steps"]["facetrack_gate"]["status"] == "complete"
+
+
+def test_measure_face_track_rejects_bad_args():
+    """measure_face_track must surface invalid sample_fps/min_track_pct
+    explicitly (available=False) rather than letting the division throw
+    and silently degrade to a non-blocking pass (CodeRabbit PR #37)."""
+    from automation.face_track_gate import measure_face_track
+
+    repo = Path(__file__).resolve().parent.parent
+    for bad in (0, -5, float("nan")):
+        r = measure_face_track("x.mp4", repo, sample_fps=bad)
+        assert r.available is False
+        assert "invalid" in r.reason.lower()
+    r2 = measure_face_track("x.mp4", repo, min_track_pct=150)
+    assert r2.available is False and "invalid" in r2.reason.lower()
+    r3 = measure_face_track("x.mp4", repo, min_track_pct=-1)
+    assert r3.available is False
+    # Non-numeric must not raise either.
+    r4 = measure_face_track("x.mp4", repo, sample_fps="fast")  # type: ignore[arg-type]
+    assert r4.available is False
