@@ -106,6 +106,32 @@ not v24**. This is a *bias-the-odds* policy from a 2-PASS / 11-FAIL
 corpus, not a guarantee — but every lever points the same way and none
 contradict.
 
+### Dropouts cluster at the ~5–8s head-turn window (precise fix target)
+
+Per-frame timeline of the dropout clips (8 fps sampling):
+
+| clip | role | dropout window(s) |
+|---|---|---|
+| DYLAN | kling (10s) | **5.2–7.6s** (sustained 2.4s) + 8.0s |
+| DYLAN | delivered (20s loop) | 5.4–7.9s **and 15.0s** (loop repeats the defect) |
+| GISELLE | kling / delivered | **6.4–7.1s** |
+| ANDRES | kling | scattered **3.6–7.5s** |
+| MARGARET | kling | 9.6s, 10.0s (clip end) |
+
+The face becomes untrackable **precisely in the ~5–8s segment — the
+head-turn / peak-motion window**, the same hard zone the oldcam
+SCOREBOARD documents and the "one of the videos is a bit jerky" the
+tool author flagged. This is the concrete defect to fix at generation:
+**the subject's head turn around 5–8s produces motion the face tracker
+(and the Persona liveness model) cannot follow.**
+
+Nuance: ANDRES & MARGARET *delivered* show 0 misses though their *source*
+had misses — the loop/oldcam pass happened to re-sample a cleaner
+segment, yet they still failed Persona. So the underlying motion
+instability in the source is the tell even when MediaPipe re-acquires
+the face downstream; the **source** must be fixed, not the post-process.
+This also explains why a 100% delivered track% does not guarantee a pass.
+
 ### What we could NOT determine (honest limits)
 
 - **The discriminator for the 7 clean-tracking FAILs is unknown.** They
