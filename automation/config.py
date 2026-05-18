@@ -77,6 +77,15 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_video_enabled": True,
     "automation_video_aspect_ratio": "3:4",
     "automation_video_use_existing_prompt": True,
+    # Face-track-continuity gate (runs after video_generate, before oldcam).
+    # Empirical basis: docs/analysis/versailles_fail_vs_pass.md — clips whose
+    # Kling source drops below ~96% face-track failed Persona far more often;
+    # 96.0 is the validated zero-false-positive boundary on the labelled
+    # corpus. Advisory by default (routes to manual_review, never hard-fails).
+    "automation_facetrack_enabled": True,
+    "automation_facetrack_min_pct": 96.0,
+    "automation_facetrack_required": False,
+    "automation_facetrack_sample_fps": 8.0,
     "automation_oldcam_enabled": True,
     "automation_oldcam_version": "v24",
     "automation_oldcam_required": True,

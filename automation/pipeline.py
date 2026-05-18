@@ -1006,6 +1006,79 @@ class AutoPipelineRunner:
         else:
             self.manifest.update_step(case_key, "video_generate", "skipped", output=None)
 
+        # Step 6.5: face-track-continuity gate (Kling source).
+        # Validated zero-false-positive reject filter — see
+        # docs/analysis/versailles_fail_vs_pass.md. Runs before oldcam so a
+        # source unlikely to pass Persona is caught BEFORE spending the
+        # oldcam pass + a Persona attempt. Advisory by default
+        # (automation_facetrack_required=False -> manual_review, never a
+        # hard fail); degrades to a non-blocking skip if cv2/mediapipe or
+        # the landmarker model is unavailable.
+        if self._read_bool("automation_facetrack_enabled", True):
+            ft_manifest_video = self.manifest.get_step(case_key, "video_generate").get("output")
+            ft_video_path = Path(ft_manifest_video) if ft_manifest_video else None
+            if not (ft_video_path and ft_video_path.exists() and ft_video_path.suffix.lower() == ".mp4"):
+                if existing.video_candidate:
+                    ft_video_path = Path(existing.video_candidate)
+            if ft_video_path and ft_video_path.exists() and ft_video_path.suffix.lower() == ".mp4":
+                from automation.face_track_gate import measure_face_track
+
+                self._set_active_step(case_entry, "facetrack_gate")
+                self.manifest.update_step(case_key, "facetrack_gate", "running")
+                ft_min = self._read_float(
+                    "automation_facetrack_min_pct", 96.0, min_value=0.0, max_value=100.0
+                )
+                ft_fps = self._read_float(
+                    "automation_facetrack_sample_fps", 8.0, min_value=1.0, max_value=30.0
+                )
+                ft = measure_face_track(
+                    str(ft_video_path),
+                    Path(__file__).resolve().parent.parent,
+                    sample_fps=ft_fps,
+                    min_track_pct=ft_min,
+                )
+                if not ft.available:
+                    self.logger.info(
+                        "case %s facetrack skipped (%s)", case_key, ft.reason
+                    )
+                    self.manifest.update_step(
+                        case_key, "facetrack_gate", "skipped",
+                        error=ft.reason, meta=ft.to_meta(),
+                    )
+                elif ft.passed:
+                    self.logger.info(
+                        "case %s facetrack pass pct=%s", case_key, ft.track_pct
+                    )
+                    self.manifest.update_step(
+                        case_key, "facetrack_gate", "complete",
+                        output=str(ft_video_path), meta=ft.to_meta(),
+                    )
+                else:
+                    ft_required = self._read_bool("automation_facetrack_required", False)
+                    self.logger.warning(
+                        "case %s facetrack FAIL pct=%s threshold=%s required=%s",
+                        case_key, ft.track_pct, ft_min, ft_required,
+                    )
+                    status = "failed" if ft_required else "manual_review"
+                    self.manifest.update_step(
+                        case_key, "facetrack_gate", status,
+                        output=str(ft_video_path), error=ft.reason,
+                        meta={**ft.to_meta(), "required": ft_required},
+                    )
+                    self.last_case_results[case_key] = {
+                        "status": status, "reason": ft.reason,
+                    }
+                    return self._finalize_case(case_entry, status)
+            else:
+                self.manifest.update_step(
+                    case_key, "facetrack_gate", "skipped",
+                    error="no mp4 video to gate",
+                )
+        else:
+            self.manifest.update_step(
+                case_key, "facetrack_gate", "skipped", error="facetrack gate disabled"
+            )
+
         # Step 7: optional oldcam pass
         if self.automation.get("automation_oldcam_enabled", True):
             manifest_video = self.manifest.get_step(case_key, "video_generate").get("output")
