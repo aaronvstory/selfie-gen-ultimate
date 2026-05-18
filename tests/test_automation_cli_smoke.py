@@ -680,3 +680,54 @@ def test_automation_status_lines_include_front_passes(tmp_path):
     lines = ui._automation_status_lines()
     assert any("passes=2" in line for line in lines)
     assert any("composite=" in line for line in lines)
+
+
+def test_merge_defaults_includes_facetrack_gate_keys(tmp_path):
+    """The validated face-track gate must be present in merged defaults
+    (advisory mode, 96% — see docs/analysis/versailles_fail_vs_pass.md)."""
+    merged = merge_automation_defaults({})
+    assert merged["automation_facetrack_enabled"] is True
+    assert merged["automation_facetrack_min_pct"] == 96.0
+    assert merged["automation_facetrack_required"] is False
+    assert merged["automation_facetrack_sample_fps"] == 8.0
+
+
+def test_automation_status_lines_include_facetrack_indicator(tmp_path):
+    """Preflight summary surfaces the face-track gate indicator so the
+    operator sees gate state before a run."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_max_cases_per_run": "5",
+        "falai_api_key": "x", "bfl_api_key": "y",
+        "automation_front_expand_mode": "percent",
+        "automation_front_expand_percent": 70,
+        "automation_front_expand_passes": 1,
+        "automation_front_expand_provider": "bfl",
+        "automation_front_expand_composite_mode": "preserve_seamless",
+        "automation_selfie_expand_mode": "percent",
+        "automation_selfie_expand_percent": 30,
+        "automation_selfie_expand_provider": "bfl",
+        "automation_selfie_expand_composite_mode": "preserve_seamless",
+        "automation_selfie_models": ["fal-ai/nano-banana-2/edit"],
+        "automation_selfie_prompt_slot": 1,
+        "automation_selfie_prompts": {"1": "x"},
+        "automation_similarity_threshold": 80,
+        "current_model": "m", "current_prompt_slot": 1,
+        "automation_oldcam_version": "v24",
+        "automation_oldcam_required": False,
+        "automation_facetrack_enabled": True,
+        "automation_facetrack_min_pct": 96.0,
+        "automation_facetrack_required": False,
+        "automation_recommended_defaults_version": 1,
+        "automation_verbose_logging": True,
+    }
+    ui.automation_root_folder = str(tmp_path)
+    ui._read_max_cases_setting = lambda: "5"
+    ui._resolve_provider = lambda _x: "bfl"
+    ui._oldcam_readiness_status = lambda: "ready(v24)"
+    ui._selfie_model_label_map = lambda: {}
+    ui._ensure_selfie_prompt_slots = lambda: None
+    lines = ui._automation_status_lines()
+    ft = [ln for ln in lines if "facetrack_gate=" in ln]
+    assert ft, f"no facetrack indicator in {lines}"
+    assert "on" in ft[0] and "96.0%" in ft[0] and "advisory" in ft[0]
