@@ -619,6 +619,70 @@ class ConfigPanel(tk.Frame):
             ),
         )
 
+        # Face-track gate: a Kling-source liveness pre-check that runs
+        # AFTER a Kling video is produced and BEFORE oldcam. Validated on
+        # the labelled Persona corpus (docs/analysis/
+        # versailles_fail_vs_pass.md): a source whose face-track drops
+        # below the threshold fails Persona far more often (rejects ~40%
+        # of fails, zero false positives at 96%). The "Block oldcam"
+        # checkbox is the user's switch: checked => a sub-threshold clip
+        # is stopped before oldcam; unchecked => it's only flagged
+        # (indicator) and still processed.
+        rFT = tk.Frame(left_col, bg=COLORS["bg_input"])
+        rFT.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(rFT, text="Face-track:", font=(FONT_FAMILY, 10),
+                 bg=COLORS["bg_input"], fg=COLORS["text_light"],
+                 width=lbl_w, anchor="w").pack(side=tk.LEFT)
+        self.facetrack_enabled_var = tk.BooleanVar(value=True)
+        self.facetrack_enabled_checkbox = tk.Checkbutton(
+            rFT, text="Gate enabled", variable=self.facetrack_enabled_var,
+            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            command=self._on_facetrack_changed,
+        )
+        self.facetrack_enabled_checkbox.pack(side=tk.LEFT)
+        self.facetrack_required_var = tk.BooleanVar(value=False)
+        self.facetrack_required_checkbox = tk.Checkbutton(
+            rFT, text="Block oldcam if below threshold",
+            variable=self.facetrack_required_var,
+            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            command=self._on_facetrack_changed,
+        )
+        self.facetrack_required_checkbox.pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(rFT, text="min %:", font=(FONT_FAMILY, 9),
+                 bg=COLORS["bg_input"], fg=COLORS["text_dim"]).pack(
+                     side=tk.LEFT, padx=(10, 2))
+        self.facetrack_min_var = tk.StringVar(value="96.0")
+        self.facetrack_min_entry = tk.Entry(
+            rFT, textvariable=self.facetrack_min_var, width=6,
+            font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=COLORS["text_light"],
+            insertbackground=COLORS["text_light"], relief=tk.FLAT,
+        )
+        self.facetrack_min_entry.pack(side=tk.LEFT)
+        self.facetrack_min_entry.bind("<FocusOut>", lambda _e: self._on_facetrack_changed())
+        self.facetrack_min_entry.bind("<Return>", lambda _e: self._on_facetrack_changed())
+        self.facetrack_status_label = tk.Label(
+            rFT, text="● advisory", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.facetrack_status_label.pack(side=tk.LEFT, padx=(10, 0))
+        HoverTooltip(
+            self.facetrack_status_label,
+            lambda: (
+                "Runs after a Kling video is generated, before oldcam.\n"
+                "Measures face-track continuity of the Kling source.\n"
+                "Block oldcam ON  -> sub-threshold clip is stopped "
+                "(routed to manual review).\n"
+                "Block oldcam OFF -> only flagged; still goes to oldcam.\n"
+                "Validated: <96% rejects ~40% of Persona fails, "
+                "zero false positives."
+            ),
+        )
+        self._refresh_facetrack_status()
+
         # Allow reprocessing
         rB = tk.Frame(left_col, bg=COLORS["bg_input"])
         rB.pack(fill=tk.X, pady=(0, 4))
@@ -1127,6 +1191,18 @@ class ConfigPanel(tk.Frame):
         # Loop video option
         self.loop_video_var.set(self.config.get("loop_videos", False))
         self._check_ffmpeg_status()
+        # Face-track gate controls (round-trip the automation_* keys).
+        if hasattr(self, "facetrack_enabled_var"):
+            self.facetrack_enabled_var.set(
+                bool(self.config.get("automation_facetrack_enabled", True)))
+            self.facetrack_required_var.set(
+                bool(self.config.get("automation_facetrack_required", False)))
+            ft_min = self.config.get("automation_facetrack_min_pct", 96.0)
+            try:
+                self.facetrack_min_var.set(f"{float(ft_min):g}")
+            except (TypeError, ValueError):
+                self.facetrack_min_var.set("96")
+            self._refresh_facetrack_status()
         selected_versions = self._resolve_oldcam_versions_from_config()
         for version, var in self.oldcam_version_vars.items():
             var.set(version in selected_versions)
@@ -1464,6 +1540,51 @@ class ConfigPanel(tk.Frame):
         self.config["loop_videos"] = self.loop_video_var.get()
         status = "enabled" if self.loop_video_var.get() else "disabled"
         self._notify_change(f"Loop video {status}")
+
+    def _refresh_facetrack_status(self):
+        """Update the inline face-track gate indicator label."""
+        if not hasattr(self, "facetrack_status_label"):
+            return
+        if not self.facetrack_enabled_var.get():
+            self.facetrack_status_label.config(
+                text="● off", fg=COLORS["text_dim"])
+        elif self.facetrack_required_var.get():
+            self.facetrack_status_label.config(
+                text="● blocking", fg=COLORS.get("error", "#E06C75"))
+        else:
+            self.facetrack_status_label.config(
+                text="● advisory", fg=COLORS.get("accent", "#C39BD3"))
+
+    def _on_facetrack_changed(self):
+        """Persist face-track gate controls to the automation_* config
+        keys the pipeline reads, and refresh the indicator. 'Block
+        oldcam' maps to automation_facetrack_required: ON => a
+        sub-threshold Kling source is stopped before oldcam; OFF =>
+        only flagged (still processed)."""
+        self.config["automation_facetrack_enabled"] = bool(
+            self.facetrack_enabled_var.get())
+        self.config["automation_facetrack_required"] = bool(
+            self.facetrack_required_var.get())
+        raw = str(self.facetrack_min_var.get()).strip()
+        try:
+            val = float(raw)
+            if not (0.0 <= val <= 100.0):
+                raise ValueError
+            self.config["automation_facetrack_min_pct"] = val
+        except (TypeError, ValueError):
+            # Bad input -> snap the field back to the stored/default value.
+            val = float(self.config.get("automation_facetrack_min_pct", 96.0))
+            self.facetrack_min_var.set(f"{val:g}")
+            self.config["automation_facetrack_min_pct"] = val
+        self._refresh_facetrack_status()
+        if not self.facetrack_enabled_var.get():
+            self._notify_change("Face-track gate disabled")
+        elif self.facetrack_required_var.get():
+            self._notify_change(
+                f"Face-track gate blocking oldcam below {val:g}%")
+        else:
+            self._notify_change(
+                f"Face-track gate advisory (flag only) below {val:g}%")
 
     def _oldcam_version_key(self, version: str) -> int:
         try:
