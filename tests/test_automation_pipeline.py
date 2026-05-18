@@ -1637,3 +1637,28 @@ def test_facetrack_gate_skips_when_disabled(tmp_path: Path, monkeypatch):
     stats = runner.run([record])
     assert stats["completed"] == 1
     assert manifest.data["cases"]["case-ft"]["steps"]["facetrack_gate"]["status"] == "skipped"
+
+
+def test_facetrack_gate_tolerates_invalid_config(tmp_path: Path, monkeypatch):
+    """Garbage / out-of-range min_pct + fps must fall back to the validated
+    defaults (96.0 / 8.0) via _read_float clamping — never crash a run."""
+    seen = {}
+
+    def _capture(video_path, repo_root, *, sample_fps, min_track_pct, **kw):
+        seen["fps"] = sample_fps
+        seen["min"] = min_track_pct
+        return FaceTrackResult(
+            True, track_pct=100.0, sampled=80, with_face=80, passed=True)
+
+    monkeypatch.setattr(
+        "automation.face_track_gate.measure_face_track", _capture)
+    runner, record, manifest = _ft_runner(tmp_path, monkeypatch, {
+        "automation_facetrack_min_pct": "not-a-number",
+        "automation_facetrack_sample_fps": 999,  # out of [1,30]
+    })
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    # Bad string -> 96.0 default; out-of-range fps -> 8.0 default.
+    assert seen["min"] == 96.0
+    assert seen["fps"] == 8.0
+    assert manifest.data["cases"]["case-ft"]["steps"]["facetrack_gate"]["status"] == "complete"
