@@ -683,10 +683,13 @@ def test_automation_status_lines_include_front_passes(tmp_path):
 
 
 def test_merge_defaults_includes_facetrack_gate_keys(tmp_path):
-    """The validated face-track gate must be present in merged defaults
-    (advisory mode, 96% — see docs/analysis/versailles_fail_vs_pass.md)."""
+    """Face-track keys must still be present (retained as an opt-in
+    diagnostic), but DEFAULT OFF: a large balanced corpus showed
+    face-track % does not separate Persona PASS/FAIL — see
+    docs/analysis/versailles_fail_vs_pass.md "DEFINITIVE LARGE-CORPUS
+    NEGATIVE"."""
     merged = merge_automation_defaults({})
-    assert merged["automation_facetrack_enabled"] is True
+    assert merged["automation_facetrack_enabled"] is False
     assert merged["automation_facetrack_min_pct"] == 96.0
     assert merged["automation_facetrack_required"] is False
     assert merged["automation_facetrack_sample_fps"] == 8.0

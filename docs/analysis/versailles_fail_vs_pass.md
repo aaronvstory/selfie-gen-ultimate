@@ -686,3 +686,133 @@ documented. **The analytical question is answered:**
 
 No further calibration-loop iterations are warranted: there are no
 untested metric avenues left. Closing the loop here.
+
+---
+
+## 🔚 DEFINITIVE LARGE-CORPUS NEGATIVE (2026-05-19) — no metric in the suite separates Persona PASS/FAIL
+
+**Corpus:** the Sourav Vai labelled set — `DUPES/` = passed Persona,
+`FAILED PERSONA/` = failed Persona. After de-duping to one Kling **source**
+per persona (the validated-signal rule; looped/delivered twins excluded):
+**21 PASS / 23 FAIL**, every clip a Kling video generated from a real
+selfie, single model (`k25tPro`), **no oldcam confound**. This is the
+largest, cleanest, most balanced labelled set tested — and it has real
+statistical power, unlike the 2–7-PASS versailles set.
+
+Two full sweeps were run with the production tooling:
+`docs/analysis/measure_sourav_corpus.py` (the exact pipeline
+`automation.face_track_gate.measure_face_track`) and
+`docs/analysis/measure_sourav_kinematics.py` (`rPPG/face_kinematics` —
+head-pose jerk + blink, the doc's "geometrically-motivated" candidate).
+
+### Face-track % — the prior "validated 96%" finding DOES NOT HOLD
+
+| | `< 96%` | distribution (sorted) |
+|---|---|---|
+| **PASS** (n=21) | **7/21 (33.3%)** | 76.5, 77.8, 80.2, 81.5, 82.7, 88.9, 91.4, 96.3, 98.8, 100×12 |
+| **FAIL** (n=23) | **7/23 (30.4%)** | 63.0, 70.4, 90.1, 91.4, 91.4, 92.6, 95.1, 96.3, 97.5, 98.8, 100×13 |
+
+PASS and FAIL `<96%` rates are **statistically identical** (33% vs 30%).
+Seven clips that **passed** Persona track as low as **76.5%**; 16 of 23
+**fails** track ≥96% (13 at a perfect 100%). The full threshold sweep
+(80→100%) shows **every cutoff loses roughly as many real PASSes as it
+catches FAILs — there is NO zero-false-positive threshold anywhere**
+(cleanest point, 80%: catches 2/23 fails, still loses 2/21 passes).
+The looped and pooled-per-persona views reproduce this exactly, so it is
+not a source-vs-delivered artifact.
+
+> **The earlier "face-track <96% = zero false positives, catches 40% of
+> fails" was a small-sample (2–7 PASS) artifact. On a properly powered
+> balanced corpus it is refuted: face-track % is ~a coin flip for Persona
+> pass/fail.** The honest-limits sections above predicted exactly this.
+
+### Kinematic suite — also no separation (Youden J; 1.0=perfect, 0=coin flip)
+
+| metric | best J | zero-false-pos catch | verdict |
+|---|---|---|---|
+| kinematic overall | 0.09 | 2/23 (9%) | no separation |
+| head-jerk sub-score | 0.16 | **none** | weak (only by losing 71% of PASS) |
+| blink sub-score | 0.00 | none | no separation |
+| raw jerk mean | 0.02 | none | no separation |
+| raw jerk p95 | 0.09 | 2/23 (9%) | no separation |
+| raw jerk max | 0.08 | none | no separation |
+
+Flag frequencies are the tell: `head_jerk_fail` fires on **90.5% of PASS
+and 91.3% of FAIL** — identical; `kinematic_overall_fail` fires *more* on
+PASS (28.6%) than FAIL (17.4%) — inverted noise. No kinematic axis
+discriminates.
+
+### Conclusion (terminal, highest-power evidence)
+
+This confirms the report's recurring finding with the strongest data yet:
+**no single scalar in this toolchain — face-track, rPPG (already dead),
+or the full kinematic suite — separates Persona PASS from FAIL.** Failure
+is a logical OR of many independent generation defects; PASSes are boring,
+each FAIL is broken in its own way, so no one threshold can split them.
+
+### Engineering actions taken (this commit)
+
+- **Face-track GUI controls removed** from the Tkinter video tab
+  (`kling_gui/config_panel.py`) — a near-coin-flip check must not be
+  surfaced as a quality gate.
+- **`automation_facetrack_enabled` default flipped to `False`**
+  (`automation/config.py`). Keys + pipeline gate code **retained** as an
+  opt-in diagnostic (explicitly settable for experiments), not a default
+  gate. `test_config_panel_facetrack.py` deleted (tested removed widgets);
+  pipeline gate tests kept (they validate the retained opt-in code path).
+
+---
+
+## 🔁 HOW TO RE-RUN THESE TESTS ON A FUTURE CORPUS
+
+The full pipeline is four committed, repo-safe scripts under
+`docs/analysis/` (no corpus data or rPPG code is committed; videos are
+read in place). To test any new labelled corpus:
+
+**1. Lay the corpus out as two folders** (any names — edit the `LABELS`
+dict in the two `measure_*` scripts to match):
+
+```
+<corpus root>/
+  DUPES/            <- one subfolder per persona that PASSED Persona
+    <persona>/ ... *_k25tPro_p*_1.mp4 (Kling source) [+ *_looped.mp4]
+  FAILED PERSONA/   <- one subfolder per persona that FAILED Persona
+    <persona>/ ...
+```
+
+The scripts auto-classify `*_looped.mp4` as the looped twin and everything
+else as the Kling source, and recurse arbitrarily deep.
+
+**2. Point the scripts at it.** Edit `BASE = Path(r"...")` (and `LABELS`
+if folder names differ) at the top of both:
+`docs/analysis/measure_sourav_corpus.py` and
+`docs/analysis/measure_sourav_kinematics.py`.
+
+**3. Run the two measurement passes** (both resumable; re-running skips
+already-measured clips):
+
+```bash
+venv/Scripts/python.exe docs/analysis/measure_sourav_corpus.py      # face-track %  (~4s/clip)
+venv/Scripts/python.exe docs/analysis/measure_sourav_kinematics.py  # kinematics    (~5s/clip)
+```
+
+Outputs: `docs/analysis/sourav_facetrack_results.json` and
+`docs/analysis/sourav_kinematic_results.json`.
+
+**4. Analyze** (honest stats — distributions, full threshold sweep with
+false-positive cost, Youden-J best split, zero-false-positive best):
+
+```bash
+venv/Scripts/python.exe docs/analysis/analyze_sourav_corpus.py
+venv/Scripts/python.exe docs/analysis/analyze_sourav_kinematics.py
+```
+
+**What to look for:** a metric is only a usable gate if its
+`ZERO-FALSE-POS BEST` catches a meaningful share of FAILs **and** its
+Youden `J ≥ 0.30`. Anything below that is overlap (noise) — do NOT wire it
+as a default gate; at most retain it opt-in like the face-track keys.
+
+**Not run (deliberate):** `rPPG/rppg_injector.py --analyze` (5 pulse
+liveness metrics) — ~3 min/clip and already conclusively non-discriminating
+("CONCLUSIVE NEGATIVE" section above). Only revisit if a corpus shows the
+geometric metrics separating first.

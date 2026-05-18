@@ -1548,6 +1548,11 @@ def _ft_runner(tmp_path: Path, monkeypatch, overrides: dict):
         "falai_api_key": "x", "bfl_api_key": "bfl-token",
         "automation_oldcam_required": False,
         "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1,
+        # Face-track gate now defaults OFF (large-corpus negative, see
+        # docs/analysis/versailles_fail_vs_pass.md). These tests exercise
+        # the RETAINED opt-in gate code, so enable it by default here;
+        # a test can still override it back off via overrides.
+        "automation_facetrack_enabled": True,
         **overrides,
     })
     manifest = AutomationManifest.create_or_load(
