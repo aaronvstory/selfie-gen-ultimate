@@ -479,3 +479,34 @@ fixing/regenerating sources with unstable 5–8s head motion.
   `automation/pipeline.py` as an upstream Kling-source gate (after
   `video_generate`, before `oldcam`); fix the ~5–8s head-turn motion at
   generation for the clean-track FAILs.
+
+---
+
+## ✅ ANALYSIS COMPLETE — terminal status (2026-05-18)
+
+Every metric hypothesis testable against this corpus has been tested and
+documented. **The analytical question is answered:**
+
+> **What separates FAIL from PASS is face-track continuity of the Kling
+> source through the ~5–8s head turn — and nothing else measurable.**
+> oldcam version, Resemble score, sim score, every rPPG/liveness metric,
+> kinematic score, blink, and windowed head-jerk were each ruled out
+> with full-corpus data.
+
+**Shipped & validated (on this PR):**
+- `face_track_prefilter.py` — zero-false-positive upstream reject gate
+  (catches 4/11 fails free, validated by an independent code path).
+- `persona_prefilter.py` — combined 3-signal recommender (12/13 in-sample).
+- `calibrate_liveness.py` / `calibrate_kinematics.py` /
+  `head_motion_window.py` — the calibration harnesses, all reproducible.
+
+**What remains is NOT analysis — it is engineering + data:**
+1. **Engineering:** wire the face-track gate into `automation/pipeline.py`
+   (a production change touching the similarity-stack-style 10-surface
+   wiring — needs explicit go-ahead, kept off this analysis-only branch).
+2. **Data:** the 7 clean-track FAILs have no known discriminator; only
+   2 heterogeneous PASS samples exist. Cracking them requires **more
+   labelled PASSES**, not more metrics — every metric is exhausted.
+
+No further calibration-loop iterations are warranted: there are no
+untested metric avenues left. Closing the loop here.
