@@ -482,6 +482,47 @@ fixing/regenerating sources with unstable 5–8s head motion.
 
 ---
 
+## 🎯 TERMINAL CONCLUSION (2026-05-18 pm) — failure is a logical OR of independent defects
+
+The visual matched-pair study (the qualitative path numbers couldn't
+take) gives the real answer. Looking at PASS vs FAIL frames side by side:
+
+- **FAIL Schuyler** — *shirtless* (out-of-distribution attire for KYC)
+- **FAIL Leigh Ann** — *garbled gibberish text on shirt* ("VAHRDER
+  HORBEEFUTAN") — classic AI text-render artifact
+- **FAIL Maris** — *melting / elongated forearms* — AI limb distortion
+- **FAIL Emily** — looks fine but *sim 51* — identity mismatch
+- **FAIL DYLAN/Schuyler/Rachel** — *face-track dropout* — motion defect
+- **Every PASS** (Mark, Michelle, Jon Gray, Laura, Brittany…) —
+  unremarkable: clothed, no garbled text, stable limbs, plausible
+  identity, continuous tracking
+
+> **There is no single discriminator because failure is a logical OR of
+> many independent AI-generation defects. A clip passes only when it is
+> clean on ALL axes at once; it fails if ANY one breaks. PASالسes are
+> boring; each FAIL is broken in its own way.** (This is exactly why
+> every single-variable signal washed out, and why the user's "the fail
+> can be anything about the video" is literally correct.)
+
+**Engineering implication:** the right tool is **not one threshold** —
+it is a **multi-check pre-submission QA gate**, each check catching one
+failure mode. The first validated check, quantified on the full corpus:
+
+| face-track threshold (Kling src) | FAIL rejected | PASS wrongly rejected |
+|---|---|---|
+| <85% | 6/44 (13%) | **0/7** |
+| <90% | 14/44 (31%) | **0/7** |
+| **<96%** | **18/44 (40%)** | **0/7 ✅** |
+| <100% | 24/44 (54%) | 2/7 ❌ |
+
+**`face-track < 96%` on the Kling source rejects 40% of failures with
+zero false positives** — a real, free, fast first QA check. The other
+checks (attire/garbled-text/limb-distortion/identity-sim) are
+detectable but need their own detectors — a roadmap, not a one-liner.
+This is the honest, terminal framing of the whole investigation.
+
+---
+
 ## 🔬 EXPANDED CORPUS (2026-05-18 pm) — 15 PASS / 44 FAIL
 
 User supplied 3 more labelled corpora (`USA omnapayments scans/
