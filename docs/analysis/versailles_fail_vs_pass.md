@@ -482,6 +482,59 @@ fixing/regenerating sources with unstable 5–8s head motion.
 
 ---
 
+## ⚠️ CRITICAL REFRAME (2026-05-18 pm) — Persona only sees a FACE CROP
+
+User correction: **Persona's detector receives a face-cropped region
+(face + slight surroundings), NOT the full body/scene the videos show.**
+This invalidates the body-artifact half of the census below:
+
+- **Limb/arm melt, garbled clothing text, shirtless attire → IRRELEVANT.**
+  Persona never sees them; they cannot explain any FAIL.
+- Therefore *every* FAIL is, from Persona's viewpoint, a **"clean face"
+  fail** — the discriminator must live in the **face region + its
+  temporal behaviour**, nothing below the shoulders.
+- This is consistent with why every body/scene signal washed out, and
+  it sharply narrows where to look: face-crop appearance + face motion.
+
+The census table below is kept for the record but its non-face rows
+(limb/text/attire) are moot. The face-track<96% finding **stands** (it
+measures the face region) and remains the one validated check. Re-doing
+the visual study on the face-cropped view (what Persona actually sees)
+is the live task.
+
+---
+
+## 📊 FAIL-MODE CENSUS (2026-05-18 pm) — kept for record (non-face rows moot)
+
+Classified the 44 FAILs (programmatic face-track + visual inspection of
+14 representative 3-frame montages incl. the head-turn window):
+
+| failure mode | ~count | detectable by a static/track QA tool? |
+|---|---|---|
+| face-track <96% (motion/track defect) | ~19/44 (43%) | ✅ yes — the validated check |
+| visible limb/arm melt in head-turn | ~3+ (Jennifer, Katherine, Maris) | ⚠️ hard (needs a limb-distortion model) |
+| garbled clothing text | ≥1 (Leigh Ann) | ⚠️ possible (OCR-gibberish detector) |
+| inappropriate attire (shirtless) | ≥1 (Schuyler) | ⚠️ possible (clothing classifier) |
+| **visually CLEAN, no static tell** | **~60-70%** | ❌ **NO — impossible by definition** |
+
+**The decisive scoping fact:** ~60–70% of FAILs are *visually
+indistinguishable from PASالسes in still frames* (Erin, Leanne, James
+Middendorf, Christopher Koerber, Morgan Philley, Sarah Zayhowski,
+Michael Rooney…). Persona rejects these on a **temporal /
+sub-perceptual** signal (micro-motion, frame coherence, a generative
+fingerprint) that **no still-frame or simple geometric QA check can
+see** — the same wall every metric hit.
+
+**Honest consequence for the multi-check QA tool:** it can realistically
+catch only the **~30–40% with a detectable static/track defect** (and
+the face-track<96% check alone already covers ~43% with zero false
+positives). The remaining majority is beyond a static tool's reach.
+A QA gate is therefore a **partial efficiency win** (cut ~⅓ of doomed
+submissions, zero false rejects) — *not* a pass-rate fix. Stated plainly
+so the build scope is set with eyes open.
+
+---
+
 ## 🎯 TERMINAL CONCLUSION (2026-05-18 pm) — failure is a logical OR of independent defects
 
 The visual matched-pair study (the qualitative path numbers couldn't
