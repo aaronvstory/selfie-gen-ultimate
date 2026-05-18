@@ -166,3 +166,9 @@
 - **What changed:** nothing (verification-only iteration)
 - **Why:** loop mandate — confirm Tkinter gate toggles actually reach the pipeline gate
 - **Finding:** verified correct + empirically proven. merge_automation_defaults does `dict(config)` then fills defaults only `if key not in merged` → GUI-set automation_facetrack_* overrides (enabled=False/required=True/min_pct=88) survive intact through from_app_config→AutomationConfig→pipeline. Contract holds end-to-end; no code needed. CodeRabbit reviewing GUI code (pending). PR #37 @ 35 commits. ~27min to bound.
+
+## 2026-05-18 22:18 - Loop iter: ALL BOTS GREEN on GUI code — work complete
+
+- **What changed:** nothing (verification iteration)
+- **Why:** CodeRabbit+Kilo were reviewing the Tkinter gate code; awaited results
+- **Finding:** CodeRabbit=PASS (0 new findings on config_panel/GUI), Kilo=PASS, Sourcery=skip. 107 passed full suite. Clean tree, 0 rPPG, no nul. ALL 8 tasks substantively complete; only procedural closeout (stop cron) remains, gated on 1hr bound (~26min left). PR #37 @ 36 commits, zero open production findings. Holding to bound per user's full-hour loop instruction.
