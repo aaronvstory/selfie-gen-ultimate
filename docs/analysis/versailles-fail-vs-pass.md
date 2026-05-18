@@ -53,6 +53,41 @@ both PASS personas 100% → OK, every other clip 100% → OK. **Zero false
 positives** (no PASS ever rejected). Confirmed reproducible, not an
 artifact of one detector configuration.
 
+### Quantified leverage (upstream gate on the Kling source)
+
+| persona | truth | kling src track% | delivered track% | upstream verdict |
+|---|---|---|---|---|
+| ANDRES | FAIL | 88.0 | 100 | **REJECT** (saved attempt) |
+| DYLAN | FAIL | 73.0 | 73.7 | **REJECT** |
+| GISELLE | FAIL | 99.2 | 92.5 | **REJECT** |
+| MARGARET | FAIL | 97.5 | 100 | **REJECT** |
+| 7 other FAIL | FAIL | 100 | 100 | pass-through |
+| LAURA, BRITTANY | PASS | 100 | 100 | pass-through |
+
+> **A face-track gate on the Kling source rejects 4/11 (36%) of the
+> failures before any oldcam or Persona cost — zero PASS rejected.**
+
+Two extra insights from the table:
+
+- **GISELLE**: source 99.2% but *delivered* 92.5% — **oldcam v24
+  processing made trackability worse**. Aggressive crush can degrade
+  face-trackability, a second argument against v24-class processing.
+- The gate doesn't convert a fail to a pass; it eliminates ~a third of
+  wasted Persona attempts for free and tells the generation step exactly
+  what to fix (subject leaving frame / untrackable face → regenerate).
+
+### What we could NOT determine (honest limits)
+
+- **The discriminator for the 7 clean-tracking FAILs is unknown.** They
+  hold a face 100% of frames yet still failed Persona. No kinematic axis,
+  no rPPG metric, no sim score, and no oldcam version separates them from
+  the 2 clean PASS.
+- **The ground truth is only 2 PASS**, and they are heterogeneous (LAURA:
+  standard sim86 Kling→v13; BRITTANY: a Signal-app `signal-*` video→v15,
+  no sim score). Two dissimilar positives cannot support a multivariate
+  pass/fail model — any "pattern" fit to them would be overfitting. More
+  labelled PASSES are required to go further than the pre-filter.
+
 ---
 
 ## TL;DR
