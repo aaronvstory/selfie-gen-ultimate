@@ -154,3 +154,9 @@
 - **What changed:** nothing (audit-only iteration)
 - **Why:** loop multi-surface mandate — audited _planned_action_for_case manual_review handling vs the new gate
 - **Finding:** correct by design. Gate's unavailable-tooling path = "skipped"+continue (never parks), so no similarity-style retry carve-out needed; sub-threshold manual_review SHOULD stay parked (re-running identical doomed source is futile — operator regenerates). Adding code here would be wrong. 102 passed; all bots pass; tree clean. PR #37 @ 32 commits. ~36min to bound.
+
+## 2026-05-18 22:15 - Loop iter: Tkinter video-tab gate control (user request)
+
+- **What changed:** kling_gui/config_panel.py (face-track gate row: Gate enabled + Block-oldcam checkboxes + min% entry + ●advisory/●blocking/●off indicator + tooltip; _on_facetrack_changed + _refresh_facetrack_status + _load_config round-trip to automation_facetrack_* keys); tests/test_config_panel_facetrack.py (new, 5 tests)
+- **Why:** user explicitly asked for the checkable gate in the Tkinter GUI's video tab (stop sub-threshold→oldcam, or indicator-only mode)
+- **Verified:** 154 passed (GUI+automation), 0 regressions; config_panel.py i/crlf preserved (121 add, no flip); new test i/lf 0-CR; no rPPG leak; CodeRabbit review re-triggered. PR #37 @ 34 commits. ~29min to bound.
