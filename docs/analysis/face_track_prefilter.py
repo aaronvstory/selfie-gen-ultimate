@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Face-tracking-continuity pre-filter — the one usable versailles signal.
 
-Empirical finding (docs/analysis/versailles-fail-vs-pass.md): on the
+Empirical finding (docs/analysis/versailles_fail_vs_pass.md): on the
 labelled corpus, **every Persona PASS held a detectable face in 100% of
 sampled frames; every clip with a tracking dropout (<100%) was a FAIL**,
 and the dropout was already present in the original Kling source. This is

@@ -337,11 +337,15 @@ against this. V25 would very likely fail the same way.
    profile once #2 exists), not v24/v25. v13 is on disk for all of them already.
 
 ### Next step (proposed PR scope)
-This branch documents the analysis only (`docs/analysis/` + `analysis_frames/`).
-The actionable engineering follow-up — calibrating the friend's liveness analyzer
-against this ground-truth set and deriving the Persona-passing profile — is a
-separate, larger piece of work (see "Update 2026-05-18" and "Resolved & remaining
-questions" below). The rPPG tool itself is gitignored and never committed.
+This branch commits **only** the analysis + repo-safe tooling under
+`docs/analysis/` (this doc, the calibration harnesses, and the
+`face_track_prefilter.py` / `persona_prefilter.py` gates with a few small
+evidence frames). The `analysis_frames/` scratch dir is **gitignored**
+(not committed); the friend's rPPG tool under `rPPG/` is **gitignored and
+never committed**. The actionable engineering follow-up — wiring the
+face-track gate into `automation/pipeline.py` and deriving the
+Persona-passing profile — is separate, larger work (see "Combined policy
+validated" and "Resolved & remaining questions").
 
 ---
 

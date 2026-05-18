@@ -2,7 +2,7 @@
 """Persona pre-submission risk filter — combined bias-the-odds gate.
 
 Derived from the versailles FAILED-vs-DASHERS corpus (see
-versailles-fail-vs-pass.md). NOT a guaranteed pass predictor — a
+versailles_fail_vs_pass.md). NOT a guaranteed pass predictor — a
 *reject / regenerate* recommender that, on the labelled corpus,
 classified 12/13 personas correctly (2/2 PASS, 10/11 FAIL; the single
 miss, BRESLEY, carries a separate blink anomaly).
