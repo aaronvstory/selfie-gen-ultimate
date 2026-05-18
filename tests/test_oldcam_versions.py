@@ -397,7 +397,8 @@ def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
     panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
     assert 'text="Oldcam Finish"' not in panel_source
     assert 'text="Oldcam:"' in panel_source
-    assert 'for i, version in enumerate(("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24"))' in panel_source
+    assert '_oldcam_versions = ("v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24")' in panel_source
+    assert 'for i, version in enumerate(_oldcam_versions)' in panel_source
 
 
 def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
