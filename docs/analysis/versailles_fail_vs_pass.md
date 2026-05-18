@@ -438,6 +438,31 @@ signal that discriminates** on this corpus (already shipped as
 calibration or the rppg-injector fork is warranted for the Persona use
 case.
 
+## Windowed head-motion jerk — corroborates, doesn't add a discriminator
+
+Tested the last unexplored angle (`head_motion_window.py`): head-pose
+**angular jerk inside the 5–8s turn window** (pure landmark geometry,
+no rPPG), all 26 clips.
+
+- **No clean separation** (delivered yaw-jerk FAIL[2974–7930] vs
+  PASS[759–7149] — the same heterogeneous-PASS overlap; LAURA jerks
+  hard at 7149, BRITTANY barely at 759). A jerk threshold is not a
+  usable discriminator. Avenue closed.
+- **One extreme standalone outlier corroborates the shipped finding:**
+  **DYLAN Kling source `yaw_jerk_window = 62,247`, ratio 12.1** — an
+  order of magnitude above everything else (next: ANDRES 12,568,
+  GISELLE 8,290). This is the *mechanism* behind DYLAN's 74% face-track
+  dropout: the head moves so violently through the turn that MediaPipe
+  loses the face. **The face-track dropout is the detectable symptom of
+  catastrophic head-motion jerk in the source** — the two findings are
+  the same phenomenon, which strengthens (not extends) the conclusion.
+
+Net: every metric-based avenue is now exhausted. The only thing that
+discriminates is **face-track continuity of the Kling source**, and
+windowed jerk explains *why* (violent source head motion in the turn).
+The actionable lever remains upstream: the prefilter gate +
+fixing/regenerating sources with unstable 5–8s head motion.
+
 ## Resolved & remaining questions
 
 - ✅ Provider = **Persona**. Tune/validate against Persona's liveness model.
