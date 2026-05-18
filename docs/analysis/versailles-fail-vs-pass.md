@@ -6,6 +6,48 @@
 
 ---
 
+## ⭐ 2026-05-18 BREAKTHROUGH — face-tracking continuity is a usable pre-filter
+
+Ran `face_kinematics` over the **full** labelled corpus (38 clips: every
+persona's delivered + pre-oldcam looped + original Kling, correct
+v24-if-present-else-v13 rule). The kinematic *score* does **not** separate
+PASS from FAIL (the 2 PASS personas sit at opposite ends of every axis).
+**But one detail field does, one-sided and cleanly:**
+
+> **Every PASS clip holds a detectable face in 100.0% of sampled frames.
+> Every clip with a face-tracking dropout (<100%) is a FAIL — and the
+> dropout is already present in the original Kling source, before any
+> oldcam processing.**
+
+| persona | truth | delivered track% | kling track% |
+|---|---|---|---|
+| DYLAN | FAIL | **73.7%** | **73.0%** |
+| ANDRES | FAIL | 100% | **88.0%** |
+| MARGARET | FAIL | 100% | **97.5%** |
+| GISELLE | FAIL | **92.5%** | 99.2% |
+| LAURA | **PASS** | 100% | 100% |
+| BRITTANY | **PASS** | 100% | 100% |
+| (7 other FAIL) | FAIL | 100% | 100% |
+
+**Honest strength:** necessary-not-sufficient. 100% tracking does *not*
+guarantee a pass (7 FAILs also track 100%), so it doesn't explain every
+failure. **But <100% tracking is a zero-false-positive FAIL predictor on
+this corpus**, detectable in the Kling source in seconds, with no API cost.
+
+**Actionable now:** add a cheap upstream gate — *reject/regenerate any
+Kling clip that does not hold a face in 100% of frames before spending
+oldcam + Persona attempts on it.* On this set that alone flags 4 of 11
+failures (DYLAN, ANDRES, MARGARET, GISELLE) for free. It does not turn a
+fail into a pass by itself, but it stops wasting a Persona attempt on a
+clip that cannot pass, and points selfie/Kling generation at the real
+upstream defect (the subject leaves frame / face becomes untrackable).
+
+The kinematic *score* and the rPPG metrics remain non-discriminating for
+the clean-tracking clips (see "Update 2026-05-18" below) — so the next
+lever is the source generation, not a post-process.
+
+---
+
 ## TL;DR
 
 1. **The oldcam version is NOT the discriminator.** Both FAILED and DASHERS personas
