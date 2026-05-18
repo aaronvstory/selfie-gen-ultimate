@@ -90,6 +90,8 @@ def measure_face_track(
     if not os.path.exists(video_path):
         return FaceTrackResult(False, reason=f"video missing: {video_path}")
 
+    cap = None
+    landmarker = None
     try:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -123,10 +125,22 @@ def measure_face_track(
                     cur_gap += 1
                     longest_gap = max(longest_gap, cur_gap)
             idx += 1
-        cap.release()
-        landmarker.close()
     except Exception as exc:  # pragma: no cover - runtime guard
         return FaceTrackResult(False, reason=f"face-track error: {exc}")
+    finally:
+        # Guaranteed cleanup: an exception mid-loop (e.g. in
+        # landmarker.detect) must not leak a VideoCapture / landmarker
+        # handle — these accumulate fast across a batch pipeline run.
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # pragma: no cover - best-effort cleanup
+                pass
+        if landmarker is not None:
+            try:
+                landmarker.close()
+            except Exception:  # pragma: no cover - best-effort cleanup
+                pass
 
     if sampled == 0:
         return FaceTrackResult(False, reason="no frames sampled")
