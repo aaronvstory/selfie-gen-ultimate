@@ -2228,6 +2228,7 @@ class KlingAutomationUI:
             "similarity_gate": "4 similarity gate",
             "selfie_expand": "5 selfie expand",
             "video_generate": "6 kling video",
+            "facetrack_gate": "6.5 face-track gate",
             "oldcam": "7 loop/oldcam",
         }
 
