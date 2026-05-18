@@ -62,3 +62,6 @@ oldcam-v9/.venv/
 oldcam-v10/.venv/
 test-material/
 .recovery/
+
+# Scratch frame extracts from analysis (committed copies live in docs/analysis/)
+analysis_frames/
