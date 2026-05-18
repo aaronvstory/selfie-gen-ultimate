@@ -49,10 +49,13 @@ def best_split(P, F, direction):
     best_zerofp = None    # max recall with 0 PASS rejected
     for t in cands:
         if direction == "low_is_fail":
-            fr = sum(1 for v in F if v < t); pr = sum(1 for v in P if v < t)
+            fr = sum(1 for v in F if v < t)
+            pr = sum(1 for v in P if v < t)
         else:  # high_is_fail
-            fr = sum(1 for v in F if v > t); pr = sum(1 for v in P if v > t)
-        rec = fr / len(F); fp = pr / len(P)
+            fr = sum(1 for v in F if v > t)
+            pr = sum(1 for v in P if v > t)
+        rec = fr / len(F)
+        fp = pr / len(P)
         J = rec - fp
         if best is None or J > best[0]:
             best = (J, t, fr, pr, rec, fp)

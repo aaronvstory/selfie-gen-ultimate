@@ -1630,10 +1630,14 @@ class KlingAutomationUI:
         self.config["saved_prompts"] = saved_prompts
         self.config["automation_similarity_threshold"] = 80
         self.config["automation_video_enabled"] = True
-        # Validated face-track gate: advisory by default (zero-false-positive
-        # at 96% on the labelled corpus — see docs/analysis/
-        # versailles_fail_vs_pass.md). Recommended config enables it.
-        self.config["automation_facetrack_enabled"] = True
+        # Face-track gate is DIAGNOSTIC-ONLY and OFF by default. A large
+        # balanced corpus showed face-track % does NOT separate Persona
+        # PASS from FAIL (the earlier "zero false positives at 96%" was a
+        # small-sample artifact, refuted — see docs/analysis/
+        # versailles_fail_vs_pass.md "DEFINITIVE LARGE-CORPUS NEGATIVE").
+        # Recommended defaults keep it OFF; do not re-enable without a new
+        # corpus demonstrating genuine separation.
+        self.config["automation_facetrack_enabled"] = False
         self.config["automation_facetrack_min_pct"] = 96.0
         self.config["automation_facetrack_required"] = False
         self.config["automation_facetrack_sample_fps"] = 8.0
@@ -2033,12 +2037,14 @@ class KlingAutomationUI:
         _ask_bool("Video generation enabled", "automation_video_enabled")
         _ask("Video aspect ratio", "automation_video_aspect_ratio", str, lambda v: ":" in v)
         _ask_bool("Use existing video prompt", "automation_video_use_existing_prompt")
-        print("\n[Face-Track Gate]  (Kling-source liveness pre-check, runs before oldcam)")
-        print("  Validated on the labelled Persona corpus: a Kling source whose")
-        print("  face-track drops below the threshold fails Persona far more often")
-        print("  (rejects ~40% of fails, zero false positives at 96%). Advisory by")
-        print("  default (routes to manual_review); set 'required' to hard-fail and")
-        print("  skip oldcam entirely on a sub-threshold source.")
+        print("\n[Face-Track Gate]  (DIAGNOSTIC-ONLY — OFF by default)")
+        print("  A large balanced corpus showed face-track % does NOT separate")
+        print("  Persona PASS from FAIL (earlier '96% zero-false-positive' claim")
+        print("  was a small-sample artifact, refuted — see docs/analysis/")
+        print("  versailles_fail_vs_pass.md). Leave disabled unless your own")
+        print("  current labelled corpus validates a safe threshold. When")
+        print("  enabled: advisory routes to manual_review; 'required' hard-fails")
+        print("  and skips oldcam on a sub-threshold source.")
         _ask_bool("Face-track gate enabled", "automation_facetrack_enabled")
         _ask("Face-track min track %", "automation_facetrack_min_pct", float, lambda v: 0.0 <= v <= 100.0)
         _ask_bool("Face-track required (sub-threshold => fail+skip oldcam)", "automation_facetrack_required")

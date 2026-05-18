@@ -68,26 +68,30 @@ def montage(video: str, out_path: str) -> bool:
     cap = cv2.VideoCapture(video)
     if not cap.isOpened():
         return False
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    # early (~1s), head-turn (~6s mod clip), late (~ -1s)
-    targets = [
-        int(1.0 * fps),
-        int(6.0 * fps) % max(1, total),
-        max(0, total - int(1.0 * fps)),
-    ]
-    lm = _landmarker()
+    lm = None
     crops = []
-    for t in targets:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, min(t, total - 1))
-        ok, fr = cap.read()
-        if not ok:
-            continue
-        c = _face_crop(fr, lm)
-        if c is not None:
-            crops.append(cv2.resize(c, (320, 320)))
-    cap.release()
-    lm.close()
+    try:
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        # early (~1s), head-turn (~6s mod clip), late (~ -1s)
+        targets = [
+            int(1.0 * fps),
+            int(6.0 * fps) % max(1, total),
+            max(0, total - int(1.0 * fps)),
+        ]
+        lm = _landmarker()
+        for t in targets:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, min(t, total - 1))
+            ok, fr = cap.read()
+            if not ok:
+                continue
+            c = _face_crop(fr, lm)
+            if c is not None:
+                crops.append(cv2.resize(c, (320, 320)))
+    finally:
+        cap.release()
+        if lm is not None:
+            lm.close()
     if not crops:
         return False
     while len(crops) < 3:
@@ -150,9 +154,14 @@ def main() -> int:
             continue
         if n >= args.max:
             break
-        v = _deliv(pd)
-        ok = bool(v) and montage(v, str(OUT / f"{tag}.jpg"))
-        idx[tag] = {"truth": lbl, "persona": d, "ok": ok}
+        try:
+            v = _deliv(pd)
+            ok = bool(v) and montage(v, str(OUT / f"{tag}.jpg"))
+            idx[tag] = {"truth": lbl, "persona": d, "ok": ok}
+        except Exception as exc:  # never abort the sweep on one clip
+            ok = False
+            idx[tag] = {"truth": lbl, "persona": d, "ok": False,
+                        "error": f"{exc!r}"}
         idx_path.write_text(json.dumps(idx, indent=1))
         n += 1
         print(f"[{n}] {lbl:<4} {d[:40]:<42} {'OK' if ok else 'no-face'}")

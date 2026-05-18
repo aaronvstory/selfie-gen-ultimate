@@ -172,3 +172,9 @@
 - **What changed:** nothing (verification iteration)
 - **Why:** CodeRabbit+Kilo were reviewing the Tkinter gate code; awaited results
 - **Finding:** CodeRabbit=PASS (0 new findings on config_panel/GUI), Kilo=PASS, Sourcery=skip. 107 passed full suite. Clean tree, 0 rPPG, no nul. ALL 8 tasks substantively complete; only procedural closeout (stop cron) remains, gated on 1hr bound (~26min left). PR #37 @ 36 commits, zero open production findings. Holding to bound per user's full-hour loop instruction.
+
+## 2026-05-19 01:30 - Face-track gate: large-corpus NEGATIVE, removed from GUI
+
+- **What changed:** Ran full metric suite over Sourav Vai corpus (21 PASS / 23 FAIL). Face-track % + all kinematic metrics do NOT separate Persona PASS/FAIL (PASS<96%=33%, FAIL<96%=30%; every kinematic Youden J<=0.16). Removed face-track gate GUI controls (kling_gui/config_panel.py -120/+7); automation_facetrack_enabled default True->False (opt-in diagnostic only, code retained); deleted test_config_panel_facetrack.py; flipped cli-smoke assertion; seeded gate-on in _ft_runner. Added DEFINITIVE LARGE-CORPUS NEGATIVE + HOW-TO-RE-RUN to versailles_fail_vs_pass.md + 4 repo-safe measure/analyze scripts. Also: oldcam checkboxes 2-row column layout (commit 2b4b1aa).
+- **Why:** Refutes the earlier 2-7-PASS "96% zero-false-positive" artifact with real statistical power; a near-coin-flip check must not be a GUI quality gate. Result JSONs gitignored (private persona IDs).
+- **Verified:** 528 passed/0 failed full suite; macOS portability gate PASS; no nul; committed-blob eol integrity per-file (LF=0CR, CRLF unchanged); ConfigPanel smoke clean. Commits 2b4b1aa + 28f8cb2 pushed; PR #37 updated.

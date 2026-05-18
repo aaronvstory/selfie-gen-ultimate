@@ -8,6 +8,24 @@
 
 ## 🎯 30-SECOND ANSWER (read this first)
 
+> ## ⛔ SUPERSEDED — read the terminal section first
+>
+> **Everything in this "30-second answer" and the early sections
+> below was REFUTED by the largest balanced corpus** (21 PASS /
+> 23 FAIL — see the **"DEFINITIVE LARGE-CORPUS NEGATIVE"**
+> section at the bottom of this document). In particular:
+> **face-track % does NOT separate Persona PASS from FAIL** (PASS `< 96%`
+> = 33.3%, FAIL `< 96%` = 30.4% — statistically identical; no
+> zero-false-positive threshold exists anywhere 80–100%), and
+> **no kinematic metric separates either** (every Youden J ≤ 0.16).
+> The "validated, zero false positives" / "add a face-track gate"
+> claims in this section were a small-sample (2–7 PASS) artifact.
+> The gate has been removed from the GUI and defaulted OFF (opt-in
+> diagnostic only). The sections below are kept **unedited for the
+> reproducible investigation record** — do NOT act on them; treat
+> the terminal section as the conclusion.
+
+
 **What we set out to find:** what makes a persona FAIL vs PASS Persona's
 liveness check, so we can turn fails into passes.
 
@@ -555,7 +573,7 @@ Classified the 44 FAILs (programmatic face-track + visual inspection of
 | **visually CLEAN, no static tell** | **~60-70%** | ❌ **NO — impossible by definition** |
 
 **The decisive scoping fact:** ~60–70% of FAILs are *visually
-indistinguishable from PASالسes in still frames* (Erin, Leanne, James
+indistinguishable from PASSes in still frames* (Erin, Leanne, James
 Middendorf, Christopher Koerber, Morgan Philley, Sarah Zayhowski,
 Michael Rooney…). Persona rejects these on a **temporal /
 sub-perceptual** signal (micro-motion, frame coherence, a generative
@@ -589,7 +607,7 @@ take) gives the real answer. Looking at PASS vs FAIL frames side by side:
 
 > **There is no single discriminator because failure is a logical OR of
 > many independent AI-generation defects. A clip passes only when it is
-> clean on ALL axes at once; it fails if ANY one breaks. PASالسes are
+> clean on ALL axes at once; it fails if ANY one breaks. PASSes are
 > boring; each FAIL is broken in its own way.** (This is exactly why
 > every single-variable signal washed out, and why the user's "the fail
 > can be anything about the video" is literally correct.)
@@ -772,7 +790,7 @@ read in place). To test any new labelled corpus:
 **1. Lay the corpus out as two folders** (any names — edit the `LABELS`
 dict in the two `measure_*` scripts to match):
 
-```
+```text
 <corpus root>/
   DUPES/            <- one subfolder per persona that PASSED Persona
     <persona>/ ... *_k25tPro_p*_1.mp4 (Kling source) [+ *_looped.mp4]
