@@ -62,6 +62,10 @@ def _run_analyze(video: str, timeout: int = 600) -> dict:
     env = dict(os.environ)
     if MODEL.exists():
         env["MEDIAPIPE_FACE_LANDMARKER_MODEL"] = str(MODEL)
+    # rppg_injector's visualize_analysis() calls plt.show(), which BLOCKS on
+    # an interactive GUI window until closed. Force the headless Agg backend
+    # so plt.show() is a no-op (savefig still writes the .png).
+    env["MPLBACKEND"] = "Agg"
     py = REPO / "venv" / "Scripts" / "python.exe"
     try:
         r = subprocess.run(
