@@ -142,3 +142,9 @@
 - **What changed:** tests/test_automation_pipeline.py (+test_facetrack_gate_tolerates_invalid_config — garbage min_pct/fps fall back to validated 96.0/8.0 via _read_float clamp)
 - **Why:** loop excellence pass — invalid-config defensive path was untested; production gate must never crash on bad config
 - **Verified:** 90 passed; CodeRabbit re-review = PASS, 0 new production findings; resource-leak fix (e7f4a62) confirmed clean by CodeRabbit; Kilo pass (re-running on newest test-only push); clean tree, 0 rPPG tracked, no nul. PR #37 @ 29 commits. Loop continues to ~22:44 per user's 1hr instruction.
+
+## 2026-05-18 22:03 - Loop iter: CLI live-progress label gap fixed
+
+- **What changed:** kling_automation_ui.py — added "facetrack_gate":"6.5 face-track gate" to the Rich live-progress step-label map (was missing → raw key shown during gate step)
+- **Why:** loop multi-surface audit found the gate functionally wired but unlabeled in the live progress UI — incomplete surface
+- **Verified:** 28 CLI smoke pass; syntax OK; 1-insertion clean diff, i/crlf preserved; no rPPG leak. All bots pass (CodeRabbit, Kilo, Sourcery-skip). PR #37 @ 31 commits. ~41min to loop bound.
