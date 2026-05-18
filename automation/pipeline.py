@@ -1031,6 +1031,10 @@ class AutoPipelineRunner:
                 ft_fps = self._read_float(
                     "automation_facetrack_sample_fps", 8.0, min_value=1.0, max_value=30.0
                 )
+                self._report(
+                    f"face-track gate: checking Kling source "
+                    f"(min {ft_min}% @ {ft_fps}fps)…", "info"
+                )
                 ft = measure_face_track(
                     str(ft_video_path),
                     Path(__file__).resolve().parent.parent,
@@ -1038,16 +1042,17 @@ class AutoPipelineRunner:
                     min_track_pct=ft_min,
                 )
                 if not ft.available:
-                    self.logger.info(
-                        "case %s facetrack skipped (%s)", case_key, ft.reason
+                    self._report(
+                        f"face-track gate: skipped ({ft.reason})", "info"
                     )
                     self.manifest.update_step(
                         case_key, "facetrack_gate", "skipped",
                         error=ft.reason, meta=ft.to_meta(),
                     )
                 elif ft.passed:
-                    self.logger.info(
-                        "case %s facetrack pass pct=%s", case_key, ft.track_pct
+                    self._report(
+                        f"face-track gate: PASS {ft.track_pct}% "
+                        f"(>= {ft_min}% threshold)", "info"
                     )
                     self.manifest.update_step(
                         case_key, "facetrack_gate", "complete",
@@ -1055,9 +1060,11 @@ class AutoPipelineRunner:
                     )
                 else:
                     ft_required = self._read_bool("automation_facetrack_required", False)
-                    self.logger.warning(
-                        "case %s facetrack FAIL pct=%s threshold=%s required=%s",
-                        case_key, ft.track_pct, ft_min, ft_required,
+                    self._report(
+                        f"face-track gate: FAIL {ft.track_pct}% < {ft_min}% "
+                        f"-> {'failed (oldcam skipped)' if ft_required else 'manual_review'} "
+                        f"(likely fails Persona — regenerate the Kling source)",
+                        "warning",
                     )
                     status = "failed" if ft_required else "manual_review"
                     self.manifest.update_step(
