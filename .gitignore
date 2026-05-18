@@ -65,7 +65,3 @@ test-material/
 
 # Scratch frame extracts from analysis (committed copies live in docs/analysis/)
 analysis_frames/
-# Friend’s private rPPG/liveness tool — sensitive, NEVER commit/push (user req)
-rPPG/
-**/rppg_injector*.py
-**/rppg_injector*.zip
