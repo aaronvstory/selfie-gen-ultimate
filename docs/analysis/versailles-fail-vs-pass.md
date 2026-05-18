@@ -46,6 +46,13 @@ The kinematic *score* and the rPPG metrics remain non-discriminating for
 the clean-tracking clips (see "Update 2026-05-18" below) — so the next
 lever is the source generation, not a post-process.
 
+**Independently validated.** `face_track_prefilter.py` (a separate tool,
+different code path, 8 fps sampling, NOT the friend's code) reproduces it
+on the delivered clips: DYLAN 74.5% → REJECT, GISELLE 93.8% → REJECT,
+both PASS personas 100% → OK, every other clip 100% → OK. **Zero false
+positives** (no PASS ever rejected). Confirmed reproducible, not an
+artifact of one detector configuration.
+
 ---
 
 ## TL;DR
