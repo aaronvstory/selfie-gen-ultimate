@@ -504,6 +504,43 @@ is the live task.
 
 ---
 
+## 🎬 WHICH OLDCAM IS BEST? (2026-05-18 pm) — definitive answer: version is NOT the lever
+
+Direct question from the user, answered with the full corpus. Extracted
+the oldcam-version token from every delivered clip across all 59
+labelled personas:
+
+| | versions seen (per the "highest version in folder = what shipped" rule) |
+|---|---|
+| **PASS** (n≈15) | spread: v0/bare ×9, v7 ×2, v8 ×2, v1/v2/v3 ×1 — **no version dominates**, **zero used v24** |
+| **FAIL** (n≈44) | v0/bare ×32 — but that is a **corpus-era artifact** (the FAILED sets were processed by the old unversioned build), not evidence v0 causes failure |
+
+Combined with the original versailles finding (**v24 — the current
+pipeline default — failed 4/4 in production**, and was the Resemble
+"champion" that still didn't pass Persona):
+
+> **There is no "best" oldcam version, and a newer one would not help.**
+> Passes span old/low versions; the highest/newest version (v24) has a
+> 0-pass, 4-fail record. The oldcam pass is **not where pass/fail is
+> decided** — it is decided upstream, in the Kling source generation
+> (face-track continuity through the head turn + the OR-of-defects in
+> the face crop). Oldcam only re-encodes an already-good-or-bad source.
+
+**Actionable recommendation (data-grounded):**
+1. **Do not chase / build a new oldcam version** — it cannot fix a
+   source Persona will reject; the lever is the Kling source, not the
+   re-encode.
+2. If anything, the data mildly favours **lower/simpler oldcam**
+   (v13/v15-class) over v24 for Persona — but the effect is weak and
+   **secondary to the face-track gate**, which is the one validated win.
+3. Keep `automation_oldcam_version` configurable (left at the existing
+   default); the face-track gate (now shipped) is what actually trims
+   doomed runs. Oldcam-version tuning is **deprioritised by evidence.**
+
+This closes the user's oldcam question with data, not opinion.
+
+---
+
 ## 📊 FAIL-MODE CENSUS (2026-05-18 pm) — kept for record (non-face rows moot)
 
 Classified the 44 FAILs (programmatic face-track + visual inspection of
