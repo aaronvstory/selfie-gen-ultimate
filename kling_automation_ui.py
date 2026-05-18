@@ -2168,6 +2168,7 @@ class KlingAutomationUI:
             "selfie": self._qs_section_selfie,
             "selfie_expand": self._qs_section_selfie_expand,
             "video": self._qs_section_video,
+            "facetrack": self._qs_section_facetrack,
             "oldcam": self._qs_section_oldcam,
             "logging": self._qs_section_logging,
         }
@@ -2187,6 +2188,7 @@ class KlingAutomationUI:
                     questionary.Choice(f"✨ Selfie gen      {summary['selfie']}", "selfie"),
                     questionary.Choice(f"➕ Selfie expand   {summary['selfie_expand']}", "selfie_expand"),
                     questionary.Choice(f"🎬 Video           {summary['video']}", "video"),
+                    questionary.Choice(f"🎯 Face-track gate {summary['facetrack']}", "facetrack"),
                     questionary.Choice(f"📼 Oldcam          {summary['oldcam']}", "oldcam"),
                     questionary.Choice(f"🪵 Logging         {summary['logging']}", "logging"),
                     questionary.Separator("─" * 50),
@@ -2261,6 +2263,11 @@ class KlingAutomationUI:
             "video": (
                 f"enabled={'y' if c.get('automation_video_enabled') else 'n'}, "
                 f"aspect={c.get('automation_video_aspect_ratio', '3:4')}"
+            ),
+            "facetrack": (
+                f"enabled={'y' if c.get('automation_facetrack_enabled', False) else 'n'}, "
+                f"min={c.get('automation_facetrack_min_pct', 96.0)}%, "
+                f"{'required' if c.get('automation_facetrack_required', False) else 'advisory'}"
             ),
             "oldcam": (
                 f"enabled={'y' if c.get('automation_oldcam_enabled') else 'n'}, "
@@ -2712,6 +2719,27 @@ class KlingAutomationUI:
         self._qs_text("Aspect ratio (e.g. 3:4):", "automation_video_aspect_ratio",
                       default="3:4", validator=lambda v: ":" in v)
         self._qs_bool("Use existing video prompt slot?", "automation_video_use_existing_prompt", default=True)
+
+    def _qs_section_facetrack(self):
+        # Mirrors the legacy walker's face-track-gate prompts (PR #37).
+        # Defaults are intentionally OFF per docs/analysis/versailles_fail_vs_pass.md:
+        # a large balanced corpus showed face-track % does NOT separate Persona
+        # PASS from FAIL — the earlier "96% zero-false-positive" claim was a
+        # small-sample artifact. Leave disabled unless your own labelled corpus
+        # validates a safe threshold.
+        self._qs_section_banner(
+            "Face-track gate",
+            "DIAGNOSTIC-ONLY. Off by default — see docs/analysis/versailles_fail_vs_pass.md. "
+            "Advisory mode routes sub-threshold sources to manual_review; required mode "
+            "hard-fails the case and skips oldcam.",
+        )
+        self._qs_bool("Face-track gate enabled?", "automation_facetrack_enabled", default=False)
+        self._qs_float("Min face-track percent (0-100):", "automation_facetrack_min_pct",
+                       default=96.0, validator=lambda v: 0.0 <= v <= 100.0)
+        self._qs_bool("Required (sub-threshold => fail + skip oldcam)?",
+                      "automation_facetrack_required", default=False)
+        self._qs_float("Sample fps (1-30):", "automation_facetrack_sample_fps",
+                       default=8.0, validator=lambda v: 1.0 <= v <= 30.0)
 
     def _qs_section_oldcam(self):
         self._qs_section_banner(
