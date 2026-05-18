@@ -132,17 +132,77 @@ against this. V25 would very likely fail the same way.
 
 ### Next step (proposed PR scope)
 This branch documents the analysis only (`docs/analysis/` + `analysis_frames/`).
-The actionable engineering follow-up — a liveness-metric scorer that correlates with
-this ground-truth set — is a separate, larger piece of work and should be scoped
-before code is written (see "Open questions" below).
+The actionable engineering follow-up — calibrating the friend's liveness analyzer
+against this ground-truth set and deriving the Persona-passing profile — is a
+separate, larger piece of work (see "Update 2026-05-18" and "Resolved & remaining
+questions" below). The rPPG tool itself is gitignored and never committed.
 
 ---
 
-## Open questions (need user input before building)
+## Update 2026-05-18 — rPPG tool received + first ground-truth run
 
-- Do we have access to the friend's rPPG/liveness tool, or do we rebuild the
-  3-metric scorer in-repo (mirroring the `resemble-score/` subproject pattern)?
-- Which provider is the actual gate (Onfido / Sumsub / Jumio)? Their liveness
-  models differ; tuning is provider-specific.
-- Is re-delivering the 11 FAILED personas with v13 worth doing now as a quick win
-  while the liveness harness is built?
+The friend's tool is in `./rPPG` (gitignored, sensitive — never commit). It runs
+on our existing main venv (all deps — cv2/numpy/mediapipe/scipy/sklearn — already
+present; no new requirements). The friend confirmed two key things:
+
+- **The provider is Persona** (withpersona.com), not Onfido/Sumsub/Jumio.
+- **rPPG/pulse is NOT what Persona gates on** — *"you don't actually need rppg
+  for persona"*. Persona's tell is **kinematic/temporal** (head-pose jerk, motion
+  smoothness, blink), the geometric motion axes that survive pixel post-processing.
+  This matches our analysis exactly.
+
+`rPPG/rppg_injector.py` (5,100 LOC) already encodes the friend's three target
+metrics verbatim as live tuning targets:
+
+```python
+target_temporal_consistency = 0.85   # segment-to-segment SNR stability
+target_motion_artifacts_min = 0.03
+target_motion_artifacts     = 0.15   # max acceptable motion artifact ratio
+target_harmonic_alignment   = 0.7    # natural harmonic presence
+```
+
+…plus a full iterative knob-tuning registry (per-knob measured slope coefficients
+across snr/phase/temporal/motion/harmonic axes, with diagnostic-memory notes from
+prior runs). This is the measure→tune→re-measure→pick-best loop the friend
+described.
+
+### First kinematic-gate run on the labelled set (preflight head only)
+
+`face_kinematics.score_face_kinematics()` (the v8 preflight gate: head-pose
+angular jerk + blink distribution) on each persona's *delivered* video:
+
+| truth | persona/ver | overall | jerk | blink | flags |
+|---|---|---|---|---|---|
+| FAIL | ANDRES v13 | 0.407 | 0.196 | 0.618 | head_jerk_fail |
+| FAIL | ANDRES v24 | 0.462 | 0.235 | 0.688 | head_jerk_fail |
+| FAIL | GABRIELLE v24 | 0.647 | 0.364 | 0.930 | — |
+| FAIL | MARGARET v24 | 0.613 | 0.252 | 0.975 | head_jerk_fail |
+| FAIL | CHRIS v24 | 0.555 | 0.339 | 0.771 | — |
+| FAIL | DYLAN v13 | 0.555 | 0.112 | 0.997 | head_jerk_fail |
+| FAIL | DENA v13 | 0.573 | 0.302 | 0.844 | — |
+| FAIL | ABIGAIL v13 | 0.548 | 0.290 | 0.806 | head_jerk_fail |
+| PASS | LAURA v13 | **0.670** | 0.344 | 0.997 | — |
+| PASS | BRITTANY v13 | 0.559 | 0.284 | 0.833 | head_jerk_fail |
+| PASS | BRITTANY v15sig | 0.393 | 0.587 | 0.200 | blink_fail |
+
+**Honest read:** the *uncalibrated top-level* score does **not** cleanly separate
+pass/fail yet (FAIL 0.41–0.65, PASS 0.39–0.67 — heavy overlap). This is expected:
+`face_kinematics.py`'s own docstring says the 0.30 threshold is a loose default
+"until we calibrate against a labelled corpus" — **we are now that corpus**, and
+the preflight gate is only one head of a much larger analysis surface. The
+`head_jerk` sub-axis is the most promising (it appears on most fails) but needs
+the full `rppg_injector --analyze` temporal/motion metrics, not just the gate, to
+be conclusive. Next: run the full analyzer (temporal_consistency / motion_artifacts
+/ harmonic_alignment) on the labelled set and calibrate thresholds against the
+known FAIL/PASS labels.
+
+## Resolved & remaining questions
+
+- ✅ Provider = **Persona**. Tune/validate against Persona's liveness model.
+- ✅ Tool sourced (friend's `./rPPG`, runs on main venv) + we have the labelled
+  ground-truth corpus to calibrate it.
+- ⏳ Re-delivering the 11 FAILED with v13: **hold** (user: not yet — wait for the
+  calibrated liveness-tuned profile rather than guess).
+- ⏳ Next engineering step: full `rppg_injector --analyze` pass over the labelled
+  set → calibrate temporal/motion/jerk thresholds → derive the oldcam/processing
+  profile that actually maximises Persona pass-rate.
