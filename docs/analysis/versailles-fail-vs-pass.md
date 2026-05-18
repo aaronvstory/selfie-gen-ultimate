@@ -6,6 +6,34 @@
 
 ---
 
+## 🎯 30-SECOND ANSWER (read this first)
+
+**What we set out to find:** what makes a persona FAIL vs PASS Persona's
+liveness check, so we can turn fails into passes.
+
+**What is decisively true (validated, zero false positives):**
+1. **It is NOT the oldcam version, NOT the Resemble score, NOT the sim
+   score.** v24 (Resemble champion) failed 4/4 in production.
+2. **Failing clips lose face-trackability in the ~5–8s head-turn
+   window**, and the defect is in the **Kling source**, before oldcam.
+   Every PASS held a face 100% of frames; every dropout clip FAILED.
+3. **Two more levers all point the same way:** outpaint-expanded sources
+   (0/2 PASS vs 7/11 FAIL) and aggressive v24 (also degrades tracking).
+
+**What to actually do (actionable now):**
+- **Add an upstream face-track gate** on the Kling source — regenerate
+  any clip that doesn't hold a face 100% of frames (esp. the 5–8s turn).
+  Catches 4/11 failures for free, zero Persona cost, zero false rejects.
+  Tool shipped: `docs/analysis/face_track_prefilter.py`.
+- **Prefer non-outpaint-expanded sources** and **gentle oldcam (v13/v15),
+  not v24**.
+- This *biases the odds strongly*; it is not a proven fail→pass converter
+  (see "honest limits" — only 2 PASS samples, and 7 clean-track FAILs
+  have no known discriminator). Turning the remaining fails requires
+  more labelled PASSES and likely fixing the source head-turn motion.
+
+---
+
 ## ⭐ 2026-05-18 BREAKTHROUGH — face-tracking continuity is a usable pre-filter
 
 Ran `face_kinematics` over the **full** labelled corpus (38 clips: every
