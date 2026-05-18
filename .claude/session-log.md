@@ -136,3 +136,9 @@
 - **What changed:** automation/pipeline.py (_report progress, live in CLI/GUI); automation/face_track_gate.py (CodeRabbit fix: VideoCapture/FaceLandmarker cleanup in finally); docs/analysis/face_crop_study.py committed
 - **Why:** user "make integration really excellent"; CodeRabbit flagged a real resource-leak in now-production code
 - **Verified:** 101 passed (full automation suite); CodeRabbit re-review pass→fix→re-triggered; multi-surface check = gate adds ZERO new deps (reuses oldcam's cv2+mediapipe), GUI frozen build doesn't run CLI pipeline so no spec change needed; every edit autocrlf-guarded; PR #37 @ 28 commits, no rPPG leak
+
+## 2026-05-18 22:00 - Loop iter: defensive-config test + CodeRabbit verified pass
+
+- **What changed:** tests/test_automation_pipeline.py (+test_facetrack_gate_tolerates_invalid_config — garbage min_pct/fps fall back to validated 96.0/8.0 via _read_float clamp)
+- **Why:** loop excellence pass — invalid-config defensive path was untested; production gate must never crash on bad config
+- **Verified:** 90 passed; CodeRabbit re-review = PASS, 0 new production findings; resource-leak fix (e7f4a62) confirmed clean by CodeRabbit; Kilo pass (re-running on newest test-only push); clean tree, 0 rPPG tracked, no nul. PR #37 @ 29 commits. Loop continues to ~22:44 per user's 1hr instruction.
