@@ -148,3 +148,9 @@
 - **What changed:** kling_automation_ui.py — added "facetrack_gate":"6.5 face-track gate" to the Rich live-progress step-label map (was missing → raw key shown during gate step)
 - **Why:** loop multi-surface audit found the gate functionally wired but unlabeled in the live progress UI — incomplete surface
 - **Verified:** 28 CLI smoke pass; syntax OK; 1-insertion clean diff, i/crlf preserved; no rPPG leak. All bots pass (CodeRabbit, Kilo, Sourcery-skip). PR #37 @ 31 commits. ~41min to loop bound.
+
+## 2026-05-18 22:08 - Loop iter: surface audit (no change needed — correct by design)
+
+- **What changed:** nothing (audit-only iteration)
+- **Why:** loop multi-surface mandate — audited _planned_action_for_case manual_review handling vs the new gate
+- **Finding:** correct by design. Gate's unavailable-tooling path = "skipped"+continue (never parks), so no similarity-style retry carve-out needed; sub-threshold manual_review SHOULD stay parked (re-running identical doomed source is futile — operator regenerates). Adding code here would be wrong. 102 passed; all bots pass; tree clean. PR #37 @ 32 commits. ~36min to bound.
