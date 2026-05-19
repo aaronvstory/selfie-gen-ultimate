@@ -51,6 +51,45 @@ def test_manifest_complete_requires_existing_final_output(tmp_path: Path):
     assert manifest.case_is_complete_and_valid("case/a") is True
 
 
+def test_manifest_complete_validates_rppg_output_when_rppg_completed(tmp_path: Path):
+    """Regression (Codex P2, PR #39): rPPG is the LAST post-process. When
+    the rppg step completed, validation must check the injected file —
+    not fall back to the surviving pre-rPPG oldcam/video output — so a
+    deleted rPPG deliverable isn't masked as 'complete' (which would make
+    skip_completed wrongly skip the case, leaving no rPPG output)."""
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest = AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+    manifest.ensure_case("case/r", tmp_path / "case/r", tmp_path / "case/r/front.png")
+    steps = manifest.data["cases"]["case/r"]["steps"]
+    manifest.data["cases"]["case/r"]["status"] = "complete"
+
+    # Pre-rPPG oldcam file survives; the rPPG deliverable was deleted.
+    oldcam_file = tmp_path / "clip-oldcam-v24.mp4"
+    oldcam_file.write_bytes(b"oldcam")
+    steps["video_generate"]["output"] = str(tmp_path / "clip.mp4")
+    steps["oldcam"]["status"] = "complete"
+    steps["oldcam"]["output"] = str(oldcam_file)
+    steps["rppg"]["status"] = "complete"
+    steps["rppg"]["output"] = str(tmp_path / "clip-oldcam-v24-rppg - 7.8.mp4")  # missing
+    manifest.save_atomic()
+    # Must be INVALID — the real final (rPPG) deliverable is gone, even
+    # though the pre-rPPG oldcam file still exists.
+    assert manifest.case_is_complete_and_valid("case/r") is False
+
+    # Restore the rPPG file -> valid again.
+    rppg_file = tmp_path / "clip-oldcam-v24-rppg - 7.8.mp4"
+    rppg_file.write_bytes(b"rppg")
+    manifest.save_atomic()
+    assert manifest.case_is_complete_and_valid("case/r") is True
+
+    # If rppg did NOT complete (e.g. disabled/skipped), behaviour is
+    # unchanged: fall back to the oldcam output.
+    steps["rppg"]["status"] = "skipped"
+    steps["rppg"]["output"] = None
+    manifest.save_atomic()
+    assert manifest.case_is_complete_and_valid("case/r") is True  # oldcam file exists
+
+
 def test_manifest_corrupt_file_is_backed_up_and_recreated(tmp_path: Path):
     manifest_path = tmp_path / "automation_manifest.json"
     manifest_path.write_text("{ bad json", encoding="utf-8")

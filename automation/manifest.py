@@ -233,10 +233,22 @@ class AutomationManifest:
             return False
         if case_entry.get("status") != "complete":
             return False
-        final_output = (
-            case_entry.get("steps", {}).get("oldcam", {}).get("output")
-            or case_entry.get("steps", {}).get("video_generate", {}).get("output")
-        )
+        steps = case_entry.get("steps", {})
+        # rPPG is the LAST post-process: when it completed, the injected
+        # file is the real final deliverable. Validate against THAT, so a
+        # deleted rPPG output isn't masked as "complete" just because the
+        # pre-rPPG oldcam/video file still exists (skip_completed would
+        # then wrongly skip the case, leaving no rPPG deliverable). If
+        # rppg did not complete (disabled / skipped / failed-non-required),
+        # fall back to the prior oldcam -> video_generate chain unchanged.
+        rppg_step = steps.get("rppg", {})
+        if rppg_step.get("status") == "complete" and rppg_step.get("output"):
+            final_output = rppg_step.get("output")
+        else:
+            final_output = (
+                steps.get("oldcam", {}).get("output")
+                or steps.get("video_generate", {}).get("output")
+            )
         if not final_output:
             return False
         return Path(final_output).exists()

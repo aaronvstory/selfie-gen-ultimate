@@ -29,11 +29,13 @@ explicitly out of scope for this pass; ``run_rppg`` simply skips gracefully
 from __future__ import annotations
 
 import os
+import queue as _queue
 import shlex
 import subprocess
+import threading
 import time
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 ProgressCB = Optional[Callable[[str, str], None]]
 
@@ -117,6 +119,86 @@ def resolve_produced_output(requested: Path) -> Optional[Path]:
     return candidates[0] if candidates else None
 
 
+def stream_subprocess_with_timeout(
+    cmd: List[str],
+    *,
+    cwd: str,
+    timeout_seconds: int,
+    on_line: Optional[Callable[[str], None]] = None,
+) -> Tuple[int, List[str]]:
+    """Run *cmd*, stream stdout line-by-line, and enforce a HARD wall-clock
+    timeout that fires even if the child stalls mid-line with no newline
+    and no EOF.
+
+    A bare ``readline()`` loop (even with a deadline checked before each
+    call) cannot honour the timeout: ``readline()`` itself blocks until a
+    newline or EOF, so a silently-hung child wedges the loop forever and
+    the documented graceful-skip never happens. We drain stdout on a
+    daemon reader thread and let the MAIN thread own the wall clock, so a
+    no-output stall is still killed on schedule.
+
+    Returns ``(returncode, output_lines)``. Raises
+    ``subprocess.TimeoutExpired`` on timeout (caller treats that as a
+    graceful skip). The single source of truth for rPPG subprocess
+    streaming — both automation/rppg.py and the GUI queue use it so the
+    timeout behaviour can't drift between paths.
+    """
+    process = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    line_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
+
+    def _drain() -> None:
+        try:
+            for line in process.stdout:  # type: ignore[union-attr]
+                line_q.put(line)
+        except Exception:
+            pass
+        finally:
+            line_q.put(None)  # sentinel: stdout closed (process exiting)
+
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
+
+    output_lines: List[str] = []
+    deadline = time.monotonic() + timeout_seconds
+    eof = False
+    while not eof:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if process.poll() is None:
+                process.kill()
+            raise subprocess.TimeoutExpired(cmd, timeout_seconds)
+        try:
+            item = line_q.get(timeout=min(remaining, 1.0))
+        except _queue.Empty:
+            continue  # re-check the wall clock; child may be silent
+        if item is None:
+            eof = True
+            break
+        text = item.rstrip()
+        if text:
+            output_lines.append(text)
+            if on_line is not None:
+                on_line(text)
+
+    # stdout drained; the process should exit imminently. Bound the final
+    # wait by whatever wall-clock budget is left.
+    try:
+        returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        if process.poll() is None:
+            process.kill()
+        raise
+    return returncode, output_lines
+
+
 def run_rppg(
     *,
     video_path: Path,
@@ -152,35 +234,13 @@ def run_rppg(
 
     output_lines: List[str] = []
     try:
-        process = subprocess.Popen(
+        completed_returncode, output_lines = stream_subprocess_with_timeout(
             cmd,
             cwd=str(launcher.parent),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            timeout_seconds=timeout_seconds,
+            on_line=lambda text: _report(progress_cb, text, "info"),
         )
-        assert process.stdout is not None
-        # Wall-clock-bounded read. `for line in stdout` (or a bare
-        # readline loop) blocks until EOF, so a silent hung injector
-        # would NEVER reach process.wait(timeout=) — the graceful-skip
-        # guarantee would not fire. Enforce the deadline on every
-        # readline so a no-output stall is still killed + skipped.
-        deadline = time.monotonic() + timeout_seconds
-        while True:
-            if time.monotonic() > deadline:
-                raise subprocess.TimeoutExpired(cmd, timeout_seconds)
-            line = process.stdout.readline()
-            if not line:
-                break  # EOF: process exited (or closed stdout)
-            line_text = line.rstrip()
-            if line_text:
-                output_lines.append(line_text)
-                _report(progress_cb, line_text, "info")
-        completed_returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
-        if "process" in locals() and process.poll() is None:
-            process.kill()
         _report(progress_cb, f"rPPG timed out after {timeout_seconds}s", "warning")
         return None
     except Exception as exc:  # never raise into the pipeline

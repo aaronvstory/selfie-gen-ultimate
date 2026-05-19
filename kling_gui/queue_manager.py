@@ -1645,66 +1645,34 @@ class QueueManager:
             ]
             output_lines: list[str] = []
             returncode = -1
-            process: Optional[subprocess.Popen] = None
             _TIMEOUT = 600
+
+            def _on_rppg_line(text: str) -> None:
+                if not _is_tf_noise(text):
+                    level = "debug" if _is_panel_noise(text) else "info"
+                    self.log(text, level)
+
             try:
-                process = subprocess.Popen(
+                # Shared reader-thread + hard wall-clock helper (single
+                # source of truth with automation/rppg.py). A bare
+                # readline() loop — even with a deadline checked first —
+                # blocks forever if the injector stalls mid-line, freezing
+                # this worker with is_running set and breaking the
+                # documented graceful-skip guarantee. The helper owns the
+                # wall clock on the main thread so a silent hang is still
+                # killed + skipped on schedule.
+                from automation.rppg import stream_subprocess_with_timeout
+
+                returncode, output_lines = stream_subprocess_with_timeout(
                     run_cmd,
                     cwd=str(launcher.parent),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
+                    timeout_seconds=_TIMEOUT,
+                    on_line=_on_rppg_line,
                 )
-                assert process.stdout is not None
-                deadline = time.monotonic() + _TIMEOUT
-                while True:
-                    # Check the deadline BEFORE the blocking readline().
-                    # If the injector stalls silently (no newline, no
-                    # exit), readline() blocks forever and the timeout
-                    # would never fire — freezing this worker with
-                    # is_running set and breaking the documented
-                    # graceful-skip guarantee. Guard first.
-                    if time.monotonic() > deadline:
-                        raise subprocess.TimeoutExpired(run_cmd, _TIMEOUT)
-                    line = process.stdout.readline()
-                    if not line:
-                        break
-                    line_text = line.rstrip()
-                    if line_text:
-                        output_lines.append(line_text)
-                        if not _is_tf_noise(line_text):
-                            level = "debug" if _is_panel_noise(line_text) else "info"
-                            self.log(line_text, level)
-                returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
-                if process is not None:
-                    if process.poll() is None:
-                        process.kill()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pass
-                    if process.stdout is not None:
-                        try:
-                            process.stdout.close()
-                        except Exception:
-                            pass
                 self.log("rPPG timed out after 600s; keeping pre-rPPG video", "warning")
                 return None
             except Exception as exc:
-                if process is not None:
-                    if process.poll() is None:
-                        process.kill()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pass
-                    if process.stdout is not None:
-                        try:
-                            process.stdout.close()
-                        except Exception:
-                            pass
                 self.log(f"rPPG launcher error: {exc}; keeping pre-rPPG video", "warning")
                 return None
 
