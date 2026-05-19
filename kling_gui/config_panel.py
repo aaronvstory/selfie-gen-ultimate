@@ -2235,10 +2235,22 @@ class ConfigPanel(tk.Frame):
         except (TypeError, ValueError):
             return
         if hasattr(self, "prompt_preview"):
+            resolved_height = max(4, preview_height)
             self.prompt_preview.config(
-                height=max(4, preview_height),
+                height=resolved_height,
                 font=(FONT_FAMILY, max(6, preview_font_size)),
             )
+            # apply_ui_config fires ~50ms after launch and resizes the
+            # positive box to the ui_config height while the negative
+            # half is hidden (_neg_visible starts False). That resized
+            # height IS the no-negative ("full") state, so make the
+            # toggle's restore target track it. Without this the first
+            # negative-prompt show/hide snaps the box from the configured
+            # height back to the stale construction-time 12 — a visible
+            # jump that also masked the PR #41 height fix on fresh
+            # installs (code-reviewer finding, PR #41). The split
+            # (negative-shown) target stays its own constant.
+            self._positive_prompt_full_height = resolved_height
 
     def set_active_prompt_text(self, text: str):
         """Set the text of the active prompt slot (called by PrepTab vision analysis).
