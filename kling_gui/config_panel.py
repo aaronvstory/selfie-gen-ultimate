@@ -1397,8 +1397,15 @@ class ConfigPanel(tk.Frame):
         # Motion controls (end-frame lock + cfg_scale). lock default True
         # (mechanical return-to-pose is the intended selfie behaviour);
         # cfg default 0.7 (stricter prompt adherence than fal's 0.5).
+        # lock_end_frame defaults to True, so an unparseable / null
+        # value (_parse_bool -> None) must resolve to True, NOT
+        # bool(None)=False — otherwise the GUI silently loads with the
+        # end-frame lock OFF (mirrors queue_manager + pipeline; the
+        # contrasting rppg_metrics_in_filename, default False, correctly
+        # keeps bool(None)=False — do NOT unify them).
+        _raw_lock = _parse_bool(self.config.get("lock_end_frame", True))
         self.lock_end_frame_var.set(
-            bool(_parse_bool(self.config.get("lock_end_frame", True)))
+            True if _raw_lock is None else bool(_raw_lock)
         )
         try:
             _cfg = float(self.config.get("cfg_scale_value", 0.7))
@@ -1429,6 +1436,13 @@ class ConfigPanel(tk.Frame):
             "current_model", "fal-ai/kling-video/v2.1/pro/image-to-video"
         )
         self.update_parameter_visibility(current_model)
+        # Also sync the Motion row (end-frame checkbox / cfg entry
+        # grayed-state + caps label + neg-prompt split visibility) to
+        # the SAVED model on startup — _update_motion_controls is
+        # otherwise only wired to _on_model_changed, so without this the
+        # Motion row showed its construction-time state until the user
+        # manually switched models (code-review finding, PR #41).
+        self._update_motion_controls(current_model)
 
     def _start_api_enrichment(self):
         """Background: fetch schema metadata + pricing for all models, then refresh UI."""
