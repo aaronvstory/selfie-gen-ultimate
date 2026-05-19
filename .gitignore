@@ -74,11 +74,8 @@ analysis_frames/
 docs/analysis/sourav_facetrack_results.json
 docs/analysis/sourav_kinematic_results.json
 
-# === rPPG feature: permanent local test harness (NEVER COMMIT) ===
-# The rPPG injector tool and the oldcam analysis bundle are large,
-# private, and live only on this Windows box as a permanent test
-# harness. See CLAUDE.md "rPPG Wiring" + docs/rppg-wiring.md.
-rPPG/
+# rPPG/ is intentionally TRACKED (un-ignored per user 2026-05-19).
+# oldcam_reference_bundle/ stays ignored (confidential analysis bundle).
 oldcam_reference_bundle/
 # Permanent Kling test fixture (real generated video, ~20MB) used by
 # the rPPG/oldcam test harness. Keep on disk; never track.

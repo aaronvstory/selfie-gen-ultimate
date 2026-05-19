@@ -105,19 +105,20 @@ levels, SNR 7.72→13.08 dB, phase 75.5°→7.8°. Default strength is correct.
 - rPPG-only re-run via a shared post-process re-run button (the current
   oldcam ↻/📂 already also apply rPPG when both are checked).
 
-## Step-3 Layout v2 preview (opt-in, env-gated)
+## Step-3 layout (canonical)
 
-The default (basic) Step-3 layout is unchanged everywhere. An experimental
-variant gives the orange rPPG frame its own ↻/📂 re-run pair (visually
-symmetric with the violet oldcam frame, less vertical cramp). It is gated
-by `SELFIEGEN_STEP3_LAYOUT=v2` and reuses the existing oldcam re-run
-callbacks verbatim (zero new logic — the queue re-run path already applies
-rPPG when `rppg_enabled`). Launch it via:
+The Step-3 post-process area is a single horizontal band: an
+`Options:` label, then a vertical stack of the violet **Oldcam** frame
+(top) over the orange **rPPG** frame (below) -- both in the same parent
+with identical pack options so they render **equal width** -- then ONE
+shared **Re-Run** column (the rotate / open-folder buttons) to the
+right of both frames. `Loop Video (ping-pong)` lives on the "Allow
+reprocessing" row, inline after "Increment (_2, _3...)".
 
-```bat
-run_gui_step3_v2.bat                       rem root wrapper
-launchers\windows\run_gui_step3_v2.bat     rem platform launcher
-```
-
-The default layout never builds the v2 widgets, so this cannot affect the
-shipping path. Promote to default only after visual sign-off.
+The single shared Re-Run pair drives `_on_oldcam_rerun_clicked` /
+`_on_oldcam_pick_rerun_clicked` -> `queue_manager.rerun_oldcam_only`,
+which already applies whatever is selected (any Oldcam versions AND/OR
+rPPG) and re-loops first when Loop Video is on -- pure UI relocation,
+zero re-run logic change. The earlier env-gated `SELFIEGEN_STEP3_LAYOUT`
+preview and its `run_gui_step3_v2.bat` launchers were removed once this
+became the canonical layout.
