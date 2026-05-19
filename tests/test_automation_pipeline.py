@@ -1961,3 +1961,58 @@ def test_resolve_produced_output_handles_glob_metacharacters(tmp_path):
     real = d2 / "clip-rppg - 1.0-2.0-0.5-0.0-0.5.mp4"
     real.write_bytes(b"r")
     assert resolve_produced_output(d2 / "clip-rppg.mp4") == real
+
+
+def test_pipeline_rppg_skips_reinjection_of_already_injected_input(tmp_path, monkeypatch):
+    """Regression (Codex P2, PR #39): a stale/seeded manifest can point
+    video_generate (or oldcam) output at a prior "*-rppg" artifact. Step 8
+    must NOT re-inject it (-rppg-rppg double pulse breaks the
+    non-negotiable sub-perceptual guarantee) — it IS the final
+    deliverable, so record complete and DO NOT call run_rppg."""
+    case_dir = tmp_path / "case-doubleinject"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    (case_dir / "gen-videos").mkdir()
+    # Manifest's recorded video output IS an already-injected rPPG file
+    # (the exact stale-manifest condition Codex described).
+    injected = case_dir / "gen-videos" / "clip-oldcam-v24-rppg - 7.8-6.4-0.5-0.0-0.5.mp4"
+    injected.write_bytes(b"already-injected")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-doubleinject")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x", "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1,
+        "automation_video_enabled": False,
+        "automation_skip_if_video_exists": False,
+        "automation_oldcam_enabled": False,
+        "automation_oldcam_required": False,
+        "automation_rppg_enabled": True,
+        "automation_rppg_required": False,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    manifest.update_step(record.relative_key, "video_generate", "complete", output=str(injected))
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    rppg_calls = []
+    monkeypatch.setattr("automation.pipeline.run_rppg", lambda **kw: rppg_calls.append(kw) or None)
+
+    runner = AutoPipelineRunner(
+        config=config, automation_config=from_app_config(config), manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(outpaint_factory=lambda: FakeOutpaint(), selfie_factory=lambda: FakeSelfie(), video_factory=lambda: FakeVideo()),
+    )
+    stats = runner.run([record])
+    # The non-negotiable property: an already-injected file is NEVER fed
+    # back into the injector (a double -rppg-rppg pass would compound the
+    # pulse out of the sub-perceptual range). Run must not fail; rppg must
+    # not end up "complete" via a FRESH injection of an injected input.
+    assert stats["failed"] == 0
+    assert rppg_calls == [], "re-injected an already-rPPG'd input (double-injection)"
+    step = manifest.data["cases"]["case-doubleinject"]["steps"].get("rppg", {})
+    assert step.get("status") in {"complete", "skipped"}
+    if step.get("status") == "complete":
+        assert step.get("meta", {}).get("already_injected") is True

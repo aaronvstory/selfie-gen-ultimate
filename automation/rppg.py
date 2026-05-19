@@ -85,6 +85,22 @@ def build_rppg_output_path(input_path: Path) -> Path:
     return input_path.with_name(f"{input_path.stem}-rppg{input_path.suffix}")
 
 
+def is_rppg_artifact(path: Path) -> bool:
+    """True if *path* is already an rPPG-injected file.
+
+    The injector emits ``{stem}-rppg{ext}`` and then renames it to
+    ``{stem}-rppg - <metrics>{ext}`` — both carry the ``-rppg`` marker in
+    the stem. Used to refuse re-injecting an already-injected video: when
+    the manifest is stale/missing, detect_existing_outputs() can surface a
+    prior ``*-rppg`` artifact as the "existing video", and feeding that
+    back into the injector would double-inject (``-rppg-rppg``) and
+    compound the pulse out of the sub-perceptual range. Conservative
+    substring check on the stem (the literal token the injector writes).
+    """
+    stem = Path(path).stem.lower()
+    return stem.endswith("-rppg") or "-rppg - " in stem or stem.endswith("-rppg ")
+
+
 def resolve_produced_output(requested: Path) -> Optional[Path]:
     """Find the file the injector actually produced.
 

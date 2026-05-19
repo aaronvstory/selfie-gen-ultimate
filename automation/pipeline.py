@@ -16,7 +16,7 @@ from automation.discovery import CaseRecord, detect_existing_outputs
 from automation.logger import build_safe_config_snapshot, create_automation_logger
 from automation.manifest import AutomationManifest, now_iso
 from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies, run_oldcam
-from automation.rppg import run_rppg
+from automation.rppg import is_rppg_artifact, run_rppg
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
@@ -1172,6 +1172,28 @@ class AutoPipelineRunner:
             elif video_out and Path(video_out).exists():
                 rppg_input = Path(video_out)
             required = bool(self.automation.get("automation_rppg_required", False))
+            # Never re-inject an already-injected file. When the manifest
+            # is stale/missing, detect_existing_outputs() can surface a
+            # prior "*-rppg" artifact as oldcam/video output; feeding it
+            # back into the injector would double-inject (-rppg-rppg) and
+            # compound the pulse out of the sub-perceptual range (which is
+            # non-negotiable). If the resolved input is already an rPPG
+            # artifact, it IS the final deliverable — record complete,
+            # don't re-run. (Codex P2, PR #39.)
+            if rppg_input is not None and is_rppg_artifact(rppg_input):
+                self.logger.info(
+                    "case %s rppg input already injected (%s); skipping re-injection",
+                    case_key,
+                    rppg_input.name,
+                )
+                self.manifest.update_step(
+                    case_key,
+                    "rppg",
+                    "complete",
+                    output=str(rppg_input),
+                    meta={**self._policy_meta("rppg", True, reprocess_mode), "already_injected": True},
+                )
+                return self._finalize_case(case_entry, "completed")
             if rppg_input is None:
                 self.logger.warning("case %s rppg readiness=not-ready required=%s", case_key, required)
                 self.manifest.update_step(
