@@ -485,7 +485,13 @@ class ModelManagerDialog(tk.Toplevel):
         # ints, numeric strings, and junk (skipped).
         def _as_int_durations(raw):
             out = []
-            for v in raw or []:
+            # Tolerate a scalar (`10`) too — a hand-edited or stale
+            # config could persist `duration_options` as a bare int /
+            # string instead of a list, which the bare `for v in raw`
+            # would crash on before rendering (CodeRabbit, PR #41).
+            if not isinstance(raw, (list, tuple, set)):
+                raw = [raw] if raw is not None else []
+            for v in raw:
                 try:
                     out.append(int(v))
                 except (TypeError, ValueError):

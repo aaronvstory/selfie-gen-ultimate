@@ -206,5 +206,86 @@ class SimilarityScoreVarianceTests(unittest.TestCase):
         self.assertEqual(se.FaceEngine.FAIL_CURVE_EXPONENT, 1.0)
 
 
+class CodeRabbitCleanupTests(unittest.TestCase):
+    """CodeRabbit + Codex round on commit 915819f (PR #41):
+    1. CLI apply_recommended_defaults no longer reverts selfie expand
+       composite to "preserve_seamless" (must stay the new "none").
+    2. get_merged_models exempts current_model from BOTH hidden paths.
+    3. main_window _on_image_session_changed narrows the catch-all.
+    4. _as_int_durations tolerates scalar input.
+    5. Split height re-derives from full height so a ui_config height
+       below 7 cannot make the negative toggle GROW the positive box."""
+
+    def test_cli_recommended_defaults_sets_selfie_composite_none(self):
+        src = (_ROOT / "kling_automation_ui.py").read_text(encoding="utf-8")
+        self.assertRegex(
+            src,
+            r'self\.config\["automation_selfie_expand_composite_mode"\]\s*=\s*"none"',
+        )
+        self.assertIn("-> bfl / percent / 30 / none", src)
+        self.assertNotIn("-> bfl / percent / 30 / preserve_seamless", src)
+
+    def test_get_merged_models_exempts_current_from_both_hide_paths(self):
+        from kling_gui.config_panel import ModelFetcher
+        ep = "bytedance/seedance-2.0/image-to-video"
+        cfg = {"current_model": ep, "hidden_models": [ep]}
+        endpoints = {m.get("endpoint") for m in ModelFetcher.get_merged_models(cfg)}
+        self.assertIn(ep, endpoints)
+
+    def test_session_change_handler_narrows_exception(self):
+        src = (_ROOT / "kling_gui" / "main_window.py").read_text(encoding="utf-8")
+        self.assertRegex(
+            src,
+            r"refresh_from_active_carousel\(\)[\s\S]{0,200}?except tk\.TclError",
+        )
+        self.assertRegex(
+            src,
+            r"refresh_from_active_carousel\(\)[\s\S]{0,800}?Step 2\.5 live refresh failed",
+        )
+
+    def test_as_int_durations_scalar_input(self):
+        def _as_int_durations(raw):
+            out = []
+            if not isinstance(raw, (list, tuple, set)):
+                raw = [raw] if raw is not None else []
+            for v in raw:
+                try:
+                    out.append(int(v))
+                except (TypeError, ValueError):
+                    continue
+            return out
+
+        self.assertEqual(_as_int_durations(10), [10])
+        self.assertEqual(_as_int_durations("10"), [10])
+        self.assertEqual(_as_int_durations(None), [])
+        self.assertEqual(_as_int_durations(["5", "10"]), [5, 10])
+        src = (_ROOT / "kling_gui" / "model_manager_dialog.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("isinstance(raw, (list, tuple, set))", src)
+
+    def test_split_height_derives_from_full_height(self):
+        src = (_ROOT / "kling_gui" / "config_panel.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            src,
+            r"max\(\s*3,\s*min\(\s*7,\s*self\._positive_prompt_full_height\s*-\s*5\s*\)\s*\)",
+        )
+        self.assertRegex(
+            src,
+            r"max\(\s*3,\s*min\(\s*7,\s*resolved_height\s*-\s*5\s*\)\s*\)",
+        )
+
+        def derive(full):
+            return max(3, min(7, full - 5))
+
+        self.assertEqual(derive(6), 3)
+        self.assertEqual(derive(10), 5)
+        self.assertEqual(derive(12), 7)
+        for f in range(4, 25):
+            self.assertLess(derive(f), f)
+
+
 if __name__ == "__main__":
     unittest.main()

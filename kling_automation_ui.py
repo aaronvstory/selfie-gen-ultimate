@@ -1707,7 +1707,12 @@ class KlingAutomationUI:
         self.config["automation_selfie_expand_provider"] = "bfl"
         self.config["automation_selfie_expand_mode"] = "percent"
         self.config["automation_selfie_expand_percent"] = 30
-        self.config["automation_selfie_expand_composite_mode"] = "preserve_seamless"
+        # Ship default for Step 2.5 selfie expand is "none" (raw AI
+        # output) — must match the baseline default in
+        # automation/config.py + default_config_template.json, otherwise
+        # apply_recommended_defaults would silently revert the user's
+        # new ship default (CodeRabbit, PR #41).
+        self.config["automation_selfie_expand_composite_mode"] = "none"
         self.config["automation_selfie_expand_edge_seal_enabled"] = False
         self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
         self.config["automation_selfie_prompt_slot"] = DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT
@@ -1774,7 +1779,7 @@ class KlingAutomationUI:
             f"passes={before['front'][3]} / {before['front'][4]} "
             "-> bfl / percent / 70 / passes=2 / preserve_seamless"
         )
-        print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} / {before['selfie_expand'][3]} -> bfl / percent / 30 / preserve_seamless")
+        print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} / {before['selfie_expand'][3]} -> bfl / percent / 30 / none")
         print(f"  selfie model: {before['selfie_models']} -> Nano Banana 2 Edit")
         print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
         print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 3")

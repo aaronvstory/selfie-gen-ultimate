@@ -606,7 +606,11 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_front_expand_passes"] == 2
     assert ui.config["automation_selfie_expand_provider"] == "bfl"
     assert ui.config["automation_selfie_expand_mode"] == "percent"
-    assert ui.config["automation_selfie_expand_composite_mode"] == "preserve_seamless"
+    # Ship default for Step 2.5 selfie expand is "none" (raw AI output)
+    # — see automation/config.py + default_config_template.json + the
+    # release_prep force-override. apply_recommended_defaults must
+    # match (CodeRabbit, PR #41).
+    assert ui.config["automation_selfie_expand_composite_mode"] == "none"
     assert ui.config["automation_selfie_expand_percent"] == 30
     assert ui.config["automation_selfie_models"] == ["fal-ai/nano-banana-2/edit"]
     assert ui.config["automation_selfie_prompt_slot"] == 3

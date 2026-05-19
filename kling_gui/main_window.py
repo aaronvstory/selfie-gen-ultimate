@@ -4295,8 +4295,23 @@ class KlingGUIWindow:
                 and self.notebook.index(self.notebook.select()) == 3
             ):
                 self.expand_tab.refresh_from_active_carousel()
-        except Exception:
+        except tk.TclError:
+            # Widget lifecycle race (close / tab teardown / not yet
+            # realized) — safe to ignore, will refresh next session
+            # event.
             pass
+        except Exception as _exc:
+            # Surface real failures at debug level so candidate sync
+            # can't silently stop working while the user is on Step
+            # 2.5 (CodeRabbit, PR #41 — the prior `except Exception:
+            # pass` hid genuine errors).
+            try:
+                self._log(
+                    f"Step 2.5 live refresh failed: {_exc!r}",
+                    "debug",
+                )
+            except Exception:
+                pass
 
     def _queue_autosave(self, reason: str = "state_change", debounce_ms: Optional[int] = None):
         """Queue one debounced autosave call."""

@@ -288,13 +288,21 @@ class ModelFetcher:
         hidden = set(config.get("hidden_models", []))
         current = config.get("current_model", "")
         custom = config.get("custom_models", [])
+        # A deliberately-persisted current_model is exempt from BOTH
+        # hiding mechanisms — user-hiding (hidden_models) AND the
+        # per-model "hidden": true flag. The previous order applied
+        # hidden_models BEFORE the current-exempt check, so a model
+        # the user explicitly hid would still drop out even if it was
+        # the active selection (CodeRabbit, PR #41).
         factory = [
             m
             for m in MODEL_METADATA
-            if m.get("endpoint") not in hidden
-            and (
-                not m.get("hidden")
-                or m.get("endpoint") == current
+            if (
+                m.get("endpoint") == current
+                or (
+                    m.get("endpoint") not in hidden
+                    and not m.get("hidden")
+                )
             )
         ]
         merged = factory + list(custom)
@@ -1136,7 +1144,15 @@ class ConfigPanel(tk.Frame):
         # negative-prompt support (CodeRabbit Major, PR #41). Remember
         # the full height so the toggle can restore it.
         self._positive_prompt_full_height = 12
-        self._positive_prompt_split_height = 7
+        # Split height MUST stay strictly < full height — otherwise
+        # showing the negative half would GROW the positive box (the
+        # opposite of "split into two halves"). Keep it ~= full - 5
+        # but floor at 3 so it's always usable. apply_ui_config will
+        # re-derive both proportionally when the live ui_config
+        # height differs from 12 (Codex P2, PR #41).
+        self._positive_prompt_split_height = max(
+            3, min(7, self._positive_prompt_full_height - 5)
+        )
         # Visibility is set on first model-change; default-hide until then.
         self._negative_prompt_section.pack_forget()
         # Explicit desired-visibility flag (see
@@ -2307,8 +2323,16 @@ class ConfigPanel(tk.Frame):
             # height back to the stale construction-time 12 — a visible
             # jump that also masked the PR #41 height fix on fresh
             # installs (code-reviewer finding, PR #41). The split
-            # (negative-shown) target stays its own constant.
+            # (negative-shown) target is RE-DERIVED proportionally —
+            # must stay strictly < full or showing the negative half
+            # would GROW the positive box (the opposite of splitting
+            # into two halves). Codex P2, PR #41: with the new
+            # ui_config default of 6 and the legacy hardcoded split=7
+            # the toggle GREW the box from 6 -> 7 instead of shrinking.
             self._positive_prompt_full_height = resolved_height
+            self._positive_prompt_split_height = max(
+                3, min(7, resolved_height - 5)
+            )
 
     def set_active_prompt_text(self, text: str):
         """Set the text of the active prompt slot (called by PrepTab vision analysis).
