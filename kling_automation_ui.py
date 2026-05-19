@@ -298,6 +298,29 @@ class KlingAutomationUI:
         saved = self.config.get("negative_prompts", {})
         return saved.get(slot)
 
+    def _resolve_cfg_and_lock(self) -> tuple:
+        """Resolve (cfg_scale, lock_end_frame) for a video dispatch.
+
+        Single source for the interactive CLI batch path, mirroring
+        automation/pipeline.py exactly: cfg_scale clamped to [0.0, 1.0]
+        (a stale/hand-edited out-of-range value must not reach the API),
+        and lock_end_frame via the canonical _parse_bool with an
+        unparseable value coercing to True (its default is True — GUI,
+        pipeline and CLI must agree on malformed input). The generator
+        still gates BOTH per-model via get_model_capabilities, so passing
+        them on unsupported models is a safe no-op (code-reviewer, PR #41
+        — process_all_images_concurrent previously dropped both).
+        """
+        try:
+            _cfg = float(self.config.get("cfg_scale_value", 0.7))
+        except (TypeError, ValueError):
+            _cfg = 0.7
+        from face_similarity import _parse_bool as _pb
+        _lock = _pb(self.config.get("lock_end_frame", True))
+        if _lock is None:
+            _lock = True
+        return max(0.0, min(1.0, _cfg)), bool(_lock)
+
     def get_default_prompt(self) -> str:
         """The default video prompt — the minimal-motion prompt (PR #2).
 
@@ -3530,6 +3553,7 @@ class KlingAutomationUI:
 
                         # Use concurrent processing with 5 workers (Kling API max)
                         use_source = self.config.get("use_source_folder", True)
+                        _cfg_scale, _lock_ef = self._resolve_cfg_and_lock()
                         generator.process_all_images_concurrent(
                             target_directory=input_folder,
                             output_directory=self.config["output_folder"],
@@ -3544,6 +3568,8 @@ class KlingAutomationUI:
                             seed=self.config.get("seed", -1),
                             camera_fixed=self.config.get("camera_fixed", False),
                             generate_audio=self.config.get("generate_audio", False),
+                            cfg_scale=_cfg_scale,
+                            lock_end_frame=_lock_ef,
                         )
 
                         if total_files > 0:
@@ -3570,6 +3596,7 @@ class KlingAutomationUI:
                 print("All detailed logs will be displayed below:")
                 print()
 
+                _cfg_scale, _lock_ef = self._resolve_cfg_and_lock()
                 generator.process_all_images_concurrent(
                     target_directory=input_folder,
                     output_directory=self.config["output_folder"],
@@ -3583,6 +3610,8 @@ class KlingAutomationUI:
                     seed=self.config.get("seed", -1),
                     camera_fixed=self.config.get("camera_fixed", False),
                     generate_audio=self.config.get("generate_audio", False),
+                    cfg_scale=_cfg_scale,
+                    lock_end_frame=_lock_ef,
                 )
 
         except Exception as e:

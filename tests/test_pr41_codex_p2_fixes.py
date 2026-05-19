@@ -168,5 +168,79 @@ class StringDurationCoercionTests(unittest.TestCase):
         self.assertEqual(_as_int_durations(["5", "auto", None, "10"]), [5, 10])
 
 
+class CliBatchCfgLockParityTests(unittest.TestCase):
+    """code-reviewer (PR #41): process_all_images_concurrent — the
+    interactive CLI "Batch Generate" path — was never threaded with
+    cfg_scale / lock_end_frame, so a user who set recommended defaults
+    (cfg_scale_value=0.7, lock_end_frame=True) silently got NEITHER on
+    the CLI batch flow while the GUI queue + automation pipeline both
+    honoured them. Pin: (a) the generator signature accepts both, (b)
+    both CLI call sites forward them, (c) the shared resolver mirrors
+    the pipeline's clamp + None->True coercion exactly."""
+
+    def test_generator_signature_accepts_cfg_and_lock(self):
+        import inspect
+        from kling_generator_falai import FalAIKlingGenerator
+
+        sig = inspect.signature(
+            FalAIKlingGenerator.process_all_images_concurrent
+        )
+        self.assertIn("cfg_scale", sig.parameters)
+        self.assertIn("lock_end_frame", sig.parameters)
+        # Defaults must match create_kling_generation (generator gates
+        # both per-model, so a no-op default is correct).
+        self.assertIsNone(sig.parameters["cfg_scale"].default)
+        self.assertIs(sig.parameters["lock_end_frame"].default, False)
+
+    def test_generator_forwards_into_create_kling_generation(self):
+        src = (_ROOT / "kling_generator_falai.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(src, r"cfg_scale=cfg_scale,")
+        self.assertRegex(src, r"lock_end_frame=lock_end_frame,")
+
+    def test_both_cli_call_sites_pass_resolved_values(self):
+        src = (_ROOT / "kling_automation_ui.py").read_text(
+            encoding="utf-8"
+        )
+        # The shared resolver must be invoked, and both call sites must
+        # forward its output (exactly two call sites today).
+        self.assertIn("def _resolve_cfg_and_lock", src)
+        self.assertEqual(
+            src.count("_cfg_scale, _lock_ef = self._resolve_cfg_and_lock()"),
+            2,
+        )
+        self.assertEqual(src.count("cfg_scale=_cfg_scale,"), 2)
+        self.assertEqual(src.count("lock_end_frame=_lock_ef,"), 2)
+
+    def test_resolver_clamps_and_coerces_like_pipeline(self):
+        from kling_automation_ui import KlingAutomationUI
+
+        ui = KlingAutomationUI.__new__(KlingAutomationUI)
+
+        # Out-of-range cfg_scale clamps to [0,1]; unparseable
+        # lock_end_frame coerces to True (default True parity).
+        ui.config = {"cfg_scale_value": 9.9, "lock_end_frame": "garbage"}
+        cfg, lock = ui._resolve_cfg_and_lock()
+        self.assertEqual(cfg, 1.0)
+        self.assertIs(lock, True)
+
+        ui.config = {"cfg_scale_value": -2, "lock_end_frame": False}
+        cfg, lock = ui._resolve_cfg_and_lock()
+        self.assertEqual(cfg, 0.0)
+        self.assertIs(lock, False)
+
+        ui.config = {"cfg_scale_value": "nan-ish", "lock_end_frame": True}
+        cfg, lock = ui._resolve_cfg_and_lock()
+        self.assertEqual(cfg, 0.7)  # bad value -> default
+        self.assertIs(lock, True)
+
+        # Missing keys -> documented defaults (0.7, True).
+        ui.config = {}
+        cfg, lock = ui._resolve_cfg_and_lock()
+        self.assertEqual(cfg, 0.7)
+        self.assertIs(lock, True)
+
+
 if __name__ == "__main__":
     unittest.main()

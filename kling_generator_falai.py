@@ -1195,6 +1195,8 @@ class FalAIKlingGenerator:
         seed: int = -1,
         camera_fixed: bool = False,
         generate_audio: bool = False,
+        cfg_scale: Optional[float] = None,
+        lock_end_frame: bool = False,
     ):
         """Process all GenX images concurrently
 
@@ -1212,6 +1214,9 @@ class FalAIKlingGenerator:
             seed: Random seed (-1 for random)
             camera_fixed: Whether camera should be fixed
             generate_audio: Whether to generate audio
+            cfg_scale: Optional prompt-adherence strength (model-gated, 0-1)
+            lock_end_frame: If True and the model has an end-frame
+                param, lock the last frame to the start image
         """
         if output_directory is None:
             output_directory = self.downloads_folder
@@ -1297,6 +1302,8 @@ class FalAIKlingGenerator:
                     seed=seed,
                     camera_fixed=camera_fixed,
                     generate_audio=generate_audio,
+                    cfg_scale=cfg_scale,
+                    lock_end_frame=lock_end_frame,
                 )
 
                 with lock:

@@ -76,6 +76,54 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
     assert sanitized["saved_prompts"]["1"] == "prompt one"
 
 
+def test_release_forces_active_slot_prompt_and_overrides_cfg(tmp_path: Path):
+    """Codex P2/P3 (PR #41): the bundle ships current_prompt_slot=4,
+    and the GUI/CLI generate from the ACTIVE slot. A dev machine with
+    legacy slot-4 text + a stale cfg_scale must NOT leak into the
+    release: the new minimal-motion prompt/negative must be forced
+    into BOTH slot 1 AND the active slot (4), current_prompt_slot must
+    be pinned to the template value, and cfg_scale_value must be
+    OVERRIDDEN to 0.7 (not setdefault-preserved)."""
+    template = tmp_path / "default_config_template.json"
+    template.write_text(
+        json.dumps(
+            {
+                "current_prompt_slot": 4,
+                "saved_prompts": {"1": "NEW minimal-motion prompt"},
+                "negative_prompts": {"1": "NEW negative"},
+                "cfg_scale_value": 0.7,
+            }
+        ),
+        encoding="utf-8",
+    )
+    live = tmp_path / "kling_config.json"
+    live.write_text(
+        json.dumps(
+            {
+                # Dev machine carries STALE slot-4 text + old cfg.
+                "current_prompt_slot": 4,
+                "saved_prompts": {"1": "old s1", "4": "OLD high-motion slot4"},
+                "negative_prompts": {"4": ""},
+                "cfg_scale_value": 0.5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = build_sanitized_config(template, live)
+    # Active slot (4) AND slot 1 get the NEW prompt + negative.
+    assert cfg["saved_prompts"]["4"] == "NEW minimal-motion prompt"
+    assert cfg["saved_prompts"]["1"] == "NEW minimal-motion prompt"
+    assert cfg["negative_prompts"]["4"] == "NEW negative"
+    assert cfg["negative_prompts"]["1"] == "NEW negative"
+    # current_prompt_slot pinned to the template value.
+    assert cfg["current_prompt_slot"] == 4
+    # Stale 0.5 OVERRIDDEN, not preserved.
+    assert cfg["cfg_scale_value"] == 0.7
+    # Other forced defaults still hold.
+    assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+    assert cfg["lock_end_frame"] is True
+
+
 def test_default_config_template_contains_prompt_families():
     template = Path("default_config_template.json")
     loaded = json.loads(template.read_text(encoding="utf-8"))
