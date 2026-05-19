@@ -736,8 +736,12 @@ class ConfigPanel(tk.Frame):
                 self.rppg_rerun_btn,
                 lambda: (
                     "Re-run post-processing on a generated video.\n"
-                    "Applies whatever is checked (Oldcam and/or rPPG)\n"
-                    "in the correct order. Layout v2."
+                    "Requires at least one Oldcam version checked\n"
+                    "(this re-run is Oldcam-driven); rPPG is then\n"
+                    "applied after Oldcam if rPPG is also checked.\n"
+                    "rPPG-only re-run is a deferred feature — for\n"
+                    "rPPG-only, generate normally with rPPG checked.\n"
+                    "Layout v2."
                 ),
             )
             self.rppg_pick_btn = tk.Button(
@@ -760,7 +764,10 @@ class ConfigPanel(tk.Frame):
                 self.rppg_pick_btn,
                 lambda: (
                     "Pick a video and re-run post-processing on it.\n"
-                    "Applies checked Oldcam versions and/or rPPG.\n"
+                    "Requires at least one Oldcam version checked\n"
+                    "(Oldcam-driven re-run); rPPG is applied after\n"
+                    "Oldcam when rPPG is also checked. rPPG-only\n"
+                    "re-run is a deferred feature.\n"
                     "Layout v2."
                 ),
             )

@@ -112,18 +112,21 @@ def resolve_produced_output(requested: Path) -> Optional[Path]:
     requested path or the metric-suffixed sibling, whichever is newest.
     Returns None if nothing matching was produced (graceful-skip caller).
     """
-    if requested.exists():
-        return requested
     stem = requested.stem  # e.g. "<clip>-rppg"
     ext = requested.suffix
     parent = requested.parent
     if not parent.is_dir():
-        return None
+        return requested if requested.exists() else None
     # The injector's rename is specifically "<stem> - <metrics><ext>" with a
     # space-hyphen-space separator (rPPG/rppg_injector.py add_metric_suffix).
     # Match ONLY that exact form (not a loose "<stem>*<ext>" which would also
     # catch the input itself or unrelated "<stem>-foo<ext>" siblings on a
-    # re-run). Exclude the requested path defensively. Newest wins.
+    # re-run). Newest wins — INCLUDING the exact requested path in the
+    # ranking: on a rerun a STALE old "<stem>{ext}" can still be on disk
+    # while the injector just produced a fresh "<stem> - <metrics>{ext}";
+    # an early "return requested" would hand back the stale file instead
+    # of the new injection (Codex P2, PR #39). So rank exact + renamed
+    # siblings together by mtime.
     #
     # glob.escape() the literal parts: real Kling/oldcam stems can contain
     # glob metacharacters — e.g. "clip (1)-oldcam-v24-rppg" or
@@ -131,12 +134,11 @@ def resolve_produced_output(requested: Path) -> Optional[Path]:
     # character class and the produced file is silently missed, defeating
     # rPPG output detection (false graceful-skip on a successful inject).
     pattern = f"{_glob.escape(stem)} - *{_glob.escape(ext)}"
+    pool = {p for p in parent.glob(pattern) if p.is_file()}
+    if requested.exists() and requested.is_file():
+        pool.add(requested)
     candidates = sorted(
-        (
-            p
-            for p in parent.glob(pattern)
-            if p.is_file() and p.resolve() != requested.resolve()
-        ),
+        pool,
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )

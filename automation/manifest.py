@@ -116,22 +116,34 @@ class AutomationManifest:
                 )
 
             loaded_fingerprint = _build_config_fingerprint(loaded.get("config_snapshot", {}))
-            # Backward compatibility: a purely-additive new automation_*
-            # default key (e.g. automation_rppg_* introduced default-OFF)
-            # must NOT invalidate manifests written before it existed —
-            # those runs are behaviour-identical (the feature is off). So
-            # only the keys the OLD manifest actually recorded must still
-            # match; extra keys in `desired` that are absent from the
-            # loaded snapshot are tolerated. Changing the value of an
-            # existing recorded key still mismatches (original guarantee
-            # preserved). Codex P1 / PR #39: without this, every existing
-            # user's resume/run breaks the moment rPPG defaults are added.
-            conflicting = {
-                key: (loaded_fingerprint[key], desired_fingerprint.get(key))
-                for key in loaded_fingerprint
-                if key not in desired_fingerprint
-                or loaded_fingerprint[key] != desired_fingerprint[key]
-            }
+            # Backward compatibility (Codex P1/P2, PR #39): a purely-
+            # additive new automation_* key (e.g. automation_rppg_*) must
+            # NOT invalidate manifests written before it existed *when the
+            # requested value is still the default* — that run is
+            # behaviour-identical. But if the user EXPLICITLY opts the new
+            # feature in (requested value != default, e.g.
+            # automation_rppg_enabled=true on a pre-rPPG corpus), the case
+            # MUST reprocess so the new step actually runs — otherwise
+            # skip_completed skips it as "complete" on the stale pre-rPPG
+            # output and the opted-in feature silently never executes.
+            from automation.config import AUTOMATION_DEFAULTS  # cycle-safe (config does not import manifest)
+
+            conflicting = {}
+            # 1. Keys the OLD manifest recorded: any value change is a
+            #    conflict (original change-detection guarantee).
+            for key in loaded_fingerprint:
+                if key not in desired_fingerprint or loaded_fingerprint[key] != desired_fingerprint[key]:
+                    conflicting[key] = (loaded_fingerprint[key], desired_fingerprint.get(key))
+            # 2. NEW keys absent from the old manifest: tolerated ONLY when
+            #    the requested value equals the documented default
+            #    (behaviour-preserving). A non-default requested value =
+            #    explicit opt-in => force reprocess.
+            for key, desired_val in desired_fingerprint.items():
+                if key in loaded_fingerprint:
+                    continue
+                default_val = AUTOMATION_DEFAULTS.get(key, object())
+                if desired_val != default_val:
+                    conflicting[key] = ("<absent: pre-feature manifest>", desired_val)
             if conflicting:
                 raise ValueError(
                     f"Manifest config fingerprint mismatch at {manifest_path}: "

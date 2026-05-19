@@ -190,6 +190,35 @@ def test_manifest_additive_default_key_is_backward_compatible(tmp_path: Path):
         AutomationManifest.create_or_load(manifest_path, root, changed_snap)
 
 
+def test_manifest_explicit_optin_of_new_key_forces_reprocess(tmp_path: Path):
+    """Regression (Codex P2, PR #39): tolerating a missing additive key
+    is only valid when the requested value is the DEFAULT. If the user
+    EXPLICITLY opts a new feature in (automation_rppg_enabled=True) on a
+    corpus whose manifest predates rPPG, the fingerprint MUST mismatch so
+    the case reprocesses and the opted-in step actually runs — otherwise
+    skip_completed would skip it as 'complete' on the stale pre-rPPG
+    output and rPPG silently never executes."""
+    manifest_path = tmp_path / "automation_manifest.json"
+    root = tmp_path / "root"
+    root.mkdir()
+    old_snap = {
+        "automation_manifest_name": "automation_manifest.json",
+        "automation_front_expand_mode": "document_3x4",
+    }
+    AutomationManifest.create_or_load(manifest_path, root, old_snap)
+
+    # Default-valued additive key -> tolerated (behaviour-preserving).
+    ok_snap = dict(old_snap)
+    ok_snap["automation_rppg_enabled"] = False  # the documented default
+    assert AutomationManifest.create_or_load(manifest_path, root, ok_snap) is not None
+
+    # EXPLICIT opt-in (non-default) -> must force a reprocess (mismatch).
+    optin_snap = dict(old_snap)
+    optin_snap["automation_rppg_enabled"] = True
+    with pytest.raises(ValueError, match="fingerprint mismatch"):
+        AutomationManifest.create_or_load(manifest_path, root, optin_snap)
+
+
 @pytest.mark.parametrize(
     "changed_key,old_value,new_value",
     [
