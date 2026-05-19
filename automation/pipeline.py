@@ -1276,7 +1276,20 @@ class AutoPipelineRunner:
                 )
                 self._set_active_step(case_entry, "rppg")
                 self.manifest.update_step(case_key, "rppg", "running")
-                produced: List[str] = []
+                # Track success/failure PER candidate. ``to_inject`` is
+                # ordered base -> oldcam ascending. A naive "collect
+                # successes, headline produced[-1]" silently masks a
+                # partial fan-out failure: if the base injects but an
+                # oldcam injection fails, produced[-1] becomes the base
+                # *-rppg and the case is marked complete exposing a
+                # non-oldcam clip — and with rppg_required=true a partial
+                # failure is reported as success. (Codex P2, PR #40.)
+                produced: List[str] = []          # all successful outputs
+                failed_inputs: List[str] = []     # candidates with no output
+                # Map src -> output so the headline can prefer the
+                # HIGHEST oldcam that actually succeeded (not blindly the
+                # last attempted). to_inject order == priority order.
+                produced_for: dict = {}
                 for src in to_inject:
                     out = run_rppg(
                         video_path=src,
@@ -1286,33 +1299,78 @@ class AutoPipelineRunner:
                     )
                     if out and out.exists():
                         produced.append(str(out))
-                if produced:
-                    # Headline = the last produced (highest oldcam version,
-                    # since candidates are ordered base -> v.. ascending).
+                        produced_for[str(src)] = str(out)
+                    else:
+                        failed_inputs.append(Path(src).name)
+
+                partial = bool(produced) and bool(failed_inputs)
+                if produced and not (required and failed_inputs):
+                    # Headline = the rPPG of the LAST candidate that
+                    # actually succeeded (candidates are base -> oldcam
+                    # ascending, so the last success is the
+                    # highest-priority real deliverable — never a clip
+                    # that silently skipped its oldcam injection).
+                    headline = next(
+                        produced_for[str(s)]
+                        for s in reversed(to_inject)
+                        if str(s) in produced_for
+                    )
+                    status_note = ""
+                    if partial:
+                        status_note = (
+                            f" (PARTIAL: {len(failed_inputs)} of "
+                            f"{len(to_inject)} candidate(s) failed: "
+                            f"{', '.join(failed_inputs)})"
+                        )
                     self.logger.info(
-                        "case %s rppg outputs=%d headline=%s",
+                        "case %s rppg outputs=%d headline=%s%s",
                         case_key,
                         len(produced),
-                        Path(produced[-1]).name,
+                        Path(headline).name,
+                        status_note,
                     )
                     self.manifest.update_step(
                         case_key,
                         "rppg",
                         "complete",
-                        output=produced[-1],
+                        output=headline,
                         meta={
                             **self._policy_meta("rppg", False, reprocess_mode),
                             "all_outputs": produced,
+                            "failed_inputs": failed_inputs,
+                            "partial": partial,
                         },
                     )
                 else:
-                    self.logger.warning("case %s rppg failed required=%s", case_key, required)
+                    # Either nothing was produced, OR required=true and at
+                    # least one candidate failed — a required fan-out must
+                    # be ALL-or-fail so a missing oldcam deliverable is
+                    # never reported as success.
+                    if not produced:
+                        err = "rPPG injection produced no output"
+                    else:
+                        err = (
+                            f"rPPG required but {len(failed_inputs)} of "
+                            f"{len(to_inject)} candidate(s) failed: "
+                            f"{', '.join(failed_inputs)}"
+                        )
+                    self.logger.warning(
+                        "case %s rppg failed required=%s (%s)",
+                        case_key,
+                        required,
+                        err,
+                    )
                     self.manifest.update_step(
                         case_key,
                         "rppg",
                         "failed" if required else "skipped",
-                        error="rPPG injection produced no output",
-                        meta={**self._policy_meta("rppg", False, reprocess_mode), "required": required},
+                        error=err,
+                        meta={
+                            **self._policy_meta("rppg", False, reprocess_mode),
+                            "required": required,
+                            "all_outputs": produced,
+                            "failed_inputs": failed_inputs,
+                        },
                     )
                     if required:
                         return self._finalize_case(case_entry, "failed")
