@@ -996,11 +996,40 @@ class AutoPipelineRunner:
                 self.manifest.update_step(case_key, "video_generate", "running")
                 video_output_dir = case_dir / "gen-videos"
                 video_output_dir.mkdir(exist_ok=True)
+                # CLI parity with the GUI queue: pass the negative prompt
+                # + cfg_scale + end-frame lock from the SAME config keys
+                # the GUI writes (negative_prompts / cfg_scale_value /
+                # lock_end_frame). The dispatcher gates each on the
+                # selected model's capabilities (get_model_capabilities —
+                # single source of truth), so an o3/seedance run silently
+                # drops the unsupported ones exactly as the GUI does.
+                _slot = str(self.config.get("current_prompt_slot", 1))
+                _use_existing = self.automation.get(
+                    "automation_video_use_existing_prompt", True
+                )
+                try:
+                    _cfg_val = float(self.config.get("cfg_scale_value", 0.7))
+                except (TypeError, ValueError):
+                    _cfg_val = 0.7
+                # lock_end_frame is a GUI (kling_config) key, NOT an
+                # automation_* key — read it from self.config via the
+                # canonical _parse_bool (NOT self._read_bool, which only
+                # looks in self.automation and would always return the
+                # default here).
+                from face_similarity import _parse_bool as _pb
+                _lock_ef = _pb(self.config.get("lock_end_frame", True))
+                if _lock_ef is None:
+                    _lock_ef = True
                 output_video = video.create_kling_generation(
                     character_image_path=final_still,
                     output_folder=str(video_output_dir),
-                    custom_prompt=self.config.get("saved_prompts", {}).get(str(self.config.get("current_prompt_slot", 1)))
-                    if self.automation.get("automation_video_use_existing_prompt", True)
+                    custom_prompt=self.config.get("saved_prompts", {}).get(_slot)
+                    if _use_existing
+                    else None,
+                    negative_prompt=(
+                        self.config.get("negative_prompts", {}).get(_slot) or None
+                    )
+                    if _use_existing
                     else None,
                     duration=int(self.config.get("video_duration", 10)),
                     aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
@@ -1008,6 +1037,8 @@ class AutoPipelineRunner:
                     seed=int(self.config.get("seed", -1)),
                     camera_fixed=bool(self.config.get("camera_fixed", False)),
                     generate_audio=bool(self.config.get("generate_audio", False)),
+                    cfg_scale=max(0.0, min(1.0, _cfg_val)),
+                    lock_end_frame=bool(_lock_ef),
                     use_source_folder=False,
                 )
                 if not output_video:
