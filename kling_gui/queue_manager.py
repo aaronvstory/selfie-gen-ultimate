@@ -797,6 +797,15 @@ class QueueManager:
                 # output (or, if oldcam produced nothing, on run_input —
                 # which already has the loop applied above when enabled).
                 # Graceful skip leaves output_path as the oldcam result.
+                #
+                # NOTE (deliberate asymmetry, not a bug): this is the
+                # oldcam-specific re-run path — it already early-returned
+                # above when no oldcam versions are selected, so rPPG-only
+                # re-run is NOT reachable here. rPPG-only DOES work in the
+                # normal generation flow (the main queue runs _rppg_video
+                # unconditionally on _rppg_enabled). A shared post-process
+                # re-run button is a documented future direction
+                # (docs/rppg-wiring.md), not an omission.
                 if self._rppg_enabled():
                     rppg_source = output_path or str(run_input)
                     rppg_path = self._rppg_video(rppg_source, QueueItem(str(source_video)))
