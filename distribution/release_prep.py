@@ -178,12 +178,18 @@ def build_sanitized_config(
     # slot is empty in the template (PR #41, user request).
     _force_slots = {"1", _tmpl_slot}
     if isinstance(_t_saved, dict) and _t_saved.get("1"):
-        sp = dict(config.get("saved_prompts") or {})
+        # Guard against a user-edited live kling_config.json carrying
+        # a non-mapping at saved_prompts — without this dict(non_dict)
+        # raises ValueError and aborts release prep instead of
+        # gracefully sanitizing (Codex P2, PR #41).
+        _live_sp = config.get("saved_prompts")
+        sp = dict(_live_sp) if isinstance(_live_sp, dict) else {}
         for _sl in _force_slots:
             sp[_sl] = _t_saved.get(_sl) or _t_saved["1"]
         config["saved_prompts"] = sp
     if isinstance(_t_neg, dict) and _t_neg.get("1"):
-        npd = dict(config.get("negative_prompts") or {})
+        _live_np = config.get("negative_prompts")
+        npd = dict(_live_np) if isinstance(_live_np, dict) else {}
         for _sl in _force_slots:
             npd[_sl] = _t_neg.get(_sl) or _t_neg["1"]
         config["negative_prompts"] = npd
@@ -191,7 +197,8 @@ def build_sanitized_config(
     # 2.5 pro") so the GUI shows the right label on first launch.
     _t_titles = template.get("prompt_titles")
     if isinstance(_t_titles, dict):
-        pt = dict(config.get("prompt_titles") or {})
+        _live_pt = config.get("prompt_titles")
+        pt = dict(_live_pt) if isinstance(_live_pt, dict) else {}
         for _sl in _force_slots:
             if _t_titles.get(_sl):
                 pt[_sl] = _t_titles[_sl]
@@ -210,7 +217,14 @@ def build_sanitized_config(
     config["model_display_name"] = str(
         template.get("model_display_name", "Kling 2.5 Turbo Pro")
     ).strip()
-    config["lock_end_frame"] = True
+    # Template-driven so default_config_template.json explicitly
+    # setting lock_end_frame: false actually ships false (Codex P2,
+    # PR #41). Unparseable / missing template key -> True (the
+    # canonical default; matches the queue_manager + pipeline
+    # _parse_bool None -> True coercion).
+    from face_similarity import _parse_bool as _pb_release
+    _t_lock = _pb_release(template.get("lock_end_frame", True))
+    config["lock_end_frame"] = True if _t_lock is None else bool(_t_lock)
     # Unconditionally OVERRIDE (not setdefault) — a stale live
     # cfg_scale_value (e.g. 0.5) must not survive into the bundle;
     # the intended shipped default is 0.7 (Codex P3, PR #41).

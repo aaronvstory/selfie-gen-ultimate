@@ -489,5 +489,88 @@ class CustomEndpointEndImageUrlFallbackTests(unittest.TestCase):
         )
 
 
+class ReleasePrepMalformedConfigTests(unittest.TestCase):
+    """Codex P2 (PR #41): build_sanitized_config used to call
+    `dict(config.get(key) or {})` blindly, which raised ValueError when
+    a user-edited kling_config.json had a string/list at saved_prompts,
+    negative_prompts, or prompt_titles instead of a dict — aborting the
+    release build. The fix isinstance-guards the live value and falls
+    back to {}."""
+
+    def _run(self, live_overrides):
+        import json as _j, os, tempfile
+        from pathlib import Path
+        from distribution.release_prep import build_sanitized_config
+        with tempfile.TemporaryDirectory() as d:
+            t = os.path.join(d, "default_config_template.json")
+            l = os.path.join(d, "kling_config.json")
+            with open(t, "w", encoding="utf-8") as fp:
+                fp.write(_j.dumps({
+                    "saved_prompts": {"1": "TEMPLATE PROMPT"},
+                    "negative_prompts": {"1": "TEMPLATE NEG"},
+                    "prompt_titles": {"1": "TEMPLATE TITLE"},
+                    "current_prompt_slot": 1,
+                }))
+            base = {"current_prompt_slot": 1}
+            base.update(live_overrides)
+            with open(l, "w", encoding="utf-8") as fp:
+                fp.write(_j.dumps(base))
+            return build_sanitized_config(Path(t), Path(l))
+
+    def test_saved_prompts_as_string_does_not_crash(self):
+        cfg = self._run({"saved_prompts": "garbage-string"})
+        # Falls back to {} then receives the forced template values.
+        self.assertEqual(cfg["saved_prompts"]["1"], "TEMPLATE PROMPT")
+
+    def test_negative_prompts_as_list_does_not_crash(self):
+        cfg = self._run({"negative_prompts": ["bad", "shape"]})
+        self.assertEqual(cfg["negative_prompts"]["1"], "TEMPLATE NEG")
+
+    def test_prompt_titles_as_int_does_not_crash(self):
+        cfg = self._run({"prompt_titles": 42})
+        self.assertEqual(cfg["prompt_titles"]["1"], "TEMPLATE TITLE")
+
+
+class ReleasePrepLockEndFrameTemplateTests(unittest.TestCase):
+    """Codex P2 (PR #41): lock_end_frame was hardcoded True in
+    build_sanitized_config, so a template explicitly setting
+    lock_end_frame:false still shipped True. Fix makes it
+    template-driven via _parse_bool with None -> True (matches the
+    queue_manager + pipeline canonical-default coercion)."""
+
+    def _run(self, template_lock):
+        import json as _j, os, tempfile
+        from pathlib import Path
+        from distribution.release_prep import build_sanitized_config
+        with tempfile.TemporaryDirectory() as d:
+            t = os.path.join(d, "default_config_template.json")
+            l = os.path.join(d, "kling_config.json")
+            tmpl = {}
+            if template_lock != "__omit__":
+                tmpl["lock_end_frame"] = template_lock
+            with open(t, "w", encoding="utf-8") as fp:
+                fp.write(_j.dumps(tmpl))
+            with open(l, "w", encoding="utf-8") as fp:
+                fp.write(_j.dumps({"lock_end_frame": True}))
+            return build_sanitized_config(Path(t), Path(l))
+
+    def test_template_true_ships_true(self):
+        self.assertIs(self._run(True)["lock_end_frame"], True)
+
+    def test_template_false_ships_false(self):
+        # The point of the fix: a template explicitly false must NOT
+        # be silently overridden back to True.
+        self.assertIs(self._run(False)["lock_end_frame"], False)
+
+    def test_template_missing_defaults_to_true(self):
+        # No lock_end_frame key in template -> canonical default True.
+        self.assertIs(self._run("__omit__")["lock_end_frame"], True)
+
+    def test_template_string_true_parses(self):
+        # _parse_bool handles "true"/"false" strings.
+        self.assertIs(self._run("false")["lock_end_frame"], False)
+        self.assertIs(self._run("true")["lock_end_frame"], True)
+
+
 if __name__ == "__main__":
     unittest.main()
