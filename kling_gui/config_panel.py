@@ -1081,13 +1081,16 @@ class ConfigPanel(tk.Frame):
             self._negative_prompt_section, bg=COLORS["bg_panel"]
         )
         neg_text_frame.pack(fill=tk.BOTH, expand=True)
+        # NOTE: tk.Text does NOT support disabledforeground /
+        # disabledbackground (those are Entry/Button options) — passing
+        # them raises TclError and crashes panel construction. Mirror the
+        # working positive prompt_preview: state="disabled" + the
+        # edit-mode methods toggle fg via .config() for the dim effect.
         self.negative_prompt_preview = tk.Text(
             neg_text_frame, font=(FONT_FAMILY, 10),
             bg=COLORS["bg_main"], fg=COLORS["text_dim"],
             height=5, wrap=tk.WORD, relief=tk.FLAT, borderwidth=0,
             insertbackground=COLORS["text_light"], state="disabled",
-            disabledforeground=COLORS["text_dim"],
-            disabledbackground=COLORS["bg_main"],
         )
         neg_scroll = ttk.Scrollbar(
             neg_text_frame, orient=tk.VERTICAL,
@@ -1101,9 +1104,19 @@ class ConfigPanel(tk.Frame):
         self.prompt_preview.config(height=7)
         # Visibility is set on first model-change; default-hide until then.
         self._negative_prompt_section.pack_forget()
+        # Explicit desired-visibility flag (see
+        # _apply_negative_prompt_visibility — winfo_ismapped() is
+        # unreliable before the window is realized). Starts hidden;
+        # _update_motion_controls flips it per the selected model.
+        self._neg_visible = False
 
-        # Footer: char count badge + Edit button + Save button
+        # Footer: char count badge + Edit button + Save button.
+        # Kept as self._prompt_footer so the negative-prompt split
+        # section can be re-packed BEFORE it (correct slot: under the
+        # positive box, above the footer) when a model that supports
+        # negative_prompt is selected.
         prompt_footer = tk.Frame(right_inner, bg=COLORS["bg_panel"])
+        self._prompt_footer = prompt_footer
         prompt_footer.pack(fill=tk.X, pady=(6, 0))
         char_badge = tk.Frame(
             prompt_footer, bg=COLORS["bg_input"],
@@ -1890,19 +1903,33 @@ class ConfigPanel(tk.Frame):
     def _apply_negative_prompt_visibility(self, has_neg: bool):
         """Show/hide the negative-prompt half of the split prompt editor.
 
-        The widgets are created once (see the prompt-editor build); here
-        we only pack_forget / re-pack the negative section so its text
-        survives toggling. No-op until the split editor exists."""
+        Widgets are created once; we only pack / pack_forget the section
+        so its text survives toggling. Desired visibility is tracked with
+        an explicit flag (``_neg_visible``) — NOT ``winfo_ismapped()``,
+        which is False until the whole window is realized and would make
+        the section never appear on initial load. When showing, pack it
+        BEFORE the footer so it always lands in the right slot (under the
+        positive box, above the Edit/Save row) regardless of call order.
+        No-op until the split editor exists."""
         neg = getattr(self, "_negative_prompt_section", None)
         if neg is None:
             return
+        want = bool(has_neg)
+        if getattr(self, "_neg_visible", None) == want:
+            return  # idempotent — already in the desired state
         try:
-            if has_neg:
-                if not neg.winfo_ismapped():
+            if want:
+                footer = getattr(self, "_prompt_footer", None)
+                if footer is not None:
+                    neg.pack(
+                        fill=tk.BOTH, expand=True, pady=(4, 0),
+                        before=footer,
+                    )
+                else:
                     neg.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
             else:
-                if neg.winfo_ismapped():
-                    neg.pack_forget()
+                neg.pack_forget()
+            self._neg_visible = want
         except Exception:
             pass
 
