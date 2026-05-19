@@ -233,7 +233,10 @@ Manual GUI and live provider validation are still required for full end-to-end c
 
 The CLI includes a manifest-driven automated pipeline:
 
-`front_expand -> extract_portrait -> selfie_generate -> similarity_gate -> selfie_expand -> video_generate -> oldcam`
+`front_expand -> extract_portrait -> selfie_generate -> similarity_gate -> selfie_expand -> video_generate -> oldcam -> rppg`
+
+(`rppg` is the final, opt-in post-process — runs strictly LAST, after
+`oldcam`; off by default. See "rPPG Injection Wiring" below.)
 
 Core pipeline modules:
 

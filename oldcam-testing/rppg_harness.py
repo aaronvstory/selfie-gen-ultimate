@@ -98,18 +98,26 @@ def run_injector(src: Path, out: Path) -> int:
         "--skip-kinematic-gate",
     ]
     print(f"[harness] running: {subprocess.list2cmdline(cmd)}", flush=True)
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(RPPG_LAUNCHER.parent),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        print("  " + line.rstrip(), flush=True)
-    return proc.wait(timeout=900)
+    # Drain stdout via the shared reader-thread + hard wall-clock helper
+    # (single source of truth with the GUI queue and automation pipeline).
+    # A bare ``for line in proc.stdout`` loop blocks forever if the
+    # injector stalls mid-line with no newline, so the wait(timeout=900)
+    # below could never fire and the harness would hang indefinitely
+    # (CodeRabbit Major, PR #39).
+    sys.path.insert(0, str(REPO_ROOT))
+    from automation.rppg import stream_subprocess_with_timeout
+
+    try:
+        rc, lines = stream_subprocess_with_timeout(
+            cmd,
+            cwd=str(RPPG_LAUNCHER.parent),
+            timeout_seconds=900,
+            on_line=lambda text: print("  " + text, flush=True),
+        )
+    except subprocess.TimeoutExpired:
+        print("  [harness] rPPG injector timed out after 900s", flush=True)
+        return 124
+    return rc
 
 
 def run_chain(src: Path) -> Path:

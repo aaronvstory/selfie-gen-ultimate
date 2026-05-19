@@ -8,6 +8,10 @@ set "WMIC_DT=%WMIC_DT: =_%"
 set "TS=%WMIC_DT:~0,4%-%WMIC_DT:~4,2%-%WMIC_DT:~6,2% %WMIC_DT:~8,2%:%WMIC_DT:~10,2%:%WMIC_DT:~12,2%"
 set "ROOT=%~dp0.."
 pushd "%ROOT%"
+rem rppg_harness_out/ is gitignored, so on a clean checkout it does not
+rem exist yet; create it before the first log append or the >> redirect
+rem fails with "The system cannot find the path specified" (CodeRabbit).
+if not exist "%ROOT%\oldcam-testing\rppg_harness_out" mkdir "%ROOT%\oldcam-testing\rppg_harness_out"
 >>"%ROOT%\oldcam-testing\rppg_harness_out\harness.log" echo [%TS%] launch %*
 echo [%TS%] rPPG harness root=%ROOT%
 rem Version-gate every venv candidate (CLAUDE.md Hard Rule #9 / PR #39):

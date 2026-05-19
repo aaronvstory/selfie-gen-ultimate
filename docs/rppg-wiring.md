@@ -21,7 +21,7 @@ external launcher. It is **off by default everywhere** — opt-in only.
 
 ## Pipeline order (locked)
 
-```
+```text
 Kling  ->  Loop  ->  Oldcam  ->  rPPG       (rPPG strictly LAST)
 ```
 
@@ -37,7 +37,7 @@ delivered pixels preserves the correct pulse.
 
 Invocation used everywhere:
 
-```
+```bat
 rPPG/run_rppg.bat "<abs in.mp4>" --inject --output "<abs out.mp4>" --skip-kinematic-gate
 ```
 

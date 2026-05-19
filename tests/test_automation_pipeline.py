@@ -1850,13 +1850,21 @@ def test_resolve_produced_output_handles_metric_suffix_rename(tmp_path):
     renamed.write_bytes(b"b")
     assert resolve_produced_output(requested) == renamed
 
-    # Newest metric-renamed wins when several exist.
-    import time
+    # Newest metric-renamed wins when several exist. Set mtimes
+    # explicitly with os.utime() rather than relying on time.sleep():
+    # a sub-10ms sleep is below the timestamp resolution of some CI
+    # filesystems, making the "newest wins" assertion flaky. Pin EVERY
+    # competing file's mtime (including `renamed`, written above with a
+    # real ~now mtime) so the ordering is fully deterministic regardless
+    # of fs granularity.
+    import os
     older = tmp_path / "clip-rppg - 7.72-75.5-0.79-0.06-0.35.mp4"
     older.write_bytes(b"c")
-    time.sleep(0.01)
     newest = tmp_path / "clip-rppg - 14.00-3.0-0.50-0.02-0.50.mp4"
     newest.write_bytes(b"d")
+    os.utime(renamed, (1_000_000, 1_000_000))
+    os.utime(older, (1_500_000, 1_500_000))
+    os.utime(newest, (2_000_000, 2_000_000))
     assert resolve_produced_output(requested) == newest
 
     # Nothing matching -> None (graceful-skip path).

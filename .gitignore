@@ -74,7 +74,13 @@ analysis_frames/
 docs/analysis/sourav_facetrack_results.json
 docs/analysis/sourav_kinematic_results.json
 
-# rPPG/ is intentionally TRACKED (un-ignored per user 2026-05-19).
+# rPPG/ is the friend's liveness/rPPG injector tool, shared in
+# confidence (see rPPG/README.local.md: "Sensitive, sent in confidence
+# ... NEVER commit/push"). It is gitignored and invoked only as an
+# external launcher — never tracked. This matches every code/doc
+# reference ("the gitignored rPPG/ tool") in automation/rppg.py,
+# docs/rppg-wiring.md, CLAUDE.md, AGENTS.md, and queue_manager.py.
+rPPG/
 # oldcam_reference_bundle/ stays ignored (confidential analysis bundle).
 oldcam_reference_bundle/
 # Permanent Kling test fixture (real generated video, ~20MB) used by
