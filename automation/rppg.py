@@ -97,8 +97,19 @@ def resolve_produced_output(requested: Path) -> Optional[Path]:
     stem = requested.stem  # e.g. "<clip>-rppg"
     ext = requested.suffix
     parent = requested.parent
+    if not parent.is_dir():
+        return None
+    # The injector's rename is specifically "<stem> - <metrics><ext>" with a
+    # space-hyphen-space separator (rPPG/rppg_injector.py add_metric_suffix).
+    # Match ONLY that exact form (not a loose "<stem>*<ext>" which would also
+    # catch the input itself or unrelated "<stem>-foo<ext>" siblings on a
+    # re-run). Exclude the requested path defensively. Newest wins.
     candidates = sorted(
-        (p for p in parent.glob(f"{stem}*{ext}") if p.is_file()),
+        (
+            p
+            for p in parent.glob(f"{stem} - *{ext}")
+            if p.is_file() and p.resolve() != requested.resolve()
+        ),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )

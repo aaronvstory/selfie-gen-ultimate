@@ -1812,3 +1812,23 @@ def test_resolve_produced_output_handles_metric_suffix_rename(tmp_path):
     empty = tmp_path / "sub"
     empty.mkdir()
     assert resolve_produced_output(empty / "x-rppg.mp4") is None
+
+
+def test_resolve_produced_output_ignores_loose_siblings(tmp_path):
+    """The resolver must match ONLY the injector's exact rename form
+    '<stem> - <metrics><ext>' (space-hyphen-space), never a loose
+    '<stem>-<anything><ext>' sibling or the input itself. Locks the
+    self-review hardening (a greedy '<stem>*<ext>' glob could return the
+    un-injected input on a re-run)."""
+    from automation.rppg import resolve_produced_output
+
+    requested = tmp_path / "clip-rppg.mp4"
+    # A loose sibling that is NOT the metric-rename form must be ignored.
+    (tmp_path / "clip-rppg-backup.mp4").write_bytes(b"x")
+    (tmp_path / "clip-rppgX.mp4").write_bytes(b"y")
+    assert resolve_produced_output(requested) is None
+
+    # The real metric-rename form is picked.
+    real = tmp_path / "clip-rppg - 13.08-7.8-0.70-0.03-0.46.mp4"
+    real.write_bytes(b"z")
+    assert resolve_produced_output(requested) == real
