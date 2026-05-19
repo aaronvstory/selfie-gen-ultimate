@@ -314,6 +314,16 @@ class AutoPipelineRunner:
         )
         if self.automation.get("automation_oldcam_required", False) and not self.automation.get("automation_oldcam_enabled", True):
             issues.append("automation_oldcam_required=true requires automation_oldcam_enabled=true.")
+        # Symmetric with the oldcam rule above (Codex P2, PR #39): the CLI
+        # advanced setup asks rppg enabled/required independently, so a
+        # user can save automation_rppg_required=true while
+        # automation_rppg_enabled=false. Without this, Step 8 records the
+        # rPPG step "skipped" and the case still finalizes complete — the
+        # "required" policy silently becomes a no-op. Reject the
+        # contradictory combination at config-validation time, exactly as
+        # oldcam does.
+        if self.automation.get("automation_rppg_required", False) and not self.automation.get("automation_rppg_enabled", False):
+            issues.append("automation_rppg_required=true requires automation_rppg_enabled=true.")
         if self.automation.get("automation_oldcam_required", False):
             repo_root = Path(__file__).resolve().parent.parent
             versions = discover_oldcam_versions(repo_root)

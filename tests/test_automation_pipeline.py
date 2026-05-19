@@ -432,6 +432,56 @@ def test_pipeline_validation_fails_on_oldcam_required_without_enable(tmp_path: P
     assert any("requires" in issue for issue in issues)
 
 
+def test_pipeline_validation_fails_on_rppg_required_without_enable(tmp_path: Path):
+    """Regression (Codex P2, PR #39): symmetric with the oldcam rule —
+    automation_rppg_required=true while automation_rppg_enabled=false is
+    contradictory (the CLI asks them independently). Without validation,
+    Step 8 skips and the case finalizes complete, so 'required' silently
+    no-ops. validate_configuration() must reject the combination."""
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_rppg_enabled": False,
+            "automation_rppg_required": True,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    issues = runner.validate_configuration()
+    assert any("automation_rppg_required=true requires automation_rppg_enabled=true" in i for i in issues)
+
+    # Sanity: the valid combination (both true) must NOT raise this issue.
+    ok_config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_rppg_enabled": True,
+            "automation_rppg_required": True,
+        }
+    )
+    ok_runner = AutoPipelineRunner(
+        config=ok_config,
+        automation_config=from_app_config(ok_config),
+        manifest=AutomationManifest.create_or_load(tmp_path / "m2.json", tmp_path, {}),
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    assert not any("automation_rppg_required" in i for i in ok_runner.validate_configuration())
+
+
 def test_pipeline_validation_fails_when_bfl_provider_missing_bfl_key(tmp_path: Path):
     config = merge_automation_defaults(
         {
