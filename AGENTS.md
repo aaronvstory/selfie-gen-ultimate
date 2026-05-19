@@ -467,6 +467,8 @@ $crlf = $content -replace "`r`n","`n" -replace "`n","`r`n"
 
 Verify: `CRLF=True`, `LFonly=False`. macOS `.sh`/`.command` files use LF — `Write`/`Edit` are fine for those.
 
+> **The committed `.bat`/`.cmd` blob is LF, and that is CORRECT — not a bug.** `.gitattributes` declares `*.bat text eol=crlf`, so git's clean filter normalizes the blob to LF and the smudge filter restores CRLF on every Windows checkout. `git show HEAD:<file> | tr -cd '\r' | wc -c` reporting `0` is **expected** for every repo `.bat` (`run_gui.bat`, `run_cli.bat`, all launchers show `i/lf w/crlf attr/text eol=crlf`). What matters is the **working-tree** file `cmd.exe` actually runs — that IS CRLF. Do not "fix" a blob-LF `.bat` to blob-CRLF: it would fight `.gitattributes` and make the file inconsistent with the whole repo. Static `git show` blob checks (some review bots) mis-flag this; verify the working tree (`tr -cd '\r' < f | wc -c` > 0) and `git check-attr eol -- f` = `crlf` instead.
+
 ### After editing ANY tracked text file — verify the diff is your change only
 
 This box is autocrlf-like: many tracked files are `i/lf` in git but `Write`/`Edit` write CRLF. Editing such a file and committing flips the **whole file** LF→CRLF in the blob — a silent regression that ships garbled files and costs a full revert cycle (happened on `release_prep.py`, PR #22). **MANDATORY after every `Edit`/`Write` on a tracked file, before committing:**
