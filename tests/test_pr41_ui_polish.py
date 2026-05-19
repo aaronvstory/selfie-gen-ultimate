@@ -437,15 +437,56 @@ class CustomEndpointEndImageUrlFallbackTests(unittest.TestCase):
         """Critical safety invariant: a KNOWN model whose
         end_image_param is None (e.g. v2.5-turbo/standard) must still
         NOT forward end_image_url — only unknown endpoints get the
-        bypass."""
+        bypass. Verified in three layers:
+          (a) metadata: the model IS known + caps says end is None
+          (b) source: the fallback elif requires `not _is_known_model`
+          (c) AST: the elif test references `_is_known_model`
+        Layer (c) makes the guard structurally explicit so a future
+        edit that removes the condition fails this test rather than
+        silently regressing the invariant (subagent finding, PR #41).
+        """
         from model_metadata import get_model_capabilities, get_model_by_endpoint
 
         ep = "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
-        self.assertIsNotNone(get_model_by_endpoint(ep))  # known
-        self.assertIsNone(get_model_capabilities(ep)["end_image_param"])
-        # Source-level guard: the fallback branch requires
-        # `not _is_known_model`, so a known model with None end_param
-        # cannot enter it (precise per-model gating preserved).
+        self.assertIsNotNone(get_model_by_endpoint(ep))  # (a) known
+        self.assertIsNone(
+            get_model_capabilities(ep)["end_image_param"]
+        )
+
+        # (b) source regex — the fallback branch literally requires
+        # `not _is_known_model`.
+        import re
+        gen_src = (_ROOT / "kling_generator_falai.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            gen_src,
+            r"elif\s+end_image_url\s+and\s+not\s+_is_known_model:",
+        )
+
+        # (c) AST — walk the dispatcher module, find the fallback
+        # elif, and confirm its test expression contains a Name
+        # `_is_known_model` inside a `not` UnaryOp. This catches any
+        # whitespace / formatting change that the source regex might
+        # miss while still failing if the condition itself is removed.
+        import ast as _ast
+        tree = _ast.parse(gen_src)
+        found = False
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.If):
+                test_str = _ast.unparse(node.test)
+                if (
+                    "end_image_url" in test_str
+                    and "not _is_known_model" in test_str
+                ):
+                    found = True
+                    break
+        self.assertTrue(
+            found,
+            "Custom-endpoint end_image_url fallback must be guarded "
+            "by `not _is_known_model` to preserve precise per-model "
+            "gating for known models whose end_image_param is None.",
+        )
 
 
 if __name__ == "__main__":
