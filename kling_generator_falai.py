@@ -648,6 +648,17 @@ class FalAIKlingGenerator:
                     payload_full[end_param] = end_image_url
                 elif lock_end_frame:
                     payload_full[end_param] = image_url
+            elif end_image_url and not _is_known_model:
+                # Unknown / custom endpoint with no known end-param
+                # name in MODEL_METADATA — but the caller explicitly
+                # passed end_image_url, so forward it under the most
+                # common modern key. The live schema filter
+                # (schema_manager.validate_parameters below) is the
+                # authority and will drop it iff the endpoint truly
+                # doesn't support end_image_url. Custom Kling-family
+                # endpoints used to receive this param via the old
+                # always-include-then-filter path (Codex P2, PR #41).
+                payload_full["end_image_url"] = end_image_url
 
             # negative_prompt / cfg_scale only when the model supports
             # them (o3 / seedance dropped both in 2026) AND a value was

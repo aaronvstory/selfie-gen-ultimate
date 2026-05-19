@@ -196,8 +196,20 @@ def build_sanitized_config(
             if _t_titles.get(_sl):
                 pt[_sl] = _t_titles[_sl]
         config["prompt_titles"] = pt
-    config["current_model"] = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
-    config["model_display_name"] = "Kling 2.5 Turbo Pro"
+    # Template-driven so the next default-model bump is a single
+    # default_config_template.json edit, not a literal change here
+    # too (CodeRabbit Refactor, PR #41). Hardcoded fallback is the
+    # current ship target so a template missing those keys still
+    # builds a working bundle.
+    config["current_model"] = str(
+        template.get(
+            "current_model",
+            "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+        )
+    ).strip()
+    config["model_display_name"] = str(
+        template.get("model_display_name", "Kling 2.5 Turbo Pro")
+    ).strip()
     config["lock_end_frame"] = True
     # Unconditionally OVERRIDE (not setdefault) — a stale live
     # cfg_scale_value (e.g. 0.5) must not survive into the bundle;

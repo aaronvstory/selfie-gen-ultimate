@@ -139,15 +139,17 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             t=os.path.join(d,'default_config_template.json')
             l=os.path.join(d,'kling_config.json')
-            open(t,'w',encoding='utf-8').write(_j.dumps({
-                'automation_selfie_expand_composite_mode':'none',
-                'outpaint_composite_mode':'preserve_seamless',
-            }))
+            with open(t, 'w', encoding='utf-8') as fp:
+                fp.write(_j.dumps({
+                    'automation_selfie_expand_composite_mode': 'none',
+                    'outpaint_composite_mode': 'preserve_seamless',
+                }))
             # Dev machine has the WRONG (swapped) values live.
-            open(l,'w',encoding='utf-8').write(_j.dumps({
-                'automation_selfie_expand_composite_mode':'preserve_seamless',
-                'outpaint_composite_mode':'none',
-            }))
+            with open(l, 'w', encoding='utf-8') as fp:
+                fp.write(_j.dumps({
+                    'automation_selfie_expand_composite_mode': 'preserve_seamless',
+                    'outpaint_composite_mode': 'none',
+                }))
             from pathlib import Path
             cfg=build_sanitized_config(Path(t),Path(l))
         self.assertEqual(cfg['automation_selfie_expand_composite_mode'],'none')
@@ -356,6 +358,94 @@ class ApplyUiConfigRespectsNegVisibleTests(unittest.TestCase):
         self.assertEqual(panel.prompt_preview._height, 5)  # split (10-5)
         self.assertEqual(panel._positive_prompt_full_height, 10)
         self.assertEqual(panel._positive_prompt_split_height, 5)
+
+
+class TemplateDrivenShipModelTests(unittest.TestCase):
+    """CodeRabbit Major (PR #41): the bundle's current_model +
+    model_display_name must be template-driven, not duplicated
+    literals — so the next default-model bump is a single
+    default_config_template.json edit. Hardcoded fallbacks remain the
+    current ship target so a template missing those keys still builds
+    a working bundle."""
+
+    def test_template_value_overrides_default(self):
+        import json as _j, os, tempfile
+        from pathlib import Path
+        from distribution.release_prep import build_sanitized_config
+        with tempfile.TemporaryDirectory() as d:
+            t = os.path.join(d, "default_config_template.json")
+            l = os.path.join(d, "kling_config.json")
+            with open(t, "w", encoding="utf-8") as fp:
+                fp.write(_j.dumps({
+                    "current_model": "fal-ai/kling-video/v3/pro/image-to-video",
+                    "model_display_name": "Kling 3.0 Pro",
+                }))
+            with open(l, "w", encoding="utf-8") as fp:
+                fp.write(_j.dumps({
+                    "current_model": "old-stale-endpoint",
+                    "model_display_name": "Old Stale",
+                }))
+            cfg = build_sanitized_config(Path(t), Path(l))
+        # Template value WINS, even with the dev's stale live config.
+        self.assertEqual(cfg["current_model"], "fal-ai/kling-video/v3/pro/image-to-video")
+        self.assertEqual(cfg["model_display_name"], "Kling 3.0 Pro")
+
+    def test_hardcoded_fallback_when_template_missing_keys(self):
+        import json as _j, os, tempfile
+        from pathlib import Path
+        from distribution.release_prep import build_sanitized_config
+        with tempfile.TemporaryDirectory() as d:
+            t = os.path.join(d, "default_config_template.json")
+            l = os.path.join(d, "kling_config.json")
+            # Template explicitly lacks current_model + model_display_name
+            with open(t, "w", encoding="utf-8") as fp:
+                fp.write(_j.dumps({}))
+            with open(l, "w", encoding="utf-8") as fp:
+                fp.write(_j.dumps({}))
+            cfg = build_sanitized_config(Path(t), Path(l))
+        # Hardcoded fallback is the current ship target.
+        self.assertEqual(
+            cfg["current_model"],
+            "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+        )
+        self.assertEqual(cfg["model_display_name"], "Kling 2.5 Turbo Pro")
+
+
+class CustomEndpointEndImageUrlFallbackTests(unittest.TestCase):
+    """Codex P2 (PR #41): an unknown (custom) endpoint with no known
+    end-param name in MODEL_METADATA used to silently drop a
+    user-supplied end_image_url because end_param resolved to None.
+    The fix forwards it under "end_image_url" (the modern common key)
+    and lets schema_manager.validate_parameters be the authority —
+    mirroring the existing _is_known_model bypass pattern for
+    negative_prompt + cfg_scale."""
+
+    def test_dispatcher_source_has_unknown_endpoint_fallback(self):
+        src = (_ROOT / "kling_generator_falai.py").read_text(encoding="utf-8")
+        # The fallback branch must exist after the end_param if-block.
+        self.assertRegex(
+            src,
+            r"elif\s+end_image_url\s+and\s+not\s+_is_known_model:",
+        )
+        # And it must forward to "end_image_url" specifically.
+        self.assertRegex(
+            src,
+            r'payload_full\["end_image_url"\]\s*=\s*end_image_url',
+        )
+
+    def test_known_models_with_no_end_param_still_drop(self):
+        """Critical safety invariant: a KNOWN model whose
+        end_image_param is None (e.g. v2.5-turbo/standard) must still
+        NOT forward end_image_url — only unknown endpoints get the
+        bypass."""
+        from model_metadata import get_model_capabilities, get_model_by_endpoint
+
+        ep = "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+        self.assertIsNotNone(get_model_by_endpoint(ep))  # known
+        self.assertIsNone(get_model_capabilities(ep)["end_image_param"])
+        # Source-level guard: the fallback branch requires
+        # `not _is_known_model`, so a known model with None end_param
+        # cannot enter it (precise per-model gating preserved).
 
 
 if __name__ == "__main__":
