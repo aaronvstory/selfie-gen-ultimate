@@ -227,7 +227,52 @@ class SessionManagerTests(unittest.TestCase):
             paths = sorted(os.path.basename(i["path"]) for i in imgs)
             self.assertEqual(paths, ["a.png", "b.JPG", "c.webp"])
             self.assertEqual(data["project_key"], "RenamedProject")
-            self.assertTrue(all(i["source_type"] == "input" for i in imgs))
+            by_name = {os.path.basename(i["path"]): i["source_type"]
+                       for i in imgs}
+            # Root images are source inputs; the gen-images/ file is
+            # a generated artifact (regression: was hard-coded input,
+            # which made similarity recalc find zero targets).
+            self.assertEqual(by_name["a.png"], "input")
+            self.assertEqual(by_name["b.JPG"], "input")
+            self.assertEqual(by_name["c.webp"], "selfie")
+
+    def test_gen_images_classified_for_similarity_targets(self):
+        # Regression: a folder-load session must classify gen-images/
+        # artifacts as non-input so the similarity recalc has targets.
+        with self._workspace() as root:
+            proj = os.path.join(root, "DAVID_PROJ")
+            gen = os.path.join(proj, "gen-images")
+            os.makedirs(gen, exist_ok=True)
+            open(os.path.join(proj, "front.jpg"), "wb").write(b"x")
+            for fn in (
+                "front_crop.jpg",
+                "front_crop_nano-banana-2-edit_sim69_001.png",
+                "front_crop_nano-banana-2-edit_sim81_001.png",
+                "front_crop_nano-banana-2-edit_sim81_001_exp.png",
+                "front_exp.png",
+            ):
+                open(os.path.join(gen, fn), "wb").write(b"x")
+            data = sm.build_session_from_folder(proj)
+            assert data is not None
+            imgs = data["session"]["images"]
+            st = {os.path.basename(i["path"]): i["source_type"]
+                  for i in imgs}
+            self.assertEqual(st["front.jpg"], "input")
+            # The extracted crop stays input -> it's the sim ref.
+            self.assertEqual(st["front_crop.jpg"], "input")
+            self.assertEqual(
+                st["front_crop_nano-banana-2-edit_sim69_001.png"],
+                "selfie")
+            self.assertEqual(
+                st["front_crop_nano-banana-2-edit_sim81_001.png"],
+                "selfie")
+            self.assertEqual(
+                st["front_crop_nano-banana-2-edit_sim81_001_exp.png"],
+                "outpaint")
+            self.assertEqual(st["front_exp.png"], "outpaint")
+            targets = [i for i in imgs
+                       if i["source_type"] != "input"]
+            self.assertEqual(len(targets), 4)
 
     def test_build_session_from_folder_returns_none_when_no_images(self):
         with self._workspace() as root:
