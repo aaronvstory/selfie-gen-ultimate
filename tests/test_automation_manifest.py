@@ -157,6 +157,39 @@ def test_manifest_create_or_load_raises_on_fingerprint_mismatch(tmp_path: Path):
         AutomationManifest.create_or_load(manifest_path, root, snap_b)
 
 
+def test_manifest_additive_default_key_is_backward_compatible(tmp_path: Path):
+    """Regression (Codex P1, PR #39): a purely-additive new automation_*
+    default key (rPPG introduced default-OFF) must NOT invalidate a
+    manifest written before it existed. Old runs are behaviour-identical
+    (the feature is off), so resume/run must still work — only a CHANGED
+    value of a key the old manifest actually recorded may mismatch."""
+    manifest_path = tmp_path / "automation_manifest.json"
+    root = tmp_path / "root"
+    root.mkdir()
+    old_snap = {
+        "automation_manifest_name": "automation_manifest.json",
+        "automation_front_expand_mode": "document_3x4",
+    }
+    AutomationManifest.create_or_load(manifest_path, root, old_snap)
+
+    new_snap = {
+        "automation_manifest_name": "automation_manifest.json",
+        "automation_front_expand_mode": "document_3x4",
+        "automation_rppg_enabled": False,
+        "automation_rppg_mode": "inject",
+        "automation_rppg_required": False,
+    }
+    # Additive default-off keys must NOT raise — backward compatible.
+    reloaded = AutomationManifest.create_or_load(manifest_path, root, new_snap)
+    assert reloaded is not None
+
+    # Changing a key the OLD manifest recorded still mismatches.
+    changed_snap = dict(new_snap)
+    changed_snap["automation_front_expand_mode"] = "percent"
+    with pytest.raises(ValueError, match="fingerprint mismatch"):
+        AutomationManifest.create_or_load(manifest_path, root, changed_snap)
+
+
 @pytest.mark.parametrize(
     "changed_key,old_value,new_value",
     [

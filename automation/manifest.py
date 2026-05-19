@@ -116,10 +116,26 @@ class AutomationManifest:
                 )
 
             loaded_fingerprint = _build_config_fingerprint(loaded.get("config_snapshot", {}))
-            if loaded_fingerprint != desired_fingerprint:
+            # Backward compatibility: a purely-additive new automation_*
+            # default key (e.g. automation_rppg_* introduced default-OFF)
+            # must NOT invalidate manifests written before it existed —
+            # those runs are behaviour-identical (the feature is off). So
+            # only the keys the OLD manifest actually recorded must still
+            # match; extra keys in `desired` that are absent from the
+            # loaded snapshot are tolerated. Changing the value of an
+            # existing recorded key still mismatches (original guarantee
+            # preserved). Codex P1 / PR #39: without this, every existing
+            # user's resume/run breaks the moment rPPG defaults are added.
+            conflicting = {
+                key: (loaded_fingerprint[key], desired_fingerprint.get(key))
+                for key in loaded_fingerprint
+                if key not in desired_fingerprint
+                or loaded_fingerprint[key] != desired_fingerprint[key]
+            }
+            if conflicting:
                 raise ValueError(
                     f"Manifest config fingerprint mismatch at {manifest_path}: "
-                    f"manifest={loaded_fingerprint!r}, requested={desired_fingerprint!r}"
+                    f"conflicting keys (manifest vs requested)={conflicting!r}"
                 )
             return cls(manifest_path=manifest_path, data=loaded)
 
