@@ -168,17 +168,34 @@ def build_sanitized_config(
     # the dev's stale slot choice can't carry either.
     _tmpl_slot = str(template.get("current_prompt_slot", 4))
     config["current_prompt_slot"] = template.get("current_prompt_slot", 4)
+    # Force slot 1 (the proven minimal-motion fallback) AND the
+    # active slot, but each from its OWN template text — the active
+    # slot now carries a distinct "enhanced for kling 2.5 pro"
+    # prompt + negative, so stamping slot-1's text onto it (the old
+    # behaviour) would clobber the shipped enhanced prompt. A dev
+    # machine's stale slot text still can't survive — we overwrite
+    # from the template, falling back to slot 1 only if the active
+    # slot is empty in the template (PR #41, user request).
     _force_slots = {"1", _tmpl_slot}
     if isinstance(_t_saved, dict) and _t_saved.get("1"):
         sp = dict(config.get("saved_prompts") or {})
         for _sl in _force_slots:
-            sp[_sl] = _t_saved["1"]
+            sp[_sl] = _t_saved.get(_sl) or _t_saved["1"]
         config["saved_prompts"] = sp
     if isinstance(_t_neg, dict) and _t_neg.get("1"):
         npd = dict(config.get("negative_prompts") or {})
         for _sl in _force_slots:
-            npd[_sl] = _t_neg["1"]
+            npd[_sl] = _t_neg.get(_sl) or _t_neg["1"]
         config["negative_prompts"] = npd
+    # Ship the active slot's title too (e.g. "enhanced for kling
+    # 2.5 pro") so the GUI shows the right label on first launch.
+    _t_titles = template.get("prompt_titles")
+    if isinstance(_t_titles, dict):
+        pt = dict(config.get("prompt_titles") or {})
+        for _sl in _force_slots:
+            if _t_titles.get(_sl):
+                pt[_sl] = _t_titles[_sl]
+        config["prompt_titles"] = pt
     config["current_model"] = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
     config["model_display_name"] = "Kling 2.5 Turbo Pro"
     config["lock_end_frame"] = True
@@ -188,6 +205,17 @@ def build_sanitized_config(
     config["cfg_scale_value"] = template.get("cfg_scale_value", 0.7)
     config["rppg_metrics_in_filename"] = bool(
         template.get("rppg_metrics_in_filename", False)
+    )
+    # Composite modes are user-facing ship defaults that must be
+    # deterministic — OVERRIDE from the template (not inherit a
+    # stale dev kling_config.json value). Step 2.5 selfie expand
+    # ships raw AI output ('none'); Step 0 Face Crop / outpaint
+    # ships 'preserve_seamless' (user request, PR #41).
+    config["automation_selfie_expand_composite_mode"] = template.get(
+        "automation_selfie_expand_composite_mode", "none"
+    )
+    config["outpaint_composite_mode"] = template.get(
+        "outpaint_composite_mode", "preserve_seamless"
     )
 
     ensure_key_fields(config)

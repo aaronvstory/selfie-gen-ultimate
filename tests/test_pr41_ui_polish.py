@@ -127,5 +127,42 @@ class ExpandLiveActiveImageTests(unittest.TestCase):
         )
 
 
+class DistForcesCompositeModesTests(unittest.TestCase):
+    """PR #41 (user request): the v2.1 bundle must force composite
+    modes from the template — Step 2.5 selfie expand 'none', Step 0
+    Face Crop / outpaint 'preserve_seamless' — so a stale dev
+    kling_config.json cannot leak the wrong composite into the ship."""
+
+    def test_release_prep_overrides_both_composites(self):
+        import json as _j, tempfile, os
+        from distribution.release_prep import build_sanitized_config
+        with tempfile.TemporaryDirectory() as d:
+            t=os.path.join(d,'default_config_template.json')
+            l=os.path.join(d,'kling_config.json')
+            open(t,'w',encoding='utf-8').write(_j.dumps({
+                'automation_selfie_expand_composite_mode':'none',
+                'outpaint_composite_mode':'preserve_seamless',
+            }))
+            # Dev machine has the WRONG (swapped) values live.
+            open(l,'w',encoding='utf-8').write(_j.dumps({
+                'automation_selfie_expand_composite_mode':'preserve_seamless',
+                'outpaint_composite_mode':'none',
+            }))
+            from pathlib import Path
+            cfg=build_sanitized_config(Path(t),Path(l))
+        self.assertEqual(cfg['automation_selfie_expand_composite_mode'],'none')
+        self.assertEqual(cfg['outpaint_composite_mode'],'preserve_seamless')
+
+    def test_shipped_template_slot3_is_active_with_title(self):
+        import json as _j
+        d=_j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
+        self.assertEqual(d['current_prompt_slot'],3)
+        self.assertEqual(d['prompt_titles']['3'],'enhanced for kling 2.5 pro')
+        self.assertIn('Kling 2.5 Pro',d['saved_prompts']['3'])
+        self.assertTrue(d['negative_prompts']['3'])
+        # slot 1 minimal-motion fallback preserved.
+        self.assertIn('very subtle, slow head movement',d['saved_prompts']['1'])
+
+
 if __name__ == "__main__":
     unittest.main()

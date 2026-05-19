@@ -77,20 +77,27 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
 
 
 def test_release_forces_active_slot_prompt_and_overrides_cfg(tmp_path: Path):
-    """Codex P2/P3 (PR #41): the bundle ships current_prompt_slot=4,
-    and the GUI/CLI generate from the ACTIVE slot. A dev machine with
-    legacy slot-4 text + a stale cfg_scale must NOT leak into the
-    release: the new minimal-motion prompt/negative must be forced
-    into BOTH slot 1 AND the active slot (4), current_prompt_slot must
-    be pinned to the template value, and cfg_scale_value must be
-    OVERRIDDEN to 0.7 (not setdefault-preserved)."""
+    """PR #41 (user request): the v2.1 bundle ships
+    current_prompt_slot=3 with slot 3 carrying its OWN distinct
+    "enhanced for kling 2.5 pro" prompt + negative, while slot 1 keeps
+    the proven minimal-motion fallback. Each forced slot must take its
+    OWN template text (NOT slot-1 stamped onto every slot), the active
+    slot's title must ship, current_prompt_slot must be pinned, and a
+    stale dev cfg_scale must be OVERRIDDEN to the template value."""
     template = tmp_path / "default_config_template.json"
     template.write_text(
         json.dumps(
             {
-                "current_prompt_slot": 4,
-                "saved_prompts": {"1": "NEW minimal-motion prompt"},
-                "negative_prompts": {"1": "NEW negative"},
+                "current_prompt_slot": 3,
+                "saved_prompts": {
+                    "1": "MINIMAL motion fallback",
+                    "3": "ENHANCED for kling 2.5 pro",
+                },
+                "negative_prompts": {
+                    "1": "NEG one",
+                    "3": "NEG three",
+                },
+                "prompt_titles": {"3": "enhanced for kling 2.5 pro"},
                 "cfg_scale_value": 0.7,
             }
         ),
@@ -100,23 +107,28 @@ def test_release_forces_active_slot_prompt_and_overrides_cfg(tmp_path: Path):
     live.write_text(
         json.dumps(
             {
-                # Dev machine carries STALE slot-4 text + old cfg.
-                "current_prompt_slot": 4,
-                "saved_prompts": {"1": "old s1", "4": "OLD high-motion slot4"},
-                "negative_prompts": {"4": ""},
+                # Dev machine carries STALE slot text + old cfg.
+                "current_prompt_slot": 1,
+                "saved_prompts": {"1": "old s1", "3": "OLD stale slot3"},
+                "negative_prompts": {"3": "old neg3"},
+                "prompt_titles": {"3": "old title"},
                 "cfg_scale_value": 0.5,
             }
         ),
         encoding="utf-8",
     )
     cfg = build_sanitized_config(template, live)
-    # Active slot (4) AND slot 1 get the NEW prompt + negative.
-    assert cfg["saved_prompts"]["4"] == "NEW minimal-motion prompt"
-    assert cfg["saved_prompts"]["1"] == "NEW minimal-motion prompt"
-    assert cfg["negative_prompts"]["4"] == "NEW negative"
-    assert cfg["negative_prompts"]["1"] == "NEW negative"
-    # current_prompt_slot pinned to the template value.
-    assert cfg["current_prompt_slot"] == 4
+    # Slot 1 keeps ITS own text; slot 3 (active) keeps ITS own
+    # distinct enhanced text — NOT slot-1 stamped onto both.
+    assert cfg["saved_prompts"]["1"] == "MINIMAL motion fallback"
+    assert cfg["saved_prompts"]["3"] == "ENHANCED for kling 2.5 pro"
+    assert cfg["negative_prompts"]["1"] == "NEG one"
+    assert cfg["negative_prompts"]["3"] == "NEG three"
+    # The active slot's title ships so the GUI shows the right label.
+    assert cfg["prompt_titles"]["3"] == "enhanced for kling 2.5 pro"
+    # current_prompt_slot pinned to the template value (3), the dev's
+    # stale 1 must not survive.
+    assert cfg["current_prompt_slot"] == 3
     # Stale 0.5 OVERRIDDEN, not preserved.
     assert cfg["cfg_scale_value"] == 0.7
     # Other forced defaults still hold.
