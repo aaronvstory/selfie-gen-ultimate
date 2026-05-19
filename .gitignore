@@ -85,7 +85,9 @@ oldcam_reference_bundle/
 oldcam-testing/front_crop_nano-banana-2-edit_sim87_001_k25tStd_p4_1.mp4
 # rPPG harness run outputs (injected videos, frame extracts, reports)
 oldcam-testing/rppg_harness_out/
-*-rppg.mp4
+# (scoped: the bare '*-rppg.mp4' was over-broad and could hide a
+# legitimate repo output anywhere; harness byproducts are covered
+# by the oldcam-testing/-scoped patterns below.)
 # rPPG/oldcam chain-harness byproducts dropped directly in oldcam-testing/
 oldcam-testing/*-oldcam-v*.mp4
 oldcam-testing/*-rppg*.mp4

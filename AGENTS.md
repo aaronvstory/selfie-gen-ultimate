@@ -260,7 +260,7 @@ except Exception as e:
 | Defaults / config merge | `automation/config.py` | Normalize `automation_*` settings from app config |
 | Case discovery | `automation/discovery.py` | Find case folders with `front.jpg/png` and existing outputs |
 | Manifest | `automation/manifest.py` | Atomic per-case/per-step state for resume/retry |
-| Runner | `automation/pipeline.py` | Orchestrates full 7-step automated flow |
+| Runner | `automation/pipeline.py` | Orchestrates the full automated flow (8 steps: front_expand → extract_portrait → selfie_generate → similarity_gate → selfie_expand → video_generate → oldcam → **rppg**; plus the optional facetrack gate before oldcam) |
 | Face extraction service | `face_crop_service.py` | Headless portrait crop for CLI pipeline |
 
 ### Oldcam Version Wiring
@@ -283,8 +283,8 @@ Quick touch-points when adding vN:
 
 ### Automation Manifest Semantics
 
-- Fixed step keys:
-  - `front_expand`, `extract_portrait`, `selfie_generate`, `similarity_gate`, `selfie_expand`, `video_generate`, `oldcam`
+- Fixed step keys (must match `automation/manifest.py` `STEP_NAMES`):
+  - `front_expand`, `extract_portrait`, `selfie_generate`, `similarity_gate`, `selfie_expand`, `video_generate`, `facetrack_gate`, `oldcam`, `rppg`
 - Step fields:
   - `status`, `output`, `error`, `meta`, timestamps
 - Statuses:

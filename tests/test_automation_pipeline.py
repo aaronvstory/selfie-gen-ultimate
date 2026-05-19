@@ -2137,3 +2137,80 @@ def test_pipeline_rppg_string_true_enables(tmp_path, monkeypatch):
     stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled="true", rppg_returns="path")
     assert stats["failed"] == 0
     assert step.get("status") == "complete"
+
+
+def test_stream_subprocess_timeout_reaps_killed_child(tmp_path):
+    """Regression (CodeRabbit Critical, PR #39): on timeout the helper
+    kill()s the child; without a following wait() it lingers as a zombie.
+    Assert the process is actually reaped (poll() returns a code, not
+    None) after TimeoutExpired propagates."""
+    import subprocess
+    import sys
+    import time as _t
+    import unittest.mock as _m
+
+    from automation import rppg as _r
+
+    real_popen = subprocess.Popen
+    captured = {}
+
+    def _spy(*a, **k):
+        proc = real_popen(*a, **k)
+        captured["p"] = proc
+        return proc
+
+    with _m.patch("subprocess.Popen", side_effect=_spy):
+        with pytest.raises(subprocess.TimeoutExpired):
+            _r.stream_subprocess_with_timeout(
+                [sys.executable, "-c", "import time;time.sleep(30)"],
+                cwd=str(tmp_path),
+                timeout_seconds=1,
+            )
+    proc = captured["p"]
+    for _ in range(50):
+        if proc.poll() is not None:
+            break
+        _t.sleep(0.05)
+    assert proc.poll() is not None, "killed child was not reaped (zombie)"
+
+
+def test_run_rppg_absolutizes_relative_input(tmp_path, monkeypatch):
+    """Regression (CodeRabbit Major, PR #39): run_rppg runs the injector
+    with cwd=launcher.parent, so a RELATIVE video_path would resolve
+    against rPPG/ not the caller dir. The input + --output must be
+    .resolve()d before the command is built."""
+    import os
+
+    from automation import rppg as _r
+
+    rppg_dir = tmp_path / "rPPG"
+    rppg_dir.mkdir()
+    (rppg_dir / "run_rppg.bat").write_text("@echo off", encoding="utf-8")
+    (rppg_dir / "rppg_injector.py").write_text("# stub", encoding="utf-8")
+
+    work = tmp_path / "work"
+    work.mkdir()
+    vid = work / "clip.mp4"
+    vid.write_bytes(b"v")
+
+    seen = {}
+
+    def _fake_stream(cmd, *, cwd, timeout_seconds, on_line=None):
+        seen["cmd"] = list(cmd)
+        return 1, []  # non-zero -> graceful skip; we only inspect cmd
+
+    monkeypatch.setattr(_r, "stream_subprocess_with_timeout", _fake_stream)
+
+    old = os.getcwd()
+    try:
+        os.chdir(work)
+        _r.run_rppg(video_path=Path("clip.mp4"), repo_root=tmp_path)
+    finally:
+        os.chdir(old)
+
+    args = seen["cmd"]
+    in_arg = args[1]
+    out_arg = args[args.index("--output") + 1]
+    assert Path(in_arg).is_absolute(), f"input not absolutized: {in_arg!r}"
+    assert Path(out_arg).is_absolute(), f"--output not absolutized: {out_arg!r}"
+    assert Path(in_arg) == vid.resolve()

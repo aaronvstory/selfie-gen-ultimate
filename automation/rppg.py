@@ -214,6 +214,13 @@ def stream_subprocess_with_timeout(
         if remaining <= 0:
             if process.poll() is None:
                 process.kill()
+                # Reap the SIGKILL'd child so it does not linger as a
+                # zombie (kill() terminates but does not wait()). Bounded
+                # so a wedged kill can't itself hang the caller.
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
             raise subprocess.TimeoutExpired(cmd, timeout_seconds)
         try:
             item = line_q.get(timeout=min(remaining, 1.0))
@@ -235,6 +242,10 @@ def stream_subprocess_with_timeout(
     except subprocess.TimeoutExpired:
         if process.poll() is None:
             process.kill()
+            try:
+                process.wait(timeout=5)  # reap the killed child (no zombie)
+            except subprocess.TimeoutExpired:
+                pass
         raise
     return returncode, output_lines
 
@@ -254,7 +265,13 @@ def run_rppg(
         _report(progress_cb, "rPPG skipped: rPPG/ tool not present.", "warning")
         return None
 
-    input_path = Path(video_path)
+    # Absolutize BEFORE building the command: the subprocess runs with
+    # cwd=launcher.parent (rPPG/), so a relative video_path/--output
+    # would resolve against rPPG/ instead of the caller's directory —
+    # the injector would not find the input and would write the output
+    # to the wrong place (CodeRabbit major, PR #39). Callers may pass a
+    # relative path depending on the automation root.
+    input_path = Path(video_path).resolve()
     if not input_path.exists():
         _report(progress_cb, f"rPPG skipped: input missing ({input_path.name}).", "warning")
         return None
