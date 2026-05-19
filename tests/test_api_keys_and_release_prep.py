@@ -320,11 +320,20 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         cfg = json.loads(zf.read(cfg_name).decode("utf-8"))
         for key in ("falai_api_key", "bfl_api_key", "openrouter_api_key", "freeimage_api_key"):
             assert cfg[key] == ""
-        for key in ("output_folder", "automation_root_folder", "selfie_output_folder", "window_geometry"):
+        # window_geometry is NO LONGER blanked (user 2026-05-19: ship
+        # the dev's window sizing too — everything except API keys).
+        for key in ("output_folder", "automation_root_folder", "selfie_output_folder"):
             assert cfg[key] == ""
+        assert cfg.get("window_geometry") == "100x100+0+0"  # preserved
         for key in EXPECTED_PROMPT_KEYS:
             assert key in cfg
+        # saved_prompts["1"] is FORCED from the template slot 1 (the new
+        # minimal-motion default ships even if the dev's live slot was
+        # stale); current_model + lock_end_frame are forced project
+        # defaults too.
         assert cfg["saved_prompts"]["1"] == "kling prompt"
+        assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+        assert cfg["lock_end_frame"] is True
         assert cfg["automation_selfie_prompts"]["1"] == "selfie auto prompt"
         assert cfg["selfie_prompt_template"] == "selfie template"
         assert cfg["outpaint_prompt"] == "outpaint it"
