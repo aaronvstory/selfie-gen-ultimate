@@ -164,5 +164,47 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         self.assertIn('very subtle, slow head movement',d['saved_prompts']['1'])
 
 
+class SimilarityScoreVarianceTests(unittest.TestCase):
+    """User-reported regression (PR #41): two visibly-different
+    selfies both scored 82% under the v1.9 sqrt curve because d=0.50-
+    0.68 squashed into 80.0-82.9% (only 2.9 points of resolution).
+    v2.0 linear curve restores meaningful variance across the whole
+    pass zone. Pin the user's exact reported distances so a regression
+    can't quietly re-introduce the score compression."""
+
+    def test_user_reported_distances_are_distinguishable(self):
+        import importlib
+        se = importlib.import_module('similarity_engine')
+        engine = se.FaceEngine()
+        s_538, _ = engine._score_from_distance(0.538)
+        s_564, _ = engine._score_from_distance(0.564)
+        # Under the old sqrt curve BOTH rounded to 82. Under v2.0
+        # linear they round to 84 and 83 — a visible 1-point gap.
+        self.assertEqual(int(round(s_538)), 84)
+        self.assertEqual(int(round(s_564)), 83)
+        # Raw-score gap must be > 0.5 so rounding can't merge them.
+        self.assertGreater(s_538 - s_564, 0.5)
+
+    def test_typical_ai_selfie_range_has_proportional_spread(self):
+        import importlib
+        se = importlib.import_module('similarity_engine')
+        engine = se.FaceEngine()
+        # Distances 0.30 (high similarity) and 0.65 (borderline) must
+        # produce a >9-point score gap so the calculator is genuinely
+        # sensitive across the AI-selfie operating range.
+        hi, _ = engine._score_from_distance(0.30)
+        lo, _ = engine._score_from_distance(0.65)
+        self.assertGreater(hi - lo, 9.0,
+            f'AI-selfie band must spread >9 points; got {hi:.2f} vs {lo:.2f}')
+
+    def test_curve_exponent_is_v2_linear(self):
+        import importlib
+        se = importlib.import_module('similarity_engine')
+        # Pin the constant so a future PR can't silently re-introduce
+        # the v1.9 sqrt compression.
+        self.assertEqual(se.FaceEngine.PASS_CURVE_EXPONENT, 1.0)
+        self.assertEqual(se.FaceEngine.FAIL_CURVE_EXPONENT, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

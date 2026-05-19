@@ -1809,6 +1809,26 @@ class QueueManager:
                 if not _is_tf_noise(text):
                     level = "debug" if _is_panel_noise(text) else "info"
                     self.log(text, level)
+                    # The injector emits its OWN internal pass/fail
+                    # self-grade against strict metric targets. At
+                    # the sub-perceptual --strength 0.005 ship
+                    # default it's mathematically impossible to
+                    # satisfy all of phase<=18°, temporal>=0.85,
+                    # harmonic>=0.7 simultaneously, so this line
+                    # routinely reads FAIL even though the pulse was
+                    # successfully injected. The pipeline contract
+                    # is exit-code-based — exit 0 == success — so
+                    # annotate the confusing line to prevent users
+                    # reading it as a pipeline error (user feedback,
+                    # PR #41).
+                    if text.strip().startswith("Test Result:"):
+                        self.log(
+                            "  ^ injector internal self-grade only; "
+                            "pipeline OK if injector exits 0 "
+                            "(sub-perceptual --strength 0.005 "
+                            "can't satisfy all strict targets).",
+                            "debug",
+                        )
 
             try:
                 # Shared reader-thread + hard wall-clock helper (single

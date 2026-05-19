@@ -624,20 +624,33 @@ class FaceEngine:
         }
 
     # Polynomial-easing exponent for the pass curve (distance <= threshold).
-    # v1.8 used 2.5, which compressed the entire 0.0-0.20 distance band into
-    # 99-100% — making AI-generated selfies (typical distance 0.05-0.15) read
-    # as visually indistinguishable from pixel-identical inputs. v1.9 uses 0.5
-    # (square root) to spread that band across 95-91% so the score conveys
-    # meaningful gradation. Reference points (threshold=0.68):
+    # History — both prior values had structural compression problems:
+    #   v1.8 = 2.5: compressed distance 0.0-0.20 into 99-100% (AI selfies
+    #               at d=0.05-0.15 read as visually pixel-identical).
+    #   v1.9 = 0.5: fixed the top end but COMPRESSED THE BOTTOM of the
+    #               pass zone — d=0.50-0.68 squashed into 80.0-82.9%
+    #               (a 2.9-point band). User-reported symptom: two
+    #               visibly-different selfies both score 82%.
+    # v2.0 = 1.0 (linear) spreads the whole pass zone evenly so typical
+    # AI-selfie distances (0.30-0.65) cover 80-91% with proportional
+    # sensitivity at every point. Reference points (threshold=0.68):
     #   distance 0.00 -> 100.00%  (identical)
-    #   distance 0.05 ->  94.58%  (typical AI selfie, identity preserved)
-    #   distance 0.10 ->  92.33%
-    #   distance 0.15 ->  90.61%
-    #   distance 0.20 ->  89.15%  (visible variance)
-    #   distance 0.30 ->  86.72%
-    #   distance 0.50 ->  82.85%
-    #   distance 0.68 ->  80.00%  (ArcFace official threshold)
-    PASS_CURVE_EXPONENT: float = 0.5
+    #   distance 0.05 ->  98.53%  (typical AI selfie, identity preserved)
+    #   distance 0.10 ->  97.06%
+    #   distance 0.15 ->  95.59%
+    #   distance 0.20 ->  94.12%  (visible variance)
+    #   distance 0.30 ->  91.18%
+    #   distance 0.40 ->  88.24%
+    #   distance 0.50 ->  85.29%
+    #   distance 0.538 -> 84.18%  (clear 1.0-pt gap from 0.564 below)
+    #   distance 0.564 -> 83.41%
+    #   distance 0.60 ->  82.35%
+    #   distance 0.68 ->  80.00%  (ArcFace official threshold; PASS floor)
+    PASS_CURVE_EXPONENT: float = 1.0
+    # The fail-branch exponent had the inverse compression problem
+    # (sqrt squashed fail-side variance). Linear here too keeps the
+    # whole 0..threshold..1 distance domain proportionally mapped.
+    FAIL_CURVE_EXPONENT: float = 1.0
 
     def _score_from_distance(self, distance: float) -> Tuple[float, bool]:
         distance = max(0.0, min(1.0, distance))
@@ -648,7 +661,7 @@ class FaceEngine:
             curved_score = 80.0 + (20.0 * (1.0 - math.pow(ratio, self.PASS_CURVE_EXPONENT)))
             return curved_score, True
         fail_ratio = (distance - safe_threshold) / (1.0 - safe_threshold)
-        fail_score = max(0.0, 79.0 * (1.0 - math.pow(fail_ratio, 0.5)))
+        fail_score = max(0.0, 79.0 * (1.0 - math.pow(fail_ratio, self.FAIL_CURVE_EXPONENT)))
         return fail_score, False
 
     def _extract_faces(self, img_path: str) -> List[Dict[str, Any]]:
