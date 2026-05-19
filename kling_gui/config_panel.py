@@ -1099,9 +1099,15 @@ class ConfigPanel(tk.Frame):
         self.negative_prompt_preview.configure(yscrollcommand=neg_scroll.set)
         neg_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.negative_prompt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        # Shrink the positive box so the split reads as roughly two
-        # halves rather than the negative being a thin afterthought.
-        self.prompt_preview.config(height=7)
+        # Positive-box height is managed DYNAMICALLY by
+        # _apply_negative_prompt_visibility (7 when the negative half is
+        # shown so the split reads as ~two halves; restored to the full
+        # 12 when collapsed). Do NOT shrink it unconditionally here —
+        # that left the editor permanently short on models without
+        # negative-prompt support (CodeRabbit Major, PR #41). Remember
+        # the full height so the toggle can restore it.
+        self._positive_prompt_full_height = 12
+        self._positive_prompt_split_height = 7
         # Visibility is set on first model-change; default-hide until then.
         self._negative_prompt_section.pack_forget()
         # Explicit desired-visibility flag (see
@@ -1932,6 +1938,7 @@ class ConfigPanel(tk.Frame):
         if getattr(self, "_neg_visible", None) == want:
             return  # idempotent — already in the desired state
         try:
+            pp = getattr(self, "prompt_preview", None)
             if want:
                 footer = getattr(self, "_prompt_footer", None)
                 if footer is not None:
@@ -1941,8 +1948,20 @@ class ConfigPanel(tk.Frame):
                     )
                 else:
                     neg.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+                # Shrink the positive box so the split reads as ~two
+                # halves rather than the negative being a thin afterthought.
+                if pp is not None:
+                    pp.config(
+                        height=getattr(self, "_positive_prompt_split_height", 7)
+                    )
             else:
                 neg.pack_forget()
+                # Negative hidden -> restore the positive box to full
+                # height (CodeRabbit Major, PR #41 — it was left short).
+                if pp is not None:
+                    pp.config(
+                        height=getattr(self, "_positive_prompt_full_height", 12)
+                    )
             self._neg_visible = want
         except Exception:
             pass
