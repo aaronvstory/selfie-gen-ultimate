@@ -178,23 +178,40 @@ def parse_metric_suffix(produced_stem: str, requested_stem: str) -> Optional[Dic
     (e.g. the injector honoured ``--output`` for once, or the names are
     unrelated) — callers then skip the sidecar/rename gracefully.
 
-    Metric values can be negative (e.g. a negative phase) and the
-    separator between numbers is a single ``-``; a leading ``-`` on a
-    value would make ``--``. Splitting on ``-`` is therefore ambiguous,
-    so we re-parse with a float-aware scanner instead of ``str.split``.
+    The injector formats the suffix as
+    ``f"{snr:.2f}-{phase:.1f}-{temporal:.2f}-{motion:.2f}-{harmonic:.2f}"``
+    (rPPG/rppg_injector.py::format_metric_suffix) — exactly 5 numbers
+    joined by a single ``-``. ``phase`` can be NEGATIVE, so a value's
+    own leading ``-`` collides with the ``-`` separator to make ``--``.
+    A greedy signed-number regex scan therefore mis-reads every
+    separator as a sign. Instead split on ``-``: an EMPTY token (the
+    gap inside ``--``)
+    means the next number is negative. Reassemble exactly 5 values.
     """
     if produced_stem == requested_stem:
         return None
     if not produced_stem.startswith(f"{requested_stem} - "):
         return None
     tail = produced_stem[len(requested_stem) + 3:]  # drop "<stem> - "
-    # Scan exactly 5 signed floats; the inter-value separator is one '-'.
-    nums = re.findall(r"-?\d+(?:\.\d+)?", tail)
-    if len(nums) != len(_METRIC_KEYS):
-        return None
-    try:
-        values = [float(n) for n in nums]
-    except ValueError:
+    parts = tail.split("-")
+    values: List[float] = []
+    i = 0
+    while i < len(parts):
+        tok = parts[i]
+        if tok == "":
+            # Empty token => this position was a '--': the separator '-'
+            # followed by a negative value's leading '-'. The number is
+            # the NEXT part, negated.
+            i += 1
+            if i >= len(parts):
+                return None
+            tok = "-" + parts[i]
+        try:
+            values.append(float(tok))
+        except ValueError:
+            return None
+        i += 1
+    if len(values) != len(_METRIC_KEYS):
         return None
     return dict(zip(_METRIC_KEYS, values))
 
