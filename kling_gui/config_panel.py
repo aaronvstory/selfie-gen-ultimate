@@ -13,6 +13,10 @@ import re
 import logging
 import sys
 from tk_dialogs import select_directory, select_open_files
+# COLORS/FONT_FAMILY are intentionally duplicated below (documented
+# inconsistency in CLAUDE.md); we still import this one macOS button
+# helper from the single source of truth rather than re-implement it.
+from .theme import apply_macos_button_fix
 
 try:
     from tkinterdnd2 import DND_FILES as _DND_FILES
@@ -417,6 +421,7 @@ class ConfigPanel(tk.Frame):
             padx=8, pady=2, relief=tk.FLAT, borderwidth=0, command=self._open_model_manager,
         )
         self.manage_models_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        apply_macos_button_fix(self.manage_models_btn)
 
         self.model_var = tk.StringVar()
         self.model_combo = ttk.Combobox(
@@ -469,6 +474,7 @@ class ConfigPanel(tk.Frame):
             padx=10, relief=tk.FLAT, borderwidth=0, command=self._browse_output_folder,
         )
         self.browse_btn.pack(side=tk.LEFT, padx=2)
+        apply_macos_button_fix(self.browse_btn)
 
         # Separator (between model/output rows and option rows)
         ttk.Separator(left_col, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(2, 10))
@@ -664,6 +670,7 @@ class ConfigPanel(tk.Frame):
             command=self._on_oldcam_rerun_clicked,
         )
         self.oldcam_rerun_btn.pack(side=tk.LEFT, padx=(0, 4))
+        apply_macos_button_fix(self.oldcam_rerun_btn)
         HoverTooltip(
             self.oldcam_rerun_btn,
             lambda: (
@@ -690,6 +697,7 @@ class ConfigPanel(tk.Frame):
             command=self._on_oldcam_pick_rerun_clicked,
         )
         self.oldcam_pick_btn.pack(side=tk.LEFT, padx=(0, 0))
+        apply_macos_button_fix(self.oldcam_pick_btn)
         HoverTooltip(
             self.oldcam_pick_btn,
             lambda: (
@@ -1023,6 +1031,7 @@ class ConfigPanel(tk.Frame):
             command=self._enter_edit_mode,
         )
         self.edit_prompt_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        apply_macos_button_fix(self.edit_prompt_btn)
         self.save_prompt_btn = tk.Button(
             prompt_footer, text="Save Prompt", font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_input"], fg=COLORS["text_light"],
@@ -1031,6 +1040,7 @@ class ConfigPanel(tk.Frame):
             state="disabled", command=self._save_prompt,
         )
         self.save_prompt_btn.pack(side=tk.RIGHT)
+        apply_macos_button_fix(self.save_prompt_btn)
 
         # Load prompt config now that widgets exist
         self._load_prompt_config()

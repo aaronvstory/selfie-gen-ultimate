@@ -18,6 +18,7 @@ from .theme import (
     TTK_BTN_SUCCESS_COMPACT,
     BUTTON_TEXT_COLOR,
     BUTTON_DISABLED_TEXT_COLOR,
+    apply_macos_button_fix,
     debounce_command,
 )
 from .image_state import ImageSession
@@ -266,6 +267,7 @@ class ImageCarousel(tk.Frame):
             cursor="hand2",
         )
         self._ref_btn.pack(side=tk.LEFT)
+        apply_macos_button_fix(self._ref_btn)
 
         self.compare_btn = tk.Button(
             sim_row,
@@ -288,6 +290,7 @@ class ImageCarousel(tk.Frame):
             cursor="hand2",
         )
         self.compare_btn.pack(side=tk.LEFT, padx=(6, 0))
+        apply_macos_button_fix(self.compare_btn)
 
         # NOTE: manual recompute "Recalc" button moved to meta_frame (next
         # to the SIM badge) as an icon-only ⟳ button in v5 per user request.

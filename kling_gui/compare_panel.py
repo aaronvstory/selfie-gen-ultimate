@@ -4,7 +4,7 @@ import tkinter as tk
 from typing import Callable, Optional
 import logging
 
-from .theme import COLORS, FONT_FAMILY
+from .theme import COLORS, FONT_FAMILY, apply_macos_button_fix
 from .image_state import ImageSession
 from .carousel_widget import _format_image_info, _truncate_filename, _sim_color
 from .tag_utils import derive_display_tag
@@ -104,6 +104,7 @@ class ComparePanel(tk.Frame):
             padx=6,
         )
         close_btn.pack(side=tk.RIGHT)
+        apply_macos_button_fix(close_btn)
 
         # Nav buttons + counter
         self.next_btn = tk.Button(
@@ -118,6 +119,7 @@ class ComparePanel(tk.Frame):
             relief=tk.FLAT,
         )
         self.next_btn.pack(side=tk.RIGHT, padx=(2, 4))
+        apply_macos_button_fix(self.next_btn)
 
         self.counter_label = tk.Label(
             header,
@@ -140,6 +142,7 @@ class ComparePanel(tk.Frame):
             relief=tk.FLAT,
         )
         self.prev_btn.pack(side=tk.RIGHT)
+        apply_macos_button_fix(self.prev_btn)
 
         # Metadata row (resolution + filesize on left, similarity on right)
         self.meta_frame = tk.Frame(self, bg=COLORS["bg_panel"])

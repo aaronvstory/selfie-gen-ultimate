@@ -119,8 +119,9 @@ def create_action_button(parent, text: str, command, style: str = TTK_BTN_SECOND
             fg=fg,
             activebackground=COLORS["bg_hover"],
             activeforeground=fg,
-            highlightbackground=COLORS["bg_main"],
-            highlightthickness=1,
+            highlightbackground=bg,
+            highlightcolor=bg,
+            highlightthickness=0,
             relief=tk.FLAT,
             bd=0,
             padx=12,
@@ -131,3 +132,36 @@ def create_action_button(parent, text: str, command, style: str = TTK_BTN_SECOND
             button.config(width=width)
         return button
     return ttk.Button(parent, text=text, command=command, style=style, **kwargs)
+
+
+def apply_macos_button_fix(button) -> None:
+    """Make an EXISTING raw ``tk.Button`` honor its color and be
+    reliably clickable on macOS.
+
+    No-op on Windows/Linux (``tk.Button`` already behaves there). On
+    macOS Aqua a ``tk.Button``'s rendered color comes from
+    ``highlightbackground``, NOT ``bg`` — so a button created with only
+    ``bg=`` shows up plain/grey. And a non-zero ``highlightthickness``
+    draws a focus ring that shrinks the clickable interior, producing
+    the "have to wiggle the cursor and click several times" hit-area
+    bug. This mirrors the create_action_button macOS path for buttons
+    that (for layout reasons) are still built as raw ``tk.Button``:
+    point ``highlightbackground``/``highlightcolor`` at the button's
+    own ``bg`` and zero the thickness. The button's existing
+    ``fg``/padding are left untouched (no contrast regression).
+    Safe to call unconditionally; silently ignores non-tk widgets.
+    """
+    if not IS_MACOS:
+        return
+    try:
+        fill = button.cget("bg")
+        button.config(
+            highlightbackground=fill,
+            highlightcolor=fill,
+            highlightthickness=0,
+            relief="flat",
+            cursor="hand2",
+        )
+    except Exception:
+        # Never let a cosmetic tweak break widget construction.
+        pass
