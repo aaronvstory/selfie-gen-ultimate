@@ -2214,6 +2214,85 @@ def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch
     assert len(step.get("meta", {}).get("all_outputs", [])) == 3
 
 
+def _fanout_partial_case(tmp_path, required, monkeypatch):
+    """Shared rig: base + v8 + v24; v24 rPPG FAILS, base+v8 succeed."""
+    from automation.rppg import build_rppg_output_path
+
+    case_dir = tmp_path / f"case-partial-{required}"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    gv = case_dir / "gen-videos"
+    gv.mkdir()
+    base = gv / "existing.mp4"
+    base.write_bytes(b"base")
+    v8 = gv / "existing-oldcam-v8.mp4"
+    v8.write_bytes(b"v8")
+    v24 = gv / "existing-oldcam-v24.mp4"
+    v24.write_bytes(b"v24")
+    record = CaseRecord(case_dir=case_dir, front_path=front,
+                        relative_key=f"case-partial-{required}")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x", "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "p"}, "current_prompt_slot": 1,
+        "automation_skip_if_video_exists": True,
+        "automation_oldcam_enabled": True,
+        "automation_oldcam_required": False,
+        "automation_rppg_enabled": True,
+        "automation_rppg_required": required,
+    })
+    manifest = AutomationManifest.create_or_load(
+        tmp_path / f"m-{required}.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **k: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *a, **k: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **k: [("v8", v8), ("v24", v24)])
+
+    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600, keep_metrics=False):
+        del repo_root, progress_cb, timeout_seconds, keep_metrics
+        # v24 injection FAILS (returns None); base + v8 succeed.
+        if Path(video_path).name == "existing-oldcam-v24.mp4":
+            return None
+        out = build_rppg_output_path(Path(video_path))
+        out.write_bytes(b"rppg")
+        return out
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", _fake_rppg)
+    runner = AutoPipelineRunner(
+        config=config, automation_config=from_app_config(config), manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(outpaint_factory=lambda: FakeOutpaint(), selfie_factory=lambda: FakeSelfie(), video_factory=lambda: FakeVideo()),
+    )
+    stats = runner.run([record])
+    step = manifest.data["cases"][record.relative_key]["steps"].get("rppg", {})
+    return stats, step
+
+
+def test_pipeline_rppg_partial_fanout_fails_when_required(tmp_path, monkeypatch):
+    """Codex P2 (PR #40): with automation_rppg_required=true, a PARTIAL
+    fan-out (base+v8 succeed, v24 fails) must FAIL the case — a missing
+    oldcam deliverable must never be reported as success."""
+    stats, step = _fanout_partial_case(tmp_path, True, monkeypatch)
+    assert stats["failed"] == 1
+    assert step.get("status") == "failed"
+    assert "existing-oldcam-v24.mp4" in step.get("error", "")
+
+
+def test_pipeline_rppg_partial_fanout_headlines_best_success_when_not_required(tmp_path, monkeypatch):
+    """Codex P2 (PR #40): not required -> the case still completes, but
+    the headline must be the highest oldcam version that ACTUALLY
+    succeeded (v8 here), NEVER the base just because it was produced
+    last-standing. partial flag + failed_inputs are recorded."""
+    stats, step = _fanout_partial_case(tmp_path, False, monkeypatch)
+    assert stats["failed"] == 0
+    assert step.get("status") == "complete"
+    # Headline must be the v8 rPPG (highest SUCCESSFUL oldcam), not base.
+    assert step.get("output", "").endswith("existing-oldcam-v8-rppg.mp4"), step.get("output")
+    assert step.get("meta", {}).get("partial") is True
+    assert "existing-oldcam-v24.mp4" in step.get("meta", {}).get("failed_inputs", [])
+
+
 def test_pipeline_step8_candidate_selection_includes_legacy_oldcam(tmp_path):
     """Regression (Codex P2 / CodeRabbit Major, PR #40): the Step-8
     candidate-selection rule must fan rPPG over the BASE *and* the legacy

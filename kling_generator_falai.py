@@ -14,7 +14,11 @@ import traceback
 from datetime import datetime
 
 from model_schema_manager import ModelSchemaManager
-from model_metadata import get_prompt_limit
+from model_metadata import (
+    get_prompt_limit,
+    get_model_capabilities,
+    get_model_by_endpoint,
+)
 from path_utils import sanitize_stem
 
 # Setup logging
@@ -503,6 +507,8 @@ class FalAIKlingGenerator:
         camera_fixed: bool = False,
         generate_audio: bool = False,
         end_image_url: Optional[str] = None,
+        cfg_scale: Optional[float] = None,
+        lock_end_frame: bool = False,
         config: Optional[Dict[str, Any]] = None,
         timestamp: Optional[datetime] = None,
     ) -> Optional[str]:
@@ -521,7 +527,11 @@ class FalAIKlingGenerator:
             seed: Random seed (-1 for random)
             camera_fixed: Whether camera should be fixed/stationary
             generate_audio: Whether to generate audio
-            end_image_url: Optional last frame image URL for interpolation
+            end_image_url: Optional explicit last-frame image URL (model-dependent)
+            cfg_scale: Optional prompt-adherence strength (model-dependent, 0-1)
+            lock_end_frame: If True and the model has an end-frame param,
+                set it to the SAME url as the start image so the clip
+                mechanically returns to the opening pose
             config: Config dict containing prompt_titles and saved_prompts (for enhanced filenames)
             timestamp: Generation start time for consistent filenames (defaults to now)
         """
@@ -575,9 +585,37 @@ class FalAIKlingGenerator:
             # Status check headers (no Content-Type for GET requests)
             status_headers = {"Authorization": f"Key {self.api_key}"}
 
-            # Build full payload with ALL possible parameters
+            # Per-model API capability flags (single source of truth in
+            # models.json via model_metadata.get_model_capabilities — the
+            # GUI reads the SAME flags so payload + UI never diverge).
+            caps = get_model_capabilities(self.model_endpoint)
+            # A custom / unknown endpoint is NOT in MODEL_METADATA,
+            # so caps are the conservative defaults (no neg/cfg).
+            # For those we must NOT pre-drop negative_prompt /
+            # cfg_scale on the default — the live schema (via
+            # schema_manager.validate_parameters below) is the
+            # authority and will keep them iff the custom endpoint
+            # actually supports them. Pre-PR#41 behaviour for
+            # custom models; known models keep precise per-model
+            # gating (o3 / seedance correctly drop them). Codex P2.
+            _is_known_model = get_model_by_endpoint(self.model_endpoint) is not None
+            start_param = caps["start_image_param"] or "image_url"
+            end_param = caps["end_image_param"]  # str or None
+
+            # Validate the start image URL is present BEFORE building the
+            # payload — a blank/missing url silently produces a useless
+            # request the API rejects opaquely much later.
+            if not image_url or not str(image_url).strip():
+                error_msg = "No start image URL — cannot submit generation"
+                self._set_last_error(error_msg)
+                logger.error(error_msg)
+                return None
+
+            # Build full payload with ALL possible parameters. The start
+            # image goes under the model's OWN param name (Kling v3 uses
+            # start_image_url; v2.5-turbo / o3 / seedance use image_url).
             payload_full: Dict[str, Any] = {
-                "image_url": image_url,
+                start_param: image_url,
                 "prompt": prompt,
                 "duration": duration,  # fal.ai expects integer, not string
             }
@@ -598,11 +636,32 @@ class FalAIKlingGenerator:
             if generate_audio:
                 payload_full["generate_audio"] = True
 
-            if end_image_url:
-                payload_full["end_image_url"] = end_image_url
+            # End-frame: an explicit end_image_url wins; otherwise, when
+            # lock_end_frame is requested AND the model exposes an
+            # end-frame param, point it at the SAME url as the start so
+            # the clip mechanically returns to the opening pose. Use the
+            # model's OWN end param name (tail_image_url for v2.5-turbo
+            # pro; end_image_url for v3 / o3 / seedance). Models with no
+            # end-frame support (end_param is None) get nothing.
+            if end_param:
+                if end_image_url:
+                    payload_full[end_param] = end_image_url
+                elif lock_end_frame:
+                    payload_full[end_param] = image_url
 
-            if negative_prompt:
+            # negative_prompt / cfg_scale only when the model supports
+            # them (o3 / seedance dropped both in 2026) AND a value was
+            # provided. schema_manager.validate_parameters below is a
+            # second defensive filter against the live fal.ai schema.
+            if negative_prompt and (
+                caps["supports_negative_prompt"] or not _is_known_model
+            ):
                 payload_full["negative_prompt"] = negative_prompt
+
+            if cfg_scale is not None and (
+                caps["supports_cfg_scale"] or not _is_known_model
+            ):
+                payload_full["cfg_scale"] = cfg_scale
 
             # Validate and filter parameters based on model schema (dynamic detection)
             payload = self.schema_manager.validate_parameters(
@@ -1154,6 +1213,8 @@ class FalAIKlingGenerator:
         seed: int = -1,
         camera_fixed: bool = False,
         generate_audio: bool = False,
+        cfg_scale: Optional[float] = None,
+        lock_end_frame: bool = False,
     ):
         """Process all GenX images concurrently
 
@@ -1171,6 +1232,9 @@ class FalAIKlingGenerator:
             seed: Random seed (-1 for random)
             camera_fixed: Whether camera should be fixed
             generate_audio: Whether to generate audio
+            cfg_scale: Optional prompt-adherence strength (model-gated, 0-1)
+            lock_end_frame: If True and the model has an end-frame
+                param, lock the last frame to the start image
         """
         if output_directory is None:
             output_directory = self.downloads_folder
@@ -1256,6 +1320,8 @@ class FalAIKlingGenerator:
                     seed=seed,
                     camera_fixed=camera_fixed,
                     generate_audio=generate_audio,
+                    cfg_scale=cfg_scale,
+                    lock_end_frame=lock_end_frame,
                 )
 
                 with lock:

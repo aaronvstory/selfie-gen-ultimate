@@ -47,7 +47,13 @@ def test_load_config_defaults_to_kling_standard_and_slot4(tmp_path):
     assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
     assert cfg["model_display_name"] == "Kling 2.5 Turbo Standard"
     assert cfg["current_prompt_slot"] == 4
-    assert "30 degrees" in cfg["saved_prompts"]["1"].lower()
+    # Default slot-1 prompt is now the minimal-motion prompt (PR #2):
+    # the end-frame lock does the return-to-pose mechanically, so the
+    # prompt only needs to request a subtle slow head movement.
+    assert "smallest believable range" in cfg["saved_prompts"]["1"].lower()
+    assert "profile view" in cfg["negative_prompts"]["1"].lower()
+    assert cfg["cfg_scale_value"] == 0.7
+    assert cfg["lock_end_frame"] is True
     merged = merge_automation_defaults(cfg)
     assert merged["automation_selfie_prompt_slot"] == 3
     assert str(merged["automation_selfie_prompts"]["3"]).strip()
@@ -609,7 +615,12 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
     assert ui.config["model_display_name"] == "Kling 2.5 Turbo Standard"
     assert ui.config["current_prompt_slot"] == 4
-    assert "30 degrees" in ui.config["saved_prompts"]["1"].lower()
+    # Recommended-defaults now seed the minimal-motion prompt + negative
+    # + motion knobs (PR #2).
+    assert "smallest believable range" in ui.config["saved_prompts"]["1"].lower()
+    assert "profile view" in ui.config["negative_prompts"]["1"].lower()
+    assert ui.config["cfg_scale_value"] == 0.7
+    assert ui.config["lock_end_frame"] is True
     assert ui.config["automation_similarity_threshold"] == 80
     assert ui.config["automation_video_enabled"] is True
     assert ui.config["automation_oldcam_enabled"] is True

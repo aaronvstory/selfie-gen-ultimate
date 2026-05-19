@@ -95,8 +95,9 @@ _DIST_BLANKED_PATH_KEYS = (
     "output_folder",
     "automation_root_folder",
     "selfie_output_folder",
-    "window_geometry",
 )
+# window_geometry is intentionally NOT blanked (user 2026-05-19: ship
+# the dev's window sizing too — everything except API keys).
 
 
 def build_sanitized_config(
@@ -150,6 +151,44 @@ def build_sanitized_config(
     # actually set (preserve current state verbatim).
     for key, value in template.items():
         config.setdefault(key, value)
+
+    # A handful of keys are FORCED to the project's new desired
+    # defaults even if the dev machine still carries an older value
+    # (user 2026-05-19: ship the new minimal-motion prompt + negative,
+    # default model = Kling 2.5 Turbo Pro, end-frame lock on). Sourced
+    # from the template so there is ONE definition of the new defaults.
+    _t_saved = template.get("saved_prompts")
+    _t_neg = template.get("negative_prompts")
+    # The bundle ships current_prompt_slot from the template (4 in
+    # practice). Force that slot to the template's value too, NOT
+    # just slot 1 — the GUI/CLI generate from the ACTIVE slot, so a
+    # dev machine carrying legacy slot-4 text would otherwise ship
+    # the old high-motion prompt + empty negative despite this
+    # override (Codex P2, PR #41). Pin current_prompt_slot itself so
+    # the dev's stale slot choice can't carry either.
+    _tmpl_slot = str(template.get("current_prompt_slot", 4))
+    config["current_prompt_slot"] = template.get("current_prompt_slot", 4)
+    _force_slots = {"1", _tmpl_slot}
+    if isinstance(_t_saved, dict) and _t_saved.get("1"):
+        sp = dict(config.get("saved_prompts") or {})
+        for _sl in _force_slots:
+            sp[_sl] = _t_saved["1"]
+        config["saved_prompts"] = sp
+    if isinstance(_t_neg, dict) and _t_neg.get("1"):
+        npd = dict(config.get("negative_prompts") or {})
+        for _sl in _force_slots:
+            npd[_sl] = _t_neg["1"]
+        config["negative_prompts"] = npd
+    config["current_model"] = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+    config["model_display_name"] = "Kling 2.5 Turbo Pro"
+    config["lock_end_frame"] = True
+    # Unconditionally OVERRIDE (not setdefault) — a stale live
+    # cfg_scale_value (e.g. 0.5) must not survive into the bundle;
+    # the intended shipped default is 0.7 (Codex P3, PR #41).
+    config["cfg_scale_value"] = template.get("cfg_scale_value", 0.7)
+    config["rppg_metrics_in_filename"] = bool(
+        template.get("rppg_metrics_in_filename", False)
+    )
 
     ensure_key_fields(config)
     for spec in API_KEY_SPECS:
