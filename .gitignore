@@ -90,3 +90,6 @@ oldcam-testing/rppg_harness_out/
 oldcam-testing/*-oldcam-v*.mp4
 oldcam-testing/*-rppg*.mp4
 oldcam-testing/*-rppg - *.mp4
+# rPPG chain-harness loop intermediate (introduced when --chain gained
+# the real Loop step). Same gitignored-byproduct class as above.
+oldcam-testing/*_looped.mp4
