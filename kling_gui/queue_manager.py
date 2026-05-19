@@ -1061,25 +1061,51 @@ class QueueManager:
                     self.log(f"Completed: {item.filename}", "success")
 
                     final_video = result
-                    # Check if loop video is enabled
+                    # Loop runs ONCE first (Kling -> Loop). Every oldcam
+                    # version + rPPG variant builds off this single looped
+                    # source — nothing is re-looped per-variant.
                     if config.get("loop_videos", False):
                         looped_video = self._loop_video(result, item)
                         if looped_video:
                             final_video = looped_video
 
-                    # Run oldcam only when one or more versions are selected.
+                    # Oldcam: runs EVERY selected version. _oldcam_video
+                    # returns the highest version's path for callers that
+                    # want one, but _last_oldcam_run_summary["outputs"]
+                    # holds ALL per-version outputs.
+                    oldcam_outputs: List[str] = []
                     if self._get_oldcam_versions_to_run():
                         oldcam_video = self._oldcam_video(final_video, item)
                         if oldcam_video:
                             final_video = oldcam_video
+                        summary = self._last_oldcam_run_summary or {}
+                        oldcam_outputs = list(summary.get("outputs") or [])
 
-                    # rPPG runs LAST (after loop + oldcam) so the pulse is
-                    # injected on the final delivered pixels. Graceful skip
-                    # keeps final_video unchanged.
+                    # rPPG runs LAST. There is NO privileged "primary": if
+                    # multiple oldcam versions were produced, inject into
+                    # EACH so every selected version gets its own
+                    # *-rppg deliverable. If oldcam ran but none of its
+                    # outputs are tracked, fall back to final_video. If no
+                    # oldcam at all, inject the (looped/raw) clip itself.
                     if self._rppg_enabled():
-                        rppg_video = self._rppg_video(final_video, item)
-                        if rppg_video:
-                            final_video = rppg_video
+                        rppg_inputs = oldcam_outputs or [final_video]
+                        last_rppg: Optional[str] = None
+                        for src in rppg_inputs:
+                            rppg_video = self._rppg_video(src, item)
+                            if rppg_video:
+                                last_rppg = rppg_video
+                        if last_rppg:
+                            # Surface the highest-version rPPG output as the
+                            # item's headline path (the others exist on disk
+                            # next to it). When fanning out, prefer the rPPG
+                            # of the highest oldcam version (final_video's).
+                            preferred = self._build_rppg_output_path(
+                                Path(final_video)
+                            )
+                            final_video = (
+                                str(preferred) if preferred.exists()
+                                else last_rppg
+                            )
 
                     item.output_path = final_video
                     self.log(f"Saved to: {final_video}", "info")
@@ -1537,13 +1563,18 @@ class QueueManager:
                         "warning",
                     )
                     return None
-                # Primary output is highest version number among successful runs.
+                # Highest version is returned as the single "result" for
+                # callers that want one path, but ALL successful per-version
+                # outputs are exposed so downstream rPPG can fan out across
+                # every selected version (there is no privileged "primary"
+                # — each selected version is its own deliverable).
                 primary = max(outputs, key=lambda entry: self._oldcam_version_key(entry[0]))
                 self._last_oldcam_run_summary = {
                     "requested_versions": requested,
                     "succeeded_versions": [version for version, _ in outputs],
                     "failed_versions": failures,
                     "primary_output": primary[1],
+                    "outputs": [path for _version, path in outputs],
                 }
                 # Structured success summary for the file log. The user-facing
                 # panel already saw "Oldcam vN Finish applied: <name>" for each
