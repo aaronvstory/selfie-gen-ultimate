@@ -1902,15 +1902,32 @@ class ConfigPanel(tk.Frame):
         caps label echoes the support set.
         """
         try:
-            from model_metadata import get_model_capabilities
+            from model_metadata import (
+                get_model_capabilities,
+                get_model_by_endpoint,
+            )
 
             caps = get_model_capabilities(model_endpoint)
         except Exception:
             return  # never break the model-change flow over a label
 
+        # A custom / unknown endpoint is NOT in MODEL_METADATA, so caps
+        # are the conservative defaults (no neg/cfg/end). But the
+        # dispatcher + GUI queue deliberately DON'T pre-drop neg/cfg for
+        # unknown endpoints (the live schema decides — Codex P2). The
+        # Motion row must mirror that: enable cfg + the negative-prompt
+        # split for a custom model rather than always graying them out
+        # (a UI/dispatch inconsistency otherwise — Codex P2, PR #41).
+        # end-frame stays caps-driven — a custom model with no known
+        # end param has nowhere to send it.
+        try:
+            _is_known = get_model_by_endpoint(model_endpoint) is not None
+        except Exception:
+            _is_known = True  # fail safe -> precise per-model behaviour
+
         has_end = caps.get("end_image_param") is not None
-        has_cfg = bool(caps.get("supports_cfg_scale"))
-        has_neg = bool(caps.get("supports_negative_prompt"))
+        has_cfg = bool(caps.get("supports_cfg_scale")) or not _is_known
+        has_neg = bool(caps.get("supports_negative_prompt")) or not _is_known
 
         if hasattr(self, "lock_end_frame_checkbox"):
             self.lock_end_frame_checkbox.config(

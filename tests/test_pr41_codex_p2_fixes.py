@@ -296,5 +296,101 @@ class QueueManagerCustomModelCapsTests(unittest.TestCase):
         self.assertIsNone(get_model_by_endpoint(custom))
 
 
+class ModelsJsonFactVerifiedCapsTests(unittest.TestCase):
+    """Codex P1 (PR #41): legacy models had blanket conservative
+    neg/cfg defaults that were NOT fetch-verified. The known-model
+    dispatch now gates on these flags, so a wrong flag silently drops
+    valid controls. These values were fetch-verified against the live
+    fal.ai OpenAPI schema (2026-05-19). Pin the corrected ones so a
+    regression can't silently revert to the wrong blanket defaults.
+    Offline assertions — no network in CI."""
+
+    def _model(self, endpoint):
+        import json
+
+        d = json.loads((_ROOT / "models.json").read_text(encoding="utf-8"))
+        return next(m for m in d["models"] if m["endpoint"] == endpoint)
+
+    def test_v21_pro_supports_neg_and_cfg(self):
+        m = self._model("fal-ai/kling-video/v2.1/pro/image-to-video")
+        self.assertTrue(m["supports_negative_prompt"])
+        self.assertTrue(m["supports_cfg_scale"])
+        self.assertEqual(m["end_image_param"], "tail_image_url")
+
+    def test_v26_pro_neg_true_cfg_false_end_image_url(self):
+        # Live schema: negative_prompt yes, cfg_scale NO, start/end are
+        # the v3-style *_image_url names.
+        m = self._model("fal-ai/kling-video/v2.6/pro/image-to-video")
+        self.assertTrue(m["supports_negative_prompt"])
+        self.assertFalse(m["supports_cfg_scale"])
+        self.assertEqual(m["start_image_param"], "start_image_url")
+        self.assertEqual(m["end_image_param"], "end_image_url")
+
+    def test_o1_uses_start_and_end_image_url(self):
+        m = self._model("fal-ai/kling-video/o1/image-to-video")
+        self.assertEqual(m["start_image_param"], "start_image_url")
+        self.assertEqual(m["end_image_param"], "end_image_url")
+
+    def test_v16_v15_pro_have_tail_image_url(self):
+        for ep in (
+            "fal-ai/kling-video/v1.6/pro/image-to-video",
+            "fal-ai/kling-video/v1.5/pro/image-to-video",
+        ):
+            m = self._model(ep)
+            self.assertEqual(
+                m["end_image_param"], "tail_image_url", ep
+            )
+            self.assertTrue(m["supports_negative_prompt"], ep)
+            self.assertTrue(m["supports_cfg_scale"], ep)
+
+    def test_o3_and_seedance_still_drop_neg_cfg(self):
+        # Anchor: the precise per-model gating for the new roster must
+        # NOT have been weakened by the legacy corrections.
+        for ep in (
+            "fal-ai/kling-video/o3/standard/image-to-video",
+            "bytedance/seedance-2.0/image-to-video",
+        ):
+            m = self._model(ep)
+            self.assertFalse(m["supports_negative_prompt"], ep)
+            self.assertFalse(m["supports_cfg_scale"], ep)
+
+
+class ConfigPanelCustomModelMotionTests(unittest.TestCase):
+    """Codex P2 (PR #41): _update_motion_controls derived has_neg /
+    has_cfg only from get_model_capabilities (conservative False for
+    unknown endpoints), so custom models that DO support neg/cfg were
+    impossible to configure from the GUI even though the dispatch path
+    keeps them. The fix mirrors the dispatcher's _is_known bypass.
+    Structural pin (the method needs a live Tk; assert the source)."""
+
+    def test_motion_controls_have_is_known_bypass(self):
+        src = (_ROOT / "kling_gui" / "config_panel.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(src, r"get_model_by_endpoint")
+        self.assertRegex(
+            src, r"_is_known\s*=\s*get_model_by_endpoint\("
+        )
+        self.assertRegex(
+            src,
+            r'has_cfg\s*=\s*bool\(caps\.get\("supports_cfg_scale"\)\)\s*or\s*not\s*_is_known',
+        )
+        self.assertRegex(
+            src,
+            r'has_neg\s*=\s*bool\(caps\.get\("supports_negative_prompt"\)\)\s*or\s*not\s*_is_known',
+        )
+
+    def test_end_frame_stays_caps_driven(self):
+        """has_end must NOT get the bypass — a custom model with no
+        known end param has nowhere to send a locked end frame."""
+        src = (_ROOT / "kling_gui" / "config_panel.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            src,
+            r'has_end\s*=\s*caps\.get\("end_image_param"\)\s*is not None',
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
