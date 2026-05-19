@@ -106,7 +106,7 @@
   "outpaint_prompt": "Continuous, out-of-focus background environment. Shallow depth of field, soft lighting, empty neutral space matching the edges. STRICTLY NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO DOCUMENT FEATURES.",
   "outpaint_composite_mode": "preserve_seamless",
   "automation_front_expand_composite_mode": "preserve_seamless",
-  "automation_selfie_expand_composite_mode": "preserve_seamless",
+  "automation_selfie_expand_composite_mode": "none",
   "outpaint_fal_timeout_seconds": 150,
   "face_crop_polish_prompt": "Carefully remove all text, numbers, watermarks, seals, and document artifacts from the image. Clean up the background to make it seamless. CRITICAL: Do NOT alter the person's face, facial features, hair, expression, or clothing in any way. Keep the original photo quality, lighting, and realism exactly the same. Do not beautify or change the identity.",
   "openrouter_vision_system_prompt": "You are a JSON API. You only output valid JSON. Never write explanations, never use markdown, never use code blocks, never say anything outside the JSON.\n\nAnalyze the portrait image and return exactly this JSON structure with descriptive phrase values — never single words:\n{\"hair\":\"...\",\"skin\":\"...\",\"eyes\":\"...\",\"face_shape\":\"...\",\"age_range\":\"...\",\"gender\":\"...\",\"clothing\":\"...\",\"expression\":\"...\"}\n\nRules:\n- Output MUST start with { and end with }\n- No text before or after the JSON\n- No markdown fences, no commentary\n- All values must be descriptive phrases\n- clothing: if not visible, write \"casual everyday outfit\"\n- gender: write only \"man\" or \"woman\"",

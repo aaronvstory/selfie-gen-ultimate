@@ -66,7 +66,9 @@ class ExpandTab(tk.Frame):
         self._composite_mode_var = tk.StringVar(
             value=self.config.get(
                 "automation_selfie_expand_composite_mode",
-                self.config.get("outpaint_composite_mode", "preserve_seamless"),
+                # Default "none" (raw AI output) for Step 2.5
+                # expand — user-requested ship default.
+                self.config.get("outpaint_composite_mode", "none"),
             )
         )
         self._provider_var = tk.StringVar(
@@ -279,7 +281,7 @@ class ExpandTab(tk.Frame):
         }
         composite_value = self._composite_mode_var.get().strip()
         if composite_value not in self._composite_mode_labels:
-            composite_value = "preserve_seamless"
+            composite_value = "none"
             self._composite_mode_var.set(composite_value)
         self._composite_mode_label_var = tk.StringVar(
             value=self._composite_mode_labels[composite_value]

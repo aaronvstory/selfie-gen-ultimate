@@ -71,7 +71,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_selfie_expand_enabled": True,
     "automation_selfie_expand_provider": "bfl",
     "automation_selfie_expand_mode": "percent",  # percent | centered_3x4
-    "automation_selfie_expand_composite_mode": "preserve_seamless",  # preserve_seamless | feathered | hard | none
+    "automation_selfie_expand_composite_mode": "none",  # preserve_seamless | feathered | hard | none  (Step 2.5 selfie expand ships raw AI output by default)
     "automation_selfie_expand_percent": 30,
     "automation_selfie_expand_edge_seal_enabled": False,
     "automation_video_enabled": True,

@@ -857,17 +857,27 @@ class ConfigPanel(tk.Frame):
             activeforeground=COLORS["text_light"], command=self._on_folder_match_mode_changed,
         )
         self.exact_radio.pack(side=tk.LEFT, padx=2)
-        # Filter help text — explains what Folder/Match do
-        rD2 = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rD2.pack(fill=tk.X, pady=(0, 6))
-        tk.Label(rD2, text="", bg=COLORS["bg_input"], width=lbl_w).pack(side=tk.LEFT)
-        tk.Label(
-            rD2,
-            text="Subfolder name to match when processing a folder (blank \u2192 all files)"
-                 " \u00b7 Partial: name contains filter \u00b7 Exact: name equals filter",
-            font=(FONT_FAMILY, 8), bg=COLORS["bg_input"], fg=COLORS["text_dim"],
-            wraplength=280, justify="left",
-        ).pack(side=tk.LEFT)
+        # Filter help moved into an ⓘ hover (same pattern
+        # as the oldcam / rPPG descriptors) placed inline at
+        # the end of the row — reclaims the vertical space the
+        # old multi-line help label consumed (user request,
+        # PR #41).
+        self.filter_info_icon = tk.Label(
+            rD, text="ⓘ", font=(FONT_FAMILY, 11),
+            cursor="question_arrow",
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.filter_info_icon.pack(side=tk.LEFT, padx=(6, 0))
+        HoverTooltip(
+            self.filter_info_icon,
+            lambda: (
+                "Subfolder name to match when processing a "
+                "folder\n(blank → all files)\n\n"
+                "Partial: filename contains the filter string"
+                "\nExact:  filename equals the filter string "
+                "exactly"
+            ),
+        )
 
         # Video settings
         rE = tk.Frame(left_col, bg=COLORS["bg_input"])
@@ -2267,15 +2277,27 @@ class ConfigPanel(tk.Frame):
         config_panel = ui_config.get("config_panel", {})
         try:
             preview_height = int(config_panel.get("prompt_preview_height", 6))
-            preview_font_size = int(config_panel.get("prompt_preview_font_size", 9))
+            # Default 10 (NOT 9): the negative-prompt editor is built at
+            # (FONT_FAMILY, 10) and apply_ui_config never touched it, so
+            # the old default 9 left the positive box one size smaller
+            # than the negative — a visible font mismatch the user
+            # disliked. They prefer the larger negative font; unify on it.
+            preview_font_size = int(config_panel.get("prompt_preview_font_size", 10))
         except (TypeError, ValueError):
             return
         if hasattr(self, "prompt_preview"):
             resolved_height = max(4, preview_height)
+            _resolved_font = (FONT_FAMILY, max(6, preview_font_size))
             self.prompt_preview.config(
                 height=resolved_height,
-                font=(FONT_FAMILY, max(6, preview_font_size)),
+                font=_resolved_font,
             )
+            # Keep the negative editor's font locked to the positive
+            # one so the split editor reads as a single coherent box in
+            # BOTH states (split + collapsed), regardless of the
+            # ui_config size value.
+            if hasattr(self, "negative_prompt_preview"):
+                self.negative_prompt_preview.config(font=_resolved_font)
             # apply_ui_config fires ~50ms after launch and resizes the
             # positive box to the ui_config height while the negative
             # half is hidden (_neg_visible starts False). That resized
