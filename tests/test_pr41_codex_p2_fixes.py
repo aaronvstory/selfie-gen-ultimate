@@ -242,5 +242,59 @@ class CliBatchCfgLockParityTests(unittest.TestCase):
         self.assertIs(lock, True)
 
 
+class QueueManagerCustomModelCapsTests(unittest.TestCase):
+    """code-reviewer (PR #41): the dispatcher
+    (kling_generator_falai.py) gained an `_is_known_model` bypass so
+    CUSTOM endpoints (not in MODEL_METADATA) keep negative_prompt +
+    cfg_scale (live fal.ai schema is the authority). The GUI queue
+    path (kling_gui/queue_manager.py) pre-stripped both to None using
+    only the conservative get_model_capabilities default BEFORE the
+    dispatcher's bypass could apply, so GUI custom-model users
+    silently lost neg/cfg. The fix mirrors the dispatcher; pin both so
+    the GUI and dispatcher gating cannot drift apart again."""
+
+    def test_queue_manager_has_is_known_bypass(self):
+        src = (_ROOT / "kling_gui" / "queue_manager.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(src, r"get_model_by_endpoint")
+        self.assertRegex(src, r"_is_known\s*=")
+        self.assertRegex(
+            src,
+            r'_caps\["supports_negative_prompt"\]\s*or\s*not\s*_is_known',
+        )
+        self.assertRegex(
+            src,
+            r'_caps\["supports_cfg_scale"\]\s*or\s*not\s*_is_known',
+        )
+
+    def test_dispatcher_still_has_is_known_bypass(self):
+        src = (_ROOT / "kling_generator_falai.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            src,
+            r'caps\["supports_negative_prompt"\]\s*or\s*not\s*_is_known_model',
+        )
+        self.assertRegex(
+            src,
+            r'caps\["supports_cfg_scale"\]\s*or\s*not\s*_is_known_model',
+        )
+
+    def test_known_model_gating_not_weakened(self):
+        from model_metadata import (
+            get_model_capabilities,
+            get_model_by_endpoint,
+        )
+
+        o3 = "fal-ai/kling-video/o3/standard/image-to-video"
+        self.assertIsNotNone(get_model_by_endpoint(o3))
+        caps = get_model_capabilities(o3)
+        self.assertFalse(caps["supports_negative_prompt"])
+        self.assertFalse(caps["supports_cfg_scale"])
+        custom = "fal-ai/some-user-custom/model/image-to-video"
+        self.assertIsNone(get_model_by_endpoint(custom))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1216,15 +1216,33 @@ class QueueManager:
         # the exact same flags, so the GUI pre-drop and the payload can
         # never diverge). The dispatcher gates again defensively; dropping
         # here too keeps logs/console honest about what was sent.
-        from model_metadata import get_model_capabilities
+        from model_metadata import (
+            get_model_capabilities,
+            get_model_by_endpoint,
+        )
         from face_similarity import _parse_bool
 
         _caps = get_model_capabilities(self.generator.model_endpoint)
+        # Mirror the dispatcher (kling_generator_falai.py): an
+        # endpoint NOT in MODEL_METADATA is a custom model whose
+        # true caps come from the live fal.ai schema, NOT the
+        # conservative get_model_capabilities default. Without this
+        # the GUI queue pre-strips neg/cfg to None before the
+        # dispatcher's own _is_known_model bypass can keep them, so
+        # custom-model users silently lose negative_prompt +
+        # cfg_scale (code-reviewer, PR #41). Known models keep
+        # precise per-model gating (o3 / seedance still drop both).
+        _is_known = (
+            get_model_by_endpoint(self.generator.model_endpoint)
+            is not None
+        )
         neg_for_payload = (
-            negative_prompt if _caps["supports_negative_prompt"] else None
+            negative_prompt
+            if (_caps["supports_negative_prompt"] or not _is_known)
+            else None
         )
         _cfg_cfg = self.get_config()
-        if _caps["supports_cfg_scale"]:
+        if _caps["supports_cfg_scale"] or not _is_known:
             try:
                 _cfg_scale = float(_cfg_cfg.get("cfg_scale_value", 0.7))
             except (TypeError, ValueError):
