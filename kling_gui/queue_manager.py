@@ -1619,11 +1619,6 @@ class QueueManager:
         """
         del item  # Reserved for future per-item status hooks
         try:
-            launcher = self._resolve_rppg_launcher()
-            if launcher is None:
-                self.log("rPPG skipped: rPPG/ tool not present", "warning")
-                return None
-
             input_path = Path(video_path)
             if not input_path.exists():
                 self.log(f"rPPG skipped: input missing ({input_path.name})", "warning")
@@ -1637,6 +1632,12 @@ class QueueManager:
             # deliverable — return it as-is. Symmetric with the pipeline
             # guard (automation/pipeline.py Step 8); shared single source
             # of truth for the marker. (Codex P2 class, PR #39.)
+            #
+            # This MUST run BEFORE resolving the launcher: accepting an
+            # already-injected file as the final deliverable requires no
+            # external tool, so a release without the gitignored rPPG/
+            # tool must still honor the no-reinject contract instead of
+            # graceful-skipping past it. (Codex P2, PR #39.)
             from automation.rppg import is_rppg_artifact
 
             if is_rppg_artifact(input_path):
@@ -1646,6 +1647,11 @@ class QueueManager:
                     "info",
                 )
                 return str(input_path)
+
+            launcher = self._resolve_rppg_launcher()
+            if launcher is None:
+                self.log("rPPG skipped: rPPG/ tool not present", "warning")
+                return None
 
             output_path = self._build_rppg_output_path(input_path)
             self.log("Applying rPPG injection...", "info")

@@ -2073,3 +2073,26 @@ def test_rppg_video_skips_reinjection_of_already_injected_input(tmp_path):
     assert called["popen"] is False, "re-injected an already-rPPG'd input (double-injection)"
     assert result == str(injected), "already-injected input must be returned as the final deliverable"
     assert any("already injected" in m.lower() for m, _ in logs)
+
+
+def test_rppg_video_accepts_already_injected_input_without_the_tool(tmp_path):
+    """Regression (Codex P2, PR #39): accepting an already-injected file
+    as the final deliverable needs NO external tool. The is_rppg_artifact
+    guard must run BEFORE _resolve_rppg_launcher, so a release without the
+    gitignored rPPG/ tool still honors the no-reinject contract instead
+    of graceful-skipping (returning None) past it."""
+    manager, logs = make_queue_manager({"rppg_enabled": True})
+    injected = tmp_path / "clip-rppg - 7.81-6.4-0.53-0.03-0.54.mp4"
+    injected.write_bytes(b"already-injected")
+
+    # Force the rPPG/ tool to appear ABSENT.
+    with mock.patch.object(manager, "_resolve_rppg_launcher", return_value=None):
+        result = manager._rppg_video(str(injected), QueueItem(str(injected)))
+
+    # Must return the already-injected file as the final deliverable,
+    # NOT None — even though the launcher resolved to None.
+    assert result == str(injected), (
+        "already-injected input must be accepted as final deliverable "
+        "even when the rPPG tool is absent (guard must precede launcher check)"
+    )
+    assert any("already injected" in m.lower() for m, _ in logs)
