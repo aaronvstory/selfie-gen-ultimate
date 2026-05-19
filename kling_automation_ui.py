@@ -100,19 +100,33 @@ from tk_dialogs import select_directory, select_directory_cli_safe, select_open_
 # rPPG is the untested forward direction, opt-in only).
 # v3 (2026-05-19): added automation_rppg_metrics_in_filename (default
 # False -> clean *-rppg name + .metrics.json sidecar).
-RECOMMENDED_DEFAULTS_VERSION = 3
+# v4 (2026-05-19): minimal-motion default prompt + recommended negative
+# prompt; cfg_scale_value (0.7) + lock_end_frame (true) defaults.
+RECOMMENDED_DEFAULTS_VERSION = 4
 DEFAULT_KLING_PROMPT_SLOT = 4
 DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT = 3
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
-    "Generate a lifelike video animation from the provided image. The subject must rotate only their head in an exceptionally "
-    "slow, smooth, and biologically realistic motion: start by gently turning the head left, up to 30 degrees from center, with "
-    "absolutely no movement in the shoulders, neck, or upper body, which must stay perfectly upright and still. Hold a brief, "
-    "natural pause at the leftmost 30 degree position, then gently turn the head all the way to the right 30 degree facing side , "
-    "maintaining the same extremely slow and continuous, lifelike pace. Head motion must appear completely natural, never robotic, "
-    "mechanical, stiff, or artificial—mimic genuine human motion with soft micro-adjustments. Eyes stay focused on the camera lens "
-    "through both turns. Facial expression remains strictly neutral and relaxed throughout. Lighting on the face and background "
-    "must stay natural, matching the original image, with no added highlights, shadows, flicker, or artificial lighting. The "
-    "camera is fixed and stationary. Only the head moves; the rest of the body remains motionless."
+    "Image-to-video: the subject performs a very subtle, slow head movement while "
+    "the body and background remain completely motionless. The head turns slightly "
+    "to one side, then slowly to the other side, with the smallest believable range "
+    "of motion — barely past front-facing, never approaching profile. Eyes stay "
+    "locked on the camera lens the entire time. Facial expression stays neutral "
+    "and unchanged. Shoulders, torso, neck base, and background do not move at all. "
+    "Camera is locked. Lighting matches the source image. Pacing is slow, "
+    "continuous, and natural."
+)
+
+# Recommended negative prompt — only sent for models that accept
+# negative_prompt (Kling 2.5 / v3); the dispatcher drops it for
+# o3 / seedance. Pairs with the minimal-motion positive above + the
+# end-frame lock to mechanically suppress overshoot / drift.
+RECOMMENDED_KLING_NEGATIVE_SLOT_1 = (
+    "profile view, full head turn, head turned away, looking away from camera, "
+    "broken eye contact, eyes closed, shoulder movement, torso rotation, body "
+    "twist, leaning, swaying, head tilt, smiling, changing expression, talking, "
+    "blinking unnaturally, camera movement, camera pan, camera zoom, lighting "
+    "change, flicker, exposure shift, color shift, background motion, fast motion, "
+    "jerky motion, robotic motion, morphing face, distortion, blur, low quality"
 )
 
 _CRASH_CAPTURE_FILE: Optional[io.TextIOWrapper] = None
@@ -210,10 +224,10 @@ class KlingAutomationUI:
                 "10": None,
             },
             "negative_prompts": {
-                "1": None,
+                "1": RECOMMENDED_KLING_NEGATIVE_SLOT_1,
                 "2": None,
                 "3": None,
-                "4": None,
+                "4": RECOMMENDED_KLING_NEGATIVE_SLOT_1,
                 "5": None,
                 "6": None,
                 "7": None,
@@ -231,6 +245,13 @@ class KlingAutomationUI:
             "seed": -1,  # -1 = random
             "camera_fixed": False,
             "generate_audio": False,
+            # Motion control (mirrors default_config_template.json so the
+            # CLI and GUI new-install defaults agree). cfg 0.7 = stricter
+            # prompt adherence than fal's 0.5; end-frame lock on so the
+            # clip mechanically returns to the opening pose. Both are
+            # gated per-model by the dispatcher's capability check.
+            "cfg_scale_value": 0.7,
+            "lock_end_frame": True,
             "automation_recommended_defaults_version": RECOMMENDED_DEFAULTS_VERSION,
         }
 
@@ -1679,6 +1700,19 @@ class KlingAutomationUI:
         saved_prompts["1"] = RECOMMENDED_KLING_PROMPT_SLOT_1
         saved_prompts["4"] = RECOMMENDED_KLING_PROMPT_SLOT_1
         self.config["saved_prompts"] = saved_prompts
+        # Pair the minimal-motion positive with the recommended negative
+        # on the same slots (the dispatcher drops it for models that
+        # don't accept negative_prompt — o3 / seedance).
+        negative_prompts = self.config.get("negative_prompts")
+        if not isinstance(negative_prompts, dict):
+            negative_prompts = {}
+        negative_prompts["1"] = RECOMMENDED_KLING_NEGATIVE_SLOT_1
+        negative_prompts["4"] = RECOMMENDED_KLING_NEGATIVE_SLOT_1
+        self.config["negative_prompts"] = negative_prompts
+        # Motion knobs: stricter prompt adherence + mechanical
+        # return-to-pose via the end-frame lock.
+        self.config["cfg_scale_value"] = 0.7
+        self.config["lock_end_frame"] = True
         self.config["automation_similarity_threshold"] = 80
         self.config["automation_video_enabled"] = True
         # Face-track gate is DIAGNOSTIC-ONLY and OFF by default. A large
