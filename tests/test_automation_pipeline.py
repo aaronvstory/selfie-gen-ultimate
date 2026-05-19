@@ -2087,12 +2087,27 @@ def test_is_rppg_artifact_detects_all_injection_forms():
         "clip-rppg-oldcam-v24 - 7.7-2.1-0.5-0.0-0.6.mp4",   # rPPG, oldcam, re-injected+renamed
         "a_looped-rppg-oldcam-v15.mp4",
     ]
+    injected += [
+        # Case-insensitive: the marker must match regardless of casing.
+        "CLIP-RPPG.mp4",
+        "Clip-RpPg - 7.8-1.0-0.5-0.0-0.5.mp4",
+        "clip-RPPG-oldcam-v24.mp4",
+    ]
     not_injected = [
         "clip.mp4",
         "clip-oldcam-v24.mp4",
         "clip_looped.mp4",
         "clip-oldcam-v24_looped.mp4",
         "selfie.mp4",
+        # Path-component-safe: a dir containing "-rppg" with a plain file
+        # name must NOT match (predicate uses .stem, ignores parents).
+        "rppg_harness_out/clip.mp4",
+        "some-rppg-dir/plain.mp4",
+        # Prefix-safe: the injector always writes the "-rppg" TOKEN; a
+        # bare/leading "rppg" without the separator is not its marker.
+        "rppg.mp4",
+        "rppgclip.mp4",
+        "rppg-clip.mp4",
     ]
     for name in injected:
         assert is_rppg_artifact(Path(name)) is True, f"{name!r} must be detected as injected"
