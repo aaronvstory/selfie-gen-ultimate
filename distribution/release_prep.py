@@ -5,7 +5,7 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
-from typing import Dict, Iterable, Set
+from typing import Dict, Iterable, Set, Optional
 
 try:
     from api_keys import API_KEY_SPECS, ensure_key_fields
@@ -89,24 +89,72 @@ def _should_skip(path: Path) -> bool:
     return False
 
 
-def build_sanitized_config(template_path: Path) -> Dict[str, object]:
-    """Build a sanitized runtime config for distributable bundles.
+# Machine-specific / per-install fields blanked in the shipped config
+# (everything else of the user's current state is preserved verbatim).
+_DIST_BLANKED_PATH_KEYS = (
+    "output_folder",
+    "automation_root_folder",
+    "selfie_output_folder",
+    "window_geometry",
+)
+
+
+def build_sanitized_config(
+    template_path: Path,
+    live_config_path: Optional[Path] = None,
+) -> Dict[str, object]:
+    """Build the runtime config shipped inside a release bundle.
+
+    The bundle must carry the user's CURRENT state -- ALL saved prompt
+    slots, every setting and default exactly as configured -- so a fresh
+    install behaves like the dev machine. Only secrets (the four API
+    keys) and machine-specific paths are blanked.
+
+    Sourcing order:
+      1. ``live_config_path`` (the dev machine's real
+         ``kling_config.json``) -- the full ~140-key current state.
+      2. ``template_path`` (``default_config_template.json``) merged in
+         ONLY for keys the live config is missing, so a brand-new key
+         still gets a sane default if the dev never touched it.
+      3. If neither exists, an empty config (ensure_key_fields fills the
+         required key fields).
 
     Args:
-        template_path: Path to default config template JSON.
+        template_path: Path to ``default_config_template.json``.
+        live_config_path: Path to the dev machine's ``kling_config.json``
+            (the source of truth for current prompts/settings).
 
     Returns:
-        Config dictionary with keys/path-like runtime fields blanked.
+        Config dict: full current state with API keys + machine paths
+        blanked.
     """
-    config: Dict[str, object] = {}
+    template: Dict[str, object] = {}
     if template_path.exists():
         loaded = json.loads(template_path.read_text(encoding="utf-8"))
         if isinstance(loaded, dict):
-            config.update(loaded)
+            template.update(loaded)
+
+    config: Dict[str, object] = {}
+    if live_config_path is not None and live_config_path.exists():
+        # A corrupt / non-JSON live config must NOT abort the release
+        # build -- fall back to the template-only path (old behaviour).
+        try:
+            loaded_live = json.loads(
+                live_config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, ValueError):
+            loaded_live = None
+        if isinstance(loaded_live, dict):
+            config.update(loaded_live)
+
+    # Template only fills GAPS -- it never overwrites a value the user
+    # actually set (preserve current state verbatim).
+    for key, value in template.items():
+        config.setdefault(key, value)
+
     ensure_key_fields(config)
     for spec in API_KEY_SPECS:
         config[spec.config_key] = ""
-    for key in ("output_folder", "automation_root_folder", "selfie_output_folder", "window_geometry"):
+    for key in _DIST_BLANKED_PATH_KEYS:
         config[key] = ""
     return config
 
@@ -272,7 +320,10 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
     bundle_dir = staging_root / "selfie-gen-ultimate"
     bundle_dir.mkdir(parents=True, exist_ok=True)
     copy_sanitized_tree(repo_root, bundle_dir)
-    config = build_sanitized_config(bundle_dir / "default_config_template.json")
+    config = build_sanitized_config(
+        bundle_dir / "default_config_template.json",
+        live_config_path=repo_root / "kling_config.json",
+    )
     (bundle_dir / "kling_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
     _write_top_level_launchers(bundle_dir)
     write_bundle_readme(bundle_dir)
