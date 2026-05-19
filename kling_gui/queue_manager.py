@@ -1596,6 +1596,14 @@ class QueueManager:
         Returns None (caller skips gracefully) if the gitignored rPPG/
         tool — launcher or injector — is absent, or on a non-Windows host
         (the launcher is a .bat; a macOS launcher is out of scope).
+
+        DELIBERATELY distinct from automation.rppg.resolve_rppg_launcher
+        (NOT accidental duplication — do not "dedup" them): the GUI runs
+        in frozen PyInstaller builds where the tool may be relocated, so
+        this searches app_dir / resource_dir / repo-root (mirrors
+        _resolve_oldcam_dir). The automation pipeline always runs from
+        source, so its resolver takes an explicit repo_root and does a
+        single check. Both require launcher AND injector to exist.
         """
         app_dir = Path(get_app_dir())
         resource_dir = Path(get_resource_dir())
