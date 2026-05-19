@@ -287,5 +287,76 @@ class CodeRabbitCleanupTests(unittest.TestCase):
             self.assertLess(derive(f), f)
 
 
+class ApplyUiConfigRespectsNegVisibleTests(unittest.TestCase):
+    """Codex P2 (PR #41): _load_config calls _update_motion_controls
+    BEFORE apply_ui_config, so _neg_visible can already be True when
+    apply_ui_config runs for a neg-supporting current_model. The old
+    code unconditionally set prompt_preview to FULL height, snapping
+    the box back up while the negative half was visible — the two
+    halves overlapped visually until the user toggled. The fix
+    honours _neg_visible at apply_ui_config time."""
+
+    class _FakeText:
+        def __init__(self, h):
+            self._height = h
+            self._font = None
+
+        def config(self, **kw):
+            if "height" in kw:
+                self._height = kw["height"]
+            if "font" in kw:
+                self._font = kw["font"]
+
+    def _make_panel(self):
+        import importlib
+        cp_mod = importlib.import_module("kling_gui.config_panel")
+        panel = cp_mod.ConfigPanel.__new__(cp_mod.ConfigPanel)
+        panel.prompt_preview = self._FakeText(12)
+        panel.negative_prompt_preview = self._FakeText(5)
+        panel._positive_prompt_full_height = 12
+        panel._positive_prompt_split_height = 7
+        return panel
+
+    def test_apply_ui_config_uses_full_height_when_neg_hidden(self):
+        panel = self._make_panel()
+        panel._neg_visible = False
+        panel.apply_ui_config(
+            {"config_panel": {"prompt_preview_height": 6}}
+        )
+        # No neg visible -> positive box at full (resolved) height.
+        self.assertEqual(panel.prompt_preview._height, 6)
+        self.assertEqual(panel._positive_prompt_full_height, 6)
+        self.assertEqual(panel._positive_prompt_split_height, 3)
+
+    def test_apply_ui_config_uses_split_height_when_neg_already_visible(self):
+        # _load_config -> _update_motion_controls already flipped
+        # _neg_visible to True for a neg-supporting model BEFORE
+        # apply_ui_config fires (~50ms later).
+        panel = self._make_panel()
+        panel._neg_visible = True
+        panel.apply_ui_config(
+            {"config_panel": {"prompt_preview_height": 6}}
+        )
+        # Box should be at the SPLIT height (3), not snapped back to
+        # full (6) and visually overlapping the negative half.
+        self.assertEqual(panel.prompt_preview._height, 3)
+        # Targets are re-derived correctly so the toggle still works.
+        self.assertEqual(panel._positive_prompt_full_height, 6)
+        self.assertEqual(panel._positive_prompt_split_height, 3)
+
+    def test_apply_ui_config_pins_targets_even_on_split_path(self):
+        """Even when applying split height on startup, the FULL
+        target must be the resolved height so toggling off neg-half
+        restores to the configured size — not the stale 12."""
+        panel = self._make_panel()
+        panel._neg_visible = True
+        panel.apply_ui_config(
+            {"config_panel": {"prompt_preview_height": 10}}
+        )
+        self.assertEqual(panel.prompt_preview._height, 5)  # split (10-5)
+        self.assertEqual(panel._positive_prompt_full_height, 10)
+        self.assertEqual(panel._positive_prompt_split_height, 5)
+
+
 if __name__ == "__main__":
     unittest.main()

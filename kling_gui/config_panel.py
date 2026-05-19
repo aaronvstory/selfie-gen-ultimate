@@ -2304,8 +2304,30 @@ class ConfigPanel(tk.Frame):
         if hasattr(self, "prompt_preview"):
             resolved_height = max(4, preview_height)
             _resolved_font = (FONT_FAMILY, max(6, preview_font_size))
+            # Re-derive both height targets up front — apply_ui_config
+            # fires ~50ms after launch and the resolved (ui_config)
+            # full height IS the "no-negative" target. The split target
+            # must stay strictly < full or showing the negative half
+            # would GROW the positive box (Codex P2, PR #41).
+            self._positive_prompt_full_height = resolved_height
+            self._positive_prompt_split_height = max(
+                3, min(7, resolved_height - 5)
+            )
+            # _load_config calls _update_motion_controls BEFORE
+            # apply_ui_config fires, which can flip _neg_visible to
+            # True at startup (for neg-supporting models). The previous
+            # unconditional `height=resolved_height` then snapped the
+            # box back to FULL while the negative half was visible —
+            # the two halves overlapped visually until the user
+            # toggled (Codex P2, PR #41). Honour the current
+            # visibility instead.
+            _current_target = (
+                self._positive_prompt_split_height
+                if getattr(self, "_neg_visible", False)
+                else self._positive_prompt_full_height
+            )
             self.prompt_preview.config(
-                height=resolved_height,
+                height=_current_target,
                 font=_resolved_font,
             )
             # Keep the negative editor's font locked to the positive
@@ -2314,25 +2336,6 @@ class ConfigPanel(tk.Frame):
             # ui_config size value.
             if hasattr(self, "negative_prompt_preview"):
                 self.negative_prompt_preview.config(font=_resolved_font)
-            # apply_ui_config fires ~50ms after launch and resizes the
-            # positive box to the ui_config height while the negative
-            # half is hidden (_neg_visible starts False). That resized
-            # height IS the no-negative ("full") state, so make the
-            # toggle's restore target track it. Without this the first
-            # negative-prompt show/hide snaps the box from the configured
-            # height back to the stale construction-time 12 — a visible
-            # jump that also masked the PR #41 height fix on fresh
-            # installs (code-reviewer finding, PR #41). The split
-            # (negative-shown) target is RE-DERIVED proportionally —
-            # must stay strictly < full or showing the negative half
-            # would GROW the positive box (the opposite of splitting
-            # into two halves). Codex P2, PR #41: with the new
-            # ui_config default of 6 and the legacy hardcoded split=7
-            # the toggle GREW the box from 6 -> 7 instead of shrinking.
-            self._positive_prompt_full_height = resolved_height
-            self._positive_prompt_split_height = max(
-                3, min(7, resolved_height - 5)
-            )
 
     def set_active_prompt_text(self, text: str):
         """Set the text of the active prompt slot (called by PrepTab vision analysis).
