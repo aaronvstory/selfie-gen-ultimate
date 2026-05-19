@@ -695,6 +695,18 @@ def test_merge_defaults_includes_facetrack_gate_keys(tmp_path):
     assert merged["automation_facetrack_sample_fps"] == 8.0
 
 
+def test_merge_defaults_includes_rppg_keys(tmp_path):
+    """rPPG injection keys must be present and DEFAULT OFF: rPPG is the
+    genuinely-untried forward direction (sub-perceptual pulse so Persona's
+    passive rPPG stage sees a real signal). Off + non-required => the step
+    is opt-in only and a missing/failed injection never hard-fails a run.
+    See docs/rppg-wiring.md."""
+    merged = merge_automation_defaults({})
+    assert merged["automation_rppg_enabled"] is False
+    assert merged["automation_rppg_mode"] == "inject"
+    assert merged["automation_rppg_required"] is False
+
+
 def test_automation_status_lines_include_facetrack_indicator(tmp_path):
     """Preflight summary surfaces the face-track gate indicator so the
     operator sees gate state before a run."""

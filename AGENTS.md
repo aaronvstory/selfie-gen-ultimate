@@ -415,6 +415,30 @@ Guidance:
 - Use run/resume for manifest continuation validation.
 - Use fresh root or cleaned outputs/manifest for strict clean-path retests.
 
+### Permanent rPPG / Oldcam Test Harness (this Windows box)
+
+A **permanent** validation rig lives at `oldcam-testing/`:
+
+- `oldcam-testing/run_rppg_harness.bat` (CRLF launcher) →
+  `oldcam-testing/rppg_harness.py`
+- Permanent gitignored Kling fixture (real ~20 MB generated video, **keep
+  on disk, never commit**):
+  `oldcam-testing/front_crop_nano-banana-2-edit_sim87_001_k25tStd_p4_1.mp4`
+
+```bat
+oldcam-testing\run_rppg_harness.bat            rem direct rPPG on the fixture
+oldcam-testing\run_rppg_harness.bat --chain    rem full Loop->Oldcam(v24)->rPPG
+oldcam-testing\run_rppg_harness.bat --skip-run rem re-analyse last output only
+```
+
+It runs the **real** rPPG injector (gitignored `rPPG/`) end-to-end and
+writes an anti-siren `oldcam-testing/rppg_harness_out/REPORT.md` (green
+face-box peak-to-peak delta vs original: SUB-PERCEPTUAL < 2.0, BORDERLINE
+< 5.0, else SIREN). The harness script + `.bat` are tracked permanent
+infra; the fixture and `rppg_harness_out/` are gitignored. **Use it to
+validate any rPPG or oldcam change before pushing.** Full reference:
+`docs/rppg-wiring.md`.
+
 ---
 
 ## macOS Guardrails For Agents

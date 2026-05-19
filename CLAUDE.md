@@ -518,6 +518,55 @@ When adding a new Oldcam version (e.g., v12), these are the required touch-point
 
 ---
 
+## rPPG Injection Wiring
+
+> Full reference: [`docs/rppg-wiring.md`](docs/rppg-wiring.md)
+
+rPPG injection is the **final** post-process: `Kling → Loop → Oldcam → rPPG`
+(rPPG strictly last). It installs a sub-perceptual physiological pulse so
+Persona's passive rPPG stage sees a real signal. **Off by default
+everywhere — opt-in only.** It invokes the gitignored `rPPG/` tool as an
+external launcher and degrades gracefully (skip + log, never crash) if the
+tool is absent or fails. It is NOT the removed crude v10/v11 "siren" pulse.
+
+| Layer | Where | What |
+|-------|-------|------|
+| Manifest registry | `automation/manifest.py` `STEP_NAMES` | `"rppg"` after `"oldcam"` — REQUIRED or `update_step` raises `Unknown step: rppg` |
+| Config | `automation/config.py` | `automation_rppg_enabled` (False), `automation_rppg_mode` ("inject"), `automation_rppg_required` (False) |
+| Automation | `automation/rppg.py` (NEW) | `run_rppg` / `resolve_produced_output` / `build_rppg_output_path` / `resolve_rppg_launcher` (mirrors `automation/oldcam.py`) |
+| Pipeline Step 8 | `automation/pipeline.py` | After oldcam; input = oldcam output else video_generate output; facetrack-style manifest reporting |
+| GUI queue | `kling_gui/queue_manager.py` | `_rppg_*` methods; main queue order + oldcam re-run path |
+| GUI checkbox | `kling_gui/config_panel.py` | Orange row (`#3A2A1F`/`#7D5E3A`) below the violet oldcam frame; `rppg_var`; `_on_rppg_changed`; cleanup list |
+| CLI | `kling_automation_ui.py` | recommended-defaults + `_ask_bool` + `_qs_section_oldcam`; `RECOMMENDED_DEFAULTS_VERSION` bumped |
+
+**Verified injector contract gotcha:** `--output` is NOT honoured
+deterministically — the injector renames to
+`{stem}-rppg - <metrics>{ext}`. Always resolve the real file via
+`automation.rppg.resolve_produced_output()` (single source of truth; GUI
+queue + harness both use it). `--skip-kinematic-gate` is always passed
+(README-untested gate; re-enabling is a deliberate future enhancement).
+
+### Permanent rPPG / oldcam test harness (this Windows box)
+
+`oldcam-testing/rppg_harness.py` + `oldcam-testing/run_rppg_harness.bat`
+are a **permanent** validation rig that runs the real injector on a
+permanent gitignored Kling fixture
+(`oldcam-testing/front_crop_nano-banana-2-edit_sim87_001_k25tStd_p4_1.mp4`
+— keep on disk, never commit) and emits an anti-siren `REPORT.md`.
+
+```bat
+oldcam-testing\run_rppg_harness.bat            rem direct rPPG on fixture
+oldcam-testing\run_rppg_harness.bat --chain    rem full Loop->Oldcam->rPPG
+oldcam-testing\run_rppg_harness.bat --skip-run rem re-analyse last output
+```
+
+The harness script + .bat are tracked (permanent infra); the fixture and
+`oldcam-testing/rppg_harness_out/` are gitignored. Use it to validate any
+rPPG/oldcam change before pushing. First real run: **SUB-PERCEPTUAL**
+(green p2p delta 0.26, no siren) — default `--strength 0.005` is correct.
+
+---
+
 ## Similarity Stack Wiring (NON-NEGOTIABLE — full surface coverage)
 
 The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, automation CLI pipeline, standalone subproject (own GUI + own CLI), Windows + macOS launchers (per surface), PyInstaller frozen build, dist release zip, and tests. Touching it without updating ALL applicable surfaces ships a broken release.

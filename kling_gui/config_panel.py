@@ -624,6 +624,147 @@ class ConfigPanel(tk.Frame):
             ),
         )
 
+        # rPPG injection — its own row directly below the violet Oldcam
+        # frame, orange-tinted so the two post-process stages read as a
+        # clean stacked pair. rPPG runs LAST (Kling → Loop → Oldcam →
+        # rPPG); combinable with Oldcam + Loop. Off by default. The Re-Run
+        # buttons above also apply rPPG when this is checked.
+        rPPGrow = tk.Frame(left_col, bg=COLORS["bg_input"])
+        rPPGrow.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(rPPGrow, text="", font=(FONT_FAMILY, 10),
+                 bg=COLORS["bg_input"], width=lbl_w).pack(side=tk.LEFT)
+        self.rppg_controls_frame = tk.Frame(
+            rPPGrow,
+            bg="#3A2A1F",
+            highlightthickness=1,
+            highlightbackground="#7D5E3A",
+            bd=0,
+            padx=6,
+            pady=2,
+        )
+        self.rppg_controls_frame.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        _rppg_label_row = tk.Frame(self.rppg_controls_frame, bg="#3A2A1F")
+        _rppg_label_row.pack(side=tk.LEFT, anchor="n", padx=(0, 6))
+        tk.Label(
+            _rppg_label_row,
+            text="rPPG:",
+            font=(FONT_FAMILY, 10),
+            bg="#3A2A1F",
+            fg=COLORS["text_light"],
+        ).pack(side=tk.LEFT)
+        self.rppg_info_icon = tk.Label(
+            _rppg_label_row,
+            text="ⓘ",
+            font=(FONT_FAMILY, 11),
+            cursor="question_arrow",
+            bg="#3A2A1F",
+            fg=COLORS["text_dim"],
+        )
+        self.rppg_info_icon.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(
+            self.rppg_info_icon,
+            lambda: (
+                "Sub-perceptual rPPG pulse injection (runs LAST,\n"
+                "after Loop + Oldcam). Aims to give Persona's\n"
+                "passive rPPG stage a physiologically-correct\n"
+                "signal. Untested forward direction — off by\n"
+                "default. Skips gracefully if the rPPG tool is\n"
+                "absent or injection fails (keeps the pre-rPPG\n"
+                "video; never crashes the run)."
+            ),
+        )
+        self.rppg_var = tk.BooleanVar(value=False)
+        self.rppg_checkbox = tk.Checkbutton(
+            self.rppg_controls_frame,
+            text="Inject rPPG pulse",
+            variable=self.rppg_var,
+            font=(FONT_FAMILY, 9),
+            bg="#3A2A1F",
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"],
+            activebackground="#3A2A1F",
+            activeforeground=COLORS["text_light"],
+            command=self._on_rppg_changed,
+        )
+        self.rppg_checkbox.pack(side=tk.LEFT, anchor="n", padx=(2, 8))
+        tk.Label(
+            self.rppg_controls_frame,
+            text="(sub-perceptual · runs last · off = unchanged)",
+            font=(FONT_FAMILY, 8),
+            bg="#3A2A1F",
+            fg=COLORS["text_dim"],
+        ).pack(side=tk.LEFT, anchor="n", padx=(0, 4))
+
+        # --- Optional Step-3 layout v2 (env-gated, basic stays default) ---
+        # SELFIEGEN_STEP3_LAYOUT=v2 gives the orange rPPG frame its OWN
+        # ↻/📂 re-run pair (visually symmetric with the violet oldcam
+        # frame's), so each post-process section is self-contained and the
+        # panel reads with less vertical cramp. These buttons reuse the
+        # existing oldcam re-run callbacks verbatim — the queue's re-run
+        # path already also applies rPPG when rppg_enabled, so this is pure
+        # visual parallelism with ZERO new logic (cannot break the default
+        # path; default layout never builds these).
+        if os.getenv("SELFIEGEN_STEP3_LAYOUT", "").strip().lower() == "v2":
+            _rppg_rerun_col = tk.Frame(self.rppg_controls_frame, bg="#3A2A1F")
+            _rppg_rerun_col.pack(side=tk.LEFT, anchor="n", padx=(10, 0))
+            tk.Label(
+                _rppg_rerun_col,
+                text="Re-Run:",
+                font=(FONT_FAMILY, 10),
+                bg="#3A2A1F",
+                fg=COLORS["text_light"],
+            ).pack(anchor="w")
+            _rppg_rerun_btn_row = tk.Frame(_rppg_rerun_col, bg="#3A2A1F")
+            _rppg_rerun_btn_row.pack(anchor="w", pady=(2, 0))
+            self.rppg_rerun_btn = tk.Button(
+                _rppg_rerun_btn_row,
+                text="↻",
+                font=(FONT_FAMILY, 9, "bold"),
+                bg=COLORS["bg_panel"],
+                fg=COLORS["text_light"],
+                activebackground=COLORS["bg_main"],
+                activeforeground=COLORS["text_light"],
+                width=2,
+                padx=8,
+                pady=2,
+                relief=tk.FLAT,
+                borderwidth=0,
+                command=self._on_oldcam_rerun_clicked,
+            )
+            self.rppg_rerun_btn.pack(side=tk.LEFT, padx=(0, 4))
+            HoverTooltip(
+                self.rppg_rerun_btn,
+                lambda: (
+                    "Re-run post-processing on a generated video.\n"
+                    "Applies whatever is checked (Oldcam and/or rPPG)\n"
+                    "in the correct order. Layout v2."
+                ),
+            )
+            self.rppg_pick_btn = tk.Button(
+                _rppg_rerun_btn_row,
+                text="📂",
+                font=(FONT_FAMILY, 9),
+                bg=COLORS["bg_panel"],
+                fg=COLORS["text_light"],
+                activebackground=COLORS["bg_main"],
+                activeforeground=COLORS["text_light"],
+                width=2,
+                padx=8,
+                pady=2,
+                relief=tk.FLAT,
+                borderwidth=0,
+                command=self._on_oldcam_pick_rerun_clicked,
+            )
+            self.rppg_pick_btn.pack(side=tk.LEFT, padx=(0, 0))
+            HoverTooltip(
+                self.rppg_pick_btn,
+                lambda: (
+                    "Pick a video and re-run post-processing on it.\n"
+                    "Applies checked Oldcam versions and/or rPPG.\n"
+                    "Layout v2."
+                ),
+            )
+
         # NOTE: The face-track gate GUI controls were removed (2026-05-19).
         # A large balanced corpus (21 PASS / 23 FAIL, all Kling-from-real-
         # selfie) showed face-track % does NOT separate Persona PASS from
@@ -1139,6 +1280,8 @@ class ConfigPanel(tk.Frame):
 
         # Loop video option
         self.loop_video_var.set(self.config.get("loop_videos", False))
+        # rPPG injection (off by default)
+        self.rppg_var.set(self.config.get("rppg_enabled", False))
         self._check_ffmpeg_status()
         selected_versions = self._resolve_oldcam_versions_from_config()
         for version, var in self.oldcam_version_vars.items():
@@ -1477,6 +1620,12 @@ class ConfigPanel(tk.Frame):
         self.config["loop_videos"] = self.loop_video_var.get()
         status = "enabled" if self.loop_video_var.get() else "disabled"
         self._notify_change(f"Loop video {status}")
+
+    def _on_rppg_changed(self):
+        """Handle rPPG injection checkbox change."""
+        self.config["rppg_enabled"] = self.rppg_var.get()
+        status = "enabled" if self.rppg_var.get() else "disabled"
+        self._notify_change(f"rPPG injection {status}")
 
     def _oldcam_version_key(self, version: str) -> int:
         try:
@@ -1846,6 +1995,7 @@ class ConfigPanel(tk.Frame):
             "prompt_title_var",
             "loop_video_var",
             "oldcam_version_vars",
+            "rppg_var",
             "reprocess_var",
             "reprocess_mode_var",
             "verbose_gui_var",

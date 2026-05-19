@@ -401,6 +401,28 @@ def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
     assert 'for i, version in enumerate(_oldcam_versions)' in panel_source
 
 
+def test_rppg_ui_section_present_and_wired():
+    """The orange rPPG checkbox row must exist (its own row below the
+    violet oldcam frame), be wired to a config round-trip, and be torn
+    down with the other vars. Static-source assertions mirror the oldcam
+    UI test above (the deleted test_config_panel_facetrack.py is NOT
+    recreated — these live with the oldcam UI test by design)."""
+    panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
+    # Single bool var + its label, mirroring loop_video_var (not the
+    # oldcam version dict).
+    assert "self.rppg_var = tk.BooleanVar(value=False)" in panel_source
+    assert 'text="rPPG:"' in panel_source
+    # Orange tint, distinct from the violet oldcam frame (#2A1F34/#5E3A7D).
+    assert "#3A2A1F" in panel_source
+    assert "#7D5E3A" in panel_source
+    # Config round-trip: load + on-change callback persists rppg_enabled.
+    assert 'self.rppg_var.set(self.config.get("rppg_enabled", False))' in panel_source
+    assert "def _on_rppg_changed(self):" in panel_source
+    assert 'self.config["rppg_enabled"] = self.rppg_var.get()' in panel_source
+    # Teardown cleanup list includes the new var (no leak).
+    assert '"rppg_var",' in panel_source
+
+
 def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
     manager, _ = make_queue_manager({})
     oldcam_dir = tmp_path / "oldcam-v10"

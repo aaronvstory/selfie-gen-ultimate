@@ -1687,3 +1687,128 @@ def test_measure_face_track_rejects_bad_args():
     # Non-numeric must not raise either.
     r4 = measure_face_track("x.mp4", repo, sample_fps="fast")  # type: ignore[arg-type]
     assert r4.available is False
+
+
+def _mk_rppg_case(tmp_path, monkeypatch, *, rppg_enabled, rppg_required=False, rppg_returns="path"):
+    """Shared rPPG-step pipeline harness. rppg_returns: "path" => mock
+    run_rppg writes & returns <input>-rppg.mp4; "none" => returns None
+    (graceful-skip path)."""
+    case_dir = tmp_path / "rppg-case"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="rppg-case")
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "saved_prompts": {"1": "prompt"},
+            "current_prompt_slot": 1,
+            # Oldcam off so rPPG runs on the video_generate output directly,
+            # isolating the rPPG step under test.
+            "automation_oldcam_enabled": False,
+            "automation_oldcam_required": False,
+            "automation_rppg_enabled": rppg_enabled,
+            "automation_rppg_required": rppg_required,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600):
+        del repo_root, progress_cb, timeout_seconds
+        if rppg_returns == "none":
+            return None
+        out = Path(video_path).with_name(Path(video_path).stem + "-rppg" + Path(video_path).suffix)
+        out.write_bytes(b"rppg")
+        return out
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", _fake_rppg)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    step = manifest.data["cases"]["rppg-case"]["steps"].get("rppg", {})
+    return stats, step
+
+
+def test_pipeline_rppg_skipped_when_disabled_by_default(tmp_path: Path, monkeypatch):
+    """rPPG defaults OFF: the step records 'skipped' with the disabled
+    reason and the case still completes."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled=False)
+    assert stats["failed"] == 0
+    assert step.get("status") == "skipped"
+    assert "rPPG disabled" in (step.get("error") or "")
+
+
+def test_pipeline_rppg_runs_and_completes_when_enabled(tmp_path: Path, monkeypatch):
+    """When enabled and the (mocked) injector yields output, the rppg step
+    is 'complete' and points at the injected file."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled=True, rppg_returns="path")
+    assert stats["failed"] == 0
+    assert step.get("status") == "complete"
+    assert str(step.get("output", "")).endswith("-rppg.mp4")
+
+
+def test_pipeline_rppg_graceful_skip_when_no_output_and_not_required(tmp_path: Path, monkeypatch):
+    """Enabled but injector returns nothing and not required => 'skipped',
+    run still completes (never hard-fails). Mirrors the facetrack
+    non-required precedent."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled=True, rppg_required=False, rppg_returns="none")
+    assert stats["failed"] == 0
+    assert step.get("status") == "skipped"
+
+
+def test_pipeline_rppg_required_failure_marks_case_failed(tmp_path: Path, monkeypatch):
+    """Enabled + required + injector yields nothing => case fails (opt-in
+    strictness, parallel to oldcam_required)."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled=True, rppg_required=True, rppg_returns="none")
+    assert stats["failed"] == 1
+    assert step.get("status") == "failed"
+
+
+def test_resolve_produced_output_handles_metric_suffix_rename(tmp_path):
+    """The real injector renames our --output {stem}-rppg{ext} to
+    {stem}-rppg - <snr>-<phase>-<temporal>-<motion>-<harmonic>{ext}
+    regardless of --output (verified via oldcam-testing/rppg_harness.py
+    against the real tool). resolve_produced_output must find the renamed
+    file, not insist on the exact requested path."""
+    from automation.rppg import resolve_produced_output
+
+    requested = tmp_path / "clip-rppg.mp4"
+    # Exact path present -> returned as-is.
+    requested.write_bytes(b"a")
+    assert resolve_produced_output(requested) == requested
+    requested.unlink()
+
+    # Only the metric-renamed sibling exists -> that is returned.
+    renamed = tmp_path / "clip-rppg - 13.08-7.8-0.70-0.03-0.46.mp4"
+    renamed.write_bytes(b"b")
+    assert resolve_produced_output(requested) == renamed
+
+    # Newest metric-renamed wins when several exist.
+    import time
+    older = tmp_path / "clip-rppg - 7.72-75.5-0.79-0.06-0.35.mp4"
+    older.write_bytes(b"c")
+    time.sleep(0.01)
+    newest = tmp_path / "clip-rppg - 14.00-3.0-0.50-0.02-0.50.mp4"
+    newest.write_bytes(b"d")
+    assert resolve_produced_output(requested) == newest
+
+    # Nothing matching -> None (graceful-skip path).
+    empty = tmp_path / "sub"
+    empty.mkdir()
+    assert resolve_produced_output(empty / "x-rppg.mp4") is None

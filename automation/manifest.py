@@ -19,6 +19,7 @@ STEP_NAMES = [
     "video_generate",
     "facetrack_gate",
     "oldcam",
+    "rppg",
 ]
 STEP_STATUSES = {"pending", "running", "complete", "failed", "manual_review", "skipped", "pending_not_implemented"}
 

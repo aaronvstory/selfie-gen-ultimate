@@ -95,6 +95,19 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_oldcam_enabled": True,
     "automation_oldcam_version": "v24",
     "automation_oldcam_required": True,
+    # rPPG injection (runs LAST: Kling -> Loop -> Oldcam -> rPPG). Installs a
+    # physiologically-correct, sub-perceptual pulse so Persona's passive rPPG
+    # stage sees a real signal instead of "weak/deformed rPPG". DEFAULT OFF:
+    # this is the genuinely-untried forward direction, not yet production-
+    # validated (mirrors the facetrack default-OFF precedent above). The
+    # injector itself lives in the gitignored rPPG/ tool and is invoked as an
+    # external launcher; the step degrades gracefully (skip + log) if absent
+    # or it fails. "inject" = one-shot; "iterative" is reserved for a future
+    # tuned mode. _required=False -> a missing/failed injection never hard-
+    # fails a run unless the user opts in.
+    "automation_rppg_enabled": False,
+    "automation_rppg_mode": "inject",
+    "automation_rppg_required": False,
     "automation_recommended_defaults_version": 1,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
