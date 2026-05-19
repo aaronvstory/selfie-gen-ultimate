@@ -1629,6 +1629,24 @@ class QueueManager:
                 self.log(f"rPPG skipped: input missing ({input_path.name})", "warning")
                 return None
 
+            # Never re-inject an already-injected file. The 📂 re-run
+            # picker can be pointed at ANY video, including a prior
+            # "*-rppg - <metrics>" artifact; injecting that again would
+            # double-inject (-rppg-rppg) and compound the pulse out of the
+            # non-negotiable sub-perceptual range. It IS the final
+            # deliverable — return it as-is. Symmetric with the pipeline
+            # guard (automation/pipeline.py Step 8); shared single source
+            # of truth for the marker. (Codex P2 class, PR #39.)
+            from automation.rppg import is_rppg_artifact
+
+            if is_rppg_artifact(input_path):
+                self.log(
+                    f"rPPG skipped: input is already injected ({input_path.name}); "
+                    "keeping it as the final deliverable",
+                    "info",
+                )
+                return str(input_path)
+
             output_path = self._build_rppg_output_path(input_path)
             self.log("Applying rPPG injection...", "info")
             run_cmd = [

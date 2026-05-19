@@ -2043,3 +2043,33 @@ def test_oldcam_dependency_preflight_does_not_require_mediapipe_for_v24(tmp_path
 
     with mock.patch("builtins.__import__", side_effect=fake_import):
         assert manager._ensure_oldcam_dependencies(oldcam_dir, "v24") is True
+
+
+def test_rppg_video_skips_reinjection_of_already_injected_input(tmp_path):
+    """Regression (refine-loop self-review, PR #39): the GUI _rppg_video
+    (incl. the 📂 re-run picker, which can be pointed at ANY file) must
+    NOT re-inject an already-injected "*-rppg - <metrics>" artifact —
+    that double -rppg-rppg pass compounds the pulse out of the
+    non-negotiable sub-perceptual range. It IS the final deliverable, so
+    return it as-is WITHOUT spawning the injector. Symmetric with the
+    pipeline Step 8 guard."""
+    manager, logs = make_queue_manager({"rppg_enabled": True})
+
+    # An already-injected artifact (the injector's metric-rename form).
+    injected = tmp_path / "clip-oldcam-v24-rppg - 7.81-6.4-0.53-0.03-0.54.mp4"
+    injected.write_bytes(b"already-injected")
+
+    called = {"popen": False}
+
+    def _boom(*a, **k):
+        called["popen"] = True
+        raise AssertionError("injector must NOT be spawned on an already-injected input")
+
+    # If the guard fails, _rppg_video would resolve the launcher and call
+    # stream_subprocess_with_timeout -> Popen. Patch Popen to detect that.
+    with mock.patch("subprocess.Popen", side_effect=_boom):
+        result = manager._rppg_video(str(injected), QueueItem(str(injected)))
+
+    assert called["popen"] is False, "re-injected an already-rPPG'd input (double-injection)"
+    assert result == str(injected), "already-injected input must be returned as the final deliverable"
+    assert any("already injected" in m.lower() for m, _ in logs)
