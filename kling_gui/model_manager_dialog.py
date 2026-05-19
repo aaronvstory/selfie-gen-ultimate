@@ -475,12 +475,31 @@ class ModelManagerDialog(tk.Toplevel):
 
         self._release_var.set(model.get("release", ""))
 
-        # Duration checkboxes
-        dur_opts = model.get("duration_options", [5, 10])
+        # Duration checkboxes. models.json now persists durations as
+        # JSON strings ("5"/"10"); the editor (and _save_*) work purely
+        # in ints (_DURATION_CHOICES = [5, 10]). Normalize at this read
+        # boundary so factory models open with the correct boxes ticked
+        # — otherwise `5 in ["5","10"]` is False, every model opens with
+        # both unchecked, and a plain Save silently collapses durations
+        # to [10], dropping 5s support (Codex P2, PR #41). Tolerates
+        # ints, numeric strings, and junk (skipped).
+        def _as_int_durations(raw):
+            out = []
+            for v in raw or []:
+                try:
+                    out.append(int(v))
+                except (TypeError, ValueError):
+                    continue
+            return out
+
+        dur_opts = _as_int_durations(model.get("duration_options", [5, 10]))
         self._dur_5_var.set(5 in dur_opts)
         self._dur_10_var.set(10 in dur_opts)
 
-        default_dur = model.get("duration_default", 10)
+        try:
+            default_dur = int(model.get("duration_default", 10))
+        except (TypeError, ValueError):
+            default_dur = 10
         self._default_dur_var.set(str(default_dur))
 
         # Notes: prefer user_notes, then notes, then api_description as starting point
