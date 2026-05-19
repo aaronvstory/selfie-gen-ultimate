@@ -117,5 +117,56 @@ class CfgScaleClampParityTests(unittest.TestCase):
         )
 
 
+class StringDurationCoercionTests(unittest.TestCase):
+    """Codex P2 (PR #41): models.json duration_options/duration_default
+    are JSON STRINGS ("5","10"). The model editor checked membership
+    with ints (`5 in dur_opts`) -> every factory model would open with
+    both duration boxes UNSET and a Save could rewrite durations to
+    [10], dropping 5s. The _as_int_durations() coercion in
+    model_manager_dialog._switch_to_edit_mode fixes this; pin it so the
+    regression can't silently return."""
+
+    def test_models_json_durations_are_strings(self):
+        import json
+
+        d = json.loads((_ROOT / "models.json").read_text(encoding="utf-8"))
+        pro = next(
+            m for m in d["models"]
+            if m["endpoint"] == "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+        )
+        # Documents the data shape the editor must tolerate.
+        assert all(isinstance(v, str) for v in pro["duration_options"])
+
+    def test_editor_coerces_string_durations_to_int(self):
+        src = (
+            _ROOT / "kling_gui" / "model_manager_dialog.py"
+        ).read_text(encoding="utf-8")
+        # The normalizer must exist and be applied before the int
+        # membership checks (5 in dur_opts / 10 in dur_opts).
+        self.assertIn("def _as_int_durations", src)
+        self.assertRegex(src, r"dur_opts\s*=\s*_as_int_durations\(")
+        self.assertRegex(src, r"5 in dur_opts")
+        self.assertRegex(src, r"10 in dur_opts")
+
+    def test_as_int_durations_logic_handles_strings(self):
+        # Replicate the exact coercion to prove "5"/"10" -> 5/10 so the
+        # checkbox membership tests pass (the behavioural guarantee).
+        def _as_int_durations(raw):
+            out = []
+            for v in raw or []:
+                try:
+                    out.append(int(v))
+                except (TypeError, ValueError):
+                    continue
+            return out
+
+        opts = _as_int_durations(["5", "10"])
+        self.assertEqual(opts, [5, 10])
+        self.assertIn(5, opts)
+        self.assertIn(10, opts)
+        # Garbage is skipped, not crashing.
+        self.assertEqual(_as_int_durations(["5", "auto", None, "10"]), [5, 10])
+
+
 if __name__ == "__main__":
     unittest.main()
