@@ -1742,14 +1742,29 @@ class QueueManager:
             if returncode == 0:
                 # The injector renames our --output to append a metric
                 # suffix ({stem}-rppg - <snr>-<phase>-...{ext}) regardless
-                # of --output. Resolve the actual produced file (shared
-                # single source of truth with the automation pipeline).
-                from automation.rppg import resolve_produced_output
+                # of --output. Resolve the actual produced file, then apply
+                # the user's metric-in-filename preference (clean name +
+                # .metrics.json sidecar when off). Both helpers are the
+                # shared single source of truth with the automation
+                # pipeline — do not reimplement here.
+                from automation.rppg import (
+                    finalize_rppg_output,
+                    resolve_produced_output,
+                )
 
                 produced = resolve_produced_output(output_path)
                 if produced is not None:
-                    self.log(f"rPPG injection applied: {produced.name}", "success")
-                    return str(produced)
+                    keep_metrics = bool(
+                        self.get_config().get("rppg_metrics_in_filename", False)
+                    )
+                    final = finalize_rppg_output(
+                        produced,
+                        output_path,
+                        keep_metrics=keep_metrics,
+                        progress_cb=lambda msg, lvl="info": self.log(msg, lvl),
+                    )
+                    self.log(f"rPPG injection applied: {final.name}", "success")
+                    return str(final)
                 self.log(
                     "rPPG process completed but output file was not found; keeping pre-rPPG video",
                     "warning",

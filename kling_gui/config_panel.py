@@ -777,6 +777,26 @@ class ConfigPanel(tk.Frame):
         )
         self.verbose_info_label.pack(side=tk.LEFT, padx=4)
 
+        # rPPG metric-suffix toggle (shares the Logging: row). When OFF
+        # (default) the injector's "{stem}-rppg - <SNR>-<Phase>-..." name
+        # is stripped to a clean "{stem}-rppg" and the metrics go to a
+        # .metrics.json sidecar (automation/rppg.finalize_rppg_output).
+        self.rppg_metrics_var = tk.BooleanVar(value=False)
+        self.rppg_metrics_checkbox = tk.Checkbutton(
+            rC, text="rPPG metrics in filename", variable=self.rppg_metrics_var,
+            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            command=self._on_rppg_metrics_changed,
+        )
+        self.rppg_metrics_checkbox.pack(side=tk.LEFT, padx=(12, 0))
+        self.rppg_metrics_info_label = tk.Label(
+            rC, text="(off = clean name + .metrics.json sidecar)",
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.rppg_metrics_info_label.pack(side=tk.LEFT, padx=4)
+
         # File Filter — replaces the old "Folder:" row with clearer labeling
         rD = tk.Frame(left_col, bg=COLORS["bg_input"])
         rD.pack(fill=tk.X, pady=(0, 2))
@@ -1247,6 +1267,12 @@ class ConfigPanel(tk.Frame):
         # Verbose GUI mode
         self.verbose_gui_var.set(self.config.get("verbose_gui_mode", False))
 
+        # rPPG metric-in-filename toggle (default OFF -> clean name +
+        # sidecar). Mirrors verbose_gui_mode round-trip.
+        self.rppg_metrics_var.set(
+            self.config.get("rppg_metrics_in_filename", False)
+        )
+
         # Folder filter options
         self.folder_pattern_var.set(self.config.get("folder_filter_pattern", ""))
         self.folder_match_mode_var.set(self.config.get("folder_match_mode", "partial"))
@@ -1655,6 +1681,20 @@ class ConfigPanel(tk.Frame):
         status = "enabled" if self.verbose_gui_var.get() else "disabled"
         self._notify_change(f"Verbose mode {status}")
 
+    def _on_rppg_metrics_changed(self):
+        """Handle the rPPG metric-in-filename toggle.
+
+        OFF (default): injector's metric-suffixed name is stripped to a
+        clean ``{stem}-rppg`` and the 5 metrics go to a ``.metrics.json``
+        sidecar. ON: the metric suffix stays in the filename.
+        """
+        self.config["rppg_metrics_in_filename"] = self.rppg_metrics_var.get()
+        if self.rppg_metrics_var.get():
+            status = "kept in filename"
+        else:
+            status = "moved to .metrics.json sidecar"
+        self._notify_change(f"rPPG metrics {status}")
+
     def _on_folder_pattern_changed(self, event=None):
         """Handle folder pattern entry change."""
         pattern = self.folder_pattern_var.get().strip()
@@ -1949,6 +1989,7 @@ class ConfigPanel(tk.Frame):
             "reprocess_var",
             "reprocess_mode_var",
             "verbose_gui_var",
+            "rppg_metrics_var",
             "folder_pattern_var",
             "folder_match_mode_var",
             "duration_var",
