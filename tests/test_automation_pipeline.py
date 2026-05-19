@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from automation.config import from_app_config, merge_automation_defaults
@@ -1887,3 +1888,49 @@ def test_pipeline_rppg_runs_on_reused_video_when_oldcam_disabled(tmp_path, monke
     assert existing_video.name in rppg_calls[0].name or str(existing_video) in str(rppg_calls[0])
     step = manifest.data["cases"]["case-reuse-rppg"]["steps"].get("rppg", {})
     assert step.get("status") == "complete"
+
+
+def test_stream_subprocess_with_timeout_edge_cases(tmp_path):
+    """Permanent regression for the shared rPPG subprocess streamer
+    (Codex P2, PR #39). The graceful-skip guarantee depends entirely on
+    this: a child that stalls — including MID-LINE with no trailing
+    newline — must still be killed on the wall clock, not block until
+    EOF. Covers the failure mode the bare readline() loop had."""
+    import subprocess
+    import sys
+    import time
+
+    from automation.rppg import stream_subprocess_with_timeout
+
+    def run(argv, timeout):
+        return stream_subprocess_with_timeout(
+            [sys.executable, "-c", argv], cwd=str(tmp_path), timeout_seconds=timeout
+        )
+
+    # Normal multi-line completion -> rc 0, all lines captured.
+    rc, lines = run("print('a');print('b');print('c')", 10)
+    assert rc == 0 and lines == ["a", "b", "c"]
+
+    # Non-zero exit returns rc (NOT an exception).
+    rc, lines = run("import sys;print('x');sys.exit(3)", 10)
+    assert rc == 3 and lines == ["x"]
+
+    # Silent hang: no output, no exit -> TimeoutExpired, killed fast.
+    t0 = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        run("import time;time.sleep(30)", 2)
+    assert time.monotonic() - t0 < 8, "silent hang not killed near the deadline"
+
+    # Mid-line stall: writes WITHOUT a newline then hangs forever. This
+    # is the exact scenario a bare readline() loop could not time out.
+    t0 = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        run(
+            "import sys,time;sys.stdout.write('partial');sys.stdout.flush();time.sleep(30)",
+            2,
+        )
+    assert time.monotonic() - t0 < 8, "mid-line stall not killed near the deadline"
+
+    # Rapid output then clean exit -> reader thread keeps up.
+    rc, lines = run("[print(i) for i in range(300)]", 10)
+    assert rc == 0 and len(lines) == 300
