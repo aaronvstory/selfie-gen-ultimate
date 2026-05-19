@@ -1934,3 +1934,30 @@ def test_stream_subprocess_with_timeout_edge_cases(tmp_path):
     # Rapid output then clean exit -> reader thread keeps up.
     rc, lines = run("[print(i) for i in range(300)]", 10)
     assert rc == 0 and len(lines) == 300
+
+
+def test_resolve_produced_output_handles_glob_metacharacters(tmp_path):
+    """Regression (refine-loop self-review, PR #39): real Kling/oldcam
+    stems can contain glob metacharacters — "selfie[final]", "clip (1)",
+    "v[2]-oldcam-...". Unescaped, Path.glob() treats "[..]" as a char
+    class and the produced file is silently missed → false graceful-skip
+    on a SUCCESSFUL injection. resolve_produced_output must glob.escape
+    the literal stem. (Note: "?" / "*" can't be Windows filenames, so
+    "[]" is the realistic offender; the others are escaped defensively.)"""
+    from automation.rppg import resolve_produced_output
+
+    for stem in ("selfie[final]-rppg", "v[2]-oldcam-v24-rppg", "clip (1)-rppg", "a+b{x}-rppg"):
+        d = tmp_path / stem.replace("[", "_").replace("]", "_").replace(" ", "_")
+        d.mkdir()
+        requested = d / f"{stem}.mp4"
+        produced = d / f"{stem} - 7.81-6.4-0.53-0.03-0.54.mp4"
+        produced.write_bytes(b"x")
+        assert resolve_produced_output(requested) == produced, f"failed for stem {stem!r}"
+
+    # The loose-sibling guard must still hold with escaping in place.
+    d2 = tmp_path / "guard"
+    d2.mkdir()
+    (d2 / "clip-rppg-backup.mp4").write_bytes(b"q")  # NOT the rename form
+    real = d2 / "clip-rppg - 1.0-2.0-0.5-0.0-0.5.mp4"
+    real.write_bytes(b"r")
+    assert resolve_produced_output(d2 / "clip-rppg.mp4") == real

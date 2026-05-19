@@ -28,6 +28,7 @@ explicitly out of scope for this pass; ``run_rppg`` simply skips gracefully
 
 from __future__ import annotations
 
+import glob as _glob
 import os
 import queue as _queue
 import shlex
@@ -107,10 +108,17 @@ def resolve_produced_output(requested: Path) -> Optional[Path]:
     # Match ONLY that exact form (not a loose "<stem>*<ext>" which would also
     # catch the input itself or unrelated "<stem>-foo<ext>" siblings on a
     # re-run). Exclude the requested path defensively. Newest wins.
+    #
+    # glob.escape() the literal parts: real Kling/oldcam stems can contain
+    # glob metacharacters — e.g. "clip (1)-oldcam-v24-rppg" or
+    # "selfie[final]-rppg". Unescaped, Path.glob() treats "[..]" as a
+    # character class and the produced file is silently missed, defeating
+    # rPPG output detection (false graceful-skip on a successful inject).
+    pattern = f"{_glob.escape(stem)} - *{_glob.escape(ext)}"
     candidates = sorted(
         (
             p
-            for p in parent.glob(f"{stem} - *{ext}")
+            for p in parent.glob(pattern)
             if p.is_file() and p.resolve() != requested.resolve()
         ),
         key=lambda p: p.stat().st_mtime,
