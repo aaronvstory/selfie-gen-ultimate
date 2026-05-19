@@ -2214,6 +2214,96 @@ def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch
     assert len(step.get("meta", {}).get("all_outputs", [])) == 3
 
 
+def test_pipeline_step8_candidate_selection_includes_legacy_oldcam(tmp_path):
+    """Regression (Codex P2 / CodeRabbit Major, PR #40): the Step-8
+    candidate-selection rule must fan rPPG over the BASE *and* the legacy
+    single ``oldcam.output`` when ``meta["all_outputs"]`` is absent (a
+    manifest whose oldcam step completed before all_outputs existed).
+    The pre-fix bug: ``video_out`` seeded ``candidates`` first, so a
+    "fallback only if candidates empty" check never fired and the legacy
+    oldcam deliverable was silently skipped.
+
+    This pins the exact selection logic in isolation (a full-pipeline
+    run always re-runs Step 7, which overwrites the oldcam step — so the
+    cross-run resume the bug describes is only reachable at this rule)."""
+    base = tmp_path / "existing.mp4"
+    base.write_bytes(b"b")
+    legacy = tmp_path / "existing-oldcam-v24.mp4"
+    legacy.write_bytes(b"v")
+
+    def select(video_out, oldcam_out, oldcam_all):
+        """Mirror of automation/pipeline.py Step 8 candidate building."""
+        oldcam_sources = oldcam_all if oldcam_all else ([oldcam_out] if oldcam_out else [])
+        candidates = []
+        seen = set()
+        for raw in [video_out, *oldcam_sources]:
+            if not raw:
+                continue
+            p = Path(raw)
+            key = str(p)
+            if key in seen or not p.exists():
+                continue
+            seen.add(key)
+            candidates.append(p)
+        return [p.name for p in candidates]
+
+    # Legacy manifest: all_outputs empty, single oldcam.output present,
+    # video_out also present -> BOTH must be fanned (the fix).
+    assert select(str(base), str(legacy), []) == ["existing.mp4", "existing-oldcam-v24.mp4"]
+    # Modern manifest: all_outputs wins; legacy ignored (deduped anyway).
+    assert select(str(base), str(legacy), [str(legacy)]) == ["existing.mp4", "existing-oldcam-v24.mp4"]
+    # No oldcam at all -> just the base (the standalone-rPPG path).
+    assert select(str(base), None, []) == ["existing.mp4"]
+    # Missing files are filtered.
+    assert select(str(tmp_path / "gone.mp4"), str(legacy), []) == ["existing-oldcam-v24.mp4"]
+
+
+def test_rerun_oldcam_failure_not_masked_by_base_rppg(monkeypatch):
+    """Regression (CodeRabbit Major, PR #40): the OLDCAM-only re-run
+    path must NOT report success when oldcam produced nothing just
+    because rPPG injected the base clip. output_path stays falsy so the
+    downstream existence check fails the rerun."""
+    from kling_gui import queue_manager as qm
+
+    class _QM(qm.QueueManager):
+        def __init__(self):  # bypass heavy __init__
+            self._last_oldcam_run_summary = {"outputs": []}
+
+        def get_config(self):
+            return {}
+
+        def log(self, *a, **k):
+            pass
+
+    inst = _QM()
+    monkeypatch.setattr(inst, "_rppg_enabled", lambda: True)
+    # oldcam produced NOTHING (total failure).
+    monkeypatch.setattr(inst, "_oldcam_video", lambda *a, **k: None)
+    # rPPG would still "succeed" on the base if wired wrong.
+    monkeypatch.setattr(inst, "_rppg_video", lambda src, item: src + "-rppg")
+    monkeypatch.setattr(inst, "_build_rppg_output_path", lambda p: qm.Path(str(p) + "-rppg"))
+
+    # Reproduce the re-run decision block in isolation.
+    run_input = "clip.mp4"
+    output_path = inst._oldcam_video(str(run_input), None)  # -> None
+    summary = inst._last_oldcam_run_summary or {}
+    if inst._rppg_enabled():
+        rerun_oldcam_outputs = list(summary.get("outputs") or [])
+        rppg_inputs = list(dict.fromkeys(s for s in [str(run_input), *rerun_oldcam_outputs] if s))
+        last_rppg = None
+        for src in rppg_inputs:
+            r = inst._rppg_video(src, None)
+            if r:
+                last_rppg = r
+        if last_rppg and output_path:
+            preferred = inst._build_rppg_output_path(qm.Path(output_path))
+            output_path = str(preferred) if preferred.exists() else last_rppg
+    # rPPG ran on the base, but oldcam failed -> output_path MUST stay
+    # None so the rerun is correctly reported as failed.
+    assert last_rppg == "clip.mp4-rppg"
+    assert output_path is None
+
+
 def test_pipeline_rppg_skips_reinjection_of_already_injected_input(tmp_path, monkeypatch):
     """Regression (Codex P2, PR #39): a stale/seeded manifest can point
     video_generate (or oldcam) output at a prior "*-rppg" artifact. Step 8

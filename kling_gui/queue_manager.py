@@ -812,26 +812,35 @@ class QueueManager:
                 summary = self._last_oldcam_run_summary or {}
                 if self._rppg_enabled():
                     rerun_oldcam_outputs = list(summary.get("outputs") or [])
-                    rppg_inputs: List[str] = []
-                    for src in [str(run_input), *rerun_oldcam_outputs]:
-                        if src and src not in rppg_inputs:
-                            rppg_inputs.append(src)
+                    # Ordered de-dup (base first, then each oldcam output).
+                    # dict.fromkeys is O(n) vs an O(n^2) list-membership
+                    # loop (gemini-code-assist, PR #40).
+                    rppg_inputs = list(
+                        dict.fromkeys(
+                            s for s in [str(run_input), *rerun_oldcam_outputs] if s
+                        )
+                    )
                     last_rppg: Optional[str] = None
                     for src in rppg_inputs:
                         rppg_path = self._rppg_video(src, QueueItem(str(source_video)))
                         if rppg_path:
                             last_rppg = rppg_path
-                    if last_rppg:
-                        # Headline the highest oldcam version's rPPG when
-                        # present (output_path is that version's path),
-                        # else the last successful injection.
-                        if output_path:
-                            preferred = self._build_rppg_output_path(Path(output_path))
-                            output_path = (
-                                str(preferred) if preferred.exists() else last_rppg
-                            )
-                        else:
-                            output_path = last_rppg
+                    # This is the OLDCAM-only re-run path. Only adopt the
+                    # rPPG result when oldcam itself produced output
+                    # (output_path truthy). If oldcam produced NOTHING,
+                    # leaving output_path falsy lets the downstream
+                    # "if output_path and exists()" correctly report the
+                    # oldcam rerun as FAILED — a base-only rPPG must not
+                    # mask total oldcam failure as success (CodeRabbit
+                    # Major, PR #40).
+                    if last_rppg and output_path:
+                        # Headline the highest oldcam version's rPPG
+                        # (output_path is that version's path) when its
+                        # injected sibling exists, else the last success.
+                        preferred = self._build_rppg_output_path(Path(output_path))
+                        output_path = (
+                            str(preferred) if preferred.exists() else last_rppg
+                        )
                 requested_versions = summary.get("requested_versions", [])
                 succeeded_versions = summary.get("succeeded_versions", [])
                 failed_versions = summary.get("failed_versions", [])
@@ -1115,13 +1124,16 @@ class QueueManager:
                     # "<base>-oldcam-vN-rppg" per selected version. The
                     # plain pre-rPPG files all remain on disk alongside.
                     if self._rppg_enabled():
-                        # De-dup while preserving order: base first, then
-                        # each oldcam output. (If oldcam produced nothing,
-                        # this is just the base — the no-oldcam path.)
-                        rppg_inputs: List[str] = []
-                        for src in [base_video, *oldcam_outputs]:
-                            if src and src not in rppg_inputs:
-                                rppg_inputs.append(src)
+                        # Ordered de-dup, base first then each oldcam
+                        # output. dict.fromkeys is O(n) vs an O(n^2)
+                        # list-membership loop (gemini-code-assist, PR
+                        # #40). If oldcam produced nothing this is just
+                        # the base — the no-oldcam path.
+                        rppg_inputs = list(
+                            dict.fromkeys(
+                                s for s in [base_video, *oldcam_outputs] if s
+                            )
+                        )
                         last_rppg: Optional[str] = None
                         for src in rppg_inputs:
                             rppg_video = self._rppg_video(src, item)
@@ -1788,8 +1800,17 @@ class QueueManager:
 
                 produced = resolve_produced_output(output_path)
                 if produced is not None:
+                    # _parse_bool tolerates string-backed JSON
+                    # ("false"/"0"/...) — a bare bool() treats the string
+                    # "false" as truthy and would silently flip this on
+                    # for a manually-edited config (CodeRabbit, PR #40).
+                    # None (uncoercible) -> default False.
+                    from face_similarity import _parse_bool
+
                     keep_metrics = bool(
-                        self.get_config().get("rppg_metrics_in_filename", False)
+                        _parse_bool(
+                            self.get_config().get("rppg_metrics_in_filename", False)
+                        )
                     )
                     final = finalize_rppg_output(
                         produced,

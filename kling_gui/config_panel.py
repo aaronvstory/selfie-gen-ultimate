@@ -1278,9 +1278,14 @@ class ConfigPanel(tk.Frame):
         self.verbose_gui_var.set(self.config.get("verbose_gui_mode", False))
 
         # rPPG metric-in-filename toggle (default OFF -> clean name +
-        # sidecar). Mirrors verbose_gui_mode round-trip.
+        # sidecar). _parse_bool tolerates a string-backed value
+        # ("false"/"0") from a hand-edited kling_config.json — a bare
+        # truthiness check treats "false" as True (CodeRabbit, PR #40).
+        # None (uncoercible) -> default False.
+        from face_similarity import _parse_bool
+
         self.rppg_metrics_var.set(
-            self.config.get("rppg_metrics_in_filename", False)
+            bool(_parse_bool(self.config.get("rppg_metrics_in_filename", False)))
         )
 
         # Folder filter options

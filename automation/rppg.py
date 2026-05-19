@@ -248,28 +248,44 @@ def finalize_rppg_output(
         return produced  # injector honoured --output; nothing to strip
 
     metrics = parse_metric_suffix(produced.stem, requested.stem)
-    # Write the sidecar BEFORE renaming so a rename failure still leaves
-    # the metrics recorded. Keyed off the *requested* (clean) stem.
-    if metrics is not None:
-        sidecar = requested.with_name(f"{requested.stem}.metrics.json")
-        try:
-            sidecar.write_text(
-                json.dumps(
-                    {
-                        "source": produced.name,
-                        "metrics": metrics,
-                        "order": list(_METRIC_KEYS),
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except OSError as exc:
-            _report(
-                progress_cb,
-                f"rPPG: could not write metrics sidecar ({exc}); continuing.",
-                "warning",
-            )
+    if metrics is None:
+        # produced is NOT the injector's "<requested> - <metrics>"
+        # rename (malformed/unexpected injector output, or an unrelated
+        # sibling). Renaming it onto ``requested`` would fabricate a
+        # clean-name artifact with no sidecar AND could clobber a prior
+        # legitimate clean file. Keep ``produced`` untouched — it is
+        # still the delivered video, just under its own name.
+        # (CodeRabbit Major, PR #40.)
+        _report(
+            progress_cb,
+            f"rPPG: {produced.name} is not the expected metric-rename "
+            f"form; keeping it as-is (no sidecar, no rename).",
+            "warning",
+        )
+        return produced
+    # metrics is guaranteed non-None here (we returned early above
+    # otherwise). Write the sidecar BEFORE renaming so a rename failure
+    # still leaves the metrics recorded. Keyed off the *requested*
+    # (clean) stem.
+    sidecar = requested.with_name(f"{requested.stem}.metrics.json")
+    try:
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "source": produced.name,
+                    "metrics": metrics,
+                    "order": list(_METRIC_KEYS),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        _report(
+            progress_cb,
+            f"rPPG: could not write metrics sidecar ({exc}); continuing.",
+            "warning",
+        )
 
     try:
         # A stale clean file from a previous run would block the rename

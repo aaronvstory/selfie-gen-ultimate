@@ -1206,9 +1206,20 @@ class AutoPipelineRunner:
             # CLI produces the same set as the GUI queue: "<base>-rppg"
             # plus one "<base>-oldcam-vN-rppg" per selected version. There
             # is no privileged "primary"; plain pre-rPPG files are kept.
+            #
+            # Back-compat: a manifest whose oldcam step completed BEFORE
+            # meta["all_outputs"] existed has only the legacy single
+            # ``oldcam.output``. Since ``video_out`` is normally also
+            # present, a "fallback only if candidates empty" check never
+            # fires and the already-produced oldcam deliverable is
+            # silently skipped (Codex P2 / CodeRabbit Major, PR #40).
+            # So include ``oldcam_out`` in the source list whenever
+            # ``all_outputs`` is empty — the seen-set dedups it if it
+            # also happens to equal a video/all_outputs entry.
+            oldcam_sources = oldcam_all if oldcam_all else ([oldcam_out] if oldcam_out else [])
             candidates: List[Path] = []
             seen: set = set()
-            for raw in [video_out, *oldcam_all]:
+            for raw in [video_out, *oldcam_sources]:
                 if not raw:
                     continue
                 p = Path(raw)
@@ -1217,10 +1228,6 @@ class AutoPipelineRunner:
                     continue
                 seen.add(key)
                 candidates.append(p)
-            # Back-compat: if Step 7 ran before all_outputs existed, fall
-            # back to the single recorded oldcam output.
-            if not candidates and oldcam_out and Path(oldcam_out).exists():
-                candidates = [Path(oldcam_out)]
 
             # Drop any candidate that is ALREADY an rPPG artifact —
             # re-injecting would double-inject (-rppg-rppg) and compound
