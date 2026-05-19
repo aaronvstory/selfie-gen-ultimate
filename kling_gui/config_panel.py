@@ -894,6 +894,57 @@ class ConfigPanel(tk.Frame):
         )
         self.video_settings_info.pack(side=tk.LEFT, padx=2)
 
+        # Motion control: end-frame lock + cfg_scale. Capability is the
+        # single source of truth (model_metadata.get_model_capabilities —
+        # the dispatcher + queue_manager read the SAME flags, so UI and
+        # payload never disagree). Per the user's chosen UX: the
+        # end-frame checkbox is ALWAYS visible but GRAYED OUT
+        # (state=disabled) for models that don't expose an end-frame
+        # param, and toggle-checkable for those that do (e.g. Kling 2.5
+        # Pro). When locked the SAME image is used for both start and
+        # end. Widgets are created ONCE; only their `state` changes —
+        # never destroyed/recreated — so values survive model switches.
+        rEF = tk.Frame(left_col, bg=COLORS["bg_input"])
+        rEF.pack(fill=tk.X, pady=(0, 4))
+        self._motion_row = rEF
+        tk.Label(rEF, text="Motion:", font=(FONT_FAMILY, 10),
+                 bg=COLORS["bg_input"], fg=COLORS["text_light"],
+                 width=lbl_w, anchor="w").pack(side=tk.LEFT)
+        self.lock_end_frame_var = tk.BooleanVar(value=True)
+        self.lock_end_frame_checkbox = tk.Checkbutton(
+            rEF, text="Lock End Frame to Start Image",
+            variable=self.lock_end_frame_var, font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            disabledforeground=COLORS["text_dim"],
+            command=self._on_lock_end_frame_changed,
+        )
+        self.lock_end_frame_checkbox.pack(side=tk.LEFT, padx=(0, 12))
+        self.cfg_scale_label = tk.Label(
+            rEF, text="cfg:", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.cfg_scale_label.pack(side=tk.LEFT, padx=(0, 3))
+        self.cfg_scale_var = tk.StringVar(value="0.7")
+        self.cfg_scale_entry = tk.Entry(
+            rEF, textvariable=self.cfg_scale_var, font=(FONT_FAMILY, 10),
+            bg=COLORS["bg_main"], fg=COLORS["text_light"],
+            insertbackground=COLORS["text_light"], width=5,
+            borderwidth=0, highlightthickness=1,
+            highlightbackground=COLORS["border"],
+            disabledbackground=COLORS["bg_input"],
+            disabledforeground=COLORS["text_dim"],
+        )
+        self.cfg_scale_entry.pack(side=tk.LEFT, padx=(0, 8))
+        self.cfg_scale_entry.bind("<FocusOut>", self._on_cfg_scale_changed)
+        self.cfg_scale_entry.bind("<Return>", self._on_cfg_scale_changed)
+        self.model_caps_label = tk.Label(
+            rEF, text="", font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.model_caps_label.pack(side=tk.RIGHT, padx=4)
+
         # Seed & misc options
         rF = tk.Frame(left_col, bg=COLORS["bg_input"])
         rF.pack(fill=tk.X, pady=(0, 4))
@@ -1288,6 +1339,18 @@ class ConfigPanel(tk.Frame):
             bool(_parse_bool(self.config.get("rppg_metrics_in_filename", False)))
         )
 
+        # Motion controls (end-frame lock + cfg_scale). lock default True
+        # (mechanical return-to-pose is the intended selfie behaviour);
+        # cfg default 0.7 (stricter prompt adherence than fal's 0.5).
+        self.lock_end_frame_var.set(
+            bool(_parse_bool(self.config.get("lock_end_frame", True)))
+        )
+        try:
+            _cfg = float(self.config.get("cfg_scale_value", 0.7))
+        except (TypeError, ValueError):
+            _cfg = 0.7
+        self.cfg_scale_var.set(f"{max(0.0, min(1.0, _cfg)):g}")
+
         # Folder filter options
         self.folder_pattern_var.set(self.config.get("folder_filter_pattern", ""))
         self.folder_match_mode_var.set(self.config.get("folder_match_mode", "partial"))
@@ -1436,6 +1499,7 @@ class ConfigPanel(tk.Frame):
                 self.config["video_duration"] = current_duration
 
         self.update_parameter_visibility(model_endpoint)
+        self._update_motion_controls(model_endpoint)
 
         duration_text = self.duration_var.get().rstrip("s").strip()
         if duration_text.isdigit():
@@ -1709,6 +1773,96 @@ class ConfigPanel(tk.Frame):
         else:
             status = "moved to .metrics.json sidecar"
         self._notify_change(f"rPPG metrics {status}")
+
+    def _on_lock_end_frame_changed(self):
+        """Persist the end-frame-lock toggle. Only meaningful for models
+        whose schema exposes an end-frame param (the checkbox is grayed
+        out otherwise); the dispatcher re-checks capability anyway."""
+        self.config["lock_end_frame"] = bool(self.lock_end_frame_var.get())
+        state = "on" if self.lock_end_frame_var.get() else "off"
+        self._notify_change(f"End-frame lock {state}")
+
+    def _on_cfg_scale_changed(self, event=None):
+        """Persist cfg_scale (clamped to the documented 0-1 fal.ai range).
+        Ignored at submit for models that dropped cfg_scale (o3/seedance);
+        the dispatcher gates on capability."""
+        raw = self.cfg_scale_var.get().strip()
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            val = 0.7
+        val = max(0.0, min(1.0, val))
+        # Reflect the clamp back so the user sees the effective value.
+        self.cfg_scale_var.set(f"{val:g}")
+        self.config["cfg_scale_value"] = val
+        self._notify_change(f"cfg_scale set to {val:g}")
+
+    def _update_motion_controls(self, model_endpoint: str):
+        """Enable/disable the motion row from the model's capabilities.
+
+        Single source of truth: model_metadata.get_model_capabilities
+        (the dispatcher + queue_manager read the SAME flags). Per the
+        user's chosen UX the controls are NEVER hidden — an unsupported
+        end-frame / cfg control is GRAYED OUT (state=disabled) so the
+        layout is stable and it's obvious which models can do what. The
+        caps label echoes the support set.
+        """
+        try:
+            from model_metadata import get_model_capabilities
+
+            caps = get_model_capabilities(model_endpoint)
+        except Exception:
+            return  # never break the model-change flow over a label
+
+        has_end = caps.get("end_image_param") is not None
+        has_cfg = bool(caps.get("supports_cfg_scale"))
+        has_neg = bool(caps.get("supports_negative_prompt"))
+
+        if hasattr(self, "lock_end_frame_checkbox"):
+            self.lock_end_frame_checkbox.config(
+                state=tk.NORMAL if has_end else tk.DISABLED
+            )
+        if hasattr(self, "cfg_scale_entry"):
+            self.cfg_scale_entry.config(
+                state=tk.NORMAL if has_cfg else tk.DISABLED
+            )
+        if hasattr(self, "cfg_scale_label"):
+            self.cfg_scale_label.config(
+                fg=COLORS["text_dim"] if not has_cfg else COLORS["text_light"]
+            )
+        if hasattr(self, "model_caps_label"):
+            def _mark(ok):
+                return "✓" if ok else "✗"
+            self.model_caps_label.config(
+                text=(
+                    f"negative {_mark(has_neg)} · "
+                    f"end-frame {_mark(has_end)} · "
+                    f"cfg {_mark(has_cfg)}"
+                )
+            )
+        # Reflect negative-prompt support in the prompt editor: a
+        # supported model splits the prompt box into positive/negative;
+        # an unsupported one collapses back to a single positive box.
+        self._apply_negative_prompt_visibility(has_neg)
+
+    def _apply_negative_prompt_visibility(self, has_neg: bool):
+        """Show/hide the negative-prompt half of the split prompt editor.
+
+        The widgets are created once (see the prompt-editor build); here
+        we only pack_forget / re-pack the negative section so its text
+        survives toggling. No-op until the split editor exists."""
+        neg = getattr(self, "_negative_prompt_section", None)
+        if neg is None:
+            return
+        try:
+            if has_neg:
+                if not neg.winfo_ismapped():
+                    neg.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+            else:
+                if neg.winfo_ismapped():
+                    neg.pack_forget()
+        except Exception:
+            pass
 
     def _on_folder_pattern_changed(self, event=None):
         """Handle folder pattern entry change."""
@@ -2005,6 +2159,8 @@ class ConfigPanel(tk.Frame):
             "reprocess_mode_var",
             "verbose_gui_var",
             "rppg_metrics_var",
+            "lock_end_frame_var",
+            "cfg_scale_var",
             "folder_pattern_var",
             "folder_match_mode_var",
             "duration_var",

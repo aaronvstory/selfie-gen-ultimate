@@ -1211,13 +1211,29 @@ class QueueManager:
         Returns:
             Output path on success, None on failure
         """
-        # Respect model capability: if not supported, drop negative_prompt
-        supports_negative = (
-            self.get_config()
-            .get("model_capabilities", {})
-            .get(self.generator.model_endpoint, False)
+        # Respect model capability via the SINGLE source of truth
+        # (model_metadata.get_model_capabilities — the dispatcher reads
+        # the exact same flags, so the GUI pre-drop and the payload can
+        # never diverge). The dispatcher gates again defensively; dropping
+        # here too keeps logs/console honest about what was sent.
+        from model_metadata import get_model_capabilities
+        from face_similarity import _parse_bool
+
+        _caps = get_model_capabilities(self.generator.model_endpoint)
+        neg_for_payload = (
+            negative_prompt if _caps["supports_negative_prompt"] else None
         )
-        neg_for_payload = negative_prompt if supports_negative else None
+        _cfg_cfg = self.get_config()
+        if _caps["supports_cfg_scale"]:
+            try:
+                _cfg_scale = float(_cfg_cfg.get("cfg_scale_value", 0.7))
+            except (TypeError, ValueError):
+                _cfg_scale = 0.7
+        else:
+            _cfg_scale = None
+        _lock_end_frame = bool(
+            _parse_bool(_cfg_cfg.get("lock_end_frame", True))
+        )
 
         # Set up verbose callback for generator progress
         def progress_callback(message: str, level: str = "info"):
@@ -1246,6 +1262,8 @@ class QueueManager:
                 seed=seed,
                 camera_fixed=camera_fixed,
                 generate_audio=generate_audio,
+                cfg_scale=_cfg_scale,
+                lock_end_frame=_lock_end_frame,
                 config=config,
                 timestamp=generation_timestamp,
             )
@@ -1277,6 +1295,8 @@ class QueueManager:
                 seed=seed,
                 camera_fixed=camera_fixed,
                 generate_audio=generate_audio,
+                cfg_scale=_cfg_scale,
+                lock_end_frame=_lock_end_frame,
                 config=config,
                 timestamp=generation_timestamp,
             )
