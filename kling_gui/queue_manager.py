@@ -793,9 +793,12 @@ class QueueManager:
                     "info",
                 )
                 output_path = self._oldcam_video(str(run_input), QueueItem(str(source_video)))
-                # If rPPG is also enabled, inject it LAST on the oldcam
-                # output (or, if oldcam produced nothing, on run_input —
-                # which already has the loop applied above when enabled).
+                # rPPG fan-out parity with the main queue path: when
+                # enabled, inject the BASE (run_input — already loop-
+                # applied above when looping is on) AND every selected
+                # oldcam output, so the re-run produces the same set as a
+                # fresh run ("<base>-rppg" + one "<base>-oldcam-vN-rppg"
+                # per version). The plain pre-rPPG files all stay on disk.
                 # Graceful skip leaves output_path as the oldcam result.
                 #
                 # NOTE (deliberate asymmetry, not a bug): this is the
@@ -806,12 +809,29 @@ class QueueManager:
                 # unconditionally on _rppg_enabled). A shared post-process
                 # re-run button is a documented future direction
                 # (docs/rppg-wiring.md), not an omission.
-                if self._rppg_enabled():
-                    rppg_source = output_path or str(run_input)
-                    rppg_path = self._rppg_video(rppg_source, QueueItem(str(source_video)))
-                    if rppg_path:
-                        output_path = rppg_path
                 summary = self._last_oldcam_run_summary or {}
+                if self._rppg_enabled():
+                    rerun_oldcam_outputs = list(summary.get("outputs") or [])
+                    rppg_inputs: List[str] = []
+                    for src in [str(run_input), *rerun_oldcam_outputs]:
+                        if src and src not in rppg_inputs:
+                            rppg_inputs.append(src)
+                    last_rppg: Optional[str] = None
+                    for src in rppg_inputs:
+                        rppg_path = self._rppg_video(src, QueueItem(str(source_video)))
+                        if rppg_path:
+                            last_rppg = rppg_path
+                    if last_rppg:
+                        # Headline the highest oldcam version's rPPG when
+                        # present (output_path is that version's path),
+                        # else the last successful injection.
+                        if output_path:
+                            preferred = self._build_rppg_output_path(Path(output_path))
+                            output_path = (
+                                str(preferred) if preferred.exists() else last_rppg
+                            )
+                        else:
+                            output_path = last_rppg
                 requested_versions = summary.get("requested_versions", [])
                 succeeded_versions = summary.get("succeeded_versions", [])
                 failed_versions = summary.get("failed_versions", [])
@@ -1063,16 +1083,23 @@ class QueueManager:
                     final_video = result
                     # Loop runs ONCE first (Kling -> Loop). Every oldcam
                     # version + rPPG variant builds off this single looped
-                    # source — nothing is re-looped per-variant.
+                    # source — nothing is re-looped per-variant. ``base_video``
+                    # is that single source: the looped clip if looping is
+                    # on, else the raw Kling clip. It is rPPG's base target
+                    # (the clearly-labelled "original + rPPG" deliverable),
+                    # independent of any oldcam output.
                     if config.get("loop_videos", False):
                         looped_video = self._loop_video(result, item)
                         if looped_video:
                             final_video = looped_video
+                    base_video = final_video
 
                     # Oldcam: runs EVERY selected version. _oldcam_video
                     # returns the highest version's path for callers that
                     # want one, but _last_oldcam_run_summary["outputs"]
-                    # holds ALL per-version outputs.
+                    # holds ALL per-version outputs. The plain
+                    # ``-oldcam-vN`` files are KEPT (non-destructive) —
+                    # rPPG produces siblings, it does not replace them.
                     oldcam_outputs: List[str] = []
                     if self._get_oldcam_versions_to_run():
                         oldcam_video = self._oldcam_video(final_video, item)
@@ -1081,14 +1108,20 @@ class QueueManager:
                         summary = self._last_oldcam_run_summary or {}
                         oldcam_outputs = list(summary.get("outputs") or [])
 
-                    # rPPG runs LAST. There is NO privileged "primary": if
-                    # multiple oldcam versions were produced, inject into
-                    # EACH so every selected version gets its own
-                    # *-rppg deliverable. If oldcam ran but none of its
-                    # outputs are tracked, fall back to final_video. If no
-                    # oldcam at all, inject the (looped/raw) clip itself.
+                    # rPPG runs LAST. There is NO privileged "primary":
+                    # inject into the BASE (looped/raw) clip AND into EVERY
+                    # selected oldcam output, so the user gets a clearly-
+                    # labelled set: "<base>-rppg" plus one
+                    # "<base>-oldcam-vN-rppg" per selected version. The
+                    # plain pre-rPPG files all remain on disk alongside.
                     if self._rppg_enabled():
-                        rppg_inputs = oldcam_outputs or [final_video]
+                        # De-dup while preserving order: base first, then
+                        # each oldcam output. (If oldcam produced nothing,
+                        # this is just the base — the no-oldcam path.)
+                        rppg_inputs: List[str] = []
+                        for src in [base_video, *oldcam_outputs]:
+                            if src and src not in rppg_inputs:
+                                rppg_inputs.append(src)
                         last_rppg: Optional[str] = None
                         for src in rppg_inputs:
                             rppg_video = self._rppg_video(src, item)
@@ -1097,8 +1130,9 @@ class QueueManager:
                         if last_rppg:
                             # Surface the highest-version rPPG output as the
                             # item's headline path (the others exist on disk
-                            # next to it). When fanning out, prefer the rPPG
-                            # of the highest oldcam version (final_video's).
+                            # next to it). Prefer the rPPG of the highest
+                            # oldcam version (final_video's) when present,
+                            # else the last successful injection.
                             preferred = self._build_rppg_output_path(
                                 Path(final_video)
                             )

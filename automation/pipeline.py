@@ -15,7 +15,12 @@ from automation.config import (
 from automation.discovery import CaseRecord, detect_existing_outputs
 from automation.logger import build_safe_config_snapshot, create_automation_logger
 from automation.manifest import AutomationManifest, now_iso
-from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies, run_oldcam
+from automation.oldcam import (
+    _version_key as _oldcam_version_key,
+    discover_oldcam_versions,
+    ensure_oldcam_dependencies,
+    run_oldcam_all,
+)
 from automation.rppg import is_rppg_artifact, run_rppg
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
@@ -1122,11 +1127,22 @@ class AutoPipelineRunner:
                 self.logger.info("case %s oldcam readiness=ready version=%s required=%s", case_key, self.automation.get("automation_oldcam_version", "v12"), bool(self.automation.get("automation_oldcam_required", False)))
                 self._set_active_step(case_entry, "oldcam")
                 self.manifest.update_step(case_key, "oldcam", "running")
-                oldcam_output = run_oldcam(
+                # Run EVERY selected version (run_oldcam_all). The manifest
+                # step carries one canonical ``output`` (highest version,
+                # back-compat) but ALL per-version paths are stashed in
+                # meta["all_outputs"] so Step 8 can fan rPPG over each —
+                # there is no privileged "primary" (parity with the GUI
+                # queue). Plain -oldcam-vN files are kept (non-destructive).
+                oldcam_all = run_oldcam_all(
                     video_path=selected_video_path,
                     version_setting=str(self.automation.get("automation_oldcam_version", "v12")),
                     repo_root=Path(__file__).resolve().parent.parent,
                     progress_cb=self.progress_cb,
+                )
+                oldcam_output = (
+                    max(oldcam_all, key=lambda iv: _oldcam_version_key(iv[0]))[1]
+                    if oldcam_all
+                    else None
                 )
                 if oldcam_output:
                     self.logger.info("case %s oldcam output=%s", case_key, oldcam_output)
@@ -1135,7 +1151,10 @@ class AutoPipelineRunner:
                         "oldcam",
                         "complete",
                         output=str(oldcam_output),
-                        meta=self._policy_meta("oldcam", False, reprocess_mode),
+                        meta={
+                            **self._policy_meta("oldcam", False, reprocess_mode),
+                            "all_outputs": [str(p) for _v, p in oldcam_all],
+                        },
                     )
                 else:
                     required = bool(self.automation.get("automation_oldcam_required", False))
@@ -1174,37 +1193,44 @@ class AutoPipelineRunner:
         # (mirrors the facetrack-gate precedent). The injector lives in the
         # gitignored rPPG/ tool, invoked as an external launcher.
         if self._read_bool("automation_rppg_enabled", False):
-            oldcam_out = self.manifest.get_step(case_key, "oldcam").get("output")
+            oldcam_step = self.manifest.get_step(case_key, "oldcam")
+            oldcam_out = oldcam_step.get("output")
+            oldcam_all = list((oldcam_step.get("meta") or {}).get("all_outputs") or [])
             video_out = self.manifest.get_step(case_key, "video_generate").get("output")
-            rppg_input: Optional[Path] = None
-            if oldcam_out and Path(oldcam_out).exists():
-                rppg_input = Path(oldcam_out)
-            elif video_out and Path(video_out).exists():
-                rppg_input = Path(video_out)
             required = self._read_bool("automation_rppg_required", False)
-            # Never re-inject an already-injected file. When the manifest
-            # is stale/missing, detect_existing_outputs() can surface a
-            # prior "*-rppg" artifact as oldcam/video output; feeding it
-            # back into the injector would double-inject (-rppg-rppg) and
-            # compound the pulse out of the sub-perceptual range (which is
-            # non-negotiable). If the resolved input is already an rPPG
-            # artifact, it IS the final deliverable — record complete,
-            # don't re-run. (Codex P2, PR #39.)
-            if rppg_input is not None and is_rppg_artifact(rppg_input):
-                self.logger.info(
-                    "case %s rppg input already injected (%s); skipping re-injection",
-                    case_key,
-                    rppg_input.name,
-                )
-                self.manifest.update_step(
-                    case_key,
-                    "rppg",
-                    "complete",
-                    output=str(rppg_input),
-                    meta={**self._policy_meta("rppg", True, reprocess_mode), "already_injected": True},
-                )
-                return self._finalize_case(case_entry, "completed")
-            if rppg_input is None:
+            keep_metrics = self._read_bool("automation_rppg_metrics_in_filename", False)
+
+            # Fan rPPG over the BASE (video_generate output — the
+            # automation pipeline has no loop step, so this is the raw
+            # generated clip) AND every per-version oldcam output, so the
+            # CLI produces the same set as the GUI queue: "<base>-rppg"
+            # plus one "<base>-oldcam-vN-rppg" per selected version. There
+            # is no privileged "primary"; plain pre-rPPG files are kept.
+            candidates: List[Path] = []
+            seen: set = set()
+            for raw in [video_out, *oldcam_all]:
+                if not raw:
+                    continue
+                p = Path(raw)
+                key = str(p)
+                if key in seen or not p.exists():
+                    continue
+                seen.add(key)
+                candidates.append(p)
+            # Back-compat: if Step 7 ran before all_outputs existed, fall
+            # back to the single recorded oldcam output.
+            if not candidates and oldcam_out and Path(oldcam_out).exists():
+                candidates = [Path(oldcam_out)]
+
+            # Drop any candidate that is ALREADY an rPPG artifact —
+            # re-injecting would double-inject (-rppg-rppg) and compound
+            # the pulse out of the non-negotiable sub-perceptual range.
+            # (Codex P2, PR #39.) An already-injected file IS a final
+            # deliverable; it just doesn't get re-run.
+            already = [p for p in candidates if is_rppg_artifact(p)]
+            to_inject = [p for p in candidates if not is_rppg_artifact(p)]
+
+            if not candidates:
                 self.logger.warning("case %s rppg readiness=not-ready required=%s", case_key, required)
                 self.manifest.update_step(
                     case_key,
@@ -1215,23 +1241,62 @@ class AutoPipelineRunner:
                 )
                 if required:
                     return self._finalize_case(case_entry, "failed")
+            elif not to_inject:
+                # Every candidate is already injected — nothing to do but
+                # record the (highest/last) one as the final deliverable.
+                final = str(already[-1])
+                self.logger.info(
+                    "case %s rppg: all %d candidate(s) already injected; "
+                    "recording %s",
+                    case_key,
+                    len(already),
+                    already[-1].name,
+                )
+                self.manifest.update_step(
+                    case_key,
+                    "rppg",
+                    "complete",
+                    output=final,
+                    meta={**self._policy_meta("rppg", True, reprocess_mode), "already_injected": True},
+                )
+                return self._finalize_case(case_entry, "completed")
             else:
-                self.logger.info("case %s rppg readiness=ready required=%s", case_key, required)
+                self.logger.info(
+                    "case %s rppg readiness=ready required=%s fan-out=%d",
+                    case_key,
+                    required,
+                    len(to_inject),
+                )
                 self._set_active_step(case_entry, "rppg")
                 self.manifest.update_step(case_key, "rppg", "running")
-                rppg_output = run_rppg(
-                    video_path=rppg_input,
-                    repo_root=Path(__file__).resolve().parent.parent,
-                    progress_cb=self.progress_cb,
-                )
-                if rppg_output and rppg_output.exists():
-                    self.logger.info("case %s rppg output=%s", case_key, rppg_output)
+                produced: List[str] = []
+                for src in to_inject:
+                    out = run_rppg(
+                        video_path=src,
+                        repo_root=Path(__file__).resolve().parent.parent,
+                        progress_cb=self.progress_cb,
+                        keep_metrics=keep_metrics,
+                    )
+                    if out and out.exists():
+                        produced.append(str(out))
+                if produced:
+                    # Headline = the last produced (highest oldcam version,
+                    # since candidates are ordered base -> v.. ascending).
+                    self.logger.info(
+                        "case %s rppg outputs=%d headline=%s",
+                        case_key,
+                        len(produced),
+                        Path(produced[-1]).name,
+                    )
                     self.manifest.update_step(
                         case_key,
                         "rppg",
                         "complete",
-                        output=str(rppg_output),
-                        meta=self._policy_meta("rppg", False, reprocess_mode),
+                        output=produced[-1],
+                        meta={
+                            **self._policy_meta("rppg", False, reprocess_mode),
+                            "all_outputs": produced,
+                        },
                     )
                 else:
                     self.logger.warning("case %s rppg failed required=%s", case_key, required)

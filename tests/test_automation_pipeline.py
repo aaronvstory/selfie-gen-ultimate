@@ -69,7 +69,7 @@ def test_pipeline_success_case(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -129,7 +129,7 @@ def test_pipeline_fas_strict_gate_routes_to_manual_review(tmp_path: Path, monkey
             },
         },
     )
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -185,7 +185,7 @@ def test_pipeline_fas_log_only_does_not_block_when_require_fas_pass_false(tmp_pa
             },
         },
     )
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -220,7 +220,7 @@ def test_pipeline_similarity_manual_review(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 40, "pass": False, "error": None, "match": False})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -256,7 +256,7 @@ def test_pipeline_skips_video_when_existing(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -298,7 +298,7 @@ def test_pipeline_oldcam_required_failure_marks_case_failed(tmp_path: Path, monk
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -339,7 +339,7 @@ def test_pipeline_increment_mode_generates_incremented_files(tmp_path: Path, mon
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     # Pre-create expected default outputs so increment path is exercised.
     (case_dir / "front-expanded.png").write_bytes(b"x")
@@ -387,7 +387,7 @@ def test_pipeline_overwrite_mode_reuses_base_output_name(tmp_path: Path, monkeyp
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -696,7 +696,7 @@ def test_pipeline_manual_review_when_selfie_disabled(tmp_path: Path, monkeypatch
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -736,7 +736,7 @@ def test_pipeline_honors_selfie_max_attempts(tmp_path: Path, monkeypatch):
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 10, "pass": False, "error": None, "match": False})
 
     selfie = FakeSelfie()
@@ -776,11 +776,11 @@ def test_pipeline_existing_video_still_runs_oldcam_when_enabled(tmp_path: Path, 
 
     oldcam_called = {"value": False}
 
-    def _run_oldcam(**kwargs):
+    def _run_oldcam_all(**kwargs):
         oldcam_called["value"] = True
-        return None
+        return []
 
-    monkeypatch.setattr("automation.pipeline.run_oldcam", _run_oldcam)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", _run_oldcam_all)
 
     runner = AutoPipelineRunner(
         config=config,
@@ -819,7 +819,7 @@ def test_pipeline_extract_disabled_stays_skipped_when_file_exists(tmp_path: Path
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -855,7 +855,7 @@ def test_pipeline_extract_disabled_missing_file_marks_manual_review(tmp_path: Pa
     )
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -894,7 +894,7 @@ def test_pipeline_extract_disabled_reuses_manifest_output(tmp_path: Path, monkey
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     manifest.update_step(record.relative_key, "extract_portrait", "complete", output=str(extracted))
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -936,11 +936,11 @@ def test_pipeline_video_disabled_skips_oldcam_without_video(tmp_path: Path, monk
 
     oldcam_called = {"value": False}
 
-    def _run_oldcam(**kwargs):
+    def _run_oldcam_all(**kwargs):
         oldcam_called["value"] = True
-        return None
+        return []
 
-    monkeypatch.setattr("automation.pipeline.run_oldcam", _run_oldcam)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", _run_oldcam_all)
 
     runner = AutoPipelineRunner(
         config=config,
@@ -981,7 +981,7 @@ def test_pipeline_video_disabled_oldcam_required_fails(tmp_path: Path, monkeypat
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -1013,7 +1013,7 @@ def test_pipeline_resolves_auto_provider_to_bfl_for_caps_and_outpaint(tmp_path: 
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     outpaint = FakeOutpaint()
     runner = AutoPipelineRunner(
@@ -1054,7 +1054,7 @@ def test_pipeline_front_expand_runs_two_passes_when_configured(tmp_path: Path, m
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     outpaint = FakeOutpaint()
     runner = AutoPipelineRunner(
@@ -1096,7 +1096,7 @@ def test_pipeline_front_expand_runs_single_pass_when_configured(tmp_path: Path, 
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     outpaint = FakeOutpaint()
     runner = AutoPipelineRunner(
@@ -1137,7 +1137,7 @@ def test_pipeline_selfie_expand_reuse_skips_outpaint_call(tmp_path: Path, monkey
     manifest.update_step(record.relative_key, "selfie_expand", "complete", output=str(existing_expanded))
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     outpaint = FakeOutpaint()
     runner = AutoPipelineRunner(
@@ -1181,7 +1181,7 @@ def test_pipeline_marks_active_selfie_step_failed_on_exception(tmp_path: Path, m
         "automation.pipeline.compute_face_similarity_details",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("score boom")),
     )
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -1219,7 +1219,7 @@ def test_pipeline_similarity_backend_error_marks_manual_review_unavailable(tmp_p
         "automation.pipeline.compute_face_similarity_details",
         lambda *args, **kwargs: {"score": 0, "pass": False, "error": "backend unavailable", "match": False},
     )
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -1261,7 +1261,7 @@ def test_pipeline_passes_selected_selfie_prompt_slot(tmp_path: Path, monkeypatch
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
     selfie = FakeSelfie()
 
     runner = AutoPipelineRunner(
@@ -1301,11 +1301,11 @@ def test_pipeline_missing_manifest_video_skips_optional_oldcam_without_call(tmp_
 
     oldcam_called = {"value": False}
 
-    def _run_oldcam(**kwargs):
+    def _run_oldcam_all(**kwargs):
         oldcam_called["value"] = True
-        return None
+        return []
 
-    monkeypatch.setattr("automation.pipeline.run_oldcam", _run_oldcam)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", _run_oldcam_all)
 
     runner = AutoPipelineRunner(
         config=config,
@@ -1353,11 +1353,11 @@ def test_pipeline_missing_manifest_video_fails_required_oldcam_without_call(tmp_
 
     oldcam_called = {"value": False}
 
-    def _run_oldcam(**kwargs):
+    def _run_oldcam_all(**kwargs):
         oldcam_called["value"] = True
-        return None
+        return []
 
-    monkeypatch.setattr("automation.pipeline.run_oldcam", _run_oldcam)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", _run_oldcam_all)
 
     runner = AutoPipelineRunner(
         config=config,
@@ -1392,7 +1392,7 @@ def test_pipeline_selfie_expand_failure_is_terminal(tmp_path: Path, monkeypatch)
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 99, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     class FailingSelfieExpand(FakeOutpaint):
         def outpaint(self, image_path, output_folder, output_path=None, **kwargs):
@@ -1440,7 +1440,7 @@ def test_pipeline_extract_reuse_meta_keeps_reused_existing_true(tmp_path: Path, 
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     manifest.update_step(record.relative_key, "extract_portrait", "complete", output=str(extracted), meta={"extractor": "cached"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 99, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     runner = AutoPipelineRunner(
         config=config,
@@ -1491,11 +1491,11 @@ def test_pipeline_oldcam_falls_back_to_existing_video_when_manifest_video_is_sta
 
     called = {"video": None}
 
-    def _run_oldcam(**kwargs):
+    def _run_oldcam_all(**kwargs):
         called["video"] = str(kwargs.get("video_path"))
-        return None
+        return []
 
-    monkeypatch.setattr("automation.pipeline.run_oldcam", _run_oldcam)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", _run_oldcam_all)
 
     runner = AutoPipelineRunner(
         config=config,
@@ -1613,7 +1613,7 @@ def _ft_runner(tmp_path: Path, monkeypatch, overrides: dict):
                         lambda **kw: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details",
                         lambda *a, **k: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kw: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kw: [])
     runner = AutoPipelineRunner(
         config=config,
         automation_config=from_app_config(config),
@@ -1768,10 +1768,10 @@ def _mk_rppg_case(tmp_path, monkeypatch, *, rppg_enabled, rppg_required=False, r
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
-    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600):
-        del repo_root, progress_cb, timeout_seconds
+    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600, keep_metrics=False):
+        del repo_root, progress_cb, timeout_seconds, keep_metrics
         if rppg_returns == "none":
             return None
         out = Path(video_path).with_name(Path(video_path).stem + "-rppg" + Path(video_path).suffix)
@@ -1921,12 +1921,12 @@ def test_pipeline_rppg_runs_on_reused_video_when_oldcam_disabled(tmp_path, monke
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     rppg_calls = []
 
-    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600):
-        del repo_root, progress_cb, timeout_seconds
+    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600, keep_metrics=False):
+        del repo_root, progress_cb, timeout_seconds, keep_metrics
         rppg_calls.append(Path(video_path))
         out = Path(video_path).with_name(Path(video_path).stem + "-rppg" + Path(video_path).suffix)
         out.write_bytes(b"rppg")
@@ -2053,7 +2053,7 @@ def test_pipeline_rppg_skips_reinjection_of_already_injected_input(tmp_path, mon
     manifest.update_step(record.relative_key, "video_generate", "complete", output=str(injected))
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
-    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
     rppg_calls = []
     monkeypatch.setattr("automation.pipeline.run_rppg", lambda **kw: rppg_calls.append(kw) or None)
