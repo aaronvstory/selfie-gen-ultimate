@@ -1229,6 +1229,12 @@ class QueueManager:
                 _cfg_scale = float(_cfg_cfg.get("cfg_scale_value", 0.7))
             except (TypeError, ValueError):
                 _cfg_scale = 0.7
+            # Clamp to the fal.ai-valid range. The automation
+            # pipeline already does max(0.0, min(1.0, ...)); a
+            # stale / hand-edited out-of-range persisted value must
+            # not let the GUI submit an invalid cfg_scale while the
+            # CLI silently clamps (Codex P2, PR #41 — GUI/CLI drift).
+            _cfg_scale = max(0.0, min(1.0, _cfg_scale))
         else:
             _cfg_scale = None
         # Mirror automation/pipeline.py: an UNPARSEABLE lock_end_frame

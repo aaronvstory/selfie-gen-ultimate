@@ -274,10 +274,29 @@ class ModelFetcher:
 
     @staticmethod
     def get_merged_models(config: dict) -> List[Dict]:
-        """Merge factory models (minus hidden) with custom models."""
+        """Merge factory models (minus hidden) with custom models.
+
+        Two hiding mechanisms, both honoured:
+          * ``config["hidden_models"]`` — user-hidden endpoints.
+          * per-model ``"hidden": true`` in models.json — endpoints kept
+            out of normal selection by default (e.g. Seedance, an
+            internal/experimental endpoint). Codex P2, PR #41: the flag
+            was set but never read, so it still leaked into the dropdown.
+        A model deliberately persisted as ``current_model`` is NOT
+        filtered, so an explicit prior selection keeps working.
+        """
         hidden = set(config.get("hidden_models", []))
+        current = config.get("current_model", "")
         custom = config.get("custom_models", [])
-        factory = [m for m in MODEL_METADATA if m.get("endpoint") not in hidden]
+        factory = [
+            m
+            for m in MODEL_METADATA
+            if m.get("endpoint") not in hidden
+            and (
+                not m.get("hidden")
+                or m.get("endpoint") == current
+            )
+        ]
         merged = factory + list(custom)
         if merged:
             return merged
