@@ -31,6 +31,7 @@ from __future__ import annotations
 import glob as _glob
 import os
 import queue as _queue
+import re
 import shlex
 import subprocess
 import threading
@@ -86,19 +87,32 @@ def build_rppg_output_path(input_path: Path) -> Path:
 
 
 def is_rppg_artifact(path: Path) -> bool:
-    """True if *path* is already an rPPG-injected file.
+    """True if *path* has ALREADY had rPPG injected at any point in its
+    processing chain.
 
-    The injector emits ``{stem}-rppg{ext}`` and then renames it to
-    ``{stem}-rppg - <metrics>{ext}`` — both carry the ``-rppg`` marker in
-    the stem. Used to refuse re-injecting an already-injected video: when
-    the manifest is stale/missing, detect_existing_outputs() can surface a
-    prior ``*-rppg`` artifact as the "existing video", and feeding that
-    back into the injector would double-inject (``-rppg-rppg``) and
-    compound the pulse out of the sub-perceptual range. Conservative
-    substring check on the stem (the literal token the injector writes).
+    The injector always writes the literal token ``-rppg`` immediately
+    after the input stem, then optionally renames to
+    ``{stem}-rppg - <metrics>{ext}``. After that the file may be further
+    processed, so the ``-rppg`` token can be:
+
+      * at the end of the stem            ``clip-rppg``
+      * the metric-rename form            ``clip-rppg - 7.8-...``
+      * an INFIX when a later stage ran   ``clip-rppg-oldcam-v24``
+        (rPPG was applied BEFORE oldcam; the original injection survives
+        oldcam's re-encode, so re-injecting would compound the pulse out
+        of the non-negotiable sub-perceptual range — Codex P2, PR #39)
+
+    So match ``-rppg`` only as a COMPLETE token: followed by end-of-stem,
+    a space (metric rename), or a hyphen (a later processing stage). The
+    predicate is intentionally conservative — it errs toward "already
+    injected". A rare false-positive on a human-named file (e.g.
+    ``my-rppg-notes``) merely returns that file as-is without injecting,
+    which is harmless; a false-NEGATIVE double-injects and breaks the
+    non-negotiable sub-perceptual guarantee, so the asymmetry is
+    deliberate.
     """
     stem = Path(path).stem.lower()
-    return stem.endswith("-rppg") or "-rppg - " in stem or stem.endswith("-rppg ")
+    return bool(re.search(r"-rppg(?:$| |-)", stem))
 
 
 def resolve_produced_output(requested: Path) -> Optional[Path]:

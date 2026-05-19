@@ -2066,3 +2066,35 @@ def test_pipeline_rppg_skips_reinjection_of_already_injected_input(tmp_path, mon
     assert step.get("status") in {"complete", "skipped"}
     if step.get("status") == "complete":
         assert step.get("meta", {}).get("already_injected") is True
+
+
+def test_is_rppg_artifact_detects_all_injection_forms():
+    """Regression (Codex P2, PR #39): is_rppg_artifact must recognise the
+    "-rppg" marker as a complete token in EVERY position it can land in
+    the processing chain — including the INFIX case where rPPG ran before
+    oldcam (clip-rppg-oldcam-v24). A false-negative double-injects and
+    breaks the non-negotiable sub-perceptual guarantee."""
+    from pathlib import Path
+
+    from automation.rppg import is_rppg_artifact
+
+    injected = [
+        "clip-rppg.mp4",                                   # raw --output form
+        "clip-oldcam-v24-rppg.mp4",                         # oldcam then rPPG
+        "clip-oldcam-v24-rppg - 7.81-6.4-0.53-0.03-0.46.mp4",  # metric rename
+        "front_looped-oldcam-v24-rppg - 13.08-7.8-0.70-0.03-0.46.mp4",
+        "clip-rppg-oldcam-v24.mp4",                         # rPPG BEFORE oldcam (the bug)
+        "clip-rppg-oldcam-v24 - 7.7-2.1-0.5-0.0-0.6.mp4",   # rPPG, oldcam, re-injected+renamed
+        "a_looped-rppg-oldcam-v15.mp4",
+    ]
+    not_injected = [
+        "clip.mp4",
+        "clip-oldcam-v24.mp4",
+        "clip_looped.mp4",
+        "clip-oldcam-v24_looped.mp4",
+        "selfie.mp4",
+    ]
+    for name in injected:
+        assert is_rppg_artifact(Path(name)) is True, f"{name!r} must be detected as injected"
+    for name in not_injected:
+        assert is_rppg_artifact(Path(name)) is False, f"{name!r} must NOT be flagged injected"
