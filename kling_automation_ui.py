@@ -299,15 +299,16 @@ class KlingAutomationUI:
         return saved.get(slot)
 
     def get_default_prompt(self) -> str:
-        """Get the default head movement prompt"""
-        return (
-            "Turn head to the right slowly then all the way to the left slowly then to the right slowly, and to the left slowly. "
-            "Make sure the body is kept still while doing this - ONLY turn THE HEAD NOT THE BODY. The subject should perform smooth, "
-            "natural head movements with no body movement whatsoever. Keep shoulders, neck, and torso completely stationary. "
-            "Head movements should be slow, deliberate, and realistic. Eyes can follow natural movement patterns. "
-            "Maintain neutral facial expression throughout. Camera remains fixed and stationary. "
-            "Generate in maximum resolution and professional quality with no blur, pixelation, or quality degradation."
-        )
+        """The default video prompt — the minimal-motion prompt (PR #2).
+
+        Single source: RECOMMENDED_KLING_PROMPT_SLOT_1, so a "reset to
+        default" / no-saved-prompt fallback restores the SAME prompt the
+        recommended-defaults flow and the GUI/CLI templates seed
+        (CodeRabbit, PR #41 — previously this returned the superseded
+        turn-head text). The legacy turn-head prompt remains available
+        as the slot-2 backup (default_config), not as "the default".
+        """
+        return RECOMMENDED_KLING_PROMPT_SLOT_1
 
     def fetch_model_pricing(self, model_endpoint: str) -> Optional[float]:
         """Fetch pricing for a model from fal.ai API"""

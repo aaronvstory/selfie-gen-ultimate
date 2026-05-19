@@ -2224,9 +2224,12 @@ def _fanout_partial_case(tmp_path, required, monkeypatch):
     Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     gv = case_dir / "gen-videos"
     gv.mkdir()
-    base = gv / "existing.mp4"; base.write_bytes(b"base")
-    v8 = gv / "existing-oldcam-v8.mp4"; v8.write_bytes(b"v8")
-    v24 = gv / "existing-oldcam-v24.mp4"; v24.write_bytes(b"v24")
+    base = gv / "existing.mp4"
+    base.write_bytes(b"base")
+    v8 = gv / "existing-oldcam-v8.mp4"
+    v8.write_bytes(b"v8")
+    v24 = gv / "existing-oldcam-v24.mp4"
+    v24.write_bytes(b"v24")
     record = CaseRecord(case_dir=case_dir, front_path=front,
                         relative_key=f"case-partial-{required}")
 

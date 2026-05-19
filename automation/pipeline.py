@@ -1004,7 +1004,12 @@ class AutoPipelineRunner:
                 # single source of truth), so an o3/seedance run silently
                 # drops the unsupported ones exactly as the GUI does.
                 _slot = str(self.config.get("current_prompt_slot", 1))
-                _use_existing = self.automation.get(
+                # _read_bool (not raw .get) so a string "false" in the
+                # automation config disables prompt/negative reuse as the
+                # user intended — raw bool("false") is truthy (CodeRabbit,
+                # PR #41). It IS an automation_* key, so self._read_bool's
+                # self.automation source is correct here.
+                _use_existing = self._read_bool(
                     "automation_video_use_existing_prompt", True
                 )
                 try:
