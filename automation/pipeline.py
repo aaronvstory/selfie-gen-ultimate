@@ -966,7 +966,14 @@ class AutoPipelineRunner:
                 )
                 if not self.automation.get("automation_oldcam_enabled", True):
                     self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
-                    return self._finalize_case(case_entry, "completed")
+                    # Pre-rPPG this short-circuited to completed (video
+                    # reused + oldcam off = nothing left). rPPG can now be
+                    # the ONLY enabled post-process on a reused video, so
+                    # only finalize early when rPPG is also disabled —
+                    # otherwise fall through to Step 8, which picks up the
+                    # reused video from the video_generate step output.
+                    if not self.automation.get("automation_rppg_enabled", False):
+                        return self._finalize_case(case_entry, "completed")
             if not skipped_existing_video:
                 video = self.deps.video_factory()
                 video.set_progress_callback(self.progress_cb)

@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -160,12 +161,23 @@ def run_rppg(
             bufsize=1,
         )
         assert process.stdout is not None
-        for line in process.stdout:
+        # Wall-clock-bounded read. `for line in stdout` (or a bare
+        # readline loop) blocks until EOF, so a silent hung injector
+        # would NEVER reach process.wait(timeout=) — the graceful-skip
+        # guarantee would not fire. Enforce the deadline on every
+        # readline so a no-output stall is still killed + skipped.
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            if time.monotonic() > deadline:
+                raise subprocess.TimeoutExpired(cmd, timeout_seconds)
+            line = process.stdout.readline()
+            if not line:
+                break  # EOF: process exited (or closed stdout)
             line_text = line.rstrip()
             if line_text:
                 output_lines.append(line_text)
                 _report(progress_cb, line_text, "info")
-        completed_returncode = process.wait(timeout=timeout_seconds)
+        completed_returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         if "process" in locals() and process.poll() is None:
             process.kill()

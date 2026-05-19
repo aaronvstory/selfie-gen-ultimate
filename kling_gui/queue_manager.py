@@ -1659,11 +1659,17 @@ class QueueManager:
                 assert process.stdout is not None
                 deadline = time.monotonic() + _TIMEOUT
                 while True:
+                    # Check the deadline BEFORE the blocking readline().
+                    # If the injector stalls silently (no newline, no
+                    # exit), readline() blocks forever and the timeout
+                    # would never fire — freezing this worker with
+                    # is_running set and breaking the documented
+                    # graceful-skip guarantee. Guard first.
+                    if time.monotonic() > deadline:
+                        raise subprocess.TimeoutExpired(run_cmd, _TIMEOUT)
                     line = process.stdout.readline()
                     if not line:
                         break
-                    if time.monotonic() > deadline:
-                        raise subprocess.TimeoutExpired(run_cmd, _TIMEOUT)
                     line_text = line.rstrip()
                     if line_text:
                         output_lines.append(line_text)

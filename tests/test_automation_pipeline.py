@@ -1832,3 +1832,58 @@ def test_resolve_produced_output_ignores_loose_siblings(tmp_path):
     real = tmp_path / "clip-rppg - 13.08-7.8-0.70-0.03-0.46.mp4"
     real.write_bytes(b"z")
     assert resolve_produced_output(requested) == real
+
+
+def test_pipeline_rppg_runs_on_reused_video_when_oldcam_disabled(tmp_path, monkeypatch):
+    """Regression (Codex P2, PR #39): when skip_if_video_exists reuses an
+    existing gen-videos output AND oldcam is disabled, the case used to
+    short-circuit to 'completed' before Step 8 — so opt-in rPPG was
+    silently skipped on the common resume path. With rPPG enabled it must
+    now fall through and inject on the reused video."""
+    case_dir = tmp_path / "case-reuse-rppg"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    (case_dir / "gen-videos").mkdir()
+    existing_video = case_dir / "gen-videos" / "existing.mp4"
+    existing_video.write_bytes(b"video")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-reuse-rppg")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x", "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1,
+        "automation_skip_if_video_exists": True,
+        "automation_oldcam_enabled": False,
+        "automation_oldcam_required": False,
+        "automation_rppg_enabled": True,
+        "automation_rppg_required": False,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    rppg_calls = []
+
+    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600):
+        del repo_root, progress_cb, timeout_seconds
+        rppg_calls.append(Path(video_path))
+        out = Path(video_path).with_name(Path(video_path).stem + "-rppg" + Path(video_path).suffix)
+        out.write_bytes(b"rppg")
+        return out
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", _fake_rppg)
+
+    runner = AutoPipelineRunner(
+        config=config, automation_config=from_app_config(config), manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(outpaint_factory=lambda: FakeOutpaint(), selfie_factory=lambda: FakeSelfie(), video_factory=lambda: FakeVideo()),
+    )
+    stats = runner.run([record])
+    assert stats["failed"] == 0
+    # rPPG MUST have been invoked on the reused video.
+    assert len(rppg_calls) == 1, "rPPG was skipped on the reuse path (the bug)"
+    assert existing_video.name in rppg_calls[0].name or str(existing_video) in str(rppg_calls[0])
+    step = manifest.data["cases"]["case-reuse-rppg"]["steps"].get("rppg", {})
+    assert step.get("status") == "complete"

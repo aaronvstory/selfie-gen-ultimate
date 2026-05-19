@@ -122,11 +122,34 @@ def run_chain(src: Path) -> Path:
     def _cb(msg: str, level: str = "info") -> None:
         print(f"  [{level}] {msg}", flush=True)
 
+    # Step 1: Loop (ping-pong). Use the SAME function the GUI queue uses
+    # (kling_gui.video_looper.create_looped_video) so the rig validates
+    # the real loop-before-rPPG ordering, not a fictional one. The harness
+    # claimed Loop->Oldcam->rPPG but previously skipped Loop entirely.
+    loop_input = src
+    try:
+        from kling_gui.video_looper import create_looped_video
+
+        print("[harness] chain step: loop (ping-pong)", flush=True)
+        looped = create_looped_video(
+            input_path=str(src),
+            suffix="_looped",
+            overwrite=True,
+            log_callback=lambda m, lvl="info": _cb(m, lvl),
+        )
+        if looped and Path(looped).exists():
+            loop_input = Path(looped)
+            print(f"[harness] looped: {loop_input.name}", flush=True)
+        else:
+            print("[harness] loop produced nothing; continuing with fixture", flush=True)
+    except Exception as exc:  # harness must not die on a loop hiccup
+        print(f"[harness] loop step skipped ({exc}); continuing", flush=True)
+
     print("[harness] chain step: oldcam v24", flush=True)
-    oc = run_oldcam(video_path=src, version_setting="v24", repo_root=REPO_ROOT, progress_cb=_cb)
-    chain_input = oc if oc else src
+    oc = run_oldcam(video_path=Path(loop_input), version_setting="v24", repo_root=REPO_ROOT, progress_cb=_cb)
+    chain_input = oc if oc else loop_input
     if not oc:
-        print("[harness] oldcam produced nothing; feeding fixture straight to rPPG", flush=True)
+        print("[harness] oldcam produced nothing; feeding looped/fixture straight to rPPG", flush=True)
     print(f"[harness] chain step: rPPG on {Path(chain_input).name}", flush=True)
     rp = run_rppg(video_path=Path(chain_input), repo_root=REPO_ROOT, progress_cb=_cb)
     if not rp:
