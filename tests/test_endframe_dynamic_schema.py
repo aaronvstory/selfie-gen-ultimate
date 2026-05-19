@@ -147,6 +147,41 @@ def test_seedance_endpoint_prefix_and_caps():
     assert "cfg_scale" not in p
 
 
+def test_custom_unknown_endpoint_keeps_negative_and_cfg():
+    """Codex P2 (PR #41): get_model_capabilities only knows
+    MODEL_METADATA endpoints; a CUSTOM endpoint (config
+    custom_models) falls back to conservative caps. The dispatcher
+    must NOT pre-drop negative_prompt / cfg_scale for an unknown
+    endpoint — the live schema filter is the authority and would
+    keep them iff the custom endpoint supports them. Pre-PR#41
+    behaviour for custom models; a functional regression otherwise.
+    The capture helper mocks validate_parameters as identity, so
+    this asserts the payload the dispatcher BUILDS before schema
+    filtering."""
+    p = _capture_payload(
+        "fal-ai/some-user-custom/model/image-to-video",
+        negative_prompt="no blur",
+        cfg_scale=0.7,
+    )
+    assert p["image_url"] == "https://img.example/x.png"
+    # Unknown endpoint -> NOT pre-dropped (schema filter decides).
+    assert p.get("negative_prompt") == "no blur"
+    assert p.get("cfg_scale") == 0.7
+
+
+def test_known_model_still_drops_unsupported_neg_cfg():
+    """The custom-endpoint passthrough must NOT weaken precise
+    per-model gating for KNOWN models: o3 (in MODEL_METADATA,
+    supports_negative_prompt=False) must STILL drop them."""
+    p = _capture_payload(
+        "fal-ai/kling-video/o3/standard/image-to-video",
+        negative_prompt="no blur",
+        cfg_scale=0.7,
+    )
+    assert "negative_prompt" not in p
+    assert "cfg_scale" not in p
+
+
 def test_get_model_capabilities_is_single_source_and_safe():
     """The capability helper is the single source the GUI + dispatcher
     share. Verified models return their real flags; unknown / legacy

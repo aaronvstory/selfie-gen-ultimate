@@ -14,7 +14,11 @@ import traceback
 from datetime import datetime
 
 from model_schema_manager import ModelSchemaManager
-from model_metadata import get_prompt_limit, get_model_capabilities
+from model_metadata import (
+    get_prompt_limit,
+    get_model_capabilities,
+    get_model_by_endpoint,
+)
 from path_utils import sanitize_stem
 
 # Setup logging
@@ -585,6 +589,16 @@ class FalAIKlingGenerator:
             # models.json via model_metadata.get_model_capabilities — the
             # GUI reads the SAME flags so payload + UI never diverge).
             caps = get_model_capabilities(self.model_endpoint)
+            # A custom / unknown endpoint is NOT in MODEL_METADATA,
+            # so caps are the conservative defaults (no neg/cfg).
+            # For those we must NOT pre-drop negative_prompt /
+            # cfg_scale on the default — the live schema (via
+            # schema_manager.validate_parameters below) is the
+            # authority and will keep them iff the custom endpoint
+            # actually supports them. Pre-PR#41 behaviour for
+            # custom models; known models keep precise per-model
+            # gating (o3 / seedance correctly drop them). Codex P2.
+            _is_known_model = get_model_by_endpoint(self.model_endpoint) is not None
             start_param = caps["start_image_param"] or "image_url"
             end_param = caps["end_image_param"]  # str or None
 
@@ -639,10 +653,14 @@ class FalAIKlingGenerator:
             # them (o3 / seedance dropped both in 2026) AND a value was
             # provided. schema_manager.validate_parameters below is a
             # second defensive filter against the live fal.ai schema.
-            if negative_prompt and caps["supports_negative_prompt"]:
+            if negative_prompt and (
+                caps["supports_negative_prompt"] or not _is_known_model
+            ):
                 payload_full["negative_prompt"] = negative_prompt
 
-            if cfg_scale is not None and caps["supports_cfg_scale"]:
+            if cfg_scale is not None and (
+                caps["supports_cfg_scale"] or not _is_known_model
+            ):
                 payload_full["cfg_scale"] = cfg_scale
 
             # Validate and filter parameters based on model schema (dynamic detection)
