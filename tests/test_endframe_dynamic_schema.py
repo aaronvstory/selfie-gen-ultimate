@@ -174,3 +174,40 @@ def test_get_model_capabilities_is_single_source_and_safe():
         "supports_negative_prompt": False,
         "supports_cfg_scale": False,
     }
+
+
+def test_lock_end_frame_unparseable_resolves_to_true_in_both_paths():
+    """Parity (gemini HIGH, PR #41): lock_end_frame defaults to True, so
+    an UNPARSEABLE config value must resolve to True in BOTH the GUI
+    queue and the automation pipeline — a bare bool(None) would give
+    False in the GUI and silently disable the end-frame lock there while
+    the CLI kept it on. Pin the shared resolution rule (None -> True)
+    that both inline call sites now use."""
+    from face_similarity import _parse_bool
+
+    def _resolve_lock(raw):
+        # The exact rule both kling_gui/queue_manager.py._generate_video
+        # and automation/pipeline.py use for lock_end_frame.
+        parsed = _parse_bool(raw)
+        return True if parsed is None else bool(parsed)
+
+    # Unparseable / garbage -> True (the documented default), NOT False.
+    assert _resolve_lock("garbage") is True
+    assert _resolve_lock(None) is True
+    assert _resolve_lock("") is True
+    # Explicit values still honoured (string + real bool forms).
+    assert _resolve_lock("false") is False
+    assert _resolve_lock("0") is False
+    assert _resolve_lock(False) is False
+    assert _resolve_lock("true") is True
+    assert _resolve_lock(True) is True
+
+    # Contrast: rppg_metrics_in_filename defaults to FALSE, so for THAT
+    # key bool(_parse_bool(...)) (None -> False) is the correct default —
+    # the two keys intentionally differ; do not "unify" them.
+    def _resolve_metrics(raw):
+        return bool(_parse_bool(raw))
+
+    assert _resolve_metrics("garbage") is False
+    assert _resolve_metrics(None) is False
+    assert _resolve_metrics("true") is True

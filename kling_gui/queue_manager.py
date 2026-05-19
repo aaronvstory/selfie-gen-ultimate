@@ -1231,9 +1231,14 @@ class QueueManager:
                 _cfg_scale = 0.7
         else:
             _cfg_scale = None
-        _lock_end_frame = bool(
-            _parse_bool(_cfg_cfg.get("lock_end_frame", True))
-        )
+        # Mirror automation/pipeline.py: an UNPARSEABLE lock_end_frame
+        # (_parse_bool -> None) defaults to True, NOT bool(None)=False.
+        # lock default is True, so GUI and CLI must agree on malformed
+        # input (gemini-code-assist HIGH, PR #41). (Contrast
+        # rppg_metrics_in_filename, default False, where bool(None)=False
+        # is the correct default — do not "unify" that one.)
+        _raw_lock_ef = _parse_bool(_cfg_cfg.get("lock_end_frame", True))
+        _lock_end_frame = True if _raw_lock_ef is None else bool(_raw_lock_ef)
 
         # Set up verbose callback for generator progress
         def progress_callback(message: str, level: str = "info"):
