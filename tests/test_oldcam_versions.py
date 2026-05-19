@@ -401,6 +401,28 @@ def test_oldcam_ui_uses_version_checkboxes_without_master_toggle():
     assert 'for i, version in enumerate(_oldcam_versions)' in panel_source
 
 
+def test_rppg_ui_section_present_and_wired():
+    """The orange rPPG checkbox row must exist (its own row below the
+    violet oldcam frame), be wired to a config round-trip, and be torn
+    down with the other vars. Static-source assertions mirror the oldcam
+    UI test above (the deleted test_config_panel_facetrack.py is NOT
+    recreated — these live with the oldcam UI test by design)."""
+    panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
+    # Single bool var + its label, mirroring loop_video_var (not the
+    # oldcam version dict).
+    assert "self.rppg_var = tk.BooleanVar(value=False)" in panel_source
+    assert 'text="rPPG:"' in panel_source
+    # Orange tint, distinct from the violet oldcam frame (#2A1F34/#5E3A7D).
+    assert "#3A2A1F" in panel_source
+    assert "#7D5E3A" in panel_source
+    # Config round-trip: load + on-change callback persists rppg_enabled.
+    assert 'self.rppg_var.set(self.config.get("rppg_enabled", False))' in panel_source
+    assert "def _on_rppg_changed(self):" in panel_source
+    assert 'self.config["rppg_enabled"] = self.rppg_var.get()' in panel_source
+    # Teardown cleanup list includes the new var (no leak).
+    assert '"rppg_var",' in panel_source
+
+
 def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
     manager, _ = make_queue_manager({})
     oldcam_dir = tmp_path / "oldcam-v10"
@@ -2021,3 +2043,56 @@ def test_oldcam_dependency_preflight_does_not_require_mediapipe_for_v24(tmp_path
 
     with mock.patch("builtins.__import__", side_effect=fake_import):
         assert manager._ensure_oldcam_dependencies(oldcam_dir, "v24") is True
+
+
+def test_rppg_video_skips_reinjection_of_already_injected_input(tmp_path):
+    """Regression (refine-loop self-review, PR #39): the GUI _rppg_video
+    (incl. the 📂 re-run picker, which can be pointed at ANY file) must
+    NOT re-inject an already-injected "*-rppg - <metrics>" artifact —
+    that double -rppg-rppg pass compounds the pulse out of the
+    non-negotiable sub-perceptual range. It IS the final deliverable, so
+    return it as-is WITHOUT spawning the injector. Symmetric with the
+    pipeline Step 8 guard."""
+    manager, logs = make_queue_manager({"rppg_enabled": True})
+
+    # An already-injected artifact (the injector's metric-rename form).
+    injected = tmp_path / "clip-oldcam-v24-rppg - 7.81-6.4-0.53-0.03-0.54.mp4"
+    injected.write_bytes(b"already-injected")
+
+    called = {"popen": False}
+
+    def _boom(*a, **k):
+        called["popen"] = True
+        raise AssertionError("injector must NOT be spawned on an already-injected input")
+
+    # If the guard fails, _rppg_video would resolve the launcher and call
+    # stream_subprocess_with_timeout -> Popen. Patch Popen to detect that.
+    with mock.patch("subprocess.Popen", side_effect=_boom):
+        result = manager._rppg_video(str(injected), QueueItem(str(injected)))
+
+    assert called["popen"] is False, "re-injected an already-rPPG'd input (double-injection)"
+    assert result == str(injected), "already-injected input must be returned as the final deliverable"
+    assert any("already injected" in m.lower() for m, _ in logs)
+
+
+def test_rppg_video_accepts_already_injected_input_without_the_tool(tmp_path):
+    """Regression (Codex P2, PR #39): accepting an already-injected file
+    as the final deliverable needs NO external tool. The is_rppg_artifact
+    guard must run BEFORE _resolve_rppg_launcher, so a release without the
+    gitignored rPPG/ tool still honors the no-reinject contract instead
+    of graceful-skipping (returning None) past it."""
+    manager, logs = make_queue_manager({"rppg_enabled": True})
+    injected = tmp_path / "clip-rppg - 7.81-6.4-0.53-0.03-0.54.mp4"
+    injected.write_bytes(b"already-injected")
+
+    # Force the rPPG/ tool to appear ABSENT.
+    with mock.patch.object(manager, "_resolve_rppg_launcher", return_value=None):
+        result = manager._rppg_video(str(injected), QueueItem(str(injected)))
+
+    # Must return the already-injected file as the final deliverable,
+    # NOT None — even though the launcher resolved to None.
+    assert result == str(injected), (
+        "already-injected input must be accepted as final deliverable "
+        "even when the rPPG tool is absent (guard must precede launcher check)"
+    )
+    assert any("already injected" in m.lower() for m, _ in logs)

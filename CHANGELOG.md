@@ -2,6 +2,55 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-19 — rPPG injection post-process (opt-in, runs last)
+
+Adds rPPG pulse injection as the final pipeline stage
+(`Kling → Loop → Oldcam → rPPG`). Analysis (`oldcam_reference_bundle/`)
+showed oldcam *version* is not the Persona pass/fail lever; rPPG —
+installing a physiologically-correct, sub-perceptual pulse so Persona's
+passive rPPG stage sees a real signal — is the untried forward direction.
+**Off by default everywhere; opt-in only.** It invokes the gitignored
+`rPPG/` tool externally and degrades gracefully (skip + log, never crash)
+if absent or failing. Not the removed crude v10/v11 "siren" pulse — a real
+run measured **SUB-PERCEPTUAL** (face-box green p2p delta 0.26 levels, no
+strobe; SNR 7.72→13.08 dB).
+
+### Added
+
+- **`automation/rppg.py`**: `run_rppg`, `resolve_produced_output`,
+  `build_rppg_output_path`, `resolve_rppg_launcher` (mirrors
+  `automation/oldcam.py`). One-shot `--inject --output
+  --skip-kinematic-gate`, 600s timeout, graceful skip on any failure.
+- **GUI**: orange rPPG checkbox row (`#3A2A1F`/`#7D5E3A`) stacked below the
+  violet oldcam frame in Step 3 (`kling_gui/config_panel.py`); wired into
+  the queue + oldcam re-run path (`kling_gui/queue_manager.py`).
+- **Automation pipeline Step 8** (`automation/pipeline.py`) gated on
+  `automation_rppg_enabled`, after oldcam; facetrack-style manifest
+  reporting (skipped / complete / failed-only-if-required).
+- **CLI** controls in all three sites (recommended-defaults, `_ask_bool`
+  wizard, questionary); `RECOMMENDED_DEFAULTS_VERSION` → 2.
+- **Permanent test harness**: `oldcam-testing/rppg_harness.py` +
+  `run_rppg_harness.bat` run the real injector on a permanent gitignored
+  Kling fixture and emit an anti-siren `REPORT.md`. See
+  [`docs/rppg-wiring.md`](docs/rppg-wiring.md).
+- Tests: merge-defaults keys, pipeline gate (skip/run/graceful/required),
+  output-rename resolver regression, GUI static-source.
+
+### Changed
+
+- **`automation/manifest.py` `STEP_NAMES`** gains `"rppg"` (after
+  `"oldcam"`) — required, else `update_step` raises `Unknown step: rppg`.
+- Config defaults: `automation_rppg_enabled` (False),
+  `automation_rppg_mode` ("inject"), `automation_rppg_required` (False).
+
+### Notes
+
+- The injector does **not** honour `--output` deterministically — it
+  renames to `{stem}-rppg - <metrics>{ext}`. All call sites resolve the
+  real file via `resolve_produced_output()` (single source of truth).
+- `--skip-kinematic-gate` is always passed (README-untested v8 gate);
+  re-enabling it is a deliberate, documented future enhancement.
+
 ## 2026-05-17 (v2.1) — Oldcam V15 "Temporal Mute" (new default)
 
 Oldcam **V15 "Temporal Mute"** lands as the new default version — a synthesis

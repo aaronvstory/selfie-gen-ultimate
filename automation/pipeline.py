@@ -16,6 +16,7 @@ from automation.discovery import CaseRecord, detect_existing_outputs
 from automation.logger import build_safe_config_snapshot, create_automation_logger
 from automation.manifest import AutomationManifest, now_iso
 from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies, run_oldcam
+from automation.rppg import is_rppg_artifact, run_rppg
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
@@ -313,6 +314,16 @@ class AutoPipelineRunner:
         )
         if self.automation.get("automation_oldcam_required", False) and not self.automation.get("automation_oldcam_enabled", True):
             issues.append("automation_oldcam_required=true requires automation_oldcam_enabled=true.")
+        # Symmetric with the oldcam rule above (Codex P2, PR #39): the CLI
+        # advanced setup asks rppg enabled/required independently, so a
+        # user can save automation_rppg_required=true while
+        # automation_rppg_enabled=false. Without this, Step 8 records the
+        # rPPG step "skipped" and the case still finalizes complete — the
+        # "required" policy silently becomes a no-op. Reject the
+        # contradictory combination at config-validation time, exactly as
+        # oldcam does.
+        if self._read_bool("automation_rppg_required", False) and not self._read_bool("automation_rppg_enabled", False):
+            issues.append("automation_rppg_required=true requires automation_rppg_enabled=true.")
         if self.automation.get("automation_oldcam_required", False):
             repo_root = Path(__file__).resolve().parent.parent
             versions = discover_oldcam_versions(repo_root)
@@ -965,7 +976,14 @@ class AutoPipelineRunner:
                 )
                 if not self.automation.get("automation_oldcam_enabled", True):
                     self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
-                    return self._finalize_case(case_entry, "completed")
+                    # Pre-rPPG this short-circuited to completed (video
+                    # reused + oldcam off = nothing left). rPPG can now be
+                    # the ONLY enabled post-process on a reused video, so
+                    # only finalize early when rPPG is also disabled —
+                    # otherwise fall through to Step 8, which picks up the
+                    # reused video from the video_generate step output.
+                    if not self._read_bool("automation_rppg_enabled", False):
+                        return self._finalize_case(case_entry, "completed")
             if not skipped_existing_video:
                 video = self.deps.video_factory()
                 video.set_progress_callback(self.progress_cb)
@@ -1147,5 +1165,86 @@ class AutoPipelineRunner:
                     return self._finalize_case(case_entry, "failed")
         else:
             self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
+
+        # Step 8: optional rPPG injection — runs LAST (Kling -> Loop ->
+        # Oldcam -> rPPG). Input is the oldcam output if oldcam produced one,
+        # otherwise the video_generate output (so rPPG works standalone when
+        # oldcam is disabled). DEFAULT OFF; _required=False means a missing
+        # tool / failed injection is a graceful skip, never a hard-fail
+        # (mirrors the facetrack-gate precedent). The injector lives in the
+        # gitignored rPPG/ tool, invoked as an external launcher.
+        if self._read_bool("automation_rppg_enabled", False):
+            oldcam_out = self.manifest.get_step(case_key, "oldcam").get("output")
+            video_out = self.manifest.get_step(case_key, "video_generate").get("output")
+            rppg_input: Optional[Path] = None
+            if oldcam_out and Path(oldcam_out).exists():
+                rppg_input = Path(oldcam_out)
+            elif video_out and Path(video_out).exists():
+                rppg_input = Path(video_out)
+            required = self._read_bool("automation_rppg_required", False)
+            # Never re-inject an already-injected file. When the manifest
+            # is stale/missing, detect_existing_outputs() can surface a
+            # prior "*-rppg" artifact as oldcam/video output; feeding it
+            # back into the injector would double-inject (-rppg-rppg) and
+            # compound the pulse out of the sub-perceptual range (which is
+            # non-negotiable). If the resolved input is already an rPPG
+            # artifact, it IS the final deliverable — record complete,
+            # don't re-run. (Codex P2, PR #39.)
+            if rppg_input is not None and is_rppg_artifact(rppg_input):
+                self.logger.info(
+                    "case %s rppg input already injected (%s); skipping re-injection",
+                    case_key,
+                    rppg_input.name,
+                )
+                self.manifest.update_step(
+                    case_key,
+                    "rppg",
+                    "complete",
+                    output=str(rppg_input),
+                    meta={**self._policy_meta("rppg", True, reprocess_mode), "already_injected": True},
+                )
+                return self._finalize_case(case_entry, "completed")
+            if rppg_input is None:
+                self.logger.warning("case %s rppg readiness=not-ready required=%s", case_key, required)
+                self.manifest.update_step(
+                    case_key,
+                    "rppg",
+                    "failed" if required else "skipped",
+                    error="no input video for rPPG",
+                    meta={"required": required},
+                )
+                if required:
+                    return self._finalize_case(case_entry, "failed")
+            else:
+                self.logger.info("case %s rppg readiness=ready required=%s", case_key, required)
+                self._set_active_step(case_entry, "rppg")
+                self.manifest.update_step(case_key, "rppg", "running")
+                rppg_output = run_rppg(
+                    video_path=rppg_input,
+                    repo_root=Path(__file__).resolve().parent.parent,
+                    progress_cb=self.progress_cb,
+                )
+                if rppg_output and rppg_output.exists():
+                    self.logger.info("case %s rppg output=%s", case_key, rppg_output)
+                    self.manifest.update_step(
+                        case_key,
+                        "rppg",
+                        "complete",
+                        output=str(rppg_output),
+                        meta=self._policy_meta("rppg", False, reprocess_mode),
+                    )
+                else:
+                    self.logger.warning("case %s rppg failed required=%s", case_key, required)
+                    self.manifest.update_step(
+                        case_key,
+                        "rppg",
+                        "failed" if required else "skipped",
+                        error="rPPG injection produced no output",
+                        meta={**self._policy_meta("rppg", False, reprocess_mode), "required": required},
+                    )
+                    if required:
+                        return self._finalize_case(case_entry, "failed")
+        else:
+            self.manifest.update_step(case_key, "rppg", "skipped", error="rPPG disabled")
 
         return self._finalize_case(case_entry, "completed")

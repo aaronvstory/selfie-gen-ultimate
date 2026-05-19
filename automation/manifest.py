@@ -19,6 +19,7 @@ STEP_NAMES = [
     "video_generate",
     "facetrack_gate",
     "oldcam",
+    "rppg",
 ]
 STEP_STATUSES = {"pending", "running", "complete", "failed", "manual_review", "skipped", "pending_not_implemented"}
 
@@ -115,10 +116,38 @@ class AutomationManifest:
                 )
 
             loaded_fingerprint = _build_config_fingerprint(loaded.get("config_snapshot", {}))
-            if loaded_fingerprint != desired_fingerprint:
+            # Backward compatibility (Codex P1/P2, PR #39): a purely-
+            # additive new automation_* key (e.g. automation_rppg_*) must
+            # NOT invalidate manifests written before it existed *when the
+            # requested value is still the default* — that run is
+            # behaviour-identical. But if the user EXPLICITLY opts the new
+            # feature in (requested value != default, e.g.
+            # automation_rppg_enabled=true on a pre-rPPG corpus), the case
+            # MUST reprocess so the new step actually runs — otherwise
+            # skip_completed skips it as "complete" on the stale pre-rPPG
+            # output and the opted-in feature silently never executes.
+            from automation.config import AUTOMATION_DEFAULTS  # cycle-safe (config does not import manifest)
+
+            conflicting = {}
+            # 1. Keys the OLD manifest recorded: any value change is a
+            #    conflict (original change-detection guarantee).
+            for key in loaded_fingerprint:
+                if key not in desired_fingerprint or loaded_fingerprint[key] != desired_fingerprint[key]:
+                    conflicting[key] = (loaded_fingerprint[key], desired_fingerprint.get(key))
+            # 2. NEW keys absent from the old manifest: tolerated ONLY when
+            #    the requested value equals the documented default
+            #    (behaviour-preserving). A non-default requested value =
+            #    explicit opt-in => force reprocess.
+            for key, desired_val in desired_fingerprint.items():
+                if key in loaded_fingerprint:
+                    continue
+                default_val = AUTOMATION_DEFAULTS.get(key, object())
+                if desired_val != default_val:
+                    conflicting[key] = ("<absent: pre-feature manifest>", desired_val)
+            if conflicting:
                 raise ValueError(
                     f"Manifest config fingerprint mismatch at {manifest_path}: "
-                    f"manifest={loaded_fingerprint!r}, requested={desired_fingerprint!r}"
+                    f"conflicting keys (manifest vs requested)={conflicting!r}"
                 )
             return cls(manifest_path=manifest_path, data=loaded)
 
@@ -232,10 +261,22 @@ class AutomationManifest:
             return False
         if case_entry.get("status") != "complete":
             return False
-        final_output = (
-            case_entry.get("steps", {}).get("oldcam", {}).get("output")
-            or case_entry.get("steps", {}).get("video_generate", {}).get("output")
-        )
+        steps = case_entry.get("steps", {})
+        # rPPG is the LAST post-process: when it completed, the injected
+        # file is the real final deliverable. Validate against THAT, so a
+        # deleted rPPG output isn't masked as "complete" just because the
+        # pre-rPPG oldcam/video file still exists (skip_completed would
+        # then wrongly skip the case, leaving no rPPG deliverable). If
+        # rppg did not complete (disabled / skipped / failed-non-required),
+        # fall back to the prior oldcam -> video_generate chain unchanged.
+        rppg_step = steps.get("rppg", {})
+        if rppg_step.get("status") == "complete" and rppg_step.get("output"):
+            final_output = rppg_step.get("output")
+        else:
+            final_output = (
+                steps.get("oldcam", {}).get("output")
+                or steps.get("video_generate", {}).get("output")
+            )
         if not final_output:
             return False
         return Path(final_output).exists()

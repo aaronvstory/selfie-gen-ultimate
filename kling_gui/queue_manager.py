@@ -793,6 +793,24 @@ class QueueManager:
                     "info",
                 )
                 output_path = self._oldcam_video(str(run_input), QueueItem(str(source_video)))
+                # If rPPG is also enabled, inject it LAST on the oldcam
+                # output (or, if oldcam produced nothing, on run_input —
+                # which already has the loop applied above when enabled).
+                # Graceful skip leaves output_path as the oldcam result.
+                #
+                # NOTE (deliberate asymmetry, not a bug): this is the
+                # oldcam-specific re-run path — it already early-returned
+                # above when no oldcam versions are selected, so rPPG-only
+                # re-run is NOT reachable here. rPPG-only DOES work in the
+                # normal generation flow (the main queue runs _rppg_video
+                # unconditionally on _rppg_enabled). A shared post-process
+                # re-run button is a documented future direction
+                # (docs/rppg-wiring.md), not an omission.
+                if self._rppg_enabled():
+                    rppg_source = output_path or str(run_input)
+                    rppg_path = self._rppg_video(rppg_source, QueueItem(str(source_video)))
+                    if rppg_path:
+                        output_path = rppg_path
                 summary = self._last_oldcam_run_summary or {}
                 requested_versions = summary.get("requested_versions", [])
                 succeeded_versions = summary.get("succeeded_versions", [])
@@ -1043,17 +1061,51 @@ class QueueManager:
                     self.log(f"Completed: {item.filename}", "success")
 
                     final_video = result
-                    # Check if loop video is enabled
+                    # Loop runs ONCE first (Kling -> Loop). Every oldcam
+                    # version + rPPG variant builds off this single looped
+                    # source — nothing is re-looped per-variant.
                     if config.get("loop_videos", False):
                         looped_video = self._loop_video(result, item)
                         if looped_video:
                             final_video = looped_video
 
-                    # Run oldcam only when one or more versions are selected.
+                    # Oldcam: runs EVERY selected version. _oldcam_video
+                    # returns the highest version's path for callers that
+                    # want one, but _last_oldcam_run_summary["outputs"]
+                    # holds ALL per-version outputs.
+                    oldcam_outputs: List[str] = []
                     if self._get_oldcam_versions_to_run():
                         oldcam_video = self._oldcam_video(final_video, item)
                         if oldcam_video:
                             final_video = oldcam_video
+                        summary = self._last_oldcam_run_summary or {}
+                        oldcam_outputs = list(summary.get("outputs") or [])
+
+                    # rPPG runs LAST. There is NO privileged "primary": if
+                    # multiple oldcam versions were produced, inject into
+                    # EACH so every selected version gets its own
+                    # *-rppg deliverable. If oldcam ran but none of its
+                    # outputs are tracked, fall back to final_video. If no
+                    # oldcam at all, inject the (looped/raw) clip itself.
+                    if self._rppg_enabled():
+                        rppg_inputs = oldcam_outputs or [final_video]
+                        last_rppg: Optional[str] = None
+                        for src in rppg_inputs:
+                            rppg_video = self._rppg_video(src, item)
+                            if rppg_video:
+                                last_rppg = rppg_video
+                        if last_rppg:
+                            # Surface the highest-version rPPG output as the
+                            # item's headline path (the others exist on disk
+                            # next to it). When fanning out, prefer the rPPG
+                            # of the highest oldcam version (final_video's).
+                            preferred = self._build_rppg_output_path(
+                                Path(final_video)
+                            )
+                            final_video = (
+                                str(preferred) if preferred.exists()
+                                else last_rppg
+                            )
 
                     item.output_path = final_video
                     self.log(f"Saved to: {final_video}", "info")
@@ -1511,13 +1563,18 @@ class QueueManager:
                         "warning",
                     )
                     return None
-                # Primary output is highest version number among successful runs.
+                # Highest version is returned as the single "result" for
+                # callers that want one path, but ALL successful per-version
+                # outputs are exposed so downstream rPPG can fan out across
+                # every selected version (there is no privileged "primary"
+                # — each selected version is its own deliverable).
                 primary = max(outputs, key=lambda entry: self._oldcam_version_key(entry[0]))
                 self._last_oldcam_run_summary = {
                     "requested_versions": requested,
                     "succeeded_versions": [version for version, _ in outputs],
                     "failed_versions": failures,
                     "primary_output": primary[1],
+                    "outputs": [path for _version, path in outputs],
                 }
                 # Structured success summary for the file log. The user-facing
                 # panel already saw "Oldcam vN Finish applied: <name>" for each
@@ -1539,6 +1596,175 @@ class QueueManager:
         except Exception as e:
             self.log(f"Error applying Oldcam Finish: {e}", "warning")
             self._last_oldcam_run_summary = None
+            return None
+
+    # ------------------------------------------------------------------
+    # rPPG injection (runs LAST: Kling -> Loop -> Oldcam -> rPPG)
+    #
+    # rPPG runs after oldcam on purpose: loop's ping-pong reverse would
+    # play a pre-injected pulse backwards (detectable) and oldcam's
+    # resolution-crush would attenuate a pre-injected sub-perceptual
+    # pulse. Injecting on the final delivered pixels preserves the
+    # correct physiological signal. The injector lives in the gitignored
+    # rPPG/ tool and is shelled out to via its Windows .bat launcher;
+    # every failure path is a graceful skip (warn + return None) so the
+    # caller keeps the pre-rPPG video and the queue never crashes.
+    # ------------------------------------------------------------------
+    def _rppg_enabled(self) -> bool:
+        return bool(self.get_config().get("rppg_enabled", False))
+
+    def _build_rppg_output_path(self, input_path: Path) -> Path:
+        """``video.mp4`` -> ``video-rppg.mp4`` (mirrors oldcam suffixing).
+
+        Chained after oldcam this yields e.g.
+        ``clip_looped-oldcam-v24-rppg.mp4``.
+        """
+        return input_path.with_name(f"{input_path.stem}-rppg{input_path.suffix}")
+
+    def _resolve_rppg_launcher(self) -> Optional[Path]:
+        """Resolve rPPG/run_rppg.bat for script and frozen builds.
+
+        Returns None (caller skips gracefully) if the gitignored rPPG/
+        tool — launcher or injector — is absent, or on a non-Windows host
+        (the launcher is a .bat; a macOS launcher is out of scope).
+
+        DELIBERATELY distinct from automation.rppg.resolve_rppg_launcher
+        (NOT accidental duplication — do not "dedup" them): the GUI runs
+        in frozen PyInstaller builds where the tool may be relocated, so
+        this searches app_dir / resource_dir / repo-root (mirrors
+        _resolve_oldcam_dir). The automation pipeline always runs from
+        source, so its resolver takes an explicit repo_root and does a
+        single check. Both require launcher AND injector to exist.
+        """
+        app_dir = Path(get_app_dir())
+        resource_dir = Path(get_resource_dir())
+        candidates = [
+            app_dir / "rPPG",
+            resource_dir / "rPPG",
+            Path(__file__).parent.parent.resolve() / "rPPG",
+        ]
+        for base in candidates:
+            launcher = base / "run_rppg.bat"
+            injector = base / "rppg_injector.py"
+            if launcher.exists() and injector.exists():
+                return launcher
+        return None
+
+    def _rppg_video(self, video_path: str, item: QueueItem) -> Optional[str]:
+        """Run one-shot rPPG injection on ``video_path``.
+
+        Returns the injected output path, or None on ANY failure
+        (graceful skip — caller keeps the pre-rPPG video).
+        """
+        del item  # Reserved for future per-item status hooks
+        try:
+            input_path = Path(video_path)
+            if not input_path.exists():
+                self.log(f"rPPG skipped: input missing ({input_path.name})", "warning")
+                return None
+
+            # Never re-inject an already-injected file. The 📂 re-run
+            # picker can be pointed at ANY video, including a prior
+            # "*-rppg - <metrics>" artifact; injecting that again would
+            # double-inject (-rppg-rppg) and compound the pulse out of the
+            # non-negotiable sub-perceptual range. It IS the final
+            # deliverable — return it as-is. Symmetric with the pipeline
+            # guard (automation/pipeline.py Step 8); shared single source
+            # of truth for the marker. (Codex P2 class, PR #39.)
+            #
+            # This MUST run BEFORE resolving the launcher: accepting an
+            # already-injected file as the final deliverable requires no
+            # external tool, so a release without the gitignored rPPG/
+            # tool must still honor the no-reinject contract instead of
+            # graceful-skipping past it. (Codex P2, PR #39.)
+            from automation.rppg import is_rppg_artifact
+
+            if is_rppg_artifact(input_path):
+                self.log(
+                    f"rPPG skipped: input is already injected ({input_path.name}); "
+                    "keeping it as the final deliverable",
+                    "info",
+                )
+                return str(input_path)
+
+            launcher = self._resolve_rppg_launcher()
+            if launcher is None:
+                self.log("rPPG skipped: rPPG/ tool not present", "warning")
+                return None
+
+            output_path = self._build_rppg_output_path(input_path)
+            self.log("Applying rPPG injection...", "info")
+            run_cmd = [
+                str(launcher),
+                str(input_path),
+                "--inject",
+                "--output",
+                str(output_path),
+                # Deliberate: the injector's v8 kinematic preflight is
+                # README-marked "new, untested". Re-enabling that gate is a
+                # future enhancement (see docs/rppg-wiring.md), not an
+                # oversight.
+                "--skip-kinematic-gate",
+            ]
+            output_lines: list[str] = []
+            returncode = -1
+            _TIMEOUT = 600
+
+            def _on_rppg_line(text: str) -> None:
+                if not _is_tf_noise(text):
+                    level = "debug" if _is_panel_noise(text) else "info"
+                    self.log(text, level)
+
+            try:
+                # Shared reader-thread + hard wall-clock helper (single
+                # source of truth with automation/rppg.py). A bare
+                # readline() loop — even with a deadline checked first —
+                # blocks forever if the injector stalls mid-line, freezing
+                # this worker with is_running set and breaking the
+                # documented graceful-skip guarantee. The helper owns the
+                # wall clock on the main thread so a silent hang is still
+                # killed + skipped on schedule.
+                from automation.rppg import stream_subprocess_with_timeout
+
+                returncode, output_lines = stream_subprocess_with_timeout(
+                    run_cmd,
+                    cwd=str(launcher.parent),
+                    timeout_seconds=_TIMEOUT,
+                    on_line=_on_rppg_line,
+                )
+            except subprocess.TimeoutExpired:
+                self.log("rPPG timed out after 600s; keeping pre-rPPG video", "warning")
+                return None
+            except Exception as exc:
+                self.log(f"rPPG launcher error: {exc}; keeping pre-rPPG video", "warning")
+                return None
+
+            if returncode == 0:
+                # The injector renames our --output to append a metric
+                # suffix ({stem}-rppg - <snr>-<phase>-...{ext}) regardless
+                # of --output. Resolve the actual produced file (shared
+                # single source of truth with the automation pipeline).
+                from automation.rppg import resolve_produced_output
+
+                produced = resolve_produced_output(output_path)
+                if produced is not None:
+                    self.log(f"rPPG injection applied: {produced.name}", "success")
+                    return str(produced)
+                self.log(
+                    "rPPG process completed but output file was not found; keeping pre-rPPG video",
+                    "warning",
+                )
+                return None
+
+            self.log(
+                f"rPPG injection failed (code {returncode}); keeping pre-rPPG video",
+                "warning",
+            )
+            if output_lines:
+                self.log(output_lines[-1], "warning")
+            return None
+        except Exception as e:
+            self.log(f"Error applying rPPG injection: {e}", "warning")
             return None
 
     def _get_current_prompt(self, config: dict) -> str:

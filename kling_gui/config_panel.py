@@ -475,27 +475,24 @@ class ConfigPanel(tk.Frame):
 
         lbl_w = 10  # consistent label width in chars
 
-        # Options: Loop Video + Oldcam version selection
+        # Post-process band: [Options:] label | vertical stack of the
+        # violet Oldcam frame (top) + orange rPPG frame (below), both in
+        # the SAME parent with identical pack opts so they render EQUAL
+        # width | one SHARED Re-Run column to the right of both frames.
+        # Loop Video is NOT here — it moved to the reprocessing row.
         rA = tk.Frame(left_col, bg=COLORS["bg_input"])
         rA.pack(fill=tk.X, pady=(0, 4))
         tk.Label(rA, text="Options:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
-                 width=lbl_w, anchor="w").pack(side=tk.LEFT)
+                 width=lbl_w, anchor="nw").pack(side=tk.LEFT, anchor="n")
+        # Loop widgets built now (keep attr names + callback) but packed
+        # later into the reprocessing row (rB), not here.
         self.loop_video_var = tk.BooleanVar(value=False)
-        self.loop_checkbox = tk.Checkbutton(
-            rA, text="Loop Video (ping-pong)", variable=self.loop_video_var,
-            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
-            activeforeground=COLORS["text_light"], command=self._on_loop_changed,
-        )
-        self.loop_checkbox.pack(side=tk.LEFT)
-        self.loop_info_label = tk.Label(
-            rA, text="(requires FFmpeg)", font=(FONT_FAMILY, 8),
-            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
-        )
-        self.loop_info_label.pack(side=tk.LEFT, padx=4)
+        # vertical stack: oldcam (top) over rPPG (below), equal width
+        _pp_stack = tk.Frame(rA, bg=COLORS["bg_input"])
+        _pp_stack.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
         self.oldcam_controls_frame = tk.Frame(
-            rA,
+            _pp_stack,
             bg="#2A1F34",
             highlightthickness=1,
             highlightbackground="#5E3A7D",
@@ -503,7 +500,7 @@ class ConfigPanel(tk.Frame):
             padx=6,
             pady=2,
         )
-        self.oldcam_controls_frame.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        self.oldcam_controls_frame.pack(fill=tk.X, expand=True, pady=(0, 4))
         # "Oldcam: ⓘ" inline on top of the controls frame — top-anchored
         _oldcam_label_row = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
         _oldcam_label_row.pack(side=tk.LEFT, anchor="n", padx=(0, 6))
@@ -562,21 +559,97 @@ class ConfigPanel(tk.Frame):
             )
             check.grid(row=i // _OLDCAM_COLS, column=i % _OLDCAM_COLS, sticky="w", padx=(2, 8), pady=0)
             self.oldcam_version_checks[version] = check
-        # Re-Run column: label on top, [↻] [📂] buttons aligned below — top-anchored
-        # so it doesn't vertically center against the taller checkbox grid.
-        _rerun_col = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
-        _rerun_col.pack(side=tk.LEFT, anchor="n", padx=(10, 0))
+        # (Re-Run controls are no longer inside the Oldcam frame — they
+        # live in ONE shared column to the right of both tinted frames,
+        # built after the rPPG frame below.)
+
+        # rPPG injection — stacked directly UNDER the violet Oldcam
+        # frame inside the SAME parent (_pp_stack) with identical pack
+        # opts, so the two tinted frames render EQUAL width and read as
+        # a clean stacked pair. rPPG runs LAST (Kling → Loop → Oldcam →
+        # rPPG); combinable with Oldcam + Loop. Off by default. The
+        # shared Re-Run buttons also apply rPPG when this is checked.
+        self.rppg_controls_frame = tk.Frame(
+            _pp_stack,
+            bg="#3A2A1F",
+            highlightthickness=1,
+            highlightbackground="#7D5E3A",
+            bd=0,
+            padx=6,
+            pady=2,
+        )
+        self.rppg_controls_frame.pack(fill=tk.X, expand=True)
+        _rppg_label_row = tk.Frame(self.rppg_controls_frame, bg="#3A2A1F")
+        _rppg_label_row.pack(side=tk.LEFT, anchor="n", padx=(0, 6))
         tk.Label(
-            _rerun_col,
+            _rppg_label_row,
+            text="rPPG:",
+            font=(FONT_FAMILY, 10),
+            bg="#3A2A1F",
+            fg=COLORS["text_light"],
+        ).pack(side=tk.LEFT)
+        self.rppg_info_icon = tk.Label(
+            _rppg_label_row,
+            text="ⓘ",
+            font=(FONT_FAMILY, 11),
+            cursor="question_arrow",
+            bg="#3A2A1F",
+            fg=COLORS["text_dim"],
+        )
+        self.rppg_info_icon.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(
+            self.rppg_info_icon,
+            lambda: (
+                "Sub-perceptual rPPG pulse injection (runs LAST,\n"
+                "after Loop + Oldcam). Aims to give Persona's\n"
+                "passive rPPG stage a physiologically-correct\n"
+                "signal. Untested forward direction — off by\n"
+                "default. Skips gracefully if the rPPG tool is\n"
+                "absent or injection fails (keeps the pre-rPPG\n"
+                "video; never crashes the run)."
+            ),
+        )
+        self.rppg_var = tk.BooleanVar(value=False)
+        self.rppg_checkbox = tk.Checkbutton(
+            self.rppg_controls_frame,
+            text="Inject rPPG pulse",
+            variable=self.rppg_var,
+            font=(FONT_FAMILY, 9),
+            bg="#3A2A1F",
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"],
+            activebackground="#3A2A1F",
+            activeforeground=COLORS["text_light"],
+            command=self._on_rppg_changed,
+        )
+        self.rppg_checkbox.pack(side=tk.LEFT, anchor="n", padx=(2, 8))
+        tk.Label(
+            self.rppg_controls_frame,
+            text="(sub-perceptual · runs last · off = unchanged)",
+            font=(FONT_FAMILY, 8),
+            bg="#3A2A1F",
+            fg=COLORS["text_dim"],
+        ).pack(side=tk.LEFT, anchor="n", padx=(0, 4))
+
+        # ONE shared Re-Run column, packed into the band (rA) to the
+        # RIGHT of the Oldcam/rPPG stack — applies to whatever is
+        # selected: any Oldcam versions AND/OR rPPG, and re-loops first
+        # when Loop Video is on (queue_manager.rerun_oldcam_only already
+        # handles loop → oldcam → rPPG ordering). Top-anchored so it
+        # aligns with the top of the stack, not its vertical centre.
+        _shared_rerun_col = tk.Frame(rA, bg=COLORS["bg_input"])
+        _shared_rerun_col.pack(side=tk.LEFT, anchor="n", padx=(12, 0))
+        tk.Label(
+            _shared_rerun_col,
             text="Re-Run:",
             font=(FONT_FAMILY, 10),
-            bg="#2A1F34",
+            bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
         ).pack(anchor="w")
-        _rerun_btn_row = tk.Frame(_rerun_col, bg="#2A1F34")
-        _rerun_btn_row.pack(anchor="w", pady=(2, 0))
+        _shared_rerun_btn_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
+        _shared_rerun_btn_row.pack(anchor="w", pady=(2, 0))
         self.oldcam_rerun_btn = tk.Button(
-            _rerun_btn_row,
+            _shared_rerun_btn_row,
             text="↻",
             font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
@@ -594,13 +667,15 @@ class ConfigPanel(tk.Frame):
         HoverTooltip(
             self.oldcam_rerun_btn,
             lambda: (
-                "Re-run Oldcam on an already generated video.\n"
-                "Uses selected Processed Videos row first,\n"
-                "or latest completed output if none selected."
+                "Re-run post-processing on a generated video.\n"
+                "Applies whatever is selected — Oldcam version(s)\n"
+                "and/or rPPG — and re-loops first if Loop Video is\n"
+                "on. Uses the selected Processed Videos row, or the\n"
+                "latest completed output if none selected."
             ),
         )
         self.oldcam_pick_btn = tk.Button(
-            _rerun_btn_row,
+            _shared_rerun_btn_row,
             text="📂",
             font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
@@ -618,9 +693,10 @@ class ConfigPanel(tk.Frame):
         HoverTooltip(
             self.oldcam_pick_btn,
             lambda: (
-                "Pick a video file and run Oldcam on it.\n"
-                "Uses selected version checkboxes above.\n"
-                "Respects Allow reprocessing / Increment settings."
+                "Pick a video file and re-run post-processing on it.\n"
+                "Applies whatever is selected — Oldcam version(s)\n"
+                "and/or rPPG — and re-loops first if Loop Video is\n"
+                "on. Respects Allow reprocessing / Increment."
             ),
         )
 
@@ -665,6 +741,21 @@ class ConfigPanel(tk.Frame):
         )
         self.increment_radio.pack(side=tk.LEFT, padx=2)
         self._update_reprocess_mode_visibility()
+        # Loop Video moved here (was on the old Options row) — inline
+        # right after "Increment (_2, _3…)". Attr names + callback
+        # unchanged; only the parent/placement moved.
+        self.loop_checkbox = tk.Checkbutton(
+            rB, text="Loop Video (ping-pong)", variable=self.loop_video_var,
+            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"], command=self._on_loop_changed,
+        )
+        self.loop_checkbox.pack(side=tk.LEFT, padx=(16, 0))
+        self.loop_info_label = tk.Label(
+            rB, text="(requires FFmpeg)", font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.loop_info_label.pack(side=tk.LEFT, padx=4)
 
         # Logging
         rC = tk.Frame(left_col, bg=COLORS["bg_input"])
@@ -1139,6 +1230,8 @@ class ConfigPanel(tk.Frame):
 
         # Loop video option
         self.loop_video_var.set(self.config.get("loop_videos", False))
+        # rPPG injection (off by default)
+        self.rppg_var.set(self.config.get("rppg_enabled", False))
         self._check_ffmpeg_status()
         selected_versions = self._resolve_oldcam_versions_from_config()
         for version, var in self.oldcam_version_vars.items():
@@ -1477,6 +1570,12 @@ class ConfigPanel(tk.Frame):
         self.config["loop_videos"] = self.loop_video_var.get()
         status = "enabled" if self.loop_video_var.get() else "disabled"
         self._notify_change(f"Loop video {status}")
+
+    def _on_rppg_changed(self):
+        """Handle rPPG injection checkbox change."""
+        self.config["rppg_enabled"] = self.rppg_var.get()
+        status = "enabled" if self.rppg_var.get() else "disabled"
+        self._notify_change(f"rPPG injection {status}")
 
     def _oldcam_version_key(self, version: str) -> int:
         try:
@@ -1846,6 +1945,7 @@ class ConfigPanel(tk.Frame):
             "prompt_title_var",
             "loop_video_var",
             "oldcam_version_vars",
+            "rppg_var",
             "reprocess_var",
             "reprocess_mode_var",
             "verbose_gui_var",

@@ -254,6 +254,45 @@ def collapse_legacy_autosaves(app_dir: str) -> int:
     return removed
 
 
+_GEN_FOLDER_SEGMENTS = {"gen-images", "gen-videos"}
+# Expansion / outpaint markers (checked before the generic selfie bucket).
+_OUTPAINT_MARKERS = ("_exp", "_outpaint", "_expanded", "-expanded", " - exp")
+
+
+def _classify_source_type(path: str) -> str:
+    """Infer an ImageEntry source_type for a scanned file.
+
+    The designed project layout puts every *generated* artifact under a
+    ``gen-images/`` (or ``gen-videos/``) subfolder; true source inputs
+    (e.g. ``front.jpg``) sit at the project root. Hard-coding everything
+    to ``"input"`` (the old behaviour) made the similarity recalc find
+    zero targets after a folder-load, because the target filter is
+    ``source_type != "input"``.
+
+    Rules:
+      - Anything NOT inside a gen-* folder  -> ``"input"`` (source img).
+      - The extracted crop (``*_crop`` with no further gen suffix), even
+        inside gen-images/, stays ``"input"`` so it can serve as the
+        auto similarity reference (``get_effective_similarity_ref``
+        prefers a ``_crop`` input).
+      - Expanded / outpaint artifacts        -> ``"outpaint"``.
+      - Every other gen-folder artifact      -> ``"selfie"``.
+    """
+    norm = path.replace("\\", "/").lower()
+    parts = norm.split("/")
+    in_gen_folder = any(seg in _GEN_FOLDER_SEGMENTS for seg in parts[:-1])
+    if not in_gen_folder:
+        return "input"
+    stem = os.path.splitext(os.path.basename(norm))[0]
+    # The extracted crop is the reference, not a generated target. Treat
+    # a bare "*_crop" / "*-crop" (no later generation suffix) as input.
+    if stem.endswith("_crop") or stem.endswith("-crop") or stem == "crop":
+        return "input"
+    if any(m in stem for m in _OUTPAINT_MARKERS):
+        return "outpaint"
+    return "selfie"
+
+
 def build_session_from_folder(folder: str, max_images: int = 500) -> Optional[dict]:
     """Scan ``folder`` recursively for recognized images → ad-hoc session dict.
 
@@ -293,7 +332,7 @@ def build_session_from_folder(folder: str, max_images: int = 500) -> Optional[di
             "images": [
                 {
                     "path": p,
-                    "source_type": "input",
+                    "source_type": _classify_source_type(p),
                     "label": os.path.basename(p),
                     "ops": {},
                 }

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from automation.config import from_app_config, merge_automation_defaults
@@ -429,6 +430,56 @@ def test_pipeline_validation_fails_on_oldcam_required_without_enable(tmp_path: P
     )
     issues = runner.validate_configuration()
     assert any("requires" in issue for issue in issues)
+
+
+def test_pipeline_validation_fails_on_rppg_required_without_enable(tmp_path: Path):
+    """Regression (Codex P2, PR #39): symmetric with the oldcam rule —
+    automation_rppg_required=true while automation_rppg_enabled=false is
+    contradictory (the CLI asks them independently). Without validation,
+    Step 8 skips and the case finalizes complete, so 'required' silently
+    no-ops. validate_configuration() must reject the combination."""
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_rppg_enabled": False,
+            "automation_rppg_required": True,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    issues = runner.validate_configuration()
+    assert any("automation_rppg_required=true requires automation_rppg_enabled=true" in i for i in issues)
+
+    # Sanity: the valid combination (both true) must NOT raise this issue.
+    ok_config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_rppg_enabled": True,
+            "automation_rppg_required": True,
+        }
+    )
+    ok_runner = AutoPipelineRunner(
+        config=ok_config,
+        automation_config=from_app_config(ok_config),
+        manifest=AutomationManifest.create_or_load(tmp_path / "m2.json", tmp_path, {}),
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    assert not any("automation_rppg_required" in i for i in ok_runner.validate_configuration())
 
 
 def test_pipeline_validation_fails_when_bfl_provider_missing_bfl_key(tmp_path: Path):
@@ -1687,3 +1738,487 @@ def test_measure_face_track_rejects_bad_args():
     # Non-numeric must not raise either.
     r4 = measure_face_track("x.mp4", repo, sample_fps="fast")  # type: ignore[arg-type]
     assert r4.available is False
+
+
+def _mk_rppg_case(tmp_path, monkeypatch, *, rppg_enabled, rppg_required=False, rppg_returns="path"):
+    """Shared rPPG-step pipeline harness. rppg_returns: "path" => mock
+    run_rppg writes & returns <input>-rppg.mp4; "none" => returns None
+    (graceful-skip path)."""
+    case_dir = tmp_path / "rppg-case"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="rppg-case")
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "saved_prompts": {"1": "prompt"},
+            "current_prompt_slot": 1,
+            # Oldcam off so rPPG runs on the video_generate output directly,
+            # isolating the rPPG step under test.
+            "automation_oldcam_enabled": False,
+            "automation_oldcam_required": False,
+            "automation_rppg_enabled": rppg_enabled,
+            "automation_rppg_required": rppg_required,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600):
+        del repo_root, progress_cb, timeout_seconds
+        if rppg_returns == "none":
+            return None
+        out = Path(video_path).with_name(Path(video_path).stem + "-rppg" + Path(video_path).suffix)
+        out.write_bytes(b"rppg")
+        return out
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", _fake_rppg)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    step = manifest.data["cases"]["rppg-case"]["steps"].get("rppg", {})
+    return stats, step
+
+
+def test_pipeline_rppg_skipped_when_disabled_by_default(tmp_path: Path, monkeypatch):
+    """rPPG defaults OFF: the step records 'skipped' with the disabled
+    reason and the case still completes."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled=False)
+    assert stats["failed"] == 0
+    assert step.get("status") == "skipped"
+    assert "rPPG disabled" in (step.get("error") or "")
+
+
+def test_pipeline_rppg_runs_and_completes_when_enabled(tmp_path: Path, monkeypatch):
+    """When enabled and the (mocked) injector yields output, the rppg step
+    is 'complete' and points at the injected file."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled=True, rppg_returns="path")
+    assert stats["failed"] == 0
+    assert step.get("status") == "complete"
+    assert str(step.get("output", "")).endswith("-rppg.mp4")
+
+
+def test_pipeline_rppg_graceful_skip_when_no_output_and_not_required(tmp_path: Path, monkeypatch):
+    """Enabled but injector returns nothing and not required => 'skipped',
+    run still completes (never hard-fails). Mirrors the facetrack
+    non-required precedent."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled=True, rppg_required=False, rppg_returns="none")
+    assert stats["failed"] == 0
+    assert step.get("status") == "skipped"
+
+
+def test_pipeline_rppg_required_failure_marks_case_failed(tmp_path: Path, monkeypatch):
+    """Enabled + required + injector yields nothing => case fails (opt-in
+    strictness, parallel to oldcam_required)."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled=True, rppg_required=True, rppg_returns="none")
+    assert stats["failed"] == 1
+    assert step.get("status") == "failed"
+
+
+def test_resolve_produced_output_handles_metric_suffix_rename(tmp_path):
+    """The real injector renames our --output {stem}-rppg{ext} to
+    {stem}-rppg - <snr>-<phase>-<temporal>-<motion>-<harmonic>{ext}
+    regardless of --output (verified via oldcam-testing/rppg_harness.py
+    against the real tool). resolve_produced_output must find the renamed
+    file, not insist on the exact requested path."""
+    from automation.rppg import resolve_produced_output
+
+    requested = tmp_path / "clip-rppg.mp4"
+    # Exact path present -> returned as-is.
+    requested.write_bytes(b"a")
+    assert resolve_produced_output(requested) == requested
+    requested.unlink()
+
+    # Only the metric-renamed sibling exists -> that is returned.
+    renamed = tmp_path / "clip-rppg - 13.08-7.8-0.70-0.03-0.46.mp4"
+    renamed.write_bytes(b"b")
+    assert resolve_produced_output(requested) == renamed
+
+    # Newest metric-renamed wins when several exist. Set mtimes
+    # explicitly with os.utime() rather than relying on time.sleep():
+    # a sub-10ms sleep is below the timestamp resolution of some CI
+    # filesystems, making the "newest wins" assertion flaky. Pin EVERY
+    # competing file's mtime (including `renamed`, written above with a
+    # real ~now mtime) so the ordering is fully deterministic regardless
+    # of fs granularity.
+    import os
+    older = tmp_path / "clip-rppg - 7.72-75.5-0.79-0.06-0.35.mp4"
+    older.write_bytes(b"c")
+    newest = tmp_path / "clip-rppg - 14.00-3.0-0.50-0.02-0.50.mp4"
+    newest.write_bytes(b"d")
+    os.utime(renamed, (1_000_000, 1_000_000))
+    os.utime(older, (1_500_000, 1_500_000))
+    os.utime(newest, (2_000_000, 2_000_000))
+    assert resolve_produced_output(requested) == newest
+
+    # Nothing matching -> None (graceful-skip path).
+    empty = tmp_path / "sub"
+    empty.mkdir()
+    assert resolve_produced_output(empty / "x-rppg.mp4") is None
+
+
+def test_resolve_produced_output_ignores_loose_siblings(tmp_path):
+    """The resolver must match ONLY the injector's exact rename form
+    '<stem> - <metrics><ext>' (space-hyphen-space), never a loose
+    '<stem>-<anything><ext>' sibling or the input itself. Locks the
+    self-review hardening (a greedy '<stem>*<ext>' glob could return the
+    un-injected input on a re-run)."""
+    from automation.rppg import resolve_produced_output
+
+    requested = tmp_path / "clip-rppg.mp4"
+    # A loose sibling that is NOT the metric-rename form must be ignored.
+    (tmp_path / "clip-rppg-backup.mp4").write_bytes(b"x")
+    (tmp_path / "clip-rppgX.mp4").write_bytes(b"y")
+    assert resolve_produced_output(requested) is None
+
+    # The real metric-rename form is picked.
+    real = tmp_path / "clip-rppg - 13.08-7.8-0.70-0.03-0.46.mp4"
+    real.write_bytes(b"z")
+    assert resolve_produced_output(requested) == real
+
+
+def test_pipeline_rppg_runs_on_reused_video_when_oldcam_disabled(tmp_path, monkeypatch):
+    """Regression (Codex P2, PR #39): when skip_if_video_exists reuses an
+    existing gen-videos output AND oldcam is disabled, the case used to
+    short-circuit to 'completed' before Step 8 — so opt-in rPPG was
+    silently skipped on the common resume path. With rPPG enabled it must
+    now fall through and inject on the reused video."""
+    case_dir = tmp_path / "case-reuse-rppg"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    (case_dir / "gen-videos").mkdir()
+    existing_video = case_dir / "gen-videos" / "existing.mp4"
+    existing_video.write_bytes(b"video")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-reuse-rppg")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x", "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1,
+        "automation_skip_if_video_exists": True,
+        "automation_oldcam_enabled": False,
+        "automation_oldcam_required": False,
+        "automation_rppg_enabled": True,
+        "automation_rppg_required": False,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    rppg_calls = []
+
+    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600):
+        del repo_root, progress_cb, timeout_seconds
+        rppg_calls.append(Path(video_path))
+        out = Path(video_path).with_name(Path(video_path).stem + "-rppg" + Path(video_path).suffix)
+        out.write_bytes(b"rppg")
+        return out
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", _fake_rppg)
+
+    runner = AutoPipelineRunner(
+        config=config, automation_config=from_app_config(config), manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(outpaint_factory=lambda: FakeOutpaint(), selfie_factory=lambda: FakeSelfie(), video_factory=lambda: FakeVideo()),
+    )
+    stats = runner.run([record])
+    assert stats["failed"] == 0
+    # rPPG MUST have been invoked on the reused video.
+    assert len(rppg_calls) == 1, "rPPG was skipped on the reuse path (the bug)"
+    assert existing_video.name in rppg_calls[0].name or str(existing_video) in str(rppg_calls[0])
+    step = manifest.data["cases"]["case-reuse-rppg"]["steps"].get("rppg", {})
+    assert step.get("status") == "complete"
+
+
+def test_stream_subprocess_with_timeout_edge_cases(tmp_path):
+    """Permanent regression for the shared rPPG subprocess streamer
+    (Codex P2, PR #39). The graceful-skip guarantee depends entirely on
+    this: a child that stalls — including MID-LINE with no trailing
+    newline — must still be killed on the wall clock, not block until
+    EOF. Covers the failure mode the bare readline() loop had."""
+    import subprocess
+    import sys
+    import time
+
+    from automation.rppg import stream_subprocess_with_timeout
+
+    def run(argv, timeout):
+        return stream_subprocess_with_timeout(
+            [sys.executable, "-c", argv], cwd=str(tmp_path), timeout_seconds=timeout
+        )
+
+    # Normal multi-line completion -> rc 0, all lines captured.
+    rc, lines = run("print('a');print('b');print('c')", 10)
+    assert rc == 0 and lines == ["a", "b", "c"]
+
+    # Non-zero exit returns rc (NOT an exception).
+    rc, lines = run("import sys;print('x');sys.exit(3)", 10)
+    assert rc == 3 and lines == ["x"]
+
+    # Silent hang: no output, no exit -> TimeoutExpired, killed fast.
+    t0 = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        run("import time;time.sleep(30)", 2)
+    assert time.monotonic() - t0 < 8, "silent hang not killed near the deadline"
+
+    # Mid-line stall: writes WITHOUT a newline then hangs forever. This
+    # is the exact scenario a bare readline() loop could not time out.
+    t0 = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        run(
+            "import sys,time;sys.stdout.write('partial');sys.stdout.flush();time.sleep(30)",
+            2,
+        )
+    assert time.monotonic() - t0 < 8, "mid-line stall not killed near the deadline"
+
+    # Rapid output then clean exit -> reader thread keeps up.
+    rc, lines = run("[print(i) for i in range(300)]", 10)
+    assert rc == 0 and len(lines) == 300
+
+
+def test_resolve_produced_output_handles_glob_metacharacters(tmp_path):
+    """Regression (refine-loop self-review, PR #39): real Kling/oldcam
+    stems can contain glob metacharacters — "selfie[final]", "clip (1)",
+    "v[2]-oldcam-...". Unescaped, Path.glob() treats "[..]" as a char
+    class and the produced file is silently missed → false graceful-skip
+    on a SUCCESSFUL injection. resolve_produced_output must glob.escape
+    the literal stem. (Note: "?" / "*" can't be Windows filenames, so
+    "[]" is the realistic offender; the others are escaped defensively.)"""
+    from automation.rppg import resolve_produced_output
+
+    for stem in ("selfie[final]-rppg", "v[2]-oldcam-v24-rppg", "clip (1)-rppg", "a+b{x}-rppg"):
+        d = tmp_path / stem.replace("[", "_").replace("]", "_").replace(" ", "_")
+        d.mkdir()
+        requested = d / f"{stem}.mp4"
+        produced = d / f"{stem} - 7.81-6.4-0.53-0.03-0.54.mp4"
+        produced.write_bytes(b"x")
+        assert resolve_produced_output(requested) == produced, f"failed for stem {stem!r}"
+
+    # The loose-sibling guard must still hold with escaping in place.
+    d2 = tmp_path / "guard"
+    d2.mkdir()
+    (d2 / "clip-rppg-backup.mp4").write_bytes(b"q")  # NOT the rename form
+    real = d2 / "clip-rppg - 1.0-2.0-0.5-0.0-0.5.mp4"
+    real.write_bytes(b"r")
+    assert resolve_produced_output(d2 / "clip-rppg.mp4") == real
+
+
+def test_pipeline_rppg_skips_reinjection_of_already_injected_input(tmp_path, monkeypatch):
+    """Regression (Codex P2, PR #39): a stale/seeded manifest can point
+    video_generate (or oldcam) output at a prior "*-rppg" artifact. Step 8
+    must NOT re-inject it (-rppg-rppg double pulse breaks the
+    non-negotiable sub-perceptual guarantee) — it IS the final
+    deliverable, so record complete and DO NOT call run_rppg."""
+    case_dir = tmp_path / "case-doubleinject"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    (case_dir / "gen-videos").mkdir()
+    # Manifest's recorded video output IS an already-injected rPPG file
+    # (the exact stale-manifest condition Codex described).
+    injected = case_dir / "gen-videos" / "clip-oldcam-v24-rppg - 7.8-6.4-0.5-0.0-0.5.mp4"
+    injected.write_bytes(b"already-injected")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-doubleinject")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x", "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "prompt"}, "current_prompt_slot": 1,
+        "automation_video_enabled": False,
+        "automation_skip_if_video_exists": False,
+        "automation_oldcam_enabled": False,
+        "automation_oldcam_required": False,
+        "automation_rppg_enabled": True,
+        "automation_rppg_required": False,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    manifest.update_step(record.relative_key, "video_generate", "complete", output=str(injected))
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam", lambda **kwargs: None)
+
+    rppg_calls = []
+    monkeypatch.setattr("automation.pipeline.run_rppg", lambda **kw: rppg_calls.append(kw) or None)
+
+    runner = AutoPipelineRunner(
+        config=config, automation_config=from_app_config(config), manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(outpaint_factory=lambda: FakeOutpaint(), selfie_factory=lambda: FakeSelfie(), video_factory=lambda: FakeVideo()),
+    )
+    stats = runner.run([record])
+    # The non-negotiable property: an already-injected file is NEVER fed
+    # back into the injector (a double -rppg-rppg pass would compound the
+    # pulse out of the sub-perceptual range). Run must not fail; rppg must
+    # not end up "complete" via a FRESH injection of an injected input.
+    assert stats["failed"] == 0
+    assert rppg_calls == [], "re-injected an already-rPPG'd input (double-injection)"
+    step = manifest.data["cases"]["case-doubleinject"]["steps"].get("rppg", {})
+    assert step.get("status") in {"complete", "skipped"}
+    if step.get("status") == "complete":
+        assert step.get("meta", {}).get("already_injected") is True
+
+
+def test_is_rppg_artifact_detects_all_injection_forms():
+    """Regression (Codex P2, PR #39): is_rppg_artifact must recognise the
+    "-rppg" marker as a complete token in EVERY position it can land in
+    the processing chain — including the INFIX case where rPPG ran before
+    oldcam (clip-rppg-oldcam-v24). A false-negative double-injects and
+    breaks the non-negotiable sub-perceptual guarantee."""
+    from pathlib import Path
+
+    from automation.rppg import is_rppg_artifact
+
+    injected = [
+        "clip-rppg.mp4",                                   # raw --output form
+        "clip-oldcam-v24-rppg.mp4",                         # oldcam then rPPG
+        "clip-oldcam-v24-rppg - 7.81-6.4-0.53-0.03-0.46.mp4",  # metric rename
+        "front_looped-oldcam-v24-rppg - 13.08-7.8-0.70-0.03-0.46.mp4",
+        "clip-rppg-oldcam-v24.mp4",                         # rPPG BEFORE oldcam (the bug)
+        "clip-rppg-oldcam-v24 - 7.7-2.1-0.5-0.0-0.6.mp4",   # rPPG, oldcam, re-injected+renamed
+        "a_looped-rppg-oldcam-v15.mp4",
+    ]
+    injected += [
+        # Case-insensitive: the marker must match regardless of casing.
+        "CLIP-RPPG.mp4",
+        "Clip-RpPg - 7.8-1.0-0.5-0.0-0.5.mp4",
+        "clip-RPPG-oldcam-v24.mp4",
+    ]
+    not_injected = [
+        "clip.mp4",
+        "clip-oldcam-v24.mp4",
+        "clip_looped.mp4",
+        "clip-oldcam-v24_looped.mp4",
+        "selfie.mp4",
+        # Path-component-safe: a dir containing "-rppg" with a plain file
+        # name must NOT match (predicate uses .stem, ignores parents).
+        "rppg_harness_out/clip.mp4",
+        "some-rppg-dir/plain.mp4",
+        # Prefix-safe: the injector always writes the "-rppg" TOKEN; a
+        # bare/leading "rppg" without the separator is not its marker.
+        "rppg.mp4",
+        "rppgclip.mp4",
+        "rppg-clip.mp4",
+    ]
+    for name in injected:
+        assert is_rppg_artifact(Path(name)) is True, f"{name!r} must be detected as injected"
+    for name in not_injected:
+        assert is_rppg_artifact(Path(name)) is False, f"{name!r} must NOT be flagged injected"
+
+
+def test_pipeline_rppg_string_false_does_not_enable(tmp_path, monkeypatch):
+    """Regression (Codex P2, PR #39): a JSON/CLI string value of "false"
+    for automation_rppg_enabled must NOT opt the user into rPPG. Raw
+    dict.get returns the truthy string "false"; the pipeline now reads
+    via _read_bool (face_similarity._parse_bool) like facetrack/similarity
+    do. With rPPG effectively OFF, run_rppg must NOT be called and the
+    step records skipped/rPPG-disabled."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled="false")
+    assert stats["failed"] == 0
+    # rPPG must be treated as DISABLED: step skipped with the disabled
+    # reason, exactly as if rppg_enabled were the bool False.
+    assert step.get("status") == "skipped"
+    assert "rPPG disabled" in (step.get("error") or "")
+
+
+def test_pipeline_rppg_string_true_enables(tmp_path, monkeypatch):
+    """Symmetric: a string "true" DOES enable rPPG (the injector mock
+    runs and the step completes), so the _read_bool coercion is correct
+    in both directions, not just fail-safe-off."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled="true", rppg_returns="path")
+    assert stats["failed"] == 0
+    assert step.get("status") == "complete"
+
+
+def test_stream_subprocess_timeout_reaps_killed_child(tmp_path):
+    """Regression (CodeRabbit Critical, PR #39): on timeout the helper
+    kill()s the child; without a following wait() it lingers as a zombie.
+    Assert the process is actually reaped (poll() returns a code, not
+    None) after TimeoutExpired propagates."""
+    import subprocess
+    import sys
+    import time as _t
+    import unittest.mock as _m
+
+    from automation import rppg as _r
+
+    real_popen = subprocess.Popen
+    captured = {}
+
+    def _spy(*a, **k):
+        proc = real_popen(*a, **k)
+        captured["p"] = proc
+        return proc
+
+    with _m.patch("subprocess.Popen", side_effect=_spy):
+        with pytest.raises(subprocess.TimeoutExpired):
+            _r.stream_subprocess_with_timeout(
+                [sys.executable, "-c", "import time;time.sleep(30)"],
+                cwd=str(tmp_path),
+                timeout_seconds=1,
+            )
+    proc = captured["p"]
+    for _ in range(50):
+        if proc.poll() is not None:
+            break
+        _t.sleep(0.05)
+    assert proc.poll() is not None, "killed child was not reaped (zombie)"
+
+
+def test_run_rppg_absolutizes_relative_input(tmp_path, monkeypatch):
+    """Regression (CodeRabbit Major, PR #39): run_rppg runs the injector
+    with cwd=launcher.parent, so a RELATIVE video_path would resolve
+    against rPPG/ not the caller dir. The input + --output must be
+    .resolve()d before the command is built."""
+    import os
+
+    from automation import rppg as _r
+
+    rppg_dir = tmp_path / "rPPG"
+    rppg_dir.mkdir()
+    (rppg_dir / "run_rppg.bat").write_text("@echo off", encoding="utf-8")
+    (rppg_dir / "rppg_injector.py").write_text("# stub", encoding="utf-8")
+
+    work = tmp_path / "work"
+    work.mkdir()
+    vid = work / "clip.mp4"
+    vid.write_bytes(b"v")
+
+    seen = {}
+
+    def _fake_stream(cmd, *, cwd, timeout_seconds, on_line=None):
+        seen["cmd"] = list(cmd)
+        return 1, []  # non-zero -> graceful skip; we only inspect cmd
+
+    monkeypatch.setattr(_r, "stream_subprocess_with_timeout", _fake_stream)
+
+    old = os.getcwd()
+    try:
+        os.chdir(work)
+        _r.run_rppg(video_path=Path("clip.mp4"), repo_root=tmp_path)
+    finally:
+        os.chdir(old)
+
+    args = seen["cmd"]
+    in_arg = args[1]
+    out_arg = args[args.index("--output") + 1]
+    assert Path(in_arg).is_absolute(), f"input not absolutized: {in_arg!r}"
+    assert Path(out_arg).is_absolute(), f"--output not absolutized: {out_arg!r}"
+    assert Path(in_arg) == vid.resolve()

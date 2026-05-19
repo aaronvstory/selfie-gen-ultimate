@@ -96,7 +96,9 @@ from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependenci
 from selfie_generator import SelfieGenerator
 from tk_dialogs import select_directory, select_directory_cli_safe, select_open_file
 
-RECOMMENDED_DEFAULTS_VERSION = 1
+# v2 (2026-05-19): added automation_rppg_* recommended defaults (all OFF —
+# rPPG is the untested forward direction, opt-in only).
+RECOMMENDED_DEFAULTS_VERSION = 2
 DEFAULT_KLING_PROMPT_SLOT = 4
 DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT = 3
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
@@ -1691,6 +1693,12 @@ class KlingAutomationUI:
         self.config["automation_oldcam_enabled"] = True
         self.config["automation_oldcam_version"] = "v24"
         self.config["automation_oldcam_required"] = True
+        # rPPG injection runs LAST (Kling -> Loop -> Oldcam -> rPPG). It is
+        # the genuinely-untried forward direction, not production-validated;
+        # recommended defaults keep it OFF and non-required (opt-in only).
+        self.config["automation_rppg_enabled"] = False
+        self.config["automation_rppg_mode"] = "inject"
+        self.config["automation_rppg_required"] = False
         self.config["automation_recommended_defaults_version"] = RECOMMENDED_DEFAULTS_VERSION
         self.save_config()
 
@@ -2126,6 +2134,8 @@ class KlingAutomationUI:
         _ask_bool("Oldcam enabled", "automation_oldcam_enabled")
         _ask_choice("Oldcam version", "automation_oldcam_version", ["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"])
         _ask_bool("Oldcam required", "automation_oldcam_required")
+        _ask_bool("rPPG injection enabled (runs LAST; sub-perceptual pulse; untested direction, off by default)", "automation_rppg_enabled")
+        _ask_bool("rPPG required (no output => fail+skip case)", "automation_rppg_required")
         _ask_bool("Automation verbose logging", "automation_verbose_logging")
         _ask("Automation log max bytes", "automation_log_max_bytes", int, lambda v: v > 0)
         _ask("Automation log backup count", "automation_log_backup_count", int, lambda v: v >= 1)
@@ -2757,6 +2767,12 @@ class KlingAutomationUI:
         )
         self._qs_bool("Oldcam required (fail case if oldcam fails)?",
                       "automation_oldcam_required", default=False)
+        # rPPG runs AFTER oldcam (the true final stage). Untested forward
+        # direction — off by default, non-required (graceful skip).
+        self._qs_bool("rPPG injection enabled (runs last, after oldcam)?",
+                      "automation_rppg_enabled", default=False)
+        self._qs_bool("rPPG required (fail case if rPPG produces no output)?",
+                      "automation_rppg_required", default=False)
 
     def _qs_section_logging(self):
         self._qs_section_banner(

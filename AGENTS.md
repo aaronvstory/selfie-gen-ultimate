@@ -260,7 +260,7 @@ except Exception as e:
 | Defaults / config merge | `automation/config.py` | Normalize `automation_*` settings from app config |
 | Case discovery | `automation/discovery.py` | Find case folders with `front.jpg/png` and existing outputs |
 | Manifest | `automation/manifest.py` | Atomic per-case/per-step state for resume/retry |
-| Runner | `automation/pipeline.py` | Orchestrates full 7-step automated flow |
+| Runner | `automation/pipeline.py` | Orchestrates the full automated flow (8 steps: front_expand → extract_portrait → selfie_generate → similarity_gate → selfie_expand → video_generate → oldcam → **rppg**; plus the optional facetrack gate before oldcam) |
 | Face extraction service | `face_crop_service.py` | Headless portrait crop for CLI pipeline |
 
 ### Oldcam Version Wiring
@@ -283,8 +283,8 @@ Quick touch-points when adding vN:
 
 ### Automation Manifest Semantics
 
-- Fixed step keys:
-  - `front_expand`, `extract_portrait`, `selfie_generate`, `similarity_gate`, `selfie_expand`, `video_generate`, `oldcam`
+- Fixed step keys (must match `automation/manifest.py` `STEP_NAMES`):
+  - `front_expand`, `extract_portrait`, `selfie_generate`, `similarity_gate`, `selfie_expand`, `video_generate`, `facetrack_gate`, `oldcam`, `rppg`
 - Step fields:
   - `status`, `output`, `error`, `meta`, timestamps
 - Statuses:
@@ -415,6 +415,30 @@ Guidance:
 - Use run/resume for manifest continuation validation.
 - Use fresh root or cleaned outputs/manifest for strict clean-path retests.
 
+### Permanent rPPG / Oldcam Test Harness (this Windows box)
+
+A **permanent** validation rig lives at `oldcam-testing/`:
+
+- `oldcam-testing/run_rppg_harness.bat` (CRLF launcher) →
+  `oldcam-testing/rppg_harness.py`
+- Permanent gitignored Kling fixture (real ~20 MB generated video, **keep
+  on disk, never commit**):
+  `oldcam-testing/front_crop_nano-banana-2-edit_sim87_001_k25tStd_p4_1.mp4`
+
+```bat
+oldcam-testing\run_rppg_harness.bat            rem direct rPPG on the fixture
+oldcam-testing\run_rppg_harness.bat --chain    rem full Loop->Oldcam(v24)->rPPG
+oldcam-testing\run_rppg_harness.bat --skip-run rem re-analyse last output only
+```
+
+It runs the **real** rPPG injector (gitignored `rPPG/`) end-to-end and
+writes an anti-siren `oldcam-testing/rppg_harness_out/REPORT.md` (green
+face-box peak-to-peak delta vs original: SUB-PERCEPTUAL < 2.0, BORDERLINE
+< 5.0, else SIREN). The harness script + `.bat` are tracked permanent
+infra; the fixture and `rppg_harness_out/` are gitignored. **Use it to
+validate any rPPG or oldcam change before pushing.** Full reference:
+`docs/rppg-wiring.md`.
+
 ---
 
 ## macOS Guardrails For Agents
@@ -442,6 +466,8 @@ $crlf = $content -replace "`r`n","`n" -replace "`n","`r`n"
 ```
 
 Verify: `CRLF=True`, `LFonly=False`. macOS `.sh`/`.command` files use LF — `Write`/`Edit` are fine for those.
+
+> **The committed `.bat`/`.cmd` blob is LF, and that is CORRECT — not a bug.** `.gitattributes` declares `*.bat text eol=crlf`, so git's clean filter normalizes the blob to LF and the smudge filter restores CRLF on every Windows checkout. `git show HEAD:<file> | tr -cd '\r' | wc -c` reporting `0` is **expected** for every repo `.bat` (`run_gui.bat`, `run_cli.bat`, all launchers show `i/lf w/crlf attr/text eol=crlf`). What matters is the **working-tree** file `cmd.exe` actually runs — that IS CRLF. Do not "fix" a blob-LF `.bat` to blob-CRLF: it would fight `.gitattributes` and make the file inconsistent with the whole repo. Static `git show` blob checks (some review bots) mis-flag this; verify the working tree (`tr -cd '\r' < f | wc -c` > 0) and `git check-attr eol -- f` = `crlf` instead.
 
 ### After editing ANY tracked text file — verify the diff is your change only
 
