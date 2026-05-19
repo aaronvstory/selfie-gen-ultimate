@@ -1060,6 +1060,48 @@ class ConfigPanel(tk.Frame):
         self.prompt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.prompt_preview.bind("<KeyRelease>", self._update_prompt_char_count)
 
+        # Negative-prompt half (split-box UX, user 2026-05-19). The
+        # editor splits horizontally: the box above is the POSITIVE
+        # prompt; this section is the NEGATIVE prompt. It is shown only
+        # for models whose schema accepts negative_prompt (e.g. Kling
+        # 2.5 / v3) and pack_forget()-hidden for ones that dropped it
+        # (o3 / seedance) — created ONCE so its text survives toggling.
+        # Backed by config["negative_prompts"][slot] (the same dict
+        # queue_manager._get_current_negative_prompt reads), so the
+        # split editor and the submitted payload stay in lock-step.
+        self._negative_prompt_section = tk.Frame(
+            right_inner, bg=COLORS["bg_panel"]
+        )
+        tk.Label(
+            self._negative_prompt_section, text="Negative prompt",
+            font=(FONT_FAMILY, 8, "bold"),
+            bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor="w",
+        ).pack(fill=tk.X, pady=(0, 2))
+        neg_text_frame = tk.Frame(
+            self._negative_prompt_section, bg=COLORS["bg_panel"]
+        )
+        neg_text_frame.pack(fill=tk.BOTH, expand=True)
+        self.negative_prompt_preview = tk.Text(
+            neg_text_frame, font=(FONT_FAMILY, 10),
+            bg=COLORS["bg_main"], fg=COLORS["text_dim"],
+            height=5, wrap=tk.WORD, relief=tk.FLAT, borderwidth=0,
+            insertbackground=COLORS["text_light"], state="disabled",
+            disabledforeground=COLORS["text_dim"],
+            disabledbackground=COLORS["bg_main"],
+        )
+        neg_scroll = ttk.Scrollbar(
+            neg_text_frame, orient=tk.VERTICAL,
+            command=self.negative_prompt_preview.yview,
+        )
+        self.negative_prompt_preview.configure(yscrollcommand=neg_scroll.set)
+        neg_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.negative_prompt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Shrink the positive box so the split reads as roughly two
+        # halves rather than the negative being a thin afterthought.
+        self.prompt_preview.config(height=7)
+        # Visibility is set on first model-change; default-hide until then.
+        self._negative_prompt_section.pack_forget()
+
         # Footer: char count badge + Edit button + Save button
         prompt_footer = tk.Frame(right_inner, bg=COLORS["bg_panel"])
         prompt_footer.pack(fill=tk.X, pady=(6, 0))
@@ -2040,6 +2082,18 @@ class ConfigPanel(tk.Frame):
         if not self._prompt_edit_mode:
             self.prompt_preview.config(state="disabled")
 
+        # Negative half (split editor) — same slot, backed by
+        # config["negative_prompts"]. Mirrors the positive box's
+        # enable/disable lifecycle so editing one edits both.
+        if hasattr(self, "negative_prompt_preview"):
+            neg_prompts = self.config.setdefault("negative_prompts", {})
+            neg = neg_prompts.get(str(slot), "") or ""
+            self.negative_prompt_preview.config(state="normal")
+            self.negative_prompt_preview.delete("1.0", tk.END)
+            self.negative_prompt_preview.insert("1.0", neg)
+            if not self._prompt_edit_mode:
+                self.negative_prompt_preview.config(state="disabled")
+
         self._update_prompt_char_count()
 
     def _update_prompt_char_count(self, event=None):
@@ -2058,6 +2112,14 @@ class ConfigPanel(tk.Frame):
 
         self.config["saved_prompts"] = saved_prompts
         self.config["prompt_titles"] = saved_titles
+
+        # Persist the negative half to the same slot in
+        # config["negative_prompts"] (queue_manager reads from there).
+        if hasattr(self, "negative_prompt_preview"):
+            neg_prompts = self.config.setdefault("negative_prompts", {})
+            neg_prompts[slot] = self.negative_prompt_preview.get("1.0", "end-1c")
+            self.config["negative_prompts"] = neg_prompts
+
         self._update_prompt_char_count()
         self._exit_edit_mode_internal()  # widgets already saved above
         self._notify_change(f"Saved prompt slot {slot}")
@@ -2072,6 +2134,10 @@ class ConfigPanel(tk.Frame):
         self._prompt_edit_mode = True
         self.prompt_title_entry.config(state="normal")
         self.prompt_preview.config(state="normal", fg=COLORS["text_light"])
+        if hasattr(self, "negative_prompt_preview"):
+            self.negative_prompt_preview.config(
+                state="normal", fg=COLORS["text_light"]
+            )
         self.save_prompt_btn.config(state="normal")
         self.edit_prompt_btn.config(text="Cancel", command=self._cancel_edit)
 
@@ -2086,6 +2152,10 @@ class ConfigPanel(tk.Frame):
         self._prompt_edit_mode = False
         self.prompt_title_entry.config(state="disabled")
         self.prompt_preview.config(state="disabled", fg=COLORS["text_dim"])
+        if hasattr(self, "negative_prompt_preview"):
+            self.negative_prompt_preview.config(
+                state="disabled", fg=COLORS["text_dim"]
+            )
         self.save_prompt_btn.config(state="disabled")
         self.edit_prompt_btn.config(text="Edit", command=self._enter_edit_mode)
 
