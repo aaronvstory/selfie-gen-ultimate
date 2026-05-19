@@ -2113,3 +2113,27 @@ def test_is_rppg_artifact_detects_all_injection_forms():
         assert is_rppg_artifact(Path(name)) is True, f"{name!r} must be detected as injected"
     for name in not_injected:
         assert is_rppg_artifact(Path(name)) is False, f"{name!r} must NOT be flagged injected"
+
+
+def test_pipeline_rppg_string_false_does_not_enable(tmp_path, monkeypatch):
+    """Regression (Codex P2, PR #39): a JSON/CLI string value of "false"
+    for automation_rppg_enabled must NOT opt the user into rPPG. Raw
+    dict.get returns the truthy string "false"; the pipeline now reads
+    via _read_bool (face_similarity._parse_bool) like facetrack/similarity
+    do. With rPPG effectively OFF, run_rppg must NOT be called and the
+    step records skipped/rPPG-disabled."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled="false")
+    assert stats["failed"] == 0
+    # rPPG must be treated as DISABLED: step skipped with the disabled
+    # reason, exactly as if rppg_enabled were the bool False.
+    assert step.get("status") == "skipped"
+    assert "rPPG disabled" in (step.get("error") or "")
+
+
+def test_pipeline_rppg_string_true_enables(tmp_path, monkeypatch):
+    """Symmetric: a string "true" DOES enable rPPG (the injector mock
+    runs and the step completes), so the _read_bool coercion is correct
+    in both directions, not just fail-safe-off."""
+    stats, step = _mk_rppg_case(tmp_path, monkeypatch, rppg_enabled="true", rppg_returns="path")
+    assert stats["failed"] == 0
+    assert step.get("status") == "complete"

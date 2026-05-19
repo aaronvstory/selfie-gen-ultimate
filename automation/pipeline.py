@@ -322,7 +322,7 @@ class AutoPipelineRunner:
         # "required" policy silently becomes a no-op. Reject the
         # contradictory combination at config-validation time, exactly as
         # oldcam does.
-        if self.automation.get("automation_rppg_required", False) and not self.automation.get("automation_rppg_enabled", False):
+        if self._read_bool("automation_rppg_required", False) and not self._read_bool("automation_rppg_enabled", False):
             issues.append("automation_rppg_required=true requires automation_rppg_enabled=true.")
         if self.automation.get("automation_oldcam_required", False):
             repo_root = Path(__file__).resolve().parent.parent
@@ -982,7 +982,7 @@ class AutoPipelineRunner:
                     # only finalize early when rPPG is also disabled —
                     # otherwise fall through to Step 8, which picks up the
                     # reused video from the video_generate step output.
-                    if not self.automation.get("automation_rppg_enabled", False):
+                    if not self._read_bool("automation_rppg_enabled", False):
                         return self._finalize_case(case_entry, "completed")
             if not skipped_existing_video:
                 video = self.deps.video_factory()
@@ -1173,7 +1173,7 @@ class AutoPipelineRunner:
         # tool / failed injection is a graceful skip, never a hard-fail
         # (mirrors the facetrack-gate precedent). The injector lives in the
         # gitignored rPPG/ tool, invoked as an external launcher.
-        if self.automation.get("automation_rppg_enabled", False):
+        if self._read_bool("automation_rppg_enabled", False):
             oldcam_out = self.manifest.get_step(case_key, "oldcam").get("output")
             video_out = self.manifest.get_step(case_key, "video_generate").get("output")
             rppg_input: Optional[Path] = None
@@ -1181,7 +1181,7 @@ class AutoPipelineRunner:
                 rppg_input = Path(oldcam_out)
             elif video_out and Path(video_out).exists():
                 rppg_input = Path(video_out)
-            required = bool(self.automation.get("automation_rppg_required", False))
+            required = self._read_bool("automation_rppg_required", False)
             # Never re-inject an already-injected file. When the manifest
             # is stale/missing, detect_existing_outputs() can surface a
             # prior "*-rppg" artifact as oldcam/video output; feeding it
