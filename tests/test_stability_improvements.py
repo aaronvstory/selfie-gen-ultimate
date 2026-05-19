@@ -333,7 +333,17 @@ class MacButtonFactoryTests(unittest.TestCase):
         try:
             with mock.patch.object(theme, "IS_MACOS", True):
                 btn = theme.create_action_button(root, text="X", command=lambda: None)
-            self.assertEqual(str(btn.cget("highlightbackground")), theme.COLORS["bg_main"])
+            # macOS Aqua renders tk.Button's color from highlightbackground
+            # (NOT bg). It must be the per-style FILL color so the button
+            # actually shows color (default style = SECONDARY -> bg_input);
+            # pointing it at the window bg made buttons look plain. And
+            # highlightthickness MUST be 0: a non-zero focus ring shrinks
+            # the clickable interior, causing the "have to wiggle + click
+            # repeatedly" hit-area bug on macOS.
+            self.assertEqual(
+                str(btn.cget("highlightbackground")), theme.COLORS["bg_input"]
+            )
+            self.assertEqual(int(btn.cget("highlightthickness")), 0)
             self.assertGreaterEqual(int(btn.cget("padx")), 12)
             self.assertGreaterEqual(int(btn.cget("pady")), 8)
         finally:

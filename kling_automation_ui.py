@@ -98,7 +98,9 @@ from tk_dialogs import select_directory, select_directory_cli_safe, select_open_
 
 # v2 (2026-05-19): added automation_rppg_* recommended defaults (all OFF —
 # rPPG is the untested forward direction, opt-in only).
-RECOMMENDED_DEFAULTS_VERSION = 2
+# v3 (2026-05-19): added automation_rppg_metrics_in_filename (default
+# False -> clean *-rppg name + .metrics.json sidecar).
+RECOMMENDED_DEFAULTS_VERSION = 3
 DEFAULT_KLING_PROMPT_SLOT = 4
 DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT = 3
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
@@ -1699,6 +1701,10 @@ class KlingAutomationUI:
         self.config["automation_rppg_enabled"] = False
         self.config["automation_rppg_mode"] = "inject"
         self.config["automation_rppg_required"] = False
+        # Clean *-rppg filename + .metrics.json sidecar by default; the
+        # injector's metric-suffix rename is opt-in (see automation/rppg.py
+        # finalize_rppg_output).
+        self.config["automation_rppg_metrics_in_filename"] = False
         self.config["automation_recommended_defaults_version"] = RECOMMENDED_DEFAULTS_VERSION
         self.save_config()
 
@@ -2136,6 +2142,7 @@ class KlingAutomationUI:
         _ask_bool("Oldcam required", "automation_oldcam_required")
         _ask_bool("rPPG injection enabled (runs LAST; sub-perceptual pulse; untested direction, off by default)", "automation_rppg_enabled")
         _ask_bool("rPPG required (no output => fail+skip case)", "automation_rppg_required")
+        _ask_bool("rPPG metrics in filename (off => clean *-rppg name + .metrics.json sidecar)", "automation_rppg_metrics_in_filename")
         _ask_bool("Automation verbose logging", "automation_verbose_logging")
         _ask("Automation log max bytes", "automation_log_max_bytes", int, lambda v: v > 0)
         _ask("Automation log backup count", "automation_log_backup_count", int, lambda v: v >= 1)
@@ -2773,6 +2780,8 @@ class KlingAutomationUI:
                       "automation_rppg_enabled", default=False)
         self._qs_bool("rPPG required (fail case if rPPG produces no output)?",
                       "automation_rppg_required", default=False)
+        self._qs_bool("rPPG metrics in filename (off = clean *-rppg + .metrics.json sidecar)?",
+                      "automation_rppg_metrics_in_filename", default=False)
 
     def _qs_section_logging(self):
         self._qs_section_banner(

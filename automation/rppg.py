@@ -29,6 +29,7 @@ explicitly out of scope for this pass; ``run_rppg`` simply skips gracefully
 from __future__ import annotations
 
 import glob as _glob
+import json
 import os
 import queue as _queue
 import re
@@ -37,7 +38,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 ProgressCB = Optional[Callable[[str, str], None]]
 
@@ -159,6 +160,154 @@ def resolve_produced_output(requested: Path) -> Optional[Path]:
     return candidates[0] if candidates else None
 
 
+# The 5 metrics the injector embeds, in the exact order
+# rPPG/rppg_injector.py::format_metric_suffix writes them
+# ("{snr:.2f}-{phase:.1f}-{temporal:.2f}-{motion:.2f}-{harmonic:.2f}",
+# joined to the clean stem with a literal " - " separator).
+_METRIC_KEYS: Tuple[str, ...] = ("snr", "phase", "temporal", "motion", "harmonic")
+
+
+def parse_metric_suffix(produced_stem: str, requested_stem: str) -> Optional[Dict[str, float]]:
+    """Extract the 5 rPPG metrics the injector embedded in *produced_stem*.
+
+    *produced_stem* is the stem of the file the injector actually wrote
+    (``{requested_stem} - <snr>-<phase>-<temporal>-<motion>-<harmonic>``);
+    *requested_stem* is the clean ``{...}-rppg`` stem we asked for via
+    ``--output``. Returns the metrics keyed by name, or ``None`` if
+    *produced_stem* is not the metric-renamed form of *requested_stem*
+    (e.g. the injector honoured ``--output`` for once, or the names are
+    unrelated) — callers then skip the sidecar/rename gracefully.
+
+    The injector formats the suffix as
+    ``f"{snr:.2f}-{phase:.1f}-{temporal:.2f}-{motion:.2f}-{harmonic:.2f}"``
+    (rPPG/rppg_injector.py::format_metric_suffix) — exactly 5 numbers
+    joined by a single ``-``. ``phase`` can be NEGATIVE, so a value's
+    own leading ``-`` collides with the ``-`` separator to make ``--``.
+    A greedy signed-number regex scan therefore mis-reads every
+    separator as a sign. Instead split on ``-``: an EMPTY token (the
+    gap inside ``--``)
+    means the next number is negative. Reassemble exactly 5 values.
+    """
+    if produced_stem == requested_stem:
+        return None
+    if not produced_stem.startswith(f"{requested_stem} - "):
+        return None
+    tail = produced_stem[len(requested_stem) + 3:]  # drop "<stem> - "
+    parts = tail.split("-")
+    values: List[float] = []
+    i = 0
+    while i < len(parts):
+        tok = parts[i]
+        if tok == "":
+            # Empty token => this position was a '--': the separator '-'
+            # followed by a negative value's leading '-'. The number is
+            # the NEXT part, negated.
+            i += 1
+            if i >= len(parts):
+                return None
+            tok = "-" + parts[i]
+        try:
+            values.append(float(tok))
+        except ValueError:
+            return None
+        i += 1
+    if len(values) != len(_METRIC_KEYS):
+        return None
+    return dict(zip(_METRIC_KEYS, values))
+
+
+def finalize_rppg_output(
+    produced: Path,
+    requested: Path,
+    *,
+    keep_metrics: bool,
+    progress_cb: ProgressCB = None,
+) -> Path:
+    """Apply the user's metric-in-filename preference to a finished inject.
+
+    The injector ignores ``--output`` and renames its result to
+    ``{stem}-rppg - <SNR>-<Phase>-<Temporal>-<Motion>-<Harmonic>{ext}``.
+
+    * ``keep_metrics=True``  — leave that name as-is (return *produced*).
+    * ``keep_metrics=False`` — rename *produced* back to the clean
+      *requested* path (``{stem}-rppg{ext}``) and drop the 5 metrics into
+      a ``{stem}-rppg.metrics.json`` sidecar next to it, so the numbers
+      are preserved without polluting the filename.
+
+    Single source of truth — the GUI queue and the automation pipeline
+    both call this so the behaviour can't drift. Never raises: any rename
+    / sidecar failure logs a warning and returns the best path we have
+    (the run already succeeded; a cosmetic-rename hiccup must not lose
+    the delivered video).
+    """
+    produced = Path(produced)
+    requested = Path(requested)
+    if keep_metrics:
+        return produced
+    if produced == requested:
+        return produced  # injector honoured --output; nothing to strip
+
+    metrics = parse_metric_suffix(produced.stem, requested.stem)
+    if metrics is None:
+        # produced is NOT the injector's "<requested> - <metrics>"
+        # rename (malformed/unexpected injector output, or an unrelated
+        # sibling). Renaming it onto ``requested`` would fabricate a
+        # clean-name artifact with no sidecar AND could clobber a prior
+        # legitimate clean file. Keep ``produced`` untouched — it is
+        # still the delivered video, just under its own name.
+        # (CodeRabbit Major, PR #40.)
+        _report(
+            progress_cb,
+            f"rPPG: {produced.name} is not the expected metric-rename "
+            f"form; keeping it as-is (no sidecar, no rename).",
+            "warning",
+        )
+        return produced
+    # metrics is guaranteed non-None here (we returned early above
+    # otherwise). Write the sidecar BEFORE renaming so a rename failure
+    # still leaves the metrics recorded. Keyed off the *requested*
+    # (clean) stem.
+    sidecar = requested.with_name(f"{requested.stem}.metrics.json")
+    try:
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "source": produced.name,
+                    "metrics": metrics,
+                    "order": list(_METRIC_KEYS),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        _report(
+            progress_cb,
+            f"rPPG: could not write metrics sidecar ({exc}); continuing.",
+            "warning",
+        )
+
+    try:
+        # A stale clean file from a previous run would block the rename
+        # on Windows (os.replace overwrites, Path.rename does not — use
+        # os.replace for atomic same-dir overwrite).
+        os.replace(produced, requested)
+    except OSError as exc:
+        _report(
+            progress_cb,
+            f"rPPG: could not strip metric suffix ({exc}); "
+            f"keeping {produced.name}.",
+            "warning",
+        )
+        return produced
+    _report(
+        progress_cb,
+        f"rPPG: metrics moved to sidecar; clean output {requested.name}",
+        "info",
+    )
+    return requested
+
+
 def stream_subprocess_with_timeout(
     cmd: List[str],
     *,
@@ -256,9 +405,15 @@ def run_rppg(
     repo_root: Path,
     progress_cb: ProgressCB = None,
     timeout_seconds: int = 600,
+    keep_metrics: bool = False,
 ) -> Optional[Path]:
     """Run one-shot rPPG injection. Return the output Path, or None on any
     failure (graceful skip — caller keeps the pre-rPPG video).
+
+    *keep_metrics* selects the delivered filename: ``True`` keeps the
+    injector's ``{stem}-rppg - <metrics>{ext}``; ``False`` (default)
+    strips it back to a clean ``{stem}-rppg{ext}`` and writes a
+    ``.metrics.json`` sidecar (see :func:`finalize_rppg_output`).
     """
     launcher = resolve_rppg_launcher(repo_root)
     if launcher is None:
@@ -322,5 +477,8 @@ def run_rppg(
     if produced is None:
         _report(progress_cb, "rPPG ran but output missing; keeping pre-rPPG video.", "warning")
         return None
-    _report(progress_cb, f"rPPG injection applied: {produced.name}", "success")
-    return produced
+    final = finalize_rppg_output(
+        produced, output_path, keep_metrics=keep_metrics, progress_cb=progress_cb
+    )
+    _report(progress_cb, f"rPPG injection applied: {final.name}", "success")
+    return final

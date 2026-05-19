@@ -55,6 +55,7 @@ from .theme import (
     TTK_BTN_SUCCESS,
     TTK_BTN_SUCCESS_COMPACT,
     TTK_BTN_TAB_NAV,
+    apply_macos_button_fix,
     create_action_button,
     debounce_command,
 )
@@ -251,7 +252,7 @@ class FolderPreviewDialog(tk.Toplevel):
         btn_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         btn_frame.pack(fill=tk.X, padx=20, pady=(0, 15))
 
-        tk.Button(
+        _cancel_btn = tk.Button(
             btn_frame,
             text="Cancel",
             font=(FONT_FAMILY, 10),
@@ -259,9 +260,11 @@ class FolderPreviewDialog(tk.Toplevel):
             fg=COLORS["text_light"],
             width=12,
             command=self._cancel,
-        ).pack(side=tk.RIGHT, padx=5)
+        )
+        _cancel_btn.pack(side=tk.RIGHT, padx=5)
+        apply_macos_button_fix(_cancel_btn)
 
-        tk.Button(
+        _add_btn = tk.Button(
             btn_frame,
             text=f"Add {len(files)} to Queue",
             font=(FONT_FAMILY, 10, "bold"),
@@ -269,7 +272,9 @@ class FolderPreviewDialog(tk.Toplevel):
             fg="white",
             width=18,
             command=self._proceed,
-        ).pack(side=tk.RIGHT, padx=5)
+        )
+        _add_btn.pack(side=tk.RIGHT, padx=5)
+        apply_macos_button_fix(_add_btn)
 
         # Center on parent
         self.update_idletasks()

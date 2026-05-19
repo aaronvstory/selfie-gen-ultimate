@@ -133,17 +133,26 @@ def run_oldcam_version(
     return output_path
 
 
-def run_oldcam(
+def run_oldcam_all(
     *,
     video_path: Path,
     version_setting: str,
     repo_root: Path,
     progress_cb: ProgressCB = None,
-) -> Optional[Path]:
+) -> List[Tuple[str, Path]]:
+    """Run EVERY selected oldcam version and return ``[(version, path)]``
+    for all that succeeded (empty list if none).
+
+    This is the fan-out-aware primitive: the GUI queue and the automation
+    pipeline both need *every* per-version output (so rPPG can inject into
+    each — there is no privileged "primary"). ``run_oldcam`` below is the
+    back-compat single-path wrapper (highest version) for callers that
+    only want one. Single source of truth for version selection.
+    """
     available = discover_oldcam_versions(repo_root)
     if not available:
         _report(progress_cb, "No oldcam versions discovered.", "warning")
-        return None
+        return []
 
     selected = version_setting.lower()
     if selected == "all":
@@ -152,13 +161,33 @@ def run_oldcam(
         targets = [selected] if selected in available else []
     if not targets:
         _report(progress_cb, f"Requested oldcam version '{version_setting}' unavailable.", "warning")
-        return None
+        return []
 
     outputs: List[Tuple[str, Path]] = []
     for version in targets:
         out = run_oldcam_version(video_path=video_path, version=version, repo_root=repo_root, progress_cb=progress_cb)
         if out:
             outputs.append((version, out))
+    return outputs
+
+
+def run_oldcam(
+    *,
+    video_path: Path,
+    version_setting: str,
+    repo_root: Path,
+    progress_cb: ProgressCB = None,
+) -> Optional[Path]:
+    """Back-compat single-path wrapper: returns the HIGHEST-version oldcam
+    output (or None). Callers needing every per-version output (rPPG
+    fan-out) must use :func:`run_oldcam_all` instead.
+    """
+    outputs = run_oldcam_all(
+        video_path=video_path,
+        version_setting=version_setting,
+        repo_root=repo_root,
+        progress_cb=progress_cb,
+    )
     if not outputs:
         return None
     return max(outputs, key=lambda item: _version_key(item[0]))[1]

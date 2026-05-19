@@ -13,6 +13,10 @@ import re
 import logging
 import sys
 from tk_dialogs import select_directory, select_open_files
+# COLORS/FONT_FAMILY are intentionally duplicated below (documented
+# inconsistency in CLAUDE.md); we still import this one macOS button
+# helper from the single source of truth rather than re-implement it.
+from .theme import apply_macos_button_fix
 
 try:
     from tkinterdnd2 import DND_FILES as _DND_FILES
@@ -417,6 +421,7 @@ class ConfigPanel(tk.Frame):
             padx=8, pady=2, relief=tk.FLAT, borderwidth=0, command=self._open_model_manager,
         )
         self.manage_models_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        apply_macos_button_fix(self.manage_models_btn)
 
         self.model_var = tk.StringVar()
         self.model_combo = ttk.Combobox(
@@ -469,6 +474,7 @@ class ConfigPanel(tk.Frame):
             padx=10, relief=tk.FLAT, borderwidth=0, command=self._browse_output_folder,
         )
         self.browse_btn.pack(side=tk.LEFT, padx=2)
+        apply_macos_button_fix(self.browse_btn)
 
         # Separator (between model/output rows and option rows)
         ttk.Separator(left_col, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(2, 10))
@@ -664,6 +670,7 @@ class ConfigPanel(tk.Frame):
             command=self._on_oldcam_rerun_clicked,
         )
         self.oldcam_rerun_btn.pack(side=tk.LEFT, padx=(0, 4))
+        apply_macos_button_fix(self.oldcam_rerun_btn)
         HoverTooltip(
             self.oldcam_rerun_btn,
             lambda: (
@@ -690,6 +697,7 @@ class ConfigPanel(tk.Frame):
             command=self._on_oldcam_pick_rerun_clicked,
         )
         self.oldcam_pick_btn.pack(side=tk.LEFT, padx=(0, 0))
+        apply_macos_button_fix(self.oldcam_pick_btn)
         HoverTooltip(
             self.oldcam_pick_btn,
             lambda: (
@@ -776,6 +784,26 @@ class ConfigPanel(tk.Frame):
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.verbose_info_label.pack(side=tk.LEFT, padx=4)
+
+        # rPPG metric-suffix toggle (shares the Logging: row). When OFF
+        # (default) the injector's "{stem}-rppg - <SNR>-<Phase>-..." name
+        # is stripped to a clean "{stem}-rppg" and the metrics go to a
+        # .metrics.json sidecar (automation/rppg.finalize_rppg_output).
+        self.rppg_metrics_var = tk.BooleanVar(value=False)
+        self.rppg_metrics_checkbox = tk.Checkbutton(
+            rC, text="rPPG metrics in filename", variable=self.rppg_metrics_var,
+            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            command=self._on_rppg_metrics_changed,
+        )
+        self.rppg_metrics_checkbox.pack(side=tk.LEFT, padx=(12, 0))
+        self.rppg_metrics_info_label = tk.Label(
+            rC, text="(off = clean name + .metrics.json sidecar)",
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.rppg_metrics_info_label.pack(side=tk.LEFT, padx=4)
 
         # File Filter — replaces the old "Folder:" row with clearer labeling
         rD = tk.Frame(left_col, bg=COLORS["bg_input"])
@@ -1003,6 +1031,7 @@ class ConfigPanel(tk.Frame):
             command=self._enter_edit_mode,
         )
         self.edit_prompt_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        apply_macos_button_fix(self.edit_prompt_btn)
         self.save_prompt_btn = tk.Button(
             prompt_footer, text="Save Prompt", font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_input"], fg=COLORS["text_light"],
@@ -1011,6 +1040,7 @@ class ConfigPanel(tk.Frame):
             state="disabled", command=self._save_prompt,
         )
         self.save_prompt_btn.pack(side=tk.RIGHT)
+        apply_macos_button_fix(self.save_prompt_btn)
 
         # Load prompt config now that widgets exist
         self._load_prompt_config()
@@ -1246,6 +1276,17 @@ class ConfigPanel(tk.Frame):
 
         # Verbose GUI mode
         self.verbose_gui_var.set(self.config.get("verbose_gui_mode", False))
+
+        # rPPG metric-in-filename toggle (default OFF -> clean name +
+        # sidecar). _parse_bool tolerates a string-backed value
+        # ("false"/"0") from a hand-edited kling_config.json — a bare
+        # truthiness check treats "false" as True (CodeRabbit, PR #40).
+        # None (uncoercible) -> default False.
+        from face_similarity import _parse_bool
+
+        self.rppg_metrics_var.set(
+            bool(_parse_bool(self.config.get("rppg_metrics_in_filename", False)))
+        )
 
         # Folder filter options
         self.folder_pattern_var.set(self.config.get("folder_filter_pattern", ""))
@@ -1655,6 +1696,20 @@ class ConfigPanel(tk.Frame):
         status = "enabled" if self.verbose_gui_var.get() else "disabled"
         self._notify_change(f"Verbose mode {status}")
 
+    def _on_rppg_metrics_changed(self):
+        """Handle the rPPG metric-in-filename toggle.
+
+        OFF (default): injector's metric-suffixed name is stripped to a
+        clean ``{stem}-rppg`` and the 5 metrics go to a ``.metrics.json``
+        sidecar. ON: the metric suffix stays in the filename.
+        """
+        self.config["rppg_metrics_in_filename"] = self.rppg_metrics_var.get()
+        if self.rppg_metrics_var.get():
+            status = "kept in filename"
+        else:
+            status = "moved to .metrics.json sidecar"
+        self._notify_change(f"rPPG metrics {status}")
+
     def _on_folder_pattern_changed(self, event=None):
         """Handle folder pattern entry change."""
         pattern = self.folder_pattern_var.get().strip()
@@ -1949,6 +2004,7 @@ class ConfigPanel(tk.Frame):
             "reprocess_var",
             "reprocess_mode_var",
             "verbose_gui_var",
+            "rppg_metrics_var",
             "folder_pattern_var",
             "folder_match_mode_var",
             "duration_var",

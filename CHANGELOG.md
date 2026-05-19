@@ -2,6 +2,42 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-19 — rPPG polish: metric toggle, base+oldcam fan-out, macOS buttons
+
+Follow-up to the rPPG feature (PR #39, merged). Three user-driven
+improvements.
+
+### Added
+
+- **rPPG metrics-in-filename toggle.** The injector renames its output to
+  `{stem}-rppg - <SNR>-<Phase>-<Temporal>-<Motion>-<Harmonic>{ext}`. New
+  `rppg_metrics_in_filename` config (default **off**): when off, the file
+  is renamed back to a clean `{stem}-rppg{ext}` and the 5 metrics are
+  written to a `{stem}-rppg.metrics.json` sidecar; when on, the metric
+  name is kept. `automation/rppg.py::finalize_rppg_output` (+
+  `parse_metric_suffix`, negative-phase-safe) is the single source of
+  truth; GUI checkbox sits on the Logging row next to Verbose; CLI parity
+  in `kling_automation_ui.py` (`RECOMMENDED_DEFAULTS_VERSION` → 3).
+- **`automation/oldcam.py::run_oldcam_all`** — returns every succeeded
+  `(version, path)`; `run_oldcam` kept as the highest-only wrapper.
+- **`theme.apply_macos_button_fix`** — makes existing raw `tk.Button`s
+  reliably clickable + colored on macOS (no-op on Windows).
+
+### Changed
+
+- **rPPG fan-out**: there is no privileged "primary". rPPG now injects
+  the BASE clip (looped if looping is on, else the raw Kling/generated
+  clip) **and every selected oldcam version** — main queue path, the
+  oldcam re-run path, and the CLI automation pipeline (Step 8) all fan
+  out identically. Plain pre-rPPG `-oldcam-vN` files are KEPT
+  (non-destructive). Loop still runs exactly once first.
+- **macOS buttons**: `theme.create_action_button` (and all 25 remaining
+  raw `tk.Button` sites it didn't cover) now use
+  `highlightbackground=<fill>` + `highlightthickness=0` so buttons honor
+  their color and are reliably clickable (was: plain grey, shrunken
+  hit-area requiring repeated clicks). Windows `ttk.Button` path
+  untouched; text stays high-contrast (no legibility regression).
+
 ## 2026-05-19 — rPPG injection post-process (opt-in, runs last)
 
 Adds rPPG pulse injection as the final pipeline stage

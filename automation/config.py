@@ -108,6 +108,13 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_rppg_enabled": False,
     "automation_rppg_mode": "inject",
     "automation_rppg_required": False,
+    # When False (default) the injector's metric-suffixed filename
+    # ("{stem}-rppg - <SNR>-<Phase>-<Temporal>-<Motion>-<Harmonic>{ext}")
+    # is stripped back to a clean "{stem}-rppg{ext}" and the 5 metrics
+    # are written to a "{stem}-rppg.metrics.json" sidecar. True keeps the
+    # metrics embedded in the filename. See automation/rppg.py
+    # finalize_rppg_output() — single source of truth.
+    "automation_rppg_metrics_in_filename": False,
     "automation_recommended_defaults_version": 1,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
