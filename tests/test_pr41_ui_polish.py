@@ -803,5 +803,136 @@ class Expand25NonCandidateFallbackTests(unittest.TestCase):
             )
 
 
+class FallbackSchemaPreservesV3PayloadTests(unittest.TestCase):
+    """Codex P1 on commit 516396b (PR #41): _get_fallback_schema only
+    included image_url + prompt + duration + aspect_ratio. When fal.ai
+    schema fetch failed (429/5xx) for a v3-family endpoint that uses
+    start_image_url, validate_parameters' core-field gate passed
+    (image_url + prompt were both in the fallback) so the precise
+    filter ran and dropped start_image_url, sending the request to
+    fal.ai with no start image -> generation reliably failed.
+
+    Fix is two layers:
+      (A) Fallback schema now includes start_image_url + end_image_url
+          + tail_image_url + negative_prompt + cfg_scale as a union of
+          all roster keys.
+      (B) Fallback dict is tagged with _FALLBACK_SENTINEL so
+          validate_parameters detects it and skips filtering entirely
+          (returning the payload unfiltered; live fal.ai is the
+          authority)."""
+
+    def test_fallback_schema_includes_v3_start_image_url(self):
+        from model_schema_manager import ModelSchemaManager
+        m = ModelSchemaManager(api_key="test-key-not-used")
+        schema = m._get_fallback_schema()
+        # Layer (A): all the v3-family param names are present.
+        for key in (
+            "image_url",
+            "start_image_url",
+            "end_image_url",
+            "tail_image_url",
+            "negative_prompt",
+            "cfg_scale",
+            "prompt",
+            "duration",
+            "aspect_ratio",
+        ):
+            self.assertIn(key, schema, f"fallback must include {key!r}")
+
+    def test_fallback_schema_is_tagged_with_sentinel(self):
+        from model_schema_manager import ModelSchemaManager
+        m = ModelSchemaManager(api_key="test-key-not-used")
+        schema = m._get_fallback_schema()
+        # Layer (B): the sentinel marks this schema as non-authoritative.
+        self.assertIn(m._FALLBACK_SENTINEL, schema)
+        self.assertTrue(schema[m._FALLBACK_SENTINEL])
+
+    def test_validate_parameters_sends_v3_payload_unfiltered_on_fallback(self):
+        """The bug in production: a v3 payload with start_image_url +
+        end_image_url + negative_prompt + cfg_scale must round-trip
+        intact through validate_parameters when the schema is the
+        fallback (i.e. live fetch failed)."""
+        from model_schema_manager import ModelSchemaManager
+        from unittest import mock
+        m = ModelSchemaManager(api_key="test-key-not-used")
+        # Force get_model_schema to return the fallback (no live fetch).
+        fallback = m._get_fallback_schema()
+        with mock.patch.object(
+            m, "get_model_schema", return_value=fallback
+        ):
+            payload = {
+                "start_image_url": "https://example.com/start.png",
+                "end_image_url": "https://example.com/end.png",
+                "prompt": "a person turning their head",
+                "negative_prompt": "profile view, fast motion",
+                "cfg_scale": 0.7,
+                "duration": 10,
+                "aspect_ratio": "9:16",
+            }
+            result = m.validate_parameters(
+                "fal-ai/kling-video/v3/pro/image-to-video", payload
+            )
+        # Every required key must survive — the bug was silently
+        # dropping start_image_url here.
+        self.assertEqual(result.get("start_image_url"), payload["start_image_url"])
+        self.assertEqual(result.get("end_image_url"), payload["end_image_url"])
+        self.assertEqual(result.get("prompt"), payload["prompt"])
+        self.assertEqual(result.get("negative_prompt"), payload["negative_prompt"])
+        self.assertEqual(result.get("cfg_scale"), payload["cfg_scale"])
+
+    def test_validate_parameters_with_tail_image_url_on_fallback(self):
+        """Sister case: v2.5-turbo-pro uses tail_image_url (not
+        end_image_url). Must also survive the fallback path."""
+        from model_schema_manager import ModelSchemaManager
+        from unittest import mock
+        m = ModelSchemaManager(api_key="test-key-not-used")
+        with mock.patch.object(
+            m,
+            "get_model_schema",
+            return_value=m._get_fallback_schema(),
+        ):
+            payload = {
+                "image_url": "https://example.com/img.png",
+                "tail_image_url": "https://example.com/img.png",
+                "prompt": "head turn",
+                "cfg_scale": 0.7,
+            }
+            result = m.validate_parameters(
+                "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+                payload,
+            )
+        self.assertEqual(result.get("tail_image_url"), payload["tail_image_url"])
+        self.assertEqual(result.get("image_url"), payload["image_url"])
+        self.assertEqual(result.get("cfg_scale"), payload["cfg_scale"])
+
+    def test_live_schema_still_does_precise_filtering(self):
+        """Make sure the fix doesn't regress the LIVE-schema path —
+        when get_model_schema returns a real authoritative schema (no
+        sentinel), validate_parameters MUST still filter unknown
+        params (otherwise we ship bogus keys to fal.ai)."""
+        from model_schema_manager import ModelSchemaManager, ModelParameter
+        from unittest import mock
+        m = ModelSchemaManager(api_key="test-key-not-used")
+        # Synthetic LIVE schema (no sentinel) — only image_url + prompt.
+        live_schema = {
+            "image_url": ModelParameter("image_url", "string", True, ""),
+            "prompt": ModelParameter("prompt", "string", True, ""),
+        }
+        with mock.patch.object(
+            m, "get_model_schema", return_value=live_schema
+        ):
+            result = m.validate_parameters(
+                "fal-ai/some-known-endpoint",
+                {
+                    "image_url": "u",
+                    "prompt": "p",
+                    "bogus_key": "should_be_filtered",
+                },
+            )
+        self.assertNotIn("bogus_key", result)
+        self.assertEqual(result["image_url"], "u")
+        self.assertEqual(result["prompt"], "p")
+
+
 if __name__ == "__main__":
     unittest.main()

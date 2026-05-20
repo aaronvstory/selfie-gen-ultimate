@@ -311,11 +311,37 @@ class ModelSchemaManager:
         """Parse cached schema data"""
         return self._parse_schema_response(data)
 
+    # Sentinel attribute that validate_parameters checks to skip
+    # destructive filtering when the schema is a non-authoritative
+    # fallback (Codex P1, PR #41).
+    _FALLBACK_SENTINEL = "__fallback_schema__"
+
     def _get_fallback_schema(self) -> Dict[str, ModelParameter]:
-        """Return fallback schema with common parameters"""
-        return {
+        """Return fallback schema with common parameters.
+
+        IMPORTANT: this schema is NON-AUTHORITATIVE -- it's what we
+        return when fal.ai schema discovery fails (429/5xx/network)
+        or returns an empty schema. The set of params here is the
+        UNION of params used across the live roster (image_url AND
+        start_image_url, both end variants, neg/cfg) so that even
+        if validate_parameters somehow filters against this dict
+        it won't drop a v3-family required start_image_url
+        (Codex P1, PR #41). Tagged with _FALLBACK_SENTINEL so
+        validate_parameters can detect it and skip filtering
+        entirely -- the live API is the real authority.
+        """
+        schema = {
+            # Start-image synonyms -- both names different model
+            # families use (image_url for v2.5/o1, start_image_url
+            # for v3 / v2.6 / o1-new).
             "image_url": ModelParameter("image_url", "string", True, "Input image URL"),
+            "start_image_url": ModelParameter("start_image_url", "string", False, "Input start image URL (v3/o1 family)"),
+            # End-frame synonyms.
+            "end_image_url": ModelParameter("end_image_url", "string", False, "Input end image URL"),
+            "tail_image_url": ModelParameter("tail_image_url", "string", False, "Input tail image URL (v2.5-turbo-pro)"),
             "prompt": ModelParameter("prompt", "string", True, "Generation prompt"),
+            "negative_prompt": ModelParameter("negative_prompt", "string", False, "Negative prompt"),
+            "cfg_scale": ModelParameter("cfg_scale", "number", False, "CFG scale"),
             "duration": ModelParameter(
                 "duration", "integer", False, "Video duration", default=10
             ),
@@ -323,6 +349,12 @@ class ModelSchemaManager:
                 "aspect_ratio", "string", False, "Aspect ratio", default="16:9"
             ),
         }
+        # Tag the dict so validate_parameters() can detect it.
+        try:
+            schema[self._FALLBACK_SENTINEL] = True  # type: ignore[assignment]
+        except Exception:
+            pass
+        return schema  # type: ignore[return-value]
 
     def supports_parameter(self, model_endpoint: str, param_name: str) -> bool:
         """Check if a model supports a specific parameter"""
@@ -354,7 +386,21 @@ class ModelSchemaManager:
         Returns:
             Filtered dictionary with only supported parameters
         """
-        supported = self.get_supported_parameters(model_endpoint)
+        # NB: get_model_schema may return our non-authoritative
+        # fallback dict (fal.ai 429/5xx/network). Detect that via
+        # the sentinel and send the payload unfiltered -- the live
+        # API is the only true authority on model params, and
+        # destructively filtering against the fallback's static
+        # union would silently drop e.g. v3's start_image_url
+        # (Codex P1, PR #41).
+        schema = self.get_model_schema(model_endpoint)
+        if schema.get(self._FALLBACK_SENTINEL):
+            logger.warning(
+                f"Schema for {model_endpoint} is the non-authoritative fallback; "
+                f"sending unfiltered payload to fal.ai"
+            )
+            return dict(params)
+        supported = set(schema.keys())
 
         # If schema discovery fails or is incomplete, avoid dropping required payload fields.
         # In this case we trust API-side validation and send all parameters as-is.
@@ -364,7 +410,10 @@ class ModelSchemaManager:
             )
             return dict(params)
 
-        if "image_url" not in supported or "prompt" not in supported:
+        if (
+            ("image_url" not in supported and "start_image_url" not in supported)
+            or "prompt" not in supported
+        ):
             logger.warning(
                 f"Schema for {model_endpoint} missing core fields; sending unfiltered payload"
             )
