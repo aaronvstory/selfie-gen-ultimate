@@ -433,6 +433,16 @@ class SessionManagerDialog(tk.Toplevel):
             btn_frame, text="Delete", command=self._on_delete, style=TTK_BTN_DANGER
         )
         del_btn.pack(side=tk.LEFT, padx=(0, 6))
+        # "Prune Dead (N)" — bulk-delete sessions whose source files
+        # are missing AND whose folders contain no surviveable images/
+        # videos. Enabled iff N > 0. Confirmation dialog prevents
+        # accidental data loss; the [DEAD] badge in the listbox lets
+        # the user spot-check candidates before confirming.
+        self._prune_dead_btn = create_action_button(
+            btn_frame, text="Prune Dead", command=self._on_prune_dead,
+            style=TTK_BTN_DANGER_COMPACT,
+        )
+        self._prune_dead_btn.pack(side=tk.LEFT, padx=(0, 6))
         clear_btn = create_action_button(
             btn_frame, text="Clear Project", command=self._on_clear_project,
             style=TTK_BTN_SECONDARY,
@@ -473,6 +483,60 @@ class SessionManagerDialog(tk.Toplevel):
             except tk.TclError:
                 pass
 
+    def _update_prune_button(self):
+        """Sync Prune Dead button label + enabled state with the dead-count."""
+        btn = getattr(self, "_prune_dead_btn", None)
+        if btn is None:
+            return
+        n = len(getattr(self, "_dead_paths", set()) or set())
+        try:
+            btn.configure(
+                text=(f"Prune Dead ({n})" if n else "Prune Dead"),
+                state=(tk.NORMAL if n > 0 else tk.DISABLED),
+            )
+        except tk.TclError:
+            pass
+
+    def _on_prune_dead(self):
+        """Bulk-delete every session whose source data is gone.
+
+        UX: confirm-by-count dialog (no per-file checkbox) since the
+        [DEAD] badge in the listbox is already the spot-check surface.
+        Sessions with ANY live data — saved image still on disk OR a
+        rescan-discoverable image/video in a surveyed folder — are
+        NEVER classified dead by session_liveness, so the prune set is
+        always strictly the no-data subset.
+        """
+        from .session_manager import prune_dead_sessions, find_dead_sessions
+        from tkinter import messagebox
+        # Recompute right before the dialog so a folder restored
+        # between dialog-open and prune-click reduces the count.
+        dead_now = find_dead_sessions(self._app_dir)
+        n = len(dead_now)
+        if n == 0:
+            messagebox.showinfo(
+                "Prune Dead", "No dead sessions to remove.",
+                parent=self,
+            )
+            return
+        ok = messagebox.askyesno(
+            "Prune Dead Sessions",
+            f"Permanently delete {n} session file(s) whose source images\n"
+            "and videos are all gone from disk?\n\n"
+            "Sessions with ANY recoverable content (a saved image still\n"
+            "on disk, or a video/image the folder rescan could surface)\n"
+            "are NOT included in this prune.\n\n"
+            "This cannot be undone.",
+            parent=self, icon="warning",
+        )
+        if not ok:
+            return
+        deleted = prune_dead_sessions(self._app_dir)
+        self._log_fn(
+            f"Pruned {len(deleted)} dead session(s)", "success",
+        )
+        self._refresh_list()
+
     def _refresh_list(self):
         from .session_manager import list_sessions, collapse_legacy_autosaves
         # One-shot migration: collapse the legacy timestamped autosave pile to
@@ -505,6 +569,21 @@ class SessionManagerDialog(tk.Toplevel):
         self._selected_record = None
         self._detail_label.config(text="Select a session to view details")
         self._listbox.delete(0, tk.END)
+        # Compute liveness once per refresh so the [DEAD] badge + the
+        # Prune Dead button count stay in sync with the listbox. Uses
+        # only os.path.isfile/isdir/listdir/splitext so it works on both
+        # macOS and Windows regardless of the OS that saved the session.
+        from .session_manager import session_liveness
+        self._dead_paths: set = set()
+        for rec in self._sessions:
+            try:
+                if not session_liveness(rec.path)["live"]:
+                    self._dead_paths.add(rec.path)
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "liveness check failed for %s", rec.path, exc_info=True,
+                )
+        self._update_prune_button()
         if not self._sessions:
             self._listbox.insert(
                 tk.END,
@@ -514,9 +593,20 @@ class SessionManagerDialog(tk.Toplevel):
             return
         for rec in self._sessions:
             ts = rec.updated_at[:16].replace("T", " ") if rec.updated_at else "?"
-            badge = "[AUTOSAVE]" if rec.session_kind == "autosave" else "[MANUAL]"
-            row = f"  {badge:<10s} {rec.project_key:<20s} {ts}  {rec.image_count:>3d} imgs  {rec.name}"
+            is_dead = rec.path in self._dead_paths
+            kind_badge = "[AUTOSAVE]" if rec.session_kind == "autosave" else "[MANUAL]"
+            # When dead, prepend [DEAD] so the badge column reads as
+            # "[DEAD][AUTOSAVE]" or "[DEAD][MANUAL]". Kept in same
+            # column so column widths stay sane.
+            badge = (f"[DEAD]{kind_badge}" if is_dead else f"      {kind_badge}")
+            row = f"  {badge:<18s} {rec.project_key:<20s} {ts}  {rec.image_count:>3d} imgs  {rec.name}"
             self._listbox.insert(tk.END, row)
+            if is_dead:
+                # Dim the dead row so it visually fades into the background.
+                # itemconfig is row-scoped so live rows keep their default.
+                self._listbox.itemconfig(
+                    tk.END, fg=COLORS["text_dim"],
+                )
         self._sync_button_states()
 
     def _on_select(self, event=None):

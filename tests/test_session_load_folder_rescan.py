@@ -305,6 +305,151 @@ def test_rescan_dedups_video_across_both_discovery_passes(tmp_path):
     assert new_vids == 1
 
 
+def test_session_liveness_classifies_empty_folder_as_dead(tmp_path):
+    """A session whose saved paths all point at missing files AND whose
+    surveyed folders have no recoverable image/video must classify dead.
+    User scenario: folders were renamed (e.g. organized/ → FOR_APPLICATION_-_…),
+    leaving 70 of 74 sessions pointing at empty/missing paths."""
+    from kling_gui.session_manager import session_liveness
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    # Saved image refers to a non-existent path; the folder exists but is empty.
+    dead_folder = tmp_path / "deadfolder"
+    dead_folder.mkdir()
+    import json
+    sess_path = sessions_dir / "dead.json"
+    sess_path.write_text(json.dumps({
+        "session": {"images": [{"path": str(dead_folder / "missing.png"),
+                                "source_type": "input"}]},
+    }))
+    info = session_liveness(str(sess_path))
+    assert info["live"] is False
+    assert info["saved_images"] == 1
+    assert info["missing"] == 1
+    assert info["rescan_imgs"] == 0
+    assert info["rescan_vids"] == 0
+
+
+def test_session_liveness_classifies_alive_via_rescan_video(tmp_path):
+    """If the saved images are all missing but a VIDEO in the same folder
+    can be surfaced by the rescan, the session is NOT dead — we'd lose
+    the video association. Covers the user's actual workflow where image
+    files get pruned but oldcam/rPPG videos remain."""
+    from kling_gui.session_manager import session_liveness
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    folder = tmp_path / "live"
+    folder.mkdir()
+    (folder / "clip.mp4").write_bytes(b"fake")  # video only — image is gone
+    import json
+    sess_path = sessions_dir / "live.json"
+    sess_path.write_text(json.dumps({
+        "session": {"images": [{"path": str(folder / "gone.png"),
+                                "source_type": "input"}]},
+    }))
+    info = session_liveness(str(sess_path))
+    assert info["live"] is True, "video-only folder must survive prune"
+    assert info["rescan_vids"] == 1
+
+
+def test_session_liveness_classifies_alive_via_existing_saved_image(tmp_path):
+    """Belt-test: a saved image that still exists keeps the session live
+    even if the folder contains nothing else."""
+    from kling_gui.session_manager import session_liveness
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    folder = tmp_path / "alive"
+    folder.mkdir()
+    img = folder / "front.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")  # PNG signature — file just needs to EXIST
+    import json
+    sess_path = sessions_dir / "alive.json"
+    sess_path.write_text(json.dumps({
+        "session": {"images": [{"path": str(img), "source_type": "input"}]},
+    }))
+    info = session_liveness(str(sess_path))
+    assert info["live"] is True
+    assert info["missing"] == 0
+
+
+def test_session_liveness_unreadable_session_classified_live(tmp_path):
+    """A corrupt/unreadable JSON must NOT be classified dead — we don't
+    want to silently prune a file the user could repair."""
+    from kling_gui.session_manager import session_liveness
+    sess_path = tmp_path / "broken.json"
+    sess_path.write_text("not valid json {{{")
+    info = session_liveness(str(sess_path))
+    assert info["live"] is True, "broken JSON must be conservatively kept"
+
+
+def test_find_dead_sessions_returns_only_dead(tmp_path):
+    """End-to-end: with a mix of live and dead sessions, only the dead
+    ones come back. Tests the integration of list_sessions →
+    session_liveness → find_dead_sessions on a real filesystem."""
+    from kling_gui.session_manager import find_dead_sessions
+    import json
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Dead — folder doesn't exist
+    (sessions_dir / "dead1.json").write_text(json.dumps({
+        "session": {"images": [{"path": str(tmp_path / "gone" / "x.png"),
+                                "source_type": "input"}]},
+    }))
+    # Live — saved image actually exists
+    live_dir = tmp_path / "live"
+    live_dir.mkdir()
+    (live_dir / "x.png").write_bytes(b"\x89PNG")
+    (sessions_dir / "live1.json").write_text(json.dumps({
+        "session": {"images": [{"path": str(live_dir / "x.png"),
+                                "source_type": "input"}]},
+    }))
+    # Live — saved image gone but folder has a video
+    video_dir = tmp_path / "video_only"
+    video_dir.mkdir()
+    (video_dir / "clip.mp4").write_bytes(b"fake")
+    (sessions_dir / "live2.json").write_text(json.dumps({
+        "session": {"images": [{"path": str(video_dir / "gone.png"),
+                                "source_type": "input"}]},
+    }))
+
+    dead = find_dead_sessions(str(tmp_path))
+    dead_names = sorted(os.path.basename(r.path) for r in dead)
+    assert dead_names == ["dead1.json"], (
+        f"Expected only dead1.json to be classified dead; got {dead_names}"
+    )
+
+
+def test_prune_dead_sessions_deletes_dead_keeps_live(tmp_path):
+    """End-to-end on a real filesystem: prune wipes exactly the dead set,
+    leaves live + corrupt sessions untouched."""
+    from kling_gui.session_manager import prune_dead_sessions
+    import json
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Dead
+    dead_path = sessions_dir / "dead.json"
+    dead_path.write_text(json.dumps({
+        "session": {"images": [{"path": str(tmp_path / "ghost" / "x.png"),
+                                "source_type": "input"}]},
+    }))
+    # Live
+    live_dir = tmp_path / "kept"
+    live_dir.mkdir()
+    (live_dir / "x.png").write_bytes(b"\x89PNG")
+    live_path = sessions_dir / "live.json"
+    live_path.write_text(json.dumps({
+        "session": {"images": [{"path": str(live_dir / "x.png"),
+                                "source_type": "input"}]},
+    }))
+
+    deleted = prune_dead_sessions(str(tmp_path))
+    assert len(deleted) == 1
+    assert not dead_path.exists()
+    assert live_path.exists(), "live session must survive prune"
+
+
 def test_video_thumb_async_helper_present_and_signature():
     """Gemini PR #43 finding (cv2 blocking on Tk): the carousel video branch
     must NOT call _extract_video_first_frame synchronously on the Tk thread

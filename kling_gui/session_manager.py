@@ -564,3 +564,122 @@ def delete_session(path: str) -> None:
     if os.path.isfile(path):
         os.remove(path)
         logger.info("Session deleted: %s", path)
+
+
+# Folder-rescan vocabulary mirrors main_window's session-load rescan.
+# Kept in lockstep so a session that the load path would surface as
+# non-empty is NEVER classified as dead. If you add a video extension
+# to either side, add it to the other.
+_LIVENESS_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif"}
+_LIVENESS_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+
+
+def session_liveness(record_path: str) -> dict:
+    """Inspect a session's on-disk state without loading it.
+
+    Returns a dict::
+
+        {
+          "live": bool,        # True iff at least one path / rescan-able file exists
+          "saved_images": int, # count of image entries in the JSON
+          "missing": int,      # how many of those have no file on disk
+          "rescan_imgs": int,  # extra images discoverable via folder rescan
+          "rescan_vids": int,  # extra videos discoverable via folder rescan
+        }
+
+    A session is "dead" when ``live`` is False — every saved image is
+    missing AND no surveyed folder has any image/video the rescan path
+    could surface. Used by the Session Manager to flag prune candidates.
+
+    Cross-platform: only uses os.path.isfile / isdir / listdir / splitext,
+    so saved paths work on whichever OS this runs on (Win sessions opened
+    on macOS will read as "dead" iff the macOS-mounted equivalents don't
+    exist, which is the right answer).
+    """
+    result = {"live": False, "saved_images": 0, "missing": 0,
+              "rescan_imgs": 0, "rescan_vids": 0}
+    try:
+        with open(record_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        # Unreadable / corrupt JSON — NOT dead, just broken. Let
+        # list_sessions' existing skip-warning handle it; we return
+        # "live" so the user doesn't accidentally lose a fixable file.
+        result["live"] = True
+        return result
+
+    images = data.get("session", {}).get("images", [])
+    result["saved_images"] = len(images)
+    folders: set = set()
+    any_saved_alive = False
+    for img in images:
+        path = img.get("path", "")
+        if not path:
+            continue
+        folders.add(os.path.dirname(path))
+        if os.path.isfile(path):
+            any_saved_alive = True
+        else:
+            result["missing"] += 1
+
+    # Folder rescan vocabulary mirrors the load-path: count any image
+    # or video the rescan WOULD pick up. Treat ANY hit as evidence of
+    # life — a folder with only videos but no saved-image survivors
+    # is still loadable by the rescan path and should not be pruned.
+    for folder in folders:
+        if not folder or not os.path.isdir(folder):
+            continue
+        try:
+            entries = os.listdir(folder)
+        except OSError:
+            continue
+        for fname in entries:
+            full = os.path.join(folder, fname)
+            if not os.path.isfile(full):
+                continue
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in _LIVENESS_IMAGE_EXTS:
+                result["rescan_imgs"] += 1
+            elif ext in _LIVENESS_VIDEO_EXTS:
+                result["rescan_vids"] += 1
+
+    result["live"] = bool(
+        any_saved_alive or result["rescan_imgs"] > 0 or result["rescan_vids"] > 0
+    )
+    return result
+
+
+def find_dead_sessions(app_dir: str) -> List[SessionRecord]:
+    """Return the subset of saved sessions whose source data is gone.
+
+    "Dead" = ``session_liveness(...)["live"] is False`` — the saved
+    image paths all point at missing files AND no surveyed folder has
+    any image/video the rescan path could surface. Safe for prune.
+    """
+    dead: List[SessionRecord] = []
+    for rec in list_sessions(app_dir):
+        try:
+            if not session_liveness(rec.path)["live"]:
+                dead.append(rec)
+        except Exception:
+            # Defensive: any unexpected error means we keep the record
+            # rather than risk a false-positive prune.
+            logger.warning("session_liveness raised for %s", rec.path, exc_info=True)
+    return dead
+
+
+def prune_dead_sessions(app_dir: str) -> List[str]:
+    """Delete every session classified dead by ``find_dead_sessions``.
+
+    Returns the list of deleted file paths so the caller can show a
+    confirmation log. Individual delete failures are logged + skipped
+    so one stuck file can't block the whole sweep.
+    """
+    deleted: List[str] = []
+    for rec in find_dead_sessions(app_dir):
+        try:
+            delete_session(rec.path)
+            deleted.append(rec.path)
+        except OSError as exc:
+            logger.warning("Failed to prune dead session %s: %s", rec.path, exc)
+    return deleted
