@@ -176,7 +176,11 @@ def test_manifest_additive_default_key_is_backward_compatible(tmp_path: Path):
         "automation_manifest_name": "automation_manifest.json",
         "automation_front_expand_mode": "document_3x4",
         "automation_rppg_enabled": False,
-        "automation_rppg_mode": "inject",
+        # Default was "inject" in PR #39; flipped to "iterative" in PR
+        # #43 (friend confirmed iterative is mandatory for production).
+        # The test sends the CURRENT default so the manifest treats
+        # the key as default-equal and reconciles cleanly.
+        "automation_rppg_mode": "iterative",
         "automation_rppg_required": False,
     }
     # Additive default-off keys must NOT raise — backward compatible.

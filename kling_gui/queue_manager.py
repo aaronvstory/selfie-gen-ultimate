@@ -1789,18 +1789,40 @@ class QueueManager:
 
             output_path = self._build_rppg_output_path(input_path)
             self.log("Applying rPPG injection...", "info")
+            # Iterative-mode flags. Defaults match rPPG/rppg.bat (the
+            # friend's canonical launcher): --iterative is MANDATORY
+            # for production because the initial single-shot rarely
+            # lands at the optimal strength; --iterate-from-baseline
+            # avoids cumulative encoding loss across iterations;
+            # --skip-diagnosis dodges the Claude-API "clod diagnostics"
+            # postscript. All three default ON, user-overridable via
+            # the config keys.
+            cfg = self.get_config()
+            rppg_mode = str(cfg.get("rppg_mode") or "iterative").strip().lower()
+            iterative = rppg_mode == "iterative"
+            iterate_from_baseline = bool(cfg.get("rppg_iterate_from_baseline", True))
+            skip_diagnosis = bool(cfg.get("rppg_skip_diagnosis", True))
+            skip_kinematic_gate = bool(cfg.get("rppg_skip_kinematic_gate", True))
             run_cmd = [
                 str(launcher),
                 str(input_path),
                 "--inject",
                 "--output",
                 str(output_path),
-                # Deliberate: the injector's v8 kinematic preflight is
-                # README-marked "new, untested". Re-enabling that gate is a
-                # future enhancement (see docs/rppg-wiring.md), not an
-                # oversight.
-                "--skip-kinematic-gate",
             ]
+            # ORDER mirrors rPPG/rppg.bat:
+            #     --inject --iterative --iterate-from-base --skip-diagnosis
+            # Plus --skip-kinematic-gate (preserved from before).
+            if iterative:
+                run_cmd.append("--iterative")
+                if iterate_from_baseline:
+                    run_cmd.append("--iterate-from-baseline")
+                if skip_diagnosis:
+                    run_cmd.append("--skip-diagnosis")
+            if skip_kinematic_gate:
+                # v8 kinematic preflight is README-marked "new, untested"
+                # (see docs/rppg-wiring.md).
+                run_cmd.append("--skip-kinematic-gate")
             output_lines: list[str] = []
             returncode = -1
             _TIMEOUT = 600

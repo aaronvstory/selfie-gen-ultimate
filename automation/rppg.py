@@ -406,9 +406,37 @@ def run_rppg(
     progress_cb: ProgressCB = None,
     timeout_seconds: int = 600,
     keep_metrics: bool = False,
+    iterative: bool = True,
+    iterate_from_baseline: bool = True,
+    skip_diagnosis: bool = True,
+    skip_kinematic_gate: bool = True,
 ) -> Optional[Path]:
-    """Run one-shot rPPG injection. Return the output Path, or None on any
+    """Run rPPG injection. Return the output Path, or None on any
     failure (graceful skip — caller keeps the pre-rPPG video).
+
+    *iterative* (default ``True``): re-inject with PID-adjusted
+    settings until the score converges. The friend who wrote the
+    injector confirmed iterative is MANDATORY for production: the
+    initial single-shot injection rarely lands at the optimal strength
+    and iterative tunes via feedback. Matches ``rPPG/rppg.bat`` which
+    passes ``--iterative`` unconditionally. Set ``False`` only for
+    back-to-back calibration / A-B testing against a fixed-param run.
+
+    *iterate_from_baseline* (default ``True``, ignored when not
+    iterative): each iteration re-injects from the ORIGINAL input,
+    not the previous iteration's output. Avoids cumulative encoding
+    loss and gives the PID clean slope estimates per iter. Matches
+    the launcher.
+
+    *skip_diagnosis* (default ``True``): bypass the automatic Claude-
+    API diagnosis that runs after iterative injection. Diagnosis
+    requires ``ANTHROPIC_API_KEY`` and costs API spend; the friend's
+    .bat skips it. Set ``False`` only when you want the post-run
+    diagnostic writeup.
+
+    *skip_kinematic_gate* (default ``True``): bypass the v8 facial-
+    kinematic preflight. Per docs/rppg-wiring.md the gate is README-
+    marked untested.
 
     *keep_metrics* selects the delivered filename: ``True`` keeps the
     injector's ``{stem}-rppg - <metrics>{ext}``; ``False`` (default)
@@ -432,16 +460,33 @@ def run_rppg(
         return None
 
     output_path = build_rppg_output_path(input_path)
-    cmd = [
+    cmd: List[str] = [
         str(launcher),
         str(input_path),
         "--inject",
         "--output",
         str(output_path),
-        # Deliberate: v8 kinematic preflight is README-marked untested.
-        # Re-enabling is a future enhancement (docs/rppg-wiring.md).
-        "--skip-kinematic-gate",
     ]
+    # Iterative + companion flags. ORDER mirrors rPPG/rppg.bat for
+    # easy visual diff against the canonical launcher:
+    #     --inject --iterative --iterate-from-base --skip-diagnosis
+    # plus our --skip-kinematic-gate (preserved from before).
+    if iterative:
+        cmd.append("--iterative")
+        if iterate_from_baseline:
+            # argparse accepts the --iterate-from-base prefix (the .bat
+            # form); the full flag is --iterate-from-baseline. We pass
+            # the full form so a future strict-prefix injector still
+            # works.
+            cmd.append("--iterate-from-baseline")
+        if skip_diagnosis:
+            # Skip the post-iteration Claude diagnosis ("clod
+            # diagnostics" per friend). Only applies after iterative
+            # runs; harmless on single-shot but we still avoid adding
+            # noise to the cmd when iterative is off.
+            cmd.append("--skip-diagnosis")
+    if skip_kinematic_gate:
+        cmd.append("--skip-kinematic-gate")
     _report(progress_cb, f"rPPG launching: {_format_cmd_for_log(cmd)}", "info")
 
     output_lines: List[str] = []

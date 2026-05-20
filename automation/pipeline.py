@@ -1235,6 +1235,15 @@ class AutoPipelineRunner:
             video_out = self.manifest.get_step(case_key, "video_generate").get("output")
             required = self._read_bool("automation_rppg_required", False)
             keep_metrics = self._read_bool("automation_rppg_metrics_in_filename", False)
+            # Iterative+companion flags. PR #43 / friend feedback: the
+            # rPPG injector's iterative mode is mandatory for production
+            # — the initial single-shot injection rarely lands at the
+            # optimal strength. Default ON via automation_rppg_mode.
+            rppg_mode = str(self.automation.get("automation_rppg_mode") or "iterative").strip().lower()
+            iterative = rppg_mode == "iterative"
+            iterate_from_baseline = self._read_bool("automation_rppg_iterate_from_baseline", True)
+            skip_diagnosis = self._read_bool("automation_rppg_skip_diagnosis", True)
+            skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
 
             # Fan rPPG over the BASE (video_generate output — the
             # automation pipeline has no loop step, so this is the raw
@@ -1332,6 +1341,10 @@ class AutoPipelineRunner:
                         repo_root=Path(__file__).resolve().parent.parent,
                         progress_cb=self.progress_cb,
                         keep_metrics=keep_metrics,
+                        iterative=iterative,
+                        iterate_from_baseline=iterate_from_baseline,
+                        skip_diagnosis=skip_diagnosis,
+                        skip_kinematic_gate=skip_kinematic_gate,
                     )
                     if out and out.exists():
                         produced.append(str(out))

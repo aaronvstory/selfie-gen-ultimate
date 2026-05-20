@@ -1,0 +1,191 @@
+"""Argv shape tests for automation.rppg.run_rppg.
+
+These tests capture the exact ``subprocess.Popen`` argv the rPPG runner
+constructs. They were added in PR #43 to lock in:
+
+* Iterative mode is the production default (friend confirmed mandatory).
+* ``--iterate-from-baseline`` rides with ``--iterative``.
+* ``--skip-diagnosis`` rides with ``--iterative`` (avoids the Claude-
+  API "clod diagnostics" postscript).
+* ``--skip-kinematic-gate`` is preserved as a tier-1 default.
+* Order matches ``rPPG/rppg.bat`` (the friend's canonical launcher).
+* Per-call kwargs override the defaults for back-to-back testing.
+
+These pair with the GUI queue-manager cmd in
+``kling_gui/queue_manager.py::_rppg_video`` — the same flag set is
+duplicated there because the GUI runs the .bat directly (no pipeline).
+A future refactor could collapse both call sites into a single helper.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+from automation import rppg as rppg_module
+
+
+@pytest.fixture
+def _stub_launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Force resolve_rppg_launcher to return a real (empty) file so
+    run_rppg gets past the existence check and reaches the cmd build."""
+    fake_launcher = tmp_path / "rPPG" / "run_rppg.bat"
+    fake_launcher.parent.mkdir()
+    fake_launcher.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(
+        rppg_module,
+        "resolve_rppg_launcher",
+        lambda root: fake_launcher,
+    )
+    return fake_launcher
+
+
+@pytest.fixture
+def _stub_subprocess(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Capture the argv list passed to stream_subprocess_with_timeout.
+    Return a list that the test reads after run_rppg returns."""
+    captured: list = []
+
+    def _fake_stream(cmd, *, cwd, timeout_seconds, on_line):
+        del cwd, timeout_seconds, on_line
+        captured.append(list(cmd))
+        return (0, ["fake-stdout"])
+
+    monkeypatch.setattr(
+        rppg_module, "stream_subprocess_with_timeout", _fake_stream
+    )
+    # resolve_produced_output expects a real file; stub it so the
+    # post-run "did the injector write the file?" check passes.
+    monkeypatch.setattr(
+        rppg_module, "resolve_produced_output", lambda p: p,
+    )
+    monkeypatch.setattr(
+        rppg_module,
+        "finalize_rppg_output",
+        lambda produced, requested, **kw: produced,
+    )
+    return captured
+
+
+def _make_input(tmp_path: Path) -> Path:
+    """Touch a real input file so the run_rppg existence guard passes."""
+    p = tmp_path / "case-clip.mp4"
+    p.write_bytes(b"\x00\x00\x00\x00mp4")
+    return p
+
+
+def test_default_cmd_is_iterative_mode(tmp_path, _stub_launcher, _stub_subprocess):
+    """Default invocation: --iterative + --iterate-from-baseline +
+    --skip-diagnosis + --skip-kinematic-gate. Order mirrors rPPG/rppg.bat.
+    """
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(video_path=inp, repo_root=tmp_path)
+    assert len(_stub_subprocess) == 1
+    cmd = _stub_subprocess[0]
+    assert "--inject" in cmd
+    assert "--iterative" in cmd
+    assert "--iterate-from-baseline" in cmd
+    assert "--skip-diagnosis" in cmd
+    assert "--skip-kinematic-gate" in cmd
+    # The .bat orders flags as: --inject ... --iterative
+    # --iterate-from-baseline --skip-diagnosis (then we add
+    # --skip-kinematic-gate). Verify --iterative precedes the
+    # companion flags so a strict-mode CLI wouldn't reject the order.
+    iter_idx = cmd.index("--iterative")
+    assert cmd.index("--iterate-from-baseline") > iter_idx
+    assert cmd.index("--skip-diagnosis") > iter_idx
+
+
+def test_one_shot_mode_drops_iterative_companions(
+    tmp_path, _stub_launcher, _stub_subprocess,
+):
+    """iterative=False disables --iterative AND its companion flags
+    (--iterate-from-baseline, --skip-diagnosis). --skip-kinematic-gate
+    stays (it's not iterative-scoped). For back-to-back testing.
+    """
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(video_path=inp, repo_root=tmp_path, iterative=False)
+    cmd = _stub_subprocess[0]
+    assert "--inject" in cmd
+    assert "--iterative" not in cmd
+    assert "--iterate-from-baseline" not in cmd
+    assert "--skip-diagnosis" not in cmd
+    # Kinematic gate is independent of iterative mode.
+    assert "--skip-kinematic-gate" in cmd
+
+
+def test_iterate_from_baseline_can_be_disabled_individually(
+    tmp_path, _stub_launcher, _stub_subprocess,
+):
+    """iterative=True + iterate_from_baseline=False = cumulative
+    iteration mode (each iter builds on the prior output). Used for
+    A/B against the baseline-reset behaviour."""
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(
+        video_path=inp, repo_root=tmp_path, iterate_from_baseline=False,
+    )
+    cmd = _stub_subprocess[0]
+    assert "--iterative" in cmd
+    assert "--iterate-from-baseline" not in cmd
+    # skip_diagnosis is independent of iterate_from_baseline.
+    assert "--skip-diagnosis" in cmd
+
+
+def test_skip_diagnosis_can_be_disabled_individually(
+    tmp_path, _stub_launcher, _stub_subprocess,
+):
+    """User can opt back in to the Claude-API diagnosis if they want
+    the postscript (requires ANTHROPIC_API_KEY + API spend)."""
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(
+        video_path=inp, repo_root=tmp_path, skip_diagnosis=False,
+    )
+    cmd = _stub_subprocess[0]
+    assert "--iterative" in cmd
+    assert "--iterate-from-baseline" in cmd
+    assert "--skip-diagnosis" not in cmd
+
+
+def test_skip_kinematic_gate_can_be_disabled(
+    tmp_path, _stub_launcher, _stub_subprocess,
+):
+    """The v8 kinematic preflight is README-marked untested but can
+    be re-enabled per-call."""
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(
+        video_path=inp, repo_root=tmp_path, skip_kinematic_gate=False,
+    )
+    cmd = _stub_subprocess[0]
+    assert "--skip-kinematic-gate" not in cmd
+
+
+def test_cmd_order_matches_rppg_bat(tmp_path, _stub_launcher, _stub_subprocess):
+    """Stronger order assertion: the flag sequence matches the
+    canonical launcher (rPPG/rppg.bat line 12) so a strict-mode CLI
+    parser couldn't reject the ordering."""
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(video_path=inp, repo_root=tmp_path)
+    cmd = _stub_subprocess[0]
+    # Find the positions of the canonical flags in the actual cmd.
+    positions = {
+        flag: cmd.index(flag)
+        for flag in [
+            "--inject",
+            "--iterative",
+            "--iterate-from-baseline",
+            "--skip-diagnosis",
+            "--skip-kinematic-gate",
+        ]
+    }
+    # rPPG/rppg.bat order: --inject ... --iterative --iterate-from-base
+    # --skip-diagnosis. We add --skip-kinematic-gate after.
+    assert positions["--inject"] < positions["--iterative"]
+    assert positions["--iterative"] < positions["--iterate-from-baseline"]
+    assert (
+        positions["--iterate-from-baseline"] < positions["--skip-diagnosis"]
+    )
+    assert (
+        positions["--skip-diagnosis"] < positions["--skip-kinematic-gate"]
+    )

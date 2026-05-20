@@ -715,10 +715,19 @@ def test_merge_defaults_includes_rppg_keys(tmp_path):
     genuinely-untried forward direction (sub-perceptual pulse so Persona's
     passive rPPG stage sees a real signal). Off + non-required => the step
     is opt-in only and a missing/failed injection never hard-fails a run.
+
+    Mode default flipped from "inject" to "iterative" in PR #43 — the
+    friend who wrote the injector confirmed iterative is mandatory for
+    production (initial single-shot rarely lands at optimal strength).
+    Companion flags (iterate-from-baseline, skip-diagnosis,
+    skip-kinematic-gate) all default ON to mirror rPPG/rppg.bat.
     See docs/rppg-wiring.md."""
     merged = merge_automation_defaults({})
     assert merged["automation_rppg_enabled"] is False
-    assert merged["automation_rppg_mode"] == "inject"
+    assert merged["automation_rppg_mode"] == "iterative"
+    assert merged["automation_rppg_iterate_from_baseline"] is True
+    assert merged["automation_rppg_skip_diagnosis"] is True
+    assert merged["automation_rppg_skip_kinematic_gate"] is True
     assert merged["automation_rppg_required"] is False
 
 

@@ -102,11 +102,31 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     # validated (mirrors the facetrack default-OFF precedent above). The
     # injector itself lives in the gitignored rPPG/ tool and is invoked as an
     # external launcher; the step degrades gracefully (skip + log) if absent
-    # or it fails. "inject" = one-shot; "iterative" is reserved for a future
-    # tuned mode. _required=False -> a missing/failed injection never hard-
+    # or it fails. _required=False -> a missing/failed injection never hard-
     # fails a run unless the user opts in.
+    #
+    # Mode flags (see rPPG/rppg.bat — the friend's canonical launcher
+    # passes ALL of these by default):
+    #   "iterative" — re-injects with PID-adjusted settings until score
+    #     converges. The friend confirmed this is MANDATORY for prod use
+    #     because the initial single-shot injection rarely lands at the
+    #     optimal strength. Default ON (mode="iterative") to match the
+    #     reference launcher.
+    #   _iterate_from_baseline — each iteration re-injects from the
+    #     ORIGINAL input, not the previous iteration's output. Avoids
+    #     cumulative encoding loss and gives the PID controller clean
+    #     slope estimates. Default ON.
+    #   _skip_diagnosis — bypasses the post-iteration Claude-API
+    #     diagnosis ("clod diagnostics" per friend). Diagnosis calls
+    #     ANTHROPIC_API_KEY and costs $; the friend's bat skips it.
+    #     Default ON.
+    #   _skip_kinematic_gate — was already on; v8 kinematic preflight
+    #     is README-marked untested and was off by design.
     "automation_rppg_enabled": False,
-    "automation_rppg_mode": "inject",
+    "automation_rppg_mode": "iterative",
+    "automation_rppg_iterate_from_baseline": True,
+    "automation_rppg_skip_diagnosis": True,
+    "automation_rppg_skip_kinematic_gate": True,
     "automation_rppg_required": False,
     # When False (default) the injector's metric-suffixed filename
     # ("{stem}-rppg - <SNR>-<Phase>-<Temporal>-<Motion>-<Harmonic>{ext}")
@@ -115,7 +135,11 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     # metrics embedded in the filename. See automation/rppg.py
     # finalize_rppg_output() — single source of truth.
     "automation_rppg_metrics_in_filename": False,
-    "automation_recommended_defaults_version": 1,
+    # Bumped to 2 in PR #43 when rPPG defaults flipped to iterative mode.
+    # The CLI questionary editor uses this to detect when a user's saved
+    # config predates the new recommended-defaults baseline and offers
+    # to refresh.
+    "automation_recommended_defaults_version": 2,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
     "automation_log_backup_count": 5,

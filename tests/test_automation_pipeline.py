@@ -1770,8 +1770,26 @@ def _mk_rppg_case(tmp_path, monkeypatch, *, rppg_enabled, rppg_required=False, r
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
     monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
 
-    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600, keep_metrics=False):
-        del repo_root, progress_cb, timeout_seconds, keep_metrics
+    def _fake_rppg(
+        *,
+        video_path,
+        repo_root,
+        progress_cb=None,
+        timeout_seconds=600,
+        keep_metrics=False,
+        # Iterative-mode kwargs (PR #43 / friend feedback) — accepted
+        # but not exercised here. Pipeline-level tests verify that the
+        # config keys flow through; injector-cmd tests verify the actual
+        # subprocess argv (see test_automation_rppg_cmd.py / test_rppg_runner_cmd).
+        iterative=True,
+        iterate_from_baseline=True,
+        skip_diagnosis=True,
+        skip_kinematic_gate=True,
+    ):
+        del (
+            repo_root, progress_cb, timeout_seconds, keep_metrics,
+            iterative, iterate_from_baseline, skip_diagnosis, skip_kinematic_gate,
+        )
         if rppg_returns == "none":
             return None
         out = Path(video_path).with_name(Path(video_path).stem + "-rppg" + Path(video_path).suffix)
@@ -1925,8 +1943,16 @@ def test_pipeline_rppg_runs_on_reused_video_when_oldcam_disabled(tmp_path, monke
 
     rppg_calls = []
 
-    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600, keep_metrics=False):
-        del repo_root, progress_cb, timeout_seconds, keep_metrics
+    def _fake_rppg(
+        *, video_path, repo_root, progress_cb=None,
+        timeout_seconds=600, keep_metrics=False,
+        iterative=True, iterate_from_baseline=True,
+        skip_diagnosis=True, skip_kinematic_gate=True,
+    ):
+        del (
+            repo_root, progress_cb, timeout_seconds, keep_metrics,
+            iterative, iterate_from_baseline, skip_diagnosis, skip_kinematic_gate,
+        )
         rppg_calls.append(Path(video_path))
         out = Path(video_path).with_name(Path(video_path).stem + "-rppg" + Path(video_path).suffix)
         out.write_bytes(b"rppg")
@@ -2188,8 +2214,16 @@ def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch
 
     rppg_inputs = []
 
-    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600, keep_metrics=False):
-        del repo_root, progress_cb, timeout_seconds, keep_metrics
+    def _fake_rppg(
+        *, video_path, repo_root, progress_cb=None,
+        timeout_seconds=600, keep_metrics=False,
+        iterative=True, iterate_from_baseline=True,
+        skip_diagnosis=True, skip_kinematic_gate=True,
+    ):
+        del (
+            repo_root, progress_cb, timeout_seconds, keep_metrics,
+            iterative, iterate_from_baseline, skip_diagnosis, skip_kinematic_gate,
+        )
         rppg_inputs.append(Path(video_path))
         out = build_rppg_output_path(Path(video_path))
         out.write_bytes(b"rppg")
@@ -2249,8 +2283,16 @@ def _fanout_partial_case(tmp_path, required, monkeypatch):
     monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *a, **k: {"score": 90, "pass": True, "error": None, "match": True})
     monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **k: [("v8", v8), ("v24", v24)])
 
-    def _fake_rppg(*, video_path, repo_root, progress_cb=None, timeout_seconds=600, keep_metrics=False):
-        del repo_root, progress_cb, timeout_seconds, keep_metrics
+    def _fake_rppg(
+        *, video_path, repo_root, progress_cb=None,
+        timeout_seconds=600, keep_metrics=False,
+        iterative=True, iterate_from_baseline=True,
+        skip_diagnosis=True, skip_kinematic_gate=True,
+    ):
+        del (
+            repo_root, progress_cb, timeout_seconds, keep_metrics,
+            iterative, iterate_from_baseline, skip_diagnosis, skip_kinematic_gate,
+        )
         # v24 injection FAILS (returns None); base + v8 succeed.
         if Path(video_path).name == "existing-oldcam-v24.mp4":
             return None
