@@ -826,7 +826,41 @@ class KlingGUIWindow:
         # short enough that a quick resize + force-close still persists.
         self._layout_save_after_id: Optional[str] = None
         self._last_saved_geometry: str = ""
+        self._layout_save_reason: str = "geometry"
         self.root.bind("<Configure>", self._on_root_configure, add="+")
+
+        # Sash-drag live persistence. tk.PanedWindow does NOT fire
+        # <Configure> on the paned widget itself when a sash moves
+        # (the children resize, not the paned), so the root-Configure
+        # debounce above MISSES drop-zone / log-pane / queue / prompt-
+        # split / log-drop-split changes when the user drags a sash
+        # without resizing the window. <ButtonRelease-1> on each
+        # PanedWindow fires once when the user releases the drag
+        # handle (cross-platform: Tk on both Windows and macOS Aqua
+        # emit it; verified on Sonoma during PR #43 review).
+        #
+        # We attach to ALL FIVE PanedWindows in the app (every pane
+        # the user can interact with). add="+" so the binding doesn't
+        # clobber any future sash handlers added by individual panels.
+        # The list is locked by tests/test_window_geometry_persistence.py
+        # so a future refactor that adds/removes a pane forces a test
+        # update.
+        for _pane_attr in (
+            "main_paned",      # top section | bottom section (vertical)
+            "top_h_paned",     # prompt split (horizontal)
+            "bottom_paned",    # carousel | compare | right (horizontal)
+            "right_paned",     # log/drop | queue (vertical)
+            "log_drop_paned",  # log pane | drop zone (horizontal)
+        ):
+            _pane = getattr(self, _pane_attr, None)
+            if _pane is not None:
+                try:
+                    _pane.bind(
+                        "<ButtonRelease-1>", self._on_sash_release, add="+"
+                    )
+                except tk.TclError:
+                    # Never let a binding failure break GUI launch.
+                    pass
 
     def _set_app_icon(self):
         """Load and set the app icon from bundled resources or alongside the exe."""
@@ -4136,14 +4170,51 @@ class KlingGUIWindow:
         # quirks across Tk implementations.
         if str(event.widget) != str(self.root):
             return
-        # Cancel any pending save — the latest size wins.
+        # Route into the debounced save path. Reason="geometry" lets
+        # _save_layout_debounced apply the geometry-unchanged guard
+        # (skips spurious saves on title-bar clicks / focus events).
+        self._schedule_layout_save(reason="geometry")
+
+    def _on_sash_release(self, _event) -> None:
+        """Sash-drag release handler.
+
+        tk.PanedWindow doesn't fire <Configure> on the paned widget
+        itself when a sash moves — the children resize, not the paned.
+        So the root-Configure debounce ALONE misses drop-zone /
+        log-pane / queue / prompt-split / log-drop-split changes when
+        the user only drags a sash and doesn't resize the whole window.
+
+        <ButtonRelease-1> on each PanedWindow fires once when the user
+        releases the sash drag (cross-platform: Tk on Windows + macOS
+        both emit it; tested on macOS Sonoma in PR #43). We route into
+        the same debounced save path with reason="sash" so the
+        geometry-unchanged guard is skipped — sash position is the
+        thing that changed, even if root geometry is identical.
+        """
+        self._schedule_layout_save(reason="sash")
+
+    def _schedule_layout_save(self, *, reason: str) -> None:
+        """Single entry point for live layout persistence.
+
+        ``reason="geometry"`` means a root-window Configure fired and
+        the debounced save should apply its geometry-unchanged short-
+        circuit (avoids JSON thrash on title-bar clicks). ``reason
+        ="sash"`` means a PanedWindow's ButtonRelease-1 fired and the
+        save MUST run even if root geometry is identical (the sash
+        coords are what changed). Both reasons share the same 800ms
+        debounce so a rapid sequence of sash drags + window resizes
+        coalesces into a single JSON write.
+        """
+        # Cancel any pending save — the latest event wins.
         if self._layout_save_after_id is not None:
             try:
                 self.root.after_cancel(self._layout_save_after_id)
             except tk.TclError:
                 pass
             self._layout_save_after_id = None
-        # Schedule the actual save (800ms = "user stopped dragging").
+        # Track WHY the save was scheduled so the callback knows
+        # whether the geometry guard applies.
+        self._layout_save_reason = reason
         try:
             self._layout_save_after_id = self.root.after(
                 800, self._save_layout_debounced
@@ -4152,20 +4223,25 @@ class KlingGUIWindow:
             self._layout_save_after_id = None
 
     def _save_layout_debounced(self) -> None:
-        """Persist current layout to JSON. Fires after the Configure
-        debounce window. No-op when the geometry hasn't changed since
-        the last save (avoids needless disk writes during pure focus
-        changes that Tk reports as Configure events on some platforms)."""
+        """Persist current layout to JSON. Fires after the 800ms debounce.
+
+        For ``reason="geometry"`` saves: no-op when the geometry
+        hasn't changed since the last save (avoids needless disk
+        writes during pure focus changes that Tk reports as Configure
+        events on some platforms — especially macOS title-bar clicks).
+
+        For ``reason="sash"`` saves: ALWAYS run. The user moved a
+        sash; the root geometry may not have changed but the layout
+        certainly did.
+        """
         self._layout_save_after_id = None
+        reason = getattr(self, "_layout_save_reason", "geometry")
         try:
             current = self.root.geometry()
         except tk.TclError:
             return
-        if current == self._last_saved_geometry:
-            # Sash-only changes still get saved via the explicit on-close
-            # path; live sash-drag persistence is intentionally not added
-            # here because PanedWindow doesn't reliably fire <Configure>
-            # for sash moves (the children resize, not the paned itself).
+        # Geometry guard is geometry-only. Sash changes bypass it.
+        if reason == "geometry" and current == self._last_saved_geometry:
             return
         self._save_layout()
         try:
@@ -4176,6 +4252,10 @@ class KlingGUIWindow:
             # whatever reason (Configure can fire before _setup_logging).
             log = getattr(self, "logger", None) or logging.getLogger(__name__)
             log.exception("debounced layout save: _save_config failed")
+        # Always update the last-saved geometry tracker — a sash-only
+        # save still captures the current window size in _save_layout,
+        # so the next geometry-reason call should compare against THIS
+        # geometry, not the stale one from before the sash drag.
         self._last_saved_geometry = current
 
     def _save_layout(self):

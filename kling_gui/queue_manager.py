@@ -1798,11 +1798,24 @@ class QueueManager:
             # postscript. All three default ON, user-overridable via
             # the config keys.
             cfg = self.get_config()
+            # Reuse the canonical str-to-bool coercion so a JSON value
+            # of "false"/"no"/"0" parses as False instead of True. Raw
+            # bool() on a non-empty string is True — exactly the bug
+            # coderabbit flagged on PR #19 for the similarity strict
+            # gate. Same fix is applied in automation.pipeline._read_bool
+            # (single canonical helper, face_similarity._parse_bool).
+            from face_similarity import _parse_bool
+
+            def _cfg_bool(key: str, default: bool) -> bool:
+                raw = cfg.get(key, default)
+                parsed = _parse_bool(raw)
+                return parsed if parsed is not None else bool(default)
+
             rppg_mode = str(cfg.get("rppg_mode") or "iterative").strip().lower()
             iterative = rppg_mode == "iterative"
-            iterate_from_baseline = bool(cfg.get("rppg_iterate_from_baseline", True))
-            skip_diagnosis = bool(cfg.get("rppg_skip_diagnosis", True))
-            skip_kinematic_gate = bool(cfg.get("rppg_skip_kinematic_gate", True))
+            iterate_from_baseline = _cfg_bool("rppg_iterate_from_baseline", True)
+            skip_diagnosis = _cfg_bool("rppg_skip_diagnosis", True)
+            skip_kinematic_gate = _cfg_bool("rppg_skip_kinematic_gate", True)
             run_cmd = [
                 str(launcher),
                 str(input_path),
