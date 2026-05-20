@@ -55,6 +55,9 @@ from .theme import (
     TTK_BTN_SUCCESS,
     TTK_BTN_SUCCESS_COMPACT,
     TTK_BTN_TAB_NAV,
+    TTK_BTN_WORKFLOW,
+    TTK_BTN_SLOT_ACTIVE,
+    TTK_BTN_SLOT_INACTIVE,
     apply_macos_button_fix,
     create_action_button,
     debounce_command,
@@ -259,29 +262,23 @@ class FolderPreviewDialog(tk.Toplevel):
         btn_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         btn_frame.pack(fill=tk.X, padx=20, pady=(0, 15))
 
-        _cancel_btn = tk.Button(
+        _cancel_btn = ttk.Button(
             btn_frame,
             text="Cancel",
-            font=(FONT_FAMILY, 10),
-            bg=COLORS["bg_input"],
-            fg=COLORS["text_light"],
+            style=TTK_BTN_SECONDARY,
             width=12,
             command=self._cancel,
         )
         _cancel_btn.pack(side=tk.RIGHT, padx=5)
-        apply_macos_button_fix(_cancel_btn)
 
-        _add_btn = tk.Button(
+        _add_btn = ttk.Button(
             btn_frame,
             text=f"Add {len(files)} to Queue",
-            font=(FONT_FAMILY, 10, "bold"),
-            bg=COLORS["btn_green"],
-            fg="white",
+            style=TTK_BTN_SUCCESS,
             width=18,
             command=self._proceed,
         )
         _add_btn.pack(side=tk.RIGHT, padx=5)
-        apply_macos_button_fix(_add_btn)
 
         # Center on parent
         self.update_idletasks()
@@ -1632,6 +1629,69 @@ class KlingGUIWindow:
         style.map(
             TTK_BTN_TAB_NAV,
             background=[("active", COLORS["bg_hover"]), ("pressed", COLORS["bg_main"]), ("disabled", "#3A3A3A")],
+            foreground=[("disabled", "#8C8C8C")],
+        )
+
+        # Workflow primary action — applied per-step to the SINGLE
+        # button users should click next on that step. Accent-blue fill
+        # like TTK_BTN_PRIMARY but with a contrasting darker border
+        # (bordercolor + 2px) + slightly larger typography + padding so
+        # the "main next action" stands out without being garish. Same
+        # palette on Win + macOS (clam theme draws identically on both,
+        # ignoring the macOS Aqua HIView path).
+        style.configure(
+            TTK_BTN_WORKFLOW,
+            font=(FONT_FAMILY, 10, "bold"),
+            foreground="white",
+            background=COLORS["accent_blue"],
+            bordercolor="#0A1A2E",
+            lightcolor=COLORS["accent_blue"],
+            darkcolor=COLORS["accent_blue"],
+            borderwidth=2,
+            padding=(14, 7),
+        )
+        style.map(
+            TTK_BTN_WORKFLOW,
+            background=[
+                ("active", "#7AA7FF"),
+                ("pressed", "#4A79D8"),
+                ("disabled", "#4B4B4B"),
+            ],
+            foreground=[("disabled", "#9D9D9D")],
+            bordercolor=[("active", "#0A1A2E"), ("pressed", "#0A1A2E")],
+        )
+
+        # Slot 1/2/3 selector buttons in Step 2 — two ttk styles the
+        # selfie tab swaps via .configure(style=...) so the active slot
+        # reads as the current selection. Same dual-state pattern as
+        # the carousel Ref button. Migrating from raw tk.Button keeps
+        # the active-tint stable through macOS HIView re-paints.
+        style.configure(
+            TTK_BTN_SLOT_ACTIVE,
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground="white",
+            background=COLORS["accent_blue"],
+            bordercolor=COLORS["accent_blue"],
+            borderwidth=1,
+            padding=(6, 3),
+        )
+        style.map(
+            TTK_BTN_SLOT_ACTIVE,
+            background=[("active", "#7AA7FF"), ("pressed", "#4A79D8")],
+            foreground=[("disabled", "#9D9D9D")],
+        )
+        style.configure(
+            TTK_BTN_SLOT_INACTIVE,
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground=COLORS["text_light"],
+            background=COLORS["bg_input"],
+            bordercolor=COLORS["border"],
+            borderwidth=1,
+            padding=(6, 3),
+        )
+        style.map(
+            TTK_BTN_SLOT_INACTIVE,
+            background=[("active", COLORS["bg_hover"]), ("pressed", COLORS["bg_main"])],
             foreground=[("disabled", "#8C8C8C")],
         )
 

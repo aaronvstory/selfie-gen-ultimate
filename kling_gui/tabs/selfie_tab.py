@@ -21,7 +21,10 @@ from ..theme import (
     TTK_BTN_DANGER,
     TTK_BTN_PRIMARY,
     TTK_BTN_SECONDARY,
+    TTK_BTN_SLOT_ACTIVE,
+    TTK_BTN_SLOT_INACTIVE,
     TTK_BTN_SUCCESS,
+    TTK_BTN_WORKFLOW,
     create_action_button,
     debounce_command,
 )
@@ -304,18 +307,16 @@ class SelfieTab(tk.Frame):
         ).pack(side=tk.LEFT, padx=(14, 6))
         self._slot_buttons = []
         for slot in range(1, self.SLOT_COUNT + 1):
-            btn = tk.Button(
+            # ttk slot button — active/inactive swapped via style=
+            # in _update_selfie_slot_button_colors. Dual-style pattern
+            # (TTK_BTN_SLOT_ACTIVE/INACTIVE) so the active tint survives
+            # macOS HIView re-paints; raw tk.Button reverted to white
+            # after the first click.
+            btn = ttk.Button(
                 mode_row,
                 text=str(slot),
-                width=2,
-                font=(FONT_FAMILY, 9, "bold"),
-                bg=COLORS["bg_input"],
-                fg=BUTTON_TEXT_COLOR,
-                activebackground=COLORS["accent_blue"],
-                activeforeground=BUTTON_FILLED_TEXT_COLOR,
-                relief=tk.SOLID,
-                bd=1,
-                highlightthickness=0,
+                width=3,
+                style=TTK_BTN_SLOT_INACTIVE,
                 command=lambda s=slot: self._on_selfie_slot_changed(s),
             )
             btn.pack(side=tk.LEFT, padx=(0, 3))
@@ -744,11 +745,13 @@ class SelfieTab(tk.Frame):
         # Action buttons (btn_frame was packed at top of _build_ui)
         btn_frame = self._btn_frame
 
+        # Workflow-primary on Step 2 — Generate Selfie stands out via
+        # TTK_BTN_WORKFLOW so users immediately know "click here next".
         self.generate_btn = create_action_button(
             btn_frame,
             text="Generate Selfie",
             command=debounce_command(self._on_generate, key="selfie_generate"),
-            style=TTK_BTN_SUCCESS,
+            style=TTK_BTN_WORKFLOW,
         )
         self.generate_btn.pack(side=tk.LEFT)
 
@@ -940,12 +943,11 @@ class SelfieTab(tk.Frame):
         return self._raw_template
 
     def _update_selfie_slot_button_colors(self):
+        # ttk: swap style= instead of bg/fg. Same outcome (active slot
+        # reads as the current selection) without HIView revert on macOS.
         active = self._selfie_slot_var.get()
         for i, btn in enumerate(self._slot_buttons, start=1):
-            if i == active:
-                btn.config(bg=COLORS["accent_blue"], fg=BUTTON_FILLED_TEXT_COLOR)
-            else:
-                btn.config(bg=COLORS["bg_input"], fg=BUTTON_TEXT_COLOR)
+            btn.configure(style=TTK_BTN_SLOT_ACTIVE if i == active else TTK_BTN_SLOT_INACTIVE)
 
     def _load_current_slot_into_editor(self):
         slot = str(self._selfie_slot_var.get())

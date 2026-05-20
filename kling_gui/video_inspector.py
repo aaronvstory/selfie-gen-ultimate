@@ -1421,8 +1421,8 @@ class VideoInspectorModal(tk.Toplevel):
                 f"Oldcam v{v} applied. Adds camera/sensor imperfections\n"
                 f"(rolling shutter, AWB drift, OIS spring-damper, etc.)\n"
                 f"to make AI-generated frames read as filmed footage.\n"
-                f"Hover the v{v} checkbox in Step 3 for the full\n"
-                f"per-version description."
+                f"Hover the (i) icon next to \"Oldcam injection\" in\n"
+                f"Step 3 for the full per-version breakdown."
             )
             self._make_pill(
                 row, f"oldcam v{v}",

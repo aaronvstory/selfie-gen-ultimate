@@ -18,6 +18,7 @@ from ..theme import (
     TTK_BTN_SECONDARY,
     TTK_BTN_SUCCESS,
     TTK_BTN_TAB_NAV,
+    TTK_BTN_WORKFLOW,
     debounce_command,
 )
 from ..image_state import ImageSession
@@ -348,20 +349,24 @@ class FaceCropTab(tk.Frame):
             command=debounce_command(lambda: self._adjust_multiplier(0.1), key="facecrop_multiplier_up", interval_ms=100),
         ).pack(side=tk.LEFT)
 
+        # Workflow-primary on Step 0: "Detect Face & Crop" is the main
+        # action users hit first. Distinguished from secondary controls
+        # via TTK_BTN_WORKFLOW (accent-blue + dark border + larger
+        # padding) so it stands out without being garish.
         self._detect_btn = ttk.Button(
             slider_row,
             text="Detect Face & Crop",
-            style=TTK_BTN_SUCCESS,
+            style=TTK_BTN_WORKFLOW,
             command=debounce_command(self._detect_face, key="facecrop_detect"),
             state=tk.DISABLED if not HAS_FACE_DEPS else tk.NORMAL,
         )
         self._detect_btn.pack(side=tk.LEFT, padx=(8, 0))
 
-        # "Add to Carousel" button
+        # "Add to Carousel" — workflow-primary (next step after crop).
         self._add_carousel_btn = ttk.Button(
             slider_row,
             text="Add to Carousel",
-            style=TTK_BTN_SUCCESS,
+            style=TTK_BTN_WORKFLOW,
             command=debounce_command(self._add_crop_to_carousel, key="facecrop_add_carousel"),
             state=tk.DISABLED,
         )
@@ -633,7 +638,7 @@ class FaceCropTab(tk.Frame):
         self._expand_btn = ttk.Button(
             btn_row,
             text="Expand Image",
-            style=TTK_BTN_PRIMARY,
+            style=TTK_BTN_WORKFLOW,
             command=debounce_command(self._outpaint_image, key="facecrop_expand"),
         )
         self._expand_btn.pack(side=tk.LEFT)
@@ -1658,37 +1663,19 @@ class FaceCropTab(tk.Frame):
             self._save_config_now()
             dialog.destroy()
 
-        tk.Button(
-            btn_frame,
-            text="Reset to Default",
-            bg=COLORS["bg_input"],
-            fg=COLORS["text_light"],
-            font=(FONT_FAMILY, 9),
-            relief="flat",
-            cursor="hand2",
-            command=_reset,
+        ttk.Button(
+            btn_frame, text="Reset to Default",
+            style=TTK_BTN_SECONDARY, command=_reset,
         ).pack(side=tk.LEFT)
 
-        tk.Button(
-            btn_frame,
-            text="Cancel",
-            bg=COLORS["bg_input"],
-            fg=COLORS["text_light"],
-            font=(FONT_FAMILY, 9),
-            relief="flat",
-            cursor="hand2",
-            command=dialog.destroy,
+        ttk.Button(
+            btn_frame, text="Cancel",
+            style=TTK_BTN_SECONDARY, command=dialog.destroy,
         ).pack(side=tk.RIGHT, padx=(6, 0))
 
-        tk.Button(
-            btn_frame,
-            text="Save",
-            bg=COLORS["accent_blue"],
-            fg="white",
-            font=(FONT_FAMILY, 9, "bold"),
-            relief="flat",
-            cursor="hand2",
-            command=_save,
+        ttk.Button(
+            btn_frame, text="Save",
+            style=TTK_BTN_PRIMARY, command=_save,
         ).pack(side=tk.RIGHT)
 
     # ── Expand prompt editor ────────────────────────────────────────
@@ -1735,25 +1722,19 @@ class FaceCropTab(tk.Frame):
             self._save_config_now()
             dialog.destroy()
 
-        tk.Button(
+        ttk.Button(
             btn_frame, text="Clear",
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            font=(FONT_FAMILY, 9), relief="flat", cursor="hand2",
-            command=_clear,
+            style=TTK_BTN_SECONDARY, command=_clear,
         ).pack(side=tk.LEFT)
 
-        tk.Button(
+        ttk.Button(
             btn_frame, text="Cancel",
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            font=(FONT_FAMILY, 9), relief="flat", cursor="hand2",
-            command=dialog.destroy,
+            style=TTK_BTN_SECONDARY, command=dialog.destroy,
         ).pack(side=tk.RIGHT, padx=(6, 0))
 
-        tk.Button(
+        ttk.Button(
             btn_frame, text="Save",
-            bg=COLORS["accent_blue"], fg="white",
-            font=(FONT_FAMILY, 9, "bold"), relief="flat", cursor="hand2",
-            command=_save,
+            style=TTK_BTN_PRIMARY, command=_save,
         ).pack(side=tk.RIGHT)
 
     # ── Upscale ──────────────────────────────────────────────────────

@@ -16,7 +16,7 @@ from tk_dialogs import select_directory, select_open_files
 # COLORS/FONT_FAMILY are intentionally duplicated below (documented
 # inconsistency in CLAUDE.md); we still import this one macOS button
 # helper from the single source of truth rather than re-implement it.
-from .theme import apply_macos_button_fix
+from .theme import apply_macos_button_fix, TTK_BTN_SECONDARY, TTK_BTN_COMPACT
 
 try:
     from tkinterdnd2 import DND_FILES as _DND_FILES
@@ -463,15 +463,15 @@ class ConfigPanel(tk.Frame):
         self.model_info_icon.pack(side=tk.RIGHT, padx=(6, 0))
         HoverTooltip(self.model_info_icon, self._get_current_model_notes)
 
-        # "Manage…" button — opens the Model Manager dialog
-        self.manage_models_btn = tk.Button(
-            row1, text="Manage\u2026", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            padx=8, pady=2, relief=tk.FLAT, borderwidth=0, command=self._open_model_manager,
+        # "Manage…" button — opens the Model Manager dialog.
+        # ttk under the clam theme so the dark fill survives macOS Aqua
+        # HIView re-renders post-click (raw tk.Button reverts to
+        # white-bezel-with-black-text after the first focus/click event).
+        self.manage_models_btn = ttk.Button(
+            row1, text="Manage\u2026", style=TTK_BTN_COMPACT,
+            command=self._open_model_manager,
         )
         self.manage_models_btn.pack(side=tk.RIGHT, padx=(4, 0))
-        apply_macos_button_fix(self.manage_models_btn)
 
         self.model_var = tk.StringVar()
         self.model_combo = ttk.Combobox(
@@ -518,13 +518,11 @@ class ConfigPanel(tk.Frame):
         )
         self.output_entry.pack(side=tk.LEFT, padx=8, pady=2, fill=tk.Y)
 
-        self.browse_btn = tk.Button(
-            row2, text="BROWSE", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"], fg=COLORS["text_light"],
-            padx=10, relief=tk.FLAT, borderwidth=0, command=self._browse_output_folder,
+        self.browse_btn = ttk.Button(
+            row2, text="BROWSE", style=TTK_BTN_COMPACT,
+            command=self._browse_output_folder,
         )
         self.browse_btn.pack(side=tk.LEFT, padx=2)
-        apply_macos_button_fix(self.browse_btn)
 
         # Separator (between model/output rows and option rows)
         ttk.Separator(left_col, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(2, 10))
@@ -615,8 +613,10 @@ class ConfigPanel(tk.Frame):
             )
             check.grid(row=i // _OLDCAM_COLS, column=i % _OLDCAM_COLS, sticky="w", padx=(2, 8), pady=0)
             self.oldcam_version_checks[version] = check
-            # Per-version hover tooltip with the one-liner summary + key trade-off.
-            HoverTooltip(check, lambda _v=version: self._get_oldcam_tooltip(_v))
+            # No per-version hover. The (i) info icon next to "Oldcam
+            # injection" surfaces the full per-version breakdown via
+            # _get_oldcam_version_notes, so the per-checkbox hover was
+            # redundant clutter.
         # (Re-Run controls are no longer inside the Oldcam frame — they
         # live in ONE shared column to the right of both tinted frames,
         # built after the rPPG frame below.)
@@ -706,23 +706,14 @@ class ConfigPanel(tk.Frame):
         ).pack(anchor="w")
         _shared_rerun_btn_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
         _shared_rerun_btn_row.pack(anchor="w", pady=(2, 0))
-        self.oldcam_rerun_btn = tk.Button(
+        self.oldcam_rerun_btn = ttk.Button(
             _shared_rerun_btn_row,
             text="↻",
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"],
-            activeforeground=COLORS["text_light"],
-            width=2,
-            padx=8,
-            pady=2,
-            relief=tk.FLAT,
-            borderwidth=0,
+            style=TTK_BTN_COMPACT,
+            width=3,
             command=self._on_oldcam_rerun_clicked,
         )
         self.oldcam_rerun_btn.pack(side=tk.LEFT, padx=(0, 4))
-        apply_macos_button_fix(self.oldcam_rerun_btn)
         HoverTooltip(
             self.oldcam_rerun_btn,
             lambda: (
@@ -733,23 +724,14 @@ class ConfigPanel(tk.Frame):
                 "latest completed output if none selected."
             ),
         )
-        self.oldcam_pick_btn = tk.Button(
+        self.oldcam_pick_btn = ttk.Button(
             _shared_rerun_btn_row,
             text="📂",
-            font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"],
-            activeforeground=COLORS["text_light"],
-            width=2,
-            padx=8,
-            pady=2,
-            relief=tk.FLAT,
-            borderwidth=0,
+            style=TTK_BTN_COMPACT,
+            width=3,
             command=self._on_oldcam_pick_rerun_clicked,
         )
         self.oldcam_pick_btn.pack(side=tk.LEFT, padx=(0, 0))
-        apply_macos_button_fix(self.oldcam_pick_btn)
         HoverTooltip(
             self.oldcam_pick_btn,
             lambda: (
@@ -1227,24 +1209,16 @@ class ConfigPanel(tk.Frame):
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.prompt_char_count_label.pack()
-        self.edit_prompt_btn = tk.Button(
-            prompt_footer, text="Edit", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            padx=10, pady=2, relief=tk.FLAT, borderwidth=0,
+        self.edit_prompt_btn = ttk.Button(
+            prompt_footer, text="Edit", style=TTK_BTN_COMPACT,
             command=self._enter_edit_mode,
         )
         self.edit_prompt_btn.pack(side=tk.RIGHT, padx=(4, 0))
-        apply_macos_button_fix(self.edit_prompt_btn)
-        self.save_prompt_btn = tk.Button(
-            prompt_footer, text="Save Prompt", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            padx=10, pady=2, relief=tk.FLAT, borderwidth=0,
+        self.save_prompt_btn = ttk.Button(
+            prompt_footer, text="Save Prompt", style=TTK_BTN_COMPACT,
             state="disabled", command=self._save_prompt,
         )
         self.save_prompt_btn.pack(side=tk.RIGHT)
-        apply_macos_button_fix(self.save_prompt_btn)
 
         # Load prompt config now that widgets exist
         self._load_prompt_config()
@@ -1774,52 +1748,6 @@ class ConfigPanel(tk.Frame):
             "     than v15 while staying visually sharp. Best result.",
         ]
         return "\n".join(lines)
-
-    # Per-version oldcam tooltips, surfaced on hover over each version
-    # checkbox. Source-of-truth text is the same block in
-    # _get_oldcam_version_notes — these short forms are the one-liner
-    # summary + the key trade-off, optimized for hover-glance.
-    _OLDCAM_VERSION_TOOLTIPS = {
-        "v7":  ("Modern phone imperfection — JPEG cycle, arm-sway "
-                "rolling shutter, AF hunting. No face tracking. "
-                "Trade-off: too subtle vs. source."),
-        "v8":  ("Hardware physics upgrade — spring-damper OIS, 3D "
-                "channel noise, AWB drift, hard bitrate cap. "
-                "Trade-off: bitrate cap over-compresses + loses detail."),
-        "v9":  ("Face-aware portrait pass — MediaPipe FaceLandmarker, "
-                "4-region masks, AWB drift, soft background. "
-                "Trade-off: background blur reads as fake DOF."),
-        "v10": ("rPPG biological sync — FFT on green channel → phase-"
-                "locked color pulse in 4 face regions. "
-                "Trade-off: visible color siren; AWB removed."),
-        "v11": ("Best-of-all combo — v10 pulse + v9 AWB applied AFTER "
-                "the FFT read. "
-                "Trade-off: 2D rPPG flagged by modern PAD; sepia LUT."),
-        "v12": ("Pristine hardware-only (anti-spoof aware) — no rPPG, "
-                "no LUT, no CLAHE, no HSV. Pure OIS/AE/noise/vignette. "
-                "Best for low-light realism; preserves Kling color."),
-        "v13": ("High-end daylight (pristine optics) — no sensor noise, "
-                "no AE hunt, no ghosting, no MediaPipe. Pure OIS / "
-                "rolling shutter / bloom / AWB / aberration / vignette."),
-        "v14": ("Forensic daylight (physics-corrected) — v13 optics + "
-                "true multiplicative AWB, sub-perceptual sensor floor, "
-                "smoothstep bloom, lossless temp encode, audio-preserving."),
-        "v15": ("Temporal Mute (synthesis) — v14 math + v13 noise-free "
-                "philosophy + v12 temporal blend. No sensor noise; "
-                "--ghosting 0.18 bleeds prev frame to defeat consistency "
-                "detectors. Superseded by v24."),
-        "v24": ("\u2605 Default — Crush Laundromat (synthesis). v15 + "
-                "uniform resolution round-trip (downscale x0.40 → "
-                "Lanczos upscale + light unsharp). Destroys AI "
-                "fingerprint uniformly; ~9x better Resemble-API score "
-                "than v15 while staying visually sharp."),
-    }
-
-    def _get_oldcam_tooltip(self, version: str) -> str:
-        """Return per-version oldcam hover text for the version checkbox."""
-        return self._OLDCAM_VERSION_TOOLTIPS.get(
-            version, f"Oldcam {version} (no description)",
-        )
 
     def _update_model_info_icon(self, model: dict = None):
         """Set info icon color: blue when model has notes/info, dim otherwise."""

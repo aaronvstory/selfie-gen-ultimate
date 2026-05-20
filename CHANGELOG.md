@@ -2,6 +2,70 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-21 (v2.2) — Video Inspector + Tk button-styling sweep
+
+A/B video comparison + per-step "main next-action" emphasis + a full
+audit removing every remaining raw `tk.Button` from the UI (the source
+of the long-running macOS "buttons revert to white-bezel-with-black-
+text after first click" issue).
+
+### Added
+
+- **Video Inspector modal** — A/B video comparison + standalone preview,
+  master clock, sash-persistent geometry, color-coded pill rows
+  replacing the prior tiny metadata text. Inspector handles
+  Kling/oldcam/rPPG-named filenames with rich per-pill tooltips; non-
+  pipeline names render a single `[unrecognized format]` pill.
+- **`TTK_BTN_WORKFLOW` style** — accent-blue fill, contrasting border,
+  10pt bold typeface, generous padding. Applied to the single "main
+  next action" on each step so users instantly know what to click:
+  Detect Face & Crop / Add to Carousel / Expand Image (step 0),
+  Generate Selfie (step 2), Expand Active Image (step 2.5), Start —
+  Using Carousel Image (step 3). Cross-platform identical (clam
+  theme on both Win + macOS).
+- **`TTK_BTN_SLOT_ACTIVE` / `TTK_BTN_SLOT_INACTIVE`** — dual-state ttk
+  styles for the Step 2 slot 1/2/3 selector buttons. Replaces the
+  prior raw `tk.Button` whose active tint reverted to white after
+  one click on macOS Aqua.
+- **rPPG injection** as the final, opt-in post-process (off by default).
+  Pipeline order is non-negotiable: `Kling → Loop → Oldcam → rPPG`.
+- **Session foreign-OS detection + dead-session prune** — sessions
+  saved on a different host classify LIVE (not DEAD) and are
+  surfaced via a Prune Dead (N) button in Session Manager.
+- **`kling_ui.png`** alongside `kling_ui.ico` — macOS/Linux Tk can't
+  use `iconbitmap(.ico)`; PyInstaller spec now bundles both.
+
+### Changed
+
+- **All remaining raw `tk.Button` → `ttk.Button`** across config_panel
+  (Manage, BROWSE, Re-Run icons, Edit prompt, Save Prompt), main_window
+  (dialog Cancel + Add to Queue), face_crop_tab (Polish + Expand prompt
+  dialogs), outpaint_tab (preset rows + Expand Image), selfie_tab
+  (slot 1/2/3 selectors). Per-version oldcam hover tooltips removed
+  — the (i) icon's full per-version breakdown is enough.
+- **Slot 3 default prompt** seeded with Kling 2.5 Turbo Pro + 40°
+  head-turn 3/4-view text + comprehensive negative prompt.
+
+### Fixed
+
+- macOS Aqua HIView re-paint bug for every clickable control listed
+  above. Verified on Sonoma 2026-05-21.
+- Video Inspector close (X button) now invokes `_on_close` so the
+  parent's singleton reference is cleared immediately instead of
+  waiting for the next reopen's `winfo_exists()` guard.
+- `_master_frame` modulo-wraps at 1e6 on unknown-length sources (was
+  unbounded growth — multi-day sessions could drift into precision
+  loss).
+- Strict eviction in the video-thumb FIFO cache (`while` not `if`),
+  log exception type in `session_liveness`, switched session-load
+  folder rescan to `os.scandir`.
+
+### Distributable
+
+- `RELEASE_VERSION` `v2.1` → `v2.2`. The `.exe` build via
+  `build_gui_exe.bat` and the zip via `python -m distribution.build_release`
+  both pick up the new version automatically. Run the build on Windows.
+
 ## 2026-05-19 — End-frame lock + dynamic per-model API schemas
 
 Leverages End-Frame Locking + negative prompts to mechanically force

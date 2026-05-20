@@ -83,6 +83,15 @@ TTK_BTN_SUCCESS = "Success.TButton"
 TTK_BTN_SUCCESS_COMPACT = "SuccessCompact.TButton"
 TTK_BTN_COMPACT = "Compact.TButton"
 TTK_BTN_TAB_NAV = "TabNav.TButton"
+# Main-workflow primary action — accent-blue fill, contrasting border,
+# slightly larger typography + padding so users instantly spot "what to
+# click next" on each step. Distinct from TTK_BTN_PRIMARY (which is the
+# generic blue used everywhere). Applied to: Detect Face & Crop / Add to
+# Carousel / Expand Image (step 0), Generate Selfie (step 2), Expand
+# Active Image (step 2.5), Start — Using Carousel Image (step 3).
+TTK_BTN_WORKFLOW = "Workflow.TButton"
+TTK_BTN_SLOT_ACTIVE = "SlotActive.TButton"
+TTK_BTN_SLOT_INACTIVE = "SlotInactive.TButton"
 
 _DEBOUNCE_LAST_CALL: Dict[str, float] = {}
 

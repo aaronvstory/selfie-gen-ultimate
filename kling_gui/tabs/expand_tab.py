@@ -17,6 +17,7 @@ from ..theme import (
     TTK_BTN_PRIMARY,
     TTK_BTN_SECONDARY,
     TTK_BTN_SUCCESS,
+    TTK_BTN_WORKFLOW,
     debounce_command,
 )
 
@@ -343,10 +344,11 @@ class ExpandTab(tk.Frame):
 
         run_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         run_frame.pack(fill=tk.X, padx=10, pady=(4, 4))
+        # Workflow-primary on Step 2.5.
         self._expand_btn = ttk.Button(
             run_frame,
             text="Expand Active Image",
-            style=TTK_BTN_PRIMARY,
+            style=TTK_BTN_WORKFLOW,
             command=debounce_command(self._on_expand_selected, key="expand_run"),
         )
         self._expand_btn.pack(side=tk.LEFT)
