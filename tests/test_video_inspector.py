@@ -634,7 +634,13 @@ class VideoFrameTests(unittest.TestCase):
         # a path on hand even on failure).
         f._open_external_btn.config.assert_any_call(state=mock.ANY)
 
-    def test_clear_releases_capture_and_signals_stop(self):
+    def test_clear_signals_stop_and_detaches_capture(self):
+        """clear() signals stop, detaches self._cv2_cap, and drops the
+        PhotoImage GC anchor. It does NOT call cap.release() directly
+        — Codex P1 (3273416655) on PR #43: that races a mid-flight
+        cap.read() on the decoder thread. The worker now owns release
+        via its finally block (see test_decoder_loop_releases_cap_in_finally).
+        """
         f = self._make_frame()
         with mock.patch("cv2.VideoCapture", return_value=_FakeCap()):
             with mock.patch(
@@ -647,9 +653,43 @@ class VideoFrameTests(unittest.TestCase):
         self.assertIsNone(f._cv2_cap)
         self.assertIsNone(f._photo)
         self.assertTrue(f._stop_event.is_set())
-        # Release was called on the cap we held.
+        # CRITICAL: clear() must NOT have called cap.release(). That
+        # would race mid-flight reads on the worker thread. The cap is
+        # held by the worker until it exits its finally block.
         assert cap is not None
-        self.assertTrue(cap.released)
+        self.assertFalse(
+            cap.released,
+            "clear() must NOT call cap.release() — racing the decoder "
+            "thread's cap.read() can crash OpenCV (Codex PR #43 P1).",
+        )
+
+    def test_decoder_loop_releases_cap_in_finally(self):
+        """Codex P1 (3273416655) on PR #43: the cap is released by
+        the decoder thread on exit, NOT by the Tk-thread clear().
+        Drive _decoder_loop with a stop_event already set so it exits
+        immediately, then verify cap.released became True via the
+        finally block."""
+        from kling_gui.video_inspector import VideoFrame
+        f = self._make_frame()
+        cap = _FakeCap()
+        stop_event = threading.Event()
+        stop_event.set()  # forces immediate while-loop exit
+        import queue
+        rq = queue.Queue(maxsize=1)
+        # Pre-import cv2 module ref + a dummy Image-stub via
+        # _decoder_loop's lazy PIL import that the no-frame path skips.
+        import cv2 as _cv2
+        # Invoke the real loop; it must release cap in its finally.
+        VideoFrame._decoder_loop(
+            f, generation_id=1, stop_event=stop_event,
+            request_queue=rq, cap=cap, cv2_mod=_cv2,
+        )
+        self.assertTrue(
+            cap.released,
+            "Decoder thread MUST release cap in its finally block — "
+            "this is the serialization guarantee that prevents the "
+            "close-during-read crash.",
+        )
 
     def test_render_pil_image_drops_stale_generation(self):
         """Generation-locking guard: a frame posted by an old decoder

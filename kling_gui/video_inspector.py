@@ -314,11 +314,26 @@ class VideoFrame(tk.Frame):
             pass
 
     def clear(self) -> None:
-        """Stop the decoder thread, release the capture, blank the canvas.
+        """Stop the decoder thread, blank the canvas, hand the capture
+        off to the worker for release.
 
         Bumps the generation so any after-callback the (now-doomed)
         worker has already posted to the Tk queue gets rejected by
         _render_pil_image's generation check before touching widgets.
+
+        Critically does NOT call ``cap.release()`` from this thread.
+        Codex P1 (3273416655) on PR #43 caught a real close/reload
+        race: the decoder thread can be mid-``cap.read()`` (100-200ms
+        on H.264) when Tk calls clear(); a synchronous release here
+        races the read and crashes OpenCV depending on codec/backend.
+
+        The serialization rule is now: ONLY the decoder thread ever
+        calls cap.release(). clear() sets _stop_event + drops a
+        sentinel into the request queue; the decoder sees the event
+        on its next loop iteration, exits the `while not stop_event`
+        loop, and releases its OWN local `cap` reference in a `try
+        finally`. Tk thread doesn't wait — the worker is daemon
+        and exits within ~250ms (the queue.get timeout).
         """
         # Invalidate any in-flight render callbacks from the current
         # generation. Anything the worker posts after this point will
@@ -331,14 +346,11 @@ class VideoFrame(tk.Frame):
         except queue.Full:
             pass
 
+        # Detach our self.* reference to the capture. The actual
+        # cap.release() call happens in _decoder_loop's exit path —
+        # see Codex P1 comment above for the race-rationale.
         with self._cap_lock:
-            cap = self._cv2_cap
             self._cv2_cap = None
-        if cap is not None:
-            try:
-                cap.release()
-            except Exception:
-                pass
 
         self._photo = None
         self._video_path = None
@@ -388,6 +400,16 @@ class VideoFrame(tk.Frame):
         queue, and capture — never the new ones. The generation_id is
         threaded through so _render_pil_image can drop stale frames.
 
+        OWNERSHIP: this worker also OWNS the lifecycle of ``cap``.
+        clear() does NOT call cap.release() — instead it sets
+        stop_event + drops a sentinel, and the ``finally`` block at
+        the bottom of this function releases the cap once the worker's
+        last cap.read() returns. That serialization is REQUIRED to
+        avoid OpenCV close-during-read crashes (Codex P1 / PR #43,
+        finding 3273416655). Without it, clear() racing cap.read()
+        could trigger OpenCV-backend errors or hard crashes depending
+        on codec and platform Tk binding.
+
         Never builds an ImageTk.PhotoImage here (Tk-thread only).
         Never touches a Tk widget here.
         """
@@ -395,82 +417,104 @@ class VideoFrame(tk.Frame):
             from PIL import Image  # type: ignore
         except ImportError:
             self.after(0, lambda: self._show_error("PIL not installed"))
+            # Still need to release the cap we were handed even if we
+            # can't decode. Single-line try/except for the same reason
+            # the main finally has one — never let release() raise.
+            try:
+                cap.release()
+            except Exception:
+                pass
             return
 
-        while not stop_event.is_set():
-            try:
-                frame_index = request_queue.get(timeout=0.25)
-            except queue.Empty:
-                continue
-            if stop_event.is_set():
-                return
-            if frame_index < 0:
-                # Sentinel from clear(); exit.
-                return
+        try:
+            while not stop_event.is_set():
+                try:
+                    frame_index = request_queue.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                if stop_event.is_set():
+                    return
+                if frame_index < 0:
+                    # Sentinel from clear(); exit.
+                    return
 
-            # Cap is LOCAL to this generation — passed in as an arg, not
-            # read from self.* — so an old worker can't race the new
-            # capture. The lock that used to wrap this block has been
-            # removed (code-reviewer P2, PR #43): the previous
-            # implementation held self._cap_lock across the blocking
-            # cap.read() which on an H.264 keyframe decode can take
-            # 100-200ms, stalling the Tk thread's clear() call for the
-            # full decode window. Since cap is never shared, the lock
-            # served no real purpose.
-            #
-            # Sequential-read fast path: cap.set(CAP_PROP_POS_FRAMES) on
-            # H.264/H.265 is O(N) from the nearest keyframe (Gemini #4
-            # finding on PR #43). When the request is just "next frame",
-            # skip the seek entirely — cv2 already advances by one on
-            # cap.read(). Only seek for non-sequential jumps (scrub,
-            # restart, A/B sync). The threshold (>1 frame delta)
-            # tolerates the off-by-one from cap.get(POS_FRAMES) returning
-            # the NEXT frame index after a successful read.
+                # Cap is LOCAL to this generation — passed in as an arg,
+                # not read from self.* — so an old worker can't race the
+                # new capture. clear() does NOT release this cap from
+                # the Tk thread anymore (Codex P1, 3273416655): doing
+                # so could race a mid-flight cap.read() on H.264 and
+                # crash OpenCV. The release happens in the finally
+                # block at the bottom of THIS function, ensuring
+                # cap.read() and cap.release() are always serialized
+                # on the same thread.
+                #
+                # Sequential-read fast path: cap.set(CAP_PROP_POS_FRAMES)
+                # on H.264/H.265 is O(N) from the nearest keyframe
+                # (Gemini #4 PR #43). When the request is just "next
+                # frame", skip the seek entirely — cv2 already advances
+                # by one on cap.read(). Only seek for non-sequential
+                # jumps (scrub, restart, A/B sync). The threshold (>1
+                # frame delta) tolerates the off-by-one from
+                # cap.get(POS_FRAMES) returning the NEXT frame index
+                # after a successful read.
+                try:
+                    current = int(cap.get(cv2_mod.CAP_PROP_POS_FRAMES) or 0)
+                    if abs(current - frame_index) > 1:
+                        cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_index)
+                    ok, frame_bgr = cap.read()
+                except Exception:
+                    ok, frame_bgr = False, None
+
+                if not ok or frame_bgr is None:
+                    continue
+
+                try:
+                    # Aspect-preserving fit (PR #43 user feedback: video
+                    # was getting squashed/stretched because the previous
+                    # implementation blindly resized to _DISPLAY_W ×
+                    # _DISPLAY_H = 480×270 = 16:9). Real videos can be
+                    # 9:16 (portrait), 3:4 (selfie), or anything else.
+                    # Now we read the canvas's CURRENT size on the Tk
+                    # thread (canvas_w/h captured at frame_dim_call time)
+                    # and fit the source frame INSIDE that box preserving
+                    # aspect ratio. cv2 handles the actual resize.
+                    src_h, src_w = frame_bgr.shape[:2]
+                    # Pull the canvas dimensions captured by the last
+                    # Configure event (falls back to _DISPLAY_W/H before
+                    # the canvas has ever been laid out).
+                    target_w = self._canvas_w or _DISPLAY_W
+                    target_h = self._canvas_h or _DISPLAY_H
+                    # Fit-inside: scale by the smaller of the two ratios
+                    # so the entire source frame is visible (no crop).
+                    scale = min(target_w / src_w, target_h / src_h)
+                    new_w = max(1, int(src_w * scale))
+                    new_h = max(1, int(src_h * scale))
+                    resized = cv2_mod.resize(frame_bgr, (new_w, new_h))
+                    rgb = cv2_mod.cvtColor(resized, cv2_mod.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(rgb)
+                except Exception:
+                    logger.exception("VideoFrame decode failed")
+                    continue
+
+                # Hop back to the Tk thread for the actual widget update.
+                # generation_id flows through so the renderer drops
+                # frames from a superseded worker.
+                self.after(
+                    0, self._render_pil_image, pil_img, frame_index, generation_id,
+                )
+        finally:
+            # Decoder-thread-owned release. Tk's clear() set stop_event
+            # and dropped the sentinel; we land here once the in-flight
+            # cap.read() returns. Releasing on the same thread that did
+            # the last read serializes the OpenCV calls, eliminating
+            # the close-during-read race (Codex P1 3273416655). The
+            # try/except keeps the worker exit clean even if release
+            # itself raises (some OpenCV backends throw on a
+            # double-release after error).
             try:
-                current = int(cap.get(cv2_mod.CAP_PROP_POS_FRAMES) or 0)
-                if abs(current - frame_index) > 1:
-                    cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_index)
-                ok, frame_bgr = cap.read()
+                cap.release()
             except Exception:
-                ok, frame_bgr = False, None
-
-            if not ok or frame_bgr is None:
-                continue
-
-            try:
-                # Aspect-preserving fit (PR #43 user feedback: video
-                # was getting squashed/stretched because the previous
-                # implementation blindly resized to _DISPLAY_W ×
-                # _DISPLAY_H = 480×270 = 16:9). Real videos can be
-                # 9:16 (portrait), 3:4 (selfie), or anything else.
-                # Now we read the canvas's CURRENT size on the Tk
-                # thread (canvas_w/h captured at frame_dim_call time)
-                # and fit the source frame INSIDE that box preserving
-                # aspect ratio. cv2 handles the actual resize.
-                src_h, src_w = frame_bgr.shape[:2]
-                # Pull the canvas dimensions captured by the last
-                # Configure event (falls back to _DISPLAY_W/H before
-                # the canvas has ever been laid out).
-                target_w = self._canvas_w or _DISPLAY_W
-                target_h = self._canvas_h or _DISPLAY_H
-                # Fit-inside: scale by the smaller of the two ratios
-                # so the entire source frame is visible (no crop).
-                scale = min(target_w / src_w, target_h / src_h)
-                new_w = max(1, int(src_w * scale))
-                new_h = max(1, int(src_h * scale))
-                resized = cv2_mod.resize(frame_bgr, (new_w, new_h))
-                rgb = cv2_mod.cvtColor(resized, cv2_mod.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(rgb)
-            except Exception:
-                logger.exception("VideoFrame decode failed")
-                continue
-
-            # Hop back to the Tk thread for the actual widget update.
-            # generation_id flows through so the renderer drops frames
-            # from a superseded worker.
-            self.after(
-                0, self._render_pil_image, pil_img, frame_index, generation_id,
-            )
+                logger.debug("cap.release() in decoder finally raised", exc_info=True)
 
     # ── Internal: Tk-thread render ──────────────────────────────────
 
