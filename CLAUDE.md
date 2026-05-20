@@ -660,78 +660,54 @@ log_drop_default = int(right_section_w * 0.71)
 
 ## Oldcam Version Wiring
 
-> Full checklist: [`docs/oldcam-wiring.md`](docs/oldcam-wiring.md)
+Full wiring checklist with per-layer tables: [`docs/oldcam-wiring.md`](docs/oldcam-wiring.md).
 
-When adding a new Oldcam version (e.g., v12), these are the required touch-points:
+**Current default version:** v24 (Crush Laundromat; superseded v15). The skipped
+app-version range v16-v23 are bench experiments in `oldcam-testing/` evaluated
+against the resemble-score metric — which turned out NOT to be the metric Persona
+actually uses downstream, so the experiments are paused-pending-re-evaluation,
+not rejected. v14 / v15 / v24 do **not** use mediapipe; v9 / v10 / v11 do.
 
-| Layer | Where | What to do |
-|-------|-------|-----------|
-| Algorithm | `oldcam-vN/` + `oldcam-vN/macOS/` | Create folder with `oldcam.py`, `launcher.py`, `requirements.txt`, `oldcam_launcher.bat` (CRLF) |
-| Launchers (3 levels) | `launchers/windows/`, `launchers/macos/`, `launchers/` | Add 4 new launcher files (2 `.bat` CRLF, 2 `.command` LF) |
-| GUI checkbox | `kling_gui/config_panel.py` | Add to `oldcam_version_vars` dict (~line 514) and loop tuple (~line 522) |
-| MediaPipe flag | `kling_gui/queue_manager.py` | Add to `requires_mediapipe` set if vN uses face landmarks |
-| Tests | `tests/test_oldcam_versions.py`, `tests/test_launcher_hub_wrappers.py` | Version tuple + output path + mediapipe tests + launcher assertions |
-| Dist | `distribution/release_prep.py` | Add new launcher file paths explicitly (algorithm folder auto-included via tree walk) |
-| If new default | `automation/config.py`, root + hub launchers | Set `automation_oldcam_version`, update all 5 `run_oldcam` launchers |
-
-**Auto-discovered (no changes needed):** `_discover_oldcam_versions()` in `queue_manager.py` scans `oldcam-v*` dirs; output filename suffix is generic; face landmarker task searched generically; `automation/pipeline.py` is fully version-agnostic.
-
-**Current default version:** v24 (Crush Laundromat; superseded v15). App version numbers skip v16–v23 — those were rejected `oldcam-testing/` bench experiments, never app versions (see `oldcam-testing/SCOREBOARD.md`). Mediapipe versions: v9, v10, v11. v14/v15/v24 do **not** use mediapipe.
+**Auto-discovered (no changes needed):** `_discover_oldcam_versions()` in
+`queue_manager.py` scans `oldcam-v*` dirs; output filename suffix is generic;
+`automation/pipeline.py` is fully version-agnostic.
 
 ---
 
 ## rPPG Injection Wiring
 
-> Full reference: [`docs/rppg-wiring.md`](docs/rppg-wiring.md)
+Full wiring tables + harness usage: [`docs/rppg-wiring.md`](docs/rppg-wiring.md).
 
-rPPG injection is the **final** post-process: `Kling → Loop → Oldcam → rPPG`
-(rPPG strictly last). It installs a sub-perceptual physiological pulse so
-Persona's passive rPPG stage sees a real signal. **Off by default
-everywhere — opt-in only.** It invokes the gitignored `rPPG/` tool as an
-external launcher and degrades gracefully (skip + log, never crash) if the
-tool is absent or fails. It is NOT the removed crude v10/v11 "siren" pulse.
+**Pipeline order (NON-NEGOTIABLE):** `Kling → Loop → Oldcam → rPPG`. rPPG runs
+**last** so it sees the oldcam-distorted frames as its source, otherwise the
+pulse signal gets washed by the downstream stages. **Off by default everywhere
+— opt-in only.** Invokes the gitignored `rPPG/` external tool; degrades
+gracefully (skip + log, never crash) when the tool is missing or fails.
 
-| Layer | Where | What |
-|-------|-------|------|
-| Manifest registry | `automation/manifest.py` `STEP_NAMES` | `"rppg"` after `"oldcam"` — REQUIRED or `update_step` raises `Unknown step: rppg` |
-| Config | `automation/config.py` | `automation_rppg_enabled` (False), `automation_rppg_mode` ("inject"), `automation_rppg_required` (False) |
-| Automation | `automation/rppg.py` (NEW) | `run_rppg` / `resolve_produced_output` / `build_rppg_output_path` / `resolve_rppg_launcher` (mirrors `automation/oldcam.py`) |
-| Pipeline Step 8 | `automation/pipeline.py` | After oldcam; input = oldcam output else video_generate output; facetrack-style manifest reporting |
-| GUI queue | `kling_gui/queue_manager.py` | `_rppg_*` methods; main queue order + oldcam re-run path |
-| GUI checkbox | `kling_gui/config_panel.py` | Orange row (`#3A2A1F`/`#7D5E3A`) below the violet oldcam frame; `rppg_var`; `_on_rppg_changed`; cleanup list |
-| CLI | `kling_automation_ui.py` | recommended-defaults + `_ask_bool` + `_qs_section_oldcam`; `RECOMMENDED_DEFAULTS_VERSION` bumped |
-
-**Verified injector contract gotcha:** `--output` is NOT honoured
-deterministically — the injector renames to
+**Injector contract gotcha you WILL hit:** `--output` is NOT honoured
+deterministically — the injector renames its output to
 `{stem}-rppg - <metrics>{ext}`. Always resolve the real file via
-`automation.rppg.resolve_produced_output()` (single source of truth; GUI
-queue + harness both use it). `--skip-kinematic-gate` is always passed
-(README-untested gate; re-enabling is a deliberate future enhancement).
+`automation.rppg.resolve_produced_output()` — single source of truth used by
+both the GUI queue and the test harness.
 
-### Permanent rPPG / oldcam test harness (this Windows box)
-
-`oldcam-testing/rppg_harness.py` + `oldcam-testing/run_rppg_harness.bat`
-are a **permanent** validation rig that runs the real injector on a
-permanent gitignored Kling fixture
-(`oldcam-testing/front_crop_nano-banana-2-edit_sim87_001_k25tStd_p4_1.mp4`
-— keep on disk, never commit) and emits an anti-siren `REPORT.md`.
-
-```bat
-oldcam-testing\run_rppg_harness.bat            rem direct rPPG on fixture
-oldcam-testing\run_rppg_harness.bat --chain    rem full Loop->Oldcam->rPPG
-oldcam-testing\run_rppg_harness.bat --skip-run rem re-analyse last output
-```
-
-The harness script + .bat are tracked (permanent infra); the fixture and
-`oldcam-testing/rppg_harness_out/` are gitignored. Use it to validate any
-rPPG/oldcam change before pushing. First real run: **SUB-PERCEPTUAL**
-(green p2p delta 0.26, no siren) — default `--strength 0.005` is correct.
+**Validation rig:** `oldcam-testing/rppg_harness.py` + `run_rppg_harness.bat`
+run the real injector against a permanent gitignored fixture and emit an
+anti-siren `REPORT.md`. Use it before pushing any rPPG/oldcam change. See
+the wiring doc for the three invocation modes (direct / chain / --skip-run).
 
 ---
 
 ## Similarity Stack Wiring (NON-NEGOTIABLE — full surface coverage)
 
-The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, automation CLI pipeline, standalone subproject (own GUI + own CLI), Windows + macOS launchers (per surface), PyInstaller frozen build, dist release zip, and tests. Touching it without updating ALL applicable surfaces ships a broken release.
+Full per-action tables (adding a dep, adding a GUI control, adding a config
+key, adding a launcher, pre-flight checklist):
+[`docs/similarity-wiring.md`](docs/similarity-wiring.md).
+
+**The feature spans TEN distinct surfaces:** main GUI carousel, automation CLI
+pipeline, standalone subproject (own GUI + own CLI), Windows + macOS launchers
+(per surface), PyInstaller frozen build, dist release zip, and tests. Touching
+it without updating ALL applicable surfaces ships a broken release. Use the
+wiring doc's per-action checklist before commit.
 
 **Engine layer (single source of truth — DO NOT duplicate):**
 
@@ -744,60 +720,7 @@ The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, 
 | Main GUI import | `from face_similarity import compute_face_similarity_details` in `kling_gui/carousel_widget.py` |
 | Standalone GUI/CLI import | `from src.engine import FaceEngine` in `similarity/src/{gui,cli}.py` |
 
-### A. Adding a new ML dependency (e.g., torch, onnxruntime)
-
-| Layer | File | Action |
-|-------|------|--------|
-| Main requirements | `requirements.txt` | `+ pkg>=X,<Y` |
-| Standalone subproject requirements | `similarity/requirements.txt` | `+ pkg>=X,<Y` |
-| Dep-checker registry | `dependency_checker.py:DEPENDENCIES` | Add `Dependency(name=…, import_name=…, pip_name=…, required=False, description=…)` |
-| Auto-repair set | `dependency_checker.py:REPAIRABLE_RUNTIME_IMPORTS` | `+ "import_name"` |
-| Frozen build hidden imports | `kling_gui_direct.spec:hiddenimports` | `+ 'pkg'` and optionally `collect_submodules('pkg')` |
-| Dep stamps (auto-busted) | `.launcher_state/deps_*.ok` and `similarity/.launcher_state/similarity_*.ok` | Auto-busted on `requirements.txt` mtime/size change; manual `rm` if needed |
-
-### B. Adding a similarity GUI control (checkbox/button/etc.)
-
-| Layer | File | Action |
-|-------|------|--------|
-| Main carousel widget | `kling_gui/carousel_widget.py::_build_panel` | Add widget in `sim_row` (controls) or `meta_frame` (status chips) |
-| Bind to engine | `_on_<control>_toggle` method on `ImageCarousel` | Apply to `_get_engine().<attr>` then call `recalc_all_similarity_now(reason=...)` |
-| Standalone GUI mirror | `similarity/src/gui.py` | Add `ctk.CTkCheckBox` / `ctk.CTkSwitch` with the same name |
-| Standalone CLI mirror | `similarity/src/cli.py::apply_runtime_config` + `similarity/main.py` argparse | Add `--<flag>` with `argparse.BooleanOptionalAction` |
-| Config persistence | `kling_config.json` defaults + `face_similarity._apply_config_overrides` | New `automation_similarity_<name>` key |
-| Test stubs (main carousel) | `tests/test_carousel_ref_controls.py` `_FakeButton()` block | Add new attribute on the `tab` instance if `_update_panel` reads it |
-| Test stubs (standalone GUI) | `similarity/tests/test_gui.py::_CTkModuleStub` | Add new widget class to the stub registry |
-
-### C. Adding a new `automation_similarity_*` config key
-
-| Layer | File | Action |
-|-------|------|--------|
-| Default value | `kling_config.json` | Add key with sensible default |
-| Loader | `face_similarity._apply_config_overrides` | Read with `_parse_bool(...)` for booleans (handles `"true"`/`"false"` strings), `str(...).strip()` for strings |
-| Pipeline gate | `automation/pipeline.py` | Read via `self.automation.get("automation_similarity_<key>", default)` |
-| Standalone CLI flag | `similarity/main.py` argparse + `similarity/src/cli.py::apply_runtime_config` | Mirror as a CLI flag |
-| Tests | `tests/test_automation_pipeline.py`, `tests/test_similarity_canonical_path.py` | New gating + adapter tests |
-
-### D. Adding a new launcher (Windows + macOS, GUI + CLI)
-
-| Layer | Windows | macOS | Notes |
-|-------|---------|-------|-------|
-| Root wrapper | `run_<name>.bat` | `run_<name>.command` | Two-line passthrough |
-| Hub wrapper | `launchers/run_<name>.bat` | `launchers/run_<name>.command` | Hop to platform layer |
-| Platform impl | `launchers/windows/run_<name>.bat` (CRLF, `echo(` for blanks) | `launchers/macos/run_<name>.command` (LF — Apple writes the OS as "macOS") | Real venv/dep/exec logic |
-| Standalone subproject | `similarity/run_<name>.{bat,command}` | same | Used by hub wrappers `launchers/{windows,macos}/run_similarity_*` (path stays lowercase, OS name in prose stays "macOS") |
-| Build pipeline | `distribution/release_prep.py:copy_sanitized_tree` | same | Walks tree → auto-included unless excluded |
-
-### E. Pre-flight checklist (run BEFORE every similarity-stack commit)
-
-- [ ] `requirements.txt` updated if new pip dep
-- [ ] `similarity/requirements.txt` updated if new pip dep
-- [ ] `dependency_checker.py` (DEPENDENCIES + REPAIRABLE_RUNTIME_IMPORTS) updated
-- [ ] `kling_gui_direct.spec` hiddenimports updated if new module imported lazily
-- [ ] CLI flag in `similarity/main.py` argparse if user-controllable
-- [ ] CTk stub in `similarity/tests/test_gui.py:_CTkModuleStub` if new widget class used
-- [ ] `_FakeButton` stubs in `tests/test_carousel_ref_controls.py` if `_update_panel` reads new widget
-- [ ] `python -m pytest tests/ similarity/tests/test_cli.py similarity/tests/test_gui.py -q` (all green)
-- [ ] Line endings match per-file convention (`requirements.txt` LF, `kling_gui/main_window.py` CRLF — check with `python -c "..."` snippet from prior commits)
-- [ ] Smoke-tested both real GUI (`launchers/windows/run_gui.bat`) AND standalone GUI (`launchers/windows/run_similarity_gui.bat`)
-
-**Default config keys (current):** `automation_similarity_threshold` (80), `automation_similarity_use_ensemble` (true), `automation_similarity_secondary_model` ("Facenet512"), `automation_similarity_anti_spoofing` (true), `automation_similarity_require_fas_pass` (false).
+**Default config keys (current):** `automation_similarity_threshold` (80),
+`automation_similarity_use_ensemble` (true), `automation_similarity_secondary_model`
+("Facenet512"), `automation_similarity_anti_spoofing` (true),
+`automation_similarity_require_fas_pass` (false).
