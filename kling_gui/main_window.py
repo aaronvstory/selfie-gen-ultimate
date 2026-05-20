@@ -4465,9 +4465,16 @@ class KlingGUIWindow:
                         self.image_session.add_image(full, "input", make_active=False)
                         loaded_real.add(real)
                         rescan_imgs += 1
+                    # Videos come from two passes:
+                    # 1) find_video_groups for .mp4 (preserves Kling
+                    #    base_stem grouping the Video Inspector uses)
+                    # 2) Direct extension scan for .mov/.webm/.mkv/.avi
+                    #    which find_video_groups intentionally ignores.
+                    #    Dedup on os.path.realpath so a clip in both
+                    #    paths only adds once.
                     try:
                         groups = _find_video_groups(_Path(folder))
-                    except (OSError, ValueError):
+                    except OSError:
                         groups = []
                     for group in groups:
                         for vmeta in group.videos:
@@ -4480,6 +4487,25 @@ class KlingGUIWindow:
                             )
                             loaded_real.add(real)
                             rescan_vids += 1
+                    # Non-mp4 video extensions — simple listdir pass
+                    # (mp4 already covered above; the set difference
+                    # avoids re-adding any mp4 the loop above missed).
+                    extra_video_exts = {".mov", ".webm", ".mkv", ".avi"}
+                    for fname in entries:
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext not in extra_video_exts:
+                            continue
+                        full = os.path.join(folder, fname)
+                        if not os.path.isfile(full):
+                            continue
+                        real = os.path.realpath(full)
+                        if real in loaded_real:
+                            continue
+                        self.image_session.add_image(
+                            full, "video", make_active=False,
+                        )
+                        loaded_real.add(real)
+                        rescan_vids += 1
                 if rescan_imgs or rescan_vids:
                     self._log(
                         f"Folder rescan: +{rescan_imgs} new image(s), "

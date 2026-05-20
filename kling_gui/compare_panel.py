@@ -251,14 +251,38 @@ class ComparePanel(tk.Frame):
         try:
             from PIL import Image, ImageTk, ImageOps
 
-            img = Image.open(entry.path)
-            img.load()
+            # Video items: render cv2 first-frame + a centered ▶ glyph.
+            # PIL.Image.open() would raise UnidentifiedImageError on a
+            # .mp4 and the user would just see the generic error text —
+            # broken UX given videos are now first-class carousel items.
+            is_video = getattr(entry, "is_video", False)
+            if is_video:
+                from .carousel_widget import _extract_video_first_frame
+                img = _extract_video_first_frame(entry.path)
+                if img is None:
+                    # cv2 missing OR decode failed — placeholder + glyph.
+                    cw_pl = max(1, self.canvas.winfo_width())
+                    ch_pl = max(1, self.canvas.winfo_height())
+                    self.canvas.create_rectangle(
+                        2, 2, cw_pl - 2, ch_pl - 2,
+                        fill=COLORS["bg_input"], outline="",
+                    )
+                    self.canvas.create_text(
+                        cw_pl // 2, ch_pl // 2,
+                        text="▶", fill="#FFFFFF",
+                        font=(FONT_FAMILY, 48, "bold"),
+                    )
+                    return
+            else:
+                img = Image.open(entry.path)
+                img.load()
 
-            # Auto-correct EXIF orientation (match carousel)
+            # Auto-correct EXIF orientation (no-op on cv2-derived frames)
             img = ImageOps.exif_transpose(img)
 
-            # Apply user rotation
-            if entry.rotation:
+            # Apply user rotation (skip on videos — rotation is an
+            # image-edit concept, mirror carousel behavior).
+            if entry.rotation and not is_video:
                 img = img.rotate(-entry.rotation, expand=True)
 
             cw = max(1, self.canvas.winfo_width() - 4)
@@ -271,9 +295,21 @@ class ComparePanel(tk.Frame):
 
             photo = ImageTk.PhotoImage(img)
             self._photo = photo
+            cx_p = cw // 2 + 2
+            cy_p = ch // 2 + 2
             self.canvas.create_image(
-                cw // 2 + 2, ch // 2 + 2, image=photo, anchor=tk.CENTER
+                cx_p, cy_p, image=photo, anchor=tk.CENTER
             )
+            if is_video:
+                # Centered ▶ overlay so the user can tell at a glance
+                # this is a video, not a still. Size scales with thumbnail.
+                short_dim = min(new_w, new_h)
+                glyph_size = max(36, min(96, int(short_dim * 0.22)))
+                self.canvas.create_text(
+                    cx_p, cy_p,
+                    text="▶", fill="#FFFFFF",
+                    font=(FONT_FAMILY, glyph_size, "bold"),
+                )
         except ImportError:
             cw = max(1, self.canvas.winfo_width())
             ch = max(1, self.canvas.winfo_height())
@@ -346,10 +382,19 @@ class ComparePanel(tk.Frame):
             max_dim = 500
 
             def load_thumb(entry):
-                img = Image.open(entry.path)
-                img.load()
+                if getattr(entry, "is_video", False):
+                    from .carousel_widget import _extract_video_first_frame
+                    img = _extract_video_first_frame(entry.path)
+                    if img is None:
+                        # Fall back to a small black image rather than
+                        # raising — the hover popup just shows a blank
+                        # tile, which still beats crashing the popup.
+                        img = Image.new("RGB", (max_dim, int(max_dim * 9 / 16)), "#000000")
+                else:
+                    img = Image.open(entry.path)
+                    img.load()
                 img = ImageOps.exif_transpose(img)
-                if entry.rotation:
+                if entry.rotation and not getattr(entry, "is_video", False):
                     img = img.rotate(-entry.rotation, expand=True)
                 ratio = min(max_dim / img.width, max_dim / img.height, 1.0)
                 if ratio < 1.0:

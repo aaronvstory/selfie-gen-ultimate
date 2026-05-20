@@ -47,9 +47,13 @@ def _format_image_info(path: str) -> str:
 # Video thumbnail helper. Used by _show_image_on_canvas to render a
 # carousel item whose underlying file is a video (session-folder rescan
 # adds these). Cache is keyed by absolute path so the carousel doesn't
-# re-decode on every resize Configure event.
+# re-decode on every resize Configure event. FIFO-capped to bound
+# memory — each entry is a PIL.Image of the first frame (~2-3 MB at
+# 1280×720 RGB), so an unbounded cache leaked 100s of MB over long
+# sessions. Mirrors the _BEST_VIDEO_CACHE cap pattern in video_discovery.
 # ----------------------------------------------------------------------
-_VIDEO_THUMB_CACHE: dict = {}
+_VIDEO_THUMB_CACHE: "dict[str, object]" = {}
+_VIDEO_THUMB_CACHE_MAX = 64
 
 
 def _extract_video_first_frame(video_path: str):
@@ -79,6 +83,15 @@ def _extract_video_first_frame(video_path: str):
             return None
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb)
+        # FIFO evict the oldest entry when at cap. dict preserves
+        # insertion order in Python 3.7+ so next(iter(...)) is the
+        # oldest. Single-eviction is sufficient because we only add
+        # one entry per call.
+        if len(_VIDEO_THUMB_CACHE) >= _VIDEO_THUMB_CACHE_MAX:
+            try:
+                _VIDEO_THUMB_CACHE.pop(next(iter(_VIDEO_THUMB_CACHE)))
+            except StopIteration:
+                pass
         _VIDEO_THUMB_CACHE[video_path] = img
         return img
     except Exception:
@@ -89,7 +102,7 @@ def _extract_video_first_frame(video_path: str):
             try:
                 cap.release()
             except Exception:
-                pass
+                logger.debug("video-thumb cap.release() failed for %s", video_path, exc_info=True)
 
 
 def _truncate_filename(name: str, max_chars: int = 35) -> str:
@@ -1425,7 +1438,7 @@ class ImageCarousel(tk.Frame):
             )
             return False
         targets = [e for e in self.image_session.images
-                   if e.source_type != "input" and e is not ref and e.exists]
+                   if e.source_type != "input" and not e.is_video and e is not ref and e.exists]
         if not targets:
             self._sim_log(
                 f"recalc skipped ({reason}): no eligible targets (need at least one generated/outpaint image other than the reference).",

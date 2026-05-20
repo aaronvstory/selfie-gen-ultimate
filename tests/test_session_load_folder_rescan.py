@@ -128,8 +128,13 @@ def _replicate_rescan(session: ImageSession, folders: set, valid_image_exts: set
     or the video discovery wiring fails this test file rather than only
     showing up in a manual GUI session. If you change the production loop,
     mirror the change here.
+
+    Two video discovery passes (per H1 fix on PR #43 review):
+      1) find_video_groups for .mp4 (preserves Kling base_stem grouping)
+      2) Direct extension scan for .mov/.webm/.mkv/.avi (not covered by 1)
     """
     from kling_gui.video_discovery import find_video_groups
+    extra_video_exts = {".mov", ".webm", ".mkv", ".avi"}
     loaded_real = {os.path.realpath(e.path) for e in session.images}
     new_imgs = new_vids = 0
     for folder in sorted(folders):
@@ -154,7 +159,7 @@ def _replicate_rescan(session: ImageSession, folders: set, valid_image_exts: set
             new_imgs += 1
         try:
             groups = find_video_groups(Path(folder))
-        except (OSError, ValueError):
+        except OSError:
             groups = []
         for group in groups:
             for vmeta in group.videos:
@@ -165,6 +170,20 @@ def _replicate_rescan(session: ImageSession, folders: set, valid_image_exts: set
                 session.add_image(vpath, "video", make_active=False)
                 loaded_real.add(real)
                 new_vids += 1
+        # Pass 2: non-mp4 video extensions
+        for fname in entries:
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in extra_video_exts:
+                continue
+            full = os.path.join(folder, fname)
+            if not os.path.isfile(full):
+                continue
+            real = os.path.realpath(full)
+            if real in loaded_real:
+                continue
+            session.add_image(full, "video", make_active=False)
+            loaded_real.add(real)
+            new_vids += 1
     return new_imgs, new_vids
 
 
@@ -223,6 +242,100 @@ def test_rescan_handles_nonexistent_folder_gracefully(tmp_path):
         valid_image_exts={".png"},
     )
     assert (new_imgs, new_vids) == (0, 0)
+
+
+def test_rescan_surfaces_all_five_video_extensions(tmp_path):
+    """H1 from code review: the original rescan only used find_video_groups
+    which hard-filters on .mp4. Users with .mov/.webm/.mkv/.avi clips were
+    silently dropped, contradicting the is_video contract and the user-quoted
+    "load in everything" direction. Two-pass discovery must surface all five.
+    """
+    img = tmp_path / "anchor.png"
+    _write_minimal_png(img)
+    # One of each video extension we advertise
+    for stem, ext in [
+        ("clip1", ".mp4"),
+        ("clip2", ".mov"),
+        ("clip3", ".webm"),
+        ("clip4", ".mkv"),
+        ("clip5", ".avi"),
+    ]:
+        (tmp_path / f"{stem}{ext}").write_bytes(b"fakempeg")
+
+    session = ImageSession()
+    session.add_image(str(img), "input", make_active=False)
+
+    new_imgs, new_vids = _replicate_rescan(
+        session,
+        folders={str(tmp_path)},
+        valid_image_exts={".png"},
+    )
+    assert new_imgs == 0
+    assert new_vids == 5, (
+        f"Expected all 5 video formats to surface, got {new_vids}. "
+        "Regression of the H1 video-format-coverage fix."
+    )
+    found_exts = {
+        os.path.splitext(e.path)[1].lower()
+        for e in session.images if e.is_video
+    }
+    assert found_exts == {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+
+
+def test_rescan_dedups_video_across_both_discovery_passes(tmp_path):
+    """An .mp4 that find_video_groups DOES surface must not be re-added by
+    the extension-scan second pass. realpath dedup guards against that.
+    """
+    img = tmp_path / "anchor.png"
+    _write_minimal_png(img)
+    (tmp_path / "front_k25tStd_p1_1.mp4").write_bytes(b"fake")  # Kling-shaped
+    session = ImageSession()
+    session.add_image(str(img), "input", make_active=False)
+    new_imgs, new_vids = _replicate_rescan(
+        session,
+        folders={str(tmp_path)},
+        valid_image_exts={".png"},
+    )
+    # .mp4 is in the find_video_groups vocabulary AND in our extra_video_exts
+    # would NOT be (it's intentionally excluded from extra_video_exts). Result:
+    # exactly one video added, not two.
+    assert new_vids == 1
+
+
+def test_similarity_targets_filter_excludes_videos():
+    """Codex P1 bot finding on c58dc394: _calc_all_similarity filtered only
+    `source_type != "input"`, which let video entries through to
+    compute_face_similarity_details → validate_image_file → warning noise on
+    every recompute. The targets filter must also exclude `e.is_video`.
+
+    Asserted on the source so a regression that drops the gate fails fast.
+    """
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "carousel_widget.py").read_text()
+    # The exact gate string from the fix
+    assert "not e.is_video and e is not ref" in src, (
+        "carousel_widget._calc_all_similarity must filter out video entries "
+        "from similarity targets (regression of the Codex P1 fix on c58dc394)."
+    )
+
+
+def test_compare_panel_video_branch_uses_extract_helper(monkeypatch, tmp_path):
+    """H2 from code review: compare_panel.Image.open() on a video path would
+    raise UnidentifiedImageError and fall to the error-text branch. The
+    video-aware branch must route through _extract_video_first_frame instead.
+
+    We don't construct a real ComparePanel widget (heavy Tk setup) — instead
+    we read the source and assert the video gate is present, so a refactor
+    that drops it fails this test.
+    """
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "compare_panel.py").read_text()
+    assert "_extract_video_first_frame" in src, (
+        "compare_panel.py must import and use the carousel's video-frame "
+        "extractor for video entries (H2 fix)."
+    )
+    assert 'getattr(entry, "is_video", False)' in src, (
+        "compare_panel.py must gate the render on entry.is_video before "
+        "calling PIL.Image.open() (H2 fix)."
+    )
 
 
 if __name__ == "__main__":
