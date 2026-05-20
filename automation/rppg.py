@@ -714,7 +714,12 @@ def run_rppg(
     # mode it also extends the wall-clock deadline by ~90s every time
     # a new iteration starts (friend feedback "no arbitrary timeout").
     tracker = _RppgProgressTracker(report_cb=progress_cb, verbose=verbose)
-    extender = tracker.deadline_extender if iterative else None
+    # Codex P2 (PR #43, bot pass on 2a32f938): caller contract is that
+    # timeout_seconds=0 pins a HARD deadline with no adaptive extension.
+    # The prior code enabled the extender unconditionally on iterative,
+    # which let strict/fast-fail callers (and tests) run for many extra
+    # minutes because each Iteration line added ~90s to the deadline.
+    extender = tracker.deadline_extender if (iterative and timeout_seconds and timeout_seconds > 0) else None
     output_lines: List[str] = []
     try:
         completed_returncode, output_lines = stream_subprocess_with_timeout(

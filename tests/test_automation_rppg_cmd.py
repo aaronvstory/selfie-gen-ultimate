@@ -161,6 +161,91 @@ def test_skip_kinematic_gate_can_be_disabled(
     assert "--skip-kinematic-gate" not in cmd
 
 
+def _make_extender_capturing_stub(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Captures deadline_extender (in addition to cmd) so tests can assert on it."""
+    captured: dict = {}
+
+    def _fake_stream(cmd, *, cwd, timeout_seconds, on_line, deadline_extender=None):
+        del cwd, on_line
+        captured["cmd"] = list(cmd)
+        captured["timeout"] = timeout_seconds
+        captured["extender"] = deadline_extender
+        return (0, ["fake-stdout"])
+
+    monkeypatch.setattr(rppg_module, "stream_subprocess_with_timeout", _fake_stream)
+    monkeypatch.setattr(rppg_module, "resolve_produced_output", lambda p: p)
+    monkeypatch.setattr(
+        rppg_module, "finalize_rppg_output",
+        lambda produced, requested, **kw: produced,
+    )
+    return captured
+
+
+def test_timeout_zero_disables_adaptive_extender(tmp_path, _stub_launcher, monkeypatch):
+    """Codex P2 (PR #43, bot pass on 2a32f938): timeout_seconds=0 is the
+    documented "hard deadline, no adaptive extension" contract. Before the
+    fix, the iterative path wired the deadline_extender unconditionally —
+    a caller asking for 0 seconds (e.g. tests, fast-fail) still got many
+    extra minutes because each Iteration line added ~90s.
+    """
+    captured = _make_extender_capturing_stub(monkeypatch)
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(
+        video_path=inp, repo_root=tmp_path, timeout_seconds=0, iterative=True,
+    )
+    assert captured["timeout"] == 0
+    assert captured["extender"] is None, (
+        "timeout_seconds=0 must disable the deadline extender even when "
+        "iterative=True (Codex P2 regression)."
+    )
+
+
+def test_positive_timeout_with_iterative_enables_extender(
+    tmp_path, _stub_launcher, monkeypatch,
+):
+    """Belt-test for the Codex P2 fix: the extender DOES wire when
+    iterative=True AND timeout_seconds > 0. Without this we'd be tempted
+    to over-tighten the fix to never wire the extender."""
+    captured = _make_extender_capturing_stub(monkeypatch)
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(
+        video_path=inp, repo_root=tmp_path, timeout_seconds=600, iterative=True,
+    )
+    assert captured["extender"] is not None
+    assert callable(captured["extender"])
+
+
+def test_timeout_none_falls_through_to_default_and_keeps_extender(
+    tmp_path, _stub_launcher, monkeypatch,
+):
+    """When timeout_seconds=None, run_rppg defaults to 1800s (iterative)
+    or 600s (one-shot). With iterative=True the resulting 1800s is
+    positive so the extender IS wired — the Codex P2 fix only
+    short-circuits the hard-zero contract."""
+    captured = _make_extender_capturing_stub(monkeypatch)
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(
+        video_path=inp, repo_root=tmp_path, timeout_seconds=None, iterative=True,
+    )
+    # timeout defaulted to 1800 (iterative)
+    assert captured["timeout"] == 1800
+    assert captured["extender"] is not None
+
+
+def test_non_iterative_never_wires_extender(
+    tmp_path, _stub_launcher, monkeypatch,
+):
+    """The extender is iterative-mode-only — its purpose is to ratchet
+    the wall clock per Iteration N/M line, and one-shot has no
+    iterations to track."""
+    captured = _make_extender_capturing_stub(monkeypatch)
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(
+        video_path=inp, repo_root=tmp_path, timeout_seconds=300, iterative=False,
+    )
+    assert captured["extender"] is None
+
+
 def test_cmd_order_matches_rppg_bat(tmp_path, _stub_launcher, _stub_subprocess):
     """Stronger order assertion: the flag sequence matches the
     canonical launcher (rPPG/rppg.bat line 12) so a strict-mode CLI

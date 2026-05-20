@@ -110,28 +110,35 @@ def find_video_groups(folder: Path) -> List[VideoGroup]:
         return []
 
     groups: Dict[str, VideoGroup] = {}
+    images: Dict[str, Path] = {}
 
-    for entry in sorted(folder.iterdir(), key=lambda p: p.name):
-        if not entry.is_file() or entry.suffix.lower() != ".mp4":
-            continue
-        meta = parse_video_filename(entry)
-        key = meta.base_stem
-        if key not in groups:
-            groups[key] = VideoGroup(base_stem=key, image_path=None)
-        groups[key].videos.append(meta)
-
-    # Associate source images by EXACT stem match. Sorted iteration so
-    # multiple matching image extensions (e.g. front.png AND front.jpg)
-    # resolve deterministically — without sort, the chosen image
-    # depended on filesystem iteration order and broke the file's
-    # stability guarantee (CodeRabbit PR #43 finding).
+    # Single-pass walk (Gemini PR #43, bot pass on 2a32f938): the previous
+    # two iterdir() passes doubled the syscall cost on big folders. Sorted
+    # iteration is still required so multiple matching image extensions
+    # (front.png AND front.jpg) resolve deterministically — the last write
+    # to images[stem] wins, and sorted order picks the last extension by
+    # ASCII order ('.jpeg' < '.jpg' < '.png'). The video walk has no
+    # determinism dependency (group lookup is keyed by base_stem).
     for entry in sorted(folder.iterdir(), key=lambda p: p.name):
         if not entry.is_file():
             continue
-        if entry.suffix.lower() not in _IMAGE_EXTS:
-            continue
-        if entry.stem in groups:
-            groups[entry.stem].image_path = entry
+        ext = entry.suffix.lower()
+        if ext == ".mp4":
+            meta = parse_video_filename(entry)
+            key = meta.base_stem
+            if key not in groups:
+                groups[key] = VideoGroup(base_stem=key, image_path=None)
+            groups[key].videos.append(meta)
+        elif ext in _IMAGE_EXTS:
+            images[entry.stem] = entry
+
+    # Associate source images by EXACT stem match. CodeRabbit PR #43
+    # determinism guarantee: only image stems present in the saved
+    # iteration order can win the association, and the dict-update above
+    # preserves that order.
+    for stem, image_path in images.items():
+        if stem in groups:
+            groups[stem].image_path = image_path
 
     for g in groups.values():
         g.sort_videos()

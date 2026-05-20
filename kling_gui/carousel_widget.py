@@ -105,6 +105,65 @@ def _extract_video_first_frame(video_path: str):
                 logger.debug("video-thumb cap.release() failed for %s", video_path, exc_info=True)
 
 
+# Tracks paths whose async decode is in-flight so we don't spawn a second
+# worker for the same path before the first lands. Tk-thread only — the
+# decoder thread mutates _VIDEO_THUMB_CACHE then schedules its on_done
+# callback via widget.after(0, ...), which removes the path from this set
+# on the Tk thread before re-rendering.
+_VIDEO_THUMB_PENDING: "set[str]" = set()
+
+
+def _extract_video_first_frame_async(
+    video_path: str,
+    widget,
+    on_done,
+) -> bool:
+    """Decode a video's first frame off-thread.
+
+    Returns ``True`` if a decode was started, ``False`` if cached (caller
+    can just use ``_extract_video_first_frame`` synchronously) or if a
+    decode is already in flight for this path (caller should render the
+    placeholder and let the prior decode finish).
+
+    ``on_done`` runs on the Tk thread via ``widget.after(0, ...)`` with
+    the PIL.Image (or None on failure) as its single argument. The
+    callback should re-render the carousel — the now-cached frame will
+    serve via the sync helper next pass. Wrapped in try/TclError so a
+    widget destroyed mid-decode doesn't raise into the Tk loop.
+
+    Addresses Gemini PR #43 finding: cv2.VideoCapture on the Tk thread
+    froze the UI for 100-500ms on first render of each unique video.
+    """
+    if video_path in _VIDEO_THUMB_CACHE:
+        return False
+    if video_path in _VIDEO_THUMB_PENDING:
+        return False
+    _VIDEO_THUMB_PENDING.add(video_path)
+
+    def _worker():
+        img = _extract_video_first_frame(video_path)
+        def _finish():
+            _VIDEO_THUMB_PENDING.discard(video_path)
+            try:
+                on_done(img)
+            except tk.TclError:
+                pass  # widget destroyed mid-decode
+            except Exception:
+                logger.debug("async-thumb on_done failed", exc_info=True)
+        try:
+            widget.after(0, _finish)
+        except (tk.TclError, RuntimeError):
+            # Widget destroyed between spawn and dispatch — drop the
+            # pending marker so a later open of the same file can retry.
+            _VIDEO_THUMB_PENDING.discard(video_path)
+
+    threading.Thread(
+        target=_worker, name=f"video-thumb:{os.path.basename(video_path)}",
+        daemon=True,
+    ).start()
+    return True
+
+
 def _truncate_filename(name: str, max_chars: int = 35) -> str:
     """Truncate long filenames: 'very_long_na...ol_exp.png'"""
     if len(name) <= max_chars:
@@ -624,18 +683,28 @@ class ImageCarousel(tk.Frame):
         )
 
         if n > 0:
-            self._ref_btn.config(state=tk.NORMAL)
-            if is_manual_ref:
-                self._ref_btn.config(text="\u2605 Clear")
+            # H3: video carousel items can't be a similarity ref — disable
+            # the button on those entries. (_calc_all_similarity also guards
+            # the recalc path, but the disabled state is a better affordance.)
+            if entry is not None and entry.is_video:
                 self._ref_btn.config(
+                    state=tk.DISABLED, text="\u2605 Ref",
+                    bg=COLORS["bg_panel"],
+                    fg=BUTTON_TEXT_COLOR,
+                    activebackground=COLORS["bg_hover"],
+                    activeforeground=BUTTON_TEXT_COLOR,
+                )
+            elif is_manual_ref:
+                self._ref_btn.config(
+                    state=tk.NORMAL, text="\u2605 Clear",
                     bg=_REF_ACTIVE_BG,
                     fg=_REF_ACTIVE_FG,
                     activebackground=_REF_ACTIVE_BG,
                     activeforeground=_REF_ACTIVE_FG,
                 )
             else:
-                self._ref_btn.config(text="\u2605 Ref")
                 self._ref_btn.config(
+                    state=tk.NORMAL, text="\u2605 Ref",
                     bg=_REF_ACTIVE_BG if is_effective_ref else COLORS["bg_panel"],
                     fg=_REF_ACTIVE_FG if is_effective_ref else BUTTON_TEXT_COLOR,
                     activebackground=_REF_ACTIVE_BG if is_effective_ref else COLORS["bg_hover"],
@@ -820,6 +889,30 @@ class ImageCarousel(tk.Frame):
             canvas.delete("all")
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
+            # For memoized VIDEO failures keep the play-glyph placeholder +
+            # click-to-inspector binding (M3 fix — the user can still
+            # click through to the Inspector which has its own external-
+            # player fallback). For still-image failures keep the text
+            # placeholder so the user sees there was an earlier error.
+            ext = os.path.splitext(path)[1].lower()
+            if ext in {".mp4", ".mov", ".webm", ".mkv", ".avi"}:
+                canvas.create_rectangle(
+                    2, 2, cw - 2, ch - 2,
+                    fill=COLORS["bg_input"], outline="",
+                )
+                canvas.create_text(
+                    cw // 2, ch // 2 - 14,
+                    text="▶", fill="#FFFFFF",
+                    font=(FONT_FAMILY, 48, "bold"),
+                )
+                canvas.create_text(
+                    cw // 2, ch // 2 + 24,
+                    text=os.path.basename(path),
+                    fill=COLORS["text_light"],
+                    font=(FONT_FAMILY, 9),
+                )
+                self._bind_video_canvas_click(canvas, path)
+                return True
             canvas.create_text(
                 cw // 2, ch // 2,
                 text="(render skipped — see earlier error)",
@@ -840,12 +933,50 @@ class ImageCarousel(tk.Frame):
             ext = os.path.splitext(path)[1].lower()
             is_video = ext in {".mp4", ".mov", ".webm", ".mkv", ".avi"}
             if is_video:
-                img = _extract_video_first_frame(path)
+                # Try the in-memory cache first (instant on resize/navigate-
+                # back). On miss, render the placeholder + ▶ NOW and kick
+                # off a background decode — the carousel stays responsive
+                # while cv2 decodes (100-500ms typical) and re-renders
+                # automatically when the frame lands.
+                img = _VIDEO_THUMB_CACHE.get(path)
+                if img is None:
+                    started = _extract_video_first_frame_async(
+                        path, canvas,
+                        on_done=lambda _img: self._update_display(),
+                    )
+                    if started or path in _VIDEO_THUMB_PENDING:
+                        # Render placeholder for this pass; the async
+                        # on_done will trigger _update_display when ready.
+                        canvas.delete("all")
+                        cw_pl = max(1, canvas.winfo_width())
+                        ch_pl = max(1, canvas.winfo_height())
+                        canvas.create_rectangle(
+                            2, 2, cw_pl - 2, ch_pl - 2,
+                            fill=COLORS["bg_input"], outline="",
+                        )
+                        canvas.create_text(
+                            cw_pl // 2, ch_pl // 2 - 14,
+                            text="▶", fill="#FFFFFF",
+                            font=(FONT_FAMILY, 48, "bold"),
+                        )
+                        canvas.create_text(
+                            cw_pl // 2, ch_pl // 2 + 24,
+                            text=os.path.basename(path) + "  (loading…)",
+                            fill=COLORS["text_light"],
+                            font=(FONT_FAMILY, 9),
+                        )
+                        self._bind_video_canvas_click(canvas, path)
+                        return True
                 if img is None:
                     # cv2 unavailable OR decode failed. Show a neutral
                     # placeholder + ▶ so the user still sees that a
                     # video lives here — clicking opens the Inspector
                     # which has its own external-player fallback.
+                    # M3 (code-review): memoize the failure so corrupt-
+                    # header videos don't re-open VideoCapture on every
+                    # Configure event. The placeholder render below stays
+                    # in the failed-paths branch above on next pass.
+                    self._render_failed_paths.add(path)
                     canvas.delete("all")
                     cw_pl = max(1, canvas.winfo_width())
                     ch_pl = max(1, canvas.winfo_height())
@@ -1227,6 +1358,15 @@ class ImageCarousel(tk.Frame):
     def _toggle_sim_ref(self):
         """Toggle the similarity reference on/off for the active image."""
         session = self.image_session
+        active_entry = session.active_entry
+        # H3 (code-review 2026-05-20): videos cannot be a similarity ref
+        # — they have no face to score against. Refuse + log.
+        if active_entry is not None and active_entry.is_video:
+            self.log(
+                "Similarity ref cannot be a video — pick a still image.",
+                "warning",
+            )
+            return
         active_is_manual_ref = (
             session.current_index == session.similarity_ref_index
             and session.similarity_ref_index >= 0
@@ -1237,8 +1377,7 @@ class ImageCarousel(tk.Frame):
             recalc_reason = "manual ref cleared"
         else:
             session.set_similarity_ref(session.current_index)
-            entry = session.active_entry
-            name = entry.filename if entry else "?"
+            name = active_entry.filename if active_entry else "?"
             self.log(f"Similarity reference set: {name}", "info")
             recalc_reason = "manual ref changed"
         
@@ -1434,6 +1573,18 @@ class ImageCarousel(tk.Frame):
         if not ref:
             self._sim_log(
                 f"recalc skipped ({reason}): no similarity reference set — pick one with the ★ Ref button.",
+                "warning",
+            )
+            return False
+        # H3 (code-review 2026-05-20): videos cannot be a similarity ref.
+        # get_effective_similarity_ref filters on source_type=="input" for
+        # the auto-fallback path, but the MANUAL ref slot does not — if a
+        # user somehow set a video as manual ref (programmatically or via a
+        # stale session), refuse the recalc with a clear message rather than
+        # feeding a video path into compute_face_similarity_details.
+        if ref.is_video:
+            self._sim_log(
+                f"recalc skipped ({reason}): similarity reference is a video — pick a still image.",
                 "warning",
             )
             return False

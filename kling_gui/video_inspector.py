@@ -295,18 +295,30 @@ class VideoFrame(tk.Frame):
         self.step_to(0)
         return True
 
-    def step_to(self, frame_index: int) -> None:
+    def step_to(self, frame_index: int, *, force: bool = False) -> None:
         """Request the decoder thread render frame ``frame_index``.
 
         Non-blocking. Drop-oldest semantics — if the worker hasn't
         consumed the prior request yet, replace it (we always want the
-        newest frame target, never to play catch-up)."""
+        newest frame target, never to play catch-up).
+
+        Dedup (Gemini PR #43 bot pass on 2a32f938): when the master tick
+        ticks faster than the source FPS (slow-mo, or a stale-but-still
+        request from a paused timer that's about to be killed), repeated
+        step_to(N) calls for an already-rendered N would re-decode the
+        same frame. Skip the enqueue when frame_index == _current_frame,
+        UNLESS the caller passes force=True (_on_canvas_resize uses force
+        because the decoded image dimensions are stale on resize even if
+        the frame index is unchanged).
+        """
         if self._cv2_cap is None:
             return
         if frame_index < 0:
             frame_index = 0
         if self._frame_count > 0 and frame_index >= self._frame_count:
             frame_index = self._frame_count - 1
+        if not force and frame_index == self._current_frame:
+            return
         # Drain prior request (non-blocking) then push new one.
         try:
             while True:
@@ -712,7 +724,9 @@ class VideoFrame(tk.Frame):
             old_w != self._canvas_w or old_h != self._canvas_h
         ):
             cur_frame = max(0, self._current_frame)
-            self.step_to(cur_frame)
+            # force=True bypasses the step_to dedup: the index may be
+            # unchanged but the decoded image dimensions are now stale.
+            self.step_to(cur_frame, force=True)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1005,16 +1019,28 @@ class VideoInspectorModal(tk.Toplevel):
         )
         self._restart_btn.pack(side=tk.LEFT, padx=(6, 0))
 
-        self._lock_chk = tk.Checkbutton(
+        # ttk.Checkbutton instead of tk.Checkbutton: on macOS Aqua the
+        # raw tk.Checkbutton reverts to its native white look after the
+        # first toggle (same HIView issue as tk.Button — see b3bc7398).
+        # The clam theme is configured at root init in main_window so
+        # ttk widgets inherit the dark palette automatically.
+        _lock_style = ttk.Style()
+        _lock_style.configure(
+            "Inspector.TCheckbutton",
+            background=COLORS["bg_main"],
+            foreground=COLORS["text_light"],
+            font=(FONT_FAMILY, 9),
+        )
+        _lock_style.map(
+            "Inspector.TCheckbutton",
+            background=[("active", COLORS["bg_main"])],
+            foreground=[("active", COLORS["text_light"])],
+        )
+        self._lock_chk = ttk.Checkbutton(
             toolbar,
             text="Lock A+B scrub",
             variable=self._lock_scrub_var,
-            bg=COLORS["bg_main"],
-            fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_panel"],
-            activebackground=COLORS["bg_main"],
-            activeforeground=COLORS["text_light"],
-            font=(FONT_FAMILY, 9),
+            style="Inspector.TCheckbutton",
         )
         self._lock_chk.pack(side=tk.LEFT, padx=(12, 0))
 
@@ -1224,11 +1250,19 @@ class VideoInspectorModal(tk.Toplevel):
     def _toggle_play(self) -> None:
         if not (self._frame_a.is_loaded() or self._frame_b.is_loaded()):
             return
+        was_playing = self._playing
         self._playing = not self._playing
         try:
             self._play_btn.config(text="⏸ Pause" if self._playing else "▶ Play")
         except tk.TclError:
             pass
+        # If resuming from pause AND the timer is stopped (paused-exit
+        # cleared it), restart the ticker. The destroy()-race fix from
+        # PR #43 P3 is preserved: we only schedule when no timer is
+        # currently set, and the wrapped after() in _schedule_tick still
+        # catches TclError on destroyed widgets.
+        if self._playing and not was_playing and self._timer_id is None:
+            self._schedule_tick()
 
     def _restart(self) -> None:
         self._master_frame = 0.0
@@ -1255,7 +1289,14 @@ class VideoInspectorModal(tk.Toplevel):
         # always sees and cancels the LATEST timer id.
         try:
             if not self._playing:
+                # Pause-state exit BEFORE the finally-reschedule sets a
+                # new timer. Pre-fix: empty ticks rescheduled every 40ms
+                # forever while paused (~25 Hz idle wakeups). Post-fix:
+                # the finally block sees self._timer_id=None (set below)
+                # and skips the reschedule; _toggle_play restarts the
+                # ticker when the user resumes.
                 self._update_counter()
+                self._timer_id = None
                 return
 
             # Source-FPS-driven advancement. master_frame is a float;
@@ -1309,11 +1350,13 @@ class VideoInspectorModal(tk.Toplevel):
 
             self._update_counter()
         finally:
-            # ALWAYS reschedule, even if the body raised (a transient
-            # render error mustn't kill the timer permanently). Guard
-            # against destroyed-widget rescheduling via the try/except
-            # in _schedule_tick.
-            self._schedule_tick()
+            # Reschedule unless the paused-exit branch explicitly
+            # cleared timer_id (or destroy() did). Pre-fix: empty
+            # paused ticks rescheduled forever. The try/except in
+            # _schedule_tick still guards against the destroyed-widget
+            # case where after() raises TclError.
+            if self._timer_id is not None or self._playing:
+                self._schedule_tick()
 
     def _primary_frame(self) -> Optional["VideoFrame"]:
         """Pick which slot's FPS drives playback timing. Focused slot

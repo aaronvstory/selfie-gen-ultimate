@@ -302,6 +302,100 @@ def test_rescan_dedups_video_across_both_discovery_passes(tmp_path):
     assert new_vids == 1
 
 
+def test_video_thumb_async_helper_present_and_signature():
+    """Gemini PR #43 finding (cv2 blocking on Tk): the carousel video branch
+    must NOT call _extract_video_first_frame synchronously on the Tk thread
+    for cold paths. The async helper offloads to a daemon thread and triggers
+    a re-render via widget.after(0, ...) when the frame lands. Source-asserted
+    so a refactor that drops the async path is caught.
+    """
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "carousel_widget.py").read_text()
+    assert "def _extract_video_first_frame_async" in src
+    assert "_VIDEO_THUMB_PENDING" in src
+    assert "_extract_video_first_frame_async(" in src, (
+        "the carousel video render branch must invoke the async helper "
+        "(not the sync _extract_video_first_frame) for cold paths"
+    )
+
+
+def test_video_thumb_async_no_double_spawn(tmp_path, monkeypatch):
+    """Asynchronous decode must not spawn a second worker for a path with
+    an in-flight decode (avoids thundering-herd on a busy folder)."""
+    from kling_gui import carousel_widget
+    # Pretend a decode is already in flight
+    monkeypatch.setattr(
+        carousel_widget, "_VIDEO_THUMB_PENDING",
+        {"/some/clip.mp4"},
+        raising=True,
+    )
+    started = carousel_widget._extract_video_first_frame_async(
+        "/some/clip.mp4",
+        widget=None,            # never touched because we return early
+        on_done=lambda _img: None,
+    )
+    assert started is False
+
+
+def test_video_thumb_async_cache_hit_returns_false(monkeypatch):
+    """If the cache already has the frame, async helper should NOT spawn a
+    worker — caller can just read the cache directly."""
+    from kling_gui import carousel_widget
+    sentinel = object()
+    monkeypatch.setattr(
+        carousel_widget, "_VIDEO_THUMB_CACHE",
+        {"/cached/clip.mp4": sentinel},
+        raising=True,
+    )
+    started = carousel_widget._extract_video_first_frame_async(
+        "/cached/clip.mp4",
+        widget=None,
+        on_done=lambda _img: None,
+    )
+    assert started is False
+
+
+def test_similarity_ref_button_disabled_on_video_source():
+    """H3 (code-review 2026-05-20): the ★ Ref button must be DISABLED when
+    the active carousel entry is a video. Without this, a user could click
+    Ref on a video item, sending a .mp4 path through compute_face_similarity_details
+    on the next recalc. Source-asserted so a regression fails fast.
+    """
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "carousel_widget.py").read_text()
+    assert "entry.is_video" in src
+    assert "state=tk.DISABLED" in src
+    # Composite: the specific Ref-disable path must be present
+    assert 'if entry is not None and entry.is_video:' in src, (
+        "_update_panel must gate the Ref button on entry.is_video (H3)"
+    )
+
+
+def test_similarity_recalc_refuses_video_ref():
+    """H3 second-line defense: _calc_all_similarity must short-circuit with
+    a clear log when ref.is_video, even if a stale manual ref slipped past
+    the UI gate."""
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "carousel_widget.py").read_text()
+    assert "if ref.is_video:" in src, (
+        "_calc_all_similarity must refuse to use a video as the similarity "
+        "reference and log a clear message (H3 belt+suspenders gate)"
+    )
+
+
+def test_session_load_translates_indices_through_skip_map():
+    """H2 (code-review 2026-05-20): session-load skips missing files,
+    shifting all subsequent saved indices down by one. The translation
+    map must rewrite current_index / reference_index / similarity_ref_index
+    so a saved ref-index at position 5 still points at the right entry
+    after entries 2 and 3 were skipped on disk.
+    """
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "main_window.py").read_text()
+    assert "saved_to_new" in src, "H2 fix must build a saved_idx -> new_idx map"
+    assert "_translate" in src, "H2 fix must apply the map to restored indices"
+    # Specifically: each of the three indices must be translated
+    assert "_translate(session_data.get(\"current_index\"" in src
+    assert "_translate(session_data.get(\"reference_index\"" in src
+    assert "_translate(session_data.get(\"similarity_ref_index\"" in src
+
+
 def test_similarity_targets_filter_excludes_videos():
     """Codex P1 bot finding on c58dc394: _calc_all_similarity filtered only
     `source_type != "input"`, which let video entries through to

@@ -274,8 +274,15 @@ class ComparePanel(tk.Frame):
                     )
                     return
             else:
-                img = Image.open(entry.path)
-                img.load()
+                # with/copy pattern: PIL.Image.open holds an FD on the
+                # source file under its lazy-decoder lock. _show_image_on_canvas
+                # fires on every Configure event (resize, sash drag) and
+                # navigate, so without the explicit close + copy the FD
+                # leaks (and on Windows the queue worker hits WinError 32
+                # when trying to rename/overwrite an in-flight image).
+                with Image.open(entry.path) as _src:
+                    _src.load()
+                    img = _src.copy()
 
             # Auto-correct EXIF orientation (no-op on cv2-derived frames)
             img = ImageOps.exif_transpose(img)
@@ -391,8 +398,11 @@ class ComparePanel(tk.Frame):
                         # tile, which still beats crashing the popup.
                         img = Image.new("RGB", (max_dim, int(max_dim * 9 / 16)), "#000000")
                 else:
-                    img = Image.open(entry.path)
-                    img.load()
+                    # with/copy pattern — see _show_image_on_canvas comment
+                    # above for the FD-leak/WinError 32 rationale.
+                    with Image.open(entry.path) as _src:
+                        _src.load()
+                        img = _src.copy()
                 img = ImageOps.exif_transpose(img)
                 if entry.rotation and not getattr(entry, "is_video", False):
                     img = img.rotate(-entry.rotation, expand=True)

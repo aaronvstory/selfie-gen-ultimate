@@ -4396,7 +4396,14 @@ class KlingGUIWindow:
         try:
             # Clear and re-populate the LIVE session (preserves tab references)
             self.image_session.clear()
-            for img in images:
+            # H2 (code-review 2026-05-20): the saved JSON stores POSITIONAL
+            # indices for current_index / reference_index / similarity_ref_index.
+            # Any os.path.isfile-skip in the load loop shifts subsequent
+            # entries down, so the restored indices end up pointing at the
+            # wrong entry (silent data corruption). Track saved_idx →
+            # new_idx and translate the restored indices through the map.
+            saved_to_new: dict = {}
+            for saved_idx, img in enumerate(images):
                 path = img.get("path", "")
                 if not os.path.isfile(path):
                     self._log(f"Skipped missing: {os.path.basename(path)}", "warning")
@@ -4412,6 +4419,7 @@ class KlingGUIWindow:
                     sim_value = img.get("similarity")
                     sim_score_value = img.get("similarity_score")
                     sim_pass_value = img.get("similarity_pass")
+                new_idx = self.image_session.count
                 self.image_session.add_image(
                     path,
                     img.get("source_type", "input"),
@@ -4424,6 +4432,7 @@ class KlingGUIWindow:
                     similarity_override_ts=img.get("similarity_override_ts"),
                     ops=img.get("ops", {}),
                 )
+                saved_to_new[saved_idx] = new_idx
                 loaded_count += 1
             # Folder rescan: pull in additional images + videos that exist
             # in the saved-session folders NOW, even if they weren't part of
@@ -4514,15 +4523,24 @@ class KlingGUIWindow:
                     )
             except Exception:
                 logging.getLogger(__name__).exception("session-load folder rescan failed")
-            # Restore indices
-            target_idx = session_data.get("current_index", -1)
+            # Restore indices, translating saved positional indices through
+            # the skip-map so a saved ref-index pointing at saved_idx=5 still
+            # finds the right entry after entries 2 and 3 were skipped
+            # (H2 fix). If the saved index points at an entry that WAS
+            # skipped, saved_to_new.get returns -1 — the index is dropped
+            # rather than silently aliased to a different entry.
+            def _translate(saved_idx):
+                if saved_idx < 0:
+                    return -1
+                return saved_to_new.get(saved_idx, -1)
+            target_idx = _translate(session_data.get("current_index", -1))
             if 0 <= target_idx < self.image_session.count:
                 self.image_session.navigate_to(target_idx)
-            ref_idx = session_data.get("reference_index", -1)
+            ref_idx = _translate(session_data.get("reference_index", -1))
             if 0 <= ref_idx < self.image_session.count:
                 self.image_session._reference_index = ref_idx
             # Restore similarity ref
-            sim_ref_idx = session_data.get("similarity_ref_index", -1)
+            sim_ref_idx = _translate(session_data.get("similarity_ref_index", -1))
             if 0 <= sim_ref_idx < self.image_session.count:
                 self.image_session._similarity_ref_index = sim_ref_idx
             self.image_session._notify()
