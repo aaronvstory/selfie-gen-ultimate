@@ -124,6 +124,12 @@ class VideoFrame(tk.Frame):
         self._current_frame = -1
         self._photo: Optional[tk.PhotoImage] = None  # GC anchor
         self._overlay_drawer: Optional[Callable] = None  # dormant V1
+        # Live canvas dimensions tracked on <Configure> so the
+        # decoder thread can resize frames to the actual visible area
+        # (with aspect-preserving fit). Defaults are the _DISPLAY_W/H
+        # constants until the first Configure event lands.
+        self._canvas_w: int = _DISPLAY_W
+        self._canvas_h: int = _DISPLAY_H
 
         # Decoder-thread lifecycle: generation-id locking. Each load()
         # increments _generation_id and the new decoder thread receives
@@ -168,6 +174,13 @@ class VideoFrame(tk.Frame):
             fill=COLORS["text_dim"],
             font=(FONT_FAMILY, 11),
         )
+        # Re-center the placeholder text + any rendered frame when the
+        # canvas resizes. Items created with absolute coords (240, 135
+        # from _DISPLAY_W/H constants) would otherwise stay anchored at
+        # the original top-left even after pack/grid expanded the
+        # canvas to e.g. 700×400 — text appears off-center toward the
+        # upper-left of the actual canvas area.
+        self._canvas.bind("<Configure>", self._on_canvas_resize, add="+")
 
         # Per-slot "Open Externally" button — shown only after a failed
         # load or when the user wants the OS player. Always created so
@@ -425,9 +438,27 @@ class VideoFrame(tk.Frame):
                 continue
 
             try:
-                # Resize at decode time so the heavy lifting stays out
-                # of the Tk thread; convert BGR -> RGB.
-                resized = cv2_mod.resize(frame_bgr, (_DISPLAY_W, _DISPLAY_H))
+                # Aspect-preserving fit (PR #43 user feedback: video
+                # was getting squashed/stretched because the previous
+                # implementation blindly resized to _DISPLAY_W ×
+                # _DISPLAY_H = 480×270 = 16:9). Real videos can be
+                # 9:16 (portrait), 3:4 (selfie), or anything else.
+                # Now we read the canvas's CURRENT size on the Tk
+                # thread (canvas_w/h captured at frame_dim_call time)
+                # and fit the source frame INSIDE that box preserving
+                # aspect ratio. cv2 handles the actual resize.
+                src_h, src_w = frame_bgr.shape[:2]
+                # Pull the canvas dimensions captured by the last
+                # Configure event (falls back to _DISPLAY_W/H before
+                # the canvas has ever been laid out).
+                target_w = self._canvas_w or _DISPLAY_W
+                target_h = self._canvas_h or _DISPLAY_H
+                # Fit-inside: scale by the smaller of the two ratios
+                # so the entire source frame is visible (no crop).
+                scale = min(target_w / src_w, target_h / src_h)
+                new_w = max(1, int(src_w * scale))
+                new_h = max(1, int(src_h * scale))
+                resized = cv2_mod.resize(frame_bgr, (new_w, new_h))
                 rgb = cv2_mod.cvtColor(resized, cv2_mod.COLOR_BGR2RGB)
                 pil_img = Image.fromarray(rgb)
             except Exception:
@@ -534,6 +565,64 @@ class VideoFrame(tk.Frame):
         if self._video_path is None:
             return
         _open_externally(self._video_path)
+
+    def _on_canvas_resize(self, event) -> None:
+        """Re-center every canvas item AND update the cached canvas
+        dimensions so the decoder thread re-fits new frames into the
+        new size.
+
+        Placeholder ``(no video)`` text + any error text + rendered
+        frames were created at absolute coords keyed off the initial
+        ``_DISPLAY_W/H = 480/270``. When grid grows the canvas, items
+        stay pinned at (240, 135) — visually off-center toward the
+        upper-left. We listen for canvas ``<Configure>`` events and:
+          1. Update self._canvas_w/h so the next decoded frame is
+             resized to fit the NEW canvas with aspect preserved.
+          2. Re-center every existing canvas item, preserving each
+             item's RELATIVE x/y offset from the original center
+             (e.g. the two-line error message keeps its 22px gap).
+          3. If a video is currently loaded, request the same frame
+             again so it re-renders at the new size right away
+             instead of waiting for the next playback tick.
+        """
+        # Guard against early events (canvas not yet mapped, returns 0).
+        if event.width <= 1 or event.height <= 1:
+            return
+        # Update cached dimensions for the next decode pass.
+        old_w, old_h = self._canvas_w, self._canvas_h
+        self._canvas_w = event.width
+        self._canvas_h = event.height
+        new_cx = event.width // 2
+        new_cy = event.height // 2
+        old_cx = _DISPLAY_W // 2
+        old_cy = _DISPLAY_H // 2
+        try:
+            for item in self._canvas.find_all():
+                item_type = self._canvas.type(item)
+                if item_type not in ("text", "image"):
+                    continue
+                # Read current coords; preserve any intentional
+                # offset (e.g. error-message line 2 is at y+12).
+                cur = self._canvas.coords(item)
+                if len(cur) < 2:
+                    continue
+                cur_x, cur_y = cur[0], cur[1]
+                dx = cur_x - old_cx
+                dy = cur_y - old_cy
+                self._canvas.coords(item, new_cx + dx, new_cy + dy)
+        except tk.TclError:
+            # Widget destroyed mid-event; safe to ignore.
+            pass
+        # If a video is loaded AND the canvas size actually changed,
+        # request the current frame re-rendered so the user sees the
+        # aspect-correct fit immediately rather than after the next
+        # play tick. step_to is non-blocking — just enqueues the
+        # request for the decoder thread.
+        if self._cv2_cap is not None and (
+            old_w != self._canvas_w or old_h != self._canvas_h
+        ):
+            cur_frame = max(0, self._current_frame)
+            self.step_to(cur_frame)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -676,102 +765,46 @@ class VideoInspectorModal(tk.Toplevel):
     # ── UI construction ──────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        # Top row: listbox on left, two VideoFrames on right.
-        top = tk.Frame(self, bg=COLORS["bg_main"])
-        top.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
+        # New layout (PR #43 user feedback: filename column was crushing
+        # long pipeline names like
+        #   "front_crop_nano-banana-2-edit_sim82_001_k25tPro_p3_1-oldcam-v24-rppg - 11.89-...mp4"
+        # with the right side ALWAYS cut off).
+        #
+        #   ┌─────────────────────────────────────────────────────────┐
+        #   │ Slot A canvas              │ Slot B canvas              │
+        #   ├─────────────────────────────────────────────────────────┤
+        #   │ Metadata strip (A | B parsed tags)                       │
+        #   ├─────────────────────────────────────────────────────────┤
+        #   │ Videos in folder:                                        │
+        #   │ [ full-width listbox WITH horizontal scrollbar           │
+        #   │   showing the entire filename ]                          │
+        #   ├─────────────────────────────────────────────────────────┤
+        #   │ [▶ Play] [⏮ Restart] [☐ Lock] frame: X/Y  [Load→A/B] [✕]│
+        #   └─────────────────────────────────────────────────────────┘
 
-        # Listbox panel
-        list_panel = tk.Frame(top, bg=COLORS["bg_main"])
-        list_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
-        tk.Label(
-            list_panel,
-            text="Videos in folder",
-            bg=COLORS["bg_main"],
-            fg=COLORS["text_light"],
-            font=(FONT_FAMILY, 9, "bold"),
-        ).pack(side=tk.TOP, anchor=tk.W)
-        self._listbox = tk.Listbox(
-            list_panel,
-            width=42,
-            height=18,
-            bg=COLORS["bg_input"],
-            fg=COLORS["text_light"],
-            selectbackground=COLORS["accent_blue"],
-            highlightthickness=0,
-            relief=tk.FLAT,
-            font=(FONT_FAMILY, 9),
-            exportselection=False,
-        )
-        self._listbox.pack(side=tk.TOP, fill=tk.Y, expand=True)
-        self._listbox.bind("<Double-Button-1>", self._on_listbox_double_click)
-        # Right-click is the classic macro for "secondary action" on
-        # Windows, but macOS trackpads make it less discoverable.
-        # Shift+Double-click is the explicit affordance — works on every
-        # platform identically. Both routes load slot B.
-        self._listbox.bind("<Shift-Double-Button-1>", self._on_listbox_shift_double)
-        self._listbox.bind("<Button-3>", self._on_listbox_right_click)
-        # Explicit Load A / Load B buttons under the listbox — a
-        # third route for macOS trackpad users who don't reach for
-        # right-click or modifier+double-click.
-        load_row = tk.Frame(list_panel, bg=COLORS["bg_main"])
-        load_row.pack(side=tk.TOP, fill=tk.X, pady=(4, 0))
-        self._load_a_btn = tk.Button(
-            load_row,
-            text="Load → A",
-            command=lambda: self._load_selection_into("A"),
-            font=(FONT_FAMILY, 8),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            relief=tk.FLAT,
-            bd=0,
-            padx=8,
-            pady=2,
-            cursor="hand2",
-        )
-        apply_macos_button_fix(self._load_a_btn)
-        self._load_a_btn.pack(side=tk.LEFT, padx=(0, 4))
-        self._load_b_btn = tk.Button(
-            load_row,
-            text="Load → B",
-            command=lambda: self._load_selection_into("B"),
-            font=(FONT_FAMILY, 8),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            relief=tk.FLAT,
-            bd=0,
-            padx=8,
-            pady=2,
-            cursor="hand2",
-        )
-        apply_macos_button_fix(self._load_b_btn)
-        self._load_b_btn.pack(side=tk.LEFT)
-        tk.Label(
-            list_panel,
-            text="Double-click → A · Shift+Double / Right-click → B",
-            bg=COLORS["bg_main"],
-            fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 8),
-        ).pack(side=tk.TOP, anchor=tk.W, pady=(2, 0))
-
-        # Video panel
-        video_panel = tk.Frame(top, bg=COLORS["bg_main"])
-        video_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # ── Video row (top, full width) ──────────────────────────────
+        video_panel = tk.Frame(self, bg=COLORS["bg_main"])
+        video_panel.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
+        # 2-column grid with equal weights so Slot A and Slot B ALWAYS
+        # get identical widths regardless of inner canvas natural
+        # sizes. uniform="slots" is the key — without it Tk's pack
+        # would size each column to its child's largest natural width
+        # which can drift apart over time (e.g. once a frame loads).
+        video_panel.grid_columnconfigure(0, weight=1, uniform="slots")
+        video_panel.grid_columnconfigure(1, weight=1, uniform="slots")
+        video_panel.grid_rowconfigure(0, weight=1)
         self._frame_a = VideoFrame(
             video_panel, title="Slot A", log_callback=self._log_fn,
             bg=COLORS["bg_main"],
         )
-        self._frame_a.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
+        self._frame_a.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         self._frame_b = VideoFrame(
             video_panel, title="Slot B", log_callback=self._log_fn,
             bg=COLORS["bg_main"],
         )
-        self._frame_b.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 0))
+        self._frame_b.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
-        # Metadata panel
+        # ── Metadata strip ──────────────────────────────────────────
         self._meta_var = tk.StringVar(value="No video loaded.")
         meta_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         meta_frame.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 4))
@@ -783,9 +816,64 @@ class VideoInspectorModal(tk.Toplevel):
             font=(FONT_FAMILY, 9),
             justify=tk.LEFT,
             anchor=tk.W,
-            wraplength=900,
+            wraplength=2000,
         )
         self._meta_label.pack(side=tk.TOP, fill=tk.X, padx=8, pady=6)
+
+        # ── Videos-in-folder listbox (full width, BELOW the videos) ──
+        list_panel = tk.Frame(self, bg=COLORS["bg_main"])
+        list_panel.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 4))
+        header_row = tk.Frame(list_panel, bg=COLORS["bg_main"])
+        header_row.pack(side=tk.TOP, fill=tk.X)
+        tk.Label(
+            header_row,
+            text="Videos in folder",
+            bg=COLORS["bg_main"],
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 9, "bold"),
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            header_row,
+            text="  ·  Double-click → A · Shift+Double / Right-click → B",
+            bg=COLORS["bg_main"],
+            fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 8),
+        ).pack(side=tk.LEFT)
+        # Listbox container: listbox + vertical scrollbar + horizontal
+        # scrollbar so the full filename is always reachable.
+        list_holder = tk.Frame(list_panel, bg=COLORS["bg_main"])
+        list_holder.pack(side=tk.TOP, fill=tk.X, pady=(2, 0))
+        list_holder.grid_columnconfigure(0, weight=1)
+        list_holder.grid_rowconfigure(0, weight=1)
+        self._listbox = tk.Listbox(
+            list_holder,
+            height=6,  # ~6 rows visible by default; users can resize the modal
+            bg=COLORS["bg_input"],
+            fg=COLORS["text_light"],
+            selectbackground=COLORS["accent_blue"],
+            highlightthickness=0,
+            relief=tk.FLAT,
+            font=(FONT_FAMILY, 9),
+            exportselection=False,
+            # No fixed width — fill the available horizontal space.
+            # Horizontal scrollbar handles overflow for long names.
+        )
+        self._listbox.grid(row=0, column=0, sticky="nsew")
+        vscroll = tk.Scrollbar(
+            list_holder, orient=tk.VERTICAL, command=self._listbox.yview,
+        )
+        vscroll.grid(row=0, column=1, sticky="ns")
+        self._listbox.config(yscrollcommand=vscroll.set)
+        hscroll = tk.Scrollbar(
+            list_holder, orient=tk.HORIZONTAL, command=self._listbox.xview,
+        )
+        hscroll.grid(row=1, column=0, sticky="ew")
+        self._listbox.config(xscrollcommand=hscroll.set)
+        self._listbox.bind("<Double-Button-1>", self._on_listbox_double_click)
+        # Right-click for macOS trackpad fallback. Shift+Double-click
+        # is the explicit cross-platform secondary affordance.
+        self._listbox.bind("<Shift-Double-Button-1>", self._on_listbox_shift_double)
+        self._listbox.bind("<Button-3>", self._on_listbox_right_click)
 
         # Toolbar (bottom)
         toolbar = tk.Frame(self, bg=COLORS["bg_main"])
@@ -871,6 +959,47 @@ class VideoInspectorModal(tk.Toplevel):
         )
         apply_macos_button_fix(close_btn)
         close_btn.pack(side=tk.RIGHT)
+
+        # Explicit "Load → A" / "Load → B" buttons live in the toolbar
+        # in the new layout. They use the listbox selection so the user
+        # can click a row and then click the load button (a third
+        # alternative to double-click / shift+double / right-click).
+        self._load_b_btn = tk.Button(
+            toolbar,
+            text="Load → B",
+            command=lambda: self._load_selection_into("B"),
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"],
+            fg=BUTTON_TEXT_COLOR,
+            activebackground=COLORS["bg_hover"],
+            activeforeground=BUTTON_TEXT_COLOR,
+            relief=tk.FLAT,
+            bd=0,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            width=10,
+        )
+        apply_macos_button_fix(self._load_b_btn)
+        self._load_b_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        self._load_a_btn = tk.Button(
+            toolbar,
+            text="Load → A",
+            command=lambda: self._load_selection_into("A"),
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"],
+            fg=BUTTON_TEXT_COLOR,
+            activebackground=COLORS["bg_hover"],
+            activeforeground=BUTTON_TEXT_COLOR,
+            relief=tk.FLAT,
+            bd=0,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            width=10,
+        )
+        apply_macos_button_fix(self._load_a_btn)
+        self._load_a_btn.pack(side=tk.RIGHT, padx=(0, 6))
 
         # Kick off master timer.
         self._schedule_tick()

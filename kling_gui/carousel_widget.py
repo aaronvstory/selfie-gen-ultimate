@@ -672,6 +672,25 @@ class ImageCarousel(tk.Frame):
         # Single source of truth for FAS verdict — see similarity_engine.summarize_fas_pair.
         # Three possible verdicts: pass / fail / unavailable. Same diag → same chip,
         # always (no more "ref+target sometimes, target only sometimes" drift).
+        #
+        # User-visibility gate (PR #43 feedback): if the Anti-spoof
+        # checkbox is OFF, hide the chip entirely even when stored
+        # diagnostics from a prior run contain liveness data. The chip's
+        # presence implies "we're actively checking liveness right
+        # now" — surfacing a stale LIVE/FAIL when the user has the
+        # feature toggled off is confusing and triggered this exact
+        # report. (The diagnostics dict stays cached so re-enabling
+        # the checkbox surfaces the chip again without recomputing.)
+        anti_spoof_var = getattr(self, "_anti_spoof_var", None)
+        if anti_spoof_var is not None and not bool(anti_spoof_var.get()):
+            self.fas_label.config(
+                text="",
+                bg=COLORS["bg_panel"],
+                fg=COLORS["text_dim"],
+                highlightthickness=0,
+                padx=0,
+            )
+            return
         try:
             from similarity_engine import FaceEngine
             summary = FaceEngine.summarize_fas_pair(diag)
@@ -816,7 +835,12 @@ class ImageCarousel(tk.Frame):
                         canvas.create_rectangle(
                             x0, y0, x1, y1,
                             outline="#48DB7A",  # brighter green for visibility
-                            width=3,
+                            # width=3 was visually heavy per user
+                            # feedback on PR #43; 1.5px (rounded to 2 on
+                            # Tk's integer pen width) reads as a thin,
+                            # crisp outline without obscuring face
+                            # features.
+                            width=2,
                         )
 
             # Video Inspector play-badge overlay. Draws a circular play
@@ -841,18 +865,41 @@ class ImageCarousel(tk.Frame):
                 )
                 video_path = None
             if video_path is not None and self._on_video_callback is not None:
-                badge_x = cx + new_w / 2 - 22
-                badge_y = cy - new_h / 2 + 22
-                badge_r = 18
+                # Badge sizing scales with the visible image rect — a
+                # fixed 18px radius looks dwarfed on a large thumbnail
+                # and grotesque on a small one. Use ~7% of the smaller
+                # image dimension, clamped to [12, 22] so a tiny preview
+                # still shows a clickable target and a huge preview
+                # doesn't get a giant black blob. Margin from edge
+                # scales with the radius so the badge never bleeds
+                # past the image rect.
+                short_dim = min(new_w, new_h)
+                badge_r = max(12, min(22, int(short_dim * 0.07)))
+                margin = badge_r + 4
+                badge_x = cx + new_w / 2 - margin
+                badge_y = cy - new_h / 2 + margin
+                # Explicit integer rounding because create_oval with
+                # float coords can sub-pixel-align differently on
+                # different platforms (causing visible asymmetry on
+                # Windows Aqua). Force integer math.
+                x0, y0 = int(badge_x - badge_r), int(badge_y - badge_r)
+                x1, y1 = int(badge_x + badge_r), int(badge_y + badge_r)
                 bg_id = canvas.create_oval(
-                    badge_x - badge_r, badge_y - badge_r,
-                    badge_x + badge_r, badge_y + badge_r,
+                    x0, y0, x1, y1,
                     fill="#000000", outline="#FFFFFF", width=2,
                 )
+                # ▶ glyph: font size proportional to badge radius so
+                # the play arrow stays visually balanced inside the
+                # circle regardless of thumbnail size. No extra x-nudge
+                # — Tk's CENTER anchor positions the glyph correctly
+                # by its baseline+halfwidth; the prior `+2` was
+                # over-correcting for the asymmetric U+25B6 right-edge
+                # whitespace and was making the badge LOOK lopsided.
+                play_font_size = max(10, int(badge_r * 1.0))
                 play_id = canvas.create_text(
-                    badge_x + 2, badge_y,
+                    int(badge_x), int(badge_y),
                     text="▶",
-                    font=(FONT_FAMILY, 18, "bold"),
+                    font=(FONT_FAMILY, play_font_size, "bold"),
                     fill="#FFFFFF",
                 )
                 cb = self._on_video_callback
@@ -1212,6 +1259,13 @@ class ImageCarousel(tk.Frame):
         except Exception as exc:
             self._sim_log(f"anti-spoof toggle failed: {exc!r}", "warning")
             return
+        # Immediately hide/show the LIVE chip without waiting for the
+        # recompute pass to land — toggling OFF should be instant
+        # feedback. _render_fas_chip itself short-circuits when the
+        # checkbox is off.
+        active = self.image_session.active_entry if hasattr(self, "image_session") else None
+        diag = getattr(active, "similarity_diagnostics", None) if active else None
+        self._render_fas_chip(diag)
         # Trigger a fresh batch recompute so the displayed scores reflect the new setting.
         self._calc_all_similarity(auto_triggered=False, reason="anti-spoof toggle")
 
