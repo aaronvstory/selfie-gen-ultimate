@@ -291,7 +291,7 @@ def test_rescan_dedups_video_across_both_discovery_passes(tmp_path):
     (tmp_path / "front_k25tStd_p1_1.mp4").write_bytes(b"fake")  # Kling-shaped
     session = ImageSession()
     session.add_image(str(img), "input", make_active=False)
-    new_imgs, new_vids = _replicate_rescan(
+    _, new_vids = _replicate_rescan(
         session,
         folders={str(tmp_path)},
         valid_image_exts={".png"},

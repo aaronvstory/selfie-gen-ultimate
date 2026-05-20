@@ -455,16 +455,23 @@ class VideoFrame(tk.Frame):
                 #
                 # Sequential-read fast path: cap.set(CAP_PROP_POS_FRAMES)
                 # on H.264/H.265 is O(N) from the nearest keyframe
-                # (Gemini #4 PR #43). When the request is just "next
-                # frame", skip the seek entirely — cv2 already advances
-                # by one on cap.read(). Only seek for non-sequential
-                # jumps (scrub, restart, A/B sync). The threshold (>1
-                # frame delta) tolerates the off-by-one from
-                # cap.get(POS_FRAMES) returning the NEXT frame index
-                # after a successful read.
+                # (Gemini #4 PR #43), so we want to skip the seek when
+                # the next cap.read() will naturally produce frame_index.
+                #
+                # cap.get(POS_FRAMES) returns the index a *subsequent*
+                # cap.read() WILL produce. After reading frame 5,
+                # current=6 — a read now would yield frame 6. So for
+                # step_to(N) to render frame N exactly, current MUST
+                # equal N. Any mismatch needs a seek.
+                #
+                # The prior tolerance `abs(current - frame_index) > 1`
+                # silently swallowed a one-frame off-by-one: fast-forward
+                # from frame 5 to 7 (current=6, requested=7, abs=1) skipped
+                # the seek and rendered frame 6 instead of 7. Gemini PR #43
+                # caught this.
                 try:
                     current = int(cap.get(cv2_mod.CAP_PROP_POS_FRAMES) or 0)
-                    if abs(current - frame_index) > 1:
+                    if current != frame_index:
                         cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_index)
                     ok, frame_bgr = cap.read()
                 except Exception:
