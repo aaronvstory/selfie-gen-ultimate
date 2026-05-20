@@ -16,10 +16,8 @@ from .theme import (
     COLORS,
     FONT_FAMILY,
     TTK_BTN_DANGER,
-    TTK_BTN_PRIMARY,
     TTK_BTN_SECONDARY,
     TTK_BTN_SUCCESS,
-    apply_macos_button_fix,
 )
 from model_metadata import MODEL_METADATA, get_model_display_name
 

@@ -19,7 +19,6 @@ from .theme import (
     TTK_BTN_SUCCESS_COMPACT,
     BUTTON_TEXT_COLOR,
     BUTTON_DISABLED_TEXT_COLOR,
-    apply_macos_button_fix,
     debounce_command,
 )
 from .image_state import ImageSession
@@ -222,8 +221,6 @@ def _sim_badge_style(similarity_str) -> Optional[dict]:
 
 
 logger = logging.getLogger(__name__)
-_REF_ACTIVE_BG = "#E5C100"
-_REF_ACTIVE_FG = "#111111"
 
 class ImageCarousel(tk.Frame):
     """Unified carousel showing all images (input + selfie + outpaint) in one stream.

@@ -10,7 +10,6 @@ from .theme import (
     FONT_FAMILY,
     TTK_BTN_COMPACT,
     TTK_BTN_DANGER_COMPACT,
-    apply_macos_button_fix,
 )
 from .image_state import ImageSession
 from .carousel_widget import _format_image_info, _truncate_filename, _sim_color
