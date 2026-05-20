@@ -407,7 +407,7 @@ tool calls, not sequential):
 **a) Trigger PR bots on the PR.** Single comment listing all active
    bot mentions:
 
-   ```
+   ```text
    Branch head: <sha> — <one-line summary>. Bot pass please.
 
    @coderabbitai review
