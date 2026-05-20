@@ -16,6 +16,12 @@ _LOGGER = logging.getLogger(__name__)
 # Tk on macOS does not reliably resolve Windows font names.
 FONT_FAMILY = "Helvetica" if IS_MACOS else "Segoe UI"
 EMOJI_FONT_FAMILY = "Apple Color Emoji" if IS_MACOS else "Segoe UI Emoji"
+# Cross-platform monospace family. macOS has Menlo since 10.6 (always
+# available); Windows has Consolas since Vista. Hardcoded "Consolas"
+# elsewhere in the codebase fell back to a default mono on macOS that
+# rendered poorly. Use this constant for any listbox / log / code-style
+# widget instead of bare "Consolas".
+FONT_MONO = "Menlo" if IS_MACOS else "Consolas"
 
 # Unified color palette
 COLORS = {

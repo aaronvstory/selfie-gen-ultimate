@@ -124,6 +124,9 @@ VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", "
 IS_MACOS = sys.platform == "darwin"
 FONT_FAMILY = "Helvetica" if IS_MACOS else "Segoe UI"
 EMOJI_FONT_FAMILY = "Apple Color Emoji" if IS_MACOS else "Segoe UI Emoji"
+# Cross-platform monospace. macOS Menlo / Windows Consolas. Mirrors
+# theme.FONT_MONO — kept local for parity with FONT_FAMILY above.
+FONT_MONO = "Menlo" if IS_MACOS else "Consolas"
 
 
 UI_CONFIG_DEFAULTS = {
@@ -300,8 +303,8 @@ class FolderPreviewDialog(tk.Toplevel):
 class SessionManagerDialog(tk.Toplevel):
     """Dialog for browsing, loading, and managing saved sessions."""
 
-    DLG_W = 920
-    DLG_H = 560
+    DLG_W = 1100
+    DLG_H = 680
 
     def __init__(self, parent, app_dir, image_session, config, save_config_fn, log_fn):
         super().__init__(parent)
@@ -326,7 +329,7 @@ class SessionManagerDialog(tk.Toplevel):
         # Center and grab
         w, h = self.DLG_W, self.DLG_H
         self.geometry(f"{w}x{h}")
-        self.minsize(760, 460)
+        self.minsize(960, 580)
         self.update_idletasks()
         # Ensure parent geometry is current before reading dimensions
         parent.update_idletasks()
@@ -346,26 +349,30 @@ class SessionManagerDialog(tk.Toplevel):
     def _build_ui(self):
         # Header
         header = tk.Label(
-            self, text="Saved Sessions", font=(FONT_FAMILY, 12, "bold"),
+            self, text="Saved Sessions", font=(FONT_FAMILY, 14, "bold"),
             bg=COLORS["bg_main"], fg=COLORS["text_light"],
         )
-        header.pack(fill=tk.X, padx=16, pady=(12, 6))
+        header.pack(fill=tk.X, padx=18, pady=(14, 8))
 
         # Listbox with vertical + horizontal scrollbars (long names no longer
         # silently truncate — the user can scroll to read the full name).
         list_frame = tk.Frame(self, bg=COLORS["bg_main"])
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 6))
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 8))
 
-        scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        # ttk.Scrollbar (not tk.Scrollbar) so the clam theme renders
+        # dark on macOS — native Aqua bars would show as bright white
+        # against the dark dialog. Same rule applies to checkbutton.
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        xscrollbar = tk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
+        xscrollbar = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
         xscrollbar.pack(side=tk.BOTTOM, fill=tk.X)
 
         self._listbox = tk.Listbox(
             list_frame, bg=COLORS["bg_input"], fg=COLORS["text_light"],
             selectbackground=COLORS["accent_blue"], selectforeground="white",
-            font=("Consolas", 10), yscrollcommand=scrollbar.set,
+            font=(FONT_MONO, 11), yscrollcommand=scrollbar.set,
             xscrollcommand=xscrollbar.set, activestyle="none",
+            borderwidth=0, highlightthickness=0,
         )
         self._listbox.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self._listbox.yview)
@@ -376,33 +383,47 @@ class SessionManagerDialog(tk.Toplevel):
         # Detail label
         self._detail_label = tk.Label(
             self, text="Select a session to view details",
-            font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 10), bg=COLORS["bg_main"], fg=COLORS["text_dim"],
             anchor="w",
         )
-        self._detail_label.pack(fill=tk.X, padx=16, pady=(0, 8))
+        self._detail_label.pack(fill=tk.X, padx=18, pady=(0, 10))
 
-        # Auto-save section
-        autosave_frame = tk.Frame(self, bg=COLORS["bg_panel"], padx=10, pady=6)
-        autosave_frame.pack(fill=tk.X, padx=16, pady=(0, 8))
+        # Auto-save section. ttk.Checkbutton (not tk.Checkbutton) so it
+        # stays themed on macOS Aqua — the raw tk variant renders huge
+        # and white after the first toggle (HIView revert).
+        autosave_frame = tk.Frame(self, bg=COLORS["bg_panel"], padx=14, pady=10)
+        autosave_frame.pack(fill=tk.X, padx=18, pady=(0, 10))
+
+        _autosave_style = ttk.Style()
+        _autosave_style.configure(
+            "SessionManager.TCheckbutton",
+            background=COLORS["bg_panel"],
+            foreground=COLORS["text_light"],
+            font=(FONT_FAMILY, 10),
+        )
+        _autosave_style.map(
+            "SessionManager.TCheckbutton",
+            background=[("active", COLORS["bg_panel"])],
+            foreground=[("active", COLORS["text_light"])],
+        )
 
         tk.Label(
-            autosave_frame, text="Auto-Save:", font=(FONT_FAMILY, 9, "bold"),
+            autosave_frame, text="Auto-Save:", font=(FONT_FAMILY, 10, "bold"),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
-        ).pack(side=tk.LEFT, padx=(0, 8))
+        ).pack(side=tk.LEFT, padx=(0, 10))
 
         self._autosave_var = tk.BooleanVar(value=self._config.get("session_autosave_enabled", True))
-        autosave_cb = tk.Checkbutton(
+        autosave_cb = ttk.Checkbutton(
             autosave_frame, text="Enabled", variable=self._autosave_var,
-            bg=COLORS["bg_panel"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"], activebackground=COLORS["bg_panel"],
+            style="SessionManager.TCheckbutton",
             command=self._on_autosave_changed,
         )
-        autosave_cb.pack(side=tk.LEFT, padx=(0, 12))
+        autosave_cb.pack(side=tk.LEFT, padx=(0, 16))
 
         tk.Label(
-            autosave_frame, text="Interval:", font=(FONT_FAMILY, 9),
+            autosave_frame, text="Interval:", font=(FONT_FAMILY, 10),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
-        ).pack(side=tk.LEFT, padx=(0, 4))
+        ).pack(side=tk.LEFT, padx=(0, 6))
 
         self._interval_var = tk.StringVar(value=self._config.get("session_autosave_interval", "after_api_action"))
         interval_menu = ttk.Combobox(
@@ -417,15 +438,15 @@ class SessionManagerDialog(tk.Toplevel):
         tk.Label(
             self,
             text="Save = overwrite selected session   ·   Save As New… = create a new session file",
-            font=(FONT_FAMILY, 8), bg=COLORS["bg_main"], fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=COLORS["text_dim"],
             anchor="w",
-        ).pack(fill=tk.X, padx=16, pady=(0, 4))
+        ).pack(fill=tk.X, padx=18, pady=(0, 6))
 
         # Button bar — grouped: destructive (left) · save current state ·
         # load (right). Buttons that need a selection are tracked so they can
         # be disabled until a row is picked (clearer than a silent no-op).
         btn_frame = tk.Frame(self, bg=COLORS["bg_main"])
-        btn_frame.pack(fill=tk.X, padx=16, pady=(0, 12))
+        btn_frame.pack(fill=tk.X, padx=18, pady=(0, 14))
 
         self._selection_buttons = []
 
@@ -435,12 +456,15 @@ class SessionManagerDialog(tk.Toplevel):
         del_btn.pack(side=tk.LEFT, padx=(0, 6))
         # "Prune Dead (N)" — bulk-delete sessions whose source files
         # are missing AND whose folders contain no surviveable images/
-        # videos. Enabled iff N > 0. Confirmation dialog prevents
-        # accidental data loss; the [DEAD] badge in the listbox lets
-        # the user spot-check candidates before confirming.
+        # videos. Enabled iff N > 0. Uses TTK_BTN_DANGER (not _COMPACT)
+        # so it sits at the same height as Delete/Save/etc. — mixing
+        # _COMPACT with non-compact siblings produces visibly-different
+        # row heights and is the styling regression the user called out
+        # on 2026-05-21. Direct prune on click (no confirm dialog — the
+        # [DEAD] badge in the listbox is the spot-check surface).
         self._prune_dead_btn = create_action_button(
             btn_frame, text="Prune Dead", command=self._on_prune_dead,
-            style=TTK_BTN_DANGER_COMPACT,
+            style=TTK_BTN_DANGER,
         )
         self._prune_dead_btn.pack(side=tk.LEFT, padx=(0, 6))
         clear_btn = create_action_button(
@@ -500,41 +524,22 @@ class SessionManagerDialog(tk.Toplevel):
     def _on_prune_dead(self):
         """Bulk-delete every session whose source data is gone.
 
-        UX: confirm-by-count dialog (no per-file checkbox) since the
-        [DEAD] badge in the listbox is already the spot-check surface.
-        Sessions with ANY live data — saved image still on disk OR a
-        rescan-discoverable image/video in a surveyed folder — are
-        NEVER classified dead by session_liveness, so the prune set is
-        always strictly the no-data subset.
+        Direct prune on click — no confirm popup (user request
+        2026-05-21: "just do it instead of system alerts"). The button
+        is disabled when N=0, so an accidental click on a fresh GUI
+        won't delete anything. The [DEAD] badge in the listbox is the
+        spot-check surface before clicking. Recomputes the dead set
+        right before deleting so a folder restored between dialog-open
+        and click correctly shrinks the count.
         """
-        from .session_manager import prune_dead_sessions, find_dead_sessions
-        from tkinter import messagebox
-        # Recompute right before the dialog so a folder restored
-        # between dialog-open and prune-click reduces the count.
-        dead_now = find_dead_sessions(self._app_dir)
-        n = len(dead_now)
-        if n == 0:
-            messagebox.showinfo(
-                "Prune Dead", "No dead sessions to remove.",
-                parent=self,
-            )
-            return
-        ok = messagebox.askyesno(
-            "Prune Dead Sessions",
-            f"Permanently delete {n} session file(s) whose source images\n"
-            "and videos are all gone from disk?\n\n"
-            "Sessions with ANY recoverable content (a saved image still\n"
-            "on disk, or a video/image the folder rescan could surface)\n"
-            "are NOT included in this prune.\n\n"
-            "This cannot be undone.",
-            parent=self, icon="warning",
-        )
-        if not ok:
-            return
+        from .session_manager import prune_dead_sessions
         deleted = prune_dead_sessions(self._app_dir)
-        self._log_fn(
-            f"Pruned {len(deleted)} dead session(s)", "success",
-        )
+        if deleted:
+            self._log_fn(
+                f"Pruned {len(deleted)} dead session(s)", "success",
+            )
+        else:
+            self._log_fn("No dead sessions to prune", "info")
         self._refresh_list()
 
     def _refresh_list(self):
