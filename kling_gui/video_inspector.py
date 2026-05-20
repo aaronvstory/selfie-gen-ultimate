@@ -560,16 +560,33 @@ def open_video_inspector(
                 existing.lift()
                 existing.focus_set()
                 if initial_video is not None:
-                    # If the incoming video lives in a different folder
-                    # than the inspector is currently showing, rescan
-                    # so the listbox + metadata reflect the new folder.
-                    # Without this, double/right-click actions on the
-                    # listbox keep operating on stale entries.
-                    new_folder = Path(initial_video).parent
-                    cur_folder = getattr(existing, "_current_folder", None)
-                    if cur_folder is None or Path(cur_folder) != new_folder:
-                        existing._refresh_folder(new_folder)
+                    # ALWAYS rescan the folder on reopen, even when the
+                    # target folder matches what's currently shown. The
+                    # non-blocking workflow has users keep the inspector
+                    # open while the queue keeps generating MORE videos
+                    # in the same folder; without an unconditional
+                    # rescan the listbox + metadata stay frozen on the
+                    # snapshot taken at first open, and newly-arrived
+                    # variants never appear (Codex PR #43 P2, finding
+                    # 3272768125). _refresh_folder is cheap (one
+                    # non-recursive iterdir + stem parsing) so the
+                    # always-rescan cost is negligible.
+                    existing._refresh_folder(Path(initial_video).parent)
                     existing.load_into_slot_a(initial_video)
+                else:
+                    # Toolbar "Videos" reopen (no preload). If we have
+                    # a current folder, rescan it so the listbox picks
+                    # up files added since first open. Same Codex P2
+                    # reasoning as the initial_video branch above.
+                    cur_folder = getattr(existing, "_current_folder", None)
+                    if cur_folder is not None:
+                        try:
+                            existing._refresh_folder(Path(cur_folder))
+                        except Exception:
+                            # Folder may have been deleted out from
+                            # under us; silently ignore (modal stays
+                            # showing the last-known snapshot).
+                            pass
                 return existing
         except tk.TclError:
             pass

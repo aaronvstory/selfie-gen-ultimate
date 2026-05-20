@@ -34,6 +34,13 @@ _KLING_TAIL_RE = re.compile(
     r"_(?P<model>[A-Za-z0-9]+)_p(?P<slot>\d+)_(?P<take>\d+)$"
 )
 _OLDCAM_TAIL_RE = re.compile(r"-oldcam-v(?P<v>\d+)$")
+# Looped suffix from kling_gui/queue_manager.py::_loop_video — common
+# downstream variant (`{kling_stem}_looped.mp4`) that the Kling tail
+# regex can't see through because it requires _p{slot}_{take} to be at
+# end-of-stem. We strip _looped BEFORE the Kling parse so looped+
+# oldcam+rPPG chains still associate to their source image.
+# Codex PR #43 P1 finding (3272768118).
+_LOOPED_TAIL_RE = re.compile(r"_looped$")
 _RPPG_BARE_TAIL = "-rppg"
 _RPPG_METRIC_PREFIX = "-rppg - "
 _SIMILARITY_RE = re.compile(r"_sim(?P<sim>\d+|na)_\d{3}")
@@ -64,6 +71,7 @@ class VideoMetadata:
     model_short: Optional[str] = None
     slot: Optional[int] = None
     take: Optional[int] = None
+    is_looped: bool = False
     oldcam_version: Optional[int] = None
     rppg_metrics: Optional[RppgMetrics] = None
     rppg_metrics_source: Optional[str] = None  # "filename" | "sidecar" | None
@@ -114,6 +122,24 @@ def parse_oldcam_segment(stem: str) -> tuple[str, Optional[int]]:
     if m is None:
         return (stem, None)
     return (stem[: m.start()], int(m.group("v")))
+
+
+def parse_looped_segment(stem: str) -> tuple[str, bool]:
+    """Strip a trailing ``_looped`` token; return (residual, is_looped).
+
+    Loop variants come from ``kling_gui/queue_manager.py::_loop_video``
+    and are extremely common (one per generated Kling clip when the
+    user has loop-output enabled). Without this strip the Kling-tail
+    regex misses files like ``front_k25tStd_p4_1_looped.mp4`` because
+    its anchor requires the ``_take`` digits at end-of-stem.
+
+    Note: ``queue_manager`` actively refuses to double-loop a clip
+    (``_looped_looped`` is impossible per the existing guard at
+    queue_manager.py:723), so a single non-greedy strip is enough."""
+    m = _LOOPED_TAIL_RE.search(stem)
+    if m is None:
+        return (stem, False)
+    return (stem[: m.start()], True)
 
 
 def parse_kling_segment(
@@ -209,6 +235,19 @@ def parse_video_filename(path: Path) -> VideoMetadata:
     if oldcam_v is not None:
         raw_suffixes.append(f"oldcam-v{oldcam_v}")
 
+    # _looped strip sits BETWEEN oldcam and kling because the loop step
+    # runs AFTER kling (kling_gui/queue_manager.py:1101) but BEFORE
+    # oldcam (per the rPPG fan-out priority list at line 821-830).
+    # Real filename chains we see in the wild:
+    #     {stem}_k25tStd_p4_1.mp4                       (raw kling)
+    #     {stem}_k25tStd_p4_1_looped.mp4                (looped kling)
+    #     {stem}_k25tStd_p4_1_looped-oldcam-v24.mp4     (looped + oldcam)
+    #     {stem}_k25tStd_p4_1_looped-oldcam-v24-rppg - ...mp4  (+ rppg)
+    # So strip order in REVERSE is: rppg -> oldcam -> _looped -> kling.
+    stem, is_looped = parse_looped_segment(stem)
+    if is_looped:
+        raw_suffixes.append("looped")
+
     image_stem, model_short, slot, take = parse_kling_segment(stem)
     similarity, similarity_na = parse_similarity_from_stem(image_stem)
 
@@ -231,6 +270,7 @@ def parse_video_filename(path: Path) -> VideoMetadata:
         model_short=model_short,
         slot=slot,
         take=take,
+        is_looped=is_looped,
         oldcam_version=oldcam_v,
         rppg_metrics=metrics,
         rppg_metrics_source=metrics_source,

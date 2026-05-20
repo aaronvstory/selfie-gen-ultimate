@@ -1785,10 +1785,12 @@ def _mk_rppg_case(tmp_path, monkeypatch, *, rppg_enabled, rppg_required=False, r
         iterate_from_baseline=True,
         skip_diagnosis=True,
         skip_kinematic_gate=True,
+        verbose=False,
     ):
         del (
             repo_root, progress_cb, timeout_seconds, keep_metrics,
-            iterative, iterate_from_baseline, skip_diagnosis, skip_kinematic_gate,
+            iterative, iterate_from_baseline, skip_diagnosis,
+            skip_kinematic_gate, verbose,
         )
         if rppg_returns == "none":
             return None
@@ -1948,10 +1950,12 @@ def test_pipeline_rppg_runs_on_reused_video_when_oldcam_disabled(tmp_path, monke
         timeout_seconds=600, keep_metrics=False,
         iterative=True, iterate_from_baseline=True,
         skip_diagnosis=True, skip_kinematic_gate=True,
+        verbose=False,
     ):
         del (
             repo_root, progress_cb, timeout_seconds, keep_metrics,
-            iterative, iterate_from_baseline, skip_diagnosis, skip_kinematic_gate,
+            iterative, iterate_from_baseline, skip_diagnosis,
+            skip_kinematic_gate, verbose,
         )
         rppg_calls.append(Path(video_path))
         out = Path(video_path).with_name(Path(video_path).stem + "-rppg" + Path(video_path).suffix)
@@ -2219,10 +2223,12 @@ def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch
         timeout_seconds=600, keep_metrics=False,
         iterative=True, iterate_from_baseline=True,
         skip_diagnosis=True, skip_kinematic_gate=True,
+        verbose=False,
     ):
         del (
             repo_root, progress_cb, timeout_seconds, keep_metrics,
-            iterative, iterate_from_baseline, skip_diagnosis, skip_kinematic_gate,
+            iterative, iterate_from_baseline, skip_diagnosis,
+            skip_kinematic_gate, verbose,
         )
         rppg_inputs.append(Path(video_path))
         out = build_rppg_output_path(Path(video_path))
@@ -2288,10 +2294,12 @@ def _fanout_partial_case(tmp_path, required, monkeypatch):
         timeout_seconds=600, keep_metrics=False,
         iterative=True, iterate_from_baseline=True,
         skip_diagnosis=True, skip_kinematic_gate=True,
+        verbose=False,
     ):
         del (
             repo_root, progress_cb, timeout_seconds, keep_metrics,
-            iterative, iterate_from_baseline, skip_diagnosis, skip_kinematic_gate,
+            iterative, iterate_from_baseline, skip_diagnosis,
+            skip_kinematic_gate, verbose,
         )
         # v24 injection FAILS (returns None); base + v8 succeed.
         if Path(video_path).name == "existing-oldcam-v24.mp4":
@@ -2607,7 +2615,8 @@ def test_run_rppg_absolutizes_relative_input(tmp_path, monkeypatch):
 
     seen = {}
 
-    def _fake_stream(cmd, *, cwd, timeout_seconds, on_line=None):
+    def _fake_stream(cmd, *, cwd, timeout_seconds, on_line=None, deadline_extender=None):
+        del cwd, timeout_seconds, on_line, deadline_extender
         seen["cmd"] = list(cmd)
         return 1, []  # non-zero -> graceful skip; we only inspect cmd
 

@@ -1345,6 +1345,7 @@ class AutoPipelineRunner:
                         iterate_from_baseline=iterate_from_baseline,
                         skip_diagnosis=skip_diagnosis,
                         skip_kinematic_gate=skip_kinematic_gate,
+                        verbose=self.verbose_logging,
                     )
                     if out and out.exists():
                         produced.append(str(out))

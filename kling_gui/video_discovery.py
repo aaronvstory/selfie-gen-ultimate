@@ -65,8 +65,15 @@ def _video_sort_key(m: VideoMetadata) -> tuple:
     are decided by take first, slot second.
     """
     return (
-        m.has_rppg,                       # raw, oldcam, then rppg
+        m.has_rppg,                       # raw, looped, oldcam, then rppg
         m.oldcam_version or 0,            # within tier, ascending version
+        # _looped sits between raw kling and oldcam — it's a downstream
+        # of raw but a precursor of oldcam (queue_manager loops the
+        # kling clip BEFORE oldcam runs on the looped version). For a
+        # NON-oldcam group (oldcam_version=0), looped > raw. For oldcam
+        # groups this is dominated by oldcam_version above.
+        # PR #43 / Codex P1 (looped-variant discovery fix).
+        m.is_looped,
         m.model_short or "",
         m.take or 0,                       # tie-break primary: highest take wins
         m.slot or 0,                       # tie-break secondary: highest slot

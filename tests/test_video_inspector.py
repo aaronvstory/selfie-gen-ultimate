@@ -170,6 +170,44 @@ class MetadataTests(unittest.TestCase):
         self.assertFalse(m.has_rppg)
         self.assertEqual(m.raw_suffixes, [])
 
+    def test_parse_video_filename_looped_variant(self):
+        """Codex P1 PR #43 (3272768118): the queue manager actively
+        produces ``..._looped.mp4`` after Kling generation. The Kling-
+        tail regex used to anchor at end-of-stem so _looped suffixes
+        slipped past unparsed, breaking discovery's base_stem match.
+        After the fix _looped is stripped BEFORE Kling parsing."""
+        m = parse_video_filename(Path("front_k25tStd_p4_1_looped.mp4"))
+        self.assertEqual(m.base_stem, "front")
+        self.assertEqual(m.model_short, "k25tStd")
+        self.assertEqual(m.slot, 4)
+        self.assertEqual(m.take, 1)
+        self.assertTrue(m.is_looped)
+        self.assertIn("looped", m.raw_suffixes)
+
+    def test_parse_video_filename_looped_oldcam_rppg_chain(self):
+        """Full pipeline chain on a looped variant — every downstream
+        stage's tail must strip cleanly so base_stem ends at the source
+        image stem."""
+        m = parse_video_filename(Path(
+            "front_sim87_001_k25tStd_p4_1_looped-oldcam-v24"
+            "-rppg - 13.08-7.8-0.70-0.03-0.46.mp4"
+        ))
+        self.assertEqual(m.base_stem, "front_sim87_001")
+        self.assertTrue(m.is_looped)
+        self.assertEqual(m.oldcam_version, 24)
+        self.assertTrue(m.has_rppg)
+        self.assertEqual(m.similarity, 87)
+        # Pipeline-order suffix trail.
+        self.assertEqual(m.raw_suffixes, ["looped", "oldcam-v24", "rppg"])
+
+    def test_parse_video_filename_no_looped_marker_when_absent(self):
+        """is_looped must be False when no _looped tail is present —
+        otherwise the discovery sort key would mis-rank non-looped
+        variants."""
+        m = parse_video_filename(Path("front_k25tStd_p4_1.mp4"))
+        self.assertFalse(m.is_looped)
+        self.assertNotIn("looped", m.raw_suffixes)
+
     def test_load_sidecar_metrics_present(self):
         with tempfile.TemporaryDirectory() as td:
             folder = Path(td)
@@ -336,6 +374,43 @@ class DiscoveryTests(unittest.TestCase):
             self.assertIsNotNone(chosen)
             assert chosen is not None
             self.assertEqual(chosen.name, "front_k25tStd_p2_5.mp4")
+
+    def test_looped_variant_sorts_above_raw_kling(self):
+        """Codex PR #43 P1: _looped variants are a downstream stage
+        between raw Kling and oldcam. For a group with no oldcam/rPPG,
+        the looped variant should be the "best" (most-processed) pick.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            folder = self._make_folder(
+                td,
+                "front.png",
+                "front_k25tStd_p4_1.mp4",          # raw
+                "front_k25tStd_p4_1_looped.mp4",   # looped — should win
+            )
+            chosen = find_video_for_image(folder / "front.png")
+            self.assertIsNotNone(chosen)
+            assert chosen is not None
+            self.assertEqual(chosen.name, "front_k25tStd_p4_1_looped.mp4")
+
+    def test_oldcam_variant_sorts_above_looped(self):
+        """A looped+oldcam chain MUST sort above a bare looped (oldcam
+        is downstream of looping). Defends against a regression where
+        is_looped accidentally dominates oldcam_version in the sort key."""
+        with tempfile.TemporaryDirectory() as td:
+            folder = self._make_folder(
+                td,
+                "front.png",
+                "front_k25tStd_p4_1.mp4",
+                "front_k25tStd_p4_1_looped.mp4",
+                "front_k25tStd_p4_1_looped-oldcam-v24.mp4",  # should win
+            )
+            chosen = find_video_for_image(folder / "front.png")
+            self.assertIsNotNone(chosen)
+            assert chosen is not None
+            self.assertEqual(
+                chosen.name,
+                "front_k25tStd_p4_1_looped-oldcam-v24.mp4",
+            )
 
     def test_find_video_for_image_caches_within_mtime(self):
         """Carousel calls this on every redraw — without caching, an

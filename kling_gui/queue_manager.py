@@ -1868,32 +1868,68 @@ class QueueManager:
                 run_cmd.append("--skip-kinematic-gate")
             output_lines: list[str] = []
             returncode = -1
-            _TIMEOUT = 600
+            # Initial deadline depends on mode (PR #43 friend feedback
+            # "no arbitrary timeout"): iterative mode legitimately runs
+            # ~10min so the old hard 600s was borderline; we bump the
+            # initial to 1800s for iterative and keep 600s for one-shot.
+            # Even past the initial, the deadline RATCHETS FORWARD by
+            # 90s every time the injector emits a new "Iteration N/M"
+            # marker — so a healthy iterative run that keeps making
+            # progress NEVER hits the wall. The wall only fires on a
+            # genuinely-silent injector (real stall / wedge).
+            _TIMEOUT = 1800 if iterative else 600
+
+            # Progress tracker (PR #43, user feedback: "show progress
+            # like we do for oldcam"). Parses Iteration N/M markers
+            # from stdout, emits user-friendly progress at info, and
+            # provides a deadline-extender callback that ratchets the
+            # wall clock forward as long as the injector is making
+            # forward progress. Honors the GUI verbose_logging flag
+            # (or its non-prefixed alias) so "more nitty gritty when
+            # verbose is checked" works.
+            from automation.rppg import _RppgProgressTracker
+            verbose = _cfg_bool(
+                "verbose_logging", "automation_verbose_logging", True,
+            )
+
+            def _progress_report(message: str, level: str) -> None:
+                # Bridge the tracker's (message, level) into self.log.
+                self.log(message, level)
+
+            tracker = _RppgProgressTracker(
+                report_cb=_progress_report, verbose=verbose,
+            )
+            tracker_extender = tracker.deadline_extender if iterative else None
 
             def _on_rppg_line(text: str) -> None:
-                if not _is_tf_noise(text):
-                    level = "debug" if _is_panel_noise(text) else "info"
-                    self.log(text, level)
-                    # The injector emits its OWN internal pass/fail
-                    # self-grade against strict metric targets. At
-                    # the sub-perceptual --strength 0.005 ship
-                    # default it's mathematically impossible to
-                    # satisfy all of phase<=18°, temporal>=0.85,
-                    # harmonic>=0.7 simultaneously, so this line
-                    # routinely reads FAIL even though the pulse was
-                    # successfully injected. The pipeline contract
-                    # is exit-code-based — exit 0 == success — so
-                    # annotate the confusing line to prevent users
-                    # reading it as a pipeline error (user feedback,
-                    # PR #41).
-                    if text.strip().startswith("Test Result:"):
-                        self.log(
-                            "  ^ injector internal self-grade only; "
-                            "pipeline OK if injector exits 0 "
-                            "(sub-perceptual --strength 0.005 "
-                            "can't satisfy all strict targets).",
-                            "debug",
-                        )
+                if _is_tf_noise(text):
+                    return
+                # Panel noise (heavy TF chatter) is always debug-level
+                # regardless of verbose, otherwise pass to the tracker
+                # which decides user-friendly progress + verbose gating.
+                if _is_panel_noise(text):
+                    self.log(text, "debug")
+                else:
+                    tracker.on_line(text)
+                # The injector emits its OWN internal pass/fail
+                # self-grade against strict metric targets. At
+                # the sub-perceptual --strength 0.005 ship default
+                # it's mathematically impossible to satisfy all of
+                # phase<=18°, temporal>=0.85, harmonic>=0.7
+                # simultaneously, so this line routinely reads FAIL
+                # even though the pulse was successfully injected. The
+                # pipeline contract is exit-code-based — exit 0 ==
+                # success — so annotate the confusing line to prevent
+                # users reading it as a pipeline error (user feedback,
+                # PR #41).
+                if text.strip().startswith("Test Result:"):
+                    self.log(
+                        "  ^ injector internal self-grade only; "
+                        "pipeline OK if injector exits 0 "
+                        "(sub-perceptual --strength 0.005 "
+                        "can't satisfy all strict targets).",
+                        "debug",
+                    )
 
             try:
                 # Shared reader-thread + hard wall-clock helper (single
@@ -1911,9 +1947,14 @@ class QueueManager:
                     cwd=str(launcher.parent),
                     timeout_seconds=_TIMEOUT,
                     on_line=_on_rppg_line,
+                    deadline_extender=tracker_extender,
                 )
             except subprocess.TimeoutExpired:
-                self.log("rPPG timed out after 600s; keeping pre-rPPG video", "warning")
+                self.log(
+                    f"rPPG timed out after {_TIMEOUT}s; "
+                    "keeping pre-rPPG video",
+                    "warning",
+                )
                 return None
             except Exception as exc:
                 self.log(f"rPPG launcher error: {exc}; keeping pre-rPPG video", "warning")

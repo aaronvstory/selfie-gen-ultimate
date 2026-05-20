@@ -48,8 +48,8 @@ def _stub_subprocess(monkeypatch: pytest.MonkeyPatch) -> list:
     Return a list that the test reads after run_rppg returns."""
     captured: list = []
 
-    def _fake_stream(cmd, *, cwd, timeout_seconds, on_line):
-        del cwd, timeout_seconds, on_line
+    def _fake_stream(cmd, *, cwd, timeout_seconds, on_line, deadline_extender=None):
+        del cwd, timeout_seconds, on_line, deadline_extender
         captured.append(list(cmd))
         return (0, ["fake-stdout"])
 

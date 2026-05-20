@@ -308,14 +308,178 @@ def finalize_rppg_output(
     return requested
 
 
+# rPPG iterative-mode progress markers. The injector prints these to
+# stdout (verified via Explore agent recon, PR #43):
+#   "  Iteration N/M" — per-iter header (line ~3758 in rppg_injector.py)
+#   "  All targets met at iteration N!" — early convergence success
+#   "  Stopping to avoid over-processing" — plateau-stop exit
+#   "GPU backend: CuPy X.Y on N device(s)" — GPU detected
+#   "GPU backend: CuPy unavailable" — CPU fallback
+# These regexes are matched on .strip()'d lines so leading whitespace
+# variations don't break the parse.
+_RPPG_ITER_RE = re.compile(r"^Iteration\s+(\d+)\s*/\s*(\d+)\b")
+_RPPG_DONE_RE = re.compile(
+    r"^(All targets met at iteration|Stopping to avoid over-processing|"
+    r"Best iteration|Plateau stop|Converged)"
+)
+# User-requested surfacing (PR #43): elevate the "GPU detected" /
+# "GPU unavailable" injector line to info-level even when verbose is
+# off, so the user can immediately see whether their RTX 4090 was
+# actually used (Windows) or whether the M1 Pro fell back to CPU
+# (CuPy doesn't support Metal — out of scope for now).
+_RPPG_GPU_RE = re.compile(r"^GPU backend:\s*(.+)$")
+
+
+class _RppgProgressTracker:
+    """Stateful stdout parser for the rPPG injector's iterative mode.
+
+    Two jobs:
+      * Emit user-friendly progress lines via the host's report-cb
+        (e.g. "rPPG iteration 3/10 (~30%)") so the GUI matches the
+        oldcam progress pattern. Raw stdout is reserved for verbose
+        mode — when verbose=False the raw lines are downgraded to
+        "debug" level (which the GUI silently drops) and only the
+        synthesized progress lines surface at "info".
+      * Provide a deadline_extender that ratchets the subprocess wall
+        clock forward by ~90s every time a new iteration starts.
+        Combined with the bumped initial timeout, this means a
+        well-behaved iterative run NEVER hits an "arbitrary" wall —
+        the wall only kicks in when the injector goes silent (real
+        stall / wedge). Friend feedback to PR #43.
+
+    Per-iteration bump is generous (90s vs the ~60s realistic per-iter
+    typical) because some iters spend more time on encode than analyze
+    and we'd rather over-grant than kill a healthy run.
+    """
+
+    _PER_ITER_BUMP_SECONDS = 90
+
+    def __init__(
+        self,
+        *,
+        report_cb: Optional["ProgressCB"] = None,
+        verbose: bool = False,
+    ) -> None:
+        self._report_cb = report_cb
+        self._verbose = verbose
+        self._iter_current: Optional[int] = None
+        self._iter_max: Optional[int] = None
+
+    def deadline_extender(self, line: str) -> int:
+        """Return extra seconds to add to the deadline for *line*.
+
+        Returns POSITIVE only when this line marks a NEW iteration
+        starting (one we haven't seen before). Other lines return 0
+        so the wall clock proceeds normally; if the injector goes
+        silent the deadline eventually fires (graceful skip).
+
+        Self-stateful: when this returns positive, ``_iter_current``
+        advances internally so subsequent calls with the SAME iter
+        return 0. This lets the streamer call the extender
+        independently of ``on_line`` (the streamer in fact calls
+        on_line first, but tests + future callers may exercise the
+        extender alone)."""
+        m = _RPPG_ITER_RE.match(line.strip())
+        if m is None:
+            return 0
+        try:
+            cur = int(m.group(1))
+        except (TypeError, ValueError):
+            return 0
+        # Only extend when a NEW iteration starts (cur changed). The
+        # injector emits the same "Iteration N/M" line once per iter
+        # so this guard rarely fires extra, but a future change that
+        # emits sub-lines containing the iter marker can't trick us.
+        if self._iter_current is not None and cur <= self._iter_current:
+            return 0
+        # Advance internal state so the NEXT call (same or lower iter)
+        # returns 0 without needing on_line() to fire in between.
+        self._iter_current = cur
+        return self._PER_ITER_BUMP_SECONDS
+
+    def on_line(self, line: str) -> None:
+        """Called for every non-empty subprocess stdout line. Updates
+        internal iteration state and emits user-friendly progress.
+
+        Verbose mode (``automation_verbose_logging=True``): EVERY line
+        is reported at "info" so the user sees the full injector
+        chatter. Non-verbose: only the synthesized progress lines fire
+        at "info"; raw injector chatter goes to "debug" (silently
+        dropped by GUI loggers but kept in the file log)."""
+        stripped = line.strip()
+
+        # GPU detection — always surface this at info, regardless of
+        # verbose. User asked: "look into if we can have it utilize
+        # our RTX 4090". The injector auto-detects CuPy + CUDA at
+        # import and prints one line either way; we want the user to
+        # see that line so they know whether their GPU is in use.
+        # CuPy is CUDA-only — Apple Silicon (M1 Pro) always falls
+        # back to CPU here; a Metal port would be a separate task.
+        m_gpu = _RPPG_GPU_RE.match(stripped)
+        if m_gpu is not None:
+            _report(
+                self._report_cb,
+                f"rPPG backend — {m_gpu.group(1)}",
+                "info",
+            )
+            if self._verbose:
+                _report(self._report_cb, line, "info")
+            return
+
+        m_iter = _RPPG_ITER_RE.match(stripped)
+        if m_iter is not None:
+            try:
+                cur = int(m_iter.group(1))
+                total = int(m_iter.group(2))
+            except (TypeError, ValueError):
+                pass
+            else:
+                self._iter_current = cur
+                self._iter_max = total
+                pct = int((cur / max(total, 1)) * 100)
+                _report(
+                    self._report_cb,
+                    f"rPPG iteration {cur}/{total} (~{pct}%)",
+                    "info",
+                )
+                # The raw injector line itself is debug-level when
+                # not verbose — we've already surfaced the friendly
+                # progress version above.
+                if self._verbose:
+                    _report(self._report_cb, line, "info")
+                return
+
+        m_done = _RPPG_DONE_RE.match(stripped)
+        if m_done is not None:
+            at = self._iter_current
+            label = stripped if len(stripped) < 80 else stripped[:77] + "..."
+            if at is not None:
+                _report(
+                    self._report_cb,
+                    f"rPPG converged at iteration {at}: {label}",
+                    "info",
+                )
+            else:
+                _report(self._report_cb, f"rPPG: {label}", "info")
+            if self._verbose:
+                _report(self._report_cb, line, "info")
+            return
+
+        # All other lines: verbose -> info, non-verbose -> debug.
+        _report(
+            self._report_cb, line, "info" if self._verbose else "debug",
+        )
+
+
 def stream_subprocess_with_timeout(
     cmd: List[str],
     *,
     cwd: str,
     timeout_seconds: int,
     on_line: Optional[Callable[[str], None]] = None,
+    deadline_extender: Optional[Callable[[str], int]] = None,
 ) -> Tuple[int, List[str]]:
-    """Run *cmd*, stream stdout line-by-line, and enforce a HARD wall-clock
+    """Run *cmd*, stream stdout line-by-line, and enforce a wall-clock
     timeout that fires even if the child stalls mid-line with no newline
     and no EOF.
 
@@ -325,6 +489,14 @@ def stream_subprocess_with_timeout(
     the documented graceful-skip never happens. We drain stdout on a
     daemon reader thread and let the MAIN thread own the wall clock, so a
     no-output stall is still killed on schedule.
+
+    *deadline_extender* (PR #43, friend feedback "no arbitrary timeout"):
+    optional callback invoked with each non-empty line; if it returns a
+    POSITIVE int, the deadline is pushed forward by that many seconds.
+    Used by rPPG iterative mode to ratchet the wall clock forward as
+    long as the injector keeps emitting progress (Iteration N/M lines)
+    — so a legitimate 10-iteration run isn't killed mid-iter just
+    because the user picked a low initial timeout.
 
     Returns ``(returncode, output_lines)``. Raises
     ``subprocess.TimeoutExpired`` on timeout (caller treats that as a
@@ -383,6 +555,20 @@ def stream_subprocess_with_timeout(
             output_lines.append(text)
             if on_line is not None:
                 on_line(text)
+            # Adaptive deadline extension: a deadline_extender callback
+            # that returns N>0 pushes the wall clock forward by N
+            # seconds. The new deadline is max(current_deadline, now+N)
+            # so an extender returning a SMALLER bump than the
+            # currently-remaining budget doesn't accidentally SHRINK
+            # the deadline.
+            if deadline_extender is not None:
+                try:
+                    extra = deadline_extender(text)
+                    if extra and extra > 0:
+                        deadline = max(deadline, time.monotonic() + extra)
+                except Exception:
+                    # Never let an extender bug kill the subprocess wait.
+                    pass
 
     # stdout drained; the process should exit imminently. Bound the final
     # wait by whatever wall-clock budget is left.
@@ -404,12 +590,13 @@ def run_rppg(
     video_path: Path,
     repo_root: Path,
     progress_cb: ProgressCB = None,
-    timeout_seconds: int = 600,
+    timeout_seconds: Optional[int] = None,
     keep_metrics: bool = False,
     iterative: bool = True,
     iterate_from_baseline: bool = True,
     skip_diagnosis: bool = True,
     skip_kinematic_gate: bool = True,
+    verbose: bool = False,
 ) -> Optional[Path]:
     """Run rPPG injection. Return the output Path, or None on any
     failure (graceful skip — caller keeps the pre-rPPG video).
@@ -442,7 +629,27 @@ def run_rppg(
     injector's ``{stem}-rppg - <metrics>{ext}``; ``False`` (default)
     strips it back to a clean ``{stem}-rppg{ext}`` and writes a
     ``.metrics.json`` sidecar (see :func:`finalize_rppg_output`).
+
+    *timeout_seconds* (default ``None`` → 1800 / 30 min for iterative,
+    600 / 10 min for one-shot): wall-clock initial deadline. In
+    iterative mode the deadline is RATCHETED FORWARD by ~90s every
+    time a new "Iteration N/M" line lands on stdout — friend feedback
+    ("hope you're not still going to use some arbitrary timeout").
+    The wall only fires on a silent injector (real wedge), never on a
+    legitimate long run that keeps emitting progress markers. Pass
+    explicit int to override (use 0 to disable extension and pin the
+    deadline at the literal value, useful for tests).
+
+    *verbose* (default ``False``): when True, every line of the
+    injector's stdout is reported at "info" level. Off, only the
+    synthesized per-iteration progress lines surface at "info" and the
+    raw chatter goes to "debug" (silently dropped by GUI loggers).
+    Wired to ``automation_verbose_logging`` upstream.
     """
+    # Defaults depend on mode: iterative needs longer because the PID
+    # runs up to 10 iterations + final encode. One-shot is bounded.
+    if timeout_seconds is None:
+        timeout_seconds = 1800 if iterative else 600
     launcher = resolve_rppg_launcher(repo_root)
     if launcher is None:
         _report(progress_cb, "rPPG skipped: rPPG/ tool not present.", "warning")
@@ -489,13 +696,21 @@ def run_rppg(
         cmd.append("--skip-kinematic-gate")
     _report(progress_cb, f"rPPG launching: {_format_cmd_for_log(cmd)}", "info")
 
+    # Progress tracker: parses Iteration N/M markers from stdout, emits
+    # user-friendly progress ("rPPG iteration 3/10 (~30%)") at info,
+    # downgrades raw chatter to debug unless verbose=True. In iterative
+    # mode it also extends the wall-clock deadline by ~90s every time
+    # a new iteration starts (friend feedback "no arbitrary timeout").
+    tracker = _RppgProgressTracker(report_cb=progress_cb, verbose=verbose)
+    extender = tracker.deadline_extender if iterative else None
     output_lines: List[str] = []
     try:
         completed_returncode, output_lines = stream_subprocess_with_timeout(
             cmd,
             cwd=str(launcher.parent),
             timeout_seconds=timeout_seconds,
-            on_line=lambda text: _report(progress_cb, text, "info"),
+            on_line=tracker.on_line,
+            deadline_extender=extender,
         )
     except subprocess.TimeoutExpired:
         _report(progress_cb, f"rPPG timed out after {timeout_seconds}s", "warning")
