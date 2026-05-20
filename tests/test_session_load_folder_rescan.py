@@ -305,6 +305,132 @@ def test_rescan_dedups_video_across_both_discovery_passes(tmp_path):
     assert new_vids == 1
 
 
+def test_liveness_image_exts_match_valid_extensions():
+    """C2 (code-review on 4ddb0252): the liveness classifier MUST share
+    its image-extension set with the load-path's VALID_EXTENSIONS in
+    path_utils. Drift between the two = a session that the load-path
+    would successfully load gets classified DEAD and pruned. Identity
+    test catches this as a single-line failure."""
+    from path_utils import VALID_EXTENSIONS
+    from kling_gui.session_manager import _LIVENESS_IMAGE_EXTS
+    assert _LIVENESS_IMAGE_EXTS is VALID_EXTENSIONS or _LIVENESS_IMAGE_EXTS == VALID_EXTENSIONS, (
+        "Liveness image-extensions must match path_utils.VALID_EXTENSIONS. "
+        f"Diff: liveness={_LIVENESS_IMAGE_EXTS - VALID_EXTENSIONS}, "
+        f"valid={VALID_EXTENSIONS - _LIVENESS_IMAGE_EXTS}"
+    )
+
+
+def test_liveness_video_exts_match_image_state():
+    """C2 sibling: the video-extension set must mirror image_state._VIDEO_EXTENSIONS
+    (the source of truth for ImageEntry.is_video). Adding a new format on
+    one side without the other breaks the lockstep."""
+    from kling_gui.image_state import _VIDEO_EXTENSIONS
+    from kling_gui.session_manager import _LIVENESS_VIDEO_EXTS
+    assert _LIVENESS_VIDEO_EXTS is _VIDEO_EXTENSIONS or _LIVENESS_VIDEO_EXTS == _VIDEO_EXTENSIONS
+
+
+def test_foreign_path_detection_windows_path_on_posix():
+    """C1 (code-review on 4ddb0252): the user's mesh has 2 macOS + 1 Windows
+    machines. Sessions saved on Windows carry C:\\... paths. On macOS those
+    paths register as missing AND have no dirname, so the old classifier
+    swept them as DEAD — silent data loss when the user pulled the branch
+    on macOS and ran Prune.
+
+    The foreign-path detector must catch all common Windows path shapes."""
+    from kling_gui.session_manager import _is_foreign_path
+    import os
+    if os.name == "nt":
+        pytest.skip("Windows-on-POSIX detection — current host is Windows")
+    # Drive-letter paths
+    assert _is_foreign_path(r"C:\Users\me\proj\front.png")
+    assert _is_foreign_path(r"D:/foo/bar.jpg")  # mixed sep
+    assert _is_foreign_path(r"Z:\very_long_path\with_underscores\x.mp4")
+    # UNC paths
+    assert _is_foreign_path(r"\\server\share\file.png")
+    # Any backslash in body
+    assert _is_foreign_path(r"some\windowsy\rel\path.png")
+    # NOT foreign — local POSIX
+    assert not _is_foreign_path("/Users/me/file.png")
+    assert not _is_foreign_path("/Volumes/External/clip.mp4")
+    # Edge: empty / falsy
+    assert not _is_foreign_path("")
+
+
+def test_session_with_all_foreign_paths_classifies_live(tmp_path):
+    """End-to-end safety: a session whose images all live in C:\\Users on
+    a Windows host must classify LIVE when opened on macOS — Prune would
+    otherwise silently delete the user's work."""
+    from kling_gui.session_manager import session_liveness
+    import os, json
+    if os.name == "nt":
+        pytest.skip("foreign-path detection direction is OS-specific")
+    sess = tmp_path / "win_session.json"
+    sess.write_text(json.dumps({
+        "session": {
+            "images": [
+                {"path": r"C:\Users\me\proj\front.png", "source_type": "input"},
+                {"path": r"C:\Users\me\proj\gen-images\selfie.png",
+                 "source_type": "selfie"},
+            ]
+        }
+    }))
+    info = session_liveness(str(sess))
+    assert info["live"] is True
+    assert info["foreign_os"] is True
+
+
+def test_prune_dead_sessions_paths_kwarg_uses_explicit_set(tmp_path):
+    """H2 (code-review on 4ddb0252): the prune must accept an explicit
+    path list so the caller (Session Manager dialog) can pass the set
+    computed at refresh time. Without this, a folder going unreachable
+    between refresh and click would silently flip live→dead and get
+    swept along with the user's intended targets."""
+    from kling_gui.session_manager import prune_dead_sessions
+    import json
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    # Two dead-looking sessions on disk:
+    p1 = sessions_dir / "a.json"
+    p1.write_text(json.dumps({"session": {"images": [
+        {"path": str(tmp_path / "gone1" / "x.png"), "source_type": "input"}]}}))
+    p2 = sessions_dir / "b.json"
+    p2.write_text(json.dumps({"session": {"images": [
+        {"path": str(tmp_path / "gone2" / "x.png"), "source_type": "input"}]}}))
+
+    # Caller only wants p1 pruned, even though both ARE dead — explicit
+    # paths must be honored as the source of truth.
+    deleted = prune_dead_sessions(str(tmp_path), paths=[str(p1)])
+    assert deleted == [str(p1)]
+    assert not p1.exists()
+    assert p2.exists(), "explicit paths must NOT prune p2 even though it's also dead"
+
+
+def test_broken_symlink_folder_classifies_live(tmp_path):
+    """M1 (code-review on 4ddb0252): a broken symlink (e.g. unmounted
+    external drive) returns False from os.path.isdir but True from
+    os.path.lexists. Treat as LIVE so re-plugging the drive recovers
+    the session."""
+    from kling_gui.session_manager import session_liveness
+    import os, json
+    if os.name == "nt":
+        pytest.skip("symlink semantics differ on Windows")
+    # Create a symlink to a directory then delete the target
+    real_target = tmp_path / "real_drive"
+    real_target.mkdir()
+    link = tmp_path / "mounted"
+    link.symlink_to(real_target)
+    real_target.rmdir()  # link now dangling
+
+    sess = tmp_path / "s.json"
+    sess.write_text(json.dumps({"session": {"images": [
+        {"path": str(link / "front.png"), "source_type": "input"}]}}))
+    info = session_liveness(str(sess))
+    assert info["live"] is True, (
+        "broken symlink (sleeping drive / dropped mount) must classify "
+        "LIVE so re-plugging restores the session"
+    )
+
+
 def test_session_liveness_classifies_empty_folder_as_dead(tmp_path):
     """A session whose saved paths all point at missing files AND whose
     surveyed folders have no recoverable image/video must classify dead.

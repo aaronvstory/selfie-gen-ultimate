@@ -466,6 +466,12 @@ class SessionManagerDialog(tk.Toplevel):
             btn_frame, text="Prune Dead", command=self._on_prune_dead,
             style=TTK_BTN_DANGER,
         )
+        # H1 (code-review on 4ddb0252): start DISABLED. With many
+        # sessions, the first liveness scan blocks the Tk thread briefly;
+        # a click during that window would invoke _on_prune_dead before
+        # _dead_paths is populated. The button is re-enabled by
+        # _update_prune_button at the end of the first _refresh_list.
+        self._prune_dead_btn.configure(state=tk.DISABLED)
         self._prune_dead_btn.pack(side=tk.LEFT, padx=(0, 6))
         clear_btn = create_action_button(
             btn_frame, text="Clear Project", command=self._on_clear_project,
@@ -521,25 +527,51 @@ class SessionManagerDialog(tk.Toplevel):
         except tk.TclError:
             pass
 
+    # Threshold above which Prune Dead still requires a single confirm.
+    # The user asked us to drop the popup ("just do it"), but a 70-session
+    # accidental click is a bigger loss than the popup is annoying.
+    # 10 is enough for the typical "I have a few stale sessions" sweep
+    # to stay one-click; a 70-dead pile hits the confirm.
+    PRUNE_CONFIRM_THRESHOLD = 10
+
     def _on_prune_dead(self):
         """Bulk-delete every session whose source data is gone.
 
-        Direct prune on click — no confirm popup (user request
-        2026-05-21: "just do it instead of system alerts"). The button
-        is disabled when N=0, so an accidental click on a fresh GUI
-        won't delete anything. The [DEAD] badge in the listbox is the
-        spot-check surface before clicking. Recomputes the dead set
-        right before deleting so a folder restored between dialog-open
-        and click correctly shrinks the count.
+        Uses the dead set computed at the most recent _refresh_list
+        (self._dead_paths) — NOT a fresh re-scan. This is the source
+        of truth the user just saw highlighted in the listbox, so the
+        prune deletes exactly what was visibly dead. Re-scanning here
+        could classify formerly-live sessions as dead if a folder went
+        unreachable between refresh and click (sleeping external drive,
+        dropped network mount), silently sweeping them — code-review H2
+        on 4ddb0252.
+
+        Confirm popup is suppressed (user request 2026-05-21) for the
+        common small-sweep case, but reappears above
+        PRUNE_CONFIRM_THRESHOLD so a 70-session accidental click can't
+        wipe the manager (code-review H3).
         """
         from .session_manager import prune_dead_sessions
-        deleted = prune_dead_sessions(self._app_dir)
-        if deleted:
-            self._log_fn(
-                f"Pruned {len(deleted)} dead session(s)", "success",
-            )
-        else:
+        dead_paths = list(getattr(self, "_dead_paths", set()) or set())
+        n = len(dead_paths)
+        if n == 0:
             self._log_fn("No dead sessions to prune", "info")
+            return
+        if n > self.PRUNE_CONFIRM_THRESHOLD:
+            from tkinter import messagebox
+            ok = messagebox.askyesno(
+                "Prune Dead Sessions",
+                f"Delete {n} dead session file(s)?\n\n"
+                "Above 10 the prune asks once for safety. Cancel to\n"
+                "spot-check the [DEAD] rows in the list first.",
+                parent=self, icon="warning",
+            )
+            if not ok:
+                return
+        deleted = prune_dead_sessions(self._app_dir, paths=dead_paths)
+        self._log_fn(
+            f"Pruned {len(deleted)} dead session(s)", "success",
+        )
         self._refresh_list()
 
     def _refresh_list(self):
@@ -609,8 +641,13 @@ class SessionManagerDialog(tk.Toplevel):
             if is_dead:
                 # Dim the dead row so it visually fades into the background.
                 # itemconfig is row-scoped so live rows keep their default.
+                # Set selectforeground too — on Aqua the global listbox
+                # selectforeground can be lost on itemconfig'd rows after
+                # first selection (M4 code-review on 4ddb0252).
                 self._listbox.itemconfig(
-                    tk.END, fg=COLORS["text_dim"],
+                    tk.END,
+                    fg=COLORS["text_dim"],
+                    selectforeground=COLORS["text_dim"],
                 )
         self._sync_button_states()
 

@@ -432,31 +432,43 @@ in 5-30 minutes. Running them in parallel cuts wall-clock by ~40%.
 
 ### 4. Address subagent findings first
 
-The subagent returns before the bots usually do. Triage its findings:
+The subagent returns before the bots usually do. Triage its findings
+using a SINGLE rubric (the prior draft had two conflicting thresholds —
+fixed here per the code-review M5 finding on 4ddb0252):
 
 - **CRITICAL / HIGH**: fix in this round, write a regression test if
   the bug was non-obvious, commit + push to the PR branch.
-- **MEDIUM**: fix if tractable in <15min of work; otherwise reply
-  inline on the PR with rationale and a follow-up commit deferred to
-  the next round.
+- **MEDIUM**: fix in this round UNLESS the work is genuinely large
+  (subjectively: ">2 hours of focused work" or "requires an API
+  change in code the user explicitly asked not to touch"). Otherwise
+  do it now. Do NOT preemptively defer mediums as "V2 work" — the
+  user has called this out as a lazy pattern. The shipping cost of
+  carrying a known medium into the next round is always higher than
+  the cost of fixing it now.
 - **LOW**: defer to a cleanup pass at PR-close.
-
-Do NOT preemptively defer mediums as "V2 work" — the user has called
-this out as a lazy pattern. If a medium is 1-2 hours of work on the
-spot, do it. Only defer if the surface is genuinely large (>4 hours)
-or requires an API change in code the user explicitly asked not to
-touch.
 
 ### 5. Check bot comments
 
 By the time subagent fixes are pushed, bots should have responded.
-Pull the new comments:
+Pull the new comments using whichever snippet matches the current
+shell. Both forms produce identical filtered output; the difference
+is purely quoting (M6 code-review on 4ddb0252 — the prior single
+bash snippet was unusable from the L3 Windows machine's PowerShell):
 
-```
+**bash / zsh / git-bash** (macOS, WSL, git-bash on Windows):
+```bash
 SINCE="<timestamp-of-trigger>"
 gh api "repos/<owner>/<repo>/pulls/<n>/comments?per_page=50" \
   --paginate --jq '.[] | select(.created_at > "'"$SINCE"'" \
   and .user.login != "<your-gh-username>")'
+```
+
+**PowerShell** (native Windows shell):
+```powershell
+$SINCE = "<timestamp-of-trigger>"
+$Q = '.[] | select(.created_at > "' + $SINCE + '" and .user.login != "<your-gh-username>")'
+gh api "repos/<owner>/<repo>/pulls/<n>/comments?per_page=50" `
+  --paginate --jq $Q
 ```
 
 Per-bot disposition (per PR #43 retro, evidence-driven):
