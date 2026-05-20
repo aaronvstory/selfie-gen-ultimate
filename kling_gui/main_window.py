@@ -58,7 +58,6 @@ from .theme import (
     TTK_BTN_WORKFLOW,
     TTK_BTN_SLOT_ACTIVE,
     TTK_BTN_SLOT_INACTIVE,
-    apply_macos_button_fix,
     create_action_button,
     debounce_command,
 )

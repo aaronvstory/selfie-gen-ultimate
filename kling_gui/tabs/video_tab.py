@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, List, Optional
 
-from ..theme import COLORS, FONT_FAMILY, TTK_BTN_SUCCESS, TTK_BTN_WORKFLOW, debounce_command
+from ..theme import COLORS, FONT_FAMILY, TTK_BTN_WORKFLOW, debounce_command
 from ..image_state import ImageSession
 
 

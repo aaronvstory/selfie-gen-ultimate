@@ -12,8 +12,6 @@ import re
 from typing import Callable, Dict, List, Optional
 
 from ..theme import (
-    BUTTON_FILLED_TEXT_COLOR,
-    BUTTON_TEXT_COLOR,
     COLORS,
     FONT_FAMILY,
     FONT_MONO,

@@ -14,7 +14,6 @@ from ..image_state import ImageSession, SIMILARITY_PASS_THRESHOLD, parse_similar
 from ..theme import (
     COLORS,
     FONT_FAMILY,
-    TTK_BTN_PRIMARY,
     TTK_BTN_SECONDARY,
     TTK_BTN_SUCCESS,
     TTK_BTN_WORKFLOW,

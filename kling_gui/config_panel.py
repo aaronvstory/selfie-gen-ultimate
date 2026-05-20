@@ -16,7 +16,7 @@ from tk_dialogs import select_directory, select_open_files
 # COLORS/FONT_FAMILY are intentionally duplicated below (documented
 # inconsistency in CLAUDE.md); we still import this one macOS button
 # helper from the single source of truth rather than re-implement it.
-from .theme import apply_macos_button_fix, TTK_BTN_SECONDARY, TTK_BTN_COMPACT
+from .theme import TTK_BTN_SECONDARY, TTK_BTN_COMPACT
 
 try:
     from tkinterdnd2 import DND_FILES as _DND_FILES
