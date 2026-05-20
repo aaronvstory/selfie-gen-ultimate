@@ -608,11 +608,12 @@ def _is_foreign_path(path: str) -> bool:
         # Windows host — spot POSIX-shaped absolute paths.
         # POSIX absolute paths start with a single forward slash and
         # contain no backslashes. Reject UNC-style ``\\server\share``
-        # (those are Windows-native, just unusual shape).
-        if path.startswith("\\\\"):
+        # AND drive-relative ``\Users\…`` (both are Windows-native;
+        # POSIX paths can never contain a backslash). Code-review on
+        # 706466f caught the drive-relative case.
+        if "\\" in path:
             return False
-        normalized = path.replace("\\", "/")
-        return normalized.startswith("/") and not normalized.startswith("//")
+        return path.startswith("/") and not path.startswith("//")
     # POSIX host — spot Windows-shaped paths.
     if _WINDOWS_DRIVE_RE.match(path):
         return True

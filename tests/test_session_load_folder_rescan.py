@@ -387,6 +387,10 @@ def test_foreign_path_detection_posix_path_on_windows():
     assert not _is_foreign_path(r"C:\Users\alice\proj\front.png")
     assert not _is_foreign_path("D:/data/file.png")  # forward-slash variant
     assert not _is_foreign_path(r"\\server\share\file.png")  # UNC
+    # Drive-relative ``\Users\...`` is Windows-native too (rare in
+    # this project but possible from `subst` mounts / network shares).
+    # Code-review on 706466f hardened the detector against this case.
+    assert not _is_foreign_path(r"\Users\alice\x.png")
     # Edge: empty / relative
     assert not _is_foreign_path("")
     assert not _is_foreign_path("relative/path.png")

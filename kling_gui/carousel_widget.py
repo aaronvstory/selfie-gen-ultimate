@@ -21,7 +21,7 @@ from .theme import (
     BUTTON_DISABLED_TEXT_COLOR,
     debounce_command,
 )
-from .image_state import ImageSession
+from .image_state import ImageSession, _VIDEO_EXTENSIONS as _CAROUSEL_VIDEO_EXTS
 from .tag_utils import derive_display_tag
 from .video_discovery import find_video_for_image
 from tk_dialogs import select_open_files
@@ -865,7 +865,7 @@ class ImageCarousel(tk.Frame):
             # player fallback). For still-image failures keep the text
             # placeholder so the user sees there was an earlier error.
             ext = os.path.splitext(path)[1].lower()
-            if ext in {".mp4", ".mov", ".webm", ".mkv", ".avi"}:
+            if ext in _CAROUSEL_VIDEO_EXTS:
                 canvas.create_rectangle(
                     2, 2, cw - 2, ch - 2,
                     fill=COLORS["bg_input"], outline="",
@@ -901,7 +901,7 @@ class ImageCarousel(tk.Frame):
             # play-badge are skipped — they presume a still-image source
             # and a derived video; this entry IS the video.
             ext = os.path.splitext(path)[1].lower()
-            is_video = ext in {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+            is_video = ext in _CAROUSEL_VIDEO_EXTS
             if is_video:
                 # Try the in-memory cache first (instant on resize/navigate-
                 # back). On miss, render the placeholder + ▶ NOW and kick

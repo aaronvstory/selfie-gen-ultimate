@@ -4989,6 +4989,20 @@ class KlingGUIWindow:
 
     def _on_close(self):
         """Handle window close."""
+        # Cancel any pending layout-save debounce timer FIRST — under
+        # Python 3.14+ stricter Tkinter thread enforcement, a dangling
+        # ``after`` callback against a destroyed root can raise
+        # RuntimeError; under current Pythons it's harmless but the
+        # callback fires uselessly after destroy() returns. Cancelling
+        # up-front is the cheap, safe path. (Code-review on 706466f.)
+        after_id = getattr(self, "_layout_save_after_id", None)
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+            self._layout_save_after_id = None
+
         # Check both queue and tab worker threads
         busy_tabs = []
         for tab_name in ["face_crop_tab", "prep_tab", "selfie_tab", "expand_tab"]:

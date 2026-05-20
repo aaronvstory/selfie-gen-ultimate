@@ -79,6 +79,38 @@ def _open_externally(path: Path) -> None:
             logger.exception("Failed to open externally: %s", path)
 
 
+# Module-level guard for ttk.Style configuration. ttk.Style is a
+# process-global singleton; re-running ``.configure()`` on the same
+# style name on every modal open is wasted work and (on long-running
+# macOS Tk sessions) has been observed to slow down style lookups.
+_INSPECTOR_STYLES_CONFIGURED = False
+
+
+def _configure_inspector_styles() -> None:
+    """Configure the Inspector ttk styles once per process.
+
+    Idempotent — safe to call from every ``VideoInspectorModal.__init__``;
+    the actual ``.configure()`` / ``.map()`` calls only run the first
+    time. (Code-review on 706466f.)
+    """
+    global _INSPECTOR_STYLES_CONFIGURED
+    if _INSPECTOR_STYLES_CONFIGURED:
+        return
+    style = ttk.Style()
+    style.configure(
+        "Inspector.TCheckbutton",
+        background=COLORS["bg_main"],
+        foreground=COLORS["text_light"],
+        font=(FONT_FAMILY, 9),
+    )
+    style.map(
+        "Inspector.TCheckbutton",
+        background=[("active", COLORS["bg_main"])],
+        foreground=[("active", COLORS["text_light"])],
+    )
+    _INSPECTOR_STYLES_CONFIGURED = True
+
+
 # ──────────────────────────────────────────────────────────────────────
 # VideoFrame
 # ──────────────────────────────────────────────────────────────────────
@@ -366,6 +398,19 @@ class VideoFrame(tk.Frame):
         # Detach our self.* reference to the capture. The actual
         # cap.release() call happens in _decoder_loop's exit path —
         # see Codex P1 comment above for the race-rationale.
+        #
+        # Note on _cap_lock: the lock here is defensive — the
+        # assignment ``self._cv2_cap = None`` is already GIL-atomic and
+        # the decoder worker holds its own *local* ``cap`` reference
+        # (never reads ``self._cv2_cap``). Readers like ``is_loaded``
+        # and ``step_to`` access ``self._cv2_cap`` without the lock,
+        # which is safe because (a) the read is a single bytecode op
+        # and (b) the generation-id + stop_event scheme ensures stale
+        # workers post nothing visible after ``clear()`` returns.
+        # The lock is kept ONLY so a future maintainer who genuinely
+        # adds a multi-step read/modify/write on ``self._cv2_cap``
+        # has a ready-made mutex to grab.
+        # (Documented per code-review on 706466f.)
         with self._cap_lock:
             self._cv2_cap = None
 
@@ -1054,18 +1099,12 @@ class VideoInspectorModal(tk.Toplevel):
         # first toggle (same HIView issue as tk.Button — see b3bc7398).
         # The clam theme is configured at root init in main_window so
         # ttk widgets inherit the dark palette automatically.
-        _lock_style = ttk.Style()
-        _lock_style.configure(
-            "Inspector.TCheckbutton",
-            background=COLORS["bg_main"],
-            foreground=COLORS["text_light"],
-            font=(FONT_FAMILY, 9),
-        )
-        _lock_style.map(
-            "Inspector.TCheckbutton",
-            background=[("active", COLORS["bg_main"])],
-            foreground=[("active", COLORS["text_light"])],
-        )
+        # Style configuration is idempotent across modal reopen — ttk.Style
+        # is a process-global singleton, so re-running .configure() on
+        # every open is wasted work and (on long-running macOS Tk sessions)
+        # has been observed to slow down style lookups (code-review on
+        # 706466f).
+        _configure_inspector_styles()
         self._lock_chk = ttk.Checkbutton(
             toolbar,
             text="Lock A+B scrub",
