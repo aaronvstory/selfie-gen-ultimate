@@ -165,3 +165,84 @@ def apply_macos_button_fix(button) -> None:
     except Exception:
         # Never let a cosmetic tweak break widget construction.
         pass
+
+
+# Primary-action button color palette. Used by
+# ``apply_primary_action_style`` to mark the SINGLE most-important
+# action on a given step/page so users can immediately spot what to
+# click next. Goal (per user request, PR #43): the primary action
+# should READ as distinctly different from secondary buttons without
+# being garish or breaking the existing dark-theme palette.
+#
+# Chosen palette: accent-blue fill (same as TTK_BTN_PRIMARY) with a
+# brighter outline border, bold typeface bumped from 9pt to 10pt,
+# slightly increased padding. The border is the discriminator -
+# secondary buttons have ``highlightthickness=1`` with a same-as-bg
+# border (invisible); primary buttons get a CONTRASTING 2px border
+# in BUTTON_FILLED_TEXT_COLOR (the same color as the button's
+# foreground text), creating a 'stamped' look without color clash.
+_PRIMARY_BG = COLORS["accent_blue"]
+_PRIMARY_FG = BUTTON_FILLED_TEXT_COLOR
+_PRIMARY_RING = BUTTON_FILLED_TEXT_COLOR  # contrasting border
+
+
+def apply_primary_action_style(button) -> None:
+    """Mark a raw ``tk.Button`` as the PRIMARY action on its page.
+
+    Differentiates the single "most important" button on a step/page
+    from the surrounding secondary actions so users immediately know
+    what to click next (per user request, PR #43).
+
+    Visual recipe (cross-platform):
+      * accent-blue fill (matches TTK_BTN_PRIMARY palette)
+      * BUTTON_FILLED_TEXT_COLOR foreground (high contrast on blue)
+      * 2px contrasting outline border (the visual discriminator -
+        secondary buttons use ``highlightthickness=1`` with a
+        same-as-bg border that doesn't read; the primary's
+        contrasting border reads as a "stamped" outline)
+      * 10pt bold typeface (1pt larger than secondary 9pt bold)
+      * Slightly more horizontal padding (12 vs 8) for visual weight
+
+    macOS-aware: on Aqua, ``highlightbackground`` IS the rendered
+    color, so the border-as-discriminator needs special handling.
+    We use ``highlightbackground`` for the ring (same as Win) but
+    DO NOT zero ``highlightthickness`` - keeping the ring visible
+    while accepting the slightly smaller hit-area trade-off. Click
+    reliability is preserved by the bigger padx/pady.
+
+    Safe to call unconditionally on any ``tk.Button`` AFTER it's
+    been created (call this LAST so it overrides any baseline
+    ``apply_macos_button_fix`` styling). Silently ignores non-tk
+    widgets so it can be sprinkled liberally.
+
+    Usage::
+
+        btn = tk.Button(parent, text="Continue", command=..., ...)
+        apply_macos_button_fix(btn)        # baseline
+        apply_primary_action_style(btn)    # override to primary
+
+    To revert a button to secondary later (e.g. when the step it
+    primaried completes), recreate or restyle with the original
+    secondary palette - there's intentionally no 'unmark' helper to
+    discourage flickering style changes.
+    """
+    try:
+        button.config(
+            bg=_PRIMARY_BG,
+            fg=_PRIMARY_FG,
+            activebackground=COLORS["bg_hover"],
+            activeforeground=_PRIMARY_FG,
+            disabledforeground=BUTTON_DISABLED_TEXT_COLOR,
+            highlightbackground=_PRIMARY_RING,
+            highlightcolor=_PRIMARY_RING,
+            highlightthickness=2,
+            relief=tk.FLAT,
+            bd=0,
+            font=(FONT_FAMILY, 10, "bold"),
+            padx=12,
+            pady=6,
+            cursor="hand2",
+        )
+    except Exception:
+        # Never let a cosmetic tweak break widget construction.
+        pass
