@@ -48,7 +48,10 @@ def test_video_extension_set_covers_common_formats():
 
 
 def test_is_video_true_when_source_type_is_video():
-    entry = ImageEntry(path="/tmp/anything.png", source_type="video")
+    # Relative dummy paths — these are only fed to ImageEntry's
+    # os.path.splitext/abspath; nothing touches the filesystem. Avoids
+    # Ruff S108 "insecure tmp file usage" lint on /tmp/* literals.
+    entry = ImageEntry(path="anything.png", source_type="video")
     assert entry.is_video is True
 
 
@@ -56,13 +59,13 @@ def test_is_video_true_for_video_extensions_regardless_of_type():
     # Belt + suspenders: catches files whose source_type was misclassified
     # but whose extension is unambiguously a video.
     for ext in (".mp4", ".mov", ".webm", ".mkv", ".avi"):
-        entry = ImageEntry(path=f"/tmp/clip{ext}", source_type="input")
+        entry = ImageEntry(path=f"clip{ext}", source_type="input")
         assert entry.is_video is True, f"missed: {ext}"
 
 
 def test_is_video_false_for_image_files():
     for ext in (".png", ".jpg", ".jpeg", ".webp"):
-        entry = ImageEntry(path=f"/tmp/img{ext}", source_type="input")
+        entry = ImageEntry(path=f"img{ext}", source_type="input")
         assert entry.is_video is False, f"false positive: {ext}"
 
 
@@ -72,7 +75,7 @@ def test_is_video_false_for_image_files():
 
 
 def test_video_entry_renders_video_tag():
-    entry = ImageEntry(path="/tmp/x.mp4", source_type="video")
+    entry = ImageEntry(path="x.mp4", source_type="video")
     tag, color_key = derive_display_tag(entry)
     assert tag == "[VIDEO]"
     assert color_key == "warning_light"
@@ -95,10 +98,10 @@ def test_extract_video_first_frame_caches_results(tmp_path, monkeypatch):
     sentinel = object()
     monkeypatch.setitem(
         carousel_widget._VIDEO_THUMB_CACHE,
-        "/cached/path.mp4",
+        "cached/path.mp4",
         sentinel,
     )
-    assert carousel_widget._extract_video_first_frame("/cached/path.mp4") is sentinel
+    assert carousel_widget._extract_video_first_frame("cached/path.mp4") is sentinel
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -325,11 +328,11 @@ def test_video_thumb_async_no_double_spawn(tmp_path, monkeypatch):
     # Pretend a decode is already in flight
     monkeypatch.setattr(
         carousel_widget, "_VIDEO_THUMB_PENDING",
-        {"/some/clip.mp4"},
+        {"some/clip.mp4"},
         raising=True,
     )
     started = carousel_widget._extract_video_first_frame_async(
-        "/some/clip.mp4",
+        "some/clip.mp4",
         widget=None,            # never touched because we return early
         on_done=lambda _img: None,
     )
@@ -343,11 +346,11 @@ def test_video_thumb_async_cache_hit_returns_false(monkeypatch):
     sentinel = object()
     monkeypatch.setattr(
         carousel_widget, "_VIDEO_THUMB_CACHE",
-        {"/cached/clip.mp4": sentinel},
+        {"cached/clip.mp4": sentinel},
         raising=True,
     )
     started = carousel_widget._extract_video_first_frame_async(
-        "/cached/clip.mp4",
+        "cached/clip.mp4",
         widget=None,
         on_done=lambda _img: None,
     )

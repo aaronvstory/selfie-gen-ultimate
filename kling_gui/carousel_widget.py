@@ -940,9 +940,20 @@ class ImageCarousel(tk.Frame):
                 # automatically when the frame lands.
                 img = _VIDEO_THUMB_CACHE.get(path)
                 if img is None:
+                    # CR Major (PR #43, bot pass on 907da866): the async
+                    # decode can return None for corrupt/unsupported clips
+                    # or when cv2 is missing. Without memoizing the failure
+                    # here, the rerender triggered by on_done would spawn
+                    # another worker for the same path — infinite loading
+                    # spinner. Add the path to _render_failed_paths so the
+                    # next render hits the early-return placeholder branch.
+                    def _on_thumb_ready(_img, _p=path):
+                        if _img is None:
+                            self._render_failed_paths.add(_p)
+                        self._update_display()
                     started = _extract_video_first_frame_async(
                         path, canvas,
-                        on_done=lambda _img: self._update_display(),
+                        on_done=_on_thumb_ready,
                     )
                     if started or path in _VIDEO_THUMB_PENDING:
                         # Render placeholder for this pass; the async
