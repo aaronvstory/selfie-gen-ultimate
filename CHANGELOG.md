@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented here.
 
+## 2026-05-19 — End-frame lock + dynamic per-model API schemas
+
+Leverages End-Frame Locking + negative prompts to mechanically force
+selfies back to the opening pose and stop over-rotation.
+
+### Added
+
+- **Per-model API capability flags** in `models.json`
+  (`start_image_param`, `end_image_param`, `supports_negative_prompt`,
+  `supports_cfg_scale`, `duration_options`, `duration_default`). Every
+  endpoint was API-verified against fal.ai.
+  `model_metadata.get_model_capabilities()` is the single source of
+  truth — the dispatcher, GUI and CLI all read it (never re-derive).
+- **Roster**: added `fal-ai/kling-video/o3/standard/image-to-video`
+  (O3 dropped negative_prompt + cfg_scale, renamed start→`image_url`)
+  and `bytedance/seedance-2.0/image-to-video` (hidden by default;
+  endpoint keeps the `bytedance/` prefix — not `fal-ai/`). Existing
+  models kept; **default model unchanged (Kling 2.5 Turbo Pro)**.
+- **End-frame lock** + **cfg_scale** in `create_kling_generation`:
+  the start image goes under the model's own param name (v3 uses
+  `start_image_url`; 2.5-turbo/o3/seedance use `image_url`); when
+  `lock_end_frame` is on the model's end param (`tail_image_url` for
+  2.5 Pro, `end_image_url` for v3/o3/seedance) is set to the same url.
+  `negative_prompt`/`cfg_scale` are sent only for models that support
+  them. The start-image URL is validated before submit.
+- **GUI**: a "Motion:" row — the "Lock End Frame to Start Image"
+  checkbox (grayed out for models with no end-frame param,
+  toggle-checkable otherwise) + a `cfg_scale` entry (default 0.7,
+  grayed when unsupported) + a capability label. The prompt editor
+  splits horizontally into a positive box and a negative box, with the
+  negative half shown only for models that accept `negative_prompt`.
+- **Default prompts**: new-install slot 1 is now the minimal-motion
+  prompt + its negative; `cfg_scale_value` 0.7 and `lock_end_frame`
+  true defaults (template + CLI recommended-defaults;
+  `RECOMMENDED_DEFAULTS_VERSION` 3 → 4).
+
+### Changed
+
+- The automation CLI pipeline now passes `negative_prompt`,
+  `cfg_scale` and `lock_end_frame` from the same config keys the GUI
+  writes — full CLI/GUI/payload parity (the dispatcher gates each on
+  the model's capabilities).
+
+### Fixed
+
+- **Partial rPPG fan-out** no longer masks a missing oldcam
+  deliverable (post-merge Codex P2 from #40): per-candidate failure
+  tracking; `automation_rppg_required=true` + any failure fails the
+  case; the headline is the highest oldcam version that actually
+  succeeded, never the base when an oldcam silently skipped.
+
 ## 2026-05-19 — rPPG polish: metric toggle, base+oldcam fan-out, macOS buttons
 
 Follow-up to the rPPG feature (PR #39, merged). Three user-driven

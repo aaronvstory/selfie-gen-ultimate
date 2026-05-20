@@ -228,6 +228,43 @@ def get_duration_default(endpoint: str) -> int:
     return 10
 
 
+# Conservative defaults for any model whose capability flags are absent
+# (legacy entries, custom user models, an unknown endpoint): no end-frame
+# lock, no cfg_scale, no negative_prompt -> the dispatcher simply omits
+# those params, which is always safe. start defaults to "image_url"
+# (the most common Kling/fal convention). All capability flags live in
+# models.json (single source of truth — dispatcher AND GUI read them
+# only through this helper, never re-deriving).
+_CAPABILITY_DEFAULTS = {
+    "start_image_param": "image_url",
+    "end_image_param": None,
+    "supports_negative_prompt": False,
+    "supports_cfg_scale": False,
+}
+
+
+def get_model_capabilities(endpoint: str) -> dict:
+    """Return the per-model API capability flags for *endpoint*.
+
+    Keys: ``start_image_param`` (str), ``end_image_param`` (str | None),
+    ``supports_negative_prompt`` (bool), ``supports_cfg_scale`` (bool).
+    Always returns a fully-populated dict — unknown/legacy/custom models
+    get the conservative defaults above so callers never KeyError and an
+    unflagged model degrades to a plain prompt+image submit.
+    """
+    caps = dict(_CAPABILITY_DEFAULTS)
+    model = get_model_by_endpoint(endpoint)
+    if model:
+        for key in _CAPABILITY_DEFAULTS:
+            # Override the default only when the key is explicitly present
+            # in models.json. A JSON ``null`` (-> Python None) is a valid,
+            # intentional value for ``end_image_param`` ("no end frame"),
+            # so honour it rather than falling back to the default.
+            if key in model:
+                caps[key] = model[key]
+    return caps
+
+
 # ---------------------------------------------------------------------------
 # Prompt length limits (from fal.ai OpenAPI schemas)
 # ---------------------------------------------------------------------------

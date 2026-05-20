@@ -66,7 +66,9 @@ class ExpandTab(tk.Frame):
         self._composite_mode_var = tk.StringVar(
             value=self.config.get(
                 "automation_selfie_expand_composite_mode",
-                self.config.get("outpaint_composite_mode", "preserve_seamless"),
+                # Default "none" (raw AI output) for Step 2.5
+                # expand — user-requested ship default.
+                self.config.get("outpaint_composite_mode", "none"),
             )
         )
         self._provider_var = tk.StringVar(
@@ -90,13 +92,21 @@ class ExpandTab(tk.Frame):
 
         self._candidate_list = tk.Listbox(
             candidate_frame,
-            selectmode=tk.EXTENDED,
+            # SINGLE select: clicking a row sets the active
+            # carousel image (and that's what the Expand button
+            # operates on). Multi-select made no sense — we only
+            # ever expand one selfie at a time (user request,
+            # PR #41).
+            selectmode=tk.SINGLE,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
             font=(FONT_FAMILY, 9),
             relief=tk.FLAT,
             height=6,
             exportselection=False,
+        )
+        self._candidate_list.bind(
+            "<<ListboxSelect>>", self._on_candidate_clicked
         )
         candidate_scroll = ttk.Scrollbar(
             candidate_frame, orient=tk.VERTICAL, command=self._candidate_list.yview
@@ -113,18 +123,6 @@ class ExpandTab(tk.Frame):
             style=TTK_BTN_SECONDARY,
             command=debounce_command(lambda: self.refresh_candidates(select_all_default=True), key="expand_refresh_candidates"),
         ).pack(side=tk.LEFT)
-        ttk.Button(
-            candidate_actions,
-            text="Select All",
-            style=TTK_BTN_SECONDARY,
-            command=debounce_command(self._select_all_candidates, key="expand_select_all"),
-        ).pack(side=tk.LEFT, padx=(5, 0))
-        ttk.Button(
-            candidate_actions,
-            text="Select Passing",
-            style=TTK_BTN_SECONDARY,
-            command=debounce_command(self._select_passing_candidates, key="expand_select_passing"),
-        ).pack(side=tk.LEFT, padx=(5, 0))
         self._candidate_meta = tk.Label(
             candidate_actions,
             text="",
@@ -134,6 +132,35 @@ class ExpandTab(tk.Frame):
             anchor="w",
         )
         self._candidate_meta.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+
+        # Prompt editor (user request, PR #41) — backed by the
+        # existing outpaint_prompt config key, which the dispatch
+        # path was already reading silently. Now editable in the
+        # tab itself, so the user can tune the prompt sent to
+        # fal.ai or BFL without leaving Step 2.5. Same key as the
+        # standalone Outpaint tab, so edits flow between them.
+        prompt_frame = tk.LabelFrame(
+            self,
+            text="Prompt (sent to fal.ai / BFL)",
+            font=(FONT_FAMILY, 9, "bold"),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+        )
+        prompt_frame.pack(fill=tk.X, padx=10, pady=(0, 4))
+        self._prompt_text = tk.Text(
+            prompt_frame,
+            height=3,
+            wrap=tk.WORD,
+            bg=COLORS["bg_input"],
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 9),
+            relief=tk.FLAT,
+            insertbackground=COLORS["text_light"],
+        )
+        self._prompt_text.insert(
+            "1.0", self.config.get("outpaint_prompt", "")
+        )
+        self._prompt_text.pack(fill=tk.X, padx=6, pady=6)
 
         settings_frame = tk.LabelFrame(
             self,
@@ -279,7 +306,7 @@ class ExpandTab(tk.Frame):
         }
         composite_value = self._composite_mode_var.get().strip()
         if composite_value not in self._composite_mode_labels:
-            composite_value = "preserve_seamless"
+            composite_value = "none"
             self._composite_mode_var.set(composite_value)
         self._composite_mode_label_var = tk.StringVar(
             value=self._composite_mode_labels[composite_value]
@@ -318,7 +345,7 @@ class ExpandTab(tk.Frame):
         run_frame.pack(fill=tk.X, padx=10, pady=(4, 4))
         self._expand_btn = ttk.Button(
             run_frame,
-            text="Expand Selected",
+            text="Expand Active Image",
             style=TTK_BTN_PRIMARY,
             command=debounce_command(self._on_expand_selected, key="expand_run"),
         )
@@ -524,17 +551,34 @@ class ExpandTab(tk.Frame):
             "info",
         )
 
-    def _select_all_candidates(self):
-        self._candidate_list.selection_set(0, tk.END)
-
-    def _select_passing_candidates(self):
-        self._candidate_list.selection_clear(0, tk.END)
-        for idx, entry in enumerate(self._candidate_entries):
-            score = entry.similarity_score
-            if score is None:
-                score = parse_similarity_score(entry.similarity)
-            if score is not None and score >= SIMILARITY_PASS_THRESHOLD:
-                self._candidate_list.selection_set(idx)
+    def _on_candidate_clicked(self, _event=None):
+        """Click a row -> make that candidate the active carousel
+        image. The existing _on_image_session_changed wiring then
+        keeps the listbox preselection in sync (one-way flow back
+        from carousel-active to listbox is the prior behavior;
+        this adds the forward flow listbox-click -> carousel so
+        the two views stay coupled, and the Expand button — which
+        operates on the active carousel image — always targets
+        what the user clicked (user request, PR #41)."""
+        sel = self._candidate_list.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if not (0 <= idx < len(self._candidate_entries)):
+            return
+        clicked_path = self._candidate_entries[idx].path
+        try:
+            clicked_abs = os.path.abspath(clicked_path)
+            for i, e in enumerate(self.image_session.images):
+                if os.path.abspath(e.path) == clicked_abs:
+                    if self.image_session.current_index != i:
+                        self.image_session.navigate_to(i)
+                    break
+        except Exception:
+            # Lifecycle / path-resolution races are non-fatal —
+            # the click just becomes a no-op rather than crashing
+            # the GUI.
+            pass
 
     def _get_selected_candidate_entries(self):
         selected = []
@@ -632,7 +676,7 @@ class ExpandTab(tk.Frame):
         self._busy = busy
         self._expand_btn.config(
             state=tk.DISABLED if busy else tk.NORMAL,
-            text="Expanding..." if busy else "Expand Selected",
+            text="Expanding..." if busy else "Expand Active Image",
         )
         self._send_btn.config(state=tk.DISABLED if busy else tk.NORMAL)
         self._status_label.config(
@@ -644,21 +688,48 @@ class ExpandTab(tk.Frame):
         if self._busy:
             return
 
-        targets = self._get_selected_candidate_entries()
-        if not targets:
-            self.log("Select at least one selfie candidate", "warning")
+        # Active-carousel-image-driven (user request, PR #41).
+        # Clicking a candidate row already navigates the carousel
+        # to that image (see _on_candidate_clicked), so the active
+        # image IS the user's selection — no multi-target loop.
+        active_path = self.image_session.active_image_path
+        if not active_path:
+            self.log("No active image in carousel to expand", "warning")
             return
 
-        approved = []
-        for entry in targets:
-            if self._approve_override_if_needed(entry):
-                approved.append(entry)
-            else:
-                self.log(f"Skipped (gate not overridden): {entry.filename}", "warning")
-
-        if not approved:
-            self.log("No candidates approved for expand", "warning")
+        # Resolve back to a candidate entry (for threshold-override
+        # approval + similarity-score logging). If the active image
+        # isn't in the current candidate list (e.g. a non-selfie),
+        # fabricate a minimal entry so we can still expand it.
+        active_abs = os.path.abspath(active_path)
+        entry = None
+        for e in self._candidate_entries:
+            if os.path.abspath(e.path) == active_abs:
+                entry = e
+                break
+        if entry is None:
+            # Fallback: the active image isn't in the current
+            # selfie-candidate list (e.g. it's a crop / face_crop or
+            # an original input the user navigated to in the carousel).
+            # Use the live ImageEntry from the session directly — it
+            # has the full API (.update_similarity / .set_similarity_override
+            # / .similarity_override) that _approve_override_if_needed
+            # requires. A fabricated namedtuple is missing those
+            # methods and would raise AttributeError (Codex P1, PR #41).
+            entry = self.image_session.active_entry
+            if entry is None:
+                self.log(
+                    "Active image not resolvable to a session entry",
+                    "warning",
+                )
+                return
+        if not self._approve_override_if_needed(entry):
+            self.log(
+                f"Skipped (gate not overridden): {entry.filename}",
+                "warning",
+            )
             return
+        approved = [entry]
 
         cfg = self.get_config()
         api_key = cfg.get("falai_api_key", "")
@@ -677,7 +748,13 @@ class ExpandTab(tk.Frame):
 
         max_per_side = 2048 if use_bfl else 700
         output_format = self._format_var.get()
-        prompt = cfg.get("outpaint_prompt", "")
+        # Live editor value — falls back to the persisted config
+        # key if the widget is missing (defensive, mirrors the
+        # outpaint_tab pattern).
+        try:
+            prompt = self._prompt_text.get("1.0", "end-1c")
+        except Exception:
+            prompt = cfg.get("outpaint_prompt", "")
         composite_mode = self._composite_mode_var.get().strip() or "preserve_seamless"
         freeimage_key = cfg.get("freeimage_api_key")
         ref_path = self._get_similarity_reference()
@@ -887,4 +964,13 @@ class ExpandTab(tk.Frame):
             "outpaint_composite_mode": self._composite_mode_var.get(),
             "automation_selfie_expand_composite_mode": self._composite_mode_var.get(),
             "outpaint_provider": self._provider_var.get(),
+            "outpaint_prompt": (
+                self._prompt_text.get("1.0", "end-1c")
+                if hasattr(self, "_prompt_text")
+                else (
+                    self.config.get("outpaint_prompt", "")
+                    if isinstance(getattr(self, "config", None), dict)
+                    else ""
+                )
+            ),
         }

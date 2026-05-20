@@ -996,11 +996,45 @@ class AutoPipelineRunner:
                 self.manifest.update_step(case_key, "video_generate", "running")
                 video_output_dir = case_dir / "gen-videos"
                 video_output_dir.mkdir(exist_ok=True)
+                # CLI parity with the GUI queue: pass the negative prompt
+                # + cfg_scale + end-frame lock from the SAME config keys
+                # the GUI writes (negative_prompts / cfg_scale_value /
+                # lock_end_frame). The dispatcher gates each on the
+                # selected model's capabilities (get_model_capabilities —
+                # single source of truth), so an o3/seedance run silently
+                # drops the unsupported ones exactly as the GUI does.
+                _slot = str(self.config.get("current_prompt_slot", 1))
+                # _read_bool (not raw .get) so a string "false" in the
+                # automation config disables prompt/negative reuse as the
+                # user intended — raw bool("false") is truthy (CodeRabbit,
+                # PR #41). It IS an automation_* key, so self._read_bool's
+                # self.automation source is correct here.
+                _use_existing = self._read_bool(
+                    "automation_video_use_existing_prompt", True
+                )
+                try:
+                    _cfg_val = float(self.config.get("cfg_scale_value", 0.7))
+                except (TypeError, ValueError):
+                    _cfg_val = 0.7
+                # lock_end_frame is a GUI (kling_config) key, NOT an
+                # automation_* key — read it from self.config via the
+                # canonical _parse_bool (NOT self._read_bool, which only
+                # looks in self.automation and would always return the
+                # default here).
+                from face_similarity import _parse_bool as _pb
+                _lock_ef = _pb(self.config.get("lock_end_frame", True))
+                if _lock_ef is None:
+                    _lock_ef = True
                 output_video = video.create_kling_generation(
                     character_image_path=final_still,
                     output_folder=str(video_output_dir),
-                    custom_prompt=self.config.get("saved_prompts", {}).get(str(self.config.get("current_prompt_slot", 1)))
-                    if self.automation.get("automation_video_use_existing_prompt", True)
+                    custom_prompt=self.config.get("saved_prompts", {}).get(_slot)
+                    if _use_existing
+                    else None,
+                    negative_prompt=(
+                        self.config.get("negative_prompts", {}).get(_slot) or None
+                    )
+                    if _use_existing
                     else None,
                     duration=int(self.config.get("video_duration", 10)),
                     aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
@@ -1008,6 +1042,8 @@ class AutoPipelineRunner:
                     seed=int(self.config.get("seed", -1)),
                     camera_fixed=bool(self.config.get("camera_fixed", False)),
                     generate_audio=bool(self.config.get("generate_audio", False)),
+                    cfg_scale=max(0.0, min(1.0, _cfg_val)),
+                    lock_end_frame=bool(_lock_ef),
                     use_source_folder=False,
                 )
                 if not output_video:
@@ -1276,7 +1312,20 @@ class AutoPipelineRunner:
                 )
                 self._set_active_step(case_entry, "rppg")
                 self.manifest.update_step(case_key, "rppg", "running")
-                produced: List[str] = []
+                # Track success/failure PER candidate. ``to_inject`` is
+                # ordered base -> oldcam ascending. A naive "collect
+                # successes, headline produced[-1]" silently masks a
+                # partial fan-out failure: if the base injects but an
+                # oldcam injection fails, produced[-1] becomes the base
+                # *-rppg and the case is marked complete exposing a
+                # non-oldcam clip — and with rppg_required=true a partial
+                # failure is reported as success. (Codex P2, PR #40.)
+                produced: List[str] = []          # all successful outputs
+                failed_inputs: List[str] = []     # candidates with no output
+                # Map src -> output so the headline can prefer the
+                # HIGHEST oldcam that actually succeeded (not blindly the
+                # last attempted). to_inject order == priority order.
+                produced_for: dict = {}
                 for src in to_inject:
                     out = run_rppg(
                         video_path=src,
@@ -1286,33 +1335,78 @@ class AutoPipelineRunner:
                     )
                     if out and out.exists():
                         produced.append(str(out))
-                if produced:
-                    # Headline = the last produced (highest oldcam version,
-                    # since candidates are ordered base -> v.. ascending).
+                        produced_for[str(src)] = str(out)
+                    else:
+                        failed_inputs.append(Path(src).name)
+
+                partial = bool(produced) and bool(failed_inputs)
+                if produced and not (required and failed_inputs):
+                    # Headline = the rPPG of the LAST candidate that
+                    # actually succeeded (candidates are base -> oldcam
+                    # ascending, so the last success is the
+                    # highest-priority real deliverable — never a clip
+                    # that silently skipped its oldcam injection).
+                    headline = next(
+                        produced_for[str(s)]
+                        for s in reversed(to_inject)
+                        if str(s) in produced_for
+                    )
+                    status_note = ""
+                    if partial:
+                        status_note = (
+                            f" (PARTIAL: {len(failed_inputs)} of "
+                            f"{len(to_inject)} candidate(s) failed: "
+                            f"{', '.join(failed_inputs)})"
+                        )
                     self.logger.info(
-                        "case %s rppg outputs=%d headline=%s",
+                        "case %s rppg outputs=%d headline=%s%s",
                         case_key,
                         len(produced),
-                        Path(produced[-1]).name,
+                        Path(headline).name,
+                        status_note,
                     )
                     self.manifest.update_step(
                         case_key,
                         "rppg",
                         "complete",
-                        output=produced[-1],
+                        output=headline,
                         meta={
                             **self._policy_meta("rppg", False, reprocess_mode),
                             "all_outputs": produced,
+                            "failed_inputs": failed_inputs,
+                            "partial": partial,
                         },
                     )
                 else:
-                    self.logger.warning("case %s rppg failed required=%s", case_key, required)
+                    # Either nothing was produced, OR required=true and at
+                    # least one candidate failed — a required fan-out must
+                    # be ALL-or-fail so a missing oldcam deliverable is
+                    # never reported as success.
+                    if not produced:
+                        err = "rPPG injection produced no output"
+                    else:
+                        err = (
+                            f"rPPG required but {len(failed_inputs)} of "
+                            f"{len(to_inject)} candidate(s) failed: "
+                            f"{', '.join(failed_inputs)}"
+                        )
+                    self.logger.warning(
+                        "case %s rppg failed required=%s (%s)",
+                        case_key,
+                        required,
+                        err,
+                    )
                     self.manifest.update_step(
                         case_key,
                         "rppg",
                         "failed" if required else "skipped",
-                        error="rPPG injection produced no output",
-                        meta={**self._policy_meta("rppg", False, reprocess_mode), "required": required},
+                        error=err,
+                        meta={
+                            **self._policy_meta("rppg", False, reprocess_mode),
+                            "required": required,
+                            "all_outputs": produced,
+                            "failed_inputs": failed_inputs,
+                        },
                     )
                     if required:
                         return self._finalize_case(case_entry, "failed")

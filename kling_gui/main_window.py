@@ -129,7 +129,10 @@ UI_CONFIG_DEFAULTS = {
     "window": {"width": 1100, "height": 950, "min_width": 800, "min_height": 700},
     "config_panel": {
         "prompt_preview_height": 6,
-        "prompt_preview_font_size": 9,
+        # 10 to match the negative-prompt editor (built at size 10) so
+        # the split prompt box reads as one coherent editor — the user
+        # prefers the larger negative font; unify on it.
+        "prompt_preview_font_size": 10,
         "negative_prompt_height": 1,
     },
     "drop_zone": {"height": 560},
@@ -2569,7 +2572,7 @@ class KlingGUIWindow:
                         and hasattr(self.config_panel, "prompt_preview")
                         else 0
                     ),
-                    "prompt_preview_font_size": 9,
+                    "prompt_preview_font_size": 10,
                     "negative_prompt_height": 1,
                     "prompt_preview_width": (
                         self.config_panel.prompt_preview_container.winfo_width()
@@ -4278,6 +4281,37 @@ class KlingGUIWindow:
     def _on_image_session_changed(self):
         """Debounced autosave trigger for key session changes."""
         self.session_controller.on_image_session_changed()
+        # If the Step 2.5 Expand tab is the one currently shown, keep
+        # its candidate preselection locked to whatever image is now
+        # active in the carousel. _on_tab_changed already does this on
+        # tab-switch, but the user expects LIVE carousel navigation
+        # while sitting on Step 2.5 to re-target the expand to the
+        # active image too (user request, PR #41).
+        try:
+            if (
+                hasattr(self, "notebook")
+                and hasattr(self, "expand_tab")
+                and self.expand_tab is not None
+                and self.notebook.index(self.notebook.select()) == 3
+            ):
+                self.expand_tab.refresh_from_active_carousel()
+        except tk.TclError:
+            # Widget lifecycle race (close / tab teardown / not yet
+            # realized) — safe to ignore, will refresh next session
+            # event.
+            pass
+        except Exception as _exc:
+            # Surface real failures at debug level so candidate sync
+            # can't silently stop working while the user is on Step
+            # 2.5 (CodeRabbit, PR #41 — the prior `except Exception:
+            # pass` hid genuine errors).
+            try:
+                self._log(
+                    f"Step 2.5 live refresh failed: {_exc!r}",
+                    "debug",
+                )
+            except Exception:
+                pass
 
     def _queue_autosave(self, reason: str = "state_change", debounce_ms: Optional[int] = None):
         """Queue one debounced autosave call."""

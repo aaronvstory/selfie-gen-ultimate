@@ -1211,13 +1211,58 @@ class QueueManager:
         Returns:
             Output path on success, None on failure
         """
-        # Respect model capability: if not supported, drop negative_prompt
-        supports_negative = (
-            self.get_config()
-            .get("model_capabilities", {})
-            .get(self.generator.model_endpoint, False)
+        # Respect model capability via the SINGLE source of truth
+        # (model_metadata.get_model_capabilities — the dispatcher reads
+        # the exact same flags, so the GUI pre-drop and the payload can
+        # never diverge). The dispatcher gates again defensively; dropping
+        # here too keeps logs/console honest about what was sent.
+        from model_metadata import (
+            get_model_capabilities,
+            get_model_by_endpoint,
         )
-        neg_for_payload = negative_prompt if supports_negative else None
+        from face_similarity import _parse_bool
+
+        _caps = get_model_capabilities(self.generator.model_endpoint)
+        # Mirror the dispatcher (kling_generator_falai.py): an
+        # endpoint NOT in MODEL_METADATA is a custom model whose
+        # true caps come from the live fal.ai schema, NOT the
+        # conservative get_model_capabilities default. Without this
+        # the GUI queue pre-strips neg/cfg to None before the
+        # dispatcher's own _is_known_model bypass can keep them, so
+        # custom-model users silently lose negative_prompt +
+        # cfg_scale (code-reviewer, PR #41). Known models keep
+        # precise per-model gating (o3 / seedance still drop both).
+        _is_known = (
+            get_model_by_endpoint(self.generator.model_endpoint)
+            is not None
+        )
+        neg_for_payload = (
+            negative_prompt
+            if (_caps["supports_negative_prompt"] or not _is_known)
+            else None
+        )
+        _cfg_cfg = self.get_config()
+        if _caps["supports_cfg_scale"] or not _is_known:
+            try:
+                _cfg_scale = float(_cfg_cfg.get("cfg_scale_value", 0.7))
+            except (TypeError, ValueError):
+                _cfg_scale = 0.7
+            # Clamp to the fal.ai-valid range. The automation
+            # pipeline already does max(0.0, min(1.0, ...)); a
+            # stale / hand-edited out-of-range persisted value must
+            # not let the GUI submit an invalid cfg_scale while the
+            # CLI silently clamps (Codex P2, PR #41 — GUI/CLI drift).
+            _cfg_scale = max(0.0, min(1.0, _cfg_scale))
+        else:
+            _cfg_scale = None
+        # Mirror automation/pipeline.py: an UNPARSEABLE lock_end_frame
+        # (_parse_bool -> None) defaults to True, NOT bool(None)=False.
+        # lock default is True, so GUI and CLI must agree on malformed
+        # input (gemini-code-assist HIGH, PR #41). (Contrast
+        # rppg_metrics_in_filename, default False, where bool(None)=False
+        # is the correct default — do not "unify" that one.)
+        _raw_lock_ef = _parse_bool(_cfg_cfg.get("lock_end_frame", True))
+        _lock_end_frame = True if _raw_lock_ef is None else bool(_raw_lock_ef)
 
         # Set up verbose callback for generator progress
         def progress_callback(message: str, level: str = "info"):
@@ -1246,6 +1291,8 @@ class QueueManager:
                 seed=seed,
                 camera_fixed=camera_fixed,
                 generate_audio=generate_audio,
+                cfg_scale=_cfg_scale,
+                lock_end_frame=_lock_end_frame,
                 config=config,
                 timestamp=generation_timestamp,
             )
@@ -1277,6 +1324,8 @@ class QueueManager:
                 seed=seed,
                 camera_fixed=camera_fixed,
                 generate_audio=generate_audio,
+                cfg_scale=_cfg_scale,
+                lock_end_frame=_lock_end_frame,
                 config=config,
                 timestamp=generation_timestamp,
             )
@@ -1760,6 +1809,26 @@ class QueueManager:
                 if not _is_tf_noise(text):
                     level = "debug" if _is_panel_noise(text) else "info"
                     self.log(text, level)
+                    # The injector emits its OWN internal pass/fail
+                    # self-grade against strict metric targets. At
+                    # the sub-perceptual --strength 0.005 ship
+                    # default it's mathematically impossible to
+                    # satisfy all of phase<=18°, temporal>=0.85,
+                    # harmonic>=0.7 simultaneously, so this line
+                    # routinely reads FAIL even though the pulse was
+                    # successfully injected. The pipeline contract
+                    # is exit-code-based — exit 0 == success — so
+                    # annotate the confusing line to prevent users
+                    # reading it as a pipeline error (user feedback,
+                    # PR #41).
+                    if text.strip().startswith("Test Result:"):
+                        self.log(
+                            "  ^ injector internal self-grade only; "
+                            "pipeline OK if injector exits 0 "
+                            "(sub-perceptual --strength 0.005 "
+                            "can't satisfy all strict targets).",
+                            "debug",
+                        )
 
             try:
                 # Shared reader-thread + hard wall-clock helper (single

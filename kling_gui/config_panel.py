@@ -274,10 +274,37 @@ class ModelFetcher:
 
     @staticmethod
     def get_merged_models(config: dict) -> List[Dict]:
-        """Merge factory models (minus hidden) with custom models."""
+        """Merge factory models (minus hidden) with custom models.
+
+        Two hiding mechanisms, both honoured:
+          * ``config["hidden_models"]`` — user-hidden endpoints.
+          * per-model ``"hidden": true`` in models.json — endpoints kept
+            out of normal selection by default (e.g. Seedance, an
+            internal/experimental endpoint). Codex P2, PR #41: the flag
+            was set but never read, so it still leaked into the dropdown.
+        A model deliberately persisted as ``current_model`` is NOT
+        filtered, so an explicit prior selection keeps working.
+        """
         hidden = set(config.get("hidden_models", []))
+        current = config.get("current_model", "")
         custom = config.get("custom_models", [])
-        factory = [m for m in MODEL_METADATA if m.get("endpoint") not in hidden]
+        # A deliberately-persisted current_model is exempt from BOTH
+        # hiding mechanisms — user-hiding (hidden_models) AND the
+        # per-model "hidden": true flag. The previous order applied
+        # hidden_models BEFORE the current-exempt check, so a model
+        # the user explicitly hid would still drop out even if it was
+        # the active selection (CodeRabbit, PR #41).
+        factory = [
+            m
+            for m in MODEL_METADATA
+            if (
+                m.get("endpoint") == current
+                or (
+                    m.get("endpoint") not in hidden
+                    and not m.get("hidden")
+                )
+            )
+        ]
         merged = factory + list(custom)
         if merged:
             return merged
@@ -838,17 +865,27 @@ class ConfigPanel(tk.Frame):
             activeforeground=COLORS["text_light"], command=self._on_folder_match_mode_changed,
         )
         self.exact_radio.pack(side=tk.LEFT, padx=2)
-        # Filter help text — explains what Folder/Match do
-        rD2 = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rD2.pack(fill=tk.X, pady=(0, 6))
-        tk.Label(rD2, text="", bg=COLORS["bg_input"], width=lbl_w).pack(side=tk.LEFT)
-        tk.Label(
-            rD2,
-            text="Subfolder name to match when processing a folder (blank \u2192 all files)"
-                 " \u00b7 Partial: name contains filter \u00b7 Exact: name equals filter",
-            font=(FONT_FAMILY, 8), bg=COLORS["bg_input"], fg=COLORS["text_dim"],
-            wraplength=280, justify="left",
-        ).pack(side=tk.LEFT)
+        # Filter help moved into an ⓘ hover (same pattern
+        # as the oldcam / rPPG descriptors) placed inline at
+        # the end of the row — reclaims the vertical space the
+        # old multi-line help label consumed (user request,
+        # PR #41).
+        self.filter_info_icon = tk.Label(
+            rD, text="ⓘ", font=(FONT_FAMILY, 11),
+            cursor="question_arrow",
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.filter_info_icon.pack(side=tk.LEFT, padx=(6, 0))
+        HoverTooltip(
+            self.filter_info_icon,
+            lambda: (
+                "Subfolder name to match when processing a "
+                "folder\n(blank → all files)\n\n"
+                "Partial: filename contains the filter string"
+                "\nExact:  filename equals the filter string "
+                "exactly"
+            ),
+        )
 
         # Video settings
         rE = tk.Frame(left_col, bg=COLORS["bg_input"])
@@ -893,6 +930,57 @@ class ConfigPanel(tk.Frame):
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.video_settings_info.pack(side=tk.LEFT, padx=2)
+
+        # Motion control: end-frame lock + cfg_scale. Capability is the
+        # single source of truth (model_metadata.get_model_capabilities —
+        # the dispatcher + queue_manager read the SAME flags, so UI and
+        # payload never disagree). Per the user's chosen UX: the
+        # end-frame checkbox is ALWAYS visible but GRAYED OUT
+        # (state=disabled) for models that don't expose an end-frame
+        # param, and toggle-checkable for those that do (e.g. Kling 2.5
+        # Pro). When locked the SAME image is used for both start and
+        # end. Widgets are created ONCE; only their `state` changes —
+        # never destroyed/recreated — so values survive model switches.
+        rEF = tk.Frame(left_col, bg=COLORS["bg_input"])
+        rEF.pack(fill=tk.X, pady=(0, 4))
+        self._motion_row = rEF
+        tk.Label(rEF, text="Motion:", font=(FONT_FAMILY, 10),
+                 bg=COLORS["bg_input"], fg=COLORS["text_light"],
+                 width=lbl_w, anchor="w").pack(side=tk.LEFT)
+        self.lock_end_frame_var = tk.BooleanVar(value=True)
+        self.lock_end_frame_checkbox = tk.Checkbutton(
+            rEF, text="Lock End Frame to Start Image",
+            variable=self.lock_end_frame_var, font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            disabledforeground=COLORS["text_dim"],
+            command=self._on_lock_end_frame_changed,
+        )
+        self.lock_end_frame_checkbox.pack(side=tk.LEFT, padx=(0, 12))
+        self.cfg_scale_label = tk.Label(
+            rEF, text="cfg:", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.cfg_scale_label.pack(side=tk.LEFT, padx=(0, 3))
+        self.cfg_scale_var = tk.StringVar(value="0.7")
+        self.cfg_scale_entry = tk.Entry(
+            rEF, textvariable=self.cfg_scale_var, font=(FONT_FAMILY, 10),
+            bg=COLORS["bg_main"], fg=COLORS["text_light"],
+            insertbackground=COLORS["text_light"], width=5,
+            borderwidth=0, highlightthickness=1,
+            highlightbackground=COLORS["border"],
+            disabledbackground=COLORS["bg_input"],
+            disabledforeground=COLORS["text_dim"],
+        )
+        self.cfg_scale_entry.pack(side=tk.LEFT, padx=(0, 8))
+        self.cfg_scale_entry.bind("<FocusOut>", self._on_cfg_scale_changed)
+        self.cfg_scale_entry.bind("<Return>", self._on_cfg_scale_changed)
+        self.model_caps_label = tk.Label(
+            rEF, text="", font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.model_caps_label.pack(side=tk.RIGHT, padx=4)
 
         # Seed & misc options
         rF = tk.Frame(left_col, bg=COLORS["bg_input"])
@@ -1009,8 +1097,77 @@ class ConfigPanel(tk.Frame):
         self.prompt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.prompt_preview.bind("<KeyRelease>", self._update_prompt_char_count)
 
-        # Footer: char count badge + Edit button + Save button
+        # Negative-prompt half (split-box UX, user 2026-05-19). The
+        # editor splits horizontally: the box above is the POSITIVE
+        # prompt; this section is the NEGATIVE prompt. It is shown only
+        # for models whose schema accepts negative_prompt (e.g. Kling
+        # 2.5 / v3) and pack_forget()-hidden for ones that dropped it
+        # (o3 / seedance) — created ONCE so its text survives toggling.
+        # Backed by config["negative_prompts"][slot] (the same dict
+        # queue_manager._get_current_negative_prompt reads), so the
+        # split editor and the submitted payload stay in lock-step.
+        self._negative_prompt_section = tk.Frame(
+            right_inner, bg=COLORS["bg_panel"]
+        )
+        tk.Label(
+            self._negative_prompt_section, text="Negative prompt",
+            font=(FONT_FAMILY, 8, "bold"),
+            bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor="w",
+        ).pack(fill=tk.X, pady=(0, 2))
+        neg_text_frame = tk.Frame(
+            self._negative_prompt_section, bg=COLORS["bg_panel"]
+        )
+        neg_text_frame.pack(fill=tk.BOTH, expand=True)
+        # NOTE: tk.Text does NOT support disabledforeground /
+        # disabledbackground (those are Entry/Button options) — passing
+        # them raises TclError and crashes panel construction. Mirror the
+        # working positive prompt_preview: state="disabled" + the
+        # edit-mode methods toggle fg via .config() for the dim effect.
+        self.negative_prompt_preview = tk.Text(
+            neg_text_frame, font=(FONT_FAMILY, 10),
+            bg=COLORS["bg_main"], fg=COLORS["text_dim"],
+            height=5, wrap=tk.WORD, relief=tk.FLAT, borderwidth=0,
+            insertbackground=COLORS["text_light"], state="disabled",
+        )
+        neg_scroll = ttk.Scrollbar(
+            neg_text_frame, orient=tk.VERTICAL,
+            command=self.negative_prompt_preview.yview,
+        )
+        self.negative_prompt_preview.configure(yscrollcommand=neg_scroll.set)
+        neg_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.negative_prompt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Positive-box height is managed DYNAMICALLY by
+        # _apply_negative_prompt_visibility (7 when the negative half is
+        # shown so the split reads as ~two halves; restored to the full
+        # 12 when collapsed). Do NOT shrink it unconditionally here —
+        # that left the editor permanently short on models without
+        # negative-prompt support (CodeRabbit Major, PR #41). Remember
+        # the full height so the toggle can restore it.
+        self._positive_prompt_full_height = 12
+        # Split height MUST stay strictly < full height — otherwise
+        # showing the negative half would GROW the positive box (the
+        # opposite of "split into two halves"). Keep it ~= full - 5
+        # but floor at 3 so it's always usable. apply_ui_config will
+        # re-derive both proportionally when the live ui_config
+        # height differs from 12 (Codex P2, PR #41).
+        self._positive_prompt_split_height = max(
+            3, min(7, self._positive_prompt_full_height - 5)
+        )
+        # Visibility is set on first model-change; default-hide until then.
+        self._negative_prompt_section.pack_forget()
+        # Explicit desired-visibility flag (see
+        # _apply_negative_prompt_visibility — winfo_ismapped() is
+        # unreliable before the window is realized). Starts hidden;
+        # _update_motion_controls flips it per the selected model.
+        self._neg_visible = False
+
+        # Footer: char count badge + Edit button + Save button.
+        # Kept as self._prompt_footer so the negative-prompt split
+        # section can be re-packed BEFORE it (correct slot: under the
+        # positive box, above the footer) when a model that supports
+        # negative_prompt is selected.
         prompt_footer = tk.Frame(right_inner, bg=COLORS["bg_panel"])
+        self._prompt_footer = prompt_footer
         prompt_footer.pack(fill=tk.X, pady=(6, 0))
         char_badge = tk.Frame(
             prompt_footer, bg=COLORS["bg_input"],
@@ -1288,6 +1445,25 @@ class ConfigPanel(tk.Frame):
             bool(_parse_bool(self.config.get("rppg_metrics_in_filename", False)))
         )
 
+        # Motion controls (end-frame lock + cfg_scale). lock default True
+        # (mechanical return-to-pose is the intended selfie behaviour);
+        # cfg default 0.7 (stricter prompt adherence than fal's 0.5).
+        # lock_end_frame defaults to True, so an unparseable / null
+        # value (_parse_bool -> None) must resolve to True, NOT
+        # bool(None)=False — otherwise the GUI silently loads with the
+        # end-frame lock OFF (mirrors queue_manager + pipeline; the
+        # contrasting rppg_metrics_in_filename, default False, correctly
+        # keeps bool(None)=False — do NOT unify them).
+        _raw_lock = _parse_bool(self.config.get("lock_end_frame", True))
+        self.lock_end_frame_var.set(
+            True if _raw_lock is None else bool(_raw_lock)
+        )
+        try:
+            _cfg = float(self.config.get("cfg_scale_value", 0.7))
+        except (TypeError, ValueError):
+            _cfg = 0.7
+        self.cfg_scale_var.set(f"{max(0.0, min(1.0, _cfg)):g}")
+
         # Folder filter options
         self.folder_pattern_var.set(self.config.get("folder_filter_pattern", ""))
         self.folder_match_mode_var.set(self.config.get("folder_match_mode", "partial"))
@@ -1311,6 +1487,13 @@ class ConfigPanel(tk.Frame):
             "current_model", "fal-ai/kling-video/v2.1/pro/image-to-video"
         )
         self.update_parameter_visibility(current_model)
+        # Also sync the Motion row (end-frame checkbox / cfg entry
+        # grayed-state + caps label + neg-prompt split visibility) to
+        # the SAVED model on startup — _update_motion_controls is
+        # otherwise only wired to _on_model_changed, so without this the
+        # Motion row showed its construction-time state until the user
+        # manually switched models (code-review finding, PR #41).
+        self._update_motion_controls(current_model)
 
     def _start_api_enrichment(self):
         """Background: fetch schema metadata + pricing for all models, then refresh UI."""
@@ -1436,6 +1619,7 @@ class ConfigPanel(tk.Frame):
                 self.config["video_duration"] = current_duration
 
         self.update_parameter_visibility(model_endpoint)
+        self._update_motion_controls(model_endpoint)
 
         duration_text = self.duration_var.get().rstrip("s").strip()
         if duration_text.isdigit():
@@ -1710,6 +1894,149 @@ class ConfigPanel(tk.Frame):
             status = "moved to .metrics.json sidecar"
         self._notify_change(f"rPPG metrics {status}")
 
+    def _on_lock_end_frame_changed(self):
+        """Persist the end-frame-lock toggle. Only meaningful for models
+        whose schema exposes an end-frame param (the checkbox is grayed
+        out otherwise); the dispatcher re-checks capability anyway."""
+        self.config["lock_end_frame"] = bool(self.lock_end_frame_var.get())
+        state = "on" if self.lock_end_frame_var.get() else "off"
+        self._notify_change(f"End-frame lock {state}")
+
+    def _on_cfg_scale_changed(self, event=None):
+        """Persist cfg_scale (clamped to the documented 0-1 fal.ai range).
+        Ignored at submit for models that dropped cfg_scale (o3/seedance);
+        the dispatcher gates on capability."""
+        raw = self.cfg_scale_var.get().strip()
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            val = 0.7
+        val = max(0.0, min(1.0, val))
+        # Reflect the clamp back so the user sees the effective value.
+        self.cfg_scale_var.set(f"{val:g}")
+        self.config["cfg_scale_value"] = val
+        self._notify_change(f"cfg_scale set to {val:g}")
+
+    def _update_motion_controls(self, model_endpoint: str):
+        """Enable/disable the motion row from the model's capabilities.
+
+        Single source of truth: model_metadata.get_model_capabilities
+        (the dispatcher + queue_manager read the SAME flags). Per the
+        user's chosen UX the controls are NEVER hidden — an unsupported
+        end-frame / cfg control is GRAYED OUT (state=disabled) so the
+        layout is stable and it's obvious which models can do what. The
+        caps label echoes the support set.
+        """
+        try:
+            from model_metadata import (
+                get_model_capabilities,
+                get_model_by_endpoint,
+            )
+
+            caps = get_model_capabilities(model_endpoint)
+        except Exception:
+            return  # never break the model-change flow over a label
+
+        # A custom / unknown endpoint is NOT in MODEL_METADATA, so caps
+        # are the conservative defaults (no neg/cfg/end). But the
+        # dispatcher + GUI queue deliberately DON'T pre-drop neg/cfg for
+        # unknown endpoints (the live schema decides — Codex P2). The
+        # Motion row must mirror that: enable cfg + the negative-prompt
+        # split for a custom model rather than always graying them out
+        # (a UI/dispatch inconsistency otherwise — Codex P2, PR #41).
+        # end-frame stays caps-driven — a custom model with no known
+        # end param has nowhere to send it.
+        try:
+            _is_known = get_model_by_endpoint(model_endpoint) is not None
+        except Exception:
+            # Fail safe -> treat as custom/unknown endpoint so the
+            # cfg + negative-prompt controls stay ENABLED and the live
+            # schema decides. This matches the intentional bypass
+            # philosophy used in the dispatcher + queue_manager: an
+            # endpoint we can't classify must NOT be silently graded
+            # as a known model with no caps (which would gray out
+            # controls the user might actually need). The old fail-safe
+            # `True` produced the opposite of the design intent (full-
+            # diff subagent finding, PR #41).
+            _is_known = False
+
+        has_end = caps.get("end_image_param") is not None
+        has_cfg = bool(caps.get("supports_cfg_scale")) or not _is_known
+        has_neg = bool(caps.get("supports_negative_prompt")) or not _is_known
+
+        if hasattr(self, "lock_end_frame_checkbox"):
+            self.lock_end_frame_checkbox.config(
+                state=tk.NORMAL if has_end else tk.DISABLED
+            )
+        if hasattr(self, "cfg_scale_entry"):
+            self.cfg_scale_entry.config(
+                state=tk.NORMAL if has_cfg else tk.DISABLED
+            )
+        if hasattr(self, "cfg_scale_label"):
+            self.cfg_scale_label.config(
+                fg=COLORS["text_dim"] if not has_cfg else COLORS["text_light"]
+            )
+        if hasattr(self, "model_caps_label"):
+            def _mark(ok):
+                return "✓" if ok else "✗"
+            self.model_caps_label.config(
+                text=(
+                    f"negative {_mark(has_neg)} · "
+                    f"end-frame {_mark(has_end)} · "
+                    f"cfg {_mark(has_cfg)}"
+                )
+            )
+        # Reflect negative-prompt support in the prompt editor: a
+        # supported model splits the prompt box into positive/negative;
+        # an unsupported one collapses back to a single positive box.
+        self._apply_negative_prompt_visibility(has_neg)
+
+    def _apply_negative_prompt_visibility(self, has_neg: bool):
+        """Show/hide the negative-prompt half of the split prompt editor.
+
+        Widgets are created once; we only pack / pack_forget the section
+        so its text survives toggling. Desired visibility is tracked with
+        an explicit flag (``_neg_visible``) — NOT ``winfo_ismapped()``,
+        which is False until the whole window is realized and would make
+        the section never appear on initial load. When showing, pack it
+        BEFORE the footer so it always lands in the right slot (under the
+        positive box, above the Edit/Save row) regardless of call order.
+        No-op until the split editor exists."""
+        neg = getattr(self, "_negative_prompt_section", None)
+        if neg is None:
+            return
+        want = bool(has_neg)
+        if getattr(self, "_neg_visible", None) == want:
+            return  # idempotent — already in the desired state
+        try:
+            pp = getattr(self, "prompt_preview", None)
+            if want:
+                footer = getattr(self, "_prompt_footer", None)
+                if footer is not None:
+                    neg.pack(
+                        fill=tk.BOTH, expand=True, pady=(4, 0),
+                        before=footer,
+                    )
+                else:
+                    neg.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+                # Shrink the positive box so the split reads as ~two
+                # halves rather than the negative being a thin afterthought.
+                if pp is not None:
+                    pp.config(
+                        height=getattr(self, "_positive_prompt_split_height", 7)
+                    )
+            else:
+                neg.pack_forget()
+                # Negative hidden -> restore the positive box to full
+                # height (CodeRabbit Major, PR #41 — it was left short).
+                if pp is not None:
+                    pp.config(
+                        height=getattr(self, "_positive_prompt_full_height", 12)
+                    )
+            self._neg_visible = want
+        except Exception:
+            pass
+
     def _on_folder_pattern_changed(self, event=None):
         """Handle folder pattern entry change."""
         pattern = self.folder_pattern_var.get().strip()
@@ -1886,6 +2213,18 @@ class ConfigPanel(tk.Frame):
         if not self._prompt_edit_mode:
             self.prompt_preview.config(state="disabled")
 
+        # Negative half (split editor) — same slot, backed by
+        # config["negative_prompts"]. Mirrors the positive box's
+        # enable/disable lifecycle so editing one edits both.
+        if hasattr(self, "negative_prompt_preview"):
+            neg_prompts = self.config.setdefault("negative_prompts", {})
+            neg = neg_prompts.get(str(slot), "") or ""
+            self.negative_prompt_preview.config(state="normal")
+            self.negative_prompt_preview.delete("1.0", tk.END)
+            self.negative_prompt_preview.insert("1.0", neg)
+            if not self._prompt_edit_mode:
+                self.negative_prompt_preview.config(state="disabled")
+
         self._update_prompt_char_count()
 
     def _update_prompt_char_count(self, event=None):
@@ -1904,6 +2243,14 @@ class ConfigPanel(tk.Frame):
 
         self.config["saved_prompts"] = saved_prompts
         self.config["prompt_titles"] = saved_titles
+
+        # Persist the negative half to the same slot in
+        # config["negative_prompts"] (queue_manager reads from there).
+        if hasattr(self, "negative_prompt_preview"):
+            neg_prompts = self.config.setdefault("negative_prompts", {})
+            neg_prompts[slot] = self.negative_prompt_preview.get("1.0", "end-1c")
+            self.config["negative_prompts"] = neg_prompts
+
         self._update_prompt_char_count()
         self._exit_edit_mode_internal()  # widgets already saved above
         self._notify_change(f"Saved prompt slot {slot}")
@@ -1918,6 +2265,10 @@ class ConfigPanel(tk.Frame):
         self._prompt_edit_mode = True
         self.prompt_title_entry.config(state="normal")
         self.prompt_preview.config(state="normal", fg=COLORS["text_light"])
+        if hasattr(self, "negative_prompt_preview"):
+            self.negative_prompt_preview.config(
+                state="normal", fg=COLORS["text_light"]
+            )
         self.save_prompt_btn.config(state="normal")
         self.edit_prompt_btn.config(text="Cancel", command=self._cancel_edit)
 
@@ -1932,6 +2283,10 @@ class ConfigPanel(tk.Frame):
         self._prompt_edit_mode = False
         self.prompt_title_entry.config(state="disabled")
         self.prompt_preview.config(state="disabled", fg=COLORS["text_dim"])
+        if hasattr(self, "negative_prompt_preview"):
+            self.negative_prompt_preview.config(
+                state="disabled", fg=COLORS["text_dim"]
+            )
         self.save_prompt_btn.config(state="disabled")
         self.edit_prompt_btn.config(text="Edit", command=self._enter_edit_mode)
 
@@ -1947,14 +2302,49 @@ class ConfigPanel(tk.Frame):
         config_panel = ui_config.get("config_panel", {})
         try:
             preview_height = int(config_panel.get("prompt_preview_height", 6))
-            preview_font_size = int(config_panel.get("prompt_preview_font_size", 9))
+            # Default 10 (NOT 9): the negative-prompt editor is built at
+            # (FONT_FAMILY, 10) and apply_ui_config never touched it, so
+            # the old default 9 left the positive box one size smaller
+            # than the negative — a visible font mismatch the user
+            # disliked. They prefer the larger negative font; unify on it.
+            preview_font_size = int(config_panel.get("prompt_preview_font_size", 10))
         except (TypeError, ValueError):
             return
         if hasattr(self, "prompt_preview"):
-            self.prompt_preview.config(
-                height=max(4, preview_height),
-                font=(FONT_FAMILY, max(6, preview_font_size)),
+            resolved_height = max(4, preview_height)
+            _resolved_font = (FONT_FAMILY, max(6, preview_font_size))
+            # Re-derive both height targets up front — apply_ui_config
+            # fires ~50ms after launch and the resolved (ui_config)
+            # full height IS the "no-negative" target. The split target
+            # must stay strictly < full or showing the negative half
+            # would GROW the positive box (Codex P2, PR #41).
+            self._positive_prompt_full_height = resolved_height
+            self._positive_prompt_split_height = max(
+                3, min(7, resolved_height - 5)
             )
+            # _load_config calls _update_motion_controls BEFORE
+            # apply_ui_config fires, which can flip _neg_visible to
+            # True at startup (for neg-supporting models). The previous
+            # unconditional `height=resolved_height` then snapped the
+            # box back to FULL while the negative half was visible —
+            # the two halves overlapped visually until the user
+            # toggled (Codex P2, PR #41). Honour the current
+            # visibility instead.
+            _current_target = (
+                self._positive_prompt_split_height
+                if getattr(self, "_neg_visible", False)
+                else self._positive_prompt_full_height
+            )
+            self.prompt_preview.config(
+                height=_current_target,
+                font=_resolved_font,
+            )
+            # Keep the negative editor's font locked to the positive
+            # one so the split editor reads as a single coherent box in
+            # BOTH states (split + collapsed), regardless of the
+            # ui_config size value.
+            if hasattr(self, "negative_prompt_preview"):
+                self.negative_prompt_preview.config(font=_resolved_font)
 
     def set_active_prompt_text(self, text: str):
         """Set the text of the active prompt slot (called by PrepTab vision analysis).
@@ -2005,6 +2395,8 @@ class ConfigPanel(tk.Frame):
             "reprocess_mode_var",
             "verbose_gui_var",
             "rppg_metrics_var",
+            "lock_end_frame_var",
+            "cfg_scale_var",
             "folder_pattern_var",
             "folder_match_mode_var",
             "duration_var",

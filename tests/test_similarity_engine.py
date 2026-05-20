@@ -235,27 +235,30 @@ class SimilarityEngineTests(unittest.TestCase):
         self.assertLess(score, 80.0)
         self.assertFalse(match)
 
-    def test_v1_9_curve_spreads_ai_edit_distances_across_meaningful_band(self):
-        """v1.9 PASS_CURVE_EXPONENT=0.5 calibration check.
+    def test_v2_0_linear_curve_spreads_ai_edit_distances_across_meaningful_band(self):
+        """v2.0 PASS_CURVE_EXPONENT=1.0 (linear) calibration check.
 
-        AI-generated selfies (Nano Banana 2 Edit, FLUX Kontext, etc.) typically
-        produce cosine distances 0.05-0.15 against the source crop. v1.8's
-        exponent 2.5 mapped that whole band to 99-100% — useless for grading.
-        v1.9 spreads it across 95-91%. Pin the reference points so future
-        recalibration is intentional, not accidental.
+        User-reported regression on v1.9: the sqrt curve compressed the
+        BOTTOM half of the pass zone (d=0.50-0.68 squashed into
+        80.0-82.9% — only 2.9 points) so two visibly-different selfies
+        both rounded to 82%. v2.0 uses a linear curve so the full
+        0.0-0.68 distance domain maps proportionally to the 80-100%
+        pass band: ~0.78 pp per 0.025 of distance. Pin the reference
+        points so future recalibration is intentional.
         """
         engine = se.FaceEngine()
-        # (distance, expected_score) — derived from 80 + 20*(1 - sqrt(d/0.68))
-        # at threshold=0.68. Tolerances reflect rounding for human-readable
-        # comments; the math is exact, the tolerance is for documentation drift.
+        # (distance, expected_score) — derived from 80 + 20*(1 - d/0.68)
+        # at threshold=0.68. Same formula, exponent=1.0.
         cases = [
             (0.00, 100.00),  # identical: pegged
-            (0.05,  94.58),  # AI edit, near-perfect identity preservation
-            (0.10,  92.33),
-            (0.15,  90.61),
-            (0.20,  89.15),  # visible variance, still clearly same person
-            (0.30,  86.72),
-            (0.50,  82.85),
+            (0.05,  98.53),  # AI edit, near-perfect identity preservation
+            (0.10,  97.06),
+            (0.15,  95.59),
+            (0.20,  94.12),  # visible variance, still clearly same person
+            (0.30,  91.18),
+            (0.50,  85.29),
+            (0.538, 84.18),  # user case A — now distinguishable from B
+            (0.564, 83.41),  # user case B — 0.76-pt gap (was identical 82%)
             (0.68,  80.00),  # ArcFace official threshold
         ]
         for distance, expected in cases:

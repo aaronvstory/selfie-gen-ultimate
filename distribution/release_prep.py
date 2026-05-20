@@ -95,8 +95,9 @@ _DIST_BLANKED_PATH_KEYS = (
     "output_folder",
     "automation_root_folder",
     "selfie_output_folder",
-    "window_geometry",
 )
+# window_geometry is intentionally NOT blanked (user 2026-05-19: ship
+# the dev's window sizing too — everything except API keys).
 
 
 def build_sanitized_config(
@@ -150,6 +151,98 @@ def build_sanitized_config(
     # actually set (preserve current state verbatim).
     for key, value in template.items():
         config.setdefault(key, value)
+
+    # A handful of keys are FORCED to the project's new desired
+    # defaults even if the dev machine still carries an older value
+    # (user 2026-05-19: ship the new minimal-motion prompt + negative,
+    # default model = Kling 2.5 Turbo Pro, end-frame lock on). Sourced
+    # from the template so there is ONE definition of the new defaults.
+    _t_saved = template.get("saved_prompts")
+    _t_neg = template.get("negative_prompts")
+    # The bundle ships current_prompt_slot from the template (4 in
+    # practice). Force that slot to the template's value too, NOT
+    # just slot 1 — the GUI/CLI generate from the ACTIVE slot, so a
+    # dev machine carrying legacy slot-4 text would otherwise ship
+    # the old high-motion prompt + empty negative despite this
+    # override (Codex P2, PR #41). Pin current_prompt_slot itself so
+    # the dev's stale slot choice can't carry either.
+    _tmpl_slot = str(template.get("current_prompt_slot", 4))
+    config["current_prompt_slot"] = template.get("current_prompt_slot", 4)
+    # Force slot 1 (the proven minimal-motion fallback) AND the
+    # active slot, but each from its OWN template text — the active
+    # slot now carries a distinct "enhanced for kling 2.5 pro"
+    # prompt + negative, so stamping slot-1's text onto it (the old
+    # behaviour) would clobber the shipped enhanced prompt. A dev
+    # machine's stale slot text still can't survive — we overwrite
+    # from the template, falling back to slot 1 only if the active
+    # slot is empty in the template (PR #41, user request).
+    _force_slots = {"1", _tmpl_slot}
+    if isinstance(_t_saved, dict) and _t_saved.get("1"):
+        # Guard against a user-edited live kling_config.json carrying
+        # a non-mapping at saved_prompts — without this dict(non_dict)
+        # raises ValueError and aborts release prep instead of
+        # gracefully sanitizing (Codex P2, PR #41).
+        _live_sp = config.get("saved_prompts")
+        sp = dict(_live_sp) if isinstance(_live_sp, dict) else {}
+        for _sl in _force_slots:
+            sp[_sl] = _t_saved.get(_sl) or _t_saved["1"]
+        config["saved_prompts"] = sp
+    if isinstance(_t_neg, dict) and _t_neg.get("1"):
+        _live_np = config.get("negative_prompts")
+        npd = dict(_live_np) if isinstance(_live_np, dict) else {}
+        for _sl in _force_slots:
+            npd[_sl] = _t_neg.get(_sl) or _t_neg["1"]
+        config["negative_prompts"] = npd
+    # Ship the active slot's title too (e.g. "enhanced for kling
+    # 2.5 pro") so the GUI shows the right label on first launch.
+    _t_titles = template.get("prompt_titles")
+    if isinstance(_t_titles, dict):
+        _live_pt = config.get("prompt_titles")
+        pt = dict(_live_pt) if isinstance(_live_pt, dict) else {}
+        for _sl in _force_slots:
+            if _t_titles.get(_sl):
+                pt[_sl] = _t_titles[_sl]
+        config["prompt_titles"] = pt
+    # Template-driven so the next default-model bump is a single
+    # default_config_template.json edit, not a literal change here
+    # too (CodeRabbit Refactor, PR #41). Hardcoded fallback is the
+    # current ship target so a template missing those keys still
+    # builds a working bundle.
+    config["current_model"] = str(
+        template.get(
+            "current_model",
+            "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+        )
+    ).strip()
+    config["model_display_name"] = str(
+        template.get("model_display_name", "Kling 2.5 Turbo Pro")
+    ).strip()
+    # Template-driven so default_config_template.json explicitly
+    # setting lock_end_frame: false actually ships false (Codex P2,
+    # PR #41). Unparseable / missing template key -> True (the
+    # canonical default; matches the queue_manager + pipeline
+    # _parse_bool None -> True coercion).
+    from face_similarity import _parse_bool as _pb_release
+    _t_lock = _pb_release(template.get("lock_end_frame", True))
+    config["lock_end_frame"] = True if _t_lock is None else bool(_t_lock)
+    # Unconditionally OVERRIDE (not setdefault) — a stale live
+    # cfg_scale_value (e.g. 0.5) must not survive into the bundle;
+    # the intended shipped default is 0.7 (Codex P3, PR #41).
+    config["cfg_scale_value"] = template.get("cfg_scale_value", 0.7)
+    config["rppg_metrics_in_filename"] = bool(
+        template.get("rppg_metrics_in_filename", False)
+    )
+    # Composite modes are user-facing ship defaults that must be
+    # deterministic — OVERRIDE from the template (not inherit a
+    # stale dev kling_config.json value). Step 2.5 selfie expand
+    # ships raw AI output ('none'); Step 0 Face Crop / outpaint
+    # ships 'preserve_seamless' (user request, PR #41).
+    config["automation_selfie_expand_composite_mode"] = template.get(
+        "automation_selfie_expand_composite_mode", "none"
+    )
+    config["outpaint_composite_mode"] = template.get(
+        "outpaint_composite_mode", "preserve_seamless"
+    )
 
     ensure_key_fields(config)
     for spec in API_KEY_SPECS:
