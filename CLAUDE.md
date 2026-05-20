@@ -418,14 +418,29 @@ tool calls, not sequential):
    Skip `@sourcery-ai` until/unless it starts responding again — it's
    been silent across multiple rounds on PR #43.
 
-**b) Spawn the code-reviewer subagent on the branch diff.** Use the
-   `general-purpose` agent type with a prompt that:
-   * Points it at the specific commits (or `git diff main...HEAD`)
-   * Names the project context (macOS + Windows Tk app)
-   * Asks for severity-tagged findings (CRITICAL/HIGH/MEDIUM/LOW)
-   * Caps the response length (1500-2000 words)
-   * Tells it NOT to re-flag issues already addressed in earlier commits
-     on the same branch
+**b) Spawn the code-reviewer subagent on the ENTIRE branch diff.** Use
+   the `general-purpose` agent type with a prompt that:
+   * Points it at the FULL branch diff (`git diff main...HEAD`), NOT
+     the latest commit range. User directive 2026-05-21: "i think the
+     subagent codereview should better be ran on the entire branch
+     diff, not just the commit individuals." Reasoning: the subagent's
+     unique value over the bots is cross-cutting analysis — it catches
+     bugs in code that LOOKED safe at commit-time but interacts badly
+     with adjacent code added in earlier commits on the same branch.
+     Bots already do the per-commit review well; the subagent should
+     do what bots are bad at.
+   * Names the project context (macOS + Windows Tk app + the
+     wiring-doc cross-references for similarity / oldcam / rPPG).
+   * Asks for severity-tagged findings (CRITICAL/HIGH/MEDIUM/LOW).
+   * Caps the response length (1500-2000 words).
+   * Includes a list of findings ALREADY ADDRESSED in earlier commits
+     on the same branch with their commit SHAs — tells the subagent
+     NOT to re-flag them. Without this list, the subagent re-discovers
+     the same bugs every round and the report becomes noise.
+   * If branch is large (>1500 LOC of net diff) and would exceed the
+     subagent's effective review window, focus on the high-traffic
+     files (touched in 3+ commits) and the new files. Explicitly say
+     so in the prompt — don't silently sample.
 
 The subagent typically returns in 4-7 minutes; bots typically respond
 in 5-30 minutes. Running them in parallel cuts wall-clock by ~40%.
