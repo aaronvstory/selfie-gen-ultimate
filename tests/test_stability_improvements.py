@@ -327,25 +327,42 @@ class SelfieModelLoadingTests(unittest.TestCase):
 
 
 class MacButtonFactoryTests(unittest.TestCase):
-    def test_macos_button_factory_uses_tk_button_styling(self):
+    def test_create_action_button_returns_ttk_button_on_macos(self):
+        """Regression: on macOS the helper must return a ``ttk.Button``,
+        not a raw ``tk.Button``.
+
+        Background — the "tint reverts on first click" bug fixed
+        2026-05-20: on macOS Aqua a ``tk.Button`` is HIView-rendered
+        and the HIView only honors ``highlightbackground`` on the
+        initial paint. After the first event (focus / click / drag),
+        HIView re-renders with the default white-bezel-black-text
+        Aqua appearance and the tint is permanently lost.
+
+        ``ttk.Button`` under the ``clam`` theme is drawn entirely by
+        Tk's own clam code path (HIView is bypassed) so the tint
+        survives every event. Verified visually on Sonoma.
+
+        This test prevents anyone from re-introducing the
+        ``if IS_MACOS: tk.Button(...)`` branch without realising it
+        re-opens the tint-revert regression.
+        """
+        from tkinter import ttk
         root = __import__("tkinter").Tk()
         root.withdraw()
         try:
             with mock.patch.object(theme, "IS_MACOS", True):
-                btn = theme.create_action_button(root, text="X", command=lambda: None)
-            # macOS Aqua renders tk.Button's color from highlightbackground
-            # (NOT bg). It must be the per-style FILL color so the button
-            # actually shows color (default style = SECONDARY -> bg_input);
-            # pointing it at the window bg made buttons look plain. And
-            # highlightthickness MUST be 0: a non-zero focus ring shrinks
-            # the clickable interior, causing the "have to wiggle + click
-            # repeatedly" hit-area bug on macOS.
-            self.assertEqual(
-                str(btn.cget("highlightbackground")), theme.COLORS["bg_input"]
-            )
-            self.assertEqual(int(btn.cget("highlightthickness")), 0)
-            self.assertGreaterEqual(int(btn.cget("padx")), 12)
-            self.assertGreaterEqual(int(btn.cget("pady")), 8)
+                btn = theme.create_action_button(
+                    root, text="X", command=lambda: None,
+                    style=theme.TTK_BTN_PRIMARY,
+                )
+            self.assertIsInstance(btn, ttk.Button, (
+                "create_action_button must return a ttk.Button on macOS "
+                "(under the clam theme) so the tint survives HIView "
+                "re-renders. A tk.Button here re-opens the 'tint goes "
+                "plain after first click' regression — verified visually "
+                "on Sonoma 2026-05-20."
+            ))
+            self.assertEqual(str(btn.cget("style")), theme.TTK_BTN_PRIMARY)
         finally:
             root.destroy()
 
