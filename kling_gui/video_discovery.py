@@ -34,6 +34,15 @@ from .video_metadata import VideoMetadata, parse_video_filename
 # folders with many videos. Key: (resolved folder str, image stem,
 # folder mtime); value: the chosen Path or None. Invalidates
 # automatically when files appear/disappear (mtime changes).
+#
+# THREAD-SAFETY: this cache is TK-THREAD-ONLY. All current callers
+# (carousel._show_image_on_canvas, modal listbox population) run on
+# the Tk main thread, so the dict mutation in the LRU-eviction path
+# (``_BEST_VIDEO_CACHE.pop(next(iter(_BEST_VIDEO_CACHE)))``) is
+# safe — but check-then-pop is NOT atomic, so if a future caller
+# wires this from a background thread (e.g. a similarity recalc
+# worker), a ``threading.Lock`` must be added around the read +
+# eviction. Code-reviewer Important (PR #43, post-79802bc self-review).
 _BEST_VIDEO_CACHE: Dict[Tuple[str, str, float], Optional[Path]] = {}
 _BEST_VIDEO_CACHE_MAX = 256  # rough cap — carousel cycles through ~dozens of images
 

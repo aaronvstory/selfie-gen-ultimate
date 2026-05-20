@@ -590,6 +590,9 @@ class VideoFrameTests(unittest.TestCase):
         from kling_gui.video_inspector import _DISPLAY_W, _DISPLAY_H
         f._canvas_w = _DISPLAY_W
         f._canvas_h = _DISPLAY_H
+        # _canvas_dims is the atomic snapshot for the decoder thread
+        # (post-79802bc self-review fix). Seed it to match.
+        f._canvas_dims = (_DISPLAY_W, _DISPLAY_H)
         # Generation-id locking (new in the PR-43 race fix).
         f._generation_id = 0
         f._stop_event = threading.Event()

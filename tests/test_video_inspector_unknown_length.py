@@ -109,6 +109,56 @@ class RenderUsesLiveCanvasCenterTests(unittest.TestCase):
         )
 
 
+class DecoderUsesAtomicCanvasDimsTests(unittest.TestCase):
+    """Code-reviewer Important (PR #43, post-79802bc self-review):
+    the decoder thread reads ``self._canvas_w`` + ``self._canvas_h``
+    to compute the aspect-fit resize target. Two separate attribute
+    reads can interleave with a Tk-thread write between them, so a
+    resize that lands mid-iteration could leak (new_w, old_h) into
+    one frame's resize math and produce a single mis-stretched
+    frame on the transition tick.
+
+    Fix: decoder reads from ``self._canvas_dims`` (a tuple) instead.
+    The Tk thread assigns the tuple atomically in
+    ``_on_canvas_resize``; the decoder reads it via a single dict
+    lookup (atomic under the GIL). Lock the pattern so a future
+    refactor doesn't silently unpack the tuple back into two
+    separate ``self._canvas_*`` reads.
+    """
+
+    def test_decoder_reads_atomic_dims_tuple(self):
+        src = _read_video_inspector_source()
+        start = src.index("def _decoder_loop")
+        end = src.index("\n    def ", start + 10)
+        body = src[start:end]
+        # Atomic-snapshot pattern: read self._canvas_dims into a local.
+        self.assertIn("canvas_dims = self._canvas_dims", body)
+        # Negative-lock against the prior buggy pattern (two separate
+        # reads of self._canvas_w / self._canvas_h in the decoder).
+        self.assertNotRegex(
+            body,
+            r"target_w\s*=\s*self\._canvas_w\b",
+            "Decoder must NOT read self._canvas_w / self._canvas_h "
+            "directly — race-prone. Read self._canvas_dims tuple.",
+        )
+
+    def test_resize_handler_writes_atomic_dims_tuple(self):
+        """The Tk thread MUST write the tuple atomically in
+        _on_canvas_resize so the decoder's single-tuple read sees a
+        consistent (w, h) pair."""
+        src = _read_video_inspector_source()
+        start = src.index("def _on_canvas_resize")
+        end = src.index("\n    def ", start + 10)
+        body = src[start:end]
+        self.assertRegex(
+            body,
+            r"self\._canvas_dims\s*=\s*\(event\.width,\s*event\.height\)",
+            "Tk thread must write self._canvas_dims as a tuple so "
+            "the decoder's single dict-lookup gets a consistent "
+            "(w, h) snapshot.",
+        )
+
+
 class ResizeRecenterUsesPriorCanvasSizeTests(unittest.TestCase):
     """Codex P2 (3273246460) on bdead49: ``_on_canvas_resize`` used
     ``_DISPLAY_W/H`` as the "previous center" baseline for every

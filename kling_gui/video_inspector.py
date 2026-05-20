@@ -128,8 +128,22 @@ class VideoFrame(tk.Frame):
         # decoder thread can resize frames to the actual visible area
         # (with aspect-preserving fit). Defaults are the _DISPLAY_W/H
         # constants until the first Configure event lands.
+        #
+        # _canvas_dims is the AUTHORITATIVE source for cross-thread
+        # reads: a single tuple object that's reassigned atomically on
+        # the Tk thread and read with a single dict-lookup from the
+        # decoder thread (atomic under the GIL). The separate
+        # _canvas_w / _canvas_h attrs are kept for Tk-thread-only
+        # readers (placeholder text drawing, error labels, render
+        # centering) — those don't need the atomic-snapshot guarantee
+        # because they all run on the Tk thread.
+        # Code-reviewer P2 (PR #43, post-79802bc self-review): without
+        # the atomic tuple, the decoder could read _canvas_w + the
+        # NEWER _canvas_h after a resize event landed mid-iteration,
+        # producing a single mis-stretched frame.
         self._canvas_w: int = _DISPLAY_W
         self._canvas_h: int = _DISPLAY_H
+        self._canvas_dims: tuple = (_DISPLAY_W, _DISPLAY_H)
 
         # Decoder-thread lifecycle: generation-id locking. Each load()
         # increments _generation_id and the new decoder thread receives
@@ -480,10 +494,18 @@ class VideoFrame(tk.Frame):
                     # aspect ratio. cv2 handles the actual resize.
                     src_h, src_w = frame_bgr.shape[:2]
                     # Pull the canvas dimensions captured by the last
-                    # Configure event (falls back to _DISPLAY_W/H before
-                    # the canvas has ever been laid out).
-                    target_w = self._canvas_w or _DISPLAY_W
-                    target_h = self._canvas_h or _DISPLAY_H
+                    # Configure event. Reading the (w, h) tuple is a
+                    # single dict-lookup => atomic under the GIL; this
+                    # prevents a mid-decode resize on the Tk thread
+                    # from giving us (new_w, old_h) — which would yield
+                    # a wrongly-stretched frame for one tick. Tk thread
+                    # writes the tuple atomically in _on_canvas_resize.
+                    # Falls back to _DISPLAY_W/H before the canvas has
+                    # ever been laid out.
+                    # Code-reviewer P2 (PR #43, post-79802bc self-review).
+                    canvas_dims = self._canvas_dims
+                    target_w = canvas_dims[0] or _DISPLAY_W
+                    target_h = canvas_dims[1] or _DISPLAY_H
                     # Fit-inside: scale by the smaller of the two ratios
                     # so the entire source frame is visible (no crop).
                     scale = min(target_w / src_w, target_h / src_h)
@@ -652,6 +674,13 @@ class VideoFrame(tk.Frame):
         old_w, old_h = self._canvas_w, self._canvas_h
         self._canvas_w = event.width
         self._canvas_h = event.height
+        # Atomic snapshot for the decoder thread — single tuple
+        # assignment (Tk thread writes; decoder reads via one dict
+        # lookup on self._canvas_dims). Without this, a mid-decode
+        # resize could leak (new_w, old_h) into one frame's resize
+        # math, producing a single wrongly-stretched frame on the
+        # transition tick.
+        self._canvas_dims = (event.width, event.height)
         new_cx = event.width // 2
         new_cy = event.height // 2
         # Use the PRIOR canvas dimensions as the "old center" for
