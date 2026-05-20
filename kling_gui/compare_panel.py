@@ -1,5 +1,6 @@
 """Compare Panel — side-by-side image comparison with independent navigation."""
 
+import os
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional
@@ -251,8 +252,48 @@ class ComparePanel(tk.Frame):
             # broken UX given videos are now first-class carousel items.
             is_video = getattr(entry, "is_video", False)
             if is_video:
-                from .carousel_widget import _extract_video_first_frame
-                img = _extract_video_first_frame(entry.path)
+                # H2 fix (subagent on 2eb16f37): use the ASYNC helper to
+                # avoid blocking the Tk thread on the first render of an
+                # uncached video (100-500ms cv2.VideoCapture stall).
+                # Cache is shared with carousel via _VIDEO_THUMB_CACHE, so
+                # subsequent renders are fast either way — we only need
+                # the async path for first-touch.
+                from .carousel_widget import (
+                    _extract_video_first_frame,
+                    _extract_video_first_frame_async,
+                    _VIDEO_THUMB_CACHE,
+                )
+                # (path, mtime) cache key per M1 — sees regens.
+                try:
+                    _vt_mtime = os.path.getmtime(entry.path)
+                except OSError:
+                    _vt_mtime = 0
+                img = _VIDEO_THUMB_CACHE.get((entry.path, _vt_mtime))
+                if img is None:
+                    started = _extract_video_first_frame_async(
+                        entry.path, self.canvas,
+                        on_done=lambda _img: self._update_display(),
+                    )
+                    if started:
+                        # Render placeholder for this pass; on_done
+                        # triggers _update_display when the frame lands.
+                        cw_pl = max(1, self.canvas.winfo_width())
+                        ch_pl = max(1, self.canvas.winfo_height())
+                        self.canvas.create_rectangle(
+                            2, 2, cw_pl - 2, ch_pl - 2,
+                            fill=COLORS["bg_input"], outline="",
+                        )
+                        self.canvas.create_text(
+                            cw_pl // 2, ch_pl // 2,
+                            text="▶", fill="#FFFFFF",
+                            font=(FONT_FAMILY, 48, "bold"),
+                        )
+                        return
+                    # If we couldn't start (e.g. pending dedup), fall
+                    # through to a sync decode — placeholder will appear
+                    # briefly but the user still sees the frame on the
+                    # SAME render cycle.
+                    img = _extract_video_first_frame(entry.path)
                 if img is None:
                     # cv2 missing OR decode failed — placeholder + glyph.
                     cw_pl = max(1, self.canvas.winfo_width())
@@ -384,6 +425,14 @@ class ComparePanel(tk.Frame):
 
             def load_thumb(entry):
                 if getattr(entry, "is_video", False):
+                    # Hover preview uses the sync extract (sees cache after
+                    # the main canvas warmed it). The async helper isn't
+                    # right for hover — the popup is ephemeral, can't
+                    # outlive a second render, and an on_done callback might
+                    # land after the popup's parent canvas is gone. The
+                    # main-canvas async (above) populates _VIDEO_THUMB_CACHE
+                    # before any hover would fire, so this is fast in
+                    # practice.
                     from .carousel_widget import _extract_video_first_frame
                     img = _extract_video_first_frame(entry.path)
                     if img is None:

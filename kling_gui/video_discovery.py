@@ -94,9 +94,21 @@ def _video_sort_key(m: VideoMetadata) -> tuple:
 # pipeline but JPGs slip in from face-crop / user drops.
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg")
 
+# Video extensions. Sourced from image_state so we stay in lockstep with
+# the carousel's is_video predicate and the session-load rescan path
+# (subagent finding L2 on the full-branch review 2026-05-21 — three
+# sources of truth for the same set collapsed to one).
+from .image_state import _VIDEO_EXTENSIONS as _VIDEO_EXTS  # noqa: E402
+
 
 def find_video_groups(folder: Path) -> List[VideoGroup]:
-    """Scan ``folder`` (non-recursive) for ``*.mp4``; group by base_stem.
+    """Scan ``folder`` (non-recursive) for video files; group by base_stem.
+
+    Recognises all of ``_VIDEO_EXTS`` (.mp4/.mov/.webm/.mkv/.avi). For
+    non-mp4 files that don't match the Kling/oldcam/rPPG pipeline naming
+    convention, ``parse_video_filename`` returns a trivial VideoMetadata
+    (just ``path`` and ``base_stem=stem``) so they list as standalone
+    clips with no siblings.
 
     Each group's ``image_path`` is set to the matching source image if
     one is present in the same folder, else ``None``. Videos within
@@ -123,7 +135,7 @@ def find_video_groups(folder: Path) -> List[VideoGroup]:
         if not entry.is_file():
             continue
         ext = entry.suffix.lower()
-        if ext == ".mp4":
+        if ext in _VIDEO_EXTS:
             meta = parse_video_filename(entry)
             key = meta.base_stem
             if key not in groups:
@@ -157,7 +169,7 @@ def all_videos_for_image(image_path: Path) -> List[VideoMetadata]:
         return []
     matches: List[VideoMetadata] = []
     for entry in sorted(folder.iterdir(), key=lambda p: p.name):
-        if not entry.is_file() or entry.suffix.lower() != ".mp4":
+        if not entry.is_file() or entry.suffix.lower() not in _VIDEO_EXTS:
             continue
         meta = parse_video_filename(entry)
         if meta.base_stem == target:

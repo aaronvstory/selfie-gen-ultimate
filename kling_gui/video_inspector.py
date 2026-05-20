@@ -390,6 +390,15 @@ class VideoFrame(tk.Frame):
             pass
 
     def destroy(self) -> None:
+        # M3: invoke caller-supplied on_close BEFORE super().destroy()
+        # so the parent's reference is cleared even if the teardown
+        # raises.
+        if getattr(self, "_on_close", None) is not None:
+            try:
+                self._on_close()
+            except Exception:
+                logger.debug("on_close callback raised", exc_info=True)
+            self._on_close = None  # one-shot
         try:
             self.clear()
         except Exception:
@@ -742,6 +751,7 @@ def open_video_inspector(
     save_config_fn: Optional[Callable[[], None]] = None,
     log_fn: Optional[Callable[[str, str], None]] = None,
     initial_video: Optional[Path] = None,
+    on_close: Optional[Callable[[], None]] = None,
 ) -> "VideoInspectorModal":
     """Singleton factory. Focuses the existing modal if alive, else
     constructs a new one. The carousel/main_window keep one reference
@@ -789,6 +799,7 @@ def open_video_inspector(
         save_config_fn=save_config_fn,
         log_fn=log_fn,
         initial_video=initial_video,
+        on_close=on_close,
     )
 
 
@@ -814,11 +825,17 @@ class VideoInspectorModal(tk.Toplevel):
         save_config_fn: Optional[Callable[[], None]] = None,
         log_fn: Optional[Callable[[str, str], None]] = None,
         initial_video: Optional[Path] = None,
+        on_close: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__(parent)
         self._config = config
         self._save_config_fn = save_config_fn
         self._log_fn = log_fn
+        # M3 fix (subagent on 2eb16f37): caller passes a callback that
+        # nulls its inspector reference when the modal closes. Without
+        # this, the parent keeps a stale reference + the destroyed
+        # Toplevel widget tree pinned in memory until the next open.
+        self._on_close = on_close
         self._playing = False
         # Float since the FPS-driven _tick refactor; rendered indices
         # cast to int just before cv2 calls.

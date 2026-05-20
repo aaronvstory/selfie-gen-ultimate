@@ -3710,6 +3710,13 @@ class KlingGUIWindow:
         from pathlib import Path as _Path
         from .video_inspector import open_video_inspector
         initial = _Path(video_path) if video_path else None
+        def _clear_inspector_ref():
+            # M3: null self._video_inspector_window when the inspector
+            # closes so a long session opening/closing N times doesn't
+            # keep N dead Toplevels referenced. The factory's
+            # winfo_exists() guard already handles the dangling ref, but
+            # active clearing lets GC reclaim the widget tree faster.
+            self._video_inspector_window = None
         self._video_inspector_window = open_video_inspector(
             self.root,
             existing=self._video_inspector_window,
@@ -3717,6 +3724,7 @@ class KlingGUIWindow:
             save_config_fn=self._save_config,
             log_fn=self._log,
             initial_video=initial,
+            on_close=_clear_inspector_ref,
         )
 
     def _on_images_to_carousel(self, files: List[str]):
@@ -4638,13 +4646,11 @@ class KlingGUIWindow:
                         self.image_session.add_image(full, "input", make_active=False)
                         loaded_real.add(real)
                         rescan_imgs += 1
-                    # Videos come from two passes:
-                    # 1) find_video_groups for .mp4 (preserves Kling
-                    #    base_stem grouping the Video Inspector uses)
-                    # 2) Direct extension scan for .mov/.webm/.mkv/.avi
-                    #    which find_video_groups intentionally ignores.
-                    #    Dedup on os.path.realpath so a clip in both
-                    #    paths only adds once.
+                    # Videos: find_video_groups handles all 5 extensions
+                    # (mp4/mov/webm/mkv/avi) as of subagent H3 on
+                    # 2eb16f37. For non-mp4 files that don't match the
+                    # Kling/oldcam/rPPG naming pattern, the group is just
+                    # a single-clip group with no siblings.
                     try:
                         groups = _find_video_groups(_Path(folder))
                     except OSError:
@@ -4660,25 +4666,13 @@ class KlingGUIWindow:
                             )
                             loaded_real.add(real)
                             rescan_vids += 1
-                    # Non-mp4 video extensions — simple listdir pass
-                    # (mp4 already covered above; the set difference
-                    # avoids re-adding any mp4 the loop above missed).
-                    extra_video_exts = {".mov", ".webm", ".mkv", ".avi"}
-                    for fname in entries:
-                        ext = os.path.splitext(fname)[1].lower()
-                        if ext not in extra_video_exts:
-                            continue
-                        full = os.path.join(folder, fname)
-                        if not os.path.isfile(full):
-                            continue
-                        real = os.path.realpath(full)
-                        if real in loaded_real:
-                            continue
-                        self.image_session.add_image(
-                            full, "video", make_active=False,
-                        )
-                        loaded_real.add(real)
-                        rescan_vids += 1
+                    # H3 fix (subagent on 2eb16f37): the prior second-pass
+                    # for .mov/.webm/.mkv/.avi is now redundant —
+                    # find_video_groups itself widened to all 5 video
+                    # extensions, so the loop above catches everything
+                    # the carousel can render. Eliminates the wiring
+                    # asymmetry where the Inspector listbox saw only mp4
+                    # but the carousel showed non-mp4 too.
                 if rescan_imgs or rescan_vids:
                     self._log(
                         f"Folder rescan: +{rescan_imgs} new image(s), "

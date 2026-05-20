@@ -93,15 +93,25 @@ def test_extract_video_first_frame_returns_none_for_missing_path(tmp_path):
 
 
 def test_extract_video_first_frame_caches_results(tmp_path, monkeypatch):
-    """Second call for the same path must hit the cache, not re-decode."""
+    """Second call for the same path must hit the cache, not re-decode.
+
+    Cache key is (path, mtime) per the M1 fix on 2eb16f37 — in-place
+    video regen invalidates the cache. Test seeds the cache with the
+    (path, mtime) tuple to match production behavior.
+    """
     from kling_gui import carousel_widget
+    import os
+    # Need a real file so os.path.getmtime returns a deterministic value.
+    video_path = tmp_path / "cached.mp4"
+    video_path.write_bytes(b"fake")
+    mtime = os.path.getmtime(str(video_path))
     sentinel = object()
     monkeypatch.setitem(
         carousel_widget._VIDEO_THUMB_CACHE,
-        "cached/path.mp4",
+        (str(video_path), mtime),
         sentinel,
     )
-    assert carousel_widget._extract_video_first_frame("cached/path.mp4") is sentinel
+    assert carousel_widget._extract_video_first_frame(str(video_path)) is sentinel
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -610,18 +620,23 @@ def test_video_thumb_async_no_double_spawn(tmp_path, monkeypatch):
     assert started is False
 
 
-def test_video_thumb_async_cache_hit_returns_false(monkeypatch):
-    """If the cache already has the frame, async helper should NOT spawn a
-    worker — caller can just read the cache directly."""
+def test_video_thumb_async_cache_hit_returns_false(tmp_path, monkeypatch):
+    """If the cache already has the frame (keyed by (path, mtime) per M1),
+    async helper should NOT spawn a worker — caller can just read the
+    cache directly."""
     from kling_gui import carousel_widget
+    import os
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"fake")
+    mtime = os.path.getmtime(str(video_path))
     sentinel = object()
     monkeypatch.setattr(
         carousel_widget, "_VIDEO_THUMB_CACHE",
-        {"cached/clip.mp4": sentinel},
+        {(str(video_path), mtime): sentinel},
         raising=True,
     )
     started = carousel_widget._extract_video_first_frame_async(
-        "cached/clip.mp4",
+        str(video_path),
         widget=None,
         on_done=lambda _img: None,
     )

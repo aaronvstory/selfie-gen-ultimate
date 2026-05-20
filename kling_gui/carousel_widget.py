@@ -64,7 +64,16 @@ def _extract_video_first_frame(video_path: str):
     would serve a stale thumbnail until the process restarts, which is
     acceptable for the derived-output workflow this targets.
     """
-    cached = _VIDEO_THUMB_CACHE.get(video_path)
+    # M1 fix (subagent on 2eb16f37): key on (path, mtime) so an
+    # in-place regen (Kling queue overwrites a take, oldcam re-runs)
+    # invalidates the thumbnail. mtime stat is cheap; the alternative
+    # (stale thumb until process restart) was a real UX bug.
+    try:
+        mtime = os.path.getmtime(video_path)
+    except OSError:
+        mtime = 0  # missing file — the cv2 open below will None-out anyway
+    cache_key = (video_path, mtime)
+    cached = _VIDEO_THUMB_CACHE.get(cache_key)
     if cached is not None:
         return cached
     try:
@@ -91,7 +100,7 @@ def _extract_video_first_frame(video_path: str):
                 _VIDEO_THUMB_CACHE.pop(next(iter(_VIDEO_THUMB_CACHE)))
             except StopIteration:
                 pass
-        _VIDEO_THUMB_CACHE[video_path] = img
+        _VIDEO_THUMB_CACHE[cache_key] = img
         return img
     except Exception:
         logger.debug("video-thumb extract failed for %s", video_path, exc_info=True)
@@ -133,7 +142,11 @@ def _extract_video_first_frame_async(
     Addresses Gemini PR #43 finding: cv2.VideoCapture on the Tk thread
     froze the UI for 100-500ms on first render of each unique video.
     """
-    if video_path in _VIDEO_THUMB_CACHE:
+    try:
+        _vt_mtime = os.path.getmtime(video_path)
+    except OSError:
+        _vt_mtime = 0
+    if (video_path, _vt_mtime) in _VIDEO_THUMB_CACHE:
         return False
     if video_path in _VIDEO_THUMB_PENDING:
         return False
@@ -893,7 +906,11 @@ class ImageCarousel(tk.Frame):
                 # off a background decode — the carousel stays responsive
                 # while cv2 decodes (100-500ms typical) and re-renders
                 # automatically when the frame lands.
-                img = _VIDEO_THUMB_CACHE.get(path)
+                try:
+                    _vt_mtime = os.path.getmtime(path)
+                except OSError:
+                    _vt_mtime = 0
+                img = _VIDEO_THUMB_CACHE.get((path, _vt_mtime))
                 if img is None:
                     # CR Major (PR #43, bot pass on 907da866): the async
                     # decode can return None for corrupt/unsupported clips
