@@ -125,6 +125,17 @@ class VideoFrame(tk.Frame):
         self._photo: Optional[tk.PhotoImage] = None  # GC anchor
         self._overlay_drawer: Optional[Callable] = None  # dormant V1
 
+        # Decoder-thread lifecycle: generation-id locking. Each load()
+        # increments _generation_id and the new decoder thread receives
+        # its OWN stop_event, cap, cv2 reference, and request queue —
+        # all local to that generation. An old decoder still draining
+        # the previous load's queue cannot touch the new capture and
+        # _render_pil_image discards stale-generation frames before
+        # touching any widget state. Without this guard, a slow-exit
+        # old worker could observe self._stop_event after load()
+        # replaced it with a fresh unset Event (and continue rendering
+        # against the new VideoCapture). See GPT-5.5 PR #43 feedback.
+        self._generation_id: int = 0
         self._stop_event = threading.Event()
         self._cap_lock = threading.Lock()
         self._frame_request: "queue.Queue[int]" = queue.Queue(maxsize=1)
@@ -245,10 +256,22 @@ class VideoFrame(tk.Frame):
         except tk.TclError:
             pass
 
-        # Spawn decoder thread + request frame 0.
-        self._stop_event = threading.Event()
+        # New generation: fresh stop_event + request queue, all passed
+        # as ARGS into the decoder so it observes its own state — not
+        # whatever self.* points at by the time it ticks. An old
+        # worker that hasn't exited yet keeps its own (now-set) event.
+        self._generation_id += 1
+        gen_id = self._generation_id
+        stop_event = threading.Event()
+        request_queue: "queue.Queue[int]" = queue.Queue(maxsize=1)
+        self._stop_event = stop_event
+        self._frame_request = request_queue
+
         self._decoder_thread = threading.Thread(
-            target=self._decoder_loop, daemon=True, name="VideoFrame-decoder"
+            target=self._decoder_loop,
+            args=(gen_id, stop_event, request_queue, cap, cv2),
+            daemon=True,
+            name=f"VideoFrame-decoder-{gen_id}",
         )
         self._decoder_thread.start()
         self.step_to(0)
@@ -278,7 +301,16 @@ class VideoFrame(tk.Frame):
             pass
 
     def clear(self) -> None:
-        """Stop the decoder thread, release the capture, blank the canvas."""
+        """Stop the decoder thread, release the capture, blank the canvas.
+
+        Bumps the generation so any after-callback the (now-doomed)
+        worker has already posted to the Tk queue gets rejected by
+        _render_pil_image's generation check before touching widgets.
+        """
+        # Invalidate any in-flight render callbacks from the current
+        # generation. Anything the worker posts after this point will
+        # see a mismatched generation_id and abort cleanly.
+        self._generation_id += 1
         self._stop_event.set()
         # Unblock the decoder if it's waiting on the request queue.
         try:
@@ -327,44 +359,48 @@ class VideoFrame(tk.Frame):
 
     # ── Internal: decoder thread ────────────────────────────────────
 
-    def _decoder_loop(self) -> None:
+    def _decoder_loop(
+        self,
+        generation_id: int,
+        stop_event: threading.Event,
+        request_queue: "queue.Queue[int]",
+        cap,
+        cv2_mod,
+    ) -> None:
         """Worker thread. Pulls frame-index requests; decodes; posts
         the PIL.Image back to the Tk thread via self.after(0, ...).
+
+        All state passed by VALUE (not via self.*) so an old worker
+        that hasn't exited yet operates on its own generation's event,
+        queue, and capture — never the new ones. The generation_id is
+        threaded through so _render_pil_image can drop stale frames.
 
         Never builds an ImageTk.PhotoImage here (Tk-thread only).
         Never touches a Tk widget here.
         """
-        # Local module aliases — imported on the Tk thread in load(),
-        # cached on self._cv2; PIL is fine to import here.
         try:
             from PIL import Image  # type: ignore
         except ImportError:
             self.after(0, lambda: self._show_error("PIL not installed"))
             return
 
-        cv2 = self._cv2
-        if cv2 is None:
-            # load() failed without setting _cv2 — shouldn't happen, but
-            # bail cleanly rather than dereferencing None below.
-            return
-
-        while not self._stop_event.is_set():
+        while not stop_event.is_set():
             try:
-                frame_index = self._frame_request.get(timeout=0.25)
+                frame_index = request_queue.get(timeout=0.25)
             except queue.Empty:
                 continue
-            if self._stop_event.is_set():
+            if stop_event.is_set():
                 return
             if frame_index < 0:
                 # Sentinel from clear(); exit.
                 return
 
+            # Cap is local to this generation — old workers don't race
+            # the new capture. The lock is kept for parity with future
+            # code that wants concurrent reads from the same cap.
             with self._cap_lock:
-                cap = self._cv2_cap
-                if cap is None:
-                    return
                 try:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+                    cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_index)
                     ok, frame_bgr = cap.read()
                 except Exception:
                     ok, frame_bgr = False, None
@@ -375,20 +411,35 @@ class VideoFrame(tk.Frame):
             try:
                 # Resize at decode time so the heavy lifting stays out
                 # of the Tk thread; convert BGR -> RGB.
-                resized = cv2.resize(frame_bgr, (_DISPLAY_W, _DISPLAY_H))
-                rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                resized = cv2_mod.resize(frame_bgr, (_DISPLAY_W, _DISPLAY_H))
+                rgb = cv2_mod.cvtColor(resized, cv2_mod.COLOR_BGR2RGB)
                 pil_img = Image.fromarray(rgb)
             except Exception:
                 logger.exception("VideoFrame decode failed")
                 continue
 
             # Hop back to the Tk thread for the actual widget update.
-            self.after(0, self._render_pil_image, pil_img, frame_index)
+            # generation_id flows through so the renderer drops frames
+            # from a superseded worker.
+            self.after(
+                0, self._render_pil_image, pil_img, frame_index, generation_id,
+            )
 
     # ── Internal: Tk-thread render ──────────────────────────────────
 
-    def _render_pil_image(self, pil_img, frame_index: int) -> None:
-        """Construct PhotoImage + draw on canvas. RUNS ON TK THREAD."""
+    def _render_pil_image(
+        self, pil_img, frame_index: int, generation_id: int = 0,
+    ) -> None:
+        """Construct PhotoImage + draw on canvas. RUNS ON TK THREAD.
+
+        Stale-generation guard: if an old decoder worker posted this
+        frame *after* a newer load() has already started, the
+        generation_ids won't match and we drop the render. This is
+        what prevents a slow-exiting old worker from clobbering the
+        canvas with a frame from the previous video.
+        """
+        if generation_id != self._generation_id:
+            return
         # Guard for the case where the widget went away mid-decode.
         try:
             if not self.winfo_exists():
@@ -605,10 +656,54 @@ class VideoInspectorModal(tk.Toplevel):
         )
         self._listbox.pack(side=tk.TOP, fill=tk.Y, expand=True)
         self._listbox.bind("<Double-Button-1>", self._on_listbox_double_click)
+        # Right-click is the classic macro for "secondary action" on
+        # Windows, but macOS trackpads make it less discoverable.
+        # Shift+Double-click is the explicit affordance — works on every
+        # platform identically. Both routes load slot B.
+        self._listbox.bind("<Shift-Double-Button-1>", self._on_listbox_shift_double)
         self._listbox.bind("<Button-3>", self._on_listbox_right_click)
+        # Explicit Load A / Load B buttons under the listbox — a
+        # third route for macOS trackpad users who don't reach for
+        # right-click or modifier+double-click.
+        load_row = tk.Frame(list_panel, bg=COLORS["bg_main"])
+        load_row.pack(side=tk.TOP, fill=tk.X, pady=(4, 0))
+        self._load_a_btn = tk.Button(
+            load_row,
+            text="Load → A",
+            command=lambda: self._load_selection_into("A"),
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=BUTTON_TEXT_COLOR,
+            activebackground=COLORS["bg_hover"],
+            activeforeground=BUTTON_TEXT_COLOR,
+            relief=tk.FLAT,
+            bd=0,
+            padx=8,
+            pady=2,
+            cursor="hand2",
+        )
+        apply_macos_button_fix(self._load_a_btn)
+        self._load_a_btn.pack(side=tk.LEFT, padx=(0, 4))
+        self._load_b_btn = tk.Button(
+            load_row,
+            text="Load → B",
+            command=lambda: self._load_selection_into("B"),
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=BUTTON_TEXT_COLOR,
+            activebackground=COLORS["bg_hover"],
+            activeforeground=BUTTON_TEXT_COLOR,
+            relief=tk.FLAT,
+            bd=0,
+            padx=8,
+            pady=2,
+            cursor="hand2",
+        )
+        apply_macos_button_fix(self._load_b_btn)
+        self._load_b_btn.pack(side=tk.LEFT)
         tk.Label(
             list_panel,
-            text="Double-click → A · Right-click → B",
+            text="Double-click → A · Shift+Double / Right-click → B",
             bg=COLORS["bg_main"],
             fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 8),
@@ -799,6 +894,27 @@ class VideoInspectorModal(tk.Toplevel):
         if vmeta is not None:
             self.load_into_slot_b(vmeta.path)
 
+    def _on_listbox_shift_double(self, _event) -> None:
+        """Shift+Double-click → load slot B. macOS-trackpad-friendly
+        alternative to right-click."""
+        self._load_selection_into("B")
+
+    def _load_selection_into(self, slot: str) -> None:
+        """Load the currently-selected listbox row into slot A or B.
+        Used by both the explicit Load → A / Load → B buttons and by
+        the Shift+Double-click handler. No-op for non-video header rows
+        and for empty selections."""
+        sel = self._listbox.curselection()
+        if not sel:
+            return
+        vmeta = self._row_videos.get(sel[0])
+        if vmeta is None:
+            return
+        if slot == "B":
+            self.load_into_slot_b(vmeta.path)
+        else:
+            self.load_into_slot_a(vmeta.path)
+
     # ── Slot loading ────────────────────────────────────────────────
 
     def load_into_slot_a(self, path: Path) -> bool:
@@ -889,9 +1005,11 @@ class VideoInspectorModal(tk.Toplevel):
             self._update_counter()
             return
 
-        # Advance the master clock by ~1 source-frame per tick. We
-        # clamp to source FPS so a 60fps source isn't underdriven and
-        # an 8fps timelapse isn't overdriven.
+        # Advance one frame per ~40ms tick (~25 fps render rate). We
+        # do NOT scale by source FPS — 8fps timelapses play 3x fast,
+        # 60fps sources play at ~0.4x. That's fine for V1 visual A/B
+        # comparison (you're inspecting motion, not auditing realtime
+        # playback). Real source-FPS-driven timing is a follow-up PR.
         primary = self._frame_a if self._frame_a.is_loaded() else self._frame_b
         if not primary.is_loaded():
             self._playing = False

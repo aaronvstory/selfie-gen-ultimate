@@ -131,12 +131,13 @@ def find_video_for_image(image_path: Path) -> Optional[Path]:
         2) any oldcam variant (highest version)
         3) raw Kling (highest take, then highest slot)
 
-    A safety net for users who renamed mp4s outside the convention:
-    if there's exactly one ``.mp4`` whose full stem starts with
-    ``image_path.stem + "_"`` (i.e. has the standard ``_modelname``
-    Kling tail delimiter), pick it. We require the underscore so
-    ``front.png`` does NOT match ``front_extra_...mp4`` — the
-    stem-collision regression case.
+    Matching is via EXACT ``base_stem == image_path.stem`` equality
+    (delegated to ``all_videos_for_image``) — never prefix-match.
+    The stem-collision regression case (``front.png`` vs
+    ``front_extra_..._k25tStd_p1_1.mp4``) depends on this exactness,
+    so a user-renamed mp4 outside the pipeline naming convention will
+    NOT be auto-associated. That is intentional in V1: false-positive
+    associations are worse than a missing play badge.
     """
     image_path = Path(image_path)
     matches = all_videos_for_image(image_path)

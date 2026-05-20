@@ -401,6 +401,8 @@ class VideoFrameTests(unittest.TestCase):
         f._current_frame = -1
         f._photo = None
         f._overlay_drawer = None
+        # Generation-id locking (new in the PR-43 race fix).
+        f._generation_id = 0
         f._stop_event = threading.Event()
         f._cap_lock = threading.Lock()
         import queue
@@ -421,7 +423,7 @@ class VideoFrameTests(unittest.TestCase):
         with mock.patch("cv2.VideoCapture", return_value=_FakeCap()):
             with mock.patch(
                 "kling_gui.video_inspector.VideoFrame._decoder_loop",
-                lambda self: None,
+                lambda self, *args, **kwargs: None,
             ):
                 ok = f.load(Path("does-not-matter.mp4"))
         self.assertTrue(ok)
@@ -448,7 +450,7 @@ class VideoFrameTests(unittest.TestCase):
         with mock.patch("cv2.VideoCapture", return_value=_FakeCap()):
             with mock.patch(
                 "kling_gui.video_inspector.VideoFrame._decoder_loop",
-                lambda self: None,
+                lambda self, *args, **kwargs: None,
             ):
                 f.load(Path("ok.mp4"))
         cap = f._cv2_cap
@@ -459,6 +461,34 @@ class VideoFrameTests(unittest.TestCase):
         # Release was called on the cap we held.
         assert cap is not None
         self.assertTrue(cap.released)
+
+    def test_render_pil_image_drops_stale_generation(self):
+        """Generation-locking guard: a frame posted by an old decoder
+        thread (after a newer load() has already incremented the
+        generation) must be dropped — never reach canvas/PhotoImage
+        construction. This is the GPT-5.5-flagged race protection."""
+        f = self._make_frame()
+        # Simulate: we're currently at generation 7, but a stale worker
+        # from generation 3 just woke up and posted a frame.
+        f._generation_id = 7
+        with mock.patch(
+            "kling_gui.video_inspector.tk.PhotoImage"
+        ) as mock_photo:
+            f._render_pil_image(mock.MagicMock(), frame_index=0, generation_id=3)
+        # Canvas was NOT touched and PhotoImage was NOT built.
+        mock_photo.assert_not_called()
+        f._canvas.delete.assert_not_called()
+        f._canvas.create_image.assert_not_called()
+
+    def test_clear_bumps_generation_so_pending_callbacks_are_invalidated(self):
+        """clear() must bump the generation counter so any after-callback
+        the worker has already queued sees a mismatched gen and aborts."""
+        f = self._make_frame()
+        f._generation_id = 5
+        # Simulate a load-cap so clear has something to release.
+        f._cv2_cap = _FakeCap()
+        f.clear()
+        self.assertGreater(f._generation_id, 5)
 
 
 # ──────────────────────────────────────────────────────────────────────
