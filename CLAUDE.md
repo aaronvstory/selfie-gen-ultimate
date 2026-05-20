@@ -360,14 +360,161 @@ Output naming: `{imagename}_kling_{model_short}_{pN}.mp4` (model short names der
 - `create_icon.py` generates `kling_ui.ico` from scratch
 - Output goes to `dist/KlingUI/`
 
-## PR Bot Triage (Latest Commit Range)
+## Default Workflow After Feature Work (MANDATORY)
 
-When processing PR review bots:
+User directive (2026-05-21): "i want u to always push commit into pr on
+branch... never work on main, then run code reviewer ur own while bots
+work, then when done implementing subagent findings, should be enough
+time for checking bot comments". This is the **default loop** whenever
+feature/fix work reaches a runnable state — don't skip steps unless the
+user explicitly says "skip review" or "just push".
 
-1. Trigger fresh runs on current head (`@codoki review`, `@coderabbitai review`, `@codex review`).
-2. Collect fresh actionable findings tied to the latest commit range.
-3. Ignore stale historical findings already superseded by newer commits.
-4. Run targeted pytest suites before pushing fix commits.
+### 1. Never work on `main`
+
+All work happens on a feature branch tied to a PR. If `main` is checked
+out, create or switch to the right branch BEFORE editing. Use
+`git rev-parse --abbrev-ref HEAD` to confirm. If unsure which branch to
+use, ask the user rather than guessing.
+
+### 2. Commit + push to the PR branch when work reaches a runnable state
+
+"Runnable state" = tests pass + portability gate green + the change
+doesn't leave the GUI/CLI in a broken intermediate. **Push every such
+commit to the remote PR branch** — the user works on multiple machines
+(macOS + Windows) and pulls from the remote, so unpushed local work is
+invisible. Commit-message contract:
+
+* Type prefix: `feat:` / `fix:` / `perf:` / `chore:` / `refactor:` / `docs:`
+* One-line subject explaining the user-visible outcome
+* Body explains the WHY + cites the finding/bot/issue source if any
+* Last line: `Co-Authored-By: Claude Opus ... <noreply@anthropic.com>`
+
+Pre-commit invariants — fail-fast if any violated:
+
+- `bash scripts/check_macos_portability.sh` exits 0
+- `.venv311/bin/python -m pytest tests/ similarity/tests/ -q` (on macOS)
+  or equivalent on Windows passes
+- EOL invariants preserved on every edited file
+  (`git ls-files --eol` left column == right column, CR counts match
+  HEAD on CRLF files)
+- No `nul` file in tree (`rm -f nul`)
+
+### 3. Trigger bot reviews + spawn code-reviewer subagent in PARALLEL
+
+Right after `git push`, do BOTH of these in the same turn (parallel
+tool calls, not sequential):
+
+**a) Trigger PR bots on the PR.** Single comment listing all active
+   bot mentions:
+
+   ```
+   Branch head: <sha> — <one-line summary>. Bot pass please.
+
+   @coderabbitai review
+   @codex review
+   @gemini-code-assist review
+   ```
+
+   Skip `@sourcery-ai` until/unless it starts responding again — it's
+   been silent across multiple rounds on PR #43.
+
+**b) Spawn the code-reviewer subagent on the branch diff.** Use the
+   `general-purpose` agent type with a prompt that:
+   * Points it at the specific commits (or `git diff main...HEAD`)
+   * Names the project context (macOS + Windows Tk app)
+   * Asks for severity-tagged findings (CRITICAL/HIGH/MEDIUM/LOW)
+   * Caps the response length (1500-2000 words)
+   * Tells it NOT to re-flag issues already addressed in earlier commits
+     on the same branch
+
+The subagent typically returns in 4-7 minutes; bots typically respond
+in 5-30 minutes. Running them in parallel cuts wall-clock by ~40%.
+
+### 4. Address subagent findings first
+
+The subagent returns before the bots usually do. Triage its findings:
+
+- **CRITICAL / HIGH**: fix in this round, write a regression test if
+  the bug was non-obvious, commit + push to the PR branch.
+- **MEDIUM**: fix if tractable in <15min of work; otherwise reply
+  inline on the PR with rationale and a follow-up commit deferred to
+  the next round.
+- **LOW**: defer to a cleanup pass at PR-close.
+
+Do NOT preemptively defer mediums as "V2 work" — the user has called
+this out as a lazy pattern. If a medium is 1-2 hours of work on the
+spot, do it. Only defer if the surface is genuinely large (>4 hours)
+or requires an API change in code the user explicitly asked not to
+touch.
+
+### 5. Check bot comments
+
+By the time subagent fixes are pushed, bots should have responded.
+Pull the new comments:
+
+```
+SINCE="<timestamp-of-trigger>"
+gh api "repos/<owner>/<repo>/pulls/<n>/comments?per_page=50" \
+  --paginate --jq '.[] | select(.created_at > "'"$SINCE"'" \
+  and .user.login != "<your-gh-username>")'
+```
+
+Per-bot disposition (per PR #43 retro, evidence-driven):
+
+- **Codex** (chatgpt-codex-connector): highest signal-to-noise. P1/P2
+  badges. Catches semantic contract violations and cross-cutting bugs.
+  Address every P1 same round; P2 same round if tractable.
+- **Gemini** (gemini-code-assist): broadest coverage. HIGH/Medium/Low.
+  Catches widget patterns, perf nits, threading. Address HIGH same
+  round; triage mediums per the V2 rule above.
+- **CodeRabbit** (coderabbitai): thorough but noisy. Major/Minor +
+  inline lint rules. Address Major same round; batch Minors at PR-close.
+  Skip its "Analysis chain" issue-level comments — those are
+  verification scripts CR ran, not findings to address.
+- **Sourcery**: currently silent across PR #43; skip the trigger.
+
+### 6. Address bot findings + reply inline
+
+For each finding:
+
+1. Fix the code if Step 4's triage rules say "this round."
+2. Reply inline on the comment with `gh api -X POST .../comments/<id>/replies`
+   pointing at the fix commit SHA.
+3. If declining/deferring, post a real rationale (NOT "V2 work").
+4. Commit + push the fix batch as ONE commit with a message that
+   itemizes all the addressed findings.
+
+### 7. Post a round wrap-up comment
+
+After pushing the fix batch, post a PR comment summarizing the round:
+a table of "finding → fix commit / disposition", final test count,
+portability gate result, branch head SHA. This is the user's entry
+point when they pull the branch on another machine.
+
+### 8. Loop if findings keep landing
+
+If the bot pass produces findings that warrant a new fix commit, the
+next push triggers a fresh bot round. Repeat from step 3. Two rounds
+is normal; three rounds is acceptable; four rounds usually means a
+CRITICAL was missed in the original implementation and we should
+pause to do a wider audit before continuing.
+
+### Skip conditions (don't run the full loop)
+
+- The user explicitly says "skip review" / "just push" / "WIP"
+- The commit is purely a typo / docs fix
+- The branch is mid-experiment and not ready for review (push without
+  trigger; resume the loop when work stabilizes)
+- The user says "don't engage the bots yet"
+
+### Why this is committed to CLAUDE.md (not just a local memory)
+
+The user works on multiple machines and pulls from the remote branch.
+Local-only memories live in `~/.claude/projects/...` on a single
+machine; CLAUDE.md ships with the repo so the same workflow runs on
+Windows after `git pull`. If you find yourself wanting to add a
+workflow rule that should apply on both OSes, put it HERE, not in a
+local memory.
 
 ---
 
