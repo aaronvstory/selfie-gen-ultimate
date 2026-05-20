@@ -1287,6 +1287,52 @@ class KlingGUIWindow:
                 print("Backfilled current_model: Kling 2.5 Turbo Pro")
             config["slot3_defaults_backfilled_v21"] = True
 
+        # Force-update slot 3 positive if it matches a known stale
+        # template-shipped default (NOT a user customization). Two prior
+        # template defaults shipped:
+        #   (a) "Generate a lifelike video animation ... rotate only their head"
+        #       — was the template's slot 2 text that got mis-copied to slot 3
+        #       in older installs.
+        #   (b) "Image-to-video, photorealistic, optimized for Kling 2.5 Pro"
+        #       — the most-recent prior template default (matched the user's
+        #       request for the "extremely subtle" variant; superseded by the
+        #       40° three-quarter-view text per the 2026-05-21 directive).
+        # Anything else is treated as a user customization — left alone.
+        # Idempotent via a separate flag (the backfill flag above only gates
+        # the EMPTY-slot case; this is the FORCE case).
+        if not config.get("slot3_force_canonical_v21"):
+            saved = config.get("saved_prompts") or {}
+            current_slot3 = str(saved.get("3", "") or "").strip()
+            _STALE_PREFIXES = (
+                "Generate a lifelike video animation from the provided image",
+                "Image-to-video, photorealistic, optimized for Kling 2.5 Pro",
+            )
+            if current_slot3.startswith(_STALE_PREFIXES):
+                canonical_slot3_pos = (
+                    "Image-to-video: the subject performs a slow, controlled "
+                    "head movement while the body and background remain "
+                    "completely motionless. The head turns to one side at a "
+                    "moderate angle (about 40 degrees from center, roughly a "
+                    "three-quarter view — clearly turned but well short of "
+                    "profile), then slowly turns to the matching angle on the "
+                    "other side. Eyes stay locked on the camera lens the "
+                    "entire time. Facial expression stays neutral and "
+                    "unchanged. Shoulders, torso, neck base, and background "
+                    "do not move at all. Camera is locked. Lighting matches "
+                    "the source image. Pacing is slow, continuous, and "
+                    "natural."
+                )
+                saved["3"] = canonical_slot3_pos
+                config["saved_prompts"] = saved
+                titles = config.get("prompt_titles") or {}
+                titles["3"] = "head-turn 3/4 view (40° each side, kling 2.5 pro)"
+                config["prompt_titles"] = titles
+                print(
+                    "Force-updated slot 3 positive to canonical "
+                    "head-turn 3/4 view (was stale template default)."
+                )
+            config["slot3_force_canonical_v21"] = True
+
     def _merge_ui_config(self, base: dict, updates: dict) -> dict:
         """Deep-merge UI config dictionaries."""
         for key, value in updates.items():
