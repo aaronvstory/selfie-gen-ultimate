@@ -180,8 +180,16 @@ def all_videos_for_image(image_path: Path) -> List[VideoMetadata]:
     target = image_path.stem
     if not folder.is_dir():
         return []
+    # iterdir() can OSError on restricted/vanished folders — mirror
+    # the find_video_groups guard so find_video_for_image()
+    # (which calls us) degrades to None instead of crashing the
+    # carousel render path. CodeRabbit MAJOR on 45007d9.
+    try:
+        entries = sorted(folder.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return []
     matches: List[VideoMetadata] = []
-    for entry in sorted(folder.iterdir(), key=lambda p: p.name):
+    for entry in entries:
         if not entry.is_file() or entry.suffix.lower() not in _VIDEO_EXTS:
             continue
         meta = parse_video_filename(entry)

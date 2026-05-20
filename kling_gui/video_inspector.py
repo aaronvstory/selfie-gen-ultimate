@@ -571,7 +571,17 @@ class VideoFrame(tk.Frame):
                     # documented behavior. Bool assignment is GIL-
                     # atomic, no lock needed for cross-thread read.
                     # (Gemini MEDIUM on 9d9a473.)
-                    if self._frame_count == 0:
+                    #
+                    # Generation-gate the write (CodeRabbit MAJOR on
+                    # 45007d9): a stale worker that's still draining
+                    # after clear()/reload could otherwise flip
+                    # ``_eof_reached`` on the NEW load and the modal
+                    # would immediately stop playback for a clip that
+                    # just opened. Same gate _render_pil_image uses.
+                    if (
+                        generation_id == self._generation_id
+                        and self._frame_count == 0
+                    ):
                         self._eof_reached = True
                     continue
 

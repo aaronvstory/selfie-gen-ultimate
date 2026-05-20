@@ -4989,20 +4989,6 @@ class KlingGUIWindow:
 
     def _on_close(self):
         """Handle window close."""
-        # Cancel any pending layout-save debounce timer FIRST — under
-        # Python 3.14+ stricter Tkinter thread enforcement, a dangling
-        # ``after`` callback against a destroyed root can raise
-        # RuntimeError; under current Pythons it's harmless but the
-        # callback fires uselessly after destroy() returns. Cancelling
-        # up-front is the cheap, safe path. (Code-review on 706466f.)
-        after_id = getattr(self, "_layout_save_after_id", None)
-        if after_id is not None:
-            try:
-                self.root.after_cancel(after_id)
-            except tk.TclError:
-                pass
-            self._layout_save_after_id = None
-
         # Check both queue and tab worker threads
         busy_tabs = []
         for tab_name in ["face_crop_tab", "prep_tab", "selfie_tab", "expand_tab"]:
@@ -5024,10 +5010,32 @@ class KlingGUIWindow:
                 f"Processing is in progress{detail}. "
                 "Are you sure you want to close?",
             ):
+                # User aborted close — keep the pending layout-save
+                # timer alive so a recent geometry/sash change still
+                # gets persisted by the debounce (CodeRabbit minor
+                # on 45007d9 — the prior order cancelled even on
+                # aborted close, losing in-flight layout edits).
                 return
 
             if self.queue_manager and self.queue_manager.is_running:
                 self.queue_manager.stop_processing()
+
+        # Cancel any pending layout-save debounce timer NOW (close is
+        # committed). Under Python 3.14+ stricter Tkinter thread
+        # enforcement a dangling ``after`` callback against a destroyed
+        # root can raise RuntimeError; under current Pythons it's
+        # harmless but the callback fires uselessly after destroy()
+        # returns. The explicit ``_save_layout()`` call further down
+        # captures whatever the debounce would have caught, so no
+        # state is lost. (Code-review on 706466f + CodeRabbit on
+        # 45007d9 for the ordering.)
+        after_id = getattr(self, "_layout_save_after_id", None)
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+            self._layout_save_after_id = None
 
         # Collect tab configs before saving
         for tab in ["face_crop_tab", "prep_tab", "selfie_tab", "expand_tab"]:
