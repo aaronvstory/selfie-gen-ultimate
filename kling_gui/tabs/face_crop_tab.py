@@ -581,7 +581,7 @@ class FaceCropTab(tk.Frame):
             orient=tk.HORIZONTAL, variable=self._polish_strength_var,
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
             troughcolor=COLORS["bg_input"], highlightthickness=0,
-            font=(FONT_FAMILY, 7), length=80,
+            font=(FONT_FAMILY, 8), length=80,
         )
         self._polish_strength_scale.pack(side=tk.LEFT, padx=(2, 0))
 
@@ -714,7 +714,7 @@ class FaceCropTab(tk.Frame):
             fg=COLORS["text_light"],
             troughcolor=COLORS["bg_input"],
             highlightthickness=0,
-            font=(FONT_FAMILY, 7),
+            font=(FONT_FAMILY, 8),
         )
         self._pct_scale.pack(side=tk.LEFT, padx=(3, 0), fill=tk.X, expand=True)
 
@@ -923,7 +923,7 @@ class FaceCropTab(tk.Frame):
             orient=tk.HORIZONTAL, variable=self._upscale_creativity_var,
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
             troughcolor=COLORS["bg_input"], highlightthickness=0,
-            font=(FONT_FAMILY, 7), length=70,
+            font=(FONT_FAMILY, 8), length=70,
         )
         self._creativity_scale.pack(side=tk.LEFT, padx=(2, 8))
 
@@ -936,7 +936,7 @@ class FaceCropTab(tk.Frame):
             orient=tk.HORIZONTAL, variable=self._upscale_resemblance_var,
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
             troughcolor=COLORS["bg_input"], highlightthickness=0,
-            font=(FONT_FAMILY, 7), length=70,
+            font=(FONT_FAMILY, 8), length=70,
         )
         self._resemblance_scale.pack(side=tk.LEFT, padx=(2, 0))
 

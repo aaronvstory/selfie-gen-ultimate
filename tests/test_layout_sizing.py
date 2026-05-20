@@ -1,5 +1,6 @@
 import unittest
 
+from kling_gui.layout_utils import parse_geometry_size
 from kling_gui.main_window import UI_CONFIG_DEFAULTS, sanitize_saved_geometry, sanitize_sash_layout, sanitize_window_layout
 
 
@@ -97,6 +98,82 @@ class LayoutSizingTests(unittest.TestCase):
         self.assertEqual(sash["sash_queue"], 286)
         self.assertEqual(sash["sash_log"], 150)
         self.assertEqual(sash["sash_log_drop_split"], 520)
+
+
+class ParseGeometrySizeTests(unittest.TestCase):
+    """Guards on the geometry parser used by main_window's pre-sash clamp.
+
+    Bug fixed 2026-05-20: the pre-sash sanitize was using
+    ``sanitized_window["width"]`` (the ui_config default of 1100)
+    instead of the ACTUAL width the window was about to open at
+    (saved geometry, e.g. 1331). That clamped saved sash positions
+    down to fit 1100 px, then ``_persist_layout_corrections_if_needed``
+    flushed the clamped values back to disk — the user's actual
+    layout was permanently lost on every relaunch.
+    """
+
+    def test_parses_geometry_with_position(self):
+        self.assertEqual(parse_geometry_size("1331x950+97+52", 1100, 950), (1331, 950))
+
+    def test_parses_geometry_without_position(self):
+        self.assertEqual(parse_geometry_size("1280x720", 800, 600), (1280, 720))
+
+    def test_empty_string_falls_back(self):
+        self.assertEqual(parse_geometry_size("", 1100, 950), (1100, 950))
+
+    def test_malformed_falls_back(self):
+        self.assertEqual(parse_geometry_size("garbage", 1100, 950), (1100, 950))
+        self.assertEqual(parse_geometry_size("1280", 800, 600), (800, 600))
+
+    def test_non_string_falls_back(self):
+        self.assertEqual(parse_geometry_size(None, 1100, 950), (1100, 950))  # type: ignore[arg-type]
+
+
+class PreSashClampUsesActualGeometryTests(unittest.TestCase):
+    """End-to-end regression for the 2026-05-20 sash-bug fix.
+
+    Mimics the bug scenario: window_geometry="1331x950+97+52" (saved
+    from a wide window) + ui_config["window"]["width"]=1100 (the
+    untouched default). Asserts that when we pass the geometry-parsed
+    width to sanitize_sash_layout, the user's saved sash_queue=417
+    survives — which it does NOT when given ui_config's 1100 because
+    the 22-32% range at 1100w caps queue at 352.
+    """
+
+    def test_pre_sash_with_geometry_width_preserves_user_choice(self):
+        # The bug input: saved widget at 1331w, ui_config defaults at 1100w.
+        saved_geometry = "1331x950+97+52"
+        ui_config_width = 1100
+        ui_config_height = 950
+        user_saved_sashes = dict(
+            sash_dropzone=560, sash_prompt_split=704, sash_queue=417,
+            sash_log=167, sash_log_drop_split=613,
+        )
+
+        # OLD path (buggy): used ui_config width → clamps user's 417 down.
+        old_result, _ = sanitize_sash_layout(
+            **user_saved_sashes,
+            root_width=ui_config_width, root_height=ui_config_height,
+        )
+        self.assertLess(old_result["sash_queue"], 417, (
+            "Pre-fix sanity check: at 1100w the 22-32% range caps queue at "
+            "~352, so 417 MUST be clamped down here. If this passes the "
+            "fix has been double-applied or the percentages changed."
+        ))
+
+        # NEW path (fixed): parse the saved geometry first.
+        actual_w, actual_h = parse_geometry_size(
+            saved_geometry, ui_config_width, ui_config_height,
+        )
+        new_result, _ = sanitize_sash_layout(
+            **user_saved_sashes,
+            root_width=actual_w, root_height=actual_h,
+        )
+        self.assertEqual(new_result["sash_queue"], 417, (
+            "User's saved sash_queue=417 must survive the pre-sash clamp "
+            "when we use the geometry-parsed width (1331). Regression of "
+            "the 2026-05-20 sash-cut-off-on-relaunch bug."
+        ))
 
 
 if __name__ == "__main__":

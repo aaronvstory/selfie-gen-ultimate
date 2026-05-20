@@ -60,6 +60,7 @@ from .theme import (
     debounce_command,
 )
 from .layout_utils import (
+    parse_geometry_size as _parse_geometry_size,
     sanitize_saved_geometry as _sanitize_saved_geometry,
     sanitize_window_layout as _sanitize_window_layout,
     sanitize_sash_layout as _sanitize_sash_layout,
@@ -770,14 +771,29 @@ class KlingGUIWindow:
         # of right section) — see layout_utils.sanitize_sash_layout for the
         # canonical clamp logic. Computed for ~1621px window (the user's tested
         # size): sash_queue=405, sash_log_drop_split=863.
+        #
+        # CRITICAL: clamp against the ACTUAL geometry the window is about to
+        # open at (`sanitized_geometry`, e.g. "1331x950+97+52"), NOT against
+        # `sanitized_window["width"]` (which is the ui_config default of 1100
+        # regardless of the saved geometry). The old "use ui_config width"
+        # path silently clamped saved sash positions DOWN to fit a 1100-wide
+        # window — then `_persist_layout_corrections_if_needed` flushed the
+        # clamped values back to disk, permanently losing the user's actual
+        # widths on every relaunch ("buttons cut off, have to resize every
+        # session"). Fixed 2026-05-20.
+        pre_sash_w, pre_sash_h = _parse_geometry_size(
+            sanitized_geometry,
+            sanitized_window["width"],
+            sanitized_window["height"],
+        )
         pre_sash, pre_sash_changed = sanitize_sash_layout(
             sash_dropzone=self.config.get("sash_dropzone", 500),
             sash_prompt_split=self.config.get("sash_prompt_split", 760),
             sash_queue=self.config.get("sash_queue", 405),
             sash_log=self.config.get("sash_log", 150),
             sash_log_drop_split=self.config.get("sash_log_drop_split", 863),
-            root_width=sanitized_window["width"],
-            root_height=sanitized_window["height"],
+            root_width=pre_sash_w,
+            root_height=pre_sash_h,
         )
         self.config.update(pre_sash)
         if pre_sash_changed:
@@ -2822,7 +2838,7 @@ class KlingGUIWindow:
         indicator = tk.Label(
             frame,
             text=f"{label}: Added" if is_set else f"{label}: Missing",
-            font=(FONT_FAMILY, 7, "bold"),
+            font=(FONT_FAMILY, 8, "bold"),
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
             padx=5, pady=2,

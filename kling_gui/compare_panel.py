@@ -95,7 +95,7 @@ class ComparePanel(tk.Frame):
         close_btn = tk.Button(
             header,
             text="X Close",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"],
             fg=COLORS["error"],
             command=self._on_close,
@@ -124,7 +124,7 @@ class ComparePanel(tk.Frame):
         self.counter_label = tk.Label(
             header,
             text="",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
         )
@@ -149,13 +149,13 @@ class ComparePanel(tk.Frame):
         self.meta_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
 
         self.meta_label = tk.Label(
-            self.meta_frame, text="", font=(FONT_FAMILY, 8),
+            self.meta_frame, text="", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor=tk.W,
         )
         self.meta_label.pack(side=tk.LEFT)
 
         self.sim_label = tk.Label(
-            self.meta_frame, text="", font=(FONT_FAMILY, 8, "bold"),
+            self.meta_frame, text="", font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor=tk.E,
         )
         self.sim_label.pack(side=tk.RIGHT)
@@ -164,7 +164,7 @@ class ComparePanel(tk.Frame):
         self.info_label = tk.Label(
             self,
             text="",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             anchor=tk.W,
@@ -380,7 +380,7 @@ class ComparePanel(tk.Frame):
             left_frame.pack(side=tk.LEFT, padx=(0, 2))
             tk.Label(
                 left_frame, text="Carousel", bg=COLORS["bg_main"],
-                fg=COLORS["text_dim"], font=(FONT_FAMILY, 8),
+                fg=COLORS["text_dim"], font=(FONT_FAMILY, 9),
             ).pack()
             tk.Label(
                 left_frame, image=left_photo, bg=COLORS["bg_main"],
@@ -392,7 +392,7 @@ class ComparePanel(tk.Frame):
             right_frame.pack(side=tk.LEFT, padx=(2, 0))
             tk.Label(
                 right_frame, text="Compare", bg=COLORS["bg_main"],
-                fg=COLORS["text_dim"], font=(FONT_FAMILY, 8),
+                fg=COLORS["text_dim"], font=(FONT_FAMILY, 9),
             ).pack()
             tk.Label(
                 right_frame, image=right_photo, bg=COLORS["bg_main"],

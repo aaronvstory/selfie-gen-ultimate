@@ -16,6 +16,26 @@ def _clamp_int(value, minimum: int, maximum: int, fallback: int) -> int:
     return max(minimum, min(parsed, maximum))
 
 
+def parse_geometry_size(geometry: str, fallback_width: int, fallback_height: int) -> tuple[int, int]:
+    """Return ``(width, height)`` parsed from a Tk geometry string.
+
+    Falls back to the provided defaults when the input is empty/malformed.
+    Used by ``main_window`` to derive the ACTUAL window size the root is
+    about to open at (e.g. "1331x950+97+52" -> 1331, 950) so the pre-sash
+    clamp doesn't shrink saved sash positions to fit the smaller ui_config
+    default. See main_window._init_window_layout for the full bug story.
+    """
+    if not isinstance(geometry, str):
+        return int(fallback_width), int(fallback_height)
+    match = _GEOMETRY_RE.match(geometry.strip())
+    if not match:
+        return int(fallback_width), int(fallback_height)
+    try:
+        return int(match.group(1)), int(match.group(2))
+    except (TypeError, ValueError):
+        return int(fallback_width), int(fallback_height)
+
+
 def sanitize_saved_geometry(saved_geometry: str, min_width: int, min_height: int, max_width: int, max_height: int) -> str:
     """Sanitize Tk geometry string to safe size bounds, preserving position when present."""
     if not isinstance(saved_geometry, str) or not saved_geometry.strip():
