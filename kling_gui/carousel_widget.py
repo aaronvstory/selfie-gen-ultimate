@@ -831,7 +831,14 @@ class ImageCarousel(tk.Frame):
             # so re-resize/re-select continues to expose the badge.
             try:
                 video_path = find_video_for_image(Path(path))
-            except Exception:
+            except (OSError, ValueError) as exc:
+                # OSError covers folder-stat / permission / I/O issues
+                # against the parent dir; ValueError catches malformed
+                # paths. Anything else propagates (bug we should see).
+                logger.debug(
+                    "video_inspector: discovery failed for %s: %s",
+                    path, exc,
+                )
                 video_path = None
             if video_path is not None and self._on_video_callback is not None:
                 badge_x = cx + new_w / 2 - 22

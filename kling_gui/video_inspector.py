@@ -398,9 +398,20 @@ class VideoFrame(tk.Frame):
             # Cap is local to this generation — old workers don't race
             # the new capture. The lock is kept for parity with future
             # code that wants concurrent reads from the same cap.
+            #
+            # Sequential-read fast path: cap.set(CAP_PROP_POS_FRAMES) on
+            # H.264/H.265 is O(N) from the nearest keyframe (Gemini #4
+            # finding on PR #43). When the request is just "next frame",
+            # skip the seek entirely — cv2 already advances by one on
+            # cap.read(). Only seek for non-sequential jumps (scrub,
+            # restart, A/B sync). The threshold (>1 frame delta)
+            # tolerates the off-by-one from cap.get(POS_FRAMES) returning
+            # the NEXT frame index after a successful read.
             with self._cap_lock:
                 try:
-                    cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_index)
+                    current = int(cap.get(cv2_mod.CAP_PROP_POS_FRAMES) or 0)
+                    if abs(current - frame_index) > 1:
+                        cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_index)
                     ok, frame_bgr = cap.read()
                 except Exception:
                     ok, frame_bgr = False, None

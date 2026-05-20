@@ -537,6 +537,52 @@ class VideoFrameTests(unittest.TestCase):
         f.clear()
         self.assertGreater(f._generation_id, 5)
 
+    def test_decoder_loop_skips_seek_on_sequential_reads(self):
+        """Sequential playback shouldn't call cap.set(POS_FRAMES) on
+        every frame — that's O(N) from the nearest keyframe for
+        H.264/H.265 codecs (Gemini PR #43 finding). Only seek when
+        the next requested frame is >1 frame away from the cap's
+        current position."""
+        import cv2 as _cv2
+        from kling_gui.video_inspector import VideoFrame
+        f = self._make_frame()
+        cap = _FakeCap(n_frames=20)
+        # _FakeCap.set/get track POS_FRAMES; spy on set_calls.
+        f._cap_lock = threading.Lock()
+        # Stage 3 sequential frame requests, then sentinel to exit.
+        f._frame_request.put_nowait(0)
+        stop = threading.Event()
+        # Drive _decoder_loop directly in this thread (no daemon).
+        # We need the loop to consume the queue then exit cleanly.
+        def feeder():
+            # Wait a moment so loop pulls frame 0, then push 1, 2, 3.
+            import time
+            time.sleep(0.05)
+            f._frame_request.put(1)
+            time.sleep(0.05)
+            f._frame_request.put(2)
+            time.sleep(0.05)
+            f._frame_request.put(3)
+            time.sleep(0.05)
+            f._frame_request.put(-1)  # sentinel exit
+        threading.Thread(target=feeder, daemon=True).start()
+        # Run the real loop — it will exit when it sees -1.
+        VideoFrame._decoder_loop(
+            f, generation_id=1, stop_event=stop,
+            request_queue=f._frame_request, cap=cap, cv2_mod=_cv2,
+        )
+        # Frame 0 always seeks (current=0, requested=0, but the loop
+        # treats first call as a fresh open and may seek). Frames 1, 2,
+        # 3 are sequential from cv2's perspective — should NOT seek.
+        # We assert AT MOST one set() call in total (the optional
+        # initial seek). Without the optimization, this would be 4.
+        seeks = [c for c in cap.set_calls if c[0] == _cv2.CAP_PROP_POS_FRAMES]
+        self.assertLessEqual(
+            len(seeks), 1,
+            f"Sequential playback issued {len(seeks)} seeks; expected ≤1. "
+            f"calls={cap.set_calls}",
+        )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Step 5 — CarouselOverlayTests
