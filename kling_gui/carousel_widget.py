@@ -43,6 +43,55 @@ def _format_image_info(path: str) -> str:
         return ""
 
 
+# ----------------------------------------------------------------------
+# Video thumbnail helper. Used by _show_image_on_canvas to render a
+# carousel item whose underlying file is a video (session-folder rescan
+# adds these). Cache is keyed by absolute path so the carousel doesn't
+# re-decode on every resize Configure event.
+# ----------------------------------------------------------------------
+_VIDEO_THUMB_CACHE: dict = {}
+
+
+def _extract_video_first_frame(video_path: str):
+    """Return the first frame of a video as a PIL.Image, or None on failure.
+
+    Uses cv2 lazily — wheel availability on macOS-ARM has historically
+    lagged, so a missing cv2 falls back to None (caller renders a generic
+    placeholder). Result is cached per path; a video rewritten in place
+    would serve a stale thumbnail until the process restarts, which is
+    acceptable for the derived-output workflow this targets.
+    """
+    cached = _VIDEO_THUMB_CACHE.get(video_path)
+    if cached is not None:
+        return cached
+    try:
+        import cv2
+        from PIL import Image
+    except ImportError:
+        return None
+    cap = None
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            return None
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        _VIDEO_THUMB_CACHE[video_path] = img
+        return img
+    except Exception:
+        logger.debug("video-thumb extract failed for %s", video_path, exc_info=True)
+        return None
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+
+
 def _truncate_filename(name: str, max_chars: int = 35) -> str:
     """Truncate long filenames: 'very_long_na...ol_exp.png'"""
     if len(name) <= max_chars:
@@ -380,7 +429,7 @@ class ImageCarousel(tk.Frame):
             text="Boxes",
             variable=self._show_face_box_var,
             command=self._on_show_face_box_toggle,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
@@ -395,7 +444,7 @@ class ImageCarousel(tk.Frame):
             text="Anti-spoof",
             variable=self._anti_spoof_var,
             command=self._on_anti_spoof_toggle,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
@@ -409,7 +458,7 @@ class ImageCarousel(tk.Frame):
             bottom_row,
             text="Auto",
             variable=self._auto_var,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
@@ -426,7 +475,7 @@ class ImageCarousel(tk.Frame):
         self.meta_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
 
         self.meta_label = tk.Label(
-            self.meta_frame, text="", font=(FONT_FAMILY, 8),
+            self.meta_frame, text="", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor=tk.W,
         )
         self.meta_label.pack(side=tk.LEFT)
@@ -486,7 +535,7 @@ class ImageCarousel(tk.Frame):
         self.info_label = tk.Label(
             self.panel_frame,
             text="",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             anchor=tk.W,
@@ -771,16 +820,53 @@ class ImageCarousel(tk.Frame):
         try:
             from PIL import Image, ImageTk, ImageOps
 
-            with Image.open(path) as img_src:
-                img_src.load()
-                img = img_src.copy()
+            # Video carousel item: render the first frame via cv2 and
+            # overlay a big centered ▶ (drawn later). Bbox + corner
+            # play-badge are skipped — they presume a still-image source
+            # and a derived video; this entry IS the video.
+            ext = os.path.splitext(path)[1].lower()
+            is_video = ext in {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+            if is_video:
+                img = _extract_video_first_frame(path)
+                if img is None:
+                    # cv2 unavailable OR decode failed. Show a neutral
+                    # placeholder + ▶ so the user still sees that a
+                    # video lives here — clicking opens the Inspector
+                    # which has its own external-player fallback.
+                    canvas.delete("all")
+                    cw_pl = max(1, canvas.winfo_width())
+                    ch_pl = max(1, canvas.winfo_height())
+                    canvas.create_rectangle(
+                        2, 2, cw_pl - 2, ch_pl - 2,
+                        fill=COLORS["bg_input"], outline="",
+                    )
+                    canvas.create_text(
+                        cw_pl // 2, ch_pl // 2 - 14,
+                        text="▶", fill="#FFFFFF",
+                        font=(FONT_FAMILY, 48, "bold"),
+                    )
+                    canvas.create_text(
+                        cw_pl // 2, ch_pl // 2 + 24,
+                        text=os.path.basename(path),
+                        fill=COLORS["text_light"],
+                        font=(FONT_FAMILY, 9),
+                    )
+                    self._bind_video_canvas_click(canvas, path)
+                    return True
+            else:
+                with Image.open(path) as img_src:
+                    img_src.load()
+                    img = img_src.copy()
 
-            # Auto-correct EXIF orientation
+            # Auto-correct EXIF orientation (no-op on cv2-derived frames)
             img = ImageOps.exif_transpose(img)
 
-            # Apply user rotation (stored on the active entry)
+            # Apply user rotation (stored on the active entry).
+            # Videos use their natural orientation — rotation is an
+            # image-edit concept and the carousel doesn't expose it for
+            # video clips.
             entry = self.image_session.active_entry
-            if entry and entry.rotation:
+            if entry and entry.rotation and not is_video:
                 # PIL rotates counterclockwise, so negate for CW convention
                 img = img.rotate(-entry.rotation, expand=True)
 
@@ -806,7 +892,7 @@ class ImageCarousel(tk.Frame):
             # a misaligned box.
             # Guard against test stubs that bypass _build_panel and don't have the var.
             show_box_var = getattr(self, "_show_face_box_var", None)
-            if show_box_var is not None and show_box_var.get() and entry and not entry.rotation:
+            if not is_video and show_box_var is not None and show_box_var.get() and entry and not entry.rotation:
                 bbox = getattr(entry, "face_bbox", None)
                 if isinstance(bbox, dict):
                     try:
@@ -864,7 +950,7 @@ class ImageCarousel(tk.Frame):
                     path, exc,
                 )
                 video_path = None
-            if video_path is not None and self._on_video_callback is not None:
+            if not is_video and video_path is not None and self._on_video_callback is not None:
                 # Badge sizing scales with the visible image rect — a
                 # fixed 18px radius looks dwarfed on a large thumbnail
                 # and grotesque on a small one. Use ~7% of the smaller
@@ -910,6 +996,28 @@ class ImageCarousel(tk.Frame):
                 canvas.tag_bind(
                     play_id, "<Button-1>", lambda _e, p=vp: cb(p),
                 )
+
+            # Big centered ▶ overlay + canvas-wide click binding for
+            # video carousel items. Drawn AFTER the main image so it sits
+            # on top. Click anywhere on the canvas opens the Inspector.
+            if is_video and self._on_video_callback is not None:
+                short_dim = min(new_w, new_h)
+                glyph_size = max(36, min(96, int(short_dim * 0.22)))
+                canvas.create_text(
+                    cx, cy,
+                    text="▶", fill="#FFFFFF",
+                    font=(FONT_FAMILY, glyph_size, "bold"),
+                )
+                self._bind_video_canvas_click(canvas, path)
+            elif not is_video:
+                # Non-video item: clear any stale video click binding
+                # (this canvas may have just shown a video, then the
+                # user navigated to an image). AttributeError catches
+                # _FakeCanvas test stubs that don't implement unbind.
+                try:
+                    canvas.unbind("<Button-1>")
+                except (tk.TclError, AttributeError):
+                    pass
             return True
         except ImportError:
             cw = max(1, canvas.winfo_width())
@@ -1234,6 +1342,29 @@ class ImageCarousel(tk.Frame):
         if score_bits:
             return f"liveness={verdict_word} ({', '.join(score_bits)})"
         return f"liveness={verdict_word}"
+
+    def _bind_video_canvas_click(self, canvas, video_path):
+        """Bind a canvas-wide click handler that opens the Video Inspector.
+
+        Used by video carousel items so clicking anywhere on the rendered
+        first-frame thumbnail launches playback in the Inspector. The bind
+        is per-canvas-per-render („unbind” on the non-video branch in
+        _show_image_on_canvas clears it when the user navigates back to an
+        image item) so stale clips never trigger the wrong video.
+        """
+        cb = self._on_video_callback
+        if cb is None:
+            return
+        from pathlib import Path as _Path
+        p = _Path(video_path)
+        try:
+            canvas.unbind("<Button-1>")
+        except (tk.TclError, AttributeError):
+            pass
+        try:
+            canvas.bind("<Button-1>", lambda _e, _p=p: cb(_p))
+        except (tk.TclError, AttributeError):
+            pass
 
     def _on_show_face_box_toggle(self):
         """Toggle the face-bbox overlay. Pure redraw — no recompute."""

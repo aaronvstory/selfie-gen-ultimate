@@ -41,14 +41,15 @@ import threading
 import tkinter as tk
 import webbrowser
 from pathlib import Path
+from tkinter import ttk
 from typing import Callable, Dict, List, Optional
 
 from .theme import (
-    BUTTON_DISABLED_TEXT_COLOR,
-    BUTTON_TEXT_COLOR,
     COLORS,
     FONT_FAMILY,
-    apply_macos_button_fix,
+    TTK_BTN_COMPACT,
+    TTK_BTN_PRIMARY,
+    TTK_BTN_SECONDARY,
     debounce_command,
 )
 from .video_discovery import VideoGroup, find_video_groups
@@ -199,24 +200,14 @@ class VideoFrame(tk.Frame):
         # Per-slot "Open Externally" button — shown only after a failed
         # load or when the user wants the OS player. Always created so
         # tests can find it; placed hidden until needed.
-        self._open_external_btn = tk.Button(
+        self._open_external_btn = ttk.Button(
             self,
             text="Open Externally",
             command=self._on_open_externally,
-            font=(FONT_FAMILY, 8),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            relief=tk.FLAT,
-            bd=0,
-            padx=8,
-            pady=2,
-            cursor="hand2",
+            style=TTK_BTN_COMPACT,
             state=tk.DISABLED,
         )
-        apply_macos_button_fix(self._open_external_btn)
-        self._open_external_btn.pack(side=tk.TOP, pady=(2, 0))
+        self._open_external_btn.pack(side=tk.TOP, pady=(4, 2))
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -951,12 +942,15 @@ class VideoInspectorModal(tk.Toplevel):
             # Horizontal scrollbar handles overflow for long names.
         )
         self._listbox.grid(row=0, column=0, sticky="nsew")
-        vscroll = tk.Scrollbar(
+        # ttk.Scrollbar uses the clam theme — renders dark on macOS,
+        # unlike tk.Scrollbar which forces native Aqua white bars and
+        # produced ugly bright edges visible against the dark modal bg.
+        vscroll = ttk.Scrollbar(
             list_holder, orient=tk.VERTICAL, command=self._listbox.yview,
         )
         vscroll.grid(row=0, column=1, sticky="ns")
         self._listbox.config(yscrollcommand=vscroll.set)
-        hscroll = tk.Scrollbar(
+        hscroll = ttk.Scrollbar(
             list_holder, orient=tk.HORIZONTAL, command=self._listbox.xview,
         )
         hscroll.grid(row=1, column=0, sticky="ew")
@@ -976,47 +970,32 @@ class VideoInspectorModal(tk.Toplevel):
         self._listbox.bind("<Button-2>", self._on_listbox_right_click)
         self._listbox.bind("<Control-Button-1>", self._on_listbox_right_click)
 
-        # Toolbar (bottom)
+        # Toolbar (bottom). All buttons use ttk + the clam-themed
+        # TTK_BTN_* styles so they render with the dark theme on macOS.
+        # Raw tk.Button on Aqua loses its tint after the first event
+        # (HIView revert — see commit b3bc7398 for the deep dive), so
+        # the inspector — which has SIX buttons crammed in one row —
+        # was the worst visible offender. Extra pady so the toolbar
+        # reads as breathing-room, not crammed-against-edge.
         toolbar = tk.Frame(self, bg=COLORS["bg_main"])
-        toolbar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 8))
+        toolbar.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(6, 10))
 
-        self._play_btn = tk.Button(
+        self._play_btn = ttk.Button(
             toolbar,
             text="▶ Play",
             command=debounce_command(self._toggle_play, key="vinspect_play"),
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            disabledforeground=BUTTON_DISABLED_TEXT_COLOR,
-            relief=tk.FLAT,
-            bd=0,
-            padx=10,
-            pady=4,
-            cursor="hand2",
+            style=TTK_BTN_PRIMARY,
             width=10,
         )
-        apply_macos_button_fix(self._play_btn)
         self._play_btn.pack(side=tk.LEFT)
 
-        self._restart_btn = tk.Button(
+        self._restart_btn = ttk.Button(
             toolbar,
             text="⏮ Restart",
             command=debounce_command(self._restart, key="vinspect_restart"),
-            font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            relief=tk.FLAT,
-            bd=0,
-            padx=10,
-            pady=4,
-            cursor="hand2",
+            style=TTK_BTN_SECONDARY,
             width=10,
         )
-        apply_macos_button_fix(self._restart_btn)
         self._restart_btn.pack(side=tk.LEFT, padx=(6, 0))
 
         self._lock_chk = tk.Checkbutton(
@@ -1042,64 +1021,34 @@ class VideoInspectorModal(tk.Toplevel):
             font=(FONT_FAMILY, 9),
         ).pack(side=tk.LEFT, padx=(12, 0))
 
-        close_btn = tk.Button(
+        close_btn = ttk.Button(
             toolbar,
             text="Close",
             command=self.destroy,
-            font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            relief=tk.FLAT,
-            bd=0,
-            padx=10,
-            pady=4,
-            cursor="hand2",
+            style=TTK_BTN_SECONDARY,
             width=8,
         )
-        apply_macos_button_fix(close_btn)
         close_btn.pack(side=tk.RIGHT)
 
         # Explicit "Load → A" / "Load → B" buttons live in the toolbar
         # in the new layout. They use the listbox selection so the user
         # can click a row and then click the load button (a third
         # alternative to double-click / shift+double / right-click).
-        self._load_b_btn = tk.Button(
+        self._load_b_btn = ttk.Button(
             toolbar,
             text="Load → B",
             command=lambda: self._load_selection_into("B"),
-            font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            relief=tk.FLAT,
-            bd=0,
-            padx=10,
-            pady=4,
-            cursor="hand2",
+            style=TTK_BTN_SECONDARY,
             width=10,
         )
-        apply_macos_button_fix(self._load_b_btn)
         self._load_b_btn.pack(side=tk.RIGHT, padx=(0, 6))
-        self._load_a_btn = tk.Button(
+        self._load_a_btn = ttk.Button(
             toolbar,
             text="Load → A",
             command=lambda: self._load_selection_into("A"),
-            font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            relief=tk.FLAT,
-            bd=0,
-            padx=10,
-            pady=4,
-            cursor="hand2",
+            style=TTK_BTN_SECONDARY,
             width=10,
         )
-        apply_macos_button_fix(self._load_a_btn)
         self._load_a_btn.pack(side=tk.RIGHT, padx=(0, 6))
 
         # Kick off master timer.

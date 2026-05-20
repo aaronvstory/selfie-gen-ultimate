@@ -9,7 +9,8 @@ from typing import Optional, Callable, List, Tuple
 logger = logging.getLogger(__name__)
 
 
-_VALID_SOURCE_TYPES = {"input", "selfie", "outpaint", "polish", "upscale"}
+_VALID_SOURCE_TYPES = {"input", "selfie", "outpaint", "polish", "upscale", "video"}
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
 SIMILARITY_PASS_THRESHOLD = 80
 
 
@@ -91,6 +92,18 @@ class ImageEntry:
     @property
     def exists(self) -> bool:
         return os.path.isfile(self.path)
+
+    @property
+    def is_video(self) -> bool:
+        """True if this entry is a video clip rather than a still image.
+
+        Video entries skip similarity scoring and compare-panel handling —
+        they exist in the carousel so the user can see and click them to
+        launch the Video Inspector, not as comparable stills.
+        """
+        return self.source_type == "video" or (
+            os.path.splitext(self.path)[1].lower() in _VIDEO_EXTENSIONS
+        )
 
     def update_similarity(
         self,

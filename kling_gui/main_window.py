@@ -4425,6 +4425,69 @@ class KlingGUIWindow:
                     ops=img.get("ops", {}),
                 )
                 loaded_count += 1
+            # Folder rescan: pull in additional images + videos that exist
+            # in the saved-session folders NOW, even if they weren't part of
+            # the saved manifest. Per user direction 2026-05-20: "whenever a
+            # new or existing session gets loaded, it should rescan that
+            # folder and load in everything." Videos become source_type=
+            # "video" entries so the carousel renders them with a play
+            # glyph and routes clicks to the Video Inspector.
+            try:
+                from kling_gui.video_discovery import find_video_groups as _find_video_groups
+                from pathlib import Path as _Path
+                loaded_real = {
+                    os.path.realpath(e.path) for e in self.image_session.images
+                }
+                folders = set()
+                for img in images:
+                    p = img.get("path", "")
+                    if p:
+                        folders.add(os.path.dirname(p))
+                rescan_imgs = 0
+                rescan_vids = 0
+                for folder in sorted(folders):
+                    if not folder or not os.path.isdir(folder):
+                        continue
+                    try:
+                        entries = sorted(os.listdir(folder))
+                    except OSError:
+                        continue
+                    for fname in entries:
+                        full = os.path.join(folder, fname)
+                        if not os.path.isfile(full):
+                            continue
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext not in VALID_EXTENSIONS:
+                            continue
+                        real = os.path.realpath(full)
+                        if real in loaded_real:
+                            continue
+                        self.image_session.add_image(full, "input", make_active=False)
+                        loaded_real.add(real)
+                        rescan_imgs += 1
+                    try:
+                        groups = _find_video_groups(_Path(folder))
+                    except (OSError, ValueError):
+                        groups = []
+                    for group in groups:
+                        for vmeta in group.videos:
+                            vpath = str(vmeta.path)
+                            real = os.path.realpath(vpath)
+                            if real in loaded_real:
+                                continue
+                            self.image_session.add_image(
+                                vpath, "video", make_active=False,
+                            )
+                            loaded_real.add(real)
+                            rescan_vids += 1
+                if rescan_imgs or rescan_vids:
+                    self._log(
+                        f"Folder rescan: +{rescan_imgs} new image(s), "
+                        f"+{rescan_vids} video(s)",
+                        "info",
+                    )
+            except Exception:
+                logging.getLogger(__name__).exception("session-load folder rescan failed")
             # Restore indices
             target_idx = session_data.get("current_index", -1)
             if 0 <= target_idx < self.image_session.count:
