@@ -187,6 +187,22 @@ def load_sidecar_metrics(video_path: Path) -> Optional[RppgMetrics]:
     The injector writes this sidecar when metric-filename mode is off.
     Returns None for missing files, unreadable files, malformed JSON,
     or JSON missing any of the 5 required keys.
+
+    Schema: ``automation.rppg.finalize_rppg_output`` writes the metrics
+    NESTED under a "metrics" key:
+
+        {
+          "source": "<file>",
+          "metrics": {"snr": ..., "phase": ..., "temporal": ...,
+                      "motion": ..., "harmonic": ...},
+          "order": ["snr", "phase", ...]
+        }
+
+    We read from the nested ``metrics`` first (canonical producer
+    format) AND fall back to top-level for safety in case a manual /
+    third-party sidecar uses the flat schema.
+    Codex P2 (3272968651) on PR #43: my first implementation only read
+    top-level which silently dropped every real sidecar.
     """
     sidecar = video_path.with_suffix("").with_suffix(".metrics.json")
     # ``with_suffix("").with_suffix("...")`` strips one suffix; for
@@ -200,13 +216,18 @@ def load_sidecar_metrics(video_path: Path) -> Optional[RppgMetrics]:
         return None
     if not isinstance(data, dict):
         return None
+    # Prefer the nested schema (canonical producer format), fall back
+    # to flat top-level for legacy / third-party sidecars.
+    payload = data.get("metrics")
+    if not isinstance(payload, dict):
+        payload = data
     try:
         return RppgMetrics(
-            snr=float(data["snr"]),
-            phase=float(data["phase"]),
-            temporal=float(data["temporal"]),
-            motion=float(data["motion"]),
-            harmonic=float(data["harmonic"]),
+            snr=float(payload["snr"]),
+            phase=float(payload["phase"]),
+            temporal=float(payload["temporal"]),
+            motion=float(payload["motion"]),
+            harmonic=float(payload["harmonic"]),
         )
     except (KeyError, TypeError, ValueError):
         return None

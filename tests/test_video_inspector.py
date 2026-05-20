@@ -208,21 +208,50 @@ class MetadataTests(unittest.TestCase):
         self.assertFalse(m.is_looped)
         self.assertNotIn("looped", m.raw_suffixes)
 
-    def test_load_sidecar_metrics_present(self):
+    def test_load_sidecar_metrics_canonical_nested_schema(self):
+        """Real producer (automation.rppg.finalize_rppg_output) writes
+        the metrics NESTED under a "metrics" key alongside "source"
+        and "order" siblings. My first impl only read top-level keys
+        which silently dropped every real sidecar (Codex PR #43 P2,
+        finding 3272968651).
+        """
         with tempfile.TemporaryDirectory() as td:
             folder = Path(td)
             video = folder / "clip-rppg.mp4"
             video.touch()
             sidecar = folder / "clip-rppg.metrics.json"
             sidecar.write_text(
-                '{"snr": 11.89, "phase": 25.9, "temporal": 0.81, '
-                '"motion": 0.04, "harmonic": 0.42}',
+                '{"source": "clip-rppg - 11.89-25.9-0.81-0.04-0.42.mp4", '
+                '"metrics": {"snr": 11.89, "phase": 25.9, "temporal": 0.81, '
+                '"motion": 0.04, "harmonic": 0.42}, '
+                '"order": ["snr", "phase", "temporal", "motion", "harmonic"]}',
                 encoding="utf-8",
             )
             metrics = load_sidecar_metrics(video)
             self.assertIsNotNone(metrics)
             assert metrics is not None
             self.assertAlmostEqual(metrics.snr, 11.89)
+            self.assertAlmostEqual(metrics.phase, 25.9)
+            self.assertAlmostEqual(metrics.harmonic, 0.42)
+
+    def test_load_sidecar_metrics_legacy_flat_schema(self):
+        """Backward compatibility: a hand-written / third-party sidecar
+        with flat top-level keys still parses. We prefer nested but
+        fall through to top-level if "metrics" isn't a dict."""
+        with tempfile.TemporaryDirectory() as td:
+            folder = Path(td)
+            video = folder / "clip-rppg.mp4"
+            video.touch()
+            sidecar = folder / "clip-rppg.metrics.json"
+            sidecar.write_text(
+                '{"snr": 7.72, "phase": -75.5, "temporal": 0.79, '
+                '"motion": 0.06, "harmonic": 0.35}',
+                encoding="utf-8",
+            )
+            metrics = load_sidecar_metrics(video)
+            self.assertIsNotNone(metrics)
+            assert metrics is not None
+            self.assertAlmostEqual(metrics.phase, -75.5)
 
     def test_load_sidecar_metrics_missing(self):
         with tempfile.TemporaryDirectory() as td:

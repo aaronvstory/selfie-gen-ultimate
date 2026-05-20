@@ -179,5 +179,52 @@ class DeadlineExtenderTests(unittest.TestCase):
             self.assertEqual(t.deadline_extender(s), 0, f"line: {s!r}")
 
 
+class StreamerCallOrderTests(unittest.TestCase):
+    """Regression for the call-order bug both CodeRabbit and Codex
+    flagged on 91af11f: ``deadline_extender`` MUST run BEFORE
+    ``on_line`` in the streamer. Otherwise on_line updates
+    ``_iter_current`` and the extender then sees "already seen iter"
+    and returns 0, defeating the entire "no arbitrary timeout"
+    contract.
+    """
+
+    def test_streamer_calls_extender_before_on_line(self):
+        """Source-regex lock: the streamer must call deadline_extender
+        BEFORE on_line for every line. A future refactor that reorders
+        them silently breaks adaptive timeout."""
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent /
+               "automation" / "rppg.py").read_text(encoding="utf-8")
+        # Locate stream_subprocess_with_timeout body.
+        start = src.index("def stream_subprocess_with_timeout")
+        end = src.index("\ndef ", start + 10)
+        body = src[start:end]
+        # Find the line positions of the calls.
+        ext_pos = body.index("deadline_extender(text)")
+        on_line_pos = body.index("on_line(text)")
+        self.assertLess(
+            ext_pos, on_line_pos,
+            "deadline_extender MUST run BEFORE on_line — otherwise the "
+            "tracker's on_line updates _iter_current first and the "
+            "extender then returns 0 for the same iter marker, "
+            "defeating the adaptive-timeout contract.",
+        )
+
+    def test_streamer_accumulates_per_iter_budget(self):
+        """The streamer must ACCUMULATE per-iter budget (deadline +=
+        extra) rather than rebasing via max(deadline, now + extra).
+        With the max() form, a single 90s bump capped at the existing
+        budget never grows the deadline beyond the initial timeout —
+        the comment promised accumulation but the code didn't deliver."""
+        from pathlib import Path
+        src = (Path(__file__).resolve().parent.parent /
+               "automation" / "rppg.py").read_text(encoding="utf-8")
+        start = src.index("def stream_subprocess_with_timeout")
+        end = src.index("\ndef ", start + 10)
+        body = src[start:end]
+        self.assertIn("deadline = deadline + extra", body)
+        self.assertNotIn("deadline = max(deadline, time.monotonic() + extra", body)
+
+
 if __name__ == "__main__":
     unittest.main()

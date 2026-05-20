@@ -1082,8 +1082,20 @@ class VideoInspectorModal(tk.Toplevel):
 
             fps = primary.get_fps() or 25.0
             step = max(0.04, fps * _TICK_MS / 1000.0)  # floor 1f/25 ticks
-            total = primary.get_frame_count() or 1
-            self._master_frame = (self._master_frame + step) % total
+            # Codex P2 (3272816291): some containers/codecs return 0
+            # for cv2.CAP_PROP_FRAME_COUNT — meaning "unknown length",
+            # not "1-frame video". The prior `or 1` substitution made
+            # modulo wrap pin `_master_frame` at 0 forever, so videos
+            # with unknown counts could never play through. Treat 0
+            # as unknown: advance the master frame unboundedly and let
+            # the underlying VideoFrame.step_to() ride out the source
+            # EOF naturally (cap.read returns False; the worker just
+            # stops rendering).
+            total = primary.get_frame_count()
+            if total > 0:
+                self._master_frame = (self._master_frame + step) % total
+            else:
+                self._master_frame = self._master_frame + step
             idx = int(self._master_frame)
 
             # Always advance the focused slot (so B-only or B-focused

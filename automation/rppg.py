@@ -553,22 +553,31 @@ def stream_subprocess_with_timeout(
         text = item.rstrip()
         if text:
             output_lines.append(text)
-            if on_line is not None:
-                on_line(text)
-            # Adaptive deadline extension: a deadline_extender callback
-            # that returns N>0 pushes the wall clock forward by N
-            # seconds. The new deadline is max(current_deadline, now+N)
-            # so an extender returning a SMALLER bump than the
-            # currently-remaining budget doesn't accidentally SHRINK
-            # the deadline.
+            # ORDER MATTERS (CodeRabbit Major 3272966501 + Codex P1
+            # 3272968645 caught the same bug on 91af11f): the
+            # deadline_extender MUST run BEFORE on_line. The progress
+            # tracker's on_line updates _iter_current immediately when
+            # it sees an "Iteration N/M" marker; if the extender ran
+            # AFTER, it would see the same iter as "already seen" and
+            # return 0 — defeating the entire "no arbitrary timeout"
+            # contract. Extender first, on_line second.
             if deadline_extender is not None:
                 try:
                     extra = deadline_extender(text)
                     if extra and extra > 0:
-                        deadline = max(deadline, time.monotonic() + extra)
+                        # Accumulate per-iteration budget: bump the
+                        # ABSOLUTE deadline by `extra` seconds rather
+                        # than rebasing it from `now`. This way a
+                        # well-behaved 10-iter run accrues 10*90s of
+                        # headroom (not just one 90s lump that gets
+                        # capped at max() with the current deadline,
+                        # which was the prior bug).
+                        deadline = deadline + extra
                 except Exception:
                     # Never let an extender bug kill the subprocess wait.
                     pass
+            if on_line is not None:
+                on_line(text)
 
     # stdout drained; the process should exit imminently. Bound the final
     # wait by whatever wall-clock budget is left.
