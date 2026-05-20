@@ -8,6 +8,7 @@ import platform
 import logging
 import threading
 import subprocess
+from pathlib import Path
 
 from .theme import (
     COLORS,
@@ -23,6 +24,7 @@ from .theme import (
 )
 from .image_state import ImageSession
 from .tag_utils import derive_display_tag
+from .video_discovery import find_video_for_image
 from tk_dialogs import select_open_files
 from path_utils import preflight_image_path
 
@@ -130,6 +132,13 @@ class ImageCarousel(tk.Frame):
         # Compare callback (set by main_window)
         self._on_compare_callback: Optional[Callable[[], None]] = None
 
+        # Video Inspector callbacks (set by main_window). Two distinct
+        # entry points: clicking the carousel play-badge passes the
+        # selected video path; clicking the toolbar button opens the
+        # inspector with no preload (factory picks last folder).
+        self._on_video_callback: Optional[Callable[[Path], None]] = None
+        self._on_video_inspector_toolbar_cb: Optional[Callable[[], None]] = None
+
         # Re-entrancy guard
         self._updating: bool = False
 
@@ -171,6 +180,18 @@ class ImageCarousel(tk.Frame):
     def set_on_compare(self, callback: Callable[[], None]):
         """Register the callback invoked when the Compare button is clicked."""
         self._on_compare_callback = callback
+
+    def set_on_video(self, callback: Callable[[Path], None]):
+        """Register the callback invoked when the carousel play-badge is
+        clicked. The callback receives the video Path to preload into
+        the Video Inspector's slot A."""
+        self._on_video_callback = callback
+
+    def set_on_video_toolbar(self, callback: Callable[[], None]):
+        """Register the callback invoked when the Videos toolbar button
+        is clicked. The Video Inspector opens with no preload (it falls
+        back to the last-opened folder via config)."""
+        self._on_video_inspector_toolbar_cb = callback
 
     # ── Panel layout ────────────────────────────────────────────────
 
@@ -291,6 +312,34 @@ class ImageCarousel(tk.Frame):
         )
         self.compare_btn.pack(side=tk.LEFT, padx=(6, 0))
         apply_macos_button_fix(self.compare_btn)
+
+        # Videos button — opens the Video Inspector modal. Mirrors the
+        # Compare button recipe (same colors, same macOS button fix) so
+        # they sit visually identical in the sim_row. Always enabled —
+        # the modal handles the empty-folder case gracefully.
+        self.video_inspector_btn = tk.Button(
+            sim_row,
+            text="Videos",
+            command=debounce_command(
+                self._on_open_video_inspector, key="carousel_video_inspector"
+            ),
+            width=10,
+            font=(FONT_FAMILY, 9, "bold"),
+            bg=COLORS["bg_panel"],
+            fg=BUTTON_TEXT_COLOR,
+            activebackground=COLORS["bg_hover"],
+            activeforeground=BUTTON_TEXT_COLOR,
+            disabledforeground=BUTTON_DISABLED_TEXT_COLOR,
+            highlightbackground=COLORS["bg_main"],
+            highlightthickness=1,
+            relief=tk.FLAT,
+            bd=0,
+            padx=8,
+            pady=4,
+            cursor="hand2",
+        )
+        self.video_inspector_btn.pack(side=tk.LEFT, padx=(6, 0))
+        apply_macos_button_fix(self.video_inspector_btn)
 
         # NOTE: manual recompute "Recalc" button moved to meta_frame (next
         # to the SIM badge) as an icon-only ⟳ button in v5 per user request.
@@ -769,6 +818,44 @@ class ImageCarousel(tk.Frame):
                             outline="#48DB7A",  # brighter green for visibility
                             width=3,
                         )
+
+            # Video Inspector play-badge overlay. Draws a circular play
+            # button in the top-right corner of the fitted image rect
+            # when the active image has at least one derived video in
+            # the same folder. Click on the badge opens the inspector
+            # modal pre-loaded with the most-processed variant.
+            #
+            # tag_bind (item-scoped) is used instead of canvas.bind so
+            # the existing <Button-3> global binding (right-click) is
+            # not affected. Re-drawn unconditionally on every render
+            # so re-resize/re-select continues to expose the badge.
+            try:
+                video_path = find_video_for_image(Path(path))
+            except Exception:
+                video_path = None
+            if video_path is not None and self._on_video_callback is not None:
+                badge_x = cx + new_w / 2 - 22
+                badge_y = cy - new_h / 2 + 22
+                badge_r = 18
+                bg_id = canvas.create_oval(
+                    badge_x - badge_r, badge_y - badge_r,
+                    badge_x + badge_r, badge_y + badge_r,
+                    fill="#000000", outline="#FFFFFF", width=2,
+                )
+                play_id = canvas.create_text(
+                    badge_x + 2, badge_y,
+                    text="▶",
+                    font=(FONT_FAMILY, 18, "bold"),
+                    fill="#FFFFFF",
+                )
+                cb = self._on_video_callback
+                vp = video_path
+                canvas.tag_bind(
+                    bg_id, "<Button-1>", lambda _e, p=vp: cb(p),
+                )
+                canvas.tag_bind(
+                    play_id, "<Button-1>", lambda _e, p=vp: cb(p),
+                )
             return True
         except ImportError:
             cw = max(1, canvas.winfo_width())
@@ -859,6 +946,11 @@ class ImageCarousel(tk.Frame):
     def _on_compare(self):
         if self._on_compare_callback:
             self._on_compare_callback()
+
+    def _on_open_video_inspector(self):
+        """Internal handler for the Videos toolbar button."""
+        if self._on_video_inspector_toolbar_cb:
+            self._on_video_inspector_toolbar_cb()
 
     def _open_path_in_explorer(self, path: str):
         try:

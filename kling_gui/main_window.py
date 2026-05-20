@@ -1485,11 +1485,20 @@ class KlingGUIWindow:
         )
         self.carousel.pack(fill=tk.BOTH, expand=True)
         self.carousel.set_on_compare(self._toggle_compare)
+        self.carousel.set_on_video(lambda p: self._open_video_inspector(p))
+        self.carousel.set_on_video_toolbar(
+            lambda: self._open_video_inspector(None)
+        )
         self.bottom_paned.add(carousel_frame, minsize=340)
 
         # Compare panel state (created on demand by _toggle_compare)
         self._compare_frame: Optional[tk.Frame] = None
         self._compare_panel: Optional[ComparePanel] = None
+
+        # Video Inspector singleton state — reused across opens to
+        # avoid Toplevel + decoder-thread leaks. open_video_inspector()
+        # focuses the existing one if alive, else constructs a new one.
+        self._video_inspector_window = None
 
         # Queue panel internals are kept for backend flow, but surface stays hidden in Step 3 UI.
         self._queue_panel_visible = False
@@ -3461,6 +3470,26 @@ class KlingGUIWindow:
                 except Exception:
                     pass
             self.root.after(50, _set_compare_sash)
+
+    def _open_video_inspector(self, video_path):
+        """Open (or focus existing) Video Inspector modal.
+
+        Called by both the carousel play-badge click (with a Path) and
+        the Videos toolbar button (with None). The factory enforces
+        singleton lifetime so reopens don't leak decoder threads or
+        stack Toplevels.
+        """
+        from pathlib import Path as _Path
+        from .video_inspector import open_video_inspector
+        initial = _Path(video_path) if video_path else None
+        self._video_inspector_window = open_video_inspector(
+            self.root,
+            existing=self._video_inspector_window,
+            config=self.config,
+            save_config_fn=self._save_config,
+            log_fn=self._log,
+            initial_video=initial,
+        )
 
     def _on_images_to_carousel(self, files: List[str]):
         """Handle images dropped/browsed in the prompt panel mini drop zone."""

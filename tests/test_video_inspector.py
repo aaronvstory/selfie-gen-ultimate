@@ -1,0 +1,593 @@
+"""Tests for the Video Inspector V1 feature.
+
+Coverage:
+    MetadataTests          — filename parsing (regex round-trips,
+                             negative phase, simna, full chain).
+    DiscoveryTests         — folder scan, stem-collision regression,
+                             precedence (rPPG > oldcam > raw).
+    VideoFrameTests        — VideoFrame lifecycle with mocked cv2/PIL.
+    CarouselOverlayTests   — carousel wiring: setters, button, overlay
+                             via call-history pattern.
+    ModalStructuralTests   — VideoInspectorModal source-regex checks
+                             + geometry persistence on a __new__'d
+                             instance.
+    MainWindowWiringTests  — main_window.py source-regex checks.
+
+NO test in this file requires a live Tk root, real cv2 frames, or
+real video files. We mock cv2.VideoCapture, PIL.Image, and PIL.ImageTk
+where needed.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from kling_gui.video_discovery import (
+    VideoGroup,
+    all_videos_for_image,
+    find_video_for_image,
+    find_video_groups,
+)
+from kling_gui.video_metadata import (
+    RppgMetrics,
+    VideoMetadata,
+    load_sidecar_metrics,
+    parse_kling_segment,
+    parse_oldcam_segment,
+    parse_rppg_segment,
+    parse_similarity_from_stem,
+    parse_video_filename,
+)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Step 1 — MetadataTests
+# ──────────────────────────────────────────────────────────────────────
+
+
+class MetadataTests(unittest.TestCase):
+    def test_parse_kling_segment_basic(self):
+        residual, model, slot, take = parse_kling_segment(
+            "front_crop_simna_001_k25tStd_p4_1"
+        )
+        self.assertEqual(residual, "front_crop_simna_001")
+        self.assertEqual(model, "k25tStd")
+        self.assertEqual(slot, 4)
+        self.assertEqual(take, 1)
+
+    def test_parse_kling_segment_no_tail(self):
+        residual, model, slot, take = parse_kling_segment("user-named-video")
+        self.assertEqual(residual, "user-named-video")
+        self.assertIsNone(model)
+        self.assertIsNone(slot)
+        self.assertIsNone(take)
+
+    def test_parse_oldcam_segment(self):
+        residual, v = parse_oldcam_segment("clip_k25tStd_p1_1-oldcam-v24")
+        self.assertEqual(residual, "clip_k25tStd_p1_1")
+        self.assertEqual(v, 24)
+
+    def test_parse_oldcam_segment_missing(self):
+        residual, v = parse_oldcam_segment("clip_k25tStd_p1_1")
+        self.assertEqual(residual, "clip_k25tStd_p1_1")
+        self.assertIsNone(v)
+
+    def test_parse_rppg_segment_with_positive_metrics(self):
+        residual, has_rppg, metrics = parse_rppg_segment(
+            "clip_k25tStd_p1_1-oldcam-v24-rppg - 13.08-7.8-0.70-0.03-0.46"
+        )
+        self.assertEqual(residual, "clip_k25tStd_p1_1-oldcam-v24")
+        self.assertTrue(has_rppg)
+        self.assertIsNotNone(metrics)
+        # mypy-ish narrowing
+        assert metrics is not None
+        self.assertAlmostEqual(metrics.snr, 13.08)
+        self.assertAlmostEqual(metrics.phase, 7.8)
+        self.assertAlmostEqual(metrics.temporal, 0.70)
+
+    def test_parse_rppg_segment_with_negative_phase(self):
+        """The injector embeds negative phase as ``-75.5`` which collides
+        with the ``-`` separator, producing a ``--`` in the suffix.
+        Canonical splitter (automation.rppg.parse_metric_suffix) must
+        reassemble correctly."""
+        residual, has_rppg, metrics = parse_rppg_segment(
+            "clip_k25tStd_p1_1-oldcam-v24-rppg - 7.72--75.5-0.79-0.06-0.35"
+        )
+        self.assertTrue(has_rppg)
+        self.assertIsNotNone(metrics)
+        assert metrics is not None
+        self.assertAlmostEqual(metrics.snr, 7.72)
+        self.assertAlmostEqual(metrics.phase, -75.5)
+        self.assertAlmostEqual(metrics.harmonic, 0.35)
+
+    def test_parse_rppg_segment_bare(self):
+        residual, has_rppg, metrics = parse_rppg_segment(
+            "clip_k25tStd_p1_1-rppg"
+        )
+        self.assertEqual(residual, "clip_k25tStd_p1_1")
+        self.assertTrue(has_rppg)
+        self.assertIsNone(metrics)
+
+    def test_parse_similarity_score(self):
+        score, na = parse_similarity_from_stem("front_crop_sim87_001")
+        self.assertEqual(score, 87)
+        self.assertFalse(na)
+
+    def test_parse_similarity_simna(self):
+        """selfie_generator emits literal 'simna' for no-face / no-match
+        (selfie_generator.py:434). No underscore between sim and na."""
+        score, na = parse_similarity_from_stem("front_crop_simna_001")
+        self.assertIsNone(score)
+        self.assertTrue(na)
+
+    def test_parse_similarity_missing(self):
+        score, na = parse_similarity_from_stem("user-renamed")
+        self.assertIsNone(score)
+        self.assertFalse(na)
+
+    def test_parse_video_filename_real_harness_fixture(self):
+        """oldcam-testing/rppg_harness.py:51 ships this exact name."""
+        m = parse_video_filename(
+            Path("front_crop_nano-banana-2-edit_sim87_001_k25tStd_p4_1.mp4")
+        )
+        self.assertEqual(m.base_stem, "front_crop_nano-banana-2-edit_sim87_001")
+        self.assertEqual(m.model_short, "k25tStd")
+        self.assertEqual(m.slot, 4)
+        self.assertEqual(m.take, 1)
+        self.assertEqual(m.similarity, 87)
+        self.assertFalse(m.has_rppg)
+        self.assertIsNone(m.oldcam_version)
+
+    def test_parse_video_filename_full_chain_with_metrics(self):
+        m = parse_video_filename(
+            Path(
+                "front_crop_nano-banana-2-edit_sim87_001_k25tStd_p4_1"
+                "-oldcam-v24-rppg - 13.08-7.8-0.70-0.03-0.46.mp4"
+            )
+        )
+        self.assertEqual(m.model_short, "k25tStd")
+        self.assertEqual(m.oldcam_version, 24)
+        self.assertTrue(m.has_rppg)
+        self.assertIsNotNone(m.rppg_metrics)
+        assert m.rppg_metrics is not None
+        self.assertAlmostEqual(m.rppg_metrics.snr, 13.08)
+        self.assertEqual(m.rppg_metrics_source, "filename")
+        self.assertEqual(m.raw_suffixes, ["oldcam-v24", "rppg"])
+
+    def test_parse_video_filename_unparseable_falls_back(self):
+        m = parse_video_filename(Path("random-user-named.mp4"))
+        self.assertEqual(m.base_stem, "random-user-named")
+        self.assertIsNone(m.model_short)
+        self.assertIsNone(m.oldcam_version)
+        self.assertFalse(m.has_rppg)
+        self.assertEqual(m.raw_suffixes, [])
+
+    def test_load_sidecar_metrics_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder = Path(td)
+            video = folder / "clip-rppg.mp4"
+            video.touch()
+            sidecar = folder / "clip-rppg.metrics.json"
+            sidecar.write_text(
+                '{"snr": 11.89, "phase": 25.9, "temporal": 0.81, '
+                '"motion": 0.04, "harmonic": 0.42}',
+                encoding="utf-8",
+            )
+            metrics = load_sidecar_metrics(video)
+            self.assertIsNotNone(metrics)
+            assert metrics is not None
+            self.assertAlmostEqual(metrics.snr, 11.89)
+
+    def test_load_sidecar_metrics_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "clip-rppg.mp4"
+            video.touch()
+            self.assertIsNone(load_sidecar_metrics(video))
+
+    def test_load_sidecar_metrics_malformed(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder = Path(td)
+            video = folder / "clip-rppg.mp4"
+            video.touch()
+            (folder / "clip-rppg.metrics.json").write_text(
+                "{not valid json", encoding="utf-8"
+            )
+            self.assertIsNone(load_sidecar_metrics(video))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Step 2 — DiscoveryTests
+# ──────────────────────────────────────────────────────────────────────
+
+
+class DiscoveryTests(unittest.TestCase):
+    def _make_folder(self, td: str, *names: str) -> Path:
+        folder = Path(td)
+        for n in names:
+            (folder / n).touch()
+        return folder
+
+    def test_find_video_groups_groups_by_base_stem(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder = self._make_folder(
+                td,
+                "front.png",
+                "front_k25tStd_p4_1.mp4",
+                "front_k25tStd_p4_1-oldcam-v8.mp4",
+                "front_k25tStd_p4_1-oldcam-v24.mp4",
+            )
+            groups = find_video_groups(folder)
+            self.assertEqual(len(groups), 1)
+            g = groups[0]
+            self.assertEqual(g.base_stem, "front")
+            self.assertIsNotNone(g.image_path)
+            assert g.image_path is not None
+            self.assertEqual(g.image_path.name, "front.png")
+            self.assertEqual(len(g.videos), 3)
+
+    def test_find_video_groups_stem_collision_regression(self):
+        """The bug we're guarding against: 'front.png' must NOT swallow
+        'front_extra_..._k25tStd_p1_1.mp4'. Exact base_stem equality
+        only, no startswith."""
+        with tempfile.TemporaryDirectory() as td:
+            folder = self._make_folder(
+                td,
+                "front.png",
+                "front_k25tStd_p4_1.mp4",
+                "front_extra.png",
+                "front_extra_k25tStd_p1_1.mp4",
+            )
+            groups = find_video_groups(folder)
+            keys = {g.base_stem for g in groups}
+            self.assertEqual(keys, {"front", "front_extra"})
+            front_grp = next(g for g in groups if g.base_stem == "front")
+            self.assertEqual(len(front_grp.videos), 1)
+            self.assertEqual(
+                front_grp.videos[0].path.name, "front_k25tStd_p4_1.mp4"
+            )
+
+    def test_find_video_for_image_selects_most_processed(self):
+        """Precedence rule: rPPG > oldcam > raw Kling."""
+        with tempfile.TemporaryDirectory() as td:
+            folder = self._make_folder(
+                td,
+                "front.png",
+                "front_k25tStd_p4_1.mp4",
+                "front_k25tStd_p4_1-oldcam-v24.mp4",
+                "front_k25tStd_p4_1-oldcam-v24-rppg - 13.08-7.8-0.70-0.03-0.46.mp4",
+            )
+            chosen = find_video_for_image(folder / "front.png")
+            self.assertIsNotNone(chosen)
+            assert chosen is not None
+            self.assertIn("rppg", chosen.name)
+
+    def test_find_video_for_image_orphan_returns_none(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder = self._make_folder(td, "front_extra.png")
+            self.assertIsNone(find_video_for_image(folder / "front_extra.png"))
+
+    def test_find_video_for_image_collision_isolation(self):
+        """The stem-collision regression — front.png must not return
+        front_extra's video."""
+        with tempfile.TemporaryDirectory() as td:
+            folder = self._make_folder(
+                td,
+                "front.png",
+                "front_extra.png",
+                "front_extra_k25tStd_p1_1.mp4",
+            )
+            self.assertIsNone(find_video_for_image(folder / "front.png"))
+            fp = find_video_for_image(folder / "front_extra.png")
+            self.assertIsNotNone(fp)
+            assert fp is not None
+            self.assertEqual(fp.name, "front_extra_k25tStd_p1_1.mp4")
+
+    def test_all_videos_for_image_sorts_by_progression(self):
+        with tempfile.TemporaryDirectory() as td:
+            folder = self._make_folder(
+                td,
+                "front_k25tStd_p4_1-oldcam-v24-rppg - 13.08-7.8-0.70-0.03-0.46.mp4",
+                "front_k25tStd_p4_1.mp4",
+                "front_k25tStd_p4_1-oldcam-v8.mp4",
+                "front_k25tStd_p4_1-oldcam-v24.mp4",
+            )
+            ordered = all_videos_for_image(folder / "front.png")
+            names = [v.path.name for v in ordered]
+            # Raw < oldcam (ascending version) < rPPG
+            self.assertEqual(names[0], "front_k25tStd_p4_1.mp4")
+            self.assertIn("oldcam-v8", names[1])
+            self.assertIn("oldcam-v24", names[2])
+            self.assertTrue(names[-1].endswith("0.46.mp4"))
+
+    def test_find_video_groups_non_recursive(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "sub").mkdir()
+            (root / "sub" / "front_k25tStd_p1_1.mp4").touch()
+            self.assertEqual(find_video_groups(root), [])
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Step 3 — VideoFrameTests
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Module-import-time skip if cv2 / numpy / PIL are missing. The
+# carousel test pattern uses skipTest in setUp; we use module-level
+# skip via a guard import so collection itself stays cheap.
+try:
+    import cv2 as _cv2_check  # noqa: F401
+    import numpy as _np_check  # noqa: F401
+    _CV2_OK = True
+except ImportError:
+    _CV2_OK = False
+
+try:
+    from PIL import Image as _PIL_Image_check  # noqa: F401
+    _PIL_OK = True
+except ImportError:
+    _PIL_OK = False
+
+
+class _FakeCap:
+    """Mock for cv2.VideoCapture. Returns N constant fake frames then EOF."""
+
+    def __init__(self, n_frames: int = 10, fps: float = 25.0):
+        self._n = n_frames
+        self._fps = fps
+        self._pos = 0
+        self.released = False
+        self.set_calls = []
+
+    def read(self):
+        if self._pos >= self._n:
+            return (False, None)
+        import numpy as np
+        self._pos += 1
+        return (True, np.zeros((4, 4, 3), dtype=np.uint8))
+
+    def get(self, prop):
+        import cv2
+        if prop == cv2.CAP_PROP_FRAME_COUNT:
+            return self._n
+        if prop == cv2.CAP_PROP_FPS:
+            return self._fps
+        if prop == cv2.CAP_PROP_POS_FRAMES:
+            return self._pos
+        return 0
+
+    def set(self, prop, val):
+        self.set_calls.append((prop, val))
+        import cv2
+        if prop == cv2.CAP_PROP_POS_FRAMES:
+            self._pos = int(val)
+            return True
+        return False
+
+    def release(self):
+        self.released = True
+
+    def isOpened(self):
+        return not self.released
+
+
+@unittest.skipUnless(_CV2_OK and _PIL_OK, "cv2/numpy/PIL not installed")
+class VideoFrameTests(unittest.TestCase):
+    """VideoFrame lifecycle WITHOUT a real Tk root.
+
+    We construct via __new__, hand-attach a stub canvas, then exercise
+    the public API. cv2.VideoCapture is mocked to never touch a real
+    file on disk.
+    """
+
+    def _make_frame(self):
+        from kling_gui.video_inspector import VideoFrame
+        f = VideoFrame.__new__(VideoFrame)
+        # Manual state bootstrap (bypassing __init__ which would need Tk root).
+        f._title = ""
+        f._log_callback = None
+        f._video_path = None
+        f._cv2_cap = None
+        f._cv2 = None
+        f._frame_count = 0
+        f._fps = 25.0
+        f._current_frame = -1
+        f._photo = None
+        f._overlay_drawer = None
+        f._stop_event = threading.Event()
+        f._cap_lock = threading.Lock()
+        import queue
+        f._frame_request = queue.Queue(maxsize=1)
+        f._decoder_thread = None
+        # Stub the Tk-derived widget methods we use.
+        f._canvas = mock.MagicMock()
+        f._open_external_btn = mock.MagicMock()
+        # winfo_exists used by guards — always True for the test.
+        f.winfo_exists = mock.MagicMock(return_value=True)
+        # after() should run callbacks SYNCHRONOUSLY for the test so we
+        # don't actually need a Tk event loop.
+        f.after = lambda _ms, fn, *args: fn(*args) if callable(fn) else None
+        return f
+
+    def test_load_success_path(self):
+        f = self._make_frame()
+        with mock.patch("cv2.VideoCapture", return_value=_FakeCap()):
+            with mock.patch(
+                "kling_gui.video_inspector.VideoFrame._decoder_loop",
+                lambda self: None,
+            ):
+                ok = f.load(Path("does-not-matter.mp4"))
+        self.assertTrue(ok)
+        self.assertTrue(f.is_loaded())
+        self.assertEqual(f.get_frame_count(), 10)
+        self.assertEqual(f.get_fps(), 25.0)
+        # Clean up so subsequent tests don't see the leftover thread.
+        f.clear()
+
+    def test_load_fails_when_cv2_capture_returns_unopened(self):
+        f = self._make_frame()
+        bad_cap = _FakeCap()
+        bad_cap.released = True  # forces isOpened() == False
+        with mock.patch("cv2.VideoCapture", return_value=bad_cap):
+            ok = f.load(Path("broken.mp4"))
+        self.assertFalse(ok)
+        self.assertFalse(f.is_loaded())
+        # Error text was drawn AND open-externally was enabled (we have
+        # a path on hand even on failure).
+        f._open_external_btn.config.assert_any_call(state=mock.ANY)
+
+    def test_clear_releases_capture_and_signals_stop(self):
+        f = self._make_frame()
+        with mock.patch("cv2.VideoCapture", return_value=_FakeCap()):
+            with mock.patch(
+                "kling_gui.video_inspector.VideoFrame._decoder_loop",
+                lambda self: None,
+            ):
+                f.load(Path("ok.mp4"))
+        cap = f._cv2_cap
+        f.clear()
+        self.assertIsNone(f._cv2_cap)
+        self.assertIsNone(f._photo)
+        self.assertTrue(f._stop_event.is_set())
+        # Release was called on the cap we held.
+        assert cap is not None
+        self.assertTrue(cap.released)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Step 5 — CarouselOverlayTests
+# ──────────────────────────────────────────────────────────────────────
+
+
+class CarouselOverlayTests(unittest.TestCase):
+    """Verify the carousel's overlay/setter wiring via call-history
+    pattern (mirrors tests/test_carousel_ref_controls.py)."""
+
+    def test_setters_register_callbacks(self):
+        from kling_gui.carousel_widget import ImageCarousel
+        tab = ImageCarousel.__new__(ImageCarousel)
+        tab._on_video_callback = None
+        tab._on_video_inspector_toolbar_cb = None
+        cb_a = mock.Mock()
+        cb_b = mock.Mock()
+        tab.set_on_video(cb_a)
+        tab.set_on_video_toolbar(cb_b)
+        self.assertIs(tab._on_video_callback, cb_a)
+        self.assertIs(tab._on_video_inspector_toolbar_cb, cb_b)
+
+    def test_open_video_inspector_invokes_toolbar_callback(self):
+        from kling_gui.carousel_widget import ImageCarousel
+        tab = ImageCarousel.__new__(ImageCarousel)
+        tab._on_video_inspector_toolbar_cb = None
+        cb = mock.Mock()
+        tab.set_on_video_toolbar(cb)
+        tab._on_open_video_inspector()
+        cb.assert_called_once_with()
+
+    def test_video_button_exists_in_source(self):
+        from kling_gui import carousel_widget
+        src = Path(carousel_widget.__file__).read_text(encoding="utf-8")
+        # Button declared via tk.Button(...) with text="Videos"
+        self.assertIn("self.video_inspector_btn = tk.Button", src)
+        self.assertIn('text="Videos"', src)
+        # macOS button fix MUST be applied (per project memory).
+        self.assertRegex(
+            src, r"apply_macos_button_fix\(self\.video_inspector_btn\)"
+        )
+
+    def test_overlay_block_references_find_video_for_image(self):
+        from kling_gui import carousel_widget
+        src = Path(carousel_widget.__file__).read_text(encoding="utf-8")
+        self.assertIn("from .video_discovery import find_video_for_image", src)
+        # The overlay block uses tag_bind (scoped) not canvas.bind (global)
+        # so we don't conflict with existing <Button-3> binding.
+        self.assertRegex(
+            src, r"canvas\.tag_bind\(\s*bg_id,\s*\"<Button-1>\""
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Step 4 — ModalStructuralTests
+# ──────────────────────────────────────────────────────────────────────
+
+
+class ModalStructuralTests(unittest.TestCase):
+    def test_modal_class_and_factory_present(self):
+        from kling_gui import video_inspector
+        src = Path(video_inspector.__file__).read_text(encoding="utf-8")
+        self.assertIn(
+            "class VideoInspectorModal(tk.Toplevel)", src
+        )
+        self.assertIn("def open_video_inspector(", src)
+
+    def test_modal_uses_transient_not_global_grab(self):
+        """grab_set_global() steals system focus on macOS Sonoma; this
+        modal must NEVER use it. transient(parent) is required."""
+        from kling_gui import video_inspector
+        src = Path(video_inspector.__file__).read_text(encoding="utf-8")
+        self.assertIn("self.transient(parent)", src)
+        # The string can appear in an anti-pattern comment; reject only
+        # actual call sites (paren-prefixed).
+        self.assertNotIn("grab_set_global()", src)
+        self.assertNotIn("self.grab_set_global", src)
+
+    def test_modal_after_cancels_master_timer_on_destroy(self):
+        """Master after-job must be cancelled in destroy() BEFORE
+        super().destroy() invalidates self. Otherwise: leaked ticks."""
+        from kling_gui import video_inspector
+        src = Path(video_inspector.__file__).read_text(encoding="utf-8")
+        self.assertIn("self.after_cancel", src)
+
+    def test_modal_geometry_config_key(self):
+        from kling_gui import video_inspector
+        src = Path(video_inspector.__file__).read_text(encoding="utf-8")
+        self.assertIn("video_inspector_window", src)
+
+    def test_persist_geometry_writes_config_and_calls_save(self):
+        """Lightweight behavioural test: __new__'d modal + stubbed
+        winfo_* methods => _persist_geometry writes the expected dict."""
+        from kling_gui.video_inspector import VideoInspectorModal
+        modal = VideoInspectorModal.__new__(VideoInspectorModal)
+        modal._config = {}
+        modal._GEOMETRY_KEY = "video_inspector_window"
+        modal._save_config_fn = mock.Mock()
+        modal.winfo_width = mock.MagicMock(return_value=1200)
+        modal.winfo_height = mock.MagicMock(return_value=600)
+        modal.winfo_rootx = mock.MagicMock(return_value=100)
+        modal.winfo_rooty = mock.MagicMock(return_value=50)
+        modal._persist_geometry()
+        self.assertEqual(
+            modal._config["video_inspector_window"],
+            {"w": 1200, "h": 600, "x": 100, "y": 50},
+        )
+        modal._save_config_fn.assert_called_once_with()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Step 6 — MainWindowWiringTests
+# ──────────────────────────────────────────────────────────────────────
+
+
+class MainWindowWiringTests(unittest.TestCase):
+    def test_main_window_wires_video_callbacks(self):
+        from kling_gui import main_window
+        src = Path(main_window.__file__).read_text(encoding="utf-8")
+        # Carousel callbacks wired
+        self.assertIn("self.carousel.set_on_video(", src)
+        self.assertIn("self.carousel.set_on_video_toolbar(", src)
+        # Singleton ref present
+        self.assertIn("self._video_inspector_window", src)
+        # Factory called from inside _open_video_inspector
+        self.assertIn("def _open_video_inspector", src)
+        self.assertIn("open_video_inspector(", src)
+
+
+if __name__ == "__main__":
+    unittest.main()
