@@ -544,6 +544,15 @@ def open_video_inspector(
                 existing.lift()
                 existing.focus_set()
                 if initial_video is not None:
+                    # If the incoming video lives in a different folder
+                    # than the inspector is currently showing, rescan
+                    # so the listbox + metadata reflect the new folder.
+                    # Without this, double/right-click actions on the
+                    # listbox keep operating on stale entries.
+                    new_folder = Path(initial_video).parent
+                    cur_folder = getattr(existing, "_current_folder", None)
+                    if cur_folder is None or Path(cur_folder) != new_folder:
+                        existing._refresh_folder(new_folder)
                     existing.load_into_slot_a(initial_video)
                 return existing
         except tk.TclError:
@@ -585,7 +594,9 @@ class VideoInspectorModal(tk.Toplevel):
         self._save_config_fn = save_config_fn
         self._log_fn = log_fn
         self._playing = False
-        self._master_frame = 0
+        # Float since the FPS-driven _tick refactor; rendered indices
+        # cast to int just before cv2 calls.
+        self._master_frame: float = 0.0
         self._timer_id: Optional[str] = None
         self._lock_scrub_var = tk.BooleanVar(value=True)
         self._current_folder: Optional[Path] = None
@@ -621,7 +632,11 @@ class VideoInspectorModal(tk.Toplevel):
         else:
             # Fall back to the parent's last-opened folder if available
             # via the config dict. Otherwise leave empty.
-            last = self._config.get("video_inspector_last_folder")
+            # Tolerate non-string values in the JSON config (e.g. a
+            # stray None or numeric — bad upstream edit, mixed JSON).
+            # Path(None) raises TypeError and would abort init.
+            last_raw = self._config.get("video_inspector_last_folder")
+            last = str(last_raw).strip() if last_raw else ""
             if last:
                 self._refresh_folder(Path(last))
 
@@ -919,12 +934,13 @@ class VideoInspectorModal(tk.Toplevel):
 
     def load_into_slot_a(self, path: Path) -> bool:
         ok = self._frame_a.load(Path(path))
-        self._master_frame = 0
+        # master_frame is a float (FPS-driven). Reset to 0.0 cleanly.
+        self._master_frame = 0.0
         self._focused_slot = "A"
         self._refresh_metadata()
         if ok:
             self._frame_a.step_to(0)
-            if self._lock_scrub_var.get() and self._frame_b.is_loaded():
+            if self._frame_b.is_loaded():
                 self._frame_b.step_to(0)
         return ok
 
@@ -933,7 +949,9 @@ class VideoInspectorModal(tk.Toplevel):
         self._focused_slot = "B"
         self._refresh_metadata()
         if ok:
-            self._frame_b.step_to(self._master_frame)
+            # Cast to int for cv2.set(CAP_PROP_POS_FRAMES) — master_frame
+            # is a float since the FPS-driven refactor.
+            self._frame_b.step_to(int(self._master_frame))
         return ok
 
     def _refresh_metadata(self) -> None:
@@ -985,7 +1003,7 @@ class VideoInspectorModal(tk.Toplevel):
             pass
 
     def _restart(self) -> None:
-        self._master_frame = 0
+        self._master_frame = 0.0
         if self._frame_a.is_loaded():
             self._frame_a.step_to(0)
         if self._frame_b.is_loaded():
@@ -1005,13 +1023,15 @@ class VideoInspectorModal(tk.Toplevel):
             self._update_counter()
             return
 
-        # Advance one frame per ~40ms tick (~25 fps render rate). We
-        # do NOT scale by source FPS — 8fps timelapses play 3x fast,
-        # 60fps sources play at ~0.4x. That's fine for V1 visual A/B
-        # comparison (you're inspecting motion, not auditing realtime
-        # playback). Real source-FPS-driven timing is a follow-up PR.
-        primary = self._frame_a if self._frame_a.is_loaded() else self._frame_b
-        if not primary.is_loaded():
+        # Source-FPS-driven advancement. master_frame is a float; the
+        # increment per ~40ms tick is (src_fps * TICK_MS / 1000) so a
+        # 60fps source advances ~2.4 frames per tick (rendered at the
+        # nearest integer index) and an 8fps source advances ~0.32
+        # frames per tick. Both play at their real wall-clock rate.
+        # The "primary" slot for FPS purposes is the focused one when
+        # both are loaded, A otherwise, B if only B is loaded.
+        primary = self._primary_frame()
+        if primary is None or not primary.is_loaded():
             self._playing = False
             try:
                 self._play_btn.config(text="▶ Play")
@@ -1019,15 +1039,38 @@ class VideoInspectorModal(tk.Toplevel):
                 pass
             return
 
+        fps = primary.get_fps() or 25.0
+        step = max(0.04, fps * _TICK_MS / 1000.0)  # floor at 1 frame/25 ticks
         total = primary.get_frame_count() or 1
-        self._master_frame = (self._master_frame + 1) % total
+        self._master_frame = (self._master_frame + step) % total
+        idx = int(self._master_frame)
 
-        if self._frame_a.is_loaded():
-            self._frame_a.step_to(self._master_frame)
-        if self._lock_scrub_var.get() and self._frame_b.is_loaded():
-            self._frame_b.step_to(self._master_frame)
+        # Always advance the focused slot (so B-only or B-focused
+        # sessions don't freeze, fixing the CodeRabbit Major). The
+        # non-focused slot advances only when "Lock A+B scrub" is on.
+        # This preserves the lock checkbox's original semantic ("scrub
+        # both together") while making B-only playback work.
+        if self._frame_a.is_loaded() and (
+            self._focused_slot == "A" or self._lock_scrub_var.get()
+        ):
+            self._frame_a.step_to(idx)
+        if self._frame_b.is_loaded() and (
+            self._focused_slot == "B" or self._lock_scrub_var.get()
+        ):
+            self._frame_b.step_to(idx)
 
         self._update_counter()
+
+    def _primary_frame(self) -> Optional["VideoFrame"]:
+        """Pick which slot's FPS drives playback timing. Focused slot
+        wins; otherwise A if A is loaded, B if only B is loaded."""
+        if self._focused_slot == "B" and self._frame_b.is_loaded():
+            return self._frame_b
+        if self._frame_a.is_loaded():
+            return self._frame_a
+        if self._frame_b.is_loaded():
+            return self._frame_b
+        return None
 
     def _update_counter(self) -> None:
         total = max(
@@ -1036,7 +1079,9 @@ class VideoInspectorModal(tk.Toplevel):
         if total <= 0:
             self._counter_var.set("frame: -/-")
             return
-        self._counter_var.set(f"frame: {self._master_frame + 1}/{total}")
+        # master_frame is a float since the FPS-driven refactor — cast
+        # to int for the user-facing counter.
+        self._counter_var.set(f"frame: {int(self._master_frame) + 1}/{total}")
 
     # ── Geometry persistence ────────────────────────────────────────
 

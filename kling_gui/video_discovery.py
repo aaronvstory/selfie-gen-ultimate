@@ -23,9 +23,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .video_metadata import VideoMetadata, parse_video_filename
+
+
+# Per-image cache for find_video_for_image. The carousel calls it on
+# every <Configure> redraw and every session change; without caching
+# that's an iterdir() per resize tick — measurable UI stutter on
+# folders with many videos. Key: (resolved folder str, image stem,
+# folder mtime); value: the chosen Path or None. Invalidates
+# automatically when files appear/disappear (mtime changes).
+_BEST_VIDEO_CACHE: Dict[Tuple[str, str, float], Optional[Path]] = {}
+_BEST_VIDEO_CACHE_MAX = 256  # rough cap — carousel cycles through ~dozens of images
 
 
 @dataclass
@@ -46,13 +56,20 @@ class VideoGroup:
 
 
 def _video_sort_key(m: VideoMetadata) -> tuple:
-    """Sort key encoding 'most processed last' progression."""
+    """Sort key encoding 'most processed last' progression.
+
+    Tie-break on raw Kling variants: ``take`` is more significant
+    than ``slot``. The plan spec is "highest take, then highest slot",
+    so a later take wins regardless of slot. We list ``take`` before
+    ``slot`` in the tuple so ties on (has_rppg, oldcam_v, model_short)
+    are decided by take first, slot second.
+    """
     return (
         m.has_rppg,                       # raw, oldcam, then rppg
         m.oldcam_version or 0,            # within tier, ascending version
         m.model_short or "",
-        m.slot or 0,
-        m.take or 0,
+        m.take or 0,                       # tie-break primary: highest take wins
+        m.slot or 0,                       # tie-break secondary: highest slot
         str(m.path),
     )
 
@@ -87,8 +104,12 @@ def find_video_groups(folder: Path) -> List[VideoGroup]:
             groups[key] = VideoGroup(base_stem=key, image_path=None)
         groups[key].videos.append(meta)
 
-    # Associate source images by EXACT stem match.
-    for entry in folder.iterdir():
+    # Associate source images by EXACT stem match. Sorted iteration so
+    # multiple matching image extensions (e.g. front.png AND front.jpg)
+    # resolve deterministically — without sort, the chosen image
+    # depended on filesystem iteration order and broke the file's
+    # stability guarantee (CodeRabbit PR #43 finding).
+    for entry in sorted(folder.iterdir(), key=lambda p: p.name):
         if not entry.is_file():
             continue
         if entry.suffix.lower() not in _IMAGE_EXTS:
@@ -138,12 +159,41 @@ def find_video_for_image(image_path: Path) -> Optional[Path]:
     so a user-renamed mp4 outside the pipeline naming convention will
     NOT be auto-associated. That is intentional in V1: false-positive
     associations are worse than a missing play badge.
+
+    Cached by (folder, image_stem, folder_mtime) — the carousel
+    invokes this on every redraw, and without caching that's an
+    iterdir() per Configure event. Cache auto-invalidates when files
+    are added/removed (folder mtime changes).
     """
     image_path = Path(image_path)
-    matches = all_videos_for_image(image_path)
-    if not matches:
+    folder = image_path.parent
+    try:
+        if not folder.is_dir():
+            return None
+        folder_mtime = folder.stat().st_mtime
+    except OSError:
         return None
 
+    cache_key = (str(folder.resolve()), image_path.stem, folder_mtime)
+    if cache_key in _BEST_VIDEO_CACHE:
+        return _BEST_VIDEO_CACHE[cache_key]
+
+    matches = all_videos_for_image(image_path)
     # "Most processed wins" — the sort key already orders raw < oldcam <
     # rPPG (ascending) so the last element is the most-processed.
-    return matches[-1].path
+    result: Optional[Path] = matches[-1].path if matches else None
+
+    # LRU-ish eviction so a long carousel session doesn't grow forever.
+    if len(_BEST_VIDEO_CACHE) >= _BEST_VIDEO_CACHE_MAX:
+        # Drop the first-inserted entry (Python 3.7+ dicts preserve
+        # insertion order, so iter(dict) yields oldest first).
+        _BEST_VIDEO_CACHE.pop(next(iter(_BEST_VIDEO_CACHE)))
+    _BEST_VIDEO_CACHE[cache_key] = result
+    return result
+
+
+def clear_video_discovery_cache() -> None:
+    """Drop the find_video_for_image cache. Test helper; callers can
+    also use this if they know the folder changed without an mtime
+    bump (rare — atomic writes typically update parent mtime)."""
+    _BEST_VIDEO_CACHE.clear()

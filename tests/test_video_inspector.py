@@ -32,6 +32,7 @@ from unittest import mock
 from kling_gui.video_discovery import (
     VideoGroup,
     all_videos_for_image,
+    clear_video_discovery_cache,
     find_video_for_image,
     find_video_groups,
 )
@@ -208,6 +209,12 @@ class MetadataTests(unittest.TestCase):
 
 
 class DiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        # Cache is global; clear between tests so a previous test's
+        # tmp_path doesn't influence the current one (even though mtime
+        # differs in practice, this is belt-and-suspenders).
+        clear_video_discovery_cache()
+
     def _make_folder(self, td: str, *names: str) -> Path:
         folder = Path(td)
         for n in names:
@@ -312,6 +319,46 @@ class DiscoveryTests(unittest.TestCase):
             (root / "sub").mkdir()
             (root / "sub" / "front_k25tStd_p1_1.mp4").touch()
             self.assertEqual(find_video_groups(root), [])
+
+    def test_raw_kling_tie_break_take_dominates_slot(self):
+        """Selector contract (plan): raw-Kling tie-break is 'highest
+        take, then highest slot'. So slot=2 take=5 must beat
+        slot=4 take=1 — take wins. CodeRabbit PR #43 flagged the
+        original (slot-before-take) ordering as a contract violation."""
+        with tempfile.TemporaryDirectory() as td:
+            folder = self._make_folder(
+                td,
+                "front.png",
+                "front_k25tStd_p4_1.mp4",   # slot=4 take=1
+                "front_k25tStd_p2_5.mp4",   # slot=2 take=5 — should win
+            )
+            chosen = find_video_for_image(folder / "front.png")
+            self.assertIsNotNone(chosen)
+            assert chosen is not None
+            self.assertEqual(chosen.name, "front_k25tStd_p2_5.mp4")
+
+    def test_find_video_for_image_caches_within_mtime(self):
+        """Carousel calls this on every redraw — without caching, an
+        iterdir() runs per resize tick. Cache hits on the same
+        (folder, image, mtime) tuple should NOT re-scan."""
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            folder = self._make_folder(
+                td,
+                "front.png",
+                "front_k25tStd_p4_1.mp4",
+            )
+            # Prime the cache.
+            chosen_first = find_video_for_image(folder / "front.png")
+            # Now patch all_videos_for_image to detect a re-scan.
+            with patch(
+                "kling_gui.video_discovery.all_videos_for_image"
+            ) as mock_scan:
+                mock_scan.return_value = []
+                chosen_second = find_video_for_image(folder / "front.png")
+            self.assertEqual(chosen_first, chosen_second)
+            # all_videos_for_image was NOT called (cache hit).
+            mock_scan.assert_not_called()
 
 
 # ──────────────────────────────────────────────────────────────────────
