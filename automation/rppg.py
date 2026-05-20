@@ -531,7 +531,16 @@ def stream_subprocess_with_timeout(
     reader.start()
 
     output_lines: List[str] = []
-    deadline = time.monotonic() + timeout_seconds
+    start_time = time.monotonic()
+    deadline = start_time + timeout_seconds
+    # Hard cap on cumulative extensions — without this, a stuck
+    # subprocess that emits the same "Iteration N/M" marker in a
+    # loop could push the deadline out indefinitely. 8× the initial
+    # timeout matches the worst real-world case (heavily iterative
+    # rPPG run with 8 retries × per-iter timeout) and bites well
+    # before the user notices the GUI is unresponsive. (Gemini
+    # MEDIUM on 9d9a473.)
+    max_deadline = start_time + max(timeout_seconds * 8, 600.0)
     eof = False
     while not eof:
         remaining = deadline - time.monotonic()
@@ -574,8 +583,11 @@ def stream_subprocess_with_timeout(
                         # well-behaved 10-iter run accrues 10*90s of
                         # headroom (not just one 90s lump that gets
                         # capped at max() with the current deadline,
-                        # which was the prior bug).
-                        deadline = deadline + extra
+                        # which was the prior bug). Capped at
+                        # max_deadline so a buggy stuck subprocess
+                        # can't push the deadline forever (Gemini
+                        # MEDIUM on 9d9a473).
+                        deadline = min(deadline + extra, max_deadline)
                 except Exception:
                     # Never let an extender bug kill the subprocess wait.
                     pass

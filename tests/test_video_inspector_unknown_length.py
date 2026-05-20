@@ -56,15 +56,30 @@ class UnknownFrameCountTests(unittest.TestCase):
         end = src.index("\n    def ", start + 10)
         body = src[start:end]
         # Else branch must advance with the step (no `% 1` or `% total`
-        # — total is 0 in this branch — and no `= 0` reset).
+        # — total is 0 in this branch — and no `= 0` reset). Range
+        # widened to 1500 chars to accommodate the EOF-latch early-
+        # return block added per Gemini MEDIUM on 9d9a473 (which
+        # halts _playing when the decoder reports unknown-length EOF,
+        # preventing infinite tick CPU waste).
         self.assertRegex(
             body,
-            r"else:[\s\S]{0,400}self\._master_frame\s*=\s*\(\s*"
+            r"else:[\s\S]{0,1500}self\._master_frame\s*=\s*\(\s*"
             r"self\._master_frame\s*\+\s*step\s*\)\s*%\s*"
             r"self\._UNKNOWN_LENGTH_WRAP",
             "Unknown-length branch must add step + modulo-wrap at "
             "_UNKNOWN_LENGTH_WRAP — neither pin to 0 (Codex P2 spirit) "
             "nor drift unbounded (Gemini medium).",
+        )
+        # And the EOF-latch halt must be in place (Gemini MEDIUM on
+        # 9d9a473): when the decoder latches EOF on an unknown-length
+        # source, _playing flips to False so the tick stops.
+        self.assertIn("has_reached_eof", body)
+        self.assertRegex(
+            body,
+            r"if\s+primary\.has_reached_eof\(\):[\s\S]{0,400}"
+            r"self\._playing\s*=\s*False",
+            "Unknown-length branch must check primary.has_reached_eof() "
+            "and stop _playing when latched (Gemini MEDIUM on 9d9a473).",
         )
         # Class-level default exists so __new__ test paths still see
         # _master_frame even without __init__ (same Gemini finding).

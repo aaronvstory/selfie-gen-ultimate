@@ -157,6 +157,14 @@ class VideoFrame(tk.Frame):
         self._current_frame = -1
         self._photo: Optional[tk.PhotoImage] = None  # GC anchor
         self._overlay_drawer: Optional[Callable] = None  # dormant V1
+        # EOF latch for unknown-length sources. Set by the decoder
+        # thread when ``cap.read()`` returns False; consumed by the
+        # modal master tick to stop ``_playing`` on EOF (without this,
+        # the tick would request frames forever, wasting CPU + thread
+        # wake-ups). Reset on every fresh ``load()``. Bool assignment
+        # is GIL-atomic; no lock needed for cross-thread visibility on
+        # CPython. (Gemini MEDIUM on 9d9a473.)
+        self._eof_reached = False
         # Live canvas dimensions tracked on <Configure> so the
         # decoder thread can resize frames to the actual visible area
         # (with aspect-preserving fit). Defaults are the _DISPLAY_W/H
@@ -255,6 +263,15 @@ class VideoFrame(tk.Frame):
     def get_current_frame(self) -> int:
         return self._current_frame
 
+    def has_reached_eof(self) -> bool:
+        """True if the decoder hit EOF on an unknown-length source.
+
+        The modal master tick uses this to halt ``_playing`` so the
+        timer stops requesting frames the worker can't decode.
+        Reset by every fresh ``load()``.
+        """
+        return self._eof_reached
+
     def set_overlay_drawer(self, fn) -> None:
         """V1 stores but never invokes a non-None drawer — kept as
         future-extension seam for ROI/diff/metric overlays."""
@@ -299,6 +316,7 @@ class VideoFrame(tk.Frame):
         # Clamp FPS to a sane range; cv2 returns 0 for some containers.
         self._fps = raw_fps if 1.0 <= raw_fps <= 120.0 else 25.0
         self._current_frame = -1
+        self._eof_reached = False  # reset latch for each fresh load
 
         # Enable "Open Externally" now that we have a real path on hand.
         try:
@@ -418,6 +436,7 @@ class VideoFrame(tk.Frame):
         self._video_path = None
         self._frame_count = 0
         self._current_frame = -1
+        self._eof_reached = False
         try:
             self._canvas.delete("all")
             self._placeholder_id = self._canvas.create_text(
@@ -544,6 +563,16 @@ class VideoFrame(tk.Frame):
                     ok, frame_bgr = False, None
 
                 if not ok or frame_bgr is None:
+                    # Latch EOF for unknown-length sources so the
+                    # modal master tick can halt _playing. We only
+                    # latch on UNKNOWN-length (frame_count == 0); for
+                    # known-length sources the modal wraps via modulo
+                    # and naturally loops, which is the existing
+                    # documented behavior. Bool assignment is GIL-
+                    # atomic, no lock needed for cross-thread read.
+                    # (Gemini MEDIUM on 9d9a473.)
+                    if self._frame_count == 0:
+                        self._eof_reached = True
                     continue
 
                 try:
@@ -1652,6 +1681,18 @@ class VideoInspectorModal(tk.Toplevel):
                 # VideoFrame.step_to() handles the actual EOF (cap.read
                 # returns False; worker stops rendering).
                 # (Gemini medium PR #43, finding 3277077710.)
+                #
+                # If the decoder has latched EOF on this unknown-length
+                # source, stop _playing so the tick stops requesting
+                # frames the worker can't decode (Gemini MEDIUM on
+                # 9d9a473 — was burning ~25 wakeups/sec uselessly).
+                if primary.has_reached_eof():
+                    self._playing = False
+                    try:
+                        self._play_btn.config(text="▶ Play")
+                    except tk.TclError:
+                        pass
+                    return
                 self._master_frame = (
                     self._master_frame + step
                 ) % self._UNKNOWN_LENGTH_WRAP

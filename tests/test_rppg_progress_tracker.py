@@ -222,8 +222,18 @@ class StreamerCallOrderTests(unittest.TestCase):
         start = src.index("def stream_subprocess_with_timeout")
         end = src.index("\ndef ", start + 10)
         body = src[start:end]
-        self.assertIn("deadline = deadline + extra", body)
+        # Must be ABSOLUTE accumulation (``deadline + extra``), not
+        # the broken ``max(deadline, now + extra)`` form. The
+        # accumulation may be capped by min(...) to bound runaway
+        # subprocesses (Gemini MEDIUM on 9d9a473), but the additive
+        # form remains.
+        self.assertIn("deadline + extra", body)
         self.assertNotIn("deadline = max(deadline, time.monotonic() + extra", body)
+        # Verify the cumulative-extension cap is in place: a stuck
+        # subprocess that emits the same iteration marker forever
+        # must NOT push the deadline indefinitely.
+        self.assertIn("max_deadline", body)
+        self.assertIn("min(deadline + extra, max_deadline)", body)
 
 
 if __name__ == "__main__":

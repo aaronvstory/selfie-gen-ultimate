@@ -50,9 +50,20 @@ def _format_image_info(path: str) -> str:
 # memory — each entry is a PIL.Image of the first frame (~2-3 MB at
 # 1280×720 RGB), so an unbounded cache leaked 100s of MB over long
 # sessions. Mirrors the _BEST_VIDEO_CACHE cap pattern in video_discovery.
+#
+# THREAD-SAFETY: ``_extract_video_first_frame`` is called from BOTH the
+# Tk thread (synchronously in ``_show_image_on_canvas``) and decoder
+# daemon threads (via ``_extract_video_first_frame_async``). The dict
+# check-then-pop FIFO eviction is not atomic, so without a lock two
+# threads racing the eviction can ``RuntimeError: dictionary changed
+# size during iteration`` or one ``KeyError``s the other's pop. The
+# lock guards every mutation of the cache (read-only ``.get`` is safe
+# without it under CPython GIL — single bytecode op).
+# (Gemini HIGH on 9d9a473.)
 # ----------------------------------------------------------------------
 _VIDEO_THUMB_CACHE: "dict[str, object]" = {}
 _VIDEO_THUMB_CACHE_MAX = 64
+_VIDEO_THUMB_CACHE_LOCK = threading.Lock()
 
 
 def _extract_video_first_frame(video_path: str):
@@ -96,13 +107,16 @@ def _extract_video_first_frame(video_path: str):
         # is the oldest. While-loop (not if-single-eviction) so a
         # bulk folder rescan that inserts N>1 entries without
         # interleaved reads can't temporarily exceed the cap.
-        # (Gemini medium PR #43, finding 3277077712.)
-        while len(_VIDEO_THUMB_CACHE) >= _VIDEO_THUMB_CACHE_MAX:
-            try:
-                _VIDEO_THUMB_CACHE.pop(next(iter(_VIDEO_THUMB_CACHE)))
-            except StopIteration:
-                break
-        _VIDEO_THUMB_CACHE[cache_key] = img
+        # (Gemini medium PR #43, finding 3277077712; lock added per
+        # Gemini HIGH on 9d9a473 — Tk thread + decoder thread both
+        # mutate this dict.)
+        with _VIDEO_THUMB_CACHE_LOCK:
+            while len(_VIDEO_THUMB_CACHE) >= _VIDEO_THUMB_CACHE_MAX:
+                try:
+                    _VIDEO_THUMB_CACHE.pop(next(iter(_VIDEO_THUMB_CACHE)))
+                except (StopIteration, KeyError):
+                    break
+            _VIDEO_THUMB_CACHE[cache_key] = img
         return img
     except Exception:
         logger.debug("video-thumb extract failed for %s", video_path, exc_info=True)
@@ -281,7 +295,12 @@ class ImageCarousel(tk.Frame):
         # re-initialized inside _show_image_on_canvas for any test/instance
         # that bypassed __init__ via __new__, so we don't need a class-level
         # mutable default (which would leak failures across instances).
-        self._render_failed_paths: set[str] = set()
+        # Keyed by (path, mtime) so a clip that fails on first decode
+        # (still being written, transient read error) re-tries after
+        # the file is updated — without keying on mtime, a permanent
+        # blacklist would persist even after the file becomes valid.
+        # (Codex P2 on 9d9a473.)
+        self._render_failed_paths: set[tuple[str, float]] = set()
 
         # NOTE: the sys.setrecursionlimit(5000) bump lives at the GUI entry
         # point (kling_gui/main_window.py module-level) so the side effect is
@@ -851,7 +870,15 @@ class ImageCarousel(tk.Frame):
         # gets its own set instead of sharing a class-level mutable default.
         if not hasattr(self, "_render_failed_paths"):
             self._render_failed_paths = set()
-        if path in self._render_failed_paths:
+        # Compute the mtime once so the failure check + the eventual
+        # ``add()`` use the same key. If the file is gone, treat mtime=0
+        # (matches what the thumb-cache fallback uses below).
+        try:
+            _fail_mtime = os.path.getmtime(path)
+        except OSError:
+            _fail_mtime = 0.0
+        _fail_key = (path, _fail_mtime)
+        if _fail_key in self._render_failed_paths:
             # Clear any stale items (prior image, bbox overlay, etc.) so the
             # placeholder is the only thing on this canvas. Mirrors what the
             # successful-render path does implicitly via create_image replacing
@@ -921,9 +948,12 @@ class ImageCarousel(tk.Frame):
                     # another worker for the same path — infinite loading
                     # spinner. Add the path to _render_failed_paths so the
                     # next render hits the early-return placeholder branch.
-                    def _on_thumb_ready(_img, _p=path):
+                    def _on_thumb_ready(_img, _p=path, _m=_vt_mtime):
                         if _img is None:
-                            self._render_failed_paths.add(_p)
+                            # Key by (path, mtime) so the next regen of
+                            # the same path (e.g. queue worker overwrote
+                            # the failed take) clears the blacklist.
+                            self._render_failed_paths.add((_p, _m))
                         self._update_display()
                     started = _extract_video_first_frame_async(
                         path, canvas,
@@ -959,9 +989,11 @@ class ImageCarousel(tk.Frame):
                     # which has its own external-player fallback.
                     # M3 (code-review): memoize the failure so corrupt-
                     # header videos don't re-open VideoCapture on every
-                    # Configure event. The placeholder render below stays
-                    # in the failed-paths branch above on next pass.
-                    self._render_failed_paths.add(path)
+                    # Configure event. Key by (path, _vt_mtime) so a
+                    # later regen of the same path is retried instead
+                    # of being permanently blacklisted (Codex P2 on
+                    # 9d9a473).
+                    self._render_failed_paths.add((path, _vt_mtime))
                     canvas.delete("all")
                     cw_pl = max(1, canvas.winfo_width())
                     ch_pl = max(1, canvas.winfo_height())
@@ -1162,7 +1194,13 @@ class ImageCarousel(tk.Frame):
             return False
         except RecursionError as e:
             # Memo this path so we don't retry on every window resize.
-            self._render_failed_paths.add(path)
+            # Key by (path, mtime) for symmetry with the video-thumb
+            # failure path (Codex P2 on 9d9a473).
+            try:
+                _rec_mtime = os.path.getmtime(path)
+            except OSError:
+                _rec_mtime = 0.0
+            self._render_failed_paths.add((path, _rec_mtime))
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
             canvas.create_text(

@@ -21,6 +21,7 @@ on every reopen.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -35,16 +36,17 @@ from .video_metadata import VideoMetadata, parse_video_filename
 # folder mtime); value: the chosen Path or None. Invalidates
 # automatically when files appear/disappear (mtime changes).
 #
-# THREAD-SAFETY: this cache is TK-THREAD-ONLY. All current callers
-# (carousel._show_image_on_canvas, modal listbox population) run on
-# the Tk main thread, so the dict mutation in the LRU-eviction path
-# (``_BEST_VIDEO_CACHE.pop(next(iter(_BEST_VIDEO_CACHE)))``) is
-# safe — but check-then-pop is NOT atomic, so if a future caller
-# wires this from a background thread (e.g. a similarity recalc
-# worker), a ``threading.Lock`` must be added around the read +
-# eviction. Code-reviewer Important (PR #43, post-79802bc self-review).
+# THREAD-SAFETY: all current callers (carousel._show_image_on_canvas,
+# modal listbox population) run on the Tk main thread, but a lock is
+# added as defense-in-depth — if a future caller wires this from a
+# background thread (e.g. a similarity recalc worker, or a session-
+# load rescan that's been moved off the Tk thread), the previous
+# check-then-pop pattern would race. Lock is held only briefly across
+# the eviction + insertion; reads are GIL-atomic dict lookups so the
+# common-case fast path stays uncontended. (Gemini HIGH on 9d9a473.)
 _BEST_VIDEO_CACHE: Dict[Tuple[str, str, float], Optional[Path]] = {}
 _BEST_VIDEO_CACHE_MAX = 256  # rough cap — carousel cycles through ~dozens of images
+_BEST_VIDEO_CACHE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -131,7 +133,18 @@ def find_video_groups(folder: Path) -> List[VideoGroup]:
     # to images[stem] wins, and sorted order picks the last extension by
     # ASCII order ('.jpeg' < '.jpg' < '.png'). The video walk has no
     # determinism dependency (group lookup is keyed by base_stem).
-    for entry in sorted(folder.iterdir(), key=lambda p: p.name):
+    #
+    # ``folder.iterdir()`` can raise OSError (PermissionError on
+    # restricted folders, FileNotFoundError if the dir vanishes between
+    # is_dir() and iterdir()). Treat any OS-level failure as "empty
+    # folder" so callers in the UI path (VideoInspectorModal._refresh_folder,
+    # carousel render) degrade gracefully instead of crashing.
+    # (Gemini MEDIUM on 9d9a473.)
+    try:
+        entries = sorted(folder.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return []
+    for entry in entries:
         if not entry.is_file():
             continue
         ext = entry.suffix.lower()
@@ -210,6 +223,8 @@ def find_video_for_image(image_path: Path) -> Optional[Path]:
         return None
 
     cache_key = (str(folder.resolve()), image_path.stem, folder_mtime)
+    # Fast-path read is lock-free (single GIL-atomic dict lookup); the
+    # write path takes the lock to protect the check-then-pop eviction.
     if cache_key in _BEST_VIDEO_CACHE:
         return _BEST_VIDEO_CACHE[cache_key]
 
@@ -219,11 +234,15 @@ def find_video_for_image(image_path: Path) -> Optional[Path]:
     result: Optional[Path] = matches[-1].path if matches else None
 
     # LRU-ish eviction so a long carousel session doesn't grow forever.
-    if len(_BEST_VIDEO_CACHE) >= _BEST_VIDEO_CACHE_MAX:
-        # Drop the first-inserted entry (Python 3.7+ dicts preserve
-        # insertion order, so iter(dict) yields oldest first).
-        _BEST_VIDEO_CACHE.pop(next(iter(_BEST_VIDEO_CACHE)))
-    _BEST_VIDEO_CACHE[cache_key] = result
+    with _BEST_VIDEO_CACHE_LOCK:
+        if len(_BEST_VIDEO_CACHE) >= _BEST_VIDEO_CACHE_MAX:
+            # Drop the first-inserted entry (Python 3.7+ dicts preserve
+            # insertion order, so iter(dict) yields oldest first).
+            try:
+                _BEST_VIDEO_CACHE.pop(next(iter(_BEST_VIDEO_CACHE)))
+            except (StopIteration, KeyError):
+                pass
+        _BEST_VIDEO_CACHE[cache_key] = result
     return result
 
 
