@@ -659,7 +659,7 @@ class ConfigPanel(tk.Frame):
         tk.Label(
             self.rppg_controls_frame,
             text="(sub-perceptual · runs last · off = unchanged)",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg="#3A2A1F",
             fg=COLORS["text_dim"],
         ).pack(side=tk.LEFT, anchor="n", padx=(0, 4))
@@ -787,7 +787,7 @@ class ConfigPanel(tk.Frame):
         )
         self.loop_checkbox.pack(side=tk.LEFT, padx=(16, 0))
         self.loop_info_label = tk.Label(
-            rB, text="(requires FFmpeg)", font=(FONT_FAMILY, 8),
+            rB, text="(requires FFmpeg)", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.loop_info_label.pack(side=tk.LEFT, padx=4)
@@ -807,7 +807,7 @@ class ConfigPanel(tk.Frame):
         )
         self.verbose_checkbox.pack(side=tk.LEFT)
         self.verbose_info_label = tk.Label(
-            rC, text="(detailed processing log)", font=(FONT_FAMILY, 8),
+            rC, text="(detailed processing log)", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.verbose_info_label.pack(side=tk.LEFT, padx=4)
@@ -827,7 +827,7 @@ class ConfigPanel(tk.Frame):
         self.rppg_metrics_checkbox.pack(side=tk.LEFT, padx=(12, 0))
         self.rppg_metrics_info_label = tk.Label(
             rC, text="(off = clean name + .metrics.json sidecar)",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.rppg_metrics_info_label.pack(side=tk.LEFT, padx=4)
@@ -977,7 +977,7 @@ class ConfigPanel(tk.Frame):
         self.cfg_scale_entry.bind("<FocusOut>", self._on_cfg_scale_changed)
         self.cfg_scale_entry.bind("<Return>", self._on_cfg_scale_changed)
         self.model_caps_label = tk.Label(
-            rEF, text="", font=(FONT_FAMILY, 8),
+            rEF, text="", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.model_caps_label.pack(side=tk.RIGHT, padx=4)
@@ -1111,7 +1111,7 @@ class ConfigPanel(tk.Frame):
         )
         tk.Label(
             self._negative_prompt_section, text="Negative prompt",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor="w",
         ).pack(fill=tk.X, pady=(0, 2))
         neg_text_frame = tk.Frame(

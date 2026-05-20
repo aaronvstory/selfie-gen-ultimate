@@ -15,6 +15,13 @@ class _FakeButton:
     def config(self, **kwargs):
         self.calls.append(kwargs)
 
+    # ttk.Button uses .configure() interchangeably with .config(); the carousel
+    # migration to ttk.Button (PR #43) routes via configure(style=...). Without
+    # this stub method the _FakeButton AttributeErrors as soon as _update_panel
+    # touches the Ref button.
+    def configure(self, **kwargs):
+        self.calls.append(kwargs)
+
 
 class _FakeCanvas:
     def delete(self, *_args, **_kwargs):
@@ -86,9 +93,15 @@ class CarouselRefControlsTests(unittest.TestCase):
             tab._update_panel()
 
         has_ref = any(call.get("text") == "★ Ref" for call in tab._ref_btn.calls)
-        has_active_color = any(call.get("bg") == "#E5C100" for call in tab._ref_btn.calls)
+        # Post-ttk migration: the "active" visual state is signalled via
+        # style="CarouselRefActive.TButton" (the style itself encodes the
+        # #E5C100 yellow). The prior bg=#E5C100 path no longer exists.
+        has_active_style = any(
+            call.get("style") == "CarouselRefActive.TButton"
+            for call in tab._ref_btn.calls
+        )
         self.assertTrue(has_ref)
-        self.assertTrue(has_active_color)
+        self.assertTrue(has_active_style)
 
     def test_toggle_ref_sets_and_clears_manual_ref(self):
         tab = ImageCarousel.__new__(ImageCarousel)

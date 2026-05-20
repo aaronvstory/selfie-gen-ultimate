@@ -802,13 +802,13 @@ class CarouselOverlayTests(unittest.TestCase):
     def test_video_button_exists_in_source(self):
         from kling_gui import carousel_widget
         src = Path(carousel_widget.__file__).read_text(encoding="utf-8")
-        # Button declared via tk.Button(...) with text="Videos"
-        self.assertIn("self.video_inspector_btn = tk.Button", src)
+        # Button declared via ttk.Button(...) with text="Videos" — migrated
+        # from raw tk.Button as part of the b3bc7398 follow-up so the macOS
+        # HIView revert doesn't strip its dark tint after the first click.
+        # apply_macos_button_fix is no longer needed for ttk.Button (the
+        # clam theme bypasses HIView entirely).
+        self.assertIn("self.video_inspector_btn = ttk.Button", src)
         self.assertIn('text="Videos"', src)
-        # macOS button fix MUST be applied (per project memory).
-        self.assertRegex(
-            src, r"apply_macos_button_fix\(self\.video_inspector_btn\)"
-        )
 
     def test_overlay_block_references_find_video_for_image(self):
         from kling_gui import carousel_widget

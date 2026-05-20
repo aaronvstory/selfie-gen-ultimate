@@ -1,10 +1,17 @@
 """Compare Panel — side-by-side image comparison with independent navigation."""
 
 import tkinter as tk
+from tkinter import ttk
 from typing import Callable, Optional
 import logging
 
-from .theme import COLORS, FONT_FAMILY, apply_macos_button_fix
+from .theme import (
+    COLORS,
+    FONT_FAMILY,
+    TTK_BTN_COMPACT,
+    TTK_BTN_DANGER_COMPACT,
+    apply_macos_button_fix,
+)
 from .image_state import ImageSession
 from .carousel_widget import _format_image_info, _truncate_filename, _sim_color
 from .tag_utils import derive_display_tag
@@ -92,34 +99,27 @@ class ComparePanel(tk.Frame):
         ).pack(side=tk.LEFT)
 
         # Close button
-        close_btn = tk.Button(
+        # ttk.Button (HIView tint persists). The original used
+        # fg=COLORS["error"] for the "X" connotation; we keep that by
+        # picking the existing TTK_BTN_DANGER_COMPACT style (red
+        # foreground+fill, more visible than the prior fg-only red).
+        close_btn = ttk.Button(
             header,
             text="X Close",
-            font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"],
-            fg=COLORS["error"],
             command=self._on_close,
-            cursor="hand2",
-            relief=tk.FLAT,
-            padx=6,
+            style=TTK_BTN_DANGER_COMPACT,
         )
         close_btn.pack(side=tk.RIGHT)
-        apply_macos_button_fix(close_btn)
 
         # Nav buttons + counter
-        self.next_btn = tk.Button(
+        self.next_btn = ttk.Button(
             header,
             text=">",
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"],
-            fg=COLORS["text_light"],
             command=lambda: self._navigate(1),
             width=2,
-            cursor="hand2",
-            relief=tk.FLAT,
+            style=TTK_BTN_COMPACT,
         )
         self.next_btn.pack(side=tk.RIGHT, padx=(2, 4))
-        apply_macos_button_fix(self.next_btn)
 
         self.counter_label = tk.Label(
             header,
@@ -130,19 +130,14 @@ class ComparePanel(tk.Frame):
         )
         self.counter_label.pack(side=tk.RIGHT, padx=2)
 
-        self.prev_btn = tk.Button(
+        self.prev_btn = ttk.Button(
             header,
             text="<",
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"],
-            fg=COLORS["text_light"],
             command=lambda: self._navigate(-1),
             width=2,
-            cursor="hand2",
-            relief=tk.FLAT,
+            style=TTK_BTN_COMPACT,
         )
         self.prev_btn.pack(side=tk.RIGHT)
-        apply_macos_button_fix(self.prev_btn)
 
         # Metadata row (resolution + filesize on left, similarity on right)
         self.meta_frame = tk.Frame(self, bg=COLORS["bg_panel"])

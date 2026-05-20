@@ -48,7 +48,7 @@ class VideoTab(tk.Frame):
         tk.Label(
             use_carousel_frame,
             text="Use active carousel image for video generation",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
         ).pack(side=tk.LEFT, padx=8)

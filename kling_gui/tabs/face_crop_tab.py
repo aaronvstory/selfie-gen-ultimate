@@ -390,7 +390,7 @@ class FaceCropTab(tk.Frame):
             text="Source",
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         )
         self._source_label.pack()
         self._source_canvas = tk.Canvas(
@@ -411,7 +411,7 @@ class FaceCropTab(tk.Frame):
             text="Crop Result",
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         )
         self._crop_label.pack()
         self._crop_canvas = tk.Canvas(
@@ -458,7 +458,7 @@ class FaceCropTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         )
         self._auto_switch_cb.pack(anchor="w")
 
@@ -556,7 +556,7 @@ class FaceCropTab(tk.Frame):
         ).pack(side=tk.LEFT, padx=(6, 0))
 
         tk.Label(
-            polish_row, text="Provider:", font=(FONT_FAMILY, 8),
+            polish_row, text="Provider:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT, padx=(8, 0))
 
@@ -573,7 +573,7 @@ class FaceCropTab(tk.Frame):
         self._polish_strength_frame = tk.Frame(polish_row, bg=COLORS["bg_panel"])
 
         tk.Label(
-            self._polish_strength_frame, text="Str:", font=(FONT_FAMILY, 8),
+            self._polish_strength_frame, text="Str:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT, padx=(6, 0))
         self._polish_strength_scale = tk.Scale(
@@ -581,7 +581,7 @@ class FaceCropTab(tk.Frame):
             orient=tk.HORIZONTAL, variable=self._polish_strength_var,
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
             troughcolor=COLORS["bg_input"], highlightthickness=0,
-            font=(FONT_FAMILY, 8), length=80,
+            font=(FONT_FAMILY, 9), length=80,
         )
         self._polish_strength_scale.pack(side=tk.LEFT, padx=(2, 0))
 
@@ -595,7 +595,7 @@ class FaceCropTab(tk.Frame):
             text="",
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             anchor="w",
         )
         self._polish_status.pack(fill=tk.X)
@@ -663,7 +663,7 @@ class FaceCropTab(tk.Frame):
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         ).pack(side=tk.LEFT, padx=(10, 0))
         tk.Radiobutton(
             btn_row,
@@ -675,7 +675,7 @@ class FaceCropTab(tk.Frame):
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         ).pack(side=tk.LEFT, padx=(4, 0))
         tk.Checkbutton(
             btn_row,
@@ -685,11 +685,11 @@ class FaceCropTab(tk.Frame):
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         ).pack(side=tk.LEFT, padx=(8, 0))
 
         self._outpaint_status = tk.Label(
-            expand_parent, text="", font=(FONT_FAMILY, 8),
+            expand_parent, text="", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor="w",
         )
         self._outpaint_status.pack(fill=tk.X, pady=(0, 2))
@@ -701,7 +701,7 @@ class FaceCropTab(tk.Frame):
         pct_row.pack(fill=tk.X, pady=(0, 3))
 
         tk.Label(
-            pct_row, text="Expand:", font=(FONT_FAMILY, 8),
+            pct_row, text="Expand:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
 
@@ -714,12 +714,12 @@ class FaceCropTab(tk.Frame):
             fg=COLORS["text_light"],
             troughcolor=COLORS["bg_input"],
             highlightthickness=0,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         )
         self._pct_scale.pack(side=tk.LEFT, padx=(3, 0), fill=tk.X, expand=True)
 
         tk.Label(
-            pct_row, text="%", font=(FONT_FAMILY, 8),
+            pct_row, text="%", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
 
@@ -736,13 +736,13 @@ class FaceCropTab(tk.Frame):
             ("R:", self._expand_right_var),
         ]:
             tk.Label(
-                px_row, text=label_text, font=(FONT_FAMILY, 8),
+                px_row, text=label_text, font=(FONT_FAMILY, 9),
                 bg=COLORS["bg_panel"], fg=COLORS["text_light"],
             ).pack(side=tk.LEFT, padx=(4, 0))
             tk.Entry(
                 px_row, textvariable=var, width=5,
                 bg=COLORS["bg_input"], fg=COLORS["text_light"],
-                insertbackground=COLORS["text_light"], font=(FONT_FAMILY, 8),
+                insertbackground=COLORS["text_light"], font=(FONT_FAMILY, 9),
             ).pack(side=tk.LEFT, padx=(2, 0))
 
         # Outpaint prompt stored in config (edited via dialog)
@@ -759,7 +759,7 @@ class FaceCropTab(tk.Frame):
         opts_row.pack(fill=tk.X, pady=(0, 2))
 
         tk.Label(
-            opts_row, text="Provider:", font=(FONT_FAMILY, 8),
+            opts_row, text="Provider:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
 
@@ -782,7 +782,7 @@ class FaceCropTab(tk.Frame):
         self._label_to_provider = _LABEL_TO_PROVIDER
 
         tk.Label(
-            opts_row, text="Format:", font=(FONT_FAMILY, 8),
+            opts_row, text="Format:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
         ttk.Combobox(
@@ -791,7 +791,7 @@ class FaceCropTab(tk.Frame):
         ).pack(side=tk.LEFT, padx=(3, 8))
 
         tk.Label(
-            opts_row, text="Composite:", font=(FONT_FAMILY, 8),
+            opts_row, text="Composite:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
         self._outpaint_composite_labels = {
@@ -878,7 +878,7 @@ class FaceCropTab(tk.Frame):
         self._upscale_btn.pack(side=tk.LEFT)
 
         tk.Label(
-            upscale_row, text="Provider:", font=(FONT_FAMILY, 8),
+            upscale_row, text="Provider:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT, padx=(8, 2))
 
@@ -894,7 +894,7 @@ class FaceCropTab(tk.Frame):
         # Scale dropdown on action row (Crystal-only, toggled with provider)
         self._upscale_scale_frame = tk.Frame(upscale_row, bg=COLORS["bg_panel"])
         tk.Label(
-            self._upscale_scale_frame, text="Scale:", font=(FONT_FAMILY, 8),
+            self._upscale_scale_frame, text="Scale:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Combobox(
@@ -903,7 +903,7 @@ class FaceCropTab(tk.Frame):
         ).pack(side=tk.LEFT, padx=(3, 0))
 
         self._upscale_status = tk.Label(
-            upscale_parent, text="", font=(FONT_FAMILY, 8),
+            upscale_parent, text="", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor="w",
         )
         self._upscale_status.pack(fill=tk.X, pady=(0, 2))
@@ -915,7 +915,7 @@ class FaceCropTab(tk.Frame):
         crystal_row.pack(fill=tk.X, pady=(0, 2))
 
         tk.Label(
-            crystal_row, text="Creativity:", font=(FONT_FAMILY, 8),
+            crystal_row, text="Creativity:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
         self._creativity_scale = tk.Scale(
@@ -923,12 +923,12 @@ class FaceCropTab(tk.Frame):
             orient=tk.HORIZONTAL, variable=self._upscale_creativity_var,
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
             troughcolor=COLORS["bg_input"], highlightthickness=0,
-            font=(FONT_FAMILY, 8), length=70,
+            font=(FONT_FAMILY, 9), length=70,
         )
         self._creativity_scale.pack(side=tk.LEFT, padx=(2, 8))
 
         tk.Label(
-            crystal_row, text="Resemblance:", font=(FONT_FAMILY, 8),
+            crystal_row, text="Resemblance:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
         self._resemblance_scale = tk.Scale(
@@ -936,7 +936,7 @@ class FaceCropTab(tk.Frame):
             orient=tk.HORIZONTAL, variable=self._upscale_resemblance_var,
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
             troughcolor=COLORS["bg_input"], highlightthickness=0,
-            font=(FONT_FAMILY, 8), length=70,
+            font=(FONT_FAMILY, 9), length=70,
         )
         self._resemblance_scale.pack(side=tk.LEFT, padx=(2, 0))
 

@@ -16,6 +16,7 @@ from ..theme import (
     BUTTON_TEXT_COLOR,
     COLORS,
     FONT_FAMILY,
+    FONT_MONO,
     TTK_BTN_COMPACT,
     TTK_BTN_DANGER,
     TTK_BTN_PRIMARY,
@@ -287,7 +288,7 @@ class SelfieTab(tk.Frame):
         self._mode_hint_label = tk.Label(
             mode_row,
             text="",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             anchor="e",
@@ -297,7 +298,7 @@ class SelfieTab(tk.Frame):
         tk.Label(
             mode_row,
             text="Slots:",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         ).pack(side=tk.LEFT, padx=(14, 6))
@@ -307,7 +308,7 @@ class SelfieTab(tk.Frame):
                 mode_row,
                 text=str(slot),
                 width=2,
-                font=(FONT_FAMILY, 8, "bold"),
+                font=(FONT_FAMILY, 9, "bold"),
                 bg=COLORS["bg_input"],
                 fg=BUTTON_TEXT_COLOR,
                 activebackground=COLORS["accent_blue"],
@@ -323,7 +324,7 @@ class SelfieTab(tk.Frame):
         tk.Label(
             mode_row,
             text="Title:",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         ).pack(side=tk.LEFT, padx=(10, 6))
@@ -336,7 +337,7 @@ class SelfieTab(tk.Frame):
             readonlybackground=COLORS["bg_input"],
             fg=COLORS["text_light"],
             insertbackground=COLORS["text_light"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             relief=tk.SOLID,
             bd=1,
         )
@@ -354,7 +355,7 @@ class SelfieTab(tk.Frame):
         self._customized_frame = tk.LabelFrame(
             prompt_frame,
             text="Prompt Template  {json.field} + {opt1|opt2} wildcards",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         )
@@ -366,7 +367,7 @@ class SelfieTab(tk.Frame):
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-            font=("Consolas", 9),
+            font=(FONT_MONO, 9),
             insertbackground=COLORS["text_light"],
             padx=5,
             pady=4,
@@ -414,7 +415,7 @@ class SelfieTab(tk.Frame):
         self._customized_status = tk.Label(
             self._customized_frame,
             text="Template ready \u2014 run AI Analysis in Step 1, then Send to Step 2",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             anchor="w",
@@ -425,7 +426,7 @@ class SelfieTab(tk.Frame):
         self._wildcard_frame = tk.LabelFrame(
             prompt_frame,
             text="Wildcard Template  {option1|option2|option3}",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         )
@@ -437,7 +438,7 @@ class SelfieTab(tk.Frame):
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-            font=("Consolas", 9),
+            font=(FONT_MONO, 9),
             insertbackground=COLORS["text_light"],
             padx=5,
             pady=4,
@@ -614,7 +615,7 @@ class SelfieTab(tk.Frame):
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         ).grid(row=2, column=1, sticky="w", padx=5, pady=(4, 0))
         tk.Radiobutton(
             grid,
@@ -626,7 +627,7 @@ class SelfieTab(tk.Frame):
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         ).grid(row=2, column=2, columnspan=2, sticky="w", padx=(12, 0), pady=(4, 0))
 
         # Model selection (moved to right side of Generation Settings)
@@ -707,7 +708,7 @@ class SelfieTab(tk.Frame):
                 fg=COLORS["text_light"],
                 selectcolor=COLORS["bg_input"],
                 activebackground=COLORS["bg_panel"],
-                font=(FONT_FAMILY, 8),
+                font=(FONT_FAMILY, 9),
                 anchor="w",
             ).grid(
                 row=idx,

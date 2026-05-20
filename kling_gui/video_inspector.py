@@ -941,7 +941,7 @@ class VideoInspectorModal(tk.Toplevel):
             text="  ·  Double-click → A · Shift+Double / Right-click → B",
             bg=COLORS["bg_main"],
             fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         ).pack(side=tk.LEFT)
         # Listbox container: listbox + vertical scrollbar + horizontal
         # scrollbar so the full filename is always reachable.

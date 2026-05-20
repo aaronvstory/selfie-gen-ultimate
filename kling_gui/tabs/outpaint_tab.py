@@ -107,7 +107,7 @@ class OutpaintTab(tk.Frame):
             troughcolor=COLORS["bg_input"],
             highlightthickness=0,
             length=200,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         )
         self._pct_scale.pack(side=tk.LEFT, padx=(5, 0))
 
@@ -126,7 +126,7 @@ class OutpaintTab(tk.Frame):
         tk.Label(
             pct_presets,
             text="Presets:",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
         ).pack(side=tk.LEFT, padx=(0, 4))
@@ -138,7 +138,7 @@ class OutpaintTab(tk.Frame):
             tk.Button(
                 pct_presets,
                 text=label,
-                font=(FONT_FAMILY, 8),
+                font=(FONT_FAMILY, 9),
                 bg=COLORS["bg_input"],
                 fg=COLORS["text_light"],
                 command=lambda p=pct: self._pct_var.set(p),
@@ -221,7 +221,7 @@ class OutpaintTab(tk.Frame):
 
         for px, text in [(70, "70px"), (140, "140px"), (280, "280px"), (500, "500px")]:
             tk.Button(
-                uniform_frame, text=text, font=(FONT_FAMILY, 8),
+                uniform_frame, text=text, font=(FONT_FAMILY, 9),
                 bg=COLORS["bg_input"], fg=COLORS["text_light"],
                 command=lambda p=px: self._set_uniform(p),
                 cursor="hand2", relief=tk.FLAT, padx=6,
@@ -243,7 +243,7 @@ class OutpaintTab(tk.Frame):
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-            font=("Consolas", 9),
+            font=(FONT_MONO, 9),
             insertbackground=COLORS["text_light"],
             padx=5,
             pady=5,

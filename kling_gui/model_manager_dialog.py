@@ -12,7 +12,15 @@ import threading
 import logging
 from typing import List, Dict, Optional, Callable
 
-from .theme import COLORS, FONT_FAMILY, apply_macos_button_fix
+from .theme import (
+    COLORS,
+    FONT_FAMILY,
+    TTK_BTN_DANGER,
+    TTK_BTN_PRIMARY,
+    TTK_BTN_SECONDARY,
+    TTK_BTN_SUCCESS,
+    apply_macos_button_fix,
+)
 from model_metadata import MODEL_METADATA, get_model_display_name
 
 logger = logging.getLogger(__name__)
@@ -166,63 +174,51 @@ class ModelManagerDialog(tk.Toplevel):
         btn_row = tk.Frame(self._left_frame, bg=COLORS["bg_panel"])
         btn_row.pack(fill=tk.X, padx=8, pady=(0, 4))
 
-        self._test_btn = tk.Button(
-            btn_row, text="Test Selected", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, padx=8, pady=3, command=self._test_selected,
+        self._test_btn = ttk.Button(
+            btn_row, text="Test Selected",
+            command=self._test_selected,
+            style=TTK_BTN_SECONDARY,
         )
         self._test_btn.pack(side=tk.LEFT, padx=(0, 4))
-        apply_macos_button_fix(self._test_btn)
 
-        self._fetch_all_btn = tk.Button(
-            btn_row, text="Fetch All", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, padx=8, pady=3, command=self._fetch_all_details,
+        self._fetch_all_btn = ttk.Button(
+            btn_row, text="Fetch All",
+            command=self._fetch_all_details,
+            style=TTK_BTN_SECONDARY,
         )
         self._fetch_all_btn.pack(side=tk.LEFT, padx=(0, 4))
-        apply_macos_button_fix(self._fetch_all_btn)
 
-        self._remove_btn = tk.Button(
-            btn_row, text="Remove", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["btn_red"], fg=COLORS["text_light"],
-            activebackground="#963232", activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, padx=8, pady=3, command=self._remove_selected,
+        self._remove_btn = ttk.Button(
+            btn_row, text="Remove",
+            command=self._remove_selected,
+            style=TTK_BTN_DANGER,
         )
         self._remove_btn.pack(side=tk.LEFT, padx=(0, 4))
-        apply_macos_button_fix(self._remove_btn)
 
-        self._restore_btn = tk.Button(
-            btn_row, text="Restore Hidden", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, padx=8, pady=3, command=self._restore_hidden,
+        self._restore_btn = ttk.Button(
+            btn_row, text="Restore Hidden",
+            command=self._restore_hidden,
+            style=TTK_BTN_SECONDARY,
         )
         self._restore_btn.pack(side=tk.LEFT)
-        apply_macos_button_fix(self._restore_btn)
 
         # Second button row: + Add New, Browse fal.ai
         btn_row2 = tk.Frame(self._left_frame, bg=COLORS["bg_panel"])
         btn_row2.pack(fill=tk.X, padx=8, pady=(0, 8))
 
-        self._add_new_btn = tk.Button(
-            btn_row2, text="+ Add New", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["btn_green"], fg=COLORS["text_light"],
-            activebackground="#287028", activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, padx=8, pady=3, command=self._switch_to_add_mode,
+        self._add_new_btn = ttk.Button(
+            btn_row2, text="+ Add New",
+            command=self._switch_to_add_mode,
+            style=TTK_BTN_SUCCESS,
         )
         self._add_new_btn.pack(side=tk.LEFT, padx=(0, 4))
-        apply_macos_button_fix(self._add_new_btn)
 
-        self._browse_btn = tk.Button(
-            btn_row2, text="Browse fal.ai", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, padx=8, pady=3, command=self._toggle_browse_pane,
+        self._browse_btn = ttk.Button(
+            btn_row2, text="Browse fal.ai",
+            command=self._toggle_browse_pane,
+            style=TTK_BTN_SECONDARY,
         )
         self._browse_btn.pack(side=tk.LEFT)
-        apply_macos_button_fix(self._browse_btn)
 
         # Browse pane (initially hidden)
         self._browse_frame = tk.LabelFrame(
@@ -238,7 +234,7 @@ class ModelManagerDialog(tk.Toplevel):
 
         self._browse_status = tk.Label(
             browse_inner, text="Click to load available models",
-            font=(FONT_FAMILY, 8), bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 9), bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
         )
         self._browse_status.pack(anchor="w")
 
@@ -258,14 +254,12 @@ class ModelManagerDialog(tk.Toplevel):
         browse_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self._browse_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self._browse_add_btn = tk.Button(
-            browse_inner, text="Add Selected", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["btn_green"], fg=COLORS["text_light"],
-            activebackground="#287028", activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, padx=8, pady=3, command=self._add_browsed_models,
+        self._browse_add_btn = ttk.Button(
+            browse_inner, text="Add Selected",
+            command=self._add_browsed_models,
+            style=TTK_BTN_SUCCESS,
         )
         self._browse_add_btn.pack(anchor="w", pady=(2, 0))
-        apply_macos_button_fix(self._browse_add_btn)
 
     def _build_right_panel(self, parent: tk.Frame):
         """Right panel: add/edit form (switches between modes)."""
@@ -301,7 +295,7 @@ class ModelManagerDialog(tk.Toplevel):
         self._endpoint_entry.pack(fill=tk.X, pady=(0, 2))
         self._endpoint_hint = tk.Label(
             inner, text="e.g. fal-ai/kling-video/v3/pro/image-to-video",
-            font=(FONT_FAMILY, 8), bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 9), bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
         )
         self._endpoint_hint.pack(anchor="w", pady=(0, 6))
 
@@ -353,33 +347,27 @@ class ModelManagerDialog(tk.Toplevel):
         self._form_btns = tk.Frame(inner, bg=COLORS["bg_panel"])
         self._form_btns.pack(fill=tk.X, pady=(0, 4))
 
-        self._test_new_btn = tk.Button(
-            self._form_btns, text="Test", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, padx=10, pady=3, command=self._test_new_endpoint,
+        self._test_new_btn = ttk.Button(
+            self._form_btns, text="Test",
+            command=self._test_new_endpoint,
+            style=TTK_BTN_SECONDARY,
         )
         self._test_new_btn.pack(side=tk.LEFT, padx=(0, 4))
-        apply_macos_button_fix(self._test_new_btn)
 
-        self._add_btn = tk.Button(
-            self._form_btns, text="Add", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["btn_green"], fg=COLORS["text_light"],
-            activebackground="#287028", activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, padx=10, pady=3, command=self._add_custom_model,
+        self._add_btn = ttk.Button(
+            self._form_btns, text="Add",
+            command=self._add_custom_model,
+            style=TTK_BTN_SUCCESS,
         )
         self._add_btn.pack(side=tk.LEFT)
-        apply_macos_button_fix(self._add_btn)
 
         # Save button (hidden in add mode, shown in edit mode)
-        self._save_edit_btn = tk.Button(
-            self._form_btns, text="Save Changes", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["btn_green"], fg=COLORS["text_light"],
-            activebackground="#287028", activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, padx=10, pady=3, command=self._save_edit,
+        self._save_edit_btn = ttk.Button(
+            self._form_btns, text="Save Changes",
+            command=self._save_edit,
+            style=TTK_BTN_SUCCESS,
         )
         # Not packed initially — shown in edit mode
-        apply_macos_button_fix(self._save_edit_btn)
 
         # Test result area (multi-line for capability info)
         self._test_result_text = tk.Text(
@@ -400,23 +388,21 @@ class ModelManagerDialog(tk.Toplevel):
         footer = tk.Frame(self, bg=COLORS["bg_main"])
         footer.pack(fill=tk.X, padx=12, pady=10)
 
-        _footer_save_btn = tk.Button(
-            footer, text="Save", font=(FONT_FAMILY, 10, "bold"),
-            bg=COLORS["btn_green"], fg=COLORS["text_light"],
-            activebackground="#287028", activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, width=10, padx=16, pady=6, command=self._on_save_click,
+        _footer_save_btn = ttk.Button(
+            footer, text="Save",
+            command=self._on_save_click,
+            style=TTK_BTN_SUCCESS,
+            width=10,
         )
         _footer_save_btn.pack(side=tk.RIGHT, padx=(6, 0))
-        apply_macos_button_fix(_footer_save_btn)
 
-        _footer_cancel_btn = tk.Button(
-            footer, text="Cancel", font=(FONT_FAMILY, 10, "bold"),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            relief=tk.FLAT, width=10, padx=16, pady=6, command=self._on_cancel,
+        _footer_cancel_btn = ttk.Button(
+            footer, text="Cancel",
+            command=self._on_cancel,
+            style=TTK_BTN_SECONDARY,
+            width=10,
         )
         _footer_cancel_btn.pack(side=tk.RIGHT)
-        apply_macos_button_fix(_footer_cancel_btn)
 
     # ------------------------------------------------------------------
     # Add / Edit mode switching

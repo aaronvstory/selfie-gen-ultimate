@@ -238,7 +238,7 @@ class FolderPreviewDialog(tk.Toplevel):
             list_frame,
             bg=COLORS["bg_main"],
             fg=COLORS["text_light"],
-            font=("Consolas", 9),
+            font=(FONT_MONO, 9),
             selectbackground=COLORS["accent_blue"],
             yscrollcommand=scrollbar.set,
             borderwidth=0,
@@ -1339,7 +1339,7 @@ class KlingGUIWindow:
             foreground=COLORS["text_light"],
             fieldbackground=COLORS["bg_panel"],
             borderwidth=0,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             rowheight=18,
         )
         style.configure(
@@ -1347,7 +1347,7 @@ class KlingGUIWindow:
             background=COLORS["bg_input"],
             foreground=COLORS["text_light"],
             borderwidth=1,
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             relief="flat",
         )
         # Without explicit active/pressed maps, ttk falls back to the OS
@@ -1437,7 +1437,7 @@ class KlingGUIWindow:
         )
         style.configure(
             TTK_BTN_SUCCESS_COMPACT,
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             foreground="white",
             background=COLORS["btn_green"],
             borderwidth=1,
@@ -1463,7 +1463,7 @@ class KlingGUIWindow:
         )
         style.configure(
             TTK_BTN_DANGER_COMPACT,
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             foreground="white",
             background=COLORS["btn_red"],
             borderwidth=1,
@@ -1476,7 +1476,7 @@ class KlingGUIWindow:
         )
         style.configure(
             TTK_BTN_COMPACT,
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             foreground=COLORS["text_light"],
             background=COLORS["bg_input"],
             borderwidth=1,
@@ -1497,6 +1497,38 @@ class KlingGUIWindow:
         )
         style.map(
             TTK_BTN_TAB_NAV,
+            background=[("active", COLORS["bg_hover"]), ("pressed", COLORS["bg_main"]), ("disabled", "#3A3A3A")],
+            foreground=[("disabled", "#8C8C8C")],
+        )
+
+        # Carousel ★ Ref button styles. The Ref button has two visual
+        # states (active = yellow + dark text; inactive = neutral panel
+        # bg + light text), so it gets two ttk styles that the carousel
+        # swaps between via .configure(style=...). Migrating from raw
+        # tk.Button preserves the dark theme through macOS HIView
+        # re-paints (same fix-class as b3bc7398 across the rest of the
+        # GUI buttons).
+        style.configure(
+            "CarouselRefActive.TButton",
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground="#111111",
+            background="#E5C100",
+            borderwidth=1, padding=(8, 4),
+        )
+        style.map(
+            "CarouselRefActive.TButton",
+            background=[("active", "#E5C100"), ("pressed", "#C9AA00"), ("disabled", "#3A3A3A")],
+            foreground=[("active", "#111111"), ("disabled", "#8C8C8C")],
+        )
+        style.configure(
+            "CarouselRefInactive.TButton",
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground=COLORS["text_light"],
+            background=COLORS["bg_panel"],
+            borderwidth=1, padding=(8, 4),
+        )
+        style.map(
+            "CarouselRefInactive.TButton",
             background=[("active", COLORS["bg_hover"]), ("pressed", COLORS["bg_main"]), ("disabled", "#3A3A3A")],
             foreground=[("disabled", "#8C8C8C")],
         )
@@ -2731,7 +2763,7 @@ class KlingGUIWindow:
             label = tk.Label(
                 frame,
                 text=text,
-                font=("Consolas", 9, "bold"),
+                font=(FONT_MONO, 9, "bold"),
                 bg="#202225",
                 fg="#F2F2F2",
                 padx=10,
@@ -2868,7 +2900,7 @@ class KlingGUIWindow:
                 tk.Label(
                     frame,
                     text=line,
-                    font=("Consolas", 8),
+                    font=(FONT_MONO, 9),
                     bg=COLORS["bg_panel"],
                     fg=COLORS["text_light"],
                     anchor="w",
@@ -2970,7 +3002,7 @@ class KlingGUIWindow:
         indicator = tk.Label(
             frame,
             text=f"{label}: Added" if is_set else f"{label}: Missing",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
             padx=5, pady=2,
@@ -3047,7 +3079,7 @@ class KlingGUIWindow:
             list_frame,
             bg=COLORS["bg_main"],
             fg=COLORS["text_light"],
-            font=("Consolas", 8),
+            font=(FONT_MONO, 9),
             selectbackground=COLORS["accent_blue"],
             selectforeground="white",
             yscrollcommand=scrollbar.set,
@@ -3157,7 +3189,7 @@ class KlingGUIWindow:
         dnd_color = COLORS["success"] if HAS_DND else COLORS["warning"]
         tk.Label(
             control_frame, text=dnd_status,
-            font=(FONT_FAMILY, 8), bg=COLORS["bg_main"], fg=dnd_color,
+            font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=dnd_color,
         ).pack(side=tk.LEFT)
 
         # Right side: Control buttons (flat styling, always visible via side=BOTTOM)

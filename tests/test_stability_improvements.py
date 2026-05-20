@@ -781,11 +781,19 @@ class CarouselFolderButtonTests(unittest.TestCase):
 
     def test_similarity_row_buttons_use_compact_style(self):
         src = inspect.getsource(ImageCarousel._build_panel)
-        # Ref/Compare use tk.Button for custom legibility styling.
-        self.assertIn("self._ref_btn = tk.Button(", src)
-        self.assertIn("self.compare_btn = tk.Button(", src)
+        # Post b3bc7398 + the PR #43 follow-up: all sim_row buttons use
+        # ttk.Button so the macOS HIView revert doesn't strip their tint
+        # after the first click. The Ref button uses custom CarouselRef
+        # styles (active/inactive); Compare + Videos use TTK_BTN_SECONDARY;
+        # Open Folder uses TTK_BTN_COMPACT.
+        self.assertIn("self._ref_btn = ttk.Button(", src)
+        self.assertIn("self.compare_btn = ttk.Button(", src)
+        self.assertIn("self.video_inspector_btn = ttk.Button(", src)
         self.assertIn("self.open_active_folder_btn = ttk.Button(", src)
-        self.assertGreaterEqual(src.count("style=TTK_BTN_COMPACT"), 3)
+        # CarouselRef styles wired by main_window._setup_ui
+        self.assertIn('style="CarouselRefInactive.TButton"', src)
+        self.assertIn('style=TTK_BTN_SECONDARY', src)
+        self.assertGreaterEqual(src.count("style=TTK_BTN_COMPACT"), 1)
 
 
 class Step3UiTighteningTests(unittest.TestCase):

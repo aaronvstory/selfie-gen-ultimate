@@ -388,79 +388,45 @@ class ImageCarousel(tk.Frame):
         sim_row = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
         sim_row.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 2))
 
-        self._ref_btn = tk.Button(
+        # ttk.Button (not tk.Button) per the b3bc7398 follow-up: raw
+        # tk.Button loses its tint after the first macOS Aqua HIView
+        # repaint. Custom styles defined in main_window._setup_ui swap
+        # between active (yellow) and inactive (panel-bg) state via
+        # _update_panel.
+        self._ref_btn = ttk.Button(
             sim_row,
             text="\u2605 Ref",
             command=debounce_command(self._toggle_sim_ref, key="carousel_ref"),
             state=tk.DISABLED,
             width=10,
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            disabledforeground=BUTTON_DISABLED_TEXT_COLOR,
-            highlightbackground=COLORS["bg_main"],
-            highlightthickness=1,
-            relief=tk.FLAT,
-            bd=0,
-            padx=8,
-            pady=4,
-            cursor="hand2",
+            style="CarouselRefInactive.TButton",
         )
         self._ref_btn.pack(side=tk.LEFT)
-        apply_macos_button_fix(self._ref_btn)
 
-        self.compare_btn = tk.Button(
+        self.compare_btn = ttk.Button(
             sim_row,
             text="Compare",
             command=debounce_command(self._on_compare, key="carousel_compare"),
             state=tk.DISABLED,
             width=10,
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            disabledforeground=BUTTON_DISABLED_TEXT_COLOR,
-            highlightbackground=COLORS["bg_main"],
-            highlightthickness=1,
-            relief=tk.FLAT,
-            bd=0,
-            padx=8,
-            pady=4,
-            cursor="hand2",
+            style=TTK_BTN_SECONDARY,
         )
         self.compare_btn.pack(side=tk.LEFT, padx=(6, 0))
-        apply_macos_button_fix(self.compare_btn)
 
         # Videos button — opens the Video Inspector modal. Mirrors the
         # Compare button recipe (same colors, same macOS button fix) so
         # they sit visually identical in the sim_row. Always enabled —
         # the modal handles the empty-folder case gracefully.
-        self.video_inspector_btn = tk.Button(
+        self.video_inspector_btn = ttk.Button(
             sim_row,
             text="Videos",
             command=debounce_command(
                 self._on_open_video_inspector, key="carousel_video_inspector"
             ),
             width=10,
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            disabledforeground=BUTTON_DISABLED_TEXT_COLOR,
-            highlightbackground=COLORS["bg_main"],
-            highlightthickness=1,
-            relief=tk.FLAT,
-            bd=0,
-            padx=8,
-            pady=4,
-            cursor="hand2",
+            style=TTK_BTN_SECONDARY,
         )
         self.video_inspector_btn.pack(side=tk.LEFT, padx=(6, 0))
-        apply_macos_button_fix(self.video_inspector_btn)
 
         # NOTE: manual recompute "Recalc" button moved to meta_frame (next
         # to the SIM badge) as an icon-only ⟳ button in v5 per user request.
@@ -686,37 +652,29 @@ class ImageCarousel(tk.Frame):
             # H3: video carousel items can't be a similarity ref — disable
             # the button on those entries. (_calc_all_similarity also guards
             # the recalc path, but the disabled state is a better affordance.)
+            # ttk.Button dynamic styling via style= swap (preserves dark
+            # tint through macOS HIView repaints). The two style names
+            # are defined in main_window._setup_ui alongside TTK_BTN_*.
             if entry is not None and entry.is_video:
-                self._ref_btn.config(
+                self._ref_btn.configure(
                     state=tk.DISABLED, text="\u2605 Ref",
-                    bg=COLORS["bg_panel"],
-                    fg=BUTTON_TEXT_COLOR,
-                    activebackground=COLORS["bg_hover"],
-                    activeforeground=BUTTON_TEXT_COLOR,
+                    style="CarouselRefInactive.TButton",
                 )
             elif is_manual_ref:
-                self._ref_btn.config(
+                self._ref_btn.configure(
                     state=tk.NORMAL, text="\u2605 Clear",
-                    bg=_REF_ACTIVE_BG,
-                    fg=_REF_ACTIVE_FG,
-                    activebackground=_REF_ACTIVE_BG,
-                    activeforeground=_REF_ACTIVE_FG,
+                    style="CarouselRefActive.TButton",
                 )
             else:
-                self._ref_btn.config(
+                self._ref_btn.configure(
                     state=tk.NORMAL, text="\u2605 Ref",
-                    bg=_REF_ACTIVE_BG if is_effective_ref else COLORS["bg_panel"],
-                    fg=_REF_ACTIVE_FG if is_effective_ref else BUTTON_TEXT_COLOR,
-                    activebackground=_REF_ACTIVE_BG if is_effective_ref else COLORS["bg_hover"],
-                    activeforeground=_REF_ACTIVE_FG if is_effective_ref else BUTTON_TEXT_COLOR,
+                    style=("CarouselRefActive.TButton" if is_effective_ref
+                           else "CarouselRefInactive.TButton"),
                 )
         else:
-            self._ref_btn.config(state=tk.DISABLED, text="\u2605 Ref")
-            self._ref_btn.config(
-                bg=COLORS["bg_panel"],
-                fg=BUTTON_TEXT_COLOR,
-                activebackground=COLORS["bg_hover"],
-                activeforeground=BUTTON_TEXT_COLOR,
+            self._ref_btn.configure(
+                state=tk.DISABLED, text="\u2605 Ref",
+                style="CarouselRefInactive.TButton",
             )
 
         if n == 0:
