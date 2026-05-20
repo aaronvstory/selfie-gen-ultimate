@@ -656,5 +656,105 @@ class UpdateMotionControlsFailSafeTests(unittest.TestCase):
         self.assertTrue(has_neg, "neg control must stay enabled on fail-safe")
 
 
+class Expand25SingleSelectRedesignTests(unittest.TestCase):
+    """User-requested PR #41 redesign of Step 2.5:
+    1. Candidate listbox is SINGLE-select; clicking a row navigates the
+       carousel to that path (forward coupling).
+    2. "Select All" / "Select Passing" buttons + their callbacks are
+       gone — single-select makes them meaningless.
+    3. Inline tk.Text prompt editor backed by outpaint_prompt (same key
+       the dispatch already reads). Persists via get_config_updates.
+    4. _on_expand_selected uses image_session.active_image_path
+       instead of multi-target list selection; button reads "Expand
+       Active Image"."""
+
+    def _src(self):
+        return (_ROOT / "kling_gui" / "tabs" / "expand_tab.py").read_text(
+            encoding="utf-8"
+        )
+
+    def test_listbox_is_single_select(self):
+        src = self._src()
+        # Candidate listbox is SINGLE. (The Expanded Outputs listbox
+        # right below it stays EXTENDED — different widget, user may
+        # want to send multiple expanded results to Step 3.)
+        self.assertRegex(
+            src,
+            r"self\._candidate_list\s*=\s*tk\.Listbox\("
+            r"[\s\S]{0,400}?selectmode=tk\.SINGLE",
+        )
+
+    def test_listbox_click_handler_wired(self):
+        src = self._src()
+        # ListboxSelect binds to _on_candidate_clicked which navigates
+        # image_session.navigate_to(idx) for the row's path.
+        self.assertIn('"<<ListboxSelect>>", self._on_candidate_clicked', src)
+        self.assertIn("def _on_candidate_clicked", src)
+        self.assertIn("self.image_session.navigate_to(i)", src)
+
+    def test_select_all_and_passing_buttons_removed(self):
+        src = self._src()
+        self.assertNotIn('text="Select All"', src)
+        self.assertNotIn('text="Select Passing"', src)
+        # Their callbacks are dead-code-deleted too.
+        self.assertNotIn("def _select_all_candidates", src)
+        self.assertNotIn("def _select_passing_candidates", src)
+
+    def test_prompt_editor_widget_exists_and_loads_config_key(self):
+        src = self._src()
+        # tk.Text widget on the tab, backed by outpaint_prompt.
+        self.assertIn("self._prompt_text = tk.Text(", src)
+        # Loaded from config at construction time.
+        self.assertRegex(
+            src,
+            r'self\._prompt_text\.insert\(\s*"1\.0",\s*'
+            r'self\.config\.get\(\s*"outpaint_prompt",\s*""\s*\)\s*\)',
+        )
+
+    def test_prompt_text_is_read_at_dispatch_time(self):
+        """The live editor value (not the stale cfg blob) must be what
+        ships to fal.ai / BFL — so a just-edited prompt actually takes
+        effect on the next Expand click without saving first."""
+        src = self._src()
+        # _on_expand_selected reads from self._prompt_text first.
+        self.assertRegex(
+            src,
+            r'prompt\s*=\s*self\._prompt_text\.get\("1\.0",\s*"end-1c"\)',
+        )
+
+    def test_expand_button_text_is_active_image(self):
+        src = self._src()
+        # Construction-time text.
+        self.assertIn('text="Expand Active Image"', src)
+        # Busy-toggle resume text.
+        self.assertIn('else "Expand Active Image"', src)
+        # Old "Expand Selected" wording is gone.
+        self.assertNotIn('text="Expand Selected"', src)
+        self.assertNotIn('else "Expand Selected"', src)
+
+    def test_expand_targets_active_image_not_listbox_selection(self):
+        src = self._src()
+        # _on_expand_selected reads from image_session.active_image_path,
+        # not _get_selected_candidate_entries() any more.
+        self.assertRegex(
+            src,
+            r"def _on_expand_selected\(self\):"
+            r"[\s\S]{0,500}?"
+            r"active_path\s*=\s*self\.image_session\.active_image_path",
+        )
+
+    def test_get_config_updates_persists_outpaint_prompt(self):
+        """Saving the panel writes the live editor value back so it
+        survives a restart."""
+        src = self._src()
+        # The dict literal must include the outpaint_prompt key wired
+        # to self._prompt_text.get(...).
+        self.assertRegex(
+            src,
+            r'"outpaint_prompt":\s*\(\s*'
+            r'self\._prompt_text\.get\(\s*"1\.0",\s*"end-1c"\s*\)',
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
