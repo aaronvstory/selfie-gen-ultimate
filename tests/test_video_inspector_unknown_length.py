@@ -59,5 +59,89 @@ class UnknownFrameCountTests(unittest.TestCase):
         )
 
 
+class RenderUsesLiveCanvasCenterTests(unittest.TestCase):
+    """Codex P1 (3273246454) on bdead49: ``_render_pil_image`` was
+    placing frames at the FIXED ``_DISPLAY_W/H`` center (240, 135)
+    instead of the LIVE ``self._canvas_w/h`` center. After any modal
+    resize, every playback tick re-anchored the frame to the
+    pre-resize position, so videos appeared offset in larger/smaller
+    slots even though the aspect-fit resize logic was using live
+    dimensions correctly.
+
+    Lock that the render path uses live coords + that ``_show_error``
+    + the ``clear()`` placeholder do the same.
+    """
+
+    def test_render_pil_image_uses_self_canvas_w_h(self):
+        src = _read_video_inspector_source()
+        # Locate _render_pil_image body and assert it dereferences
+        # self._canvas_w / self._canvas_h for the draw center.
+        start = src.index("def _render_pil_image")
+        end = src.index("\n    def ", start + 10)
+        body = src[start:end]
+        self.assertRegex(
+            body, r"self\._canvas_w\s*//\s*2",
+            "_render_pil_image must use self._canvas_w//2 (live width) "
+            "for the draw center, not the fixed _DISPLAY_W constant.",
+        )
+        self.assertRegex(
+            body, r"self\._canvas_h\s*//\s*2",
+            "_render_pil_image must use self._canvas_h//2 (live height) "
+            "for the draw center, not the fixed _DISPLAY_H constant.",
+        )
+        # Negative-lock: the OLD pattern must be gone from this body.
+        self.assertNotRegex(
+            body, r"_DISPLAY_W\s*//\s*2",
+            "_render_pil_image must NOT use _DISPLAY_W // 2 — that's "
+            "the bug being fixed.",
+        )
+
+    def test_show_error_uses_live_canvas_center(self):
+        src = _read_video_inspector_source()
+        start = src.index("def _show_error")
+        end = src.index("\n    def ", start + 10)
+        body = src[start:end]
+        # Both text items must be positioned relative to the LIVE
+        # canvas center.
+        self.assertRegex(
+            body, r"self\._canvas_w\s*//\s*2",
+            "_show_error must use live canvas width for centering.",
+        )
+
+
+class ResizeRecenterUsesPriorCanvasSizeTests(unittest.TestCase):
+    """Codex P2 (3273246460) on bdead49: ``_on_canvas_resize`` used
+    ``_DISPLAY_W/H`` as the "previous center" baseline for every
+    Configure event. That only matches reality for the FIRST resize
+    from the initial 480×270. Subsequent resizes computed offsets
+    from the wrong origin, walking items across the canvas.
+
+    Lock that the offset baseline is now the PRIOR canvas size
+    (``old_w/old_h``), not the fixed constants.
+    """
+
+    def test_recenter_old_center_uses_prior_canvas_dims(self):
+        src = _read_video_inspector_source()
+        start = src.index("def _on_canvas_resize")
+        end = src.index("\n    def ", start + 10)
+        body = src[start:end]
+        # The fix: old_cx = old_w // 2 (NOT _DISPLAY_W // 2).
+        self.assertRegex(
+            body, r"old_cx\s*=\s*old_w\s*//\s*2",
+            "_on_canvas_resize must base old-center on PRIOR canvas "
+            "dims (old_w//2), not the fixed _DISPLAY_W constant.",
+        )
+        self.assertRegex(
+            body, r"old_cy\s*=\s*old_h\s*//\s*2",
+        )
+        # Negative-lock the old buggy pattern.
+        self.assertNotRegex(
+            body,
+            r"old_cx\s*=\s*_DISPLAY_W\s*//\s*2",
+            "_on_canvas_resize MUST NOT use _DISPLAY_W // 2 for the "
+            "old-center — that was the multi-resize drift bug.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

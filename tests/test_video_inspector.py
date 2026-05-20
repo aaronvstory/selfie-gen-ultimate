@@ -552,6 +552,12 @@ class VideoFrameTests(unittest.TestCase):
         f._current_frame = -1
         f._photo = None
         f._overlay_drawer = None
+        # Live canvas dimensions (PR #43 bdead49 — _render_pil_image
+        # and _show_error now read these instead of _DISPLAY_W/H).
+        # Seed to the constants so existing tests behave identically.
+        from kling_gui.video_inspector import _DISPLAY_W, _DISPLAY_H
+        f._canvas_w = _DISPLAY_W
+        f._canvas_h = _DISPLAY_H
         # Generation-id locking (new in the PR-43 race fix).
         f._generation_id = 0
         f._stop_event = threading.Event()

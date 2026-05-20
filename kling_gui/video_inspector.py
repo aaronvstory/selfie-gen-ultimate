@@ -347,8 +347,8 @@ class VideoFrame(tk.Frame):
         try:
             self._canvas.delete("all")
             self._placeholder_id = self._canvas.create_text(
-                _DISPLAY_W // 2,
-                _DISPLAY_H // 2,
+                self._canvas_w // 2,
+                self._canvas_h // 2,
                 text="(no video)",
                 fill=COLORS["text_dim"],
                 font=(FONT_FAMILY, 11),
@@ -508,11 +508,18 @@ class VideoFrame(tk.Frame):
 
         self._photo = photo  # GC anchor (mirrors carousel_widget:123)
         self._current_frame = frame_index
+        # Use LIVE canvas dimensions for the center, not the fixed
+        # _DISPLAY_W/H constants. Codex P1 (PR #43 bdead49 review):
+        # the resize-fit logic already used self._canvas_w/h to pick
+        # the resize target, but _render_pil_image was still drawing
+        # at (240, 135), so playback re-anchored to the old position
+        # every tick after a resize.
+        cx = self._canvas_w // 2
+        cy = self._canvas_h // 2
         try:
             self._canvas.delete("all")
             self._canvas.create_image(
-                _DISPLAY_W // 2,
-                _DISPLAY_H // 2,
+                cx, cy,
                 image=self._photo,
                 anchor=tk.CENTER,
             )
@@ -527,22 +534,25 @@ class VideoFrame(tk.Frame):
                 return
         except tk.TclError:
             return
+        # Use LIVE canvas dimensions so the error text centers on the
+        # CURRENT widget size, not the original 480×270 baseline.
+        # Codex P1 (PR #43 bdead49 review).
+        cx = self._canvas_w // 2
+        cy = self._canvas_h // 2
         try:
             self._canvas.delete("all")
             self._canvas.create_text(
-                _DISPLAY_W // 2,
-                _DISPLAY_H // 2 - 10,
+                cx, cy - 10,
                 text="Cannot preview this video",
                 fill="#FFFFFF",
                 font=(FONT_FAMILY, 11, "bold"),
             )
             self._canvas.create_text(
-                _DISPLAY_W // 2,
-                _DISPLAY_H // 2 + 12,
+                cx, cy + 12,
                 text=message,
                 fill=COLORS["text_dim"],
                 font=(FONT_FAMILY, 9),
-                width=_DISPLAY_W - 20,
+                width=max(120, self._canvas_w - 20),
             )
         except tk.TclError:
             pass
@@ -572,15 +582,20 @@ class VideoFrame(tk.Frame):
         new size.
 
         Placeholder ``(no video)`` text + any error text + rendered
-        frames were created at absolute coords keyed off the initial
-        ``_DISPLAY_W/H = 480/270``. When grid grows the canvas, items
-        stay pinned at (240, 135) — visually off-center toward the
-        upper-left. We listen for canvas ``<Configure>`` events and:
+        frames were created at absolute coords; on canvas resize we:
           1. Update self._canvas_w/h so the next decoded frame is
              resized to fit the NEW canvas with aspect preserved.
           2. Re-center every existing canvas item, preserving each
-             item's RELATIVE x/y offset from the original center
+             item's RELATIVE x/y offset from the PREVIOUS center
              (e.g. the two-line error message keeps its 22px gap).
+             Codex P2 (PR #43 bdead49 review): the old code used
+             ``_DISPLAY_W/H`` as the "previous center" for every
+             event, which only worked for the FIRST resize from the
+             initial 480×270 — subsequent resizes computed offsets
+             from the wrong origin and progressively drifted items
+             across the canvas. Now the offset baseline is the PRIOR
+             canvas size (``old_w/old_h``), so multi-resize sessions
+             keep items correctly centered.
           3. If a video is currently loaded, request the same frame
              again so it re-renders at the new size right away
              instead of waiting for the next playback tick.
@@ -588,14 +603,18 @@ class VideoFrame(tk.Frame):
         # Guard against early events (canvas not yet mapped, returns 0).
         if event.width <= 1 or event.height <= 1:
             return
-        # Update cached dimensions for the next decode pass.
+        # Capture the PRIOR canvas size BEFORE updating cached
+        # dimensions — that's the origin we measure offsets from.
         old_w, old_h = self._canvas_w, self._canvas_h
         self._canvas_w = event.width
         self._canvas_h = event.height
         new_cx = event.width // 2
         new_cy = event.height // 2
-        old_cx = _DISPLAY_W // 2
-        old_cy = _DISPLAY_H // 2
+        # Use the PRIOR canvas dimensions as the "old center" for
+        # offset preservation, NOT the fixed _DISPLAY_W/H constants
+        # (which only matches the initial state). See docstring P2.
+        old_cx = old_w // 2
+        old_cy = old_h // 2
         try:
             for item in self._canvas.find_all():
                 item_type = self._canvas.type(item)
