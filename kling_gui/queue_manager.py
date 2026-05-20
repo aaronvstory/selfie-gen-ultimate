@@ -1806,16 +1806,46 @@ class QueueManager:
             # (single canonical helper, face_similarity._parse_bool).
             from face_similarity import _parse_bool
 
-            def _cfg_bool(key: str, default: bool) -> bool:
-                raw = cfg.get(key, default)
+            # The GUI config uses BARE keys (rppg_enabled,
+            # rppg_metrics_in_filename) while the automation pipeline
+            # uses the automation_-prefixed namespace. For PR-43's new
+            # iterative-mode flags the GUI config_panel doesn't yet
+            # surface UI controls, so users who hand-edit the config
+            # may set either the bare key (matches the GUI namespace
+            # convention) OR the automation_ prefix (matches what's in
+            # automation/config.py). Try the bare key first (it's the
+            # canonical GUI name), then fall back to the automation_
+            # name so the two namespaces stay in sync. PR #43 / code-
+            # reviewer P1.
+            def _cfg_get(bare_key: str, automation_key: str, default):
+                val = cfg.get(bare_key, None)
+                if val is None:
+                    val = cfg.get(automation_key, default)
+                return val
+
+            def _cfg_bool(bare_key: str, automation_key: str, default: bool) -> bool:
+                raw = _cfg_get(bare_key, automation_key, default)
                 parsed = _parse_bool(raw)
                 return parsed if parsed is not None else bool(default)
 
-            rppg_mode = str(cfg.get("rppg_mode") or "iterative").strip().lower()
+            rppg_mode_raw = _cfg_get("rppg_mode", "automation_rppg_mode", "iterative")
+            rppg_mode = str(rppg_mode_raw or "iterative").strip().lower()
             iterative = rppg_mode == "iterative"
-            iterate_from_baseline = _cfg_bool("rppg_iterate_from_baseline", True)
-            skip_diagnosis = _cfg_bool("rppg_skip_diagnosis", True)
-            skip_kinematic_gate = _cfg_bool("rppg_skip_kinematic_gate", True)
+            iterate_from_baseline = _cfg_bool(
+                "rppg_iterate_from_baseline",
+                "automation_rppg_iterate_from_baseline",
+                True,
+            )
+            skip_diagnosis = _cfg_bool(
+                "rppg_skip_diagnosis",
+                "automation_rppg_skip_diagnosis",
+                True,
+            )
+            skip_kinematic_gate = _cfg_bool(
+                "rppg_skip_kinematic_gate",
+                "automation_rppg_skip_kinematic_gate",
+                True,
+            )
             run_cmd = [
                 str(launcher),
                 str(input_path),

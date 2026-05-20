@@ -395,9 +395,15 @@ class VideoFrame(tk.Frame):
                 # Sentinel from clear(); exit.
                 return
 
-            # Cap is local to this generation — old workers don't race
-            # the new capture. The lock is kept for parity with future
-            # code that wants concurrent reads from the same cap.
+            # Cap is LOCAL to this generation — passed in as an arg, not
+            # read from self.* — so an old worker can't race the new
+            # capture. The lock that used to wrap this block has been
+            # removed (code-reviewer P2, PR #43): the previous
+            # implementation held self._cap_lock across the blocking
+            # cap.read() which on an H.264 keyframe decode can take
+            # 100-200ms, stalling the Tk thread's clear() call for the
+            # full decode window. Since cap is never shared, the lock
+            # served no real purpose.
             #
             # Sequential-read fast path: cap.set(CAP_PROP_POS_FRAMES) on
             # H.264/H.265 is O(N) from the nearest keyframe (Gemini #4
@@ -407,14 +413,13 @@ class VideoFrame(tk.Frame):
             # restart, A/B sync). The threshold (>1 frame delta)
             # tolerates the off-by-one from cap.get(POS_FRAMES) returning
             # the NEXT frame index after a successful read.
-            with self._cap_lock:
-                try:
-                    current = int(cap.get(cv2_mod.CAP_PROP_POS_FRAMES) or 0)
-                    if abs(current - frame_index) > 1:
-                        cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_index)
-                    ok, frame_bgr = cap.read()
-                except Exception:
-                    ok, frame_bgr = False, None
+            try:
+                current = int(cap.get(cv2_mod.CAP_PROP_POS_FRAMES) or 0)
+                if abs(current - frame_index) > 1:
+                    cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_index)
+                ok, frame_bgr = cap.read()
+            except Exception:
+                ok, frame_bgr = False, None
 
             if not ok or frame_bgr is None:
                 continue
@@ -1028,49 +1033,63 @@ class VideoInspectorModal(tk.Toplevel):
             self._timer_id = None
 
     def _tick(self) -> None:
-        # Reschedule first so a transient render error doesn't kill the timer.
-        self._schedule_tick()
-        if not self._playing:
+        # Reschedule LAST (was first; code-reviewer P3, PR #43). The
+        # "reschedule first" pattern was conventional but created a
+        # narrow race: destroy() could read self._timer_id and cancel
+        # the OLD timer, then _tick's _schedule_tick() would install a
+        # NEW timer post-cancel. That new timer would fire on a
+        # destroyed Toplevel and raise TclError (caught, but the
+        # callback ran anyway). Rescheduling at the END means destroy()
+        # always sees and cancels the LATEST timer id.
+        try:
+            if not self._playing:
+                self._update_counter()
+                return
+
+            # Source-FPS-driven advancement. master_frame is a float;
+            # the increment per ~40ms tick is (src_fps * TICK_MS / 1000)
+            # so a 60fps source advances ~2.4 frames per tick (rendered
+            # at the nearest integer index) and an 8fps source advances
+            # ~0.32 frames per tick. Both play at their real wall-clock
+            # rate. The "primary" slot for FPS purposes is the focused
+            # one when both are loaded, A otherwise, B if only B is
+            # loaded.
+            primary = self._primary_frame()
+            if primary is None or not primary.is_loaded():
+                self._playing = False
+                try:
+                    self._play_btn.config(text="▶ Play")
+                except tk.TclError:
+                    pass
+                return
+
+            fps = primary.get_fps() or 25.0
+            step = max(0.04, fps * _TICK_MS / 1000.0)  # floor 1f/25 ticks
+            total = primary.get_frame_count() or 1
+            self._master_frame = (self._master_frame + step) % total
+            idx = int(self._master_frame)
+
+            # Always advance the focused slot (so B-only or B-focused
+            # sessions don't freeze, fixing the CodeRabbit Major). The
+            # non-focused slot advances only when "Lock A+B scrub" is
+            # on. Preserves the lock checkbox's "scrub both together"
+            # semantic without freezing B.
+            if self._frame_a.is_loaded() and (
+                self._focused_slot == "A" or self._lock_scrub_var.get()
+            ):
+                self._frame_a.step_to(idx)
+            if self._frame_b.is_loaded() and (
+                self._focused_slot == "B" or self._lock_scrub_var.get()
+            ):
+                self._frame_b.step_to(idx)
+
             self._update_counter()
-            return
-
-        # Source-FPS-driven advancement. master_frame is a float; the
-        # increment per ~40ms tick is (src_fps * TICK_MS / 1000) so a
-        # 60fps source advances ~2.4 frames per tick (rendered at the
-        # nearest integer index) and an 8fps source advances ~0.32
-        # frames per tick. Both play at their real wall-clock rate.
-        # The "primary" slot for FPS purposes is the focused one when
-        # both are loaded, A otherwise, B if only B is loaded.
-        primary = self._primary_frame()
-        if primary is None or not primary.is_loaded():
-            self._playing = False
-            try:
-                self._play_btn.config(text="▶ Play")
-            except tk.TclError:
-                pass
-            return
-
-        fps = primary.get_fps() or 25.0
-        step = max(0.04, fps * _TICK_MS / 1000.0)  # floor at 1 frame/25 ticks
-        total = primary.get_frame_count() or 1
-        self._master_frame = (self._master_frame + step) % total
-        idx = int(self._master_frame)
-
-        # Always advance the focused slot (so B-only or B-focused
-        # sessions don't freeze, fixing the CodeRabbit Major). The
-        # non-focused slot advances only when "Lock A+B scrub" is on.
-        # This preserves the lock checkbox's original semantic ("scrub
-        # both together") while making B-only playback work.
-        if self._frame_a.is_loaded() and (
-            self._focused_slot == "A" or self._lock_scrub_var.get()
-        ):
-            self._frame_a.step_to(idx)
-        if self._frame_b.is_loaded() and (
-            self._focused_slot == "B" or self._lock_scrub_var.get()
-        ):
-            self._frame_b.step_to(idx)
-
-        self._update_counter()
+        finally:
+            # ALWAYS reschedule, even if the body raised (a transient
+            # render error mustn't kill the timer permanently). Guard
+            # against destroyed-widget rescheduling via the try/except
+            # in _schedule_tick.
+            self._schedule_tick()
 
     def _primary_frame(self) -> Optional["VideoFrame"]:
         """Pick which slot's FPS drives playback timing. Focused slot

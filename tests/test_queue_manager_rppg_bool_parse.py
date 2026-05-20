@@ -50,24 +50,46 @@ class QueueManagerRppgBoolParseTests(unittest.TestCase):
         # next top-level method def, generous 6000-char window).
         end = src.find("\n    def ", start + 10)
         body = src[start:end] if end > 0 else src[start : start + 6000]
-        # The 3 flags. All read through _cfg_bool with their default=True.
-        for key in (
-            "rppg_iterate_from_baseline",
-            "rppg_skip_diagnosis",
-            "rppg_skip_kinematic_gate",
+        # The 3 flags. All read through _cfg_bool with both the bare
+        # GUI key (rppg_...) AND the automation_ fallback name (PR #43
+        # code-reviewer P1 — GUI uses bare keys, automation/config.py
+        # uses prefixed; we honor both so a JSON hand-edit in either
+        # namespace is respected).
+        for bare, auto in (
+            ("rppg_iterate_from_baseline", "automation_rppg_iterate_from_baseline"),
+            ("rppg_skip_diagnosis", "automation_rppg_skip_diagnosis"),
+            ("rppg_skip_kinematic_gate", "automation_rppg_skip_kinematic_gate"),
         ):
             self.assertRegex(
                 body,
-                rf'_cfg_bool\(\s*"{key}",\s*True\s*\)',
-                f"_rppg_video must read {key!r} via _cfg_bool, not raw bool().",
+                rf'_cfg_bool\(\s*\n?\s*"{bare}",\s*\n?\s*"{auto}",\s*\n?\s*True',
+                f"_rppg_video must read {bare!r} via _cfg_bool with "
+                f"both names ({bare} bare + {auto} fallback).",
             )
             # And NOT via raw bool(cfg.get(...)) — the original bug.
             self.assertNotRegex(
                 body,
-                rf'bool\(\s*cfg\.get\(\s*"{key}"',
-                f"_rppg_video must not use raw bool(cfg.get({key!r}, ...)) — "
+                rf'bool\(\s*cfg\.get\(\s*"{bare}"',
+                f"_rppg_video must not use raw bool(cfg.get({bare!r}, ...)) — "
                 f"bool('false') == True silently re-enables the flag.",
             )
+
+    def test_rppg_mode_honors_both_namespaces(self):
+        """rppg_mode (string, not bool) MUST also accept both the
+        bare GUI key and the automation_ fallback. The code-reviewer
+        finding on PR #43 was that the GUI namespace mismatch silently
+        ignored automation_rppg_mode overrides."""
+        src = _read_queue_manager()
+        start = src.index("def _rppg_video")
+        end = src.find("\n    def ", start + 10)
+        body = src[start:end] if end > 0 else src[start : start + 6000]
+        # _cfg_get is the string-value sibling of _cfg_bool.
+        self.assertRegex(
+            body,
+            r'_cfg_get\(\s*"rppg_mode",\s*"automation_rppg_mode"',
+            "rppg_mode must read both namespaces (GUI bare + "
+            "automation_ prefix).",
+        )
 
     def test_parse_bool_is_the_canonical_helper(self):
         """Sanity: face_similarity._parse_bool exists and is the same
