@@ -375,10 +375,13 @@ class _RppgProgressTracker:
 
         Self-stateful: when this returns positive, ``_iter_current``
         advances internally so subsequent calls with the SAME iter
-        return 0. This lets the streamer call the extender
-        independently of ``on_line`` (the streamer in fact calls
-        on_line first, but tests + future callers may exercise the
-        extender alone)."""
+        return 0. The streamer calls THIS extender FIRST and ``on_line``
+        SECOND (PR #43 / CodeRabbit + Codex caught the inverted order
+        in 91af11f — when on_line ran first it updated _iter_current
+        and the extender then saw "already seen" and returned 0,
+        defeating the adaptive timeout). Self-statefulness is kept as
+        defense-in-depth for tests + future callers that may exercise
+        the extender independently of on_line."""
         m = _RPPG_ITER_RE.match(line.strip())
         if m is None:
             return 0

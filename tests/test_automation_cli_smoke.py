@@ -630,6 +630,22 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_oldcam_enabled"] is True
     assert ui.config["automation_oldcam_version"] == "v24"
     assert ui.config["automation_oldcam_required"] is True
+    # PR #43 / CodeRabbit cycle-3 migration-guard fix: the apply-
+    # recommended-defaults helper must write the v5 rPPG iterative-
+    # mode baseline so v4-or-earlier users pulling the update can
+    # apply-and-go. The rppg_enabled GATE stays False (opt-in), but
+    # the MODE knobs are pre-set so enabling-via-toggle just works.
+    assert ui.config["automation_rppg_enabled"] is False
+    assert ui.config["automation_rppg_mode"] == "iterative"
+    assert ui.config["automation_rppg_iterate_from_baseline"] is True
+    assert ui.config["automation_rppg_skip_diagnosis"] is True
+    assert ui.config["automation_rppg_skip_kinematic_gate"] is True
+    # Version bumped from 4 to 5 — drives the "apply recommended
+    # defaults" yellow prompt on the automation menu for users still
+    # at v4 from before the rPPG-iterative migration.
+    from kling_automation_ui import RECOMMENDED_DEFAULTS_VERSION
+    assert RECOMMENDED_DEFAULTS_VERSION == 5
+    assert ui.config["automation_recommended_defaults_version"] == 5
     assert ui.config["automation_max_cases_per_run"] == "all"
     assert ui.config["falai_api_key"] == "keep-fal-key"
     assert ui.config["bfl_api_key"] == "keep-bfl-key"
