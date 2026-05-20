@@ -572,5 +572,89 @@ class ReleasePrepLockEndFrameTemplateTests(unittest.TestCase):
         self.assertIs(self._run("true")["lock_end_frame"], True)
 
 
+class UpdateMotionControlsFailSafeTests(unittest.TestCase):
+    """Full-diff subagent finding (PR #41): _update_motion_controls
+    wrapped get_model_by_endpoint in a try/except with
+    `_is_known = True` as the fail-safe — which silently graded an
+    unknown model as known-with-no-caps and DISABLED the cfg + neg
+    controls. The intentional design (matching the dispatcher + queue
+    bypass philosophy) is the opposite: an endpoint we can't classify
+    must default to CUSTOM (False) so the live schema decides and the
+    controls stay enabled. Pin both the source AND the runtime
+    behaviour via the actual except path."""
+
+    def test_source_fail_safe_is_false(self):
+        src = (_ROOT / "kling_gui" / "config_panel.py").read_text(
+            encoding="utf-8"
+        )
+        # The except branch must set _is_known to False, not True.
+        # Walk via AST so whitespace can't trick the test.
+        import ast as _ast
+        tree = _ast.parse(src)
+        found = False
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Try):
+                for handler in node.handlers:
+                    for stmt in handler.body:
+                        if (
+                            isinstance(stmt, _ast.Assign)
+                            and len(stmt.targets) == 1
+                            and isinstance(stmt.targets[0], _ast.Name)
+                            and stmt.targets[0].id == "_is_known"
+                            and isinstance(stmt.value, _ast.Constant)
+                        ):
+                            if stmt.value.value is False:
+                                found = True
+                                break
+                            if stmt.value.value is True:
+                                self.fail(
+                                    "_is_known fail-safe is True — "
+                                    "graders unknown models as known-no-caps "
+                                    "and DISABLES cfg + neg controls. The "
+                                    "intentional design is False (treat as "
+                                    "custom / let live schema decide)."
+                                )
+        self.assertTrue(
+            found,
+            "Could not locate the `_is_known = False` fail-safe in any "
+            "except handler of config_panel.py — the design invariant "
+            "is unverifiable.",
+        )
+
+    def test_runtime_except_branch_disables_neither_control(self):
+        """Exercise the except path with a callable that raises and
+        confirm has_neg + has_cfg both end up True (controls enabled)
+        when the lookup fails. Mirrors lines 1949-1962 of config_panel
+        with caps stubbed so we only exercise the fail-safe branch,
+        not the unrelated caps-fetch path (which also calls
+        get_model_by_endpoint internally and would short-circuit the
+        test via the OUTER except in _update_motion_controls)."""
+        # Caps stub: a known model with NO neg/cfg support (e.g. o3).
+        # If the fail-safe is wrong (True), has_cfg/has_neg would both
+        # be False — controls disabled. With the correct fail-safe
+        # (False -> treat as unknown / custom), the bypass kicks in
+        # and both controls are enabled regardless of caps.
+        caps = {
+            "supports_cfg_scale": False,
+            "supports_negative_prompt": False,
+        }
+
+        def _lookup_raises(_ep):
+            raise RuntimeError("simulated runtime fault")
+
+        # Re-implement just the try/except + derivation from
+        # _update_motion_controls — kept in sync via the AST test
+        # above (test_source_fail_safe_is_false).
+        try:
+            _is_known = _lookup_raises("some-unknown-custom-endpoint") is not None
+        except Exception:
+            _is_known = False  # MUST match config_panel.py fail-safe
+        has_cfg = bool(caps.get("supports_cfg_scale")) or not _is_known
+        has_neg = bool(caps.get("supports_negative_prompt")) or not _is_known
+        # Fail-safe -> custom -> controls ENABLED.
+        self.assertTrue(has_cfg, "cfg control must stay enabled on fail-safe")
+        self.assertTrue(has_neg, "neg control must stay enabled on fail-safe")
+
+
 if __name__ == "__main__":
     unittest.main()

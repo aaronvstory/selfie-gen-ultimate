@@ -1949,7 +1949,16 @@ class ConfigPanel(tk.Frame):
         try:
             _is_known = get_model_by_endpoint(model_endpoint) is not None
         except Exception:
-            _is_known = True  # fail safe -> precise per-model behaviour
+            # Fail safe -> treat as custom/unknown endpoint so the
+            # cfg + negative-prompt controls stay ENABLED and the live
+            # schema decides. This matches the intentional bypass
+            # philosophy used in the dispatcher + queue_manager: an
+            # endpoint we can't classify must NOT be silently graded
+            # as a known model with no caps (which would gray out
+            # controls the user might actually need). The old fail-safe
+            # `True` produced the opposite of the design intent (full-
+            # diff subagent finding, PR #41).
+            _is_known = False
 
         has_end = caps.get("end_image_param") is not None
         has_cfg = bool(caps.get("supports_cfg_scale")) or not _is_known
