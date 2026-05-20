@@ -777,6 +777,57 @@ class ModalStructuralTests(unittest.TestCase):
         src = Path(video_inspector.__file__).read_text(encoding="utf-8")
         self.assertIn("video_inspector_window", src)
 
+    def test_shift_double_click_handler_returns_break(self):
+        """Critical: ``_on_listbox_shift_double`` MUST return ``"break"``
+        so Tk halts the binding chain. Without it,
+        ``<Shift-Double-Button-1>`` propagates to ``<Double-Button-1>``
+        which calls the slot-A load — silently overwriting the slot B
+        the user actually asked for.
+
+        We assert BOTH the return value (behavioural) AND the source
+        annotation (so a future refactor that drops the return value
+        can't silently regress).
+        """
+        from kling_gui.video_inspector import VideoInspectorModal
+        modal = VideoInspectorModal.__new__(VideoInspectorModal)
+        # Stub the only attribute _load_selection_into reads. Make
+        # _load_selection_into itself a no-op so we don't need a real
+        # listbox.
+        modal._load_selection_into = mock.MagicMock()
+        result = modal._on_listbox_shift_double(_event=mock.MagicMock())
+        # Behavioural: handler routed to B and returned the break.
+        modal._load_selection_into.assert_called_once_with("B")
+        self.assertEqual(
+            result, "break",
+            "Shift+DoubleClick handler must return 'break' to halt Tk's "
+            "binding chain — otherwise it ALSO triggers the plain "
+            "<Double-Button-1> handler (slot A), silently overwriting "
+            "the user's intended slot B load.",
+        )
+
+    def test_shift_double_click_handler_annotated_as_returning_str(self):
+        """Source-regex lock: the handler signature must annotate ``-> str``
+        and contain ``return "break"``. Catches refactors that change
+        the signature back to ``-> None`` without realizing they're
+        breaking the Tk event-chain halt."""
+        from kling_gui import video_inspector
+        src = Path(video_inspector.__file__).read_text(encoding="utf-8")
+        # Pin both the signature and the explicit return.
+        self.assertRegex(
+            src,
+            r"def _on_listbox_shift_double\(self,\s*_event\)\s*->\s*str:",
+            "_on_listbox_shift_double must be annotated -> str.",
+        )
+        # Locate the function body and check for the return.
+        start = src.index("def _on_listbox_shift_double")
+        end = src.index("\n    def ", start + 10)
+        body = src[start:end]
+        self.assertIn(
+            'return "break"', body,
+            "_on_listbox_shift_double must `return \"break\"` to halt "
+            "Tk's event-chain propagation.",
+        )
+
     def test_persist_geometry_writes_config_and_calls_save(self):
         """Lightweight behavioural test: __new__'d modal + stubbed
         winfo_* methods => _persist_geometry writes the expected dict."""

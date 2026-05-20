@@ -942,10 +942,19 @@ class VideoInspectorModal(tk.Toplevel):
         if vmeta is not None:
             self.load_into_slot_b(vmeta.path)
 
-    def _on_listbox_shift_double(self, _event) -> None:
+    def _on_listbox_shift_double(self, _event) -> str:
         """Shift+Double-click → load slot B. macOS-trackpad-friendly
-        alternative to right-click."""
+        alternative to right-click.
+
+        MUST return ``"break"`` to halt Tk's binding chain — without
+        it, Shift+Double-1 also propagates to the plain
+        ``<Double-Button-1>`` handler (Tk treats modifier+double as
+        BOTH a "Shift+Double" AND a "Double") which would then load
+        slot A on top of our B load, silently overwriting slot B and
+        landing the user with the wrong slot loaded.
+        """
         self._load_selection_into("B")
+        return "break"
 
     def _load_selection_into(self, slot: str) -> None:
         """Load the currently-selected listbox row into slot A or B.
