@@ -814,6 +814,20 @@ class KlingGUIWindow:
         # Protocol for window close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Live persistence of window geometry + sash positions during
+        # the session. Without this, manual resizes are only saved when
+        # _on_close fires — so crashes, kills, or any exit path that
+        # skips _on_close lose the user's choice silently (the bug:
+        # "I resize the window but next launch it comes back at the
+        # old size"). Configure events fire on every pixel of a drag
+        # so we debounce: the latest event re-arms a single timer,
+        # only the final size after the drag stops actually writes
+        # JSON to disk. 800ms is long enough to coalesce a drag but
+        # short enough that a quick resize + force-close still persists.
+        self._layout_save_after_id: Optional[str] = None
+        self._last_saved_geometry: str = ""
+        self.root.bind("<Configure>", self._on_root_configure, add="+")
+
     def _set_app_icon(self):
         """Load and set the app icon from bundled resources or alongside the exe."""
         try:
@@ -4106,6 +4120,63 @@ class KlingGUIWindow:
         except Exception as e:
             # Sash positions may fail on first run, that's OK
             pass
+
+    def _on_root_configure(self, event) -> None:
+        """Debounced Configure handler — schedules a layout save.
+
+        Configure events fire on every pixel of a drag (potentially
+        dozens per second on a smooth resize), so we coalesce into a
+        single save after the user stops moving. Only events on the
+        top-level root window are honored — child-widget Configures
+        propagate up and would otherwise cause spurious saves.
+        """
+        # Tk delivers Configure for every descendant; widget==self.root
+        # is the only one that matters for window geometry. Comparing
+        # by str(widget) is robust to bound-method-vs-Misc identity
+        # quirks across Tk implementations.
+        if str(event.widget) != str(self.root):
+            return
+        # Cancel any pending save — the latest size wins.
+        if self._layout_save_after_id is not None:
+            try:
+                self.root.after_cancel(self._layout_save_after_id)
+            except tk.TclError:
+                pass
+            self._layout_save_after_id = None
+        # Schedule the actual save (800ms = "user stopped dragging").
+        try:
+            self._layout_save_after_id = self.root.after(
+                800, self._save_layout_debounced
+            )
+        except tk.TclError:
+            self._layout_save_after_id = None
+
+    def _save_layout_debounced(self) -> None:
+        """Persist current layout to JSON. Fires after the Configure
+        debounce window. No-op when the geometry hasn't changed since
+        the last save (avoids needless disk writes during pure focus
+        changes that Tk reports as Configure events on some platforms)."""
+        self._layout_save_after_id = None
+        try:
+            current = self.root.geometry()
+        except tk.TclError:
+            return
+        if current == self._last_saved_geometry:
+            # Sash-only changes still get saved via the explicit on-close
+            # path; live sash-drag persistence is intentionally not added
+            # here because PanedWindow doesn't reliably fire <Configure>
+            # for sash moves (the children resize, not the paned itself).
+            return
+        self._save_layout()
+        try:
+            self._save_config()
+        except Exception:
+            # self.logger is set up at __init__ time (line 713); fall
+            # through to the stdlib logger if it isn't ready yet for
+            # whatever reason (Configure can fire before _setup_logging).
+            log = getattr(self, "logger", None) or logging.getLogger(__name__)
+            log.exception("debounced layout save: _save_config failed")
+        self._last_saved_geometry = current
 
     def _save_layout(self):
         """Save window geometry and sash positions to config."""
