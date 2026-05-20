@@ -756,5 +756,52 @@ class Expand25SingleSelectRedesignTests(unittest.TestCase):
         )
 
 
+class Expand25NonCandidateFallbackTests(unittest.TestCase):
+    """Codex P1 on commit 4eebb81 (PR #41): when the active carousel
+    image isn't in the selfie-candidate list (a crop / front original /
+    any non-selfie navigated to in the carousel), the redesigned
+    _on_expand_selected previously built an ad-hoc namedtuple that
+    lacked the ImageEntry API (update_similarity / set_similarity_override
+    / similarity_override). Passing it to _approve_override_if_needed
+    raised AttributeError before expansion could start. The fix uses
+    image_session.active_entry directly — a real ImageEntry with the
+    full method surface."""
+
+    def test_fallback_uses_image_session_active_entry(self):
+        src = (
+            _ROOT / "kling_gui" / "tabs" / "expand_tab.py"
+        ).read_text(encoding="utf-8")
+        # The fragile _AdHoc namedtuple path is gone.
+        self.assertNotIn("_AdHoc", src)
+        self.assertNotIn("namedtuple as _nt", src)
+        # The fallback uses the live session entry.
+        self.assertRegex(
+            src,
+            r"entry\s*=\s*self\.image_session\.active_entry",
+        )
+
+    def test_active_entry_supports_override_api(self):
+        """Sanity: verify the real ImageEntry has the methods
+        _approve_override_if_needed needs (so the fix is semantically
+        correct, not just syntactically replacing one path with another)."""
+        import importlib
+        ist = importlib.import_module("kling_gui.image_state")
+        entry_cls = getattr(ist, "ImageEntry")
+        # The methods/attrs used inside _approve_override_if_needed.
+        for attr in (
+            "update_similarity",
+            "set_similarity_override",
+            "similarity_override",
+            "similarity",
+            "similarity_score",
+            "path",
+            "filename",
+        ):
+            self.assertTrue(
+                hasattr(entry_cls, attr) or attr in entry_cls.__annotations__,
+                f"ImageEntry must expose {attr!r}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

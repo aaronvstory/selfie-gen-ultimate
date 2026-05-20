@@ -708,18 +708,21 @@ class ExpandTab(tk.Frame):
                 entry = e
                 break
         if entry is None:
-            # Build a lightweight entry for non-candidate images.
-            from collections import namedtuple as _nt
-            _AdHoc = _nt(
-                "_AdHoc",
-                ["path", "filename", "similarity", "similarity_score"],
-            )
-            entry = _AdHoc(
-                path=active_path,
-                filename=os.path.basename(active_path),
-                similarity=None,
-                similarity_score=None,
-            )
+            # Fallback: the active image isn't in the current
+            # selfie-candidate list (e.g. it's a crop / face_crop or
+            # an original input the user navigated to in the carousel).
+            # Use the live ImageEntry from the session directly — it
+            # has the full API (.update_similarity / .set_similarity_override
+            # / .similarity_override) that _approve_override_if_needed
+            # requires. A fabricated namedtuple is missing those
+            # methods and would raise AttributeError (Codex P1, PR #41).
+            entry = self.image_session.active_entry
+            if entry is None:
+                self.log(
+                    "Active image not resolvable to a session entry",
+                    "warning",
+                )
+                return
         if not self._approve_override_if_needed(entry):
             self.log(
                 f"Skipped (gate not overridden): {entry.filename}",
