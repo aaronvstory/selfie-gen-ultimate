@@ -592,18 +592,27 @@ def _is_foreign_path(path: str) -> bool:
     (\\\\server\\share\\...), or any backslash in the body (POSIX never
     produces backslashes in a saved path).
 
-    POSIX paths on Windows: leading ``/`` where ``os.path.isabs`` is
-    False — Windows treats ``/Users/...`` as drive-relative, so
-    ``isabs`` is the cleanest discriminator (POSIX absolute paths all
-    have ``isabs`` True natively; Windows-shaped paths with a drive
-    letter also have ``isabs`` True). Only the bare-leading-/ case
-    needs the negative guard.
+    POSIX paths on Windows: leading ``/`` that is NOT a UNC share. The
+    earlier ``os.path.isabs`` guard was wrong — on Windows,
+    ``ntpath.isabs("/Users/alice/x")`` returns True, so the predicate
+    ``startswith("/") and not isabs`` was always False and POSIX paths
+    were never flagged as foreign on a Windows host (CodeRabbit
+    critical on 253a9b4). Detect explicitly: ``/`` start but not
+    ``//`` (which is reserved for UNC). Backslashes are a POSIX
+    impossibility, so on Windows we additionally treat their absence
+    as a hint — but the ``/`` prefix is sufficient.
     """
     if not path:
         return False
     if os.name == "nt":
         # Windows host — spot POSIX-shaped absolute paths.
-        return path.startswith("/") and not os.path.isabs(path)
+        # POSIX absolute paths start with a single forward slash and
+        # contain no backslashes. Reject UNC-style ``\\server\share``
+        # (those are Windows-native, just unusual shape).
+        if path.startswith("\\\\"):
+            return False
+        normalized = path.replace("\\", "/")
+        return normalized.startswith("/") and not normalized.startswith("//")
     # POSIX host — spot Windows-shaped paths.
     if _WINDOWS_DRIVE_RE.match(path):
         return True

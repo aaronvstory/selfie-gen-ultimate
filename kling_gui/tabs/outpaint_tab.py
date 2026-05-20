@@ -9,6 +9,7 @@ from typing import Callable
 from ..theme import (
     COLORS,
     FONT_FAMILY,
+    FONT_MONO,
     TTK_BTN_COMPACT,
     TTK_BTN_WORKFLOW,
 )

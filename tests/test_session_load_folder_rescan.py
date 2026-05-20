@@ -366,6 +366,32 @@ def test_foreign_path_detection_windows_path_on_posix():
     assert not _is_foreign_path("")
 
 
+def test_foreign_path_detection_posix_path_on_windows():
+    """CodeRabbit critical on 253a9b4 — the inverse case was broken.
+    On Windows, ``ntpath.isabs("/Users/alice/x")`` returns True, so the
+    earlier predicate ``startswith("/") and not isabs`` was always False
+    and POSIX paths from a macOS session were never flagged as foreign
+    on a Windows host. Same silent-data-loss risk as the macOS case if
+    Prune ran on the Windows machine.
+    """
+    from kling_gui.session_manager import _is_foreign_path
+    import os
+    if os.name != "nt":
+        pytest.skip("POSIX-on-Windows detection — current host is POSIX")
+    # POSIX absolute paths — foreign on Windows
+    assert _is_foreign_path("/Users/alice/proj/front.png")
+    assert _is_foreign_path("/home/bob/x.jpg")
+    assert _is_foreign_path("/tmp/y.mp4")
+    assert _is_foreign_path("/Volumes/External/clip.mp4")
+    # NOT foreign — native Windows shapes
+    assert not _is_foreign_path(r"C:\Users\alice\proj\front.png")
+    assert not _is_foreign_path("D:/data/file.png")  # forward-slash variant
+    assert not _is_foreign_path(r"\\server\share\file.png")  # UNC
+    # Edge: empty / relative
+    assert not _is_foreign_path("")
+    assert not _is_foreign_path("relative/path.png")
+
+
 def test_session_with_all_foreign_paths_classifies_live(tmp_path):
     """End-to-end safety: a session whose images all live in C:\\Users on
     a Windows host must classify LIVE when opened on macOS — Prune would
