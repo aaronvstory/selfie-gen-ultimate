@@ -29,7 +29,10 @@ hiddenimports = [
     'selenium_balance_checker',
     'dependency_checker',
 
-    # Kling GUI package (explicit)
+    # Kling GUI package (explicit) — see also collect_submodules('kling_gui')
+    # below, which sweeps any lazy-imported modules added later. The
+    # explicit list is kept so the build still works if collect_submodules
+    # is somehow skipped, and so a missing module is obvious in tracebacks.
     'kling_gui',
     'kling_gui.main_window',
     'kling_gui.config_panel',
@@ -39,6 +42,24 @@ hiddenimports = [
     'kling_gui.video_looper',
     'kling_gui.theme',
     'kling_gui.model_manager_dialog',
+    'kling_gui.session_manager',
+    'kling_gui.session_controller',
+    'kling_gui.image_state',
+    'kling_gui.carousel_widget',
+    'kling_gui.compare_panel',
+    'kling_gui.layout_utils',
+    'kling_gui.ml_backend_env',
+    'kling_gui.tag_utils',
+    'kling_gui.video_discovery',
+    'kling_gui.video_inspector',
+    'kling_gui.video_metadata',
+    'kling_gui.tabs',
+    'kling_gui.tabs.face_crop_tab',
+    'kling_gui.tabs.prep_tab',
+    'kling_gui.tabs.selfie_tab',
+    'kling_gui.tabs.outpaint_tab',
+    'kling_gui.tabs.expand_tab',
+    'kling_gui.tabs.video_tab',
 
     # Tkinter
     'tkinter',
@@ -90,6 +111,16 @@ hiddenimports = [
     'webbrowser',
     'copy',
 ]
+
+# kling_gui submodules — belt-and-suspenders for any lazy/dynamic imports
+# added in the future (e.g., video_inspector lazy-loading config_panel for
+# HoverTooltip). Static Analysis from gui_launcher.py SHOULD catch all of
+# these, but explicit collection prevents a hard-to-diagnose ImportError
+# in the frozen build if someone refactors to a lazy import path.
+try:
+    hiddenimports += collect_submodules('kling_gui')
+except Exception:
+    pass
 
 # Selenium submodules (all of them - avoids runtime import failures)
 hiddenimports += collect_submodules('selenium')
