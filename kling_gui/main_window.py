@@ -1011,18 +1011,42 @@ class KlingGUIWindow:
                     pass
 
     def _set_app_icon(self):
-        """Load and set the app icon from bundled resources or alongside the exe."""
+        """Load and set the app icon — cross-platform.
+
+        Windows: ``iconbitmap`` with `.ico` (multi-size native ICO format,
+        renders crisp at every Windows DPI).
+        macOS + Linux: ``iconphoto`` with `.png` via PhotoImage — Tk on
+        Aqua silently ignores `.ico` and `iconbitmap`, so PNG is required
+        for the dock + window-list icon to actually render. The 256x256
+        PNG generated from the same source by create_icon.py is bundled
+        alongside the .ico (see kling_gui_direct.spec).
+
+        Icon is cosmetic — never crash the app over it.
+        """
         try:
             from path_utils import get_resource_dir, get_app_dir
             import tkinter as tk
 
-            icon_name = "kling_ui.ico"
+            search_dirs = [get_resource_dir(), get_app_dir()]
 
-            # Check bundled resources first (PyInstaller _MEIPASS), then app dir
-            for search_dir in [get_resource_dir(), get_app_dir()]:
-                icon_path = os.path.join(search_dir, icon_name)
-                if os.path.isfile(icon_path):
-                    self.root.iconbitmap(icon_path)
+            if IS_MACOS:
+                # macOS / Linux path: iconphoto + PhotoImage from PNG.
+                # iconbitmap on Aqua is a silent no-op.
+                for d in search_dirs:
+                    png_path = os.path.join(d, "kling_ui.png")
+                    if os.path.isfile(png_path):
+                        try:
+                            self._app_icon_photo = tk.PhotoImage(file=png_path)
+                            self.root.iconphoto(True, self._app_icon_photo)
+                            return
+                        except tk.TclError:
+                            continue  # PhotoImage may reject some PNGs
+                return
+            # Windows path: native .ico via iconbitmap.
+            for d in search_dirs:
+                ico_path = os.path.join(d, "kling_ui.ico")
+                if os.path.isfile(ico_path):
+                    self.root.iconbitmap(ico_path)
                     return
         except Exception:
             pass  # Icon is cosmetic - never crash the app over it

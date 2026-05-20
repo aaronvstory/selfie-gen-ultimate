@@ -14,6 +14,7 @@ block_cipher = None
 
 SPEC_DIR = Path(SPECPATH)
 ICON_PATH = str(SPEC_DIR / 'kling_ui.ico')
+ICON_PNG_PATH = str(SPEC_DIR / 'kling_ui.png')  # macOS/Linux iconphoto source
 
 # -----------------------------------------------------------------------
 # Hidden imports
@@ -132,9 +133,13 @@ datas = collect_data_files('tkinterdnd2')
 # certifi CA bundle
 datas += collect_data_files('certifi')
 
-# App icon (bundled so _set_app_icon can find it in _MEIPASS)
+# App icon (bundled so _set_app_icon can find it in _MEIPASS).
+# Both .ico and .png are shipped — Windows uses .ico via iconbitmap,
+# macOS/Linux use .png via iconphoto (Tk on Aqua silently ignores .ico).
 if Path(ICON_PATH).exists():
     datas.append((ICON_PATH, '.'))
+if Path(ICON_PNG_PATH).exists():
+    datas.append((ICON_PNG_PATH, '.'))
 
 # Default config template (prompts, model defaults - no API key)
 template_path = str(SPEC_DIR / 'default_config_template.json')

@@ -363,7 +363,10 @@ class SelfieTab(tk.Frame):
 
         self.prompt_template_text = tk.Text(
             self._customized_frame,
-            height=7,
+            # height bumped to 12 (2026-05-21): macOS has vertical
+            # headroom that was unused; long wildcard prompts need it
+            # to be readable without scrolling.
+            height=12,
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
@@ -434,7 +437,7 @@ class SelfieTab(tk.Frame):
 
         self._wildcard_text = tk.Text(
             self._wildcard_frame,
-            height=7,
+            height=12,  # match customized template height
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],

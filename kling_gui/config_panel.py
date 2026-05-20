@@ -592,6 +592,8 @@ class ConfigPanel(tk.Frame):
             )
             check.grid(row=i // _OLDCAM_COLS, column=i % _OLDCAM_COLS, sticky="w", padx=(2, 8), pady=0)
             self.oldcam_version_checks[version] = check
+            # Per-version hover tooltip with the one-liner summary + key trade-off.
+            HoverTooltip(check, lambda _v=version: self._get_oldcam_tooltip(_v))
         # (Re-Run controls are no longer inside the Oldcam frame — they
         # live in ONE shared column to the right of both tinted frames,
         # built after the rPPG frame below.)
@@ -958,11 +960,33 @@ class ConfigPanel(tk.Frame):
             command=self._on_lock_end_frame_changed,
         )
         self.lock_end_frame_checkbox.pack(side=tk.LEFT, padx=(0, 12))
+        HoverTooltip(self.lock_end_frame_checkbox, lambda: (
+            "Lock End Frame — force the video to end on (or very near) "
+            "the start image. Critical for the ping-pong loop step: "
+            "if start â  end the loop visibly seams.\n\n"
+            "ON (default): video starts at source, drifts through the "
+            "head-turn, returns to source. Cleanest loops.\n"
+            "OFF: model decides freely â may improve motion realism "
+            "for non-looped output. Disable only if you're NOT going "
+            "to loop the result."
+        ))
         self.cfg_scale_label = tk.Label(
             rEF, text="cfg:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.cfg_scale_label.pack(side=tk.LEFT, padx=(0, 3))
+        _cfg_tip = lambda: (
+            "CFG (Classifier-Free Guidance) — how strictly the model "
+            "follows the prompt vs. exercises its own \"taste\".\n\n"
+            "0.0 = loose, model improvises (best for vague prompts)\n"
+            "0.5 = fal.ai default (balanced)\n"
+            "0.7 = recommended for our pipeline (sticks to head-turn\n"
+            "      prompt closely, low surprise)\n"
+            "1.0 = max adherence, can over-tighten\n\n"
+            "If subjects drift off-prompt: raise. If outputs feel "
+            "robotic: lower."
+        )
+        HoverTooltip(self.cfg_scale_label, _cfg_tip)
         self.cfg_scale_var = tk.StringVar(value="0.7")
         self.cfg_scale_entry = tk.Entry(
             rEF, textvariable=self.cfg_scale_var, font=(FONT_FAMILY, 10),
@@ -1727,6 +1751,52 @@ class ConfigPanel(tk.Frame):
             "     than v15 while staying visually sharp. Best result.",
         ]
         return "\n".join(lines)
+
+    # Per-version oldcam tooltips, surfaced on hover over each version
+    # checkbox. Source-of-truth text is the same block in
+    # _get_oldcam_version_notes — these short forms are the one-liner
+    # summary + the key trade-off, optimized for hover-glance.
+    _OLDCAM_VERSION_TOOLTIPS = {
+        "v7":  ("Modern phone imperfection — JPEG cycle, arm-sway "
+                "rolling shutter, AF hunting. No face tracking. "
+                "Trade-off: too subtle vs. source."),
+        "v8":  ("Hardware physics upgrade — spring-damper OIS, 3D "
+                "channel noise, AWB drift, hard bitrate cap. "
+                "Trade-off: bitrate cap over-compresses + loses detail."),
+        "v9":  ("Face-aware portrait pass — MediaPipe FaceLandmarker, "
+                "4-region masks, AWB drift, soft background. "
+                "Trade-off: background blur reads as fake DOF."),
+        "v10": ("rPPG biological sync — FFT on green channel → phase-"
+                "locked color pulse in 4 face regions. "
+                "Trade-off: visible color siren; AWB removed."),
+        "v11": ("Best-of-all combo — v10 pulse + v9 AWB applied AFTER "
+                "the FFT read. "
+                "Trade-off: 2D rPPG flagged by modern PAD; sepia LUT."),
+        "v12": ("Pristine hardware-only (anti-spoof aware) — no rPPG, "
+                "no LUT, no CLAHE, no HSV. Pure OIS/AE/noise/vignette. "
+                "Best for low-light realism; preserves Kling color."),
+        "v13": ("High-end daylight (pristine optics) — no sensor noise, "
+                "no AE hunt, no ghosting, no MediaPipe. Pure OIS / "
+                "rolling shutter / bloom / AWB / aberration / vignette."),
+        "v14": ("Forensic daylight (physics-corrected) — v13 optics + "
+                "true multiplicative AWB, sub-perceptual sensor floor, "
+                "smoothstep bloom, lossless temp encode, audio-preserving."),
+        "v15": ("Temporal Mute (synthesis) — v14 math + v13 noise-free "
+                "philosophy + v12 temporal blend. No sensor noise; "
+                "--ghosting 0.18 bleeds prev frame to defeat consistency "
+                "detectors. Superseded by v24."),
+        "v24": ("\u2605 Default — Crush Laundromat (synthesis). v15 + "
+                "uniform resolution round-trip (downscale x0.40 → "
+                "Lanczos upscale + light unsharp). Destroys AI "
+                "fingerprint uniformly; ~9x better Resemble-API score "
+                "than v15 while staying visually sharp."),
+    }
+
+    def _get_oldcam_tooltip(self, version: str) -> str:
+        """Return per-version oldcam hover text for the version checkbox."""
+        return self._OLDCAM_VERSION_TOOLTIPS.get(
+            version, f"Oldcam {version} (no description)",
+        )
 
     def _update_model_info_icon(self, model: dict = None):
         """Set info icon color: blue when model has notes/info, dim otherwise."""
