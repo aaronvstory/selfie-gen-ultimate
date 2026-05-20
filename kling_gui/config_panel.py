@@ -90,6 +90,15 @@ class HoverTooltip:
         self._tip: Optional[tk.Toplevel] = None
         widget.bind("<Enter>", self._show)
         widget.bind("<Leave>", self._hide)
+        # M1 (subagent on cac29c8f): if the widget is destroyed while
+        # the tooltip is showing (e.g. pill row torn down on slot-load),
+        # <Leave> never fires + the floating Toplevel stays orphaned.
+        # Bind <Destroy> to tear down the tip explicitly. add="+" so we
+        # don't clobber any existing <Destroy> binding on the widget.
+        try:
+            widget.bind("<Destroy>", self._on_widget_destroy, add="+")
+        except tk.TclError:
+            pass
 
     def _show(self, event=None):
         text = self._text_func()
@@ -130,8 +139,22 @@ class HoverTooltip:
 
     def _hide(self, event=None):
         if self._tip:
-            self._tip.destroy()
+            try:
+                self._tip.destroy()
+            except tk.TclError:
+                pass
             self._tip = None
+
+    def _on_widget_destroy(self, _event=None) -> None:
+        """Tear down the floating tooltip when the parent widget dies.
+
+        Without this, a HoverTooltip on a transient widget (e.g. the
+        Video Inspector pill row, which is rebuilt on every slot load)
+        leaves an orphan Toplevel on screen whenever the parent is
+        destroyed while the mouse is still hovering it (<Leave> never
+        fires). M1 finding on cac29c8f.
+        """
+        self._hide()
 
 
 class ModelFetcher:
@@ -966,7 +989,7 @@ class ConfigPanel(tk.Frame):
             "if start â  end the loop visibly seams.\n\n"
             "ON (default): video starts at source, drifts through the "
             "head-turn, returns to source. Cleanest loops.\n"
-            "OFF: model decides freely â may improve motion realism "
+            "OFF: model decides freely — may improve motion realism "
             "for non-looped output. Disable only if you're NOT going "
             "to loop the result."
         ))

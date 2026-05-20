@@ -1350,13 +1350,31 @@ class VideoInspectorModal(tk.Toplevel):
         meta = parse_video_filename(frame._video_path)
 
         # Model pill — human-readable name (e.g. "Kling 2.5 Turbo Std")
+        # M2 (subagent on cac29c8f): suppress the model pill on
+        # non-pipeline filenames (user-renamed mp4, .mov, .webm, etc.).
+        # Render a single "[unrecognized format]" pill instead so the
+        # user sees we couldn't parse the name + no other metadata
+        # pills follow (slot/take/oldcam/rppg/sim are all derived from
+        # the pipeline naming convention).
+        if meta.model_short is None:
+            self._make_pill(
+                row, "[unrecognized format]",
+                bg="#4A4A4F", fg="#A0A0A5",
+                tooltip=(
+                    "Filename doesn't match the pipeline naming "
+                    "convention\n(stem_modelShort_pN_M.mp4 + optional "
+                    "oldcam/rPPG/looped\nsuffixes), so model/slot/take/"
+                    "oldcam/rPPG/sim metadata\nisn't available."
+                ),
+            ).pack(side=tk.LEFT, padx=(0, 4))
+            return
         model_display = self._model_short_display(meta.model_short)
         self._make_pill(
             row, model_display,
             bg="#2A4A8C", fg="#E0E8FF",
             tooltip=(
                 f"Model: {model_display}\n"
-                f"Short code in filename: {meta.model_short or '?'}"
+                f"Short code in filename: {meta.model_short}"
             ),
         ).pack(side=tk.LEFT, padx=(0, 4))
 
@@ -1368,7 +1386,7 @@ class VideoInspectorModal(tk.Toplevel):
             if meta.take is not None:
                 slot_take.append(f"t{meta.take}")
             self._make_pill(
-                row, " Â· ".join(slot_take),
+                row, " · ".join(slot_take),
                 bg="#3C3C41",
                 tooltip="Prompt slot · take number (the N in the\n"
                         "filename suffix _pN_M).",
@@ -1404,14 +1422,14 @@ class VideoInspectorModal(tk.Toplevel):
         if meta.has_rppg:
             metrics = meta.rppg_metrics
             if metrics is not None:
-                # Compact metric form: snr=XX.X · ph=YY.YÂ°
+                # Compact metric form: snr=XX.X · ph=YY.Y°
                 rppg_text = (
-                    f"rppg Â· snr {metrics.snr:.1f} Â· ph {metrics.phase:.0f}Â°"
+                    f"rppg · snr {metrics.snr:.1f} · ph {metrics.phase:.0f}°"
                 )
                 rppg_tip = (
                     f"rPPG injection metrics (from filename or sidecar):\n"
                     f"  SNR (Signal-to-Noise Ratio): {metrics.snr:.2f}\n"
-                    f"  Phase offset: {metrics.phase:.1f}Â°\n"
+                    f"  Phase offset: {metrics.phase:.1f}°\n"
                     f"  Temporal correlation: {metrics.temporal:.3f}\n"
                     f"  Motion stability: {metrics.motion:.3f}\n"
                     f"  Harmonic energy: {metrics.harmonic:.3f}\n"

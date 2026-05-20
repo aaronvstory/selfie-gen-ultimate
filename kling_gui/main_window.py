@@ -1029,9 +1029,12 @@ class KlingGUIWindow:
 
             search_dirs = [get_resource_dir(), get_app_dir()]
 
-            if IS_MACOS:
+            # macOS and Linux Tk both silently ignore iconbitmap with .ico.
+            # Use iconphoto+PNG for those; iconbitmap+ico stays for Windows.
+            _non_windows = IS_MACOS or sys.platform.startswith("linux")
+            if _non_windows:
                 # macOS / Linux path: iconphoto + PhotoImage from PNG.
-                # iconbitmap on Aqua is a silent no-op.
+                # iconbitmap on Aqua + on most Linux WMs is a silent no-op.
                 for d in search_dirs:
                     png_path = os.path.join(d, "kling_ui.png")
                     if os.path.isfile(png_path):
@@ -1265,7 +1268,7 @@ class KlingGUIWindow:
                 "head movement while the body and background remain "
                 "completely motionless. The head turns to one side at a "
                 "moderate angle (about 40 degrees from center, roughly a "
-                "three-quarter view â clearly turned but well short of "
+                "three-quarter view — clearly turned but well short of "
                 "profile), then slowly turns to the matching angle on the "
                 "other side. Eyes stay locked on the camera lens the "
                 "entire time. Facial expression stays neutral and "
@@ -1301,7 +1304,7 @@ class KlingGUIWindow:
                 print("Backfilled negative_prompts slot 4 (was empty)")
             # If current_model drifted off the canonical Kling 2.5 Pro
             # Turbo AND the user hasn't explicitly set model_display_name,
-            # leave it alone â user may have switched intentionally.
+            # leave it alone — user may have switched intentionally.
             # Only backfill if model field is empty/missing.
             if not str(config.get("current_model", "")).strip():
                 config["current_model"] = (
