@@ -925,21 +925,22 @@ class VideoInspectorModal(tk.Toplevel):
         )
         self._frame_b.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
-        # ── Metadata strip ──────────────────────────────────────────
-        self._meta_var = tk.StringVar(value="No video loaded.")
-        meta_frame = tk.Frame(self, bg=COLORS["bg_panel"])
-        meta_frame.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 4))
-        self._meta_label = tk.Label(
-            meta_frame,
-            textvariable=self._meta_var,
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            font=(FONT_FAMILY, 9),
-            justify=tk.LEFT,
-            anchor=tk.W,
-            wraplength=2000,
-        )
-        self._meta_label.pack(side=tk.TOP, fill=tk.X, padx=8, pady=6)
+        # ── Metadata strip (pill row per slot) ──────────────────────
+        # Each slot (A/B) gets its own row of colored pills showing
+        # the parsed video metadata: model name, slot/take, oldcam
+        # version, rPPG metrics, similarity score, looped flag.
+        # User 2026-05-21 feedback: the prior single-line text
+        # "A: k25tStd · slot 3 · take 1 · oldcam v24 · sim 83%" was
+        # too tiny + monotone to scan; pills give visual grouping.
+        self._meta_container = tk.Frame(self, bg=COLORS["bg_panel"])
+        self._meta_container.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 4))
+        # Two stable slot rows so _refresh_metadata can re-populate
+        # without churning the parent (avoids re-grid + re-pack on
+        # every load).
+        self._meta_row_a = tk.Frame(self._meta_container, bg=COLORS["bg_panel"])
+        self._meta_row_a.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(6, 2))
+        self._meta_row_b = tk.Frame(self._meta_container, bg=COLORS["bg_panel"])
+        self._meta_row_b.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 6))
 
         # ── Videos-in-folder listbox (full width, BELOW the videos) ──
         list_panel = tk.Frame(self, bg=COLORS["bg_main"])
@@ -1226,14 +1227,237 @@ class VideoInspectorModal(tk.Toplevel):
         return ok
 
     def _refresh_metadata(self) -> None:
-        lines: List[str] = []
-        for slot, frame in (("A", self._frame_a), ("B", self._frame_b)):
-            if not frame.is_loaded() or frame._video_path is None:
-                lines.append(f"{slot}: (empty)")
-                continue
-            meta = parse_video_filename(frame._video_path)
-            lines.append(f"{slot}: {self._format_metadata_line(meta)}")
-        self._meta_var.set("\n".join(lines))
+        """Re-render the pill rows for both slots.
+
+        Each row is wiped + rebuilt per call. Cheap (a handful of tiny
+        frames + labels per slot) and keeps the implementation simple
+        — no diff-and-mutate needed.
+        """
+        for slot_letter, frame, row in (
+            ("A", self._frame_a, self._meta_row_a),
+            ("B", self._frame_b, self._meta_row_b),
+        ):
+            for child in row.winfo_children():
+                child.destroy()
+            self._render_pills_for_slot(row, slot_letter, frame)
+
+    # Model-short → human-readable display name. Reverse of
+    # queue_manager._model_short_from_endpoint. Used by the slot
+    # pill row so the user sees "Kling 2.5 Turbo Std" instead of
+    # "k25tStd".
+    _MODEL_SHORT_DISPLAY = {
+        "k25tPro":   "Kling 2.5 Turbo Pro",
+        "k25tStd":   "Kling 2.5 Turbo Std",
+        "k25tMaster":"Kling 2.5 Turbo Master",
+        "k25":       "Kling 2.5",
+        "k26pro":    "Kling 2.6 Pro",
+        "k26std":    "Kling 2.6 Std",
+        "k26master": "Kling 2.6 Master",
+        "k30pro":    "Kling 3.0 Pro",
+        "k30std":    "Kling 3.0 Std",
+        "k21pro":    "Kling 2.1 Pro",
+        "k21std":    "Kling 2.1 Std",
+        "k20pro":    "Kling 2.0 Pro",
+        "k20std":    "Kling 2.0 Std",
+        "k16pro":    "Kling 1.6 Pro",
+        "k16std":    "Kling 1.6 Std",
+        "k15pro":    "Kling 1.5 Pro",
+        "k15std":    "Kling 1.5 Std",
+        "kO1":       "Kling O1",
+        "veo3":      "Veo 3",
+        "veo":       "Veo",
+        "wan25":     "Wan 2.5",
+        "wan":       "Wan",
+        "ovi":       "Ovi",
+        "ltx2":      "LTX 2",
+        "pix5":      "Pixverse v5",
+        "pixverse":  "Pixverse",
+        "hunyuan":   "Hunyuan",
+        "minimax":   "Minimax",
+    }
+
+    def _model_short_display(self, short: Optional[str]) -> str:
+        """Return the human-readable name for a model_short code."""
+        if not short:
+            return "model ?"
+        return self._MODEL_SHORT_DISPLAY.get(short, short)
+
+    def _make_pill(
+        self,
+        parent: tk.Misc,
+        text: str,
+        *,
+        bg: str = "#3C3C41",
+        fg: str = "#E8E8E8",
+        tooltip: Optional[str] = None,
+    ) -> tk.Frame:
+        """Build a single rounded-ish pill. ttk-Style rounded corners
+        aren't supported by Tk, so we approximate with a flat bg-tinted
+        Frame + 1px border + tight padding. Reads as a pill at the
+        glance distance the meta-strip is used from.
+        """
+        pill = tk.Frame(
+            parent, bg=bg,
+            highlightbackground="#4A4A4F", highlightthickness=1, bd=0,
+        )
+        tk.Label(
+            pill, text=text, bg=bg, fg=fg,
+            font=(FONT_FAMILY, 10, "bold"),
+            padx=8, pady=3,
+        ).pack()
+        if tooltip:
+            # HoverTooltip is defined in config_panel.py — lazy-import
+            # to avoid a circular dep (config_panel imports nothing here).
+            try:
+                from .config_panel import HoverTooltip
+                HoverTooltip(pill, lambda _t=tooltip: _t)
+            except Exception:
+                pass
+        return pill
+
+    def _render_pills_for_slot(
+        self,
+        row: tk.Frame,
+        slot_letter: str,
+        frame: "VideoFrame",
+    ) -> None:
+        """Build the pill row for one slot. Order:
+          [Slot A/B] [Model] [pN tN] [Looped?] [Oldcam vN?] [rPPG?] [Sim N%?]
+        Empty slot just shows a dim "(empty)" label.
+        """
+        # Slot letter pill — always present, larger + bolder than data
+        # pills so the eye finds the row anchor instantly.
+        slot_pill = tk.Frame(
+            row, bg=COLORS["accent_blue"],
+            highlightbackground="#4A4A4F", highlightthickness=1, bd=0,
+        )
+        tk.Label(
+            slot_pill, text=f"Slot {slot_letter}",
+            bg=COLORS["accent_blue"], fg="#FFFFFF",
+            font=(FONT_FAMILY, 10, "bold"),
+            padx=10, pady=3,
+        ).pack()
+        slot_pill.pack(side=tk.LEFT, padx=(0, 6))
+
+        if not frame.is_loaded() or frame._video_path is None:
+            tk.Label(
+                row, text="(empty)",
+                bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
+                font=(FONT_FAMILY, 10, "italic"),
+            ).pack(side=tk.LEFT, padx=(2, 0))
+            return
+
+        meta = parse_video_filename(frame._video_path)
+
+        # Model pill — human-readable name (e.g. "Kling 2.5 Turbo Std")
+        model_display = self._model_short_display(meta.model_short)
+        self._make_pill(
+            row, model_display,
+            bg="#2A4A8C", fg="#E0E8FF",
+            tooltip=(
+                f"Model: {model_display}\n"
+                f"Short code in filename: {meta.model_short or '?'}"
+            ),
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        # Slot/take pill — concise (e.g. "p3 · t1")
+        if meta.slot is not None or meta.take is not None:
+            slot_take = []
+            if meta.slot is not None:
+                slot_take.append(f"p{meta.slot}")
+            if meta.take is not None:
+                slot_take.append(f"t{meta.take}")
+            self._make_pill(
+                row, " Â· ".join(slot_take),
+                bg="#3C3C41",
+                tooltip="Prompt slot · take number (the N in the\n"
+                        "filename suffix _pN_M).",
+            ).pack(side=tk.LEFT, padx=(0, 4))
+
+        # Looped pill (small, dim — informational)
+        if meta.is_looped:
+            self._make_pill(
+                row, "looped",
+                bg="#2A4A6A", fg="#A0C8E8",
+                tooltip="FFmpeg ping-pong loop applied. Doubles the\n"
+                        "clip length by appending a reverse copy so\n"
+                        "the video can play in a continuous loop.",
+            ).pack(side=tk.LEFT, padx=(0, 4))
+
+        # Oldcam pill
+        if meta.oldcam_version is not None:
+            v = meta.oldcam_version
+            oldcam_tooltip = (
+                f"Oldcam v{v} applied. Adds camera/sensor imperfections\n"
+                f"(rolling shutter, AWB drift, OIS spring-damper, etc.)\n"
+                f"to make AI-generated frames read as filmed footage.\n"
+                f"Hover the v{v} checkbox in Step 3 for the full\n"
+                f"per-version description."
+            )
+            self._make_pill(
+                row, f"oldcam v{v}",
+                bg="#5A3A7A", fg="#E0D0F0",  # violet (matches Step 3 frame)
+                tooltip=oldcam_tooltip,
+            ).pack(side=tk.LEFT, padx=(0, 4))
+
+        # rPPG pill (with metrics if present)
+        if meta.has_rppg:
+            metrics = meta.rppg_metrics
+            if metrics is not None:
+                # Compact metric form: snr=XX.X · ph=YY.YÂ°
+                rppg_text = (
+                    f"rppg Â· snr {metrics.snr:.1f} Â· ph {metrics.phase:.0f}Â°"
+                )
+                rppg_tip = (
+                    f"rPPG injection metrics (from filename or sidecar):\n"
+                    f"  SNR (Signal-to-Noise Ratio): {metrics.snr:.2f}\n"
+                    f"  Phase offset: {metrics.phase:.1f}Â°\n"
+                    f"  Temporal correlation: {metrics.temporal:.3f}\n"
+                    f"  Motion stability: {metrics.motion:.3f}\n"
+                    f"  Harmonic energy: {metrics.harmonic:.3f}\n"
+                    f"Higher SNR = stronger physiological signal\n"
+                    f"detectable by passive rPPG (Persona). Source:\n"
+                    f"{meta.rppg_metrics_source or '?'}."
+                )
+            else:
+                rppg_text = "rppg"
+                rppg_tip = (
+                    "rPPG pulse injected. Metrics not present in this\n"
+                    "filename (rppg_metrics_in_filename was off when\n"
+                    "this video ran). Sidecar JSON may have details."
+                )
+            self._make_pill(
+                row, rppg_text,
+                bg="#7A4A1F", fg="#F0D8B0",  # orange (matches Step 3 frame)
+                tooltip=rppg_tip,
+            ).pack(side=tk.LEFT, padx=(0, 4))
+
+        # Similarity pill — color graded green-pass / amber-borderline /
+        # red-fail based on the standard 80-pass threshold.
+        if meta.similarity is not None:
+            sim = meta.similarity
+            if sim >= 80:
+                sim_bg, sim_fg = "#2A6A2A", "#D8F0D8"  # green
+            elif sim >= 60:
+                sim_bg, sim_fg = "#7A6A1F", "#F0E8B0"  # amber
+            else:
+                sim_bg, sim_fg = "#7A2A2A", "#F0C8C8"  # red
+            self._make_pill(
+                row, f"sim {sim}%",
+                bg=sim_bg, fg=sim_fg,
+                tooltip=(
+                    f"Face similarity vs. the reference image: {sim}%.\n"
+                    "Pass threshold: 80% (green). 60-79% = amber\n"
+                    "(borderline). <60% = red (fail). Computed during\n"
+                    "selfie generation; embedded in the filename."
+                ),
+            ).pack(side=tk.LEFT, padx=(0, 4))
+        elif meta.similarity_na:
+            self._make_pill(
+                row, "sim n/a",
+                bg="#4A4A4F", fg="#A0A0A5",
+                tooltip="Similarity score not computed for this clip.",
+            ).pack(side=tk.LEFT, padx=(0, 4))
 
     @staticmethod
     def _format_metadata_line(m: VideoMetadata) -> str:
