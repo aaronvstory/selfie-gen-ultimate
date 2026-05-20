@@ -1,6 +1,7 @@
 """Shared theme constants and helpers for the Kling GUI."""
 
 import sys
+import logging
 import time
 import tkinter as tk
 from tkinter import ttk
@@ -8,6 +9,8 @@ from typing import Callable, Dict
 
 
 IS_MACOS = sys.platform == "darwin"
+
+_LOGGER = logging.getLogger(__name__)
 
 # Global font — change this one line to switch the entire UI typeface.
 # Tk on macOS does not reliably resolve Windows font names.
@@ -164,7 +167,13 @@ def apply_macos_button_fix(button) -> None:
         )
     except Exception:
         # Never let a cosmetic tweak break widget construction.
-        pass
+        # CR PR #43 (3273385365): log at debug so real bugs
+        # surface in file logs without surfacing as user-visible
+        # errors. The fallback (raw tk.Button without the fix)
+        # still renders, just without the macOS click-area tweak.
+        _LOGGER.debug(
+            "apply_macos_button_fix failed", exc_info=True,
+        )
 
 
 # Primary-action button color palette. Used by
@@ -245,4 +254,11 @@ def apply_primary_action_style(button) -> None:
         )
     except Exception:
         # Never let a cosmetic tweak break widget construction.
-        pass
+        # CR PR #43 (3273385365): log at debug so real bugs
+        # surface in file logs without crashing the GUI. The
+        # fallback (button keeps whatever style it had before)
+        # is harmless - primary buttons just look the same as
+        # secondary buttons until the next style pass.
+        _LOGGER.debug(
+            "apply_primary_action_style failed", exc_info=True,
+        )

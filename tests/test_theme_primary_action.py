@@ -46,7 +46,14 @@ class PrimaryActionStyleAPITests(unittest.TestCase):
                 self.configs = []
             def config(self, **kwargs):
                 self.configs.append(kwargs)
-            cget = lambda self, key: None
+            def cget(self, key):
+                # Stub: real Tk buttons return their attr value; the
+                # primary-style helper doesn't actually read cget, but
+                # it's part of the Tk Button contract so we provide
+                # a no-op implementation. CR PR #43 (3273385397):
+                # `cget = lambda ...` triggers Ruff E731.
+                del key
+                return None
         btn = _CapturingButton()
         apply_primary_action_style(btn)
         # The helper does a single .config() call with the full style.
@@ -69,6 +76,46 @@ class PrimaryActionStyleAPITests(unittest.TestCase):
             self.assertIn("bold", font)
         else:
             self.assertIn("bold", str(font).lower())
+
+
+class ExceptionPathLoggingTests(unittest.TestCase):
+    """CR Major (3273385365) PR #43: the silent ``except Exception: pass``
+    in apply_primary_action_style was changed to log at debug so real
+    bugs surface in file logs without crashing the GUI. Lock that
+    behavior."""
+
+    def test_failure_logs_at_debug(self):
+        from kling_gui.theme import apply_primary_action_style
+        # A class whose .config raises — exercises the except branch.
+        class _RaisingButton:
+            def config(self, **kwargs):
+                raise RuntimeError("simulated tk error")
+            def cget(self, key):
+                del key
+                return None
+
+        with self.assertLogs("kling_gui.theme", level="DEBUG") as cm:
+            apply_primary_action_style(_RaisingButton())
+        # At least one debug-level message mentions the helper.
+        joined = " | ".join(cm.output)
+        self.assertIn("apply_primary_action_style failed", joined)
+
+    def test_silent_swallow_pattern_replaced(self):
+        """Source-regex lock: ``apply_primary_action_style`` must NOT
+        contain the bare ``except Exception:\\n        pass`` pattern
+        anymore — CR Major flagged it as masking real bugs."""
+        from pathlib import Path
+        src = (
+            Path(__file__).resolve().parent.parent
+            / "kling_gui" / "theme.py"
+        ).read_text(encoding="utf-8")
+        # Locate just the apply_primary_action_style body so we don't
+        # mis-flag the apply_macos_button_fix block above it (which
+        # got the same treatment).
+        start = src.index("def apply_primary_action_style")
+        end = len(src)
+        body = src[start:end]
+        self.assertIn("_LOGGER.debug", body)
 
 
 class HelperSourceLockTests(unittest.TestCase):

@@ -866,6 +866,24 @@ class ModalStructuralTests(unittest.TestCase):
             "Tk's event-chain propagation.",
         )
 
+    def test_listbox_binds_macos_secondary_click_variants(self):
+        """Codex PR #43 P2 (3273366968): macOS Tk reports trackpad
+        secondary-click as ``<Button-2>`` OR ``<Control-Button-1>`` —
+        NOT ``<Button-3>``. Binding only Button-3 makes the advertised
+        right-click-to-B path silently fail on macOS. ALL THREE
+        sequences MUST be bound to ``_on_listbox_right_click``."""
+        from kling_gui import video_inspector
+        src = Path(video_inspector.__file__).read_text(encoding="utf-8")
+        # All three bindings must point at the same handler so the
+        # cross-platform parity is real.
+        for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
+            self.assertRegex(
+                src,
+                rf'self\._listbox\.bind\(\s*"{seq}",\s*self\._on_listbox_right_click',
+                f"Listbox must bind {seq} to _on_listbox_right_click "
+                f"for cross-platform parity (macOS Tk fallback).",
+            )
+
     def test_persist_geometry_writes_config_and_calls_save(self):
         """Lightweight behavioural test: __new__'d modal + stubbed
         winfo_* methods => _persist_geometry writes the expected dict."""

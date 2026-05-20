@@ -889,10 +889,19 @@ class VideoInspectorModal(tk.Toplevel):
         hscroll.grid(row=1, column=0, sticky="ew")
         self._listbox.config(xscrollcommand=hscroll.set)
         self._listbox.bind("<Double-Button-1>", self._on_listbox_double_click)
-        # Right-click for macOS trackpad fallback. Shift+Double-click
-        # is the explicit cross-platform secondary affordance.
+        # Shift+Double-click is the explicit cross-platform secondary
+        # affordance. Right-click is a platform-specific fallback —
+        # ``<Button-3>`` is the Windows/Linux "right mouse button" but
+        # macOS Tk reports trackpad secondary-click as either
+        # ``<Button-2>`` OR ``<Control-Button-1>`` depending on Tk
+        # version. Codex P2 (3273366968) on PR #43: binding only
+        # ``<Button-3>`` means the advertised "Right-click -> B"
+        # interaction silently fails on macOS. Bind ALL three so the
+        # documented interaction works on every platform.
         self._listbox.bind("<Shift-Double-Button-1>", self._on_listbox_shift_double)
         self._listbox.bind("<Button-3>", self._on_listbox_right_click)
+        self._listbox.bind("<Button-2>", self._on_listbox_right_click)
+        self._listbox.bind("<Control-Button-1>", self._on_listbox_right_click)
 
         # Toolbar (bottom)
         toolbar = tk.Frame(self, bg=COLORS["bg_main"])
