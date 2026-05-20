@@ -91,15 +91,17 @@ def _extract_video_first_frame(video_path: str):
             return None
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb)
-        # FIFO evict the oldest entry when at cap. dict preserves
-        # insertion order in Python 3.7+ so next(iter(...)) is the
-        # oldest. Single-eviction is sufficient because we only add
-        # one entry per call.
-        if len(_VIDEO_THUMB_CACHE) >= _VIDEO_THUMB_CACHE_MAX:
+        # FIFO evict oldest entries until strictly under cap. dict
+        # preserves insertion order in Python 3.7+ so next(iter(...))
+        # is the oldest. While-loop (not if-single-eviction) so a
+        # bulk folder rescan that inserts N>1 entries without
+        # interleaved reads can't temporarily exceed the cap.
+        # (Gemini medium PR #43, finding 3277077712.)
+        while len(_VIDEO_THUMB_CACHE) >= _VIDEO_THUMB_CACHE_MAX:
             try:
                 _VIDEO_THUMB_CACHE.pop(next(iter(_VIDEO_THUMB_CACHE)))
             except StopIteration:
-                pass
+                break
         _VIDEO_THUMB_CACHE[cache_key] = img
         return img
     except Exception:

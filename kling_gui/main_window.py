@@ -4763,17 +4763,25 @@ class KlingGUIWindow:
                 for folder in sorted(folders):
                     if not folder or not os.path.isdir(folder):
                         continue
+                    # os.scandir over os.listdir + os.path.isfile: one
+                    # syscall per entry (the dirent already carries the
+                    # type) instead of two. Material on large folders
+                    # and network shares. We still sort for determinism
+                    # so the rescan order matches save order.
+                    # (Gemini medium PR #43, finding 3277077727.)
                     try:
-                        entries = sorted(os.listdir(folder))
+                        with os.scandir(folder) as it:
+                            entries = sorted(
+                                (e for e in it if e.is_file()),
+                                key=lambda e: e.name,
+                            )
                     except OSError:
                         continue
-                    for fname in entries:
-                        full = os.path.join(folder, fname)
-                        if not os.path.isfile(full):
-                            continue
-                        ext = os.path.splitext(fname)[1].lower()
+                    for entry in entries:
+                        ext = os.path.splitext(entry.name)[1].lower()
                         if ext not in VALID_EXTENSIONS:
                             continue
+                        full = entry.path
                         real = os.path.realpath(full)
                         if real in loaded_real:
                             continue

@@ -45,17 +45,40 @@ class UnknownFrameCountTests(unittest.TestCase):
             "loop' (modulo pins master_frame to 0).",
         )
 
-    def test_master_frame_advances_unboundedly_when_total_unknown(self):
-        """In the total==0 branch the master clock just adds step;
-        the modulo wrap MUST NOT apply (it would still pin at 0)."""
+    def test_master_frame_advances_when_total_unknown(self):
+        """In the total==0 branch the master clock must advance — NOT
+        pin at 0. Gemini medium PR #43 (3277077710) added a soft modulo
+        wrap at ``_UNKNOWN_LENGTH_WRAP`` so multi-hour sessions don't
+        let the float drift unbounded into precision-loss territory.
+        Locking BOTH the symptom-fix (no pin to 0) AND the bound."""
         src = _read_video_inspector_source()
         start = src.index("def _tick(self) -> None:")
         end = src.index("\n    def ", start + 10)
         body = src[start:end]
-        # The else branch — unconstrained addition.
+        # Else branch must advance with the step (no `% 1` or `% total`
+        # — total is 0 in this branch — and no `= 0` reset).
         self.assertRegex(
             body,
-            r"else:\s*\n\s*self\._master_frame\s*=\s*self\._master_frame\s*\+\s*step",
+            r"else:[\s\S]{0,400}self\._master_frame\s*=\s*\(\s*"
+            r"self\._master_frame\s*\+\s*step\s*\)\s*%\s*"
+            r"self\._UNKNOWN_LENGTH_WRAP",
+            "Unknown-length branch must add step + modulo-wrap at "
+            "_UNKNOWN_LENGTH_WRAP — neither pin to 0 (Codex P2 spirit) "
+            "nor drift unbounded (Gemini medium).",
+        )
+        # Class-level default exists so __new__ test paths still see
+        # _master_frame even without __init__ (same Gemini finding).
+        self.assertRegex(
+            src,
+            r"class VideoInspectorModal[\s\S]{0,4000}"
+            r"_master_frame:\s*float\s*=\s*0\.0",
+            "VideoInspectorModal must declare a class-level "
+            "_master_frame default so tests can use __new__.",
+        )
+        # The wrap constant exists at class level.
+        self.assertRegex(
+            src,
+            r"_UNKNOWN_LENGTH_WRAP:\s*float\s*=\s*[\d_]+\.0",
         )
 
 

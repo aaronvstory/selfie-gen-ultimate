@@ -817,6 +817,18 @@ class VideoInspectorModal(tk.Toplevel):
 
     _GEOMETRY_KEY = "video_inspector_window"
 
+    # Soft modulo wrap for unknown-length sources. Hit only when the
+    # container reports cv2.CAP_PROP_FRAME_COUNT == 0 (unknown). At
+    # 60fps this gives ~4.6h of monotonic growth before wrap — well
+    # past any realistic viewing session, but bounded so a multi-day
+    # session can't drift the float into precision-loss territory.
+    # (Gemini medium PR #43, finding 3277077710.)
+    _UNKNOWN_LENGTH_WRAP: float = 1_000_000.0
+
+    # Class-level default — supports test paths that build the modal
+    # via __new__ without calling __init__ (same Gemini finding).
+    _master_frame: float = 0.0
+
     def __init__(
         self,
         parent: tk.Misc,
@@ -1590,7 +1602,14 @@ class VideoInspectorModal(tk.Toplevel):
             if total > 0:
                 self._master_frame = (self._master_frame + step) % total
             else:
-                self._master_frame = self._master_frame + step
+                # Unknown-length source: wrap at _UNKNOWN_LENGTH_WRAP so
+                # the float stays bounded across multi-hour sessions.
+                # VideoFrame.step_to() handles the actual EOF (cap.read
+                # returns False; worker stops rendering).
+                # (Gemini medium PR #43, finding 3277077710.)
+                self._master_frame = (
+                    self._master_frame + step
+                ) % self._UNKNOWN_LENGTH_WRAP
             idx = int(self._master_frame)
 
             # Always advance the focused slot (so B-only or B-focused
@@ -1714,6 +1733,20 @@ class VideoInspectorModal(tk.Toplevel):
             self._persist_geometry()
         except Exception:
             logger.exception("video_inspector: persist_geometry failed")
+        # Notify the caller (e.g. main_window._clear_inspector_ref) so it
+        # can null its singleton reference. WM_DELETE_WINDOW is wired to
+        # self.destroy(), so without this hook the parent's reference is
+        # only cleared when the parent calls destroy() programmatically
+        # — the user closing via the X button leaves a stale destroyed
+        # Toplevel pinned until the next reopen. One-shot: clear after
+        # invoking to keep re-entry safe.
+        # (Codex P3 PR #43, finding 3277032160.)
+        if getattr(self, "_on_close", None) is not None:
+            try:
+                self._on_close()
+            except Exception:
+                logger.debug("video_inspector on_close raised", exc_info=True)
+            self._on_close = None
         try:
             super().destroy()
         except Exception:

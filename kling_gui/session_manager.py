@@ -647,8 +647,14 @@ def session_liveness(record_path: str) -> dict:
         # "live" so the user doesn't accidentally lose a fixable file.
         # H4 (code-review): log at debug so post-mortem after a confused
         # user report ("my live sessions got pruned") is possible.
-        logger.debug("session_liveness JSON read failed for %s: %s",
-                     record_path, exc)
+        # Gemini medium PR #43 (3277077726): include exception type so
+        # post-mortem distinguishes PermissionError / OSError (disk-side,
+        # transient) from json.JSONDecodeError (file actually corrupt
+        # and should be quarantined rather than retried).
+        logger.debug(
+            "session_liveness read failed for %s: %s: %s",
+            record_path, type(exc).__name__, exc,
+        )
         result["live"] = True
         return result
 
