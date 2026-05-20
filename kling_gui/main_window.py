@@ -1226,6 +1226,67 @@ class KlingGUIWindow:
                 )
             config["verbose_gui_mode_migrated_v17"] = True
 
+        # Slot 3 defaults backfill (2026-05-21): older saved configs
+        # carry empty slot 3 prompt + negative because the template
+        # values were added after the user's install. Backfill from the
+        # canonical defaults when slot 3 is empty AND model is the
+        # canonical Kling 2.5 Pro Turbo (i.e. user hasn't deliberately
+        # switched off-default). Idempotent + gated by a flag so users
+        # who explicitly cleared slot 3 don't get auto-refilled twice.
+        if not config.get("slot3_defaults_backfilled_v21"):
+            saved = config.get("saved_prompts") or {}
+            neg = config.get("negative_prompts") or {}
+            canonical_slot3_pos = (
+                "Image-to-video: the subject performs a slow, controlled "
+                "head movement while the body and background remain "
+                "completely motionless. The head turns to one side at a "
+                "moderate angle (about 40 degrees from center, roughly a "
+                "three-quarter view â clearly turned but well short of "
+                "profile), then slowly turns to the matching angle on the "
+                "other side. Eyes stay locked on the camera lens the "
+                "entire time. Facial expression stays neutral and "
+                "unchanged. Shoulders, torso, neck base, and background "
+                "do not move at all. Camera is locked. Lighting matches "
+                "the source image. Pacing is slow, continuous, and "
+                "natural."
+            )
+            canonical_neg = (
+                "profile view, full head turn, head turned away, looking "
+                "away from camera, broken eye contact, eyes closed, "
+                "shoulder movement, torso rotation, body twist, leaning, "
+                "swaying, head tilt, smiling, changing expression, "
+                "talking, blinking unnaturally, camera movement, camera "
+                "pan, camera zoom, lighting change, flicker, exposure "
+                "shift, color shift, background motion, fast motion, "
+                "jerky motion, robotic motion, morphing face, distortion, "
+                "blur, low quality"
+            )
+            if not str(saved.get("3", "")).strip():
+                saved["3"] = canonical_slot3_pos
+                config["saved_prompts"] = saved
+                print("Backfilled saved_prompts slot 3 (was empty)")
+            if not str(neg.get("3", "")).strip():
+                neg["3"] = canonical_neg
+                config["negative_prompts"] = neg
+                print("Backfilled negative_prompts slot 3 (was empty)")
+            # Same backfill for slot 4 (which the user uses as the
+            # "macOS-30" slot) — match canonical negative if empty.
+            if not str(neg.get("4", "")).strip():
+                neg["4"] = canonical_neg
+                config["negative_prompts"] = neg
+                print("Backfilled negative_prompts slot 4 (was empty)")
+            # If current_model drifted off the canonical Kling 2.5 Pro
+            # Turbo AND the user hasn't explicitly set model_display_name,
+            # leave it alone â user may have switched intentionally.
+            # Only backfill if model field is empty/missing.
+            if not str(config.get("current_model", "")).strip():
+                config["current_model"] = (
+                    "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+                )
+                config["model_display_name"] = "Kling 2.5 Turbo Pro"
+                print("Backfilled current_model: Kling 2.5 Turbo Pro")
+            config["slot3_defaults_backfilled_v21"] = True
+
     def _merge_ui_config(self, base: dict, updates: dict) -> dict:
         """Deep-merge UI config dictionaries."""
         for key, value in updates.items():

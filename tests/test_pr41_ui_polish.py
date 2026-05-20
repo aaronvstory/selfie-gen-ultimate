@@ -159,8 +159,18 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         import json as _j
         d=_j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
         self.assertEqual(d['current_prompt_slot'],3)
-        self.assertEqual(d['prompt_titles']['3'],'enhanced for kling 2.5 pro')
-        self.assertIn('Kling 2.5 Pro',d['saved_prompts']['3'])
+        # Title updated 2026-05-21 per user direction — slot 3 is now the
+        # head-turn 3/4 view (40 degrees each side, Kling 2.5 Pro Turbo).
+        # The title reflects the prompt shape so users can spot which
+        # variant is loaded at a glance.
+        self.assertEqual(
+            d['prompt_titles']['3'],
+            'head-turn 3/4 view (40° each side, kling 2.5 pro)',
+        )
+        # New positive prompt mentions the moderate-angle three-quarter-view
+        # shape (not the prior "extremely subtle" wording).
+        self.assertIn('three-quarter view', d['saved_prompts']['3'])
+        self.assertIn('40 degrees', d['saved_prompts']['3'])
         self.assertTrue(d['negative_prompts']['3'])
         # slot 1 minimal-motion fallback preserved.
         self.assertIn('very subtle, slow head movement',d['saved_prompts']['1'])
