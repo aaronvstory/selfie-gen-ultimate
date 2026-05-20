@@ -1324,7 +1324,13 @@ class VideoInspectorModal(tk.Toplevel):
                 from .config_panel import HoverTooltip
                 HoverTooltip(pill, lambda _t=tooltip: _t)
             except Exception:
-                pass
+                # GUI must stay responsive even if tooltip wiring fails;
+                # log at debug so we can diagnose regressions without
+                # spamming the user log (CodeRabbit minor on 253a9b4).
+                logger.debug(
+                    "Failed to attach HoverTooltip to VideoInspectorModal pill",
+                    exc_info=True,
+                )
         return pill
 
     def _render_pills_for_slot(

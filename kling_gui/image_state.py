@@ -468,11 +468,15 @@ class ImageSession:
         a filtered video still resolves.
         """
         # Filter videos but track original positions so we can translate
-        # the saved indices.
+        # the saved indices. Use ``e.is_video`` (the @property), not
+        # ``source_type == "video"`` — legacy or misclassified .mp4/.mov
+        # entries with source_type=='input' would otherwise leak into
+        # the session JSON and reintroduce the duplicate-state problem
+        # this filter was added to prevent (CodeRabbit on 253a9b4).
         kept_idx_map: dict = {}  # original_idx -> filtered_idx
         filtered_images = []
         for orig_idx, e in enumerate(self._images):
-            if e.source_type == "video":
+            if e.is_video:
                 continue
             kept_idx_map[orig_idx] = len(filtered_images)
             filtered_images.append(e)

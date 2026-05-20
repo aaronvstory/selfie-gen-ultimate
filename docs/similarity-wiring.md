@@ -19,7 +19,7 @@ The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, 
 | Main GUI import | `from face_similarity import compute_face_similarity_details` in `kling_gui/carousel_widget.py` |
 | Standalone GUI/CLI import | `from src.engine import FaceEngine` in `similarity/src/{gui,cli}.py` |
 
-### A. Adding a new ML dependency (e.g., torch, onnxruntime)
+## A. Adding a new ML dependency (e.g., torch, onnxruntime)
 
 | Layer | File | Action |
 |-------|------|--------|
@@ -30,7 +30,7 @@ The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, 
 | Frozen build hidden imports | `kling_gui_direct.spec:hiddenimports` | `+ 'pkg'` and optionally `collect_submodules('pkg')` |
 | Dep stamps (auto-busted) | `.launcher_state/deps_*.ok` and `similarity/.launcher_state/similarity_*.ok` | Auto-busted on `requirements.txt` mtime/size change; manual `rm` if needed |
 
-### B. Adding a similarity GUI control (checkbox/button/etc.)
+## B. Adding a similarity GUI control (checkbox/button/etc.)
 
 | Layer | File | Action |
 |-------|------|--------|
@@ -42,7 +42,7 @@ The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, 
 | Test stubs (main carousel) | `tests/test_carousel_ref_controls.py` `_FakeButton()` block | Add new attribute on the `tab` instance if `_update_panel` reads it |
 | Test stubs (standalone GUI) | `similarity/tests/test_gui.py::_CTkModuleStub` | Add new widget class to the stub registry |
 
-### C. Adding a new `automation_similarity_*` config key
+## C. Adding a new `automation_similarity_*` config key
 
 | Layer | File | Action |
 |-------|------|--------|
@@ -52,7 +52,7 @@ The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, 
 | Standalone CLI flag | `similarity/main.py` argparse + `similarity/src/cli.py::apply_runtime_config` | Mirror as a CLI flag |
 | Tests | `tests/test_automation_pipeline.py`, `tests/test_similarity_canonical_path.py` | New gating + adapter tests |
 
-### D. Adding a new launcher (Windows + macOS, GUI + CLI)
+## D. Adding a new launcher (Windows + macOS, GUI + CLI)
 
 | Layer | Windows | macOS | Notes |
 |-------|---------|-------|-------|
@@ -62,7 +62,7 @@ The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, 
 | Standalone subproject | `similarity/run_<name>.{bat,command}` | same | Used by hub wrappers `launchers/{windows,macos}/run_similarity_*` (path stays lowercase, OS name in prose stays "macOS") |
 | Build pipeline | `distribution/release_prep.py:copy_sanitized_tree` | same | Walks tree → auto-included unless excluded |
 
-### E. Pre-flight checklist (run BEFORE every similarity-stack commit)
+## E. Pre-flight checklist (run BEFORE every similarity-stack commit)
 
 - [ ] `requirements.txt` updated if new pip dep
 - [ ] `similarity/requirements.txt` updated if new pip dep

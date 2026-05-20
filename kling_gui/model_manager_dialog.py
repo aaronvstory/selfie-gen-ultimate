@@ -394,8 +394,13 @@ class ModelManagerDialog(tk.Toplevel):
         )
         _footer_save_btn.pack(side=tk.RIGHT, padx=(6, 0))
 
+        # Labeled "Close" not "Cancel" because _on_cancel autosaves
+        # custom_models, hidden_models, and enrichment data — the user
+        # asked for this behavior (no data loss on dialog close), but a
+        # button labeled "Cancel" that commits edits is dishonest UX
+        # (CodeRabbit major on 253a9b4).
         _footer_cancel_btn = ttk.Button(
-            footer, text="Cancel",
+            footer, text="Close",
             command=self._on_cancel,
             style=TTK_BTN_SECONDARY,
             width=10,

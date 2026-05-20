@@ -252,13 +252,17 @@ def create_ico(output_path: str = "kling_ui.ico"):
     # at GUI startup (see kling_gui/main_window.py::_set_app_icon). Tk on
     # Aqua silently ignores .ico, so PNG is the only viable iconphoto
     # source for the dock + window-list icon on macOS.
-    png_path = output_path.replace('.ico', '.png')
+    # Use Path.with_suffix / with_name to survive case-variant inputs
+    # (e.g. ``foo.ICO``) and avoid str.replace stomping unintended files
+    # (CodeRabbit minor on 253a9b4).
+    output = Path(output_path)
+    png_path = str(output.with_suffix(".png"))
     images[-1].save(png_path, format='PNG', optimize=True)
     print(f"  PNG saved to: {png_path}")
 
     # Also save a separate preview path (legacy; some downstream tools
     # look for *_preview.png so we keep emitting it).
-    preview_path = output_path.replace('.ico', '_preview.png')
+    preview_path = str(output.with_name(f"{output.stem}_preview.png"))
     images[-1].save(preview_path, format='PNG')
     print(f"  Preview saved to: {preview_path}")
 

@@ -968,7 +968,7 @@ class ConfigPanel(tk.Frame):
         HoverTooltip(self.lock_end_frame_checkbox, lambda: (
             "Lock End Frame — force the video to end on (or very near) "
             "the start image. Critical for the ping-pong loop step: "
-            "if start â  end the loop visibly seams.\n\n"
+            "if start != end the loop shows a visible seam.\n\n"
             "ON (default): video starts at source, drifts through the "
             "head-turn, returns to source. Cleanest loops.\n"
             "OFF: model decides freely — may improve motion realism "
