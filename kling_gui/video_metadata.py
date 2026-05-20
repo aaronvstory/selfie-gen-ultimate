@@ -204,10 +204,21 @@ def load_sidecar_metrics(video_path: Path) -> Optional[RppgMetrics]:
     Codex P2 (3272968651) on PR #43: my first implementation only read
     top-level which silently dropped every real sidecar.
     """
-    sidecar = video_path.with_suffix("").with_suffix(".metrics.json")
-    # ``with_suffix("").with_suffix("...")`` strips one suffix; for
-    # ``a.mp4`` -> ``a`` -> ``a.metrics.json``. For ``a-rppg.mp4`` -> ``a-rppg``
-    # -> ``a-rppg.metrics.json`` which matches what the injector writes.
+    # Use ``stem + ".metrics.json"`` directly via with_name, NOT
+    # ``with_suffix("").with_suffix(".metrics.json")``. The latter
+    # collapses any internal dots in the stem because pathlib's
+    # with_suffix replaces only the LAST suffix:
+    #   Path("front.v1_clip-rppg.mp4").with_suffix("")
+    #       -> Path("front.v1_clip-rppg")
+    #   .with_suffix(".metrics.json")
+    #       -> Path("front.metrics.json")     # <-- WRONG, dots lost
+    # But the producer (automation.rppg.finalize_rppg_output) uses
+    # ``requested.with_name(f"{requested.stem}.metrics.json")``,
+    # writing "front.v1_clip-rppg.metrics.json". The two paths never
+    # matched for filenames containing dots in the base stem, so
+    # sidecar lookup silently failed for any project/video name
+    # containing a dot. Codex P2 (3273308452) on PR #43.
+    sidecar = video_path.with_name(f"{video_path.stem}.metrics.json")
     if not sidecar.is_file():
         return None
     try:

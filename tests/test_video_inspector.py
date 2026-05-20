@@ -253,6 +253,38 @@ class MetadataTests(unittest.TestCase):
             assert metrics is not None
             self.assertAlmostEqual(metrics.phase, -75.5)
 
+    def test_load_sidecar_metrics_handles_dotted_base_stem(self):
+        """Codex PR #43 P2 (3273308452): filenames containing internal
+        dots (e.g. 'front.v1_clip-rppg.mp4') silently dropped their
+        sidecar because the prior with_suffix('').with_suffix(...)
+        chain stripped everything past the last internal dot. The
+        producer writes 'front.v1_clip-rppg.metrics.json' but lookup
+        was searching for 'front.metrics.json'. Fix: use with_name
+        + .stem so the full base stem is preserved.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            folder = Path(td)
+            # Filename with TWO dots in the base stem before .mp4.
+            video = folder / "front.v1_clip-rppg.mp4"
+            video.touch()
+            # Producer's exact filename pattern.
+            sidecar = folder / "front.v1_clip-rppg.metrics.json"
+            sidecar.write_text(
+                '{"source": "front.v1_clip-rppg - 11.89.mp4", '
+                '"metrics": {"snr": 11.89, "phase": 25.9, '
+                '"temporal": 0.81, "motion": 0.04, "harmonic": 0.42}, '
+                '"order": ["snr","phase","temporal","motion","harmonic"]}',
+                encoding="utf-8",
+            )
+            metrics = load_sidecar_metrics(video)
+            self.assertIsNotNone(
+                metrics,
+                "Sidecar with dotted base stem must still be found — "
+                "regression for the with_suffix('') stem-collapse bug.",
+            )
+            assert metrics is not None
+            self.assertAlmostEqual(metrics.snr, 11.89)
+
     def test_load_sidecar_metrics_missing(self):
         with tempfile.TemporaryDirectory() as td:
             video = Path(td) / "clip-rppg.mp4"
