@@ -49,6 +49,6 @@ set "REQ=%~1"
 if not exist "%REQ%" goto :eof
 echo(
 echo === pip-audit: %REQ% ===
-"%PY%" -m pip_audit -r "%REQ%" --strict --no-deps --progress-spinner off
+"%PY%" -m pip_audit -r "%REQ%" --strict --progress-spinner off
 if !errorlevel! neq 0 set /a FAILED+=1
 goto :eof

@@ -93,5 +93,13 @@ echo "=== Sandbox audit (pip-audit on the installed env) ==="
 
 echo
 echo "Sandbox is at: $SANDBOX_DIR"
-echo "Activate with:  source $SANDBOX_DIR/bin/activate"
+# Show the correct activate path for the current platform — Git Bash
+# on Windows creates `Scripts/activate`, not `bin/activate`. The
+# script already auto-detects the python binary path above; mirror
+# that for the activation hint. (Gemini medium on 9a20e14.)
+if [ -d "$SANDBOX_DIR/Scripts" ]; then
+  echo "Activate with:  source $SANDBOX_DIR/Scripts/activate"
+else
+  echo "Activate with:  source $SANDBOX_DIR/bin/activate"
+fi
 echo "Tear down:      rm -rf $SANDBOX_DIR"

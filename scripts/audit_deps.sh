@@ -58,7 +58,7 @@ for req in \
   fi
   echo
   echo "=== pip-audit: $req ==="
-  if ! "${PY}" -m pip_audit -r "$req" --strict --no-deps --progress-spinner off; then
+  if ! "${PY}" -m pip_audit -r "$req" --strict --progress-spinner off; then
     FAILED=$((FAILED + 1))
   fi
 done
@@ -69,7 +69,7 @@ for req in oldcam-v*/requirements.txt; do
   [ -f "$req" ] || continue
   echo
   echo "=== pip-audit: $req ==="
-  if ! "${PY}" -m pip_audit -r "$req" --strict --no-deps --progress-spinner off; then
+  if ! "${PY}" -m pip_audit -r "$req" --strict --progress-spinner off; then
     FAILED=$((FAILED + 1))
   fi
 done

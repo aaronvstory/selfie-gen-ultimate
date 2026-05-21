@@ -180,11 +180,15 @@ def check_compromised_pypi_in_deps(repo_root: Path) -> CheckResult:
     hits: List[str] = []
     req_files = list(repo_root.rglob("requirements*.txt"))
     # Filter out venvs + recovery dirs + node_modules (false positives).
-    excludes = (".venv", "venv", "site-packages", ".recovery",
-                "node_modules", ".sandbox-venv", "dist/")
+    # Match by exact directory-component name, NOT substring — otherwise
+    # a legitimate project dir named `my-venv-project` or a file named
+    # `requirements-dist.txt` would be silently excluded. (Gemini HIGH
+    # on 9a20e14.)
+    exclude_dirs = {".venv", "venv", "site-packages", ".recovery",
+                    "node_modules", ".sandbox-venv", "dist"}
     req_files = [
         p for p in req_files
-        if not any(part in str(p) for part in excludes)
+        if not any(part in exclude_dirs for part in p.parts)
     ]
     for req in req_files:
         try:
@@ -311,10 +315,17 @@ def check_workflows_for_suspicious_commits(repo_root: Path) -> CheckResult:
     #   - Catch backtick-form eval ``eval `curl ...``` in addition
     #     to ``eval $(curl ...)``.
     bad_patterns = (
-        re.compile(r"curl\s+[^|\n]+\|\s*(?:sudo\s+)?(sh|bash|zsh)"),
-        re.compile(r"wget\s+[^|\n]+-O-\s*\|\s*(?:sudo\s+)?(sh|bash|zsh)"),
-        re.compile(r"(?:sh|bash|zsh)\s*<\(\s*(?:curl|wget)"),
-        re.compile(r"eval\s*(?:\$\(curl|`curl)"),
+        # Include `python` and `python3` as targets: a multi-stage
+        # payload often does ``curl ... | python -`` to run a stager
+        # without writing to disk. (Gemini security-medium on 9a20e14.)
+        re.compile(r"curl\s+[^|\n]+\|\s*(?:sudo\s+)?(sh|bash|zsh|python3?)"),
+        re.compile(r"wget\s+[^|\n]+-O-\s*\|\s*(?:sudo\s+)?(sh|bash|zsh|python3?)"),
+        re.compile(r"(?:sh|bash|zsh|python3?)\s*<\(\s*(?:curl|wget)"),
+        # Allow optional whitespace inside the subshell — `eval $( curl ...)`
+        # was a Codex-P2 bypass. Also catch wget-form. Backtick form
+        # stays separate (no whitespace tolerance needed — backticks
+        # don't permit a leading space in the standard form).
+        re.compile(r"eval\s*(?:\$\(\s*(?:curl|wget)|`(?:curl|wget))"),
     )
     # GitHub Actions accepts BOTH `.yml` and `.yaml` extensions. A
     # scanner that only checks `.yml` has a false-negative gap on

@@ -40,38 +40,54 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pip-audit
 
-      # NOTE: --no-deps audits the DIRECT dependencies declared in the
-      # requirements file only. It does NOT resolve or check transitive
-      # deps from each file's audit step. The compensating control is
-      # the `audit-installed-venv` job below, which installs the full
-      # requirements.txt + similarity/ and runs pip-audit against the
-      # resolved on-disk tree — that catches transitive CVEs (e.g. an
-      # advisory in a sub-dep introduced by fal-client). OSV-Scanner is
-      # a third independent check.
+      # pip-audit's --no-deps flag requires EXACT pins (==). Our
+      # requirements.txt uses range pins (e.g. `requests>=2.31,<3`),
+      # which pip-audit refuses with --no-deps (Codex P1 on 9a20e14).
+      #
+      # Solution: audit the HASHED file for the main project (which IS
+      # exact-pinned via pip-tools), and use --no-deps only for the
+      # files that are exact-pinned at source (similarity + oldcam).
+      # The compensating `audit-installed-venv` job below catches
+      # transitive CVEs by installing + auditing each manifest in its
+      # own isolated venv. OSV-Scanner is a third independent check.
 
-      - name: Audit requirements.txt (direct deps)
+      - name: Audit requirements-hashed.txt (full transitive, hash-verified)
         run: |
-          python -m pip_audit -r requirements.txt \
-            --strict --no-deps --progress-spinner off
+          if [ -f requirements-hashed.txt ]; then
+            python -m pip_audit -r requirements-hashed.txt \
+              --strict --require-hashes --progress-spinner off
+          else
+            # Hashed file missing (regenerate via `piptools compile
+            # --generate-hashes` after dep updates). Fall back to
+            # requirements.txt + dep resolution — slower but still safe.
+            python -m pip_audit -r requirements.txt \
+              --strict --progress-spinner off
+          fi
 
-      - name: Audit similarity/requirements.txt (direct deps)
+      # The similarity/* and oldcam-v*/ requirements files mix exact
+      # pins (==) and range specifiers (>=,<). pip-audit's --no-deps
+      # rejects ranges, so we let pip-audit resolve transitives via
+      # pip from the requirements file. Slower than --no-deps but
+      # the only correct mode for range-pinned input.
+
+      - name: Audit similarity/requirements.txt
         run: |
           python -m pip_audit -r similarity/requirements.txt \
-            --strict --no-deps --progress-spinner off
+            --strict --progress-spinner off
 
-      - name: Audit similarity/requirements-test.txt (direct deps)
+      - name: Audit similarity/requirements-test.txt
         run: |
           python -m pip_audit -r similarity/requirements-test.txt \
-            --strict --no-deps --progress-spinner off
+            --strict --progress-spinner off
 
-      - name: Audit each oldcam-v*/requirements.txt (direct deps)
+      - name: Audit each oldcam-v*/requirements.txt
         run: |
           set -e
           shopt -s nullglob
           for req in oldcam-v*/requirements.txt; do
             echo "=== $req ==="
             python -m pip_audit -r "$req" \
-              --strict --no-deps --progress-spinner off
+              --strict --progress-spinner off
           done
 
   audit-installed-venv:
