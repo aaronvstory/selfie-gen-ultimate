@@ -139,7 +139,7 @@ is much larger. Highest-risk packages by surface area:
 |---|---|---|
 | Hash-pinned `requirements-hashed.txt` | new | Generated via `pip-tools compile --generate-hashes`. Detects post-publish tampering: a malicious republish under the same version fails the SHA-256 verify on install. `sandbox_install.{sh,bat}` use `--require-hashes` when this file is present. |
 | `pip-audit` in CI + `scripts/audit_deps.{sh,bat}` | new | Cross-checks every dep against PyPA + OSV advisory DBs on every PR + on-demand for devs. |
-| Installed-venv audit job | CI | Compensating control for `--no-deps` on the requirements-file audit — catches transitive CVEs. Installs ALL requirements sets (main + similarity + oldcam-v*) so the resolved venv tree captures full transitive coverage. |
+| Installed-venv audit job | CI | Belt-and-suspenders for the requirements-file audits — catches transitive CVEs via an actual installed tree, in case the pip-audit resolver behaves differently on range-pinned input than expected. Each manifest (main + similarity + resemble-score + oldcam-v*) gets its OWN ephemeral venv so a later install's pin can't overwrite an earlier vulnerable one (Codex P1, 0e16c8d). |
 | OSV-Scanner in CI | new | Second-source vulnerability DB (Google) — covers gaps in PyPA. |
 | `detect_compromise.py` IoC self-check | new | One-command scan: known-compromised PyPI packages, `.pth` files with executable code (`re.MULTILINE` + whole-content allowlist matching to prevent prefix-only bypass), git remotes against C2 domains, workflow files for `curl \| bash` patterns, optional GitHub account scan for exfil repos. |
 | `.github/dependabot.yml` | new | Automated security updates with weekly cadence + grouping. |

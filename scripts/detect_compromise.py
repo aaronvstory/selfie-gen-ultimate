@@ -280,6 +280,25 @@ def check_pth_files_for_exec_code(venv_paths: List[Path]) -> CheckResult:
     return CheckResult(name, ok=True, details=[summary])
 
 
+_REMOTE_URL_AUTHORITY_RE = re.compile(
+    r"(?P<scheme>[a-zA-Z][\w+.\-]*://)(?P<auth>[^/@\s]+@)"
+)
+
+
+def _redact_remote_line(line: str) -> str:
+    """Strip embedded credentials from a ``git remote -v`` line.
+
+    Tokenised HTTPS remotes look like
+    ``origin\thttps://x-access-token:ghp_xxx@github.com/...``. Printing
+    them verbatim leaks the bearer secret into logs / CI output. Per
+    Codex P1 on 2ced5b6: replace the ``user[:pass]@`` segment with
+    ``<REDACTED>@`` before rendering. SSH remotes
+    (``git@github.com:owner/repo``) don't carry creds and are passed
+    through untouched.
+    """
+    return _REMOTE_URL_AUTHORITY_RE.sub(r"\g<scheme><REDACTED>@", line)
+
+
 def check_git_remotes_for_c2(repo_root: Path) -> CheckResult:
     """Check the local git remote URLs for known C2 domains."""
     name = "Git remotes don't reference known C2 domains"
@@ -292,11 +311,17 @@ def check_git_remotes_for_c2(repo_root: Path) -> CheckResult:
     for line in out.splitlines():
         for c2 in C2_DOMAINS:
             if c2 in line.lower():
-                hits.append(f"remote line: {line.strip()}  matches {c2!r}")
+                hits.append(
+                    f"remote line: {_redact_remote_line(line.strip())}  matches {c2!r}"
+                )
     if hits:
         return CheckResult(name, ok=False, details=hits)
+    # Clean path: render only redacted lines too. Codex P1 on 2ced5b6.
+    redacted_lines = [
+        _redact_remote_line(s) for s in (out.strip().splitlines()[:3] if out else [])
+    ]
     return CheckResult(name, ok=True, details=[
-        f"Checked git remotes: {out.strip().splitlines()[:3] if out else 'none'}",
+        f"Checked git remotes: {redacted_lines if redacted_lines else 'none'}",
     ])
 
 
@@ -335,13 +360,20 @@ def check_workflows_for_suspicious_commits(repo_root: Path) -> CheckResult:
         # the false-positive cost is low (it would require a
         # legitimate workflow line containing ``sudo`` + a shell
         # name + a pipe, which is itself suspicious).
+        # Multi-pipe support — attackers obfuscate the curl|bash
+        # chain with intermediate commands like ``curl ... | grep
+        # ... | bash`` or ``curl ... | tee /tmp/x | sh``. Gemini
+        # security-medium on 2ced5b6. Allow zero or more
+        # intermediate ``[non-pipe-content]|`` chunks before the
+        # final shell target. The ``[^|\n]+`` inside each chunk
+        # bounds against the line.
         re.compile(
-            r"curl\s+[^|\n]+\|\s*"
+            r"curl\s+[^|\n]+\|(?:\s*[^|\n]+\|)*\s*"
             r"(?:[\w/.+\-]+/)?(?:sudo(?:\s[^|\n]*?)?\s+)?(?:[\w/.+\-]+/)?"
             r"(sh|bash|zsh|python[\d.]*)\b"
         ),
         re.compile(
-            r"wget\s+[^|\n]+-O-\s*\|\s*"
+            r"wget\s+[^|\n]+-O-\s*\|(?:\s*[^|\n]+\|)*\s*"
             r"(?:[\w/.+\-]+/)?(?:sudo(?:\s[^|\n]*?)?\s+)?(?:[\w/.+\-]+/)?"
             r"(sh|bash|zsh|python[\d.]*)\b"
         ),

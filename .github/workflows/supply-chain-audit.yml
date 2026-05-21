@@ -53,13 +53,24 @@ jobs:
 
       - name: Audit requirements-hashed.txt (full transitive, hash-verified)
         run: |
-          if [ -f requirements-hashed.txt ]; then
+          # Platform gate (Codex P1 on 2ced5b6): the committed hashed
+          # file is generated on Windows and pins Windows-only wheels
+          # like `tensorflow-intel==2.16.2`. pip-audit's resolver tries
+          # to evaluate every requirement on the host platform and
+          # aborts on Linux when the Windows-only pin can't be
+          # satisfied. Detect the marker and fall back to the
+          # unhashed file on non-Windows runners. Linux runners
+          # still get range-pinned coverage via this fallback; the
+          # `audit-installed-venv` job below does the transitive
+          # resolution check.
+          if [ -f requirements-hashed.txt ] \
+             && ! grep -qE '^tensorflow-intel==' requirements-hashed.txt; then
             python -m pip_audit -r requirements-hashed.txt \
               --strict --require-hashes --progress-spinner off
           else
-            # Hashed file missing (regenerate via `piptools compile
-            # --generate-hashes` after dep updates). Fall back to
-            # requirements.txt + dep resolution — slower but still safe.
+            if [ -f requirements-hashed.txt ]; then
+              echo "NOTE: requirements-hashed.txt is Windows-pinned; auditing requirements.txt on this runner."
+            fi
             python -m pip_audit -r requirements.txt \
               --strict --progress-spinner off
           fi

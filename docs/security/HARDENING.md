@@ -12,8 +12,11 @@ python -m pip install -U pip pip-audit pip-tools
 # Audit dependencies (run on every dependency change)
 scripts/audit_deps.sh        # macOS / Linux
 scripts\audit_deps.bat       # Windows
-# Or directly:
-python -m pip_audit -r requirements.txt --strict --no-deps
+# Or directly (range-pin-safe — DO NOT pass --no-deps with
+# range-pinned requirements; pip-audit refuses ranges in that mode):
+python -m pip_audit -r requirements.txt --strict --progress-spinner off
+# For fully-pinned hashed input (preferred):
+python -m pip_audit -r requirements-hashed.txt --strict --require-hashes
 
 # Check for IoCs (run if you suspect compromise OR weekly)
 python scripts/detect_compromise.py

