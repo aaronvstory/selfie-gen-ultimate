@@ -47,12 +47,23 @@ class OutpaintGenerator:
 
     ENDPOINT = "fal-ai/image-apps-v2/outpaint"
 
-    # Empirical safe limits — fal.ai clamped 2782x3448 → 1232x1536 in testing.
+    # Empirical safe limits — fal.ai clamped 2782x3448 → 1232x1536 in testing
+    # (last re-verified 2026-05-22 against fal-ai/image-apps-v2/outpaint).
     # Override via env: FAL_OUTPAINT_MAX_DIM, FAL_OUTPAINT_MAX_MP
     _MAX_CANVAS_DIM = int(os.environ.get("FAL_OUTPAINT_MAX_DIM", "1536"))
     _MAX_CANVAS_MP = float(os.environ.get("FAL_OUTPAINT_MAX_MP", "2.0"))
     _PRESERVE_SEAM_BLEND_PX = 24
     _PRESERVE_SEAM_BLEND_STRENGTH = 0.55
+    # Phase C of polish/v2.3 (2026-05-22): fal.ai routinely returns
+    # the requested canvas a few pixels short (observed 1520x1296
+    # vs requested 1532x1305 — 12px / 9px). The strict ANY-shortage
+    # underflow gate previously disabled the preserve-seamless
+    # composite for these tiny gaps, which left the user looking at
+    # raw AI output. _composite_onto_result already proportionally
+    # rescales the margins for size mismatches and has a paste-OOB
+    # safety guard, so accepting <= 16px shortage on either axis is
+    # safe and recovers preserve-seamless on the common case.
+    _UNDERFLOW_TOLERANCE_PX = 16
 
     @staticmethod
     def _preflight_size(
@@ -510,22 +521,43 @@ class OutpaintGenerator:
             downloaded_w, downloaded_h = 0, 0
             read_failure_reason = f"read_failed:{type(exc).__name__}"
 
-        underflow = (downloaded_w < expected_canvas_w) or (downloaded_h < expected_canvas_h)
+        short_w = max(0, expected_canvas_w - downloaded_w)
+        short_h = max(0, expected_canvas_h - downloaded_h)
+        underflow = (short_w > 0) or (short_h > 0)
+        # Phase C of polish/v2.3 (2026-05-22): a few-pixel shortage
+        # is the common case for fal.ai output and the downstream
+        # composite already adapts via proportional margin rescaling
+        # (see _composite_onto_result). Disable composite ONLY when
+        # the shortage exceeds _UNDERFLOW_TOLERANCE_PX on either axis.
+        # Read-failures still disable (read_failure_reason carries
+        # the reason).
+        tolerance = self._UNDERFLOW_TOLERANCE_PX
+        within_tolerance = (
+            (not read_failure_reason)
+            and (short_w <= tolerance)
+            and (short_h <= tolerance)
+        )
         self._report(
             (
                 "Fal composite downloaded result: "
                 f"actual={downloaded_w}x{downloaded_h} expected={expected_canvas_w}x{expected_canvas_h} "
-                f"underflow={underflow}"
+                f"underflow={underflow} short_w={short_w} short_h={short_h} "
+                f"within_tolerance={within_tolerance}"
             ),
             "debug",
         )
-        if underflow:
+        if underflow and not within_tolerance:
             self._report(
                 "Provider output smaller than preflight expectation; composite disabled to avoid corrupting preserved pixels"
                 + (f" ({read_failure_reason})" if read_failure_reason else ""),
                 "warning",
             )
             return output_path
+        if underflow:
+            self._report(
+                f"Provider output undershot by {short_w}px x {short_h}px (≤ {tolerance}px tolerance); composite applied with proportional margin rescale",
+                "warning",
+            )
 
         self._composite_onto_result(
             output_path, composite_source, adj_left, adj_right, adj_top, adj_bottom,
@@ -723,20 +755,20 @@ class OutpaintGenerator:
 
                     if center_w > 0:
                         center_strip = orig_rgb.crop((0, y0, orig.width, y0 + 1)).resize(
-                            (center_w, band_h), Image.Resampling.BILINEAR
+                            (center_w, band_h), Image.Resampling.LANCZOS
                         )
                         band.paste(center_strip, (inner_x, 0))
 
                     if inner_x > 0:
                         left_strip = orig_rgb.crop((0, y0, 1, y0 + 1)).resize(
-                            (inner_x, band_h), Image.Resampling.BILINEAR
+                            (inner_x, band_h), Image.Resampling.LANCZOS
                         )
                         band.paste(left_strip, (0, 0))
 
                     right_fill_x0 = inner_x + center_w
                     if right_fill_x0 < band_w:
                         right_strip = orig_rgb.crop((orig.width - 1, y0, orig.width, y0 + 1)).resize(
-                            (band_w - right_fill_x0, band_h), Image.Resampling.BILINEAR
+                            (band_w - right_fill_x0, band_h), Image.Resampling.LANCZOS
                         )
                         band.paste(right_strip, (right_fill_x0, 0))
 
@@ -772,7 +804,7 @@ class OutpaintGenerator:
                 left_w = paste_left - left_ring_x0
                 if left_w > 0 and paste_bottom > paste_top:
                     strip = orig_rgb.crop((0, 0, 1, orig.height)).resize(
-                        (left_w, orig.height), Image.Resampling.BILINEAR
+                        (left_w, orig.height), Image.Resampling.LANCZOS
                     )
                     strip = strip.filter(ImageFilter.GaussianBlur(radius=blur_radius))
                     overlay.paste(strip, (left_ring_x0, paste_top))
@@ -787,7 +819,7 @@ class OutpaintGenerator:
                 right_w = right_ring_x1 - paste_right
                 if right_w > 0 and paste_bottom > paste_top:
                     strip = orig_rgb.crop((orig.width - 1, 0, orig.width, orig.height)).resize(
-                        (right_w, orig.height), Image.Resampling.BILINEAR
+                        (right_w, orig.height), Image.Resampling.LANCZOS
                     )
                     strip = strip.filter(ImageFilter.GaussianBlur(radius=blur_radius))
                     overlay.paste(strip, (paste_right, paste_top))

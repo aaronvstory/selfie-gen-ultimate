@@ -446,3 +446,58 @@ def test_bfl_pending_timeout_sets_reason_and_logs(monkeypatch, tmp_path: Path):
     assert "reason=pending_timeout" in detail
     assert "task=task-xyz" in detail
     assert any("BFL Expand timed out after" in message and "reason=pending_timeout" in message for _, message in logs)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase C of polish/v2.3 (2026-05-22) — LANCZOS ring blend + ±16px
+# underflow tolerance.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_underflow_tolerance_constant_is_16px():
+    """The tolerance value is locked in so a future edit can't silently
+    raise it (corrupting preserved pixels) or drop it (re-introducing
+    the regression where 12px shortfalls disabled the composite)."""
+    assert OutpaintGenerator._UNDERFLOW_TOLERANCE_PX == 16
+
+
+def test_seam_ring_resize_uses_lanczos_not_bilinear():
+    """Phase C: the 5 seam-ring band resizes in
+    _composite_onto_result.preserve_seamless were swapped from
+    BILINEAR to LANCZOS for sharper edge gradients. Locked via source
+    so a refactor that re-introduces BILINEAR on the ring fails
+    here."""
+    src = (Path(__file__).resolve().parent.parent / "outpaint_generator.py").read_text(encoding='utf-8')
+    # No BILINEAR remaining in the ring-blend bands (top/bottom/left/right strips).
+    # All 5 resize calls in those bands should be LANCZOS.
+    # Count occurrences: there were 5 BILINEAR calls in the ring code.
+    # After Phase C, we expect 0 in the ring-blend strips.
+    # (The preflight thumbnail still uses LANCZOS — line 191 — which is fine.)
+    # Easier check: count "Resampling.LANCZOS" — file should have >= 6 now (5 strip resizes + 1 preflight).
+    lanczos_count = src.count("Resampling.LANCZOS")
+    assert lanczos_count >= 6, (
+        f"expected >=6 LANCZOS resamplings post-Phase C, found {lanczos_count}"
+    )
+    # And no BILINEAR remains in the file (the 5 strip calls were the
+    # only ones — confirm).
+    bilinear_count = src.count("Resampling.BILINEAR")
+    assert bilinear_count == 0, (
+        f"expected 0 BILINEAR resamplings post-Phase C, found {bilinear_count}"
+    )
+
+
+def test_underflow_gate_relaxed_with_tolerance_in_source():
+    """Phase C: the new underflow gate computes short_w/short_h, only
+    disables composite when shortage exceeds tolerance, and emits a
+    warning log when shortage is within tolerance. Source-asserted
+    so a future edit reverting to the strict ANY-shortage gate fails
+    this test."""
+    src = (Path(__file__).resolve().parent.parent / "outpaint_generator.py").read_text(encoding='utf-8')
+    # The relaxed gate creates short_w/short_h variables...
+    assert "short_w = max(0, expected_canvas_w - downloaded_w)" in src
+    assert "short_h = max(0, expected_canvas_h - downloaded_h)" in src
+    # ...and only disables composite when within_tolerance is False.
+    assert "if underflow and not within_tolerance:" in src
+    # ...and emits a "composite applied with proportional margin rescale"
+    # log when tolerance is hit.
+    assert "composite applied with proportional margin rescale" in src
