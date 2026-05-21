@@ -1,10 +1,17 @@
 """Compare Panel — side-by-side image comparison with independent navigation."""
 
+import os
 import tkinter as tk
+from tkinter import ttk
 from typing import Callable, Optional
 import logging
 
-from .theme import COLORS, FONT_FAMILY, apply_macos_button_fix
+from .theme import (
+    COLORS,
+    FONT_FAMILY,
+    TTK_BTN_COMPACT,
+    TTK_BTN_DANGER_COMPACT,
+)
 from .image_state import ImageSession
 from .carousel_widget import _format_image_info, _truncate_filename, _sim_color
 from .tag_utils import derive_display_tag
@@ -92,70 +99,58 @@ class ComparePanel(tk.Frame):
         ).pack(side=tk.LEFT)
 
         # Close button
-        close_btn = tk.Button(
+        # ttk.Button (HIView tint persists). The original used
+        # fg=COLORS["error"] for the "X" connotation; we keep that by
+        # picking the existing TTK_BTN_DANGER_COMPACT style (red
+        # foreground+fill, more visible than the prior fg-only red).
+        close_btn = ttk.Button(
             header,
             text="X Close",
-            font=(FONT_FAMILY, 8),
-            bg=COLORS["bg_input"],
-            fg=COLORS["error"],
             command=self._on_close,
-            cursor="hand2",
-            relief=tk.FLAT,
-            padx=6,
+            style=TTK_BTN_DANGER_COMPACT,
         )
         close_btn.pack(side=tk.RIGHT)
-        apply_macos_button_fix(close_btn)
 
         # Nav buttons + counter
-        self.next_btn = tk.Button(
+        self.next_btn = ttk.Button(
             header,
             text=">",
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"],
-            fg=COLORS["text_light"],
             command=lambda: self._navigate(1),
             width=2,
-            cursor="hand2",
-            relief=tk.FLAT,
+            style=TTK_BTN_COMPACT,
         )
         self.next_btn.pack(side=tk.RIGHT, padx=(2, 4))
-        apply_macos_button_fix(self.next_btn)
 
         self.counter_label = tk.Label(
             header,
             text="",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
         )
         self.counter_label.pack(side=tk.RIGHT, padx=2)
 
-        self.prev_btn = tk.Button(
+        self.prev_btn = ttk.Button(
             header,
             text="<",
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"],
-            fg=COLORS["text_light"],
             command=lambda: self._navigate(-1),
             width=2,
-            cursor="hand2",
-            relief=tk.FLAT,
+            style=TTK_BTN_COMPACT,
         )
         self.prev_btn.pack(side=tk.RIGHT)
-        apply_macos_button_fix(self.prev_btn)
 
         # Metadata row (resolution + filesize on left, similarity on right)
         self.meta_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         self.meta_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
 
         self.meta_label = tk.Label(
-            self.meta_frame, text="", font=(FONT_FAMILY, 8),
+            self.meta_frame, text="", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor=tk.W,
         )
         self.meta_label.pack(side=tk.LEFT)
 
         self.sim_label = tk.Label(
-            self.meta_frame, text="", font=(FONT_FAMILY, 8, "bold"),
+            self.meta_frame, text="", font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor=tk.E,
         )
         self.sim_label.pack(side=tk.RIGHT)
@@ -164,7 +159,7 @@ class ComparePanel(tk.Frame):
         self.info_label = tk.Label(
             self,
             text="",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             anchor=tk.W,
@@ -251,14 +246,85 @@ class ComparePanel(tk.Frame):
         try:
             from PIL import Image, ImageTk, ImageOps
 
-            img = Image.open(entry.path)
-            img.load()
+            # Video items: render cv2 first-frame + a centered ▶ glyph.
+            # PIL.Image.open() would raise UnidentifiedImageError on a
+            # .mp4 and the user would just see the generic error text —
+            # broken UX given videos are now first-class carousel items.
+            is_video = getattr(entry, "is_video", False)
+            if is_video:
+                # H2 fix (subagent on 2eb16f37): use the ASYNC helper to
+                # avoid blocking the Tk thread on the first render of an
+                # uncached video (100-500ms cv2.VideoCapture stall).
+                # Cache is shared with carousel via _VIDEO_THUMB_CACHE, so
+                # subsequent renders are fast either way — we only need
+                # the async path for first-touch.
+                from .carousel_widget import (
+                    _extract_video_first_frame,
+                    _extract_video_first_frame_async,
+                    _VIDEO_THUMB_CACHE,
+                )
+                # (path, mtime) cache key per M1 — sees regens.
+                try:
+                    _vt_mtime = os.path.getmtime(entry.path)
+                except OSError:
+                    _vt_mtime = 0
+                img = _VIDEO_THUMB_CACHE.get((entry.path, _vt_mtime))
+                if img is None:
+                    started = _extract_video_first_frame_async(
+                        entry.path, self.canvas,
+                        on_done=lambda _img: self._update_display(),
+                    )
+                    if started:
+                        # Render placeholder for this pass; on_done
+                        # triggers _update_display when the frame lands.
+                        cw_pl = max(1, self.canvas.winfo_width())
+                        ch_pl = max(1, self.canvas.winfo_height())
+                        self.canvas.create_rectangle(
+                            2, 2, cw_pl - 2, ch_pl - 2,
+                            fill=COLORS["bg_input"], outline="",
+                        )
+                        self.canvas.create_text(
+                            cw_pl // 2, ch_pl // 2,
+                            text="▶", fill="#FFFFFF",
+                            font=(FONT_FAMILY, 48, "bold"),
+                        )
+                        return
+                    # If we couldn't start (e.g. pending dedup), fall
+                    # through to a sync decode — placeholder will appear
+                    # briefly but the user still sees the frame on the
+                    # SAME render cycle.
+                    img = _extract_video_first_frame(entry.path)
+                if img is None:
+                    # cv2 missing OR decode failed — placeholder + glyph.
+                    cw_pl = max(1, self.canvas.winfo_width())
+                    ch_pl = max(1, self.canvas.winfo_height())
+                    self.canvas.create_rectangle(
+                        2, 2, cw_pl - 2, ch_pl - 2,
+                        fill=COLORS["bg_input"], outline="",
+                    )
+                    self.canvas.create_text(
+                        cw_pl // 2, ch_pl // 2,
+                        text="▶", fill="#FFFFFF",
+                        font=(FONT_FAMILY, 48, "bold"),
+                    )
+                    return
+            else:
+                # with/copy pattern: PIL.Image.open holds an FD on the
+                # source file under its lazy-decoder lock. _show_image_on_canvas
+                # fires on every Configure event (resize, sash drag) and
+                # navigate, so without the explicit close + copy the FD
+                # leaks (and on Windows the queue worker hits WinError 32
+                # when trying to rename/overwrite an in-flight image).
+                with Image.open(entry.path) as _src:
+                    _src.load()
+                    img = _src.copy()
 
-            # Auto-correct EXIF orientation (match carousel)
+            # Auto-correct EXIF orientation (no-op on cv2-derived frames)
             img = ImageOps.exif_transpose(img)
 
-            # Apply user rotation
-            if entry.rotation:
+            # Apply user rotation (skip on videos — rotation is an
+            # image-edit concept, mirror carousel behavior).
+            if entry.rotation and not is_video:
                 img = img.rotate(-entry.rotation, expand=True)
 
             cw = max(1, self.canvas.winfo_width() - 4)
@@ -271,9 +337,21 @@ class ComparePanel(tk.Frame):
 
             photo = ImageTk.PhotoImage(img)
             self._photo = photo
+            cx_p = cw // 2 + 2
+            cy_p = ch // 2 + 2
             self.canvas.create_image(
-                cw // 2 + 2, ch // 2 + 2, image=photo, anchor=tk.CENTER
+                cx_p, cy_p, image=photo, anchor=tk.CENTER
             )
+            if is_video:
+                # Centered ▶ overlay so the user can tell at a glance
+                # this is a video, not a still. Size scales with thumbnail.
+                short_dim = min(new_w, new_h)
+                glyph_size = max(36, min(96, int(short_dim * 0.22)))
+                self.canvas.create_text(
+                    cx_p, cy_p,
+                    text="▶", fill="#FFFFFF",
+                    font=(FONT_FAMILY, glyph_size, "bold"),
+                )
         except ImportError:
             cw = max(1, self.canvas.winfo_width())
             ch = max(1, self.canvas.winfo_height())
@@ -346,10 +424,30 @@ class ComparePanel(tk.Frame):
             max_dim = 500
 
             def load_thumb(entry):
-                img = Image.open(entry.path)
-                img.load()
+                if getattr(entry, "is_video", False):
+                    # Hover preview uses the sync extract (sees cache after
+                    # the main canvas warmed it). The async helper isn't
+                    # right for hover — the popup is ephemeral, can't
+                    # outlive a second render, and an on_done callback might
+                    # land after the popup's parent canvas is gone. The
+                    # main-canvas async (above) populates _VIDEO_THUMB_CACHE
+                    # before any hover would fire, so this is fast in
+                    # practice.
+                    from .carousel_widget import _extract_video_first_frame
+                    img = _extract_video_first_frame(entry.path)
+                    if img is None:
+                        # Fall back to a small black image rather than
+                        # raising — the hover popup just shows a blank
+                        # tile, which still beats crashing the popup.
+                        img = Image.new("RGB", (max_dim, int(max_dim * 9 / 16)), "#000000")
+                else:
+                    # with/copy pattern — see _show_image_on_canvas comment
+                    # above for the FD-leak/WinError 32 rationale.
+                    with Image.open(entry.path) as _src:
+                        _src.load()
+                        img = _src.copy()
                 img = ImageOps.exif_transpose(img)
-                if entry.rotation:
+                if entry.rotation and not getattr(entry, "is_video", False):
                     img = img.rotate(-entry.rotation, expand=True)
                 ratio = min(max_dim / img.width, max_dim / img.height, 1.0)
                 if ratio < 1.0:
@@ -380,7 +478,7 @@ class ComparePanel(tk.Frame):
             left_frame.pack(side=tk.LEFT, padx=(0, 2))
             tk.Label(
                 left_frame, text="Carousel", bg=COLORS["bg_main"],
-                fg=COLORS["text_dim"], font=(FONT_FAMILY, 8),
+                fg=COLORS["text_dim"], font=(FONT_FAMILY, 9),
             ).pack()
             tk.Label(
                 left_frame, image=left_photo, bg=COLORS["bg_main"],
@@ -392,7 +490,7 @@ class ComparePanel(tk.Frame):
             right_frame.pack(side=tk.LEFT, padx=(2, 0))
             tk.Label(
                 right_frame, text="Compare", bg=COLORS["bg_main"],
-                fg=COLORS["text_dim"], font=(FONT_FAMILY, 8),
+                fg=COLORS["text_dim"], font=(FONT_FAMILY, 9),
             ).pack()
             tk.Label(
                 right_frame, image=right_photo, bg=COLORS["bg_main"],

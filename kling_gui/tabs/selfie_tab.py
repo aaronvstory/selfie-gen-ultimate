@@ -12,15 +12,17 @@ import re
 from typing import Callable, Dict, List, Optional
 
 from ..theme import (
-    BUTTON_FILLED_TEXT_COLOR,
-    BUTTON_TEXT_COLOR,
     COLORS,
     FONT_FAMILY,
+    FONT_MONO,
     TTK_BTN_COMPACT,
     TTK_BTN_DANGER,
     TTK_BTN_PRIMARY,
     TTK_BTN_SECONDARY,
+    TTK_BTN_SLOT_ACTIVE,
+    TTK_BTN_SLOT_INACTIVE,
     TTK_BTN_SUCCESS,
+    TTK_BTN_WORKFLOW,
     create_action_button,
     debounce_command,
 )
@@ -287,7 +289,7 @@ class SelfieTab(tk.Frame):
         self._mode_hint_label = tk.Label(
             mode_row,
             text="",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             anchor="e",
@@ -297,24 +299,22 @@ class SelfieTab(tk.Frame):
         tk.Label(
             mode_row,
             text="Slots:",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         ).pack(side=tk.LEFT, padx=(14, 6))
         self._slot_buttons = []
         for slot in range(1, self.SLOT_COUNT + 1):
-            btn = tk.Button(
+            # ttk slot button — active/inactive swapped via style=
+            # in _update_selfie_slot_button_colors. Dual-style pattern
+            # (TTK_BTN_SLOT_ACTIVE/INACTIVE) so the active tint survives
+            # macOS HIView re-paints; raw tk.Button reverted to white
+            # after the first click.
+            btn = ttk.Button(
                 mode_row,
                 text=str(slot),
-                width=2,
-                font=(FONT_FAMILY, 8, "bold"),
-                bg=COLORS["bg_input"],
-                fg=BUTTON_TEXT_COLOR,
-                activebackground=COLORS["accent_blue"],
-                activeforeground=BUTTON_FILLED_TEXT_COLOR,
-                relief=tk.SOLID,
-                bd=1,
-                highlightthickness=0,
+                width=3,
+                style=TTK_BTN_SLOT_INACTIVE,
                 command=lambda s=slot: self._on_selfie_slot_changed(s),
             )
             btn.pack(side=tk.LEFT, padx=(0, 3))
@@ -323,7 +323,7 @@ class SelfieTab(tk.Frame):
         tk.Label(
             mode_row,
             text="Title:",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         ).pack(side=tk.LEFT, padx=(10, 6))
@@ -336,7 +336,7 @@ class SelfieTab(tk.Frame):
             readonlybackground=COLORS["bg_input"],
             fg=COLORS["text_light"],
             insertbackground=COLORS["text_light"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             relief=tk.SOLID,
             bd=1,
         )
@@ -354,7 +354,7 @@ class SelfieTab(tk.Frame):
         self._customized_frame = tk.LabelFrame(
             prompt_frame,
             text="Prompt Template  {json.field} + {opt1|opt2} wildcards",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         )
@@ -362,11 +362,18 @@ class SelfieTab(tk.Frame):
 
         self.prompt_template_text = tk.Text(
             self._customized_frame,
-            height=7,
+            # height bumped to 12 (2026-05-21): macOS has vertical
+            # headroom that was unused; long wildcard prompts need it
+            # to be readable without scrolling.
+            height=12,
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-            font=("Consolas", 9),
+            # Unified prompt font (user request 2026-05-21): every
+            # prompt-text Text widget in the app uses (FONT_FAMILY, 10)
+            # to match the video-tab positive + negative prompt
+            # editors. Was (FONT_MONO, 9) — visibly smaller + mono.
+            font=(FONT_FAMILY, 10),
             insertbackground=COLORS["text_light"],
             padx=5,
             pady=4,
@@ -414,7 +421,7 @@ class SelfieTab(tk.Frame):
         self._customized_status = tk.Label(
             self._customized_frame,
             text="Template ready \u2014 run AI Analysis in Step 1, then Send to Step 2",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             anchor="w",
@@ -425,7 +432,7 @@ class SelfieTab(tk.Frame):
         self._wildcard_frame = tk.LabelFrame(
             prompt_frame,
             text="Wildcard Template  {option1|option2|option3}",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         )
@@ -433,11 +440,12 @@ class SelfieTab(tk.Frame):
 
         self._wildcard_text = tk.Text(
             self._wildcard_frame,
-            height=7,
+            height=12,  # match customized template height
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-            font=("Consolas", 9),
+            # Unified prompt font — see prompt_template_text above.
+            font=(FONT_FAMILY, 10),
             insertbackground=COLORS["text_light"],
             padx=5,
             pady=4,
@@ -614,7 +622,7 @@ class SelfieTab(tk.Frame):
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         ).grid(row=2, column=1, sticky="w", padx=5, pady=(4, 0))
         tk.Radiobutton(
             grid,
@@ -626,7 +634,7 @@ class SelfieTab(tk.Frame):
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         ).grid(row=2, column=2, columnspan=2, sticky="w", padx=(12, 0), pady=(4, 0))
 
         # Model selection (moved to right side of Generation Settings)
@@ -707,7 +715,7 @@ class SelfieTab(tk.Frame):
                 fg=COLORS["text_light"],
                 selectcolor=COLORS["bg_input"],
                 activebackground=COLORS["bg_panel"],
-                font=(FONT_FAMILY, 8),
+                font=(FONT_FAMILY, 9),
                 anchor="w",
             ).grid(
                 row=idx,
@@ -740,11 +748,13 @@ class SelfieTab(tk.Frame):
         # Action buttons (btn_frame was packed at top of _build_ui)
         btn_frame = self._btn_frame
 
+        # Workflow-primary on Step 2 — Generate Selfie stands out via
+        # TTK_BTN_WORKFLOW so users immediately know "click here next".
         self.generate_btn = create_action_button(
             btn_frame,
             text="Generate Selfie",
             command=debounce_command(self._on_generate, key="selfie_generate"),
-            style=TTK_BTN_SUCCESS,
+            style=TTK_BTN_WORKFLOW,
         )
         self.generate_btn.pack(side=tk.LEFT)
 
@@ -936,12 +946,11 @@ class SelfieTab(tk.Frame):
         return self._raw_template
 
     def _update_selfie_slot_button_colors(self):
+        # ttk: swap style= instead of bg/fg. Same outcome (active slot
+        # reads as the current selection) without HIView revert on macOS.
         active = self._selfie_slot_var.get()
         for i, btn in enumerate(self._slot_buttons, start=1):
-            if i == active:
-                btn.config(bg=COLORS["accent_blue"], fg=BUTTON_FILLED_TEXT_COLOR)
-            else:
-                btn.config(bg=COLORS["bg_input"], fg=BUTTON_TEXT_COLOR)
+            btn.configure(style=TTK_BTN_SLOT_ACTIVE if i == active else TTK_BTN_SLOT_INACTIVE)
 
     def _load_current_slot_into_editor(self):
         slot = str(self._selfie_slot_var.get())

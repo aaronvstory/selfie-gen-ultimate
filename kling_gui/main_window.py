@@ -55,11 +55,14 @@ from .theme import (
     TTK_BTN_SUCCESS,
     TTK_BTN_SUCCESS_COMPACT,
     TTK_BTN_TAB_NAV,
-    apply_macos_button_fix,
+    TTK_BTN_WORKFLOW,
+    TTK_BTN_SLOT_ACTIVE,
+    TTK_BTN_SLOT_INACTIVE,
     create_action_button,
     debounce_command,
 )
 from .layout_utils import (
+    parse_geometry_size as _parse_geometry_size,
     sanitize_saved_geometry as _sanitize_saved_geometry,
     sanitize_window_layout as _sanitize_window_layout,
     sanitize_sash_layout as _sanitize_sash_layout,
@@ -123,6 +126,9 @@ VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", "
 IS_MACOS = sys.platform == "darwin"
 FONT_FAMILY = "Helvetica" if IS_MACOS else "Segoe UI"
 EMOJI_FONT_FAMILY = "Apple Color Emoji" if IS_MACOS else "Segoe UI Emoji"
+# Cross-platform monospace. macOS Menlo / Windows Consolas. Mirrors
+# theme.FONT_MONO — kept local for parity with FONT_FAMILY above.
+FONT_MONO = "Menlo" if IS_MACOS else "Consolas"
 
 
 UI_CONFIG_DEFAULTS = {
@@ -234,7 +240,7 @@ class FolderPreviewDialog(tk.Toplevel):
             list_frame,
             bg=COLORS["bg_main"],
             fg=COLORS["text_light"],
-            font=("Consolas", 9),
+            font=(FONT_MONO, 9),
             selectbackground=COLORS["accent_blue"],
             yscrollcommand=scrollbar.set,
             borderwidth=0,
@@ -255,29 +261,23 @@ class FolderPreviewDialog(tk.Toplevel):
         btn_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         btn_frame.pack(fill=tk.X, padx=20, pady=(0, 15))
 
-        _cancel_btn = tk.Button(
+        _cancel_btn = ttk.Button(
             btn_frame,
             text="Cancel",
-            font=(FONT_FAMILY, 10),
-            bg=COLORS["bg_input"],
-            fg=COLORS["text_light"],
+            style=TTK_BTN_SECONDARY,
             width=12,
             command=self._cancel,
         )
         _cancel_btn.pack(side=tk.RIGHT, padx=5)
-        apply_macos_button_fix(_cancel_btn)
 
-        _add_btn = tk.Button(
+        _add_btn = ttk.Button(
             btn_frame,
             text=f"Add {len(files)} to Queue",
-            font=(FONT_FAMILY, 10, "bold"),
-            bg=COLORS["btn_green"],
-            fg="white",
+            style=TTK_BTN_SUCCESS,
             width=18,
             command=self._proceed,
         )
         _add_btn.pack(side=tk.RIGHT, padx=5)
-        apply_macos_button_fix(_add_btn)
 
         # Center on parent
         self.update_idletasks()
@@ -296,11 +296,46 @@ class FolderPreviewDialog(tk.Toplevel):
         self.destroy()
 
 
+# Module-level guard for the SessionManager ttk style. Mirrors the
+# _INSPECTOR_STYLES_CONFIGURED pattern in video_inspector.py — ttk.Style
+# is a process-global singleton, so re-running ``.configure()`` on
+# every dialog open is wasted work and (on long-running macOS Tk
+# sessions) has been observed to slow down style lookups. Configure
+# once per process. (Subagent on 96bfb00 — kept the two patterns
+# consistent so future dialogs copy the right one.)
+_SESSION_STYLES_CONFIGURED = False
+
+
+def _configure_session_styles() -> None:
+    """Configure the SessionManagerDialog ttk styles once per process.
+
+    Idempotent — safe to call from every ``SessionManagerDialog.__init__``;
+    the actual ``.configure()`` / ``.map()`` calls only run the first
+    time.
+    """
+    global _SESSION_STYLES_CONFIGURED
+    if _SESSION_STYLES_CONFIGURED:
+        return
+    style = ttk.Style()
+    style.configure(
+        "SessionManager.TCheckbutton",
+        background=COLORS["bg_panel"],
+        foreground=COLORS["text_light"],
+        font=(FONT_FAMILY, 10),
+    )
+    style.map(
+        "SessionManager.TCheckbutton",
+        background=[("active", COLORS["bg_panel"])],
+        foreground=[("active", COLORS["text_light"])],
+    )
+    _SESSION_STYLES_CONFIGURED = True
+
+
 class SessionManagerDialog(tk.Toplevel):
     """Dialog for browsing, loading, and managing saved sessions."""
 
-    DLG_W = 920
-    DLG_H = 560
+    DLG_W = 1100
+    DLG_H = 680
 
     def __init__(self, parent, app_dir, image_session, config, save_config_fn, log_fn):
         super().__init__(parent)
@@ -325,7 +360,7 @@ class SessionManagerDialog(tk.Toplevel):
         # Center and grab
         w, h = self.DLG_W, self.DLG_H
         self.geometry(f"{w}x{h}")
-        self.minsize(760, 460)
+        self.minsize(960, 580)
         self.update_idletasks()
         # Ensure parent geometry is current before reading dimensions
         parent.update_idletasks()
@@ -345,26 +380,30 @@ class SessionManagerDialog(tk.Toplevel):
     def _build_ui(self):
         # Header
         header = tk.Label(
-            self, text="Saved Sessions", font=(FONT_FAMILY, 12, "bold"),
+            self, text="Saved Sessions", font=(FONT_FAMILY, 14, "bold"),
             bg=COLORS["bg_main"], fg=COLORS["text_light"],
         )
-        header.pack(fill=tk.X, padx=16, pady=(12, 6))
+        header.pack(fill=tk.X, padx=18, pady=(14, 8))
 
         # Listbox with vertical + horizontal scrollbars (long names no longer
         # silently truncate — the user can scroll to read the full name).
         list_frame = tk.Frame(self, bg=COLORS["bg_main"])
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 6))
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 8))
 
-        scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        # ttk.Scrollbar (not tk.Scrollbar) so the clam theme renders
+        # dark on macOS — native Aqua bars would show as bright white
+        # against the dark dialog. Same rule applies to checkbutton.
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        xscrollbar = tk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
+        xscrollbar = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
         xscrollbar.pack(side=tk.BOTTOM, fill=tk.X)
 
         self._listbox = tk.Listbox(
             list_frame, bg=COLORS["bg_input"], fg=COLORS["text_light"],
             selectbackground=COLORS["accent_blue"], selectforeground="white",
-            font=("Consolas", 10), yscrollcommand=scrollbar.set,
+            font=(FONT_MONO, 11), yscrollcommand=scrollbar.set,
             xscrollcommand=xscrollbar.set, activestyle="none",
+            borderwidth=0, highlightthickness=0,
         )
         self._listbox.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self._listbox.yview)
@@ -375,33 +414,38 @@ class SessionManagerDialog(tk.Toplevel):
         # Detail label
         self._detail_label = tk.Label(
             self, text="Select a session to view details",
-            font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 10), bg=COLORS["bg_main"], fg=COLORS["text_dim"],
             anchor="w",
         )
-        self._detail_label.pack(fill=tk.X, padx=16, pady=(0, 8))
+        self._detail_label.pack(fill=tk.X, padx=18, pady=(0, 10))
 
-        # Auto-save section
-        autosave_frame = tk.Frame(self, bg=COLORS["bg_panel"], padx=10, pady=6)
-        autosave_frame.pack(fill=tk.X, padx=16, pady=(0, 8))
+        # Auto-save section. ttk.Checkbutton (not tk.Checkbutton) so it
+        # stays themed on macOS Aqua — the raw tk variant renders huge
+        # and white after the first toggle (HIView revert).
+        autosave_frame = tk.Frame(self, bg=COLORS["bg_panel"], padx=14, pady=10)
+        autosave_frame.pack(fill=tk.X, padx=18, pady=(0, 10))
+
+        # Idempotent — configure the SessionManager ttk style once per
+        # process. See _configure_session_styles module docstring.
+        _configure_session_styles()
 
         tk.Label(
-            autosave_frame, text="Auto-Save:", font=(FONT_FAMILY, 9, "bold"),
+            autosave_frame, text="Auto-Save:", font=(FONT_FAMILY, 10, "bold"),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
-        ).pack(side=tk.LEFT, padx=(0, 8))
+        ).pack(side=tk.LEFT, padx=(0, 10))
 
         self._autosave_var = tk.BooleanVar(value=self._config.get("session_autosave_enabled", True))
-        autosave_cb = tk.Checkbutton(
+        autosave_cb = ttk.Checkbutton(
             autosave_frame, text="Enabled", variable=self._autosave_var,
-            bg=COLORS["bg_panel"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"], activebackground=COLORS["bg_panel"],
+            style="SessionManager.TCheckbutton",
             command=self._on_autosave_changed,
         )
-        autosave_cb.pack(side=tk.LEFT, padx=(0, 12))
+        autosave_cb.pack(side=tk.LEFT, padx=(0, 16))
 
         tk.Label(
-            autosave_frame, text="Interval:", font=(FONT_FAMILY, 9),
+            autosave_frame, text="Interval:", font=(FONT_FAMILY, 10),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
-        ).pack(side=tk.LEFT, padx=(0, 4))
+        ).pack(side=tk.LEFT, padx=(0, 6))
 
         self._interval_var = tk.StringVar(value=self._config.get("session_autosave_interval", "after_api_action"))
         interval_menu = ttk.Combobox(
@@ -416,15 +460,15 @@ class SessionManagerDialog(tk.Toplevel):
         tk.Label(
             self,
             text="Save = overwrite selected session   ·   Save As New… = create a new session file",
-            font=(FONT_FAMILY, 8), bg=COLORS["bg_main"], fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=COLORS["text_dim"],
             anchor="w",
-        ).pack(fill=tk.X, padx=16, pady=(0, 4))
+        ).pack(fill=tk.X, padx=18, pady=(0, 6))
 
         # Button bar — grouped: destructive (left) · save current state ·
         # load (right). Buttons that need a selection are tracked so they can
         # be disabled until a row is picked (clearer than a silent no-op).
         btn_frame = tk.Frame(self, bg=COLORS["bg_main"])
-        btn_frame.pack(fill=tk.X, padx=16, pady=(0, 12))
+        btn_frame.pack(fill=tk.X, padx=18, pady=(0, 14))
 
         self._selection_buttons = []
 
@@ -432,6 +476,25 @@ class SessionManagerDialog(tk.Toplevel):
             btn_frame, text="Delete", command=self._on_delete, style=TTK_BTN_DANGER
         )
         del_btn.pack(side=tk.LEFT, padx=(0, 6))
+        # "Prune Dead (N)" — bulk-delete sessions whose source files
+        # are missing AND whose folders contain no surviveable images/
+        # videos. Enabled iff N > 0. Uses TTK_BTN_DANGER (not _COMPACT)
+        # so it sits at the same height as Delete/Save/etc. — mixing
+        # _COMPACT with non-compact siblings produces visibly-different
+        # row heights and is the styling regression the user called out
+        # on 2026-05-21. Direct prune on click (no confirm dialog — the
+        # [DEAD] badge in the listbox is the spot-check surface).
+        self._prune_dead_btn = create_action_button(
+            btn_frame, text="Prune Dead", command=self._on_prune_dead,
+            style=TTK_BTN_DANGER,
+        )
+        # H1 (code-review on 4ddb0252): start DISABLED. With many
+        # sessions, the first liveness scan blocks the Tk thread briefly;
+        # a click during that window would invoke _on_prune_dead before
+        # _dead_paths is populated. The button is re-enabled by
+        # _update_prune_button at the end of the first _refresh_list.
+        self._prune_dead_btn.configure(state=tk.DISABLED)
+        self._prune_dead_btn.pack(side=tk.LEFT, padx=(0, 6))
         clear_btn = create_action_button(
             btn_frame, text="Clear Project", command=self._on_clear_project,
             style=TTK_BTN_SECONDARY,
@@ -472,6 +535,67 @@ class SessionManagerDialog(tk.Toplevel):
             except tk.TclError:
                 pass
 
+    def _update_prune_button(self):
+        """Sync Prune Dead button label + enabled state with the dead-count."""
+        btn = getattr(self, "_prune_dead_btn", None)
+        if btn is None:
+            return
+        n = len(getattr(self, "_dead_paths", set()) or set())
+        try:
+            btn.configure(
+                text=(f"Prune Dead ({n})" if n else "Prune Dead"),
+                state=(tk.NORMAL if n > 0 else tk.DISABLED),
+            )
+        except tk.TclError:
+            pass
+
+    # Threshold above which Prune Dead still requires a single confirm.
+    # The user asked us to drop the popup ("just do it"), but a 70-session
+    # accidental click is a bigger loss than the popup is annoying.
+    # 10 is enough for the typical "I have a few stale sessions" sweep
+    # to stay one-click; a 70-dead pile hits the confirm.
+    PRUNE_CONFIRM_THRESHOLD = 10
+
+    def _on_prune_dead(self):
+        """Bulk-delete every session whose source data is gone.
+
+        Uses the dead set computed at the most recent _refresh_list
+        (self._dead_paths) — NOT a fresh re-scan. This is the source
+        of truth the user just saw highlighted in the listbox, so the
+        prune deletes exactly what was visibly dead. Re-scanning here
+        could classify formerly-live sessions as dead if a folder went
+        unreachable between refresh and click (sleeping external drive,
+        dropped network mount), silently sweeping them — code-review H2
+        on 4ddb0252.
+
+        Confirm popup is suppressed (user request 2026-05-21) for the
+        common small-sweep case, but reappears above
+        PRUNE_CONFIRM_THRESHOLD so a 70-session accidental click can't
+        wipe the manager (code-review H3).
+        """
+        from .session_manager import prune_dead_sessions
+        dead_paths = list(getattr(self, "_dead_paths", set()) or set())
+        n = len(dead_paths)
+        if n == 0:
+            self._log_fn("No dead sessions to prune", "info")
+            return
+        if n > self.PRUNE_CONFIRM_THRESHOLD:
+            from tkinter import messagebox
+            ok = messagebox.askyesno(
+                "Prune Dead Sessions",
+                f"Delete {n} dead session file(s)?\n\n"
+                "Above 10 the prune asks once for safety. Cancel to\n"
+                "spot-check the [DEAD] rows in the list first.",
+                parent=self, icon="warning",
+            )
+            if not ok:
+                return
+        deleted = prune_dead_sessions(self._app_dir, paths=dead_paths)
+        self._log_fn(
+            f"Pruned {len(deleted)} dead session(s)", "success",
+        )
+        self._refresh_list()
+
     def _refresh_list(self):
         from .session_manager import list_sessions, collapse_legacy_autosaves
         # One-shot migration: collapse the legacy timestamped autosave pile to
@@ -504,6 +628,21 @@ class SessionManagerDialog(tk.Toplevel):
         self._selected_record = None
         self._detail_label.config(text="Select a session to view details")
         self._listbox.delete(0, tk.END)
+        # Compute liveness once per refresh so the [DEAD] badge + the
+        # Prune Dead button count stay in sync with the listbox. Uses
+        # only os.path.isfile/isdir/listdir/splitext so it works on both
+        # macOS and Windows regardless of the OS that saved the session.
+        from .session_manager import session_liveness
+        self._dead_paths: set = set()
+        for rec in self._sessions:
+            try:
+                if not session_liveness(rec.path)["live"]:
+                    self._dead_paths.add(rec.path)
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "liveness check failed for %s", rec.path, exc_info=True,
+                )
+        self._update_prune_button()
         if not self._sessions:
             self._listbox.insert(
                 tk.END,
@@ -513,9 +652,25 @@ class SessionManagerDialog(tk.Toplevel):
             return
         for rec in self._sessions:
             ts = rec.updated_at[:16].replace("T", " ") if rec.updated_at else "?"
-            badge = "[AUTOSAVE]" if rec.session_kind == "autosave" else "[MANUAL]"
-            row = f"  {badge:<10s} {rec.project_key:<20s} {ts}  {rec.image_count:>3d} imgs  {rec.name}"
+            is_dead = rec.path in self._dead_paths
+            kind_badge = "[AUTOSAVE]" if rec.session_kind == "autosave" else "[MANUAL]"
+            # When dead, prepend [DEAD] so the badge column reads as
+            # "[DEAD][AUTOSAVE]" or "[DEAD][MANUAL]". Kept in same
+            # column so column widths stay sane.
+            badge = (f"[DEAD]{kind_badge}" if is_dead else f"      {kind_badge}")
+            row = f"  {badge:<18s} {rec.project_key:<20s} {ts}  {rec.image_count:>3d} imgs  {rec.name}"
             self._listbox.insert(tk.END, row)
+            if is_dead:
+                # Dim the dead row so it visually fades into the background.
+                # itemconfig is row-scoped so live rows keep their default.
+                # Set selectforeground too — on Aqua the global listbox
+                # selectforeground can be lost on itemconfig'd rows after
+                # first selection (M4 code-review on 4ddb0252).
+                self._listbox.itemconfig(
+                    tk.END,
+                    fg=COLORS["text_dim"],
+                    selectforeground=COLORS["text_dim"],
+                )
         self._sync_button_states()
 
     def _on_select(self, event=None):
@@ -770,14 +925,29 @@ class KlingGUIWindow:
         # of right section) — see layout_utils.sanitize_sash_layout for the
         # canonical clamp logic. Computed for ~1621px window (the user's tested
         # size): sash_queue=405, sash_log_drop_split=863.
+        #
+        # CRITICAL: clamp against the ACTUAL geometry the window is about to
+        # open at (`sanitized_geometry`, e.g. "1331x950+97+52"), NOT against
+        # `sanitized_window["width"]` (which is the ui_config default of 1100
+        # regardless of the saved geometry). The old "use ui_config width"
+        # path silently clamped saved sash positions DOWN to fit a 1100-wide
+        # window — then `_persist_layout_corrections_if_needed` flushed the
+        # clamped values back to disk, permanently losing the user's actual
+        # widths on every relaunch ("buttons cut off, have to resize every
+        # session"). Fixed 2026-05-20.
+        pre_sash_w, pre_sash_h = _parse_geometry_size(
+            sanitized_geometry,
+            sanitized_window["width"],
+            sanitized_window["height"],
+        )
         pre_sash, pre_sash_changed = sanitize_sash_layout(
             sash_dropzone=self.config.get("sash_dropzone", 500),
             sash_prompt_split=self.config.get("sash_prompt_split", 760),
             sash_queue=self.config.get("sash_queue", 405),
             sash_log=self.config.get("sash_log", 150),
             sash_log_drop_split=self.config.get("sash_log_drop_split", 863),
-            root_width=sanitized_window["width"],
-            root_height=sanitized_window["height"],
+            root_width=pre_sash_w,
+            root_height=pre_sash_h,
         )
         self.config.update(pre_sash)
         if pre_sash_changed:
@@ -814,19 +984,94 @@ class KlingGUIWindow:
         # Protocol for window close
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Live persistence of window geometry + sash positions during
+        # the session. Without this, manual resizes are only saved when
+        # _on_close fires — so crashes, kills, or any exit path that
+        # skips _on_close lose the user's choice silently (the bug:
+        # "I resize the window but next launch it comes back at the
+        # old size"). Configure events fire on every pixel of a drag
+        # so we debounce: the latest event re-arms a single timer,
+        # only the final size after the drag stops actually writes
+        # JSON to disk. 800ms is long enough to coalesce a drag but
+        # short enough that a quick resize + force-close still persists.
+        self._layout_save_after_id: Optional[str] = None
+        self._last_saved_geometry: str = ""
+        self._layout_save_reason: str = "geometry"
+        self.root.bind("<Configure>", self._on_root_configure, add="+")
+
+        # Sash-drag live persistence. tk.PanedWindow does NOT fire
+        # <Configure> on the paned widget itself when a sash moves
+        # (the children resize, not the paned), so the root-Configure
+        # debounce above MISSES drop-zone / log-pane / queue / prompt-
+        # split / log-drop-split changes when the user drags a sash
+        # without resizing the window. <ButtonRelease-1> on each
+        # PanedWindow fires once when the user releases the drag
+        # handle (cross-platform: Tk on both Windows and macOS Aqua
+        # emit it; verified on Sonoma during PR #43 review).
+        #
+        # We attach to ALL FIVE PanedWindows in the app (every pane
+        # the user can interact with). add="+" so the binding doesn't
+        # clobber any future sash handlers added by individual panels.
+        # The list is locked by tests/test_window_geometry_persistence.py
+        # so a future refactor that adds/removes a pane forces a test
+        # update.
+        for _pane_attr in (
+            "main_paned",      # top section | bottom section (vertical)
+            "top_h_paned",     # prompt split (horizontal)
+            "bottom_paned",    # carousel | compare | right (horizontal)
+            "right_paned",     # log/drop | queue (vertical)
+            "log_drop_paned",  # log pane | drop zone (horizontal)
+        ):
+            _pane = getattr(self, _pane_attr, None)
+            if _pane is not None:
+                try:
+                    _pane.bind(
+                        "<ButtonRelease-1>", self._on_sash_release, add="+"
+                    )
+                except tk.TclError:
+                    # Never let a binding failure break GUI launch.
+                    pass
+
     def _set_app_icon(self):
-        """Load and set the app icon from bundled resources or alongside the exe."""
+        """Load and set the app icon — cross-platform.
+
+        Windows: ``iconbitmap`` with `.ico` (multi-size native ICO format,
+        renders crisp at every Windows DPI).
+        macOS + Linux: ``iconphoto`` with `.png` via PhotoImage — Tk on
+        Aqua silently ignores `.ico` and `iconbitmap`, so PNG is required
+        for the dock + window-list icon to actually render. The 256x256
+        PNG generated from the same source by create_icon.py is bundled
+        alongside the .ico (see kling_gui_direct.spec).
+
+        Icon is cosmetic — never crash the app over it.
+        """
         try:
             from path_utils import get_resource_dir, get_app_dir
             import tkinter as tk
 
-            icon_name = "kling_ui.ico"
+            search_dirs = [get_resource_dir(), get_app_dir()]
 
-            # Check bundled resources first (PyInstaller _MEIPASS), then app dir
-            for search_dir in [get_resource_dir(), get_app_dir()]:
-                icon_path = os.path.join(search_dir, icon_name)
-                if os.path.isfile(icon_path):
-                    self.root.iconbitmap(icon_path)
+            # macOS and Linux Tk both silently ignore iconbitmap with .ico.
+            # Use iconphoto+PNG for those; iconbitmap+ico stays for Windows.
+            _non_windows = IS_MACOS or sys.platform.startswith("linux")
+            if _non_windows:
+                # macOS / Linux path: iconphoto + PhotoImage from PNG.
+                # iconbitmap on Aqua + on most Linux WMs is a silent no-op.
+                for d in search_dirs:
+                    png_path = os.path.join(d, "kling_ui.png")
+                    if os.path.isfile(png_path):
+                        try:
+                            self._app_icon_photo = tk.PhotoImage(file=png_path)
+                            self.root.iconphoto(True, self._app_icon_photo)
+                            return
+                        except tk.TclError:
+                            continue  # PhotoImage may reject some PNGs
+                return
+            # Windows path: native .ico via iconbitmap.
+            for d in search_dirs:
+                ico_path = os.path.join(d, "kling_ui.ico")
+                if os.path.isfile(ico_path):
+                    self.root.iconbitmap(ico_path)
                     return
         except Exception:
             pass  # Icon is cosmetic - never crash the app over it
@@ -1030,6 +1275,113 @@ class KlingGUIWindow:
                 )
             config["verbose_gui_mode_migrated_v17"] = True
 
+        # Slot 3 defaults backfill (2026-05-21): older saved configs
+        # carry empty slot 3 prompt + negative because the template
+        # values were added after the user's install. Backfill from the
+        # canonical defaults when slot 3 is empty AND model is the
+        # canonical Kling 2.5 Pro Turbo (i.e. user hasn't deliberately
+        # switched off-default). Idempotent + gated by a flag so users
+        # who explicitly cleared slot 3 don't get auto-refilled twice.
+        if not config.get("slot3_defaults_backfilled_v21"):
+            saved = config.get("saved_prompts") or {}
+            neg = config.get("negative_prompts") or {}
+            canonical_slot3_pos = (
+                "Image-to-video: the subject performs a slow, controlled "
+                "head movement while the body and background remain "
+                "completely motionless. The head turns to one side at a "
+                "moderate angle (about 40 degrees from center, roughly a "
+                "three-quarter view — clearly turned but well short of "
+                "profile), then slowly turns to the matching angle on the "
+                "other side. Eyes stay locked on the camera lens the "
+                "entire time. Facial expression stays neutral and "
+                "unchanged. Shoulders, torso, neck base, and background "
+                "do not move at all. Camera is locked. Lighting matches "
+                "the source image. Pacing is slow, continuous, and "
+                "natural."
+            )
+            canonical_neg = (
+                "profile view, full head turn, head turned away, looking "
+                "away from camera, broken eye contact, eyes closed, "
+                "shoulder movement, torso rotation, body twist, leaning, "
+                "swaying, head tilt, smiling, changing expression, "
+                "talking, blinking unnaturally, camera movement, camera "
+                "pan, camera zoom, lighting change, flicker, exposure "
+                "shift, color shift, background motion, fast motion, "
+                "jerky motion, robotic motion, morphing face, distortion, "
+                "blur, low quality"
+            )
+            if not str(saved.get("3", "")).strip():
+                saved["3"] = canonical_slot3_pos
+                config["saved_prompts"] = saved
+                print("Backfilled saved_prompts slot 3 (was empty)")
+            if not str(neg.get("3", "")).strip():
+                neg["3"] = canonical_neg
+                config["negative_prompts"] = neg
+                print("Backfilled negative_prompts slot 3 (was empty)")
+            # Same backfill for slot 4 (which the user uses as the
+            # "macOS-30" slot) — match canonical negative if empty.
+            if not str(neg.get("4", "")).strip():
+                neg["4"] = canonical_neg
+                config["negative_prompts"] = neg
+                print("Backfilled negative_prompts slot 4 (was empty)")
+            # If current_model drifted off the canonical Kling 2.5 Pro
+            # Turbo AND the user hasn't explicitly set model_display_name,
+            # leave it alone — user may have switched intentionally.
+            # Only backfill if model field is empty/missing.
+            if not str(config.get("current_model", "")).strip():
+                config["current_model"] = (
+                    "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+                )
+                config["model_display_name"] = "Kling 2.5 Turbo Pro"
+                print("Backfilled current_model: Kling 2.5 Turbo Pro")
+            config["slot3_defaults_backfilled_v21"] = True
+
+        # Force-update slot 3 positive if it matches a known stale
+        # template-shipped default (NOT a user customization). Two prior
+        # template defaults shipped:
+        #   (a) "Generate a lifelike video animation ... rotate only their head"
+        #       — was the template's slot 2 text that got mis-copied to slot 3
+        #       in older installs.
+        #   (b) "Image-to-video, photorealistic, optimized for Kling 2.5 Pro"
+        #       — the most-recent prior template default (matched the user's
+        #       request for the "extremely subtle" variant; superseded by the
+        #       40° three-quarter-view text per the 2026-05-21 directive).
+        # Anything else is treated as a user customization — left alone.
+        # Idempotent via a separate flag (the backfill flag above only gates
+        # the EMPTY-slot case; this is the FORCE case).
+        if not config.get("slot3_force_canonical_v21"):
+            saved = config.get("saved_prompts") or {}
+            current_slot3 = str(saved.get("3", "") or "").strip()
+            _STALE_PREFIXES = (
+                "Generate a lifelike video animation from the provided image",
+                "Image-to-video, photorealistic, optimized for Kling 2.5 Pro",
+            )
+            if current_slot3.startswith(_STALE_PREFIXES):
+                canonical_slot3_pos = (
+                    "Image-to-video: the subject performs a slow, controlled "
+                    "head movement while the body and background remain "
+                    "completely motionless. The head turns to one side at a "
+                    "moderate angle (about 40 degrees from center, roughly a "
+                    "three-quarter view — clearly turned but well short of "
+                    "profile), then slowly turns to the matching angle on the "
+                    "other side. Eyes stay locked on the camera lens the "
+                    "entire time. Facial expression stays neutral and "
+                    "unchanged. Shoulders, torso, neck base, and background "
+                    "do not move at all. Camera is locked. Lighting matches "
+                    "the source image. Pacing is slow, continuous, and "
+                    "natural."
+                )
+                saved["3"] = canonical_slot3_pos
+                config["saved_prompts"] = saved
+                titles = config.get("prompt_titles") or {}
+                titles["3"] = "head-turn 3/4 view (40° each side, kling 2.5 pro)"
+                config["prompt_titles"] = titles
+                print(
+                    "Force-updated slot 3 positive to canonical "
+                    "head-turn 3/4 view (was stale template default)."
+                )
+            config["slot3_force_canonical_v21"] = True
+
     def _merge_ui_config(self, base: dict, updates: dict) -> dict:
         """Deep-merge UI config dictionaries."""
         for key, value in updates.items():
@@ -1143,7 +1495,7 @@ class KlingGUIWindow:
             foreground=COLORS["text_light"],
             fieldbackground=COLORS["bg_panel"],
             borderwidth=0,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             rowheight=18,
         )
         style.configure(
@@ -1151,7 +1503,7 @@ class KlingGUIWindow:
             background=COLORS["bg_input"],
             foreground=COLORS["text_light"],
             borderwidth=1,
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             relief="flat",
         )
         # Without explicit active/pressed maps, ttk falls back to the OS
@@ -1241,7 +1593,7 @@ class KlingGUIWindow:
         )
         style.configure(
             TTK_BTN_SUCCESS_COMPACT,
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             foreground="white",
             background=COLORS["btn_green"],
             borderwidth=1,
@@ -1267,7 +1619,7 @@ class KlingGUIWindow:
         )
         style.configure(
             TTK_BTN_DANGER_COMPACT,
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             foreground="white",
             background=COLORS["btn_red"],
             borderwidth=1,
@@ -1280,7 +1632,7 @@ class KlingGUIWindow:
         )
         style.configure(
             TTK_BTN_COMPACT,
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             foreground=COLORS["text_light"],
             background=COLORS["bg_input"],
             borderwidth=1,
@@ -1301,6 +1653,119 @@ class KlingGUIWindow:
         )
         style.map(
             TTK_BTN_TAB_NAV,
+            background=[("active", COLORS["bg_hover"]), ("pressed", COLORS["bg_main"]), ("disabled", "#3A3A3A")],
+            foreground=[("disabled", "#8C8C8C")],
+        )
+
+        # Workflow primary action — applied per-step to the SINGLE
+        # button users should click next on that step. Accent-blue fill
+        # like TTK_BTN_PRIMARY but with a contrasting darker border
+        # (bordercolor + 2px) + slightly larger typography + padding so
+        # the "main next action" stands out without being garish. Same
+        # palette on Win + macOS (clam theme draws identically on both,
+        # ignoring the macOS Aqua HIView path).
+        # Darker, more saturated blue + brighter glow ring so the
+        # white text reads sharply and the button visibly "lifts"
+        # off the panel. Same size as TTK_BTN_PRIMARY (padding +
+        # font kept unchanged from prior revision); only the fill
+        # + border colors shift. Clam theme renders identically on
+        # Win + macOS so the visual contract holds cross-platform.
+        # (User request 2026-05-21 — original "accent_blue" #4A8FFF
+        # was too washed-out for white text.)
+        _WORKFLOW_FILL = "#1F4FB8"        # darker saturated blue
+        _WORKFLOW_GLOW = "#7BC0FF"        # bright cyan-blue ring (slightly more visible per user request 2026-05-21)
+        _WORKFLOW_HOVER = "#2D62D8"       # lighter on hover (still darker than accent_blue)
+        _WORKFLOW_PRESSED = "#143985"     # press goes darker
+        style.configure(
+            TTK_BTN_WORKFLOW,
+            font=(FONT_FAMILY, 10, "bold"),
+            foreground="white",
+            background=_WORKFLOW_FILL,
+            bordercolor=_WORKFLOW_GLOW,   # bright ring around the dark fill
+            lightcolor=_WORKFLOW_FILL,
+            darkcolor=_WORKFLOW_FILL,
+            # 3px ring (was 2) — subtly more presence without making the
+            # button itself larger; padding stays the same so layout
+            # doesn't shift. (User request 2026-05-21 — slight bump.)
+            borderwidth=3,
+            padding=(14, 7),
+        )
+        style.map(
+            TTK_BTN_WORKFLOW,
+            background=[
+                ("active", _WORKFLOW_HOVER),
+                ("pressed", _WORKFLOW_PRESSED),
+                ("disabled", "#4B4B4B"),
+            ],
+            foreground=[("disabled", "#9D9D9D")],
+            bordercolor=[
+                ("active", _WORKFLOW_GLOW),
+                ("pressed", _WORKFLOW_GLOW),
+            ],
+        )
+
+        # Slot 1/2/3 selector buttons in Step 2 — two ttk styles the
+        # selfie tab swaps via .configure(style=...) so the active slot
+        # reads as the current selection. Same dual-state pattern as
+        # the carousel Ref button. Migrating from raw tk.Button keeps
+        # the active-tint stable through macOS HIView re-paints.
+        style.configure(
+            TTK_BTN_SLOT_ACTIVE,
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground="white",
+            background=COLORS["accent_blue"],
+            bordercolor=COLORS["accent_blue"],
+            borderwidth=1,
+            padding=(6, 3),
+        )
+        style.map(
+            TTK_BTN_SLOT_ACTIVE,
+            background=[("active", "#7AA7FF"), ("pressed", "#4A79D8")],
+            foreground=[("disabled", "#9D9D9D")],
+        )
+        style.configure(
+            TTK_BTN_SLOT_INACTIVE,
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground=COLORS["text_light"],
+            background=COLORS["bg_input"],
+            bordercolor=COLORS["border"],
+            borderwidth=1,
+            padding=(6, 3),
+        )
+        style.map(
+            TTK_BTN_SLOT_INACTIVE,
+            background=[("active", COLORS["bg_hover"]), ("pressed", COLORS["bg_main"])],
+            foreground=[("disabled", "#8C8C8C")],
+        )
+
+        # Carousel ★ Ref button styles. The Ref button has two visual
+        # states (active = yellow + dark text; inactive = neutral panel
+        # bg + light text), so it gets two ttk styles that the carousel
+        # swaps between via .configure(style=...). Migrating from raw
+        # tk.Button preserves the dark theme through macOS HIView
+        # re-paints (same fix-class as b3bc7398 across the rest of the
+        # GUI buttons).
+        style.configure(
+            "CarouselRefActive.TButton",
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground="#111111",
+            background="#E5C100",
+            borderwidth=1, padding=(8, 4),
+        )
+        style.map(
+            "CarouselRefActive.TButton",
+            background=[("active", "#E5C100"), ("pressed", "#C9AA00"), ("disabled", "#3A3A3A")],
+            foreground=[("active", "#111111"), ("disabled", "#8C8C8C")],
+        )
+        style.configure(
+            "CarouselRefInactive.TButton",
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground=COLORS["text_light"],
+            background=COLORS["bg_panel"],
+            borderwidth=1, padding=(8, 4),
+        )
+        style.map(
+            "CarouselRefInactive.TButton",
             background=[("active", COLORS["bg_hover"]), ("pressed", COLORS["bg_main"]), ("disabled", "#3A3A3A")],
             foreground=[("disabled", "#8C8C8C")],
         )
@@ -1485,11 +1950,20 @@ class KlingGUIWindow:
         )
         self.carousel.pack(fill=tk.BOTH, expand=True)
         self.carousel.set_on_compare(self._toggle_compare)
+        self.carousel.set_on_video(lambda p: self._open_video_inspector(p))
+        self.carousel.set_on_video_toolbar(
+            lambda: self._open_video_inspector(None)
+        )
         self.bottom_paned.add(carousel_frame, minsize=340)
 
         # Compare panel state (created on demand by _toggle_compare)
         self._compare_frame: Optional[tk.Frame] = None
         self._compare_panel: Optional[ComparePanel] = None
+
+        # Video Inspector singleton state — reused across opens to
+        # avoid Toplevel + decoder-thread leaks. open_video_inspector()
+        # focuses the existing one if alive, else constructs a new one.
+        self._video_inspector_window = None
 
         # Queue panel internals are kept for backend flow, but surface stays hidden in Step 3 UI.
         self._queue_panel_visible = False
@@ -2526,7 +3000,7 @@ class KlingGUIWindow:
             label = tk.Label(
                 frame,
                 text=text,
-                font=("Consolas", 9, "bold"),
+                font=(FONT_MONO, 9, "bold"),
                 bg="#202225",
                 fg="#F2F2F2",
                 padx=10,
@@ -2663,7 +3137,7 @@ class KlingGUIWindow:
                 tk.Label(
                     frame,
                     text=line,
-                    font=("Consolas", 8),
+                    font=(FONT_MONO, 9),
                     bg=COLORS["bg_panel"],
                     fg=COLORS["text_light"],
                     anchor="w",
@@ -2765,7 +3239,7 @@ class KlingGUIWindow:
         indicator = tk.Label(
             frame,
             text=f"{label}: Added" if is_set else f"{label}: Missing",
-            font=(FONT_FAMILY, 7, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
             padx=5, pady=2,
@@ -2842,7 +3316,7 @@ class KlingGUIWindow:
             list_frame,
             bg=COLORS["bg_main"],
             fg=COLORS["text_light"],
-            font=("Consolas", 8),
+            font=(FONT_MONO, 9),
             selectbackground=COLORS["accent_blue"],
             selectforeground="white",
             yscrollcommand=scrollbar.set,
@@ -2952,7 +3426,7 @@ class KlingGUIWindow:
         dnd_color = COLORS["success"] if HAS_DND else COLORS["warning"]
         tk.Label(
             control_frame, text=dnd_status,
-            font=(FONT_FAMILY, 8), bg=COLORS["bg_main"], fg=dnd_color,
+            font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=dnd_color,
         ).pack(side=tk.LEFT)
 
         # Right side: Control buttons (flat styling, always visible via side=BOTTOM)
@@ -3461,6 +3935,71 @@ class KlingGUIWindow:
                 except Exception:
                     pass
             self.root.after(50, _set_compare_sash)
+
+    def _open_video_inspector(self, video_path):
+        """Open (or focus existing) Video Inspector modal.
+
+        Called by both the carousel play-badge click (with a Path) and
+        the Videos toolbar button (with None). The factory enforces
+        singleton lifetime so reopens don't leak decoder threads or
+        stack Toplevels.
+
+        When called with None (toolbar "Videos" button), fall back to
+        discovering a companion video for the carousel's ACTIVE entry
+        — so a user viewing a still that has derived videos can open
+        the Inspector preloaded without first hunting for the video
+        in the file listbox. The previous corner-play-badge on stills
+        provided this discovery affordance; it was removed 2026-05-21
+        per user feedback (Codex P2 on 79e9b6e — without the badge
+        AND without this fallback, a fresh-install user with no
+        ``video_inspector_last_folder`` couldn't reach companion
+        videos from a still at all).
+        """
+        from pathlib import Path as _Path
+        from .video_inspector import open_video_inspector
+        initial = _Path(video_path) if video_path else None
+        if initial is None:
+            try:
+                active = self.image_session.active_entry
+                if active is not None and active.path:
+                    active_path = _Path(active.path)
+                    # If the active carousel entry IS a video, open
+                    # the Inspector preloaded with it directly — don't
+                    # try to look up a companion (the "companion" of
+                    # a video is itself; find_video_for_image's stem
+                    # match won't even find it). GPT audit on b4ed739.
+                    if getattr(active, "is_video", False):
+                        initial = active_path
+                    else:
+                        from .video_discovery import find_video_for_image
+                        companion = find_video_for_image(active_path)
+                        if companion is not None:
+                            initial = companion
+            except Exception:
+                # Discovery is a convenience — never let it block the
+                # modal from opening. The user can still pick a folder
+                # via the file-list rescan once the modal is up.
+                logging.getLogger(__name__).debug(
+                    "_open_video_inspector: active-entry companion "
+                    "lookup failed",
+                    exc_info=True,
+                )
+        def _clear_inspector_ref():
+            # M3: null self._video_inspector_window when the inspector
+            # closes so a long session opening/closing N times doesn't
+            # keep N dead Toplevels referenced. The factory's
+            # winfo_exists() guard already handles the dangling ref, but
+            # active clearing lets GC reclaim the widget tree faster.
+            self._video_inspector_window = None
+        self._video_inspector_window = open_video_inspector(
+            self.root,
+            existing=self._video_inspector_window,
+            config=self.config,
+            save_config_fn=self._save_config,
+            log_fn=self._log,
+            initial_video=initial,
+            on_close=_clear_inspector_ref,
+        )
 
     def _on_images_to_carousel(self, files: List[str]):
         """Handle images dropped/browsed in the prompt panel mini drop zone."""
@@ -4078,6 +4617,109 @@ class KlingGUIWindow:
             # Sash positions may fail on first run, that's OK
             pass
 
+    def _on_root_configure(self, event) -> None:
+        """Debounced Configure handler — schedules a layout save.
+
+        Configure events fire on every pixel of a drag (potentially
+        dozens per second on a smooth resize), so we coalesce into a
+        single save after the user stops moving. Only events on the
+        top-level root window are honored — child-widget Configures
+        propagate up and would otherwise cause spurious saves.
+        """
+        # Tk delivers Configure for every descendant; widget==self.root
+        # is the only one that matters for window geometry. Comparing
+        # by str(widget) is robust to bound-method-vs-Misc identity
+        # quirks across Tk implementations.
+        if str(event.widget) != str(self.root):
+            return
+        # Route into the debounced save path. Reason="geometry" lets
+        # _save_layout_debounced apply the geometry-unchanged guard
+        # (skips spurious saves on title-bar clicks / focus events).
+        self._schedule_layout_save(reason="geometry")
+
+    def _on_sash_release(self, _event) -> None:
+        """Sash-drag release handler.
+
+        tk.PanedWindow doesn't fire <Configure> on the paned widget
+        itself when a sash moves — the children resize, not the paned.
+        So the root-Configure debounce ALONE misses drop-zone /
+        log-pane / queue / prompt-split / log-drop-split changes when
+        the user only drags a sash and doesn't resize the whole window.
+
+        <ButtonRelease-1> on each PanedWindow fires once when the user
+        releases the sash drag (cross-platform: Tk on Windows + macOS
+        both emit it; tested on macOS Sonoma in PR #43). We route into
+        the same debounced save path with reason="sash" so the
+        geometry-unchanged guard is skipped — sash position is the
+        thing that changed, even if root geometry is identical.
+        """
+        self._schedule_layout_save(reason="sash")
+
+    def _schedule_layout_save(self, *, reason: str) -> None:
+        """Single entry point for live layout persistence.
+
+        ``reason="geometry"`` means a root-window Configure fired and
+        the debounced save should apply its geometry-unchanged short-
+        circuit (avoids JSON thrash on title-bar clicks). ``reason
+        ="sash"`` means a PanedWindow's ButtonRelease-1 fired and the
+        save MUST run even if root geometry is identical (the sash
+        coords are what changed). Both reasons share the same 800ms
+        debounce so a rapid sequence of sash drags + window resizes
+        coalesces into a single JSON write.
+        """
+        # Cancel any pending save — the latest event wins.
+        if self._layout_save_after_id is not None:
+            try:
+                self.root.after_cancel(self._layout_save_after_id)
+            except tk.TclError:
+                pass
+            self._layout_save_after_id = None
+        # Track WHY the save was scheduled so the callback knows
+        # whether the geometry guard applies.
+        self._layout_save_reason = reason
+        try:
+            self._layout_save_after_id = self.root.after(
+                800, self._save_layout_debounced
+            )
+        except tk.TclError:
+            self._layout_save_after_id = None
+
+    def _save_layout_debounced(self) -> None:
+        """Persist current layout to JSON. Fires after the 800ms debounce.
+
+        For ``reason="geometry"`` saves: no-op when the geometry
+        hasn't changed since the last save (avoids needless disk
+        writes during pure focus changes that Tk reports as Configure
+        events on some platforms — especially macOS title-bar clicks).
+
+        For ``reason="sash"`` saves: ALWAYS run. The user moved a
+        sash; the root geometry may not have changed but the layout
+        certainly did.
+        """
+        self._layout_save_after_id = None
+        reason = getattr(self, "_layout_save_reason", "geometry")
+        try:
+            current = self.root.geometry()
+        except tk.TclError:
+            return
+        # Geometry guard is geometry-only. Sash changes bypass it.
+        if reason == "geometry" and current == self._last_saved_geometry:
+            return
+        self._save_layout()
+        try:
+            self._save_config()
+        except Exception:
+            # self.logger is set up at __init__ time (line 713); fall
+            # through to the stdlib logger if it isn't ready yet for
+            # whatever reason (Configure can fire before _setup_logging).
+            log = getattr(self, "logger", None) or logging.getLogger(__name__)
+            log.exception("debounced layout save: _save_config failed")
+        # Always update the last-saved geometry tracker — a sash-only
+        # save still captures the current window size in _save_layout,
+        # so the next geometry-reason call should compare against THIS
+        # geometry, not the stale one from before the sash drag.
+        self._last_saved_geometry = current
+
     def _save_layout(self):
         """Save window geometry and sash positions to config."""
         try:
@@ -4132,8 +4774,17 @@ class KlingGUIWindow:
                 except Exception:
                     pass
 
-        except Exception as e:
-            pass  # Don't fail on layout save errors
+        except Exception:
+            # Layout save is best-effort — never crash the close path
+            # or the debounce tick on it. Log at debug so a genuine
+            # regression in the sash-coord readers is diagnosable
+            # without spamming the user log. (Subagent finding on
+            # 20b4162; matches the project guideline against silent
+            # excepts.)
+            logging.getLogger(__name__).debug(
+                "_save_layout: unexpected error",
+                exc_info=True,
+            )
 
     # ── Session save/load ────────────────────────────────────────────────────
 
@@ -4200,7 +4851,14 @@ class KlingGUIWindow:
         try:
             # Clear and re-populate the LIVE session (preserves tab references)
             self.image_session.clear()
-            for img in images:
+            # H2 (code-review 2026-05-20): the saved JSON stores POSITIONAL
+            # indices for current_index / reference_index / similarity_ref_index.
+            # Any os.path.isfile-skip in the load loop shifts subsequent
+            # entries down, so the restored indices end up pointing at the
+            # wrong entry (silent data corruption). Track saved_idx →
+            # new_idx and translate the restored indices through the map.
+            saved_to_new: dict = {}
+            for saved_idx, img in enumerate(images):
                 path = img.get("path", "")
                 if not os.path.isfile(path):
                     self._log(f"Skipped missing: {os.path.basename(path)}", "warning")
@@ -4216,6 +4874,7 @@ class KlingGUIWindow:
                     sim_value = img.get("similarity")
                     sim_score_value = img.get("similarity_score")
                     sim_pass_value = img.get("similarity_pass")
+                new_idx = self.image_session.count
                 self.image_session.add_image(
                     path,
                     img.get("source_type", "input"),
@@ -4228,16 +4887,109 @@ class KlingGUIWindow:
                     similarity_override_ts=img.get("similarity_override_ts"),
                     ops=img.get("ops", {}),
                 )
+                saved_to_new[saved_idx] = new_idx
                 loaded_count += 1
-            # Restore indices
-            target_idx = session_data.get("current_index", -1)
+            # Folder rescan: pull in additional images + videos that exist
+            # in the saved-session folders NOW, even if they weren't part of
+            # the saved manifest. Per user direction 2026-05-20: "whenever a
+            # new or existing session gets loaded, it should rescan that
+            # folder and load in everything." Videos become source_type=
+            # "video" entries so the carousel renders them with a play
+            # glyph and routes clicks to the Video Inspector.
+            try:
+                from kling_gui.video_discovery import find_video_groups as _find_video_groups
+                from pathlib import Path as _Path
+                loaded_real = {
+                    os.path.realpath(e.path) for e in self.image_session.images
+                }
+                folders = set()
+                for img in images:
+                    p = img.get("path", "")
+                    if p:
+                        folders.add(os.path.dirname(p))
+                rescan_imgs = 0
+                rescan_vids = 0
+                for folder in sorted(folders):
+                    if not folder or not os.path.isdir(folder):
+                        continue
+                    # os.scandir over os.listdir + os.path.isfile: one
+                    # syscall per entry (the dirent already carries the
+                    # type) instead of two. Material on large folders
+                    # and network shares. We still sort for determinism
+                    # so the rescan order matches save order.
+                    # (Gemini medium PR #43, finding 3277077727.)
+                    try:
+                        with os.scandir(folder) as it:
+                            entries = sorted(
+                                (e for e in it if e.is_file()),
+                                key=lambda e: e.name,
+                            )
+                    except OSError:
+                        continue
+                    for entry in entries:
+                        ext = os.path.splitext(entry.name)[1].lower()
+                        if ext not in VALID_EXTENSIONS:
+                            continue
+                        full = entry.path
+                        real = os.path.realpath(full)
+                        if real in loaded_real:
+                            continue
+                        self.image_session.add_image(full, "input", make_active=False)
+                        loaded_real.add(real)
+                        rescan_imgs += 1
+                    # Videos: find_video_groups handles all 5 extensions
+                    # (mp4/mov/webm/mkv/avi) as of subagent H3 on
+                    # 2eb16f37. For non-mp4 files that don't match the
+                    # Kling/oldcam/rPPG naming pattern, the group is just
+                    # a single-clip group with no siblings.
+                    try:
+                        groups = _find_video_groups(_Path(folder))
+                    except OSError:
+                        groups = []
+                    for group in groups:
+                        for vmeta in group.videos:
+                            vpath = str(vmeta.path)
+                            real = os.path.realpath(vpath)
+                            if real in loaded_real:
+                                continue
+                            self.image_session.add_image(
+                                vpath, "video", make_active=False,
+                            )
+                            loaded_real.add(real)
+                            rescan_vids += 1
+                    # H3 fix (subagent on 2eb16f37): the prior second-pass
+                    # for .mov/.webm/.mkv/.avi is now redundant —
+                    # find_video_groups itself widened to all 5 video
+                    # extensions, so the loop above catches everything
+                    # the carousel can render. Eliminates the wiring
+                    # asymmetry where the Inspector listbox saw only mp4
+                    # but the carousel showed non-mp4 too.
+                if rescan_imgs or rescan_vids:
+                    self._log(
+                        f"Folder rescan: +{rescan_imgs} new image(s), "
+                        f"+{rescan_vids} video(s)",
+                        "info",
+                    )
+            except Exception:
+                logging.getLogger(__name__).exception("session-load folder rescan failed")
+            # Restore indices, translating saved positional indices through
+            # the skip-map so a saved ref-index pointing at saved_idx=5 still
+            # finds the right entry after entries 2 and 3 were skipped
+            # (H2 fix). If the saved index points at an entry that WAS
+            # skipped, saved_to_new.get returns -1 — the index is dropped
+            # rather than silently aliased to a different entry.
+            def _translate(saved_idx):
+                if saved_idx < 0:
+                    return -1
+                return saved_to_new.get(saved_idx, -1)
+            target_idx = _translate(session_data.get("current_index", -1))
             if 0 <= target_idx < self.image_session.count:
                 self.image_session.navigate_to(target_idx)
-            ref_idx = session_data.get("reference_index", -1)
+            ref_idx = _translate(session_data.get("reference_index", -1))
             if 0 <= ref_idx < self.image_session.count:
                 self.image_session._reference_index = ref_idx
             # Restore similarity ref
-            sim_ref_idx = session_data.get("similarity_ref_index", -1)
+            sim_ref_idx = _translate(session_data.get("similarity_ref_index", -1))
             if 0 <= sim_ref_idx < self.image_session.count:
                 self.image_session._similarity_ref_index = sim_ref_idx
             self.image_session._notify()
@@ -4348,10 +5100,32 @@ class KlingGUIWindow:
                 f"Processing is in progress{detail}. "
                 "Are you sure you want to close?",
             ):
+                # User aborted close — keep the pending layout-save
+                # timer alive so a recent geometry/sash change still
+                # gets persisted by the debounce (CodeRabbit minor
+                # on 45007d9 — the prior order cancelled even on
+                # aborted close, losing in-flight layout edits).
                 return
 
             if self.queue_manager and self.queue_manager.is_running:
                 self.queue_manager.stop_processing()
+
+        # Cancel any pending layout-save debounce timer NOW (close is
+        # committed). Under Python 3.14+ stricter Tkinter thread
+        # enforcement a dangling ``after`` callback against a destroyed
+        # root can raise RuntimeError; under current Pythons it's
+        # harmless but the callback fires uselessly after destroy()
+        # returns. The explicit ``_save_layout()`` call further down
+        # captures whatever the debounce would have caught, so no
+        # state is lost. (Code-review on 706466f + CodeRabbit on
+        # 45007d9 for the ordering.)
+        after_id = getattr(self, "_layout_save_after_id", None)
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+            self._layout_save_after_id = None
 
         # Collect tab configs before saving
         for tab in ["face_crop_tab", "prep_tab", "selfie_tab", "expand_tab"]:

@@ -6,7 +6,13 @@ import threading
 import os
 from typing import Callable
 
-from ..theme import COLORS, FONT_FAMILY
+from ..theme import (
+    COLORS,
+    FONT_FAMILY,
+    FONT_MONO,
+    TTK_BTN_COMPACT,
+    TTK_BTN_WORKFLOW,
+)
 from ..image_state import ImageSession
 from path_utils import get_gen_images_folder
 from automation.config import get_outpaint_fal_timeout_seconds
@@ -107,7 +113,7 @@ class OutpaintTab(tk.Frame):
             troughcolor=COLORS["bg_input"],
             highlightthickness=0,
             length=200,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         )
         self._pct_scale.pack(side=tk.LEFT, padx=(5, 0))
 
@@ -126,7 +132,7 @@ class OutpaintTab(tk.Frame):
         tk.Label(
             pct_presets,
             text="Presets:",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
         ).pack(side=tk.LEFT, padx=(0, 4))
@@ -135,16 +141,11 @@ class OutpaintTab(tk.Frame):
             label = f"{pct}%"
             if pct == 30:
                 label = "30% (default)"
-            tk.Button(
+            ttk.Button(
                 pct_presets,
                 text=label,
-                font=(FONT_FAMILY, 8),
-                bg=COLORS["bg_input"],
-                fg=COLORS["text_light"],
+                style=TTK_BTN_COMPACT,
                 command=lambda p=pct: self._pct_var.set(p),
-                cursor="hand2",
-                relief=tk.FLAT,
-                padx=6,
             ).pack(side=tk.LEFT, padx=2)
 
         # ── Pixels Controls ─────────────────────────────────────────────
@@ -220,11 +221,9 @@ class OutpaintTab(tk.Frame):
         uniform_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
 
         for px, text in [(70, "70px"), (140, "140px"), (280, "280px"), (500, "500px")]:
-            tk.Button(
-                uniform_frame, text=text, font=(FONT_FAMILY, 8),
-                bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            ttk.Button(
+                uniform_frame, text=text, style=TTK_BTN_COMPACT,
                 command=lambda p=px: self._set_uniform(p),
-                cursor="hand2", relief=tk.FLAT, padx=6,
             ).pack(side=tk.LEFT, padx=2)
 
         # ── Prompt (optional) ───────────────────────────────────────────
@@ -243,7 +242,11 @@ class OutpaintTab(tk.Frame):
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-            font=("Consolas", 9),
+            # Unified prompt font (user request 2026-05-21): every
+            # prompt-text Text widget in the app uses (FONT_FAMILY, 10)
+            # to match the video-tab positive + negative prompt
+            # editors. Was (FONT_MONO, 9) — visibly smaller + mono.
+            font=(FONT_FAMILY, 10),
             insertbackground=COLORS["text_light"],
             padx=5,
             pady=5,
@@ -283,17 +286,12 @@ class OutpaintTab(tk.Frame):
         btn_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        self.expand_btn = tk.Button(
+        # Workflow-primary on the standalone Outpaint tab.
+        self.expand_btn = ttk.Button(
             btn_frame,
             text="Expand Image",
-            font=(FONT_FAMILY, 11, "bold"),
-            bg=COLORS["accent_blue"],
-            fg="#111111",
+            style=TTK_BTN_WORKFLOW,
             command=self._on_expand,
-            cursor="hand2",
-            relief=tk.FLAT,
-            padx=20,
-            pady=6,
         )
         self.expand_btn.pack(side=tk.LEFT)
 

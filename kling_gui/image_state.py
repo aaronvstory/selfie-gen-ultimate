@@ -9,7 +9,8 @@ from typing import Optional, Callable, List, Tuple
 logger = logging.getLogger(__name__)
 
 
-_VALID_SOURCE_TYPES = {"input", "selfie", "outpaint", "polish", "upscale"}
+_VALID_SOURCE_TYPES = {"input", "selfie", "outpaint", "polish", "upscale", "video"}
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
 SIMILARITY_PASS_THRESHOLD = 80
 
 
@@ -91,6 +92,18 @@ class ImageEntry:
     @property
     def exists(self) -> bool:
         return os.path.isfile(self.path)
+
+    @property
+    def is_video(self) -> bool:
+        """True if this entry is a video clip rather than a still image.
+
+        Video entries skip similarity scoring and compare-panel handling —
+        they exist in the carousel so the user can see and click them to
+        launch the Video Inspector, not as comparable stills.
+        """
+        return self.source_type == "video" or (
+            os.path.splitext(self.path)[1].lower() in _VIDEO_EXTENSIONS
+        )
 
     def update_similarity(
         self,
@@ -441,7 +454,36 @@ class ImageSession:
         return True
 
     def to_dict(self) -> dict:
-        """Serialize session state to a plain dict (for JSON persistence)."""
+        """Serialize session state to a plain dict (for JSON persistence).
+
+        Excludes ``source_type == "video"`` entries — those are derived
+        from the session-load folder rescan, not user state. Persisting
+        them would duplicate state (rescan re-discovers them anyway on
+        next load) AND cause the next load loop to apply
+        ``os.path.isfile`` to videos that the rescan would have
+        surveyed differently. Subagent H1 finding on the full-branch
+        review 2026-05-21. The persisted ``current_index`` /
+        ``reference_index`` / ``similarity_ref_index`` are translated
+        below to account for the filter so a saved index pointing past
+        a filtered video still resolves.
+        """
+        # Filter videos but track original positions so we can translate
+        # the saved indices. Use ``e.is_video`` (the @property), not
+        # ``source_type == "video"`` — legacy or misclassified .mp4/.mov
+        # entries with source_type=='input' would otherwise leak into
+        # the session JSON and reintroduce the duplicate-state problem
+        # this filter was added to prevent (CodeRabbit on 253a9b4).
+        kept_idx_map: dict = {}  # original_idx -> filtered_idx
+        filtered_images = []
+        for orig_idx, e in enumerate(self._images):
+            if e.is_video:
+                continue
+            kept_idx_map[orig_idx] = len(filtered_images)
+            filtered_images.append(e)
+
+        def _translate_idx(idx: int) -> int:
+            return kept_idx_map.get(idx, -1) if idx >= 0 else -1
+
         return {
             "images": [
                 {
@@ -456,11 +498,11 @@ class ImageSession:
                     "similarity_override_ts": e.similarity_override_ts,
                     "ops": e.ops if e.ops else {},
                 }
-                for e in self._images
+                for e in filtered_images
             ],
-            "current_index": self._current_index,
-            "reference_index": self._reference_index,
-            "similarity_ref_index": self._similarity_ref_index,
+            "current_index": _translate_idx(self._current_index),
+            "reference_index": _translate_idx(self._reference_index),
+            "similarity_ref_index": _translate_idx(self._similarity_ref_index),
         }
 
     @classmethod

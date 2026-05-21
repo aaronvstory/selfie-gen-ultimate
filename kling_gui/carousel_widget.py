@@ -8,6 +8,7 @@ import platform
 import logging
 import threading
 import subprocess
+from pathlib import Path
 
 from .theme import (
     COLORS,
@@ -18,10 +19,9 @@ from .theme import (
     TTK_BTN_SUCCESS_COMPACT,
     BUTTON_TEXT_COLOR,
     BUTTON_DISABLED_TEXT_COLOR,
-    apply_macos_button_fix,
     debounce_command,
 )
-from .image_state import ImageSession
+from .image_state import ImageSession, _VIDEO_EXTENSIONS as _CAROUSEL_VIDEO_EXTS
 from .tag_utils import derive_display_tag
 from tk_dialogs import select_open_files
 from path_utils import preflight_image_path
@@ -39,6 +39,180 @@ def _format_image_info(path: str) -> str:
         return f"({w}\u00d7{h}, {size_kb:.0f} KB)"
     except Exception:
         return ""
+
+
+# ----------------------------------------------------------------------
+# Video thumbnail helper. Used by _show_image_on_canvas to render a
+# carousel item whose underlying file is a video (session-folder rescan
+# adds these). Cache is keyed by absolute path so the carousel doesn't
+# re-decode on every resize Configure event. FIFO-capped to bound
+# memory — each entry is a PIL.Image of the first frame (~2-3 MB at
+# 1280×720 RGB), so an unbounded cache leaked 100s of MB over long
+# sessions. Mirrors the _BEST_VIDEO_CACHE cap pattern in video_discovery.
+#
+# THREAD-SAFETY: ``_extract_video_first_frame`` is called from BOTH the
+# Tk thread (synchronously in ``_show_image_on_canvas``) and decoder
+# daemon threads (via ``_extract_video_first_frame_async``). The dict
+# check-then-pop FIFO eviction is not atomic, so without a lock two
+# threads racing the eviction can ``RuntimeError: dictionary changed
+# size during iteration`` or one ``KeyError``s the other's pop. The
+# lock guards every mutation of the cache (read-only ``.get`` is safe
+# without it under CPython GIL — single bytecode op).
+# (Gemini HIGH on 9d9a473.)
+# ----------------------------------------------------------------------
+_VIDEO_THUMB_CACHE: "dict[str, object]" = {}
+_VIDEO_THUMB_CACHE_MAX = 64
+_VIDEO_THUMB_CACHE_LOCK = threading.Lock()
+
+
+def _extract_video_first_frame(video_path: str):
+    """Return the first frame of a video as a PIL.Image, or None on failure.
+
+    Uses cv2 lazily — wheel availability on macOS-ARM has historically
+    lagged, so a missing cv2 falls back to None (caller renders a generic
+    placeholder). Result is cached per path; a video rewritten in place
+    would serve a stale thumbnail until the process restarts, which is
+    acceptable for the derived-output workflow this targets.
+    """
+    # M1 fix (subagent on 2eb16f37): key on (path, mtime) so an
+    # in-place regen (Kling queue overwrites a take, oldcam re-runs)
+    # invalidates the thumbnail. mtime stat is cheap; the alternative
+    # (stale thumb until process restart) was a real UX bug.
+    try:
+        mtime = os.path.getmtime(video_path)
+    except OSError:
+        mtime = 0  # missing file — the cv2 open below will None-out anyway
+    cache_key = (video_path, mtime)
+    # Guard the read with the same lock as the eviction/insert path
+    # below. Single dict.get is GIL-atomic on simple lookups, but if
+    # another thread is mid-eviction (the FIFO pop in the write path
+    # below) the dict's internal hash table could be momentarily
+    # inconsistent. Holding the lock for the read is cheap (the lock
+    # itself is uncontended ~99.99% of the time) and removes the
+    # last theoretical race. (Gemini MEDIUM on be30379.)
+    with _VIDEO_THUMB_CACHE_LOCK:
+        cached = _VIDEO_THUMB_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        import cv2
+        from PIL import Image
+    except ImportError:
+        return None
+    cap = None
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return None
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            return None
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        # FIFO evict oldest entries until strictly under cap. dict
+        # preserves insertion order in Python 3.7+ so next(iter(...))
+        # is the oldest. While-loop (not if-single-eviction) so a
+        # bulk folder rescan that inserts N>1 entries without
+        # interleaved reads can't temporarily exceed the cap.
+        # (Gemini medium PR #43, finding 3277077712; lock added per
+        # Gemini HIGH on 9d9a473 — Tk thread + decoder thread both
+        # mutate this dict.)
+        with _VIDEO_THUMB_CACHE_LOCK:
+            while len(_VIDEO_THUMB_CACHE) >= _VIDEO_THUMB_CACHE_MAX:
+                try:
+                    _VIDEO_THUMB_CACHE.pop(next(iter(_VIDEO_THUMB_CACHE)))
+                except (StopIteration, KeyError):
+                    break
+            _VIDEO_THUMB_CACHE[cache_key] = img
+        return img
+    except Exception:
+        logger.debug("video-thumb extract failed for %s", video_path, exc_info=True)
+        return None
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                logger.debug("video-thumb cap.release() failed for %s", video_path, exc_info=True)
+
+
+# Tracks paths whose async decode is in-flight so we don't spawn a second
+# worker for the same path before the first lands. MOSTLY Tk-thread —
+# add() at the spawn site and discard() inside _finish() (after()-
+# dispatched, Tk thread). HOWEVER the worker's exception-fallback path
+# also discards (line ~186) so the widget can re-spawn after a
+# widget-destroyed-mid-decode case. That fallback runs on the WORKER
+# thread, so cross-thread mutation IS possible — a lock is required to
+# keep ``add()``+``discard()``+``in`` atomic per path.
+# (Gemini MEDIUM on 19fc413.)
+_VIDEO_THUMB_PENDING: "set[str]" = set()
+_VIDEO_THUMB_PENDING_LOCK = threading.Lock()
+
+
+def _extract_video_first_frame_async(
+    video_path: str,
+    widget,
+    on_done,
+) -> bool:
+    """Decode a video's first frame off-thread.
+
+    Returns ``True`` if a decode was started, ``False`` if cached (caller
+    can just use ``_extract_video_first_frame`` synchronously) or if a
+    decode is already in flight for this path (caller should render the
+    placeholder and let the prior decode finish).
+
+    ``on_done`` runs on the Tk thread via ``widget.after(0, ...)`` with
+    the PIL.Image (or None on failure) as its single argument. The
+    callback should re-render the carousel — the now-cached frame will
+    serve via the sync helper next pass. Wrapped in try/TclError so a
+    widget destroyed mid-decode doesn't raise into the Tk loop.
+
+    Addresses Gemini PR #43 finding: cv2.VideoCapture on the Tk thread
+    froze the UI for 100-500ms on first render of each unique video.
+    """
+    try:
+        _vt_mtime = os.path.getmtime(video_path)
+    except OSError:
+        _vt_mtime = 0
+    # Lock the cache membership check; same rationale as the .get()
+    # in _extract_video_first_frame (Gemini MEDIUM on be30379).
+    with _VIDEO_THUMB_CACHE_LOCK:
+        if (video_path, _vt_mtime) in _VIDEO_THUMB_CACHE:
+            return False
+    # Atomic check-then-add: must be inside the lock to prevent a
+    # racing worker-thread discard() (the widget-destroyed-mid-decode
+    # branch below) from clearing the marker between the check and
+    # the add (Gemini MEDIUM on 19fc413).
+    with _VIDEO_THUMB_PENDING_LOCK:
+        if video_path in _VIDEO_THUMB_PENDING:
+            return False
+        _VIDEO_THUMB_PENDING.add(video_path)
+
+    def _worker():
+        img = _extract_video_first_frame(video_path)
+        def _finish():
+            with _VIDEO_THUMB_PENDING_LOCK:
+                _VIDEO_THUMB_PENDING.discard(video_path)
+            try:
+                on_done(img)
+            except tk.TclError:
+                pass  # widget destroyed mid-decode
+            except Exception:
+                logger.debug("async-thumb on_done failed", exc_info=True)
+        try:
+            widget.after(0, _finish)
+        except (tk.TclError, RuntimeError):
+            # Widget destroyed between spawn and dispatch — drop the
+            # pending marker so a later open of the same file can retry.
+            # This is the WORKER-thread mutation that motivates the lock.
+            with _VIDEO_THUMB_PENDING_LOCK:
+                _VIDEO_THUMB_PENDING.discard(video_path)
+
+    threading.Thread(
+        target=_worker, name=f"video-thumb:{os.path.basename(video_path)}",
+        daemon=True,
+    ).start()
+    return True
 
 
 def _truncate_filename(name: str, max_chars: int = 35) -> str:
@@ -99,8 +273,6 @@ def _sim_badge_style(similarity_str) -> Optional[dict]:
 
 
 logger = logging.getLogger(__name__)
-_REF_ACTIVE_BG = "#E5C100"
-_REF_ACTIVE_FG = "#111111"
 
 class ImageCarousel(tk.Frame):
     """Unified carousel showing all images (input + selfie + outpaint) in one stream.
@@ -130,6 +302,13 @@ class ImageCarousel(tk.Frame):
         # Compare callback (set by main_window)
         self._on_compare_callback: Optional[Callable[[], None]] = None
 
+        # Video Inspector callbacks (set by main_window). Two distinct
+        # entry points: clicking the carousel play-badge passes the
+        # selected video path; clicking the toolbar button opens the
+        # inspector with no preload (factory picks last folder).
+        self._on_video_callback: Optional[Callable[[Path], None]] = None
+        self._on_video_inspector_toolbar_cb: Optional[Callable[[], None]] = None
+
         # Re-entrancy guard
         self._updating: bool = False
 
@@ -139,7 +318,12 @@ class ImageCarousel(tk.Frame):
         # re-initialized inside _show_image_on_canvas for any test/instance
         # that bypassed __init__ via __new__, so we don't need a class-level
         # mutable default (which would leak failures across instances).
-        self._render_failed_paths: set[str] = set()
+        # Keyed by (path, mtime) so a clip that fails on first decode
+        # (still being written, transient read error) re-tries after
+        # the file is updated — without keying on mtime, a permanent
+        # blacklist would persist even after the file becomes valid.
+        # (Codex P2 on 9d9a473.)
+        self._render_failed_paths: set[tuple[str, float]] = set()
 
         # NOTE: the sys.setrecursionlimit(5000) bump lives at the GUI entry
         # point (kling_gui/main_window.py module-level) so the side effect is
@@ -171,6 +355,18 @@ class ImageCarousel(tk.Frame):
     def set_on_compare(self, callback: Callable[[], None]):
         """Register the callback invoked when the Compare button is clicked."""
         self._on_compare_callback = callback
+
+    def set_on_video(self, callback: Callable[[Path], None]):
+        """Register the callback invoked when the carousel play-badge is
+        clicked. The callback receives the video Path to preload into
+        the Video Inspector's slot A."""
+        self._on_video_callback = callback
+
+    def set_on_video_toolbar(self, callback: Callable[[], None]):
+        """Register the callback invoked when the Videos toolbar button
+        is clicked. The Video Inspector opens with no preload (it falls
+        back to the last-opened folder via config)."""
+        self._on_video_inspector_toolbar_cb = callback
 
     # ── Panel layout ────────────────────────────────────────────────
 
@@ -246,51 +442,45 @@ class ImageCarousel(tk.Frame):
         sim_row = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
         sim_row.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 2))
 
-        self._ref_btn = tk.Button(
+        # ttk.Button (not tk.Button) per the b3bc7398 follow-up: raw
+        # tk.Button loses its tint after the first macOS Aqua HIView
+        # repaint. Custom styles defined in main_window._setup_ui swap
+        # between active (yellow) and inactive (panel-bg) state via
+        # _update_panel.
+        self._ref_btn = ttk.Button(
             sim_row,
             text="\u2605 Ref",
             command=debounce_command(self._toggle_sim_ref, key="carousel_ref"),
             state=tk.DISABLED,
             width=10,
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            disabledforeground=BUTTON_DISABLED_TEXT_COLOR,
-            highlightbackground=COLORS["bg_main"],
-            highlightthickness=1,
-            relief=tk.FLAT,
-            bd=0,
-            padx=8,
-            pady=4,
-            cursor="hand2",
+            style="CarouselRefInactive.TButton",
         )
         self._ref_btn.pack(side=tk.LEFT)
-        apply_macos_button_fix(self._ref_btn)
 
-        self.compare_btn = tk.Button(
+        self.compare_btn = ttk.Button(
             sim_row,
             text="Compare",
             command=debounce_command(self._on_compare, key="carousel_compare"),
             state=tk.DISABLED,
             width=10,
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"],
-            fg=BUTTON_TEXT_COLOR,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=BUTTON_TEXT_COLOR,
-            disabledforeground=BUTTON_DISABLED_TEXT_COLOR,
-            highlightbackground=COLORS["bg_main"],
-            highlightthickness=1,
-            relief=tk.FLAT,
-            bd=0,
-            padx=8,
-            pady=4,
-            cursor="hand2",
+            style=TTK_BTN_SECONDARY,
         )
         self.compare_btn.pack(side=tk.LEFT, padx=(6, 0))
-        apply_macos_button_fix(self.compare_btn)
+
+        # Videos button — opens the Video Inspector modal. Mirrors the
+        # Compare button recipe (same colors, same macOS button fix) so
+        # they sit visually identical in the sim_row. Always enabled —
+        # the modal handles the empty-folder case gracefully.
+        self.video_inspector_btn = ttk.Button(
+            sim_row,
+            text="Videos",
+            command=debounce_command(
+                self._on_open_video_inspector, key="carousel_video_inspector"
+            ),
+            width=10,
+            style=TTK_BTN_SECONDARY,
+        )
+        self.video_inspector_btn.pack(side=tk.LEFT, padx=(6, 0))
 
         # NOTE: manual recompute "Recalc" button moved to meta_frame (next
         # to the SIM badge) as an icon-only ⟳ button in v5 per user request.
@@ -331,7 +521,7 @@ class ImageCarousel(tk.Frame):
             text="Boxes",
             variable=self._show_face_box_var,
             command=self._on_show_face_box_toggle,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
@@ -346,7 +536,7 @@ class ImageCarousel(tk.Frame):
             text="Anti-spoof",
             variable=self._anti_spoof_var,
             command=self._on_anti_spoof_toggle,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
@@ -360,7 +550,7 @@ class ImageCarousel(tk.Frame):
             bottom_row,
             text="Auto",
             variable=self._auto_var,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
             selectcolor=COLORS["bg_input"],
@@ -377,7 +567,7 @@ class ImageCarousel(tk.Frame):
         self.meta_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
 
         self.meta_label = tk.Label(
-            self.meta_frame, text="", font=(FONT_FAMILY, 8),
+            self.meta_frame, text="", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor=tk.W,
         )
         self.meta_label.pack(side=tk.LEFT)
@@ -437,7 +627,7 @@ class ImageCarousel(tk.Frame):
         self.info_label = tk.Label(
             self.panel_frame,
             text="",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             anchor=tk.W,
@@ -513,30 +703,32 @@ class ImageCarousel(tk.Frame):
         )
 
         if n > 0:
-            self._ref_btn.config(state=tk.NORMAL)
-            if is_manual_ref:
-                self._ref_btn.config(text="\u2605 Clear")
-                self._ref_btn.config(
-                    bg=_REF_ACTIVE_BG,
-                    fg=_REF_ACTIVE_FG,
-                    activebackground=_REF_ACTIVE_BG,
-                    activeforeground=_REF_ACTIVE_FG,
+            # H3: video carousel items can't be a similarity ref — disable
+            # the button on those entries. (_calc_all_similarity also guards
+            # the recalc path, but the disabled state is a better affordance.)
+            # ttk.Button dynamic styling via style= swap (preserves dark
+            # tint through macOS HIView repaints). The two style names
+            # are defined in main_window._setup_ui alongside TTK_BTN_*.
+            if entry is not None and entry.is_video:
+                self._ref_btn.configure(
+                    state=tk.DISABLED, text="\u2605 Ref",
+                    style="CarouselRefInactive.TButton",
+                )
+            elif is_manual_ref:
+                self._ref_btn.configure(
+                    state=tk.NORMAL, text="\u2605 Clear",
+                    style="CarouselRefActive.TButton",
                 )
             else:
-                self._ref_btn.config(text="\u2605 Ref")
-                self._ref_btn.config(
-                    bg=_REF_ACTIVE_BG if is_effective_ref else COLORS["bg_panel"],
-                    fg=_REF_ACTIVE_FG if is_effective_ref else BUTTON_TEXT_COLOR,
-                    activebackground=_REF_ACTIVE_BG if is_effective_ref else COLORS["bg_hover"],
-                    activeforeground=_REF_ACTIVE_FG if is_effective_ref else BUTTON_TEXT_COLOR,
+                self._ref_btn.configure(
+                    state=tk.NORMAL, text="\u2605 Ref",
+                    style=("CarouselRefActive.TButton" if is_effective_ref
+                           else "CarouselRefInactive.TButton"),
                 )
         else:
-            self._ref_btn.config(state=tk.DISABLED, text="\u2605 Ref")
-            self._ref_btn.config(
-                bg=COLORS["bg_panel"],
-                fg=BUTTON_TEXT_COLOR,
-                activebackground=COLORS["bg_hover"],
-                activeforeground=BUTTON_TEXT_COLOR,
+            self._ref_btn.configure(
+                state=tk.DISABLED, text="\u2605 Ref",
+                style="CarouselRefInactive.TButton",
             )
 
         if n == 0:
@@ -623,6 +815,25 @@ class ImageCarousel(tk.Frame):
         # Single source of truth for FAS verdict — see similarity_engine.summarize_fas_pair.
         # Three possible verdicts: pass / fail / unavailable. Same diag → same chip,
         # always (no more "ref+target sometimes, target only sometimes" drift).
+        #
+        # User-visibility gate (PR #43 feedback): if the Anti-spoof
+        # checkbox is OFF, hide the chip entirely even when stored
+        # diagnostics from a prior run contain liveness data. The chip's
+        # presence implies "we're actively checking liveness right
+        # now" — surfacing a stale LIVE/FAIL when the user has the
+        # feature toggled off is confusing and triggered this exact
+        # report. (The diagnostics dict stays cached so re-enabling
+        # the checkbox surfaces the chip again without recomputing.)
+        anti_spoof_var = getattr(self, "_anti_spoof_var", None)
+        if anti_spoof_var is not None and not bool(anti_spoof_var.get()):
+            self.fas_label.config(
+                text="",
+                bg=COLORS["bg_panel"],
+                fg=COLORS["text_dim"],
+                highlightthickness=0,
+                padx=0,
+            )
+            return
         try:
             from similarity_engine import FaceEngine
             summary = FaceEngine.summarize_fas_pair(diag)
@@ -682,7 +893,15 @@ class ImageCarousel(tk.Frame):
         # gets its own set instead of sharing a class-level mutable default.
         if not hasattr(self, "_render_failed_paths"):
             self._render_failed_paths = set()
-        if path in self._render_failed_paths:
+        # Compute the mtime once so the failure check + the eventual
+        # ``add()`` use the same key. If the file is gone, treat mtime=0
+        # (matches what the thumb-cache fallback uses below).
+        try:
+            _fail_mtime = os.path.getmtime(path)
+        except OSError:
+            _fail_mtime = 0.0
+        _fail_key = (path, _fail_mtime)
+        if _fail_key in self._render_failed_paths:
             # Clear any stale items (prior image, bbox overlay, etc.) so the
             # placeholder is the only thing on this canvas. Mirrors what the
             # successful-render path does implicitly via create_image replacing
@@ -690,6 +909,30 @@ class ImageCarousel(tk.Frame):
             canvas.delete("all")
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
+            # For memoized VIDEO failures keep the play-glyph placeholder +
+            # click-to-inspector binding (M3 fix — the user can still
+            # click through to the Inspector which has its own external-
+            # player fallback). For still-image failures keep the text
+            # placeholder so the user sees there was an earlier error.
+            ext = os.path.splitext(path)[1].lower()
+            if ext in _CAROUSEL_VIDEO_EXTS:
+                canvas.create_rectangle(
+                    2, 2, cw - 2, ch - 2,
+                    fill=COLORS["bg_input"], outline="",
+                )
+                canvas.create_text(
+                    cw // 2, ch // 2 - 14,
+                    text="▶", fill="#FFFFFF",
+                    font=(FONT_FAMILY, 48, "bold"),
+                )
+                canvas.create_text(
+                    cw // 2, ch // 2 + 24,
+                    text=os.path.basename(path),
+                    fill=COLORS["text_light"],
+                    font=(FONT_FAMILY, 9),
+                )
+                self._bind_video_canvas_click(canvas, path)
+                return True
             canvas.create_text(
                 cw // 2, ch // 2,
                 text="(render skipped — see earlier error)",
@@ -703,16 +946,139 @@ class ImageCarousel(tk.Frame):
         try:
             from PIL import Image, ImageTk, ImageOps
 
-            with Image.open(path) as img_src:
-                img_src.load()
-                img = img_src.copy()
+            # Video carousel item: render the first frame via cv2 and
+            # overlay a big centered ▶ (drawn later). Bbox + corner
+            # play-badge are skipped — they presume a still-image source
+            # and a derived video; this entry IS the video.
+            ext = os.path.splitext(path)[1].lower()
+            is_video = ext in _CAROUSEL_VIDEO_EXTS
+            if is_video:
+                # Try the in-memory cache first (instant on resize/navigate-
+                # back). On miss, render the placeholder + ▶ NOW and kick
+                # off a background decode — the carousel stays responsive
+                # while cv2 decodes (100-500ms typical) and re-renders
+                # automatically when the frame lands.
+                try:
+                    _vt_mtime = os.path.getmtime(path)
+                except OSError:
+                    _vt_mtime = 0
+                # Locked read — same rationale as the helper above
+                # (Gemini MEDIUM on be30379).
+                with _VIDEO_THUMB_CACHE_LOCK:
+                    img = _VIDEO_THUMB_CACHE.get((path, _vt_mtime))
+                if img is None:
+                    # CR Major (PR #43, bot pass on 907da866): the async
+                    # decode can return None for corrupt/unsupported clips
+                    # or when cv2 is missing. Without memoizing the failure
+                    # here, the rerender triggered by on_done would spawn
+                    # another worker for the same path — infinite loading
+                    # spinner. Add the path to _render_failed_paths so the
+                    # next render hits the early-return placeholder branch.
+                    def _on_thumb_ready(_img, _p=path, _m=_vt_mtime):
+                        if _img is None:
+                            # Key by (path, mtime) so the next regen of
+                            # the same path (e.g. queue worker overwrote
+                            # the failed take) clears the blacklist.
+                            self._render_failed_paths.add((_p, _m))
+                        self._update_display()
+                    started = _extract_video_first_frame_async(
+                        path, canvas,
+                        on_done=_on_thumb_ready,
+                    )
+                    # Locked read of the pending set so a future
+                    # refactor that adds a Tk-thread discard
+                    # (e.g. \"Cancel pending decodes\" button)
+                    # doesn't silently turn this into a race.
+                    # Today this runs on the Tk thread and the
+                    # only worker-thread discard is on the
+                    # widget-destroyed-mid-decode path. Match the
+                    # locking discipline documented for this set.
+                    # (Subagent finding on 20b4162.)
+                    with _VIDEO_THUMB_PENDING_LOCK:
+                        _in_flight = path in _VIDEO_THUMB_PENDING
+                    if started or _in_flight:
+                        # Render placeholder for this pass; the async
+                        # on_done will trigger _update_display when ready.
+                        canvas.delete("all")
+                        cw_pl = max(1, canvas.winfo_width())
+                        ch_pl = max(1, canvas.winfo_height())
+                        canvas.create_rectangle(
+                            2, 2, cw_pl - 2, ch_pl - 2,
+                            fill=COLORS["bg_input"], outline="",
+                        )
+                        canvas.create_text(
+                            cw_pl // 2, ch_pl // 2 - 14,
+                            text="▶", fill="#FFFFFF",
+                            font=(FONT_FAMILY, 48, "bold"),
+                        )
+                        canvas.create_text(
+                            cw_pl // 2, ch_pl // 2 + 24,
+                            text=os.path.basename(path) + "  (loading…)",
+                            fill=COLORS["text_light"],
+                            font=(FONT_FAMILY, 9),
+                        )
+                        self._bind_video_canvas_click(canvas, path)
+                        return True
+                if img is None:
+                    # Close a narrow race (CodeRabbit MAJOR on 79e9b6e):
+                    # an async worker may have populated the cache
+                    # between the FIRST get() above and now (e.g. the
+                    # decode finished while we were rendering the
+                    # placeholder for a prior pass and the listbox
+                    # navigated back to this entry). Re-read under the
+                    # lock to confirm we're really still empty before
+                    # memoizing the failure — without this, a valid
+                    # thumbnail can land in _render_failed_paths and
+                    # the entry shows the placeholder until mtime
+                    # changes.
+                    with _VIDEO_THUMB_CACHE_LOCK:
+                        img = _VIDEO_THUMB_CACHE.get((path, _vt_mtime))
+                if img is None:
+                    # cv2 unavailable OR decode failed. Show a neutral
+                    # placeholder + ▶ so the user still sees that a
+                    # video lives here — clicking opens the Inspector
+                    # which has its own external-player fallback.
+                    # M3 (code-review): memoize the failure so corrupt-
+                    # header videos don't re-open VideoCapture on every
+                    # Configure event. Key by (path, _vt_mtime) so a
+                    # later regen of the same path is retried instead
+                    # of being permanently blacklisted (Codex P2 on
+                    # 9d9a473).
+                    self._render_failed_paths.add((path, _vt_mtime))
+                    canvas.delete("all")
+                    cw_pl = max(1, canvas.winfo_width())
+                    ch_pl = max(1, canvas.winfo_height())
+                    canvas.create_rectangle(
+                        2, 2, cw_pl - 2, ch_pl - 2,
+                        fill=COLORS["bg_input"], outline="",
+                    )
+                    canvas.create_text(
+                        cw_pl // 2, ch_pl // 2 - 14,
+                        text="▶", fill="#FFFFFF",
+                        font=(FONT_FAMILY, 48, "bold"),
+                    )
+                    canvas.create_text(
+                        cw_pl // 2, ch_pl // 2 + 24,
+                        text=os.path.basename(path),
+                        fill=COLORS["text_light"],
+                        font=(FONT_FAMILY, 9),
+                    )
+                    self._bind_video_canvas_click(canvas, path)
+                    return True
+            else:
+                with Image.open(path) as img_src:
+                    img_src.load()
+                    img = img_src.copy()
 
-            # Auto-correct EXIF orientation
+            # Auto-correct EXIF orientation (no-op on cv2-derived frames)
             img = ImageOps.exif_transpose(img)
 
-            # Apply user rotation (stored on the active entry)
+            # Apply user rotation (stored on the active entry).
+            # Videos use their natural orientation — rotation is an
+            # image-edit concept and the carousel doesn't expose it for
+            # video clips.
             entry = self.image_session.active_entry
-            if entry and entry.rotation:
+            if entry and entry.rotation and not is_video:
                 # PIL rotates counterclockwise, so negate for CW convention
                 img = img.rotate(-entry.rotation, expand=True)
 
@@ -738,7 +1104,7 @@ class ImageCarousel(tk.Frame):
             # a misaligned box.
             # Guard against test stubs that bypass _build_panel and don't have the var.
             show_box_var = getattr(self, "_show_face_box_var", None)
-            if show_box_var is not None and show_box_var.get() and entry and not entry.rotation:
+            if not is_video and show_box_var is not None and show_box_var.get() and entry and not entry.rotation:
                 bbox = getattr(entry, "face_bbox", None)
                 if isinstance(bbox, dict):
                     try:
@@ -767,8 +1133,48 @@ class ImageCarousel(tk.Frame):
                         canvas.create_rectangle(
                             x0, y0, x1, y1,
                             outline="#48DB7A",  # brighter green for visibility
-                            width=3,
+                            # width=3 was visually heavy per user
+                            # feedback on PR #43; 1.5px (rounded to 2 on
+                            # Tk's integer pen width) reads as a thin,
+                            # crisp outline without obscuring face
+                            # features.
+                            width=2,
                         )
+
+            # Corner black-circle "▶" badge on stills with companion
+            # videos was REMOVED 2026-05-21 per user feedback —
+            # looked ugly on PNG thumbnails (the black blob crowded
+            # the corner of every front-crop/selfie/outpaint that
+            # had ever been animated). The actual VIDEO carousel
+            # entries still get the big centered white ▶ overlay
+            # (see the ``is_video`` branch below), which IS the
+            # intended UX. The previous ``find_video_for_image()``
+            # call here is now also unnecessary — it was only used
+            # to decide whether to draw the corner badge — so it's
+            # been removed to save a folder-mtime stat + dict lookup
+            # per render.
+
+            # Big centered ▶ overlay + canvas-wide click binding for
+            # video carousel items. Drawn AFTER the main image so it sits
+            # on top. Click anywhere on the canvas opens the Inspector.
+            if is_video and self._on_video_callback is not None:
+                short_dim = min(new_w, new_h)
+                glyph_size = max(36, min(96, int(short_dim * 0.22)))
+                canvas.create_text(
+                    cx, cy,
+                    text="▶", fill="#FFFFFF",
+                    font=(FONT_FAMILY, glyph_size, "bold"),
+                )
+                self._bind_video_canvas_click(canvas, path)
+            elif not is_video:
+                # Non-video item: clear any stale video click binding
+                # (this canvas may have just shown a video, then the
+                # user navigated to an image). AttributeError catches
+                # _FakeCanvas test stubs that don't implement unbind.
+                try:
+                    canvas.unbind("<Button-1>")
+                except (tk.TclError, AttributeError):
+                    pass
             return True
         except ImportError:
             cw = max(1, canvas.winfo_width())
@@ -784,7 +1190,13 @@ class ImageCarousel(tk.Frame):
             return False
         except RecursionError as e:
             # Memo this path so we don't retry on every window resize.
-            self._render_failed_paths.add(path)
+            # Key by (path, mtime) for symmetry with the video-thumb
+            # failure path (Codex P2 on 9d9a473).
+            try:
+                _rec_mtime = os.path.getmtime(path)
+            except OSError:
+                _rec_mtime = 0.0
+            self._render_failed_paths.add((path, _rec_mtime))
             cw = max(1, canvas.winfo_width())
             ch = max(1, canvas.winfo_height())
             canvas.create_text(
@@ -859,6 +1271,11 @@ class ImageCarousel(tk.Frame):
     def _on_compare(self):
         if self._on_compare_callback:
             self._on_compare_callback()
+
+    def _on_open_video_inspector(self):
+        """Internal handler for the Videos toolbar button."""
+        if self._on_video_inspector_toolbar_cb:
+            self._on_video_inspector_toolbar_cb()
 
     def _open_path_in_explorer(self, path: str):
         try:
@@ -960,6 +1377,15 @@ class ImageCarousel(tk.Frame):
     def _toggle_sim_ref(self):
         """Toggle the similarity reference on/off for the active image."""
         session = self.image_session
+        active_entry = session.active_entry
+        # H3 (code-review 2026-05-20): videos cannot be a similarity ref
+        # — they have no face to score against. Refuse + log.
+        if active_entry is not None and active_entry.is_video:
+            self.log(
+                "Similarity ref cannot be a video — pick a still image.",
+                "warning",
+            )
+            return
         active_is_manual_ref = (
             session.current_index == session.similarity_ref_index
             and session.similarity_ref_index >= 0
@@ -970,8 +1396,7 @@ class ImageCarousel(tk.Frame):
             recalc_reason = "manual ref cleared"
         else:
             session.set_similarity_ref(session.current_index)
-            entry = session.active_entry
-            name = entry.filename if entry else "?"
+            name = active_entry.filename if active_entry else "?"
             self.log(f"Similarity reference set: {name}", "info")
             recalc_reason = "manual ref changed"
         
@@ -1089,6 +1514,39 @@ class ImageCarousel(tk.Frame):
             return f"liveness={verdict_word} ({', '.join(score_bits)})"
         return f"liveness={verdict_word}"
 
+    def _bind_video_canvas_click(self, canvas, video_path):
+        """Bind a canvas-wide click handler that opens the Video Inspector.
+
+        Used by video carousel items so clicking anywhere on the rendered
+        first-frame thumbnail launches playback in the Inspector. The bind
+        is per-canvas-per-render („unbind” on the non-video branch in
+        _show_image_on_canvas clears it when the user navigates back to an
+        image item) so stale clips never trigger the wrong video.
+
+        Safety note (Gemini HIGH/MEDIUM 2026-05-21 on 94d9d7a):
+        ``canvas.bind("<Button-1>", ...)`` is widget-level which would
+        normally risk wiping a navigation/selection binding. Confirmed
+        safe here: the ImageCarousel constructor binds ``<Configure>``,
+        ``<Enter>``, ``<Leave>``, ``<Button-3>`` on the canvas — but
+        intentionally NOT ``<Button-1>``. Left-click navigation is
+        handled by the side-arrow buttons + listbox elsewhere. So this
+        function OWNS the canvas's <Button-1> binding; unbind/bind is
+        a deliberate exclusive-ownership swap, not a clobber.
+        """
+        cb = self._on_video_callback
+        if cb is None:
+            return
+        from pathlib import Path as _Path
+        p = _Path(video_path)
+        try:
+            canvas.unbind("<Button-1>")
+        except (tk.TclError, AttributeError):
+            pass
+        try:
+            canvas.bind("<Button-1>", lambda _e, _p=p: cb(_p))
+        except (tk.TclError, AttributeError):
+            pass
+
     def _on_show_face_box_toggle(self):
         """Toggle the face-bbox overlay. Pure redraw — no recompute."""
         # Clear the cached PhotoImage attrs so _show_image_on_canvas re-renders
@@ -1113,6 +1571,13 @@ class ImageCarousel(tk.Frame):
         except Exception as exc:
             self._sim_log(f"anti-spoof toggle failed: {exc!r}", "warning")
             return
+        # Immediately hide/show the LIVE chip without waiting for the
+        # recompute pass to land — toggling OFF should be instant
+        # feedback. _render_fas_chip itself short-circuits when the
+        # checkbox is off.
+        active = self.image_session.active_entry if hasattr(self, "image_session") else None
+        diag = getattr(active, "similarity_diagnostics", None) if active else None
+        self._render_fas_chip(diag)
         # Trigger a fresh batch recompute so the displayed scores reflect the new setting.
         self._calc_all_similarity(auto_triggered=False, reason="anti-spoof toggle")
 
@@ -1140,8 +1605,20 @@ class ImageCarousel(tk.Frame):
                 "warning",
             )
             return False
+        # H3 (code-review 2026-05-20): videos cannot be a similarity ref.
+        # get_effective_similarity_ref filters on source_type=="input" for
+        # the auto-fallback path, but the MANUAL ref slot does not — if a
+        # user somehow set a video as manual ref (programmatically or via a
+        # stale session), refuse the recalc with a clear message rather than
+        # feeding a video path into compute_face_similarity_details.
+        if ref.is_video:
+            self._sim_log(
+                f"recalc skipped ({reason}): similarity reference is a video — pick a still image.",
+                "warning",
+            )
+            return False
         targets = [e for e in self.image_session.images
-                   if e.source_type != "input" and e is not ref and e.exists]
+                   if e.source_type != "input" and not e.is_video and e is not ref and e.exists]
         if not targets:
             self._sim_log(
                 f"recalc skipped ({reason}): no eligible targets (need at least one generated/outpaint image other than the reference).",

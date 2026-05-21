@@ -35,11 +35,24 @@ delivered pixels preserves the correct pulse.
 
 ## Verified injector contract (DO NOT trust the README's path claim)
 
-Invocation used everywhere:
+Invocation used everywhere (PR #43 — flipped from one-shot to iterative
+to match the friend's `rPPG/rppg.bat`):
 
 ```bat
-rPPG/run_rppg.bat "<abs in.mp4>" --inject --output "<abs out.mp4>" --skip-kinematic-gate
+rPPG/run_rppg.bat "<abs in.mp4>" --inject --output "<abs out.mp4>" \
+    --iterative --iterate-from-baseline --skip-diagnosis \
+    --skip-kinematic-gate
 ```
+
+Iterative mode is now the production default. The friend who wrote the
+injector confirmed it is **mandatory** for production: the initial
+single-shot injection rarely lands at the optimal strength, and the
+iterative PID re-injects with adjusted settings until score converges.
+`--iterate-from-baseline` ensures each iteration re-injects from the
+ORIGINAL input (no cumulative encoding loss across iters).
+`--skip-diagnosis` bypasses the post-iter Claude-API diagnosis (which
+costs `ANTHROPIC_API_KEY` calls). All three are user-overridable via
+config keys; default-ON to mirror the canonical `.bat`.
 
 | Aspect | Reality (verified via `oldcam-testing/rppg_harness.py`) |
 |--------|----------------------------------------------------------|
@@ -59,7 +72,7 @@ rPPG/run_rppg.bat "<abs in.mp4>" --inject --output "<abs out.mp4>" --skip-kinema
 | Layer | File | What |
 |-------|------|------|
 | Manifest step registry | `automation/manifest.py` `STEP_NAMES` | `"rppg"` after `"oldcam"` (else `update_step` raises `Unknown step: rppg`). **Backward-compat:** `create_or_load`'s fingerprint check tolerates an additive `automation_*` key absent from a pre-rPPG manifest **only when the requested value equals the default** — so existing users' resume/run isn't broken by the new defaults, but an explicit opt-in (`automation_rppg_enabled=true`) on an old corpus forces a reprocess. `case_is_complete_and_valid` prefers the `rppg` step output when that step completed (so a deleted rPPG deliverable isn't masked as complete). |
-| Config defaults | `automation/config.py` `AUTOMATION_DEFAULTS` | `automation_rppg_enabled` (False), `automation_rppg_mode` ("inject"), `automation_rppg_required` (False), `automation_rppg_metrics_in_filename` (False) |
+| Config defaults | `automation/config.py` `AUTOMATION_DEFAULTS` | `automation_rppg_enabled` (False), `automation_rppg_mode` ("iterative" — PR #43, was "inject"), `automation_rppg_iterate_from_baseline` (True), `automation_rppg_skip_diagnosis` (True), `automation_rppg_skip_kinematic_gate` (True), `automation_rppg_required` (False), `automation_rppg_metrics_in_filename` (False). `automation_recommended_defaults_version` bumped from 1 to 2 when iterative became default. |
 | Automation module | `automation/rppg.py` | `run_rppg`, `build_rppg_output_path`, `resolve_produced_output`, `resolve_rppg_launcher`, `is_rppg_artifact`, `stream_subprocess_with_timeout` (the last two are the safety-critical double-injection guard + hard-timeout streamer; mirrors `automation/oldcam.py`) |
 | Pipeline Step 8 | `automation/pipeline.py` | After oldcam, before `_finalize_case`. **Fan-out (no "primary"):** Step 7 calls `run_oldcam_all` and stashes every per-version path in the oldcam step `meta["all_outputs"]`; Step 8 injects rPPG into the BASE (`video_generate` output — automation has no loop step) AND every oldcam output, dropping already-injected candidates. Honors `keep_metrics`; records headline + `meta["all_outputs"]`. Mirrors the GUI queue main + re-run paths (base = looped clip there). Plain `-oldcam-vN` kept. |
 | GUI queue | `kling_gui/queue_manager.py` | `_rppg_enabled`, `_build_rppg_output_path`, `_resolve_rppg_launcher`, `_rppg_video`; inserted in main queue order (after oldcam) + the oldcam re-run path |
@@ -97,11 +110,15 @@ levels, SNR 7.72→13.08 dB, phase 75.5°→7.8°. Default strength is correct.
 
 ## Future enhancements (explicitly deferred)
 
-- Re-enable / evaluate the v8 kinematic preflight gate (currently always
-  `--skip-kinematic-gate`).
-- Iterative/tuned mode (`--inject --iterative`); `automation_rppg_mode`
-  already reserves `"iterative"`. Add a second GUI checkbox mirroring the
-  oldcam multi-checkbox pattern.
+- Re-enable / evaluate the v8 kinematic preflight gate (currently
+  `automation_rppg_skip_kinematic_gate=True`).
+- ~~Iterative/tuned mode~~ — **landed in PR #43.** `automation_rppg_mode`
+  defaults to `"iterative"`; companion flags `automation_rppg_iterate_from_baseline`,
+  `automation_rppg_skip_diagnosis`, `automation_rppg_skip_kinematic_gate`
+  all default ON. Argv shape is locked by `tests/test_automation_rppg_cmd.py`.
+  GUI checkbox-row expansion (multi-checkbox like oldcam) is still
+  deferred — V1 of iterative just flips the default; per-mode UI
+  surfacing arrives with the next config-panel refresh.
 - macOS injector launcher.
 - rPPG-only re-run via a shared post-process re-run button (the current
   oldcam ↻/📂 already also apply rPPG when both are checked).

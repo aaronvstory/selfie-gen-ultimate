@@ -16,7 +16,7 @@ from tk_dialogs import select_directory, select_open_files
 # COLORS/FONT_FAMILY are intentionally duplicated below (documented
 # inconsistency in CLAUDE.md); we still import this one macOS button
 # helper from the single source of truth rather than re-implement it.
-from .theme import apply_macos_button_fix
+from .theme import TTK_BTN_SECONDARY, TTK_BTN_COMPACT
 
 try:
     from tkinterdnd2 import DND_FILES as _DND_FILES
@@ -71,7 +71,22 @@ logger = logging.getLogger(__name__)
 
 
 class HoverTooltip:
-    """Dark-themed floating tooltip shown when hovering a widget."""
+    """Dark-themed floating tooltip shown when hovering a widget.
+
+    Root-cause note (GPT diagnosis 2026-05-21): tall tooltips covering
+    their own hover target cause Tk to fire ``<Leave>`` on the trigger
+    widget the moment the Toplevel paints over it, which destroys the
+    tooltip in ``_hide()`` and starts a flicker/no-show loop. The fix
+    has two parts:
+
+      1. Position the tooltip to the RIGHT of the trigger when there's
+         room (else LEFT, else clamp), so it doesn't overlap the
+         widget that's listening for ``<Leave>``.
+      2. Keep the lifecycle dead-simple: ``<Enter>`` → ``_show``,
+         ``<Leave>`` → ``_hide``. No delayed show, no off-screen
+         staging, no withdraw/deiconify — those layered hacks made the
+         oldcam tooltip stop showing at all on Windows.
+    """
 
     _BG = "#1A1A1E"
     _FG = "#DCDCDC"
@@ -90,6 +105,15 @@ class HoverTooltip:
         self._tip: Optional[tk.Toplevel] = None
         widget.bind("<Enter>", self._show)
         widget.bind("<Leave>", self._hide)
+        # M1 (subagent on cac29c8f): if the widget is destroyed while
+        # the tooltip is showing (e.g. pill row torn down on slot-load),
+        # <Leave> never fires + the floating Toplevel stays orphaned.
+        # Bind <Destroy> to tear down the tip explicitly. add="+" so we
+        # don't clobber any existing <Destroy> binding on the widget.
+        try:
+            widget.bind("<Destroy>", self._on_widget_destroy, add="+")
+        except tk.TclError:
+            pass
 
     def _show(self, event=None):
         text = self._text_func()
@@ -118,20 +142,59 @@ class HoverTooltip:
 
         wx = self._widget.winfo_rootx()
         wy = self._widget.winfo_rooty()
+        ww = self._widget.winfo_width()
         wh = self._widget.winfo_height()
+        sw = self._widget.winfo_screenwidth()
         sh = self._widget.winfo_screenheight()
 
-        x = max(0, wx - tip_w + self._widget.winfo_width())
-        y = wy + wh + 4
-        if y + tip_h > sh - 40:
-            y = wy - tip_h - 4  # flip above if near bottom of screen
+        # HORIZONTAL — prefer RIGHT of the trigger so the tooltip
+        # doesn't paint over its own hover target (GPT diagnosis
+        # 2026-05-21: covering the trigger was the source of the
+        # flicker loop — Tk fires <Leave> the moment the Toplevel
+        # overlaps the icon, destroying the tooltip).
+        right_x = wx + ww + 8
+        left_x = wx - tip_w - 8
+        if right_x + tip_w <= sw - 20:
+            x = right_x
+        elif left_x >= 20:
+            x = left_x
+        else:
+            # Last-resort clamp — keep on-screen even if it overlaps
+            # (better than off-screen). Try to bias away from the
+            # trigger center.
+            x = max(20, min(wx, sw - tip_w - 20))
+
+        # VERTICAL — below by default; flip above if no room; pin to
+        # top if neither fits (very tall tooltip on low-res screen).
+        below_y = wy + wh + 4
+        above_y = wy - tip_h - 4
+        if below_y + tip_h <= sh - 40:
+            y = below_y
+        elif above_y >= 20:
+            y = above_y
+        else:
+            y = 20
 
         self._tip.wm_geometry(f"+{x}+{y}")
 
     def _hide(self, event=None):
         if self._tip:
-            self._tip.destroy()
+            try:
+                self._tip.destroy()
+            except tk.TclError:
+                pass
             self._tip = None
+
+    def _on_widget_destroy(self, _event=None) -> None:
+        """Tear down the floating tooltip when the parent widget dies.
+
+        Without this, a HoverTooltip on a transient widget (e.g. the
+        Video Inspector pill row, which is rebuilt on every slot load)
+        leaves an orphan Toplevel on screen whenever the parent is
+        destroyed while the mouse is still hovering it (<Leave> never
+        fires). M1 finding on cac29c8f.
+        """
+        self._hide()
 
 
 class ModelFetcher:
@@ -440,15 +503,15 @@ class ConfigPanel(tk.Frame):
         self.model_info_icon.pack(side=tk.RIGHT, padx=(6, 0))
         HoverTooltip(self.model_info_icon, self._get_current_model_notes)
 
-        # "Manage…" button — opens the Model Manager dialog
-        self.manage_models_btn = tk.Button(
-            row1, text="Manage\u2026", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            padx=8, pady=2, relief=tk.FLAT, borderwidth=0, command=self._open_model_manager,
+        # "Manage…" button — opens the Model Manager dialog.
+        # ttk under the clam theme so the dark fill survives macOS Aqua
+        # HIView re-renders post-click (raw tk.Button reverts to
+        # white-bezel-with-black-text after the first focus/click event).
+        self.manage_models_btn = ttk.Button(
+            row1, text="Manage\u2026", style=TTK_BTN_COMPACT,
+            command=self._open_model_manager,
         )
         self.manage_models_btn.pack(side=tk.RIGHT, padx=(4, 0))
-        apply_macos_button_fix(self.manage_models_btn)
 
         self.model_var = tk.StringVar()
         self.model_combo = ttk.Combobox(
@@ -495,13 +558,11 @@ class ConfigPanel(tk.Frame):
         )
         self.output_entry.pack(side=tk.LEFT, padx=8, pady=2, fill=tk.Y)
 
-        self.browse_btn = tk.Button(
-            row2, text="BROWSE", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"], fg=COLORS["text_light"],
-            padx=10, relief=tk.FLAT, borderwidth=0, command=self._browse_output_folder,
+        self.browse_btn = ttk.Button(
+            row2, text="BROWSE", style=TTK_BTN_COMPACT,
+            command=self._browse_output_folder,
         )
         self.browse_btn.pack(side=tk.LEFT, padx=2)
-        apply_macos_button_fix(self.browse_btn)
 
         # Separator (between model/output rows and option rows)
         ttk.Separator(left_col, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(2, 10))
@@ -592,6 +653,10 @@ class ConfigPanel(tk.Frame):
             )
             check.grid(row=i // _OLDCAM_COLS, column=i % _OLDCAM_COLS, sticky="w", padx=(2, 8), pady=0)
             self.oldcam_version_checks[version] = check
+            # No per-version hover. The (i) info icon next to "Oldcam
+            # injection" surfaces the full per-version breakdown via
+            # _get_oldcam_version_notes, so the per-checkbox hover was
+            # redundant clutter.
         # (Re-Run controls are no longer inside the Oldcam frame — they
         # live in ONE shared column to the right of both tinted frames,
         # built after the rPPG frame below.)
@@ -659,7 +724,7 @@ class ConfigPanel(tk.Frame):
         tk.Label(
             self.rppg_controls_frame,
             text="(sub-perceptual · runs last · off = unchanged)",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg="#3A2A1F",
             fg=COLORS["text_dim"],
         ).pack(side=tk.LEFT, anchor="n", padx=(0, 4))
@@ -681,23 +746,14 @@ class ConfigPanel(tk.Frame):
         ).pack(anchor="w")
         _shared_rerun_btn_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
         _shared_rerun_btn_row.pack(anchor="w", pady=(2, 0))
-        self.oldcam_rerun_btn = tk.Button(
+        self.oldcam_rerun_btn = ttk.Button(
             _shared_rerun_btn_row,
             text="↻",
-            font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"],
-            activeforeground=COLORS["text_light"],
-            width=2,
-            padx=8,
-            pady=2,
-            relief=tk.FLAT,
-            borderwidth=0,
+            style=TTK_BTN_COMPACT,
+            width=3,
             command=self._on_oldcam_rerun_clicked,
         )
         self.oldcam_rerun_btn.pack(side=tk.LEFT, padx=(0, 4))
-        apply_macos_button_fix(self.oldcam_rerun_btn)
         HoverTooltip(
             self.oldcam_rerun_btn,
             lambda: (
@@ -708,23 +764,14 @@ class ConfigPanel(tk.Frame):
                 "latest completed output if none selected."
             ),
         )
-        self.oldcam_pick_btn = tk.Button(
+        self.oldcam_pick_btn = ttk.Button(
             _shared_rerun_btn_row,
             text="📂",
-            font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"],
-            activeforeground=COLORS["text_light"],
-            width=2,
-            padx=8,
-            pady=2,
-            relief=tk.FLAT,
-            borderwidth=0,
+            style=TTK_BTN_COMPACT,
+            width=3,
             command=self._on_oldcam_pick_rerun_clicked,
         )
         self.oldcam_pick_btn.pack(side=tk.LEFT, padx=(0, 0))
-        apply_macos_button_fix(self.oldcam_pick_btn)
         HoverTooltip(
             self.oldcam_pick_btn,
             lambda: (
@@ -787,7 +834,7 @@ class ConfigPanel(tk.Frame):
         )
         self.loop_checkbox.pack(side=tk.LEFT, padx=(16, 0))
         self.loop_info_label = tk.Label(
-            rB, text="(requires FFmpeg)", font=(FONT_FAMILY, 8),
+            rB, text="(requires FFmpeg)", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.loop_info_label.pack(side=tk.LEFT, padx=4)
@@ -807,7 +854,7 @@ class ConfigPanel(tk.Frame):
         )
         self.verbose_checkbox.pack(side=tk.LEFT)
         self.verbose_info_label = tk.Label(
-            rC, text="(detailed processing log)", font=(FONT_FAMILY, 8),
+            rC, text="(detailed processing log)", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.verbose_info_label.pack(side=tk.LEFT, padx=4)
@@ -827,7 +874,7 @@ class ConfigPanel(tk.Frame):
         self.rppg_metrics_checkbox.pack(side=tk.LEFT, padx=(12, 0))
         self.rppg_metrics_info_label = tk.Label(
             rC, text="(off = clean name + .metrics.json sidecar)",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.rppg_metrics_info_label.pack(side=tk.LEFT, padx=4)
@@ -958,11 +1005,34 @@ class ConfigPanel(tk.Frame):
             command=self._on_lock_end_frame_changed,
         )
         self.lock_end_frame_checkbox.pack(side=tk.LEFT, padx=(0, 12))
+        HoverTooltip(self.lock_end_frame_checkbox, lambda: (
+            "Lock End Frame — force the video to end on (or very near) "
+            "the start image. Pairs with the ping-pong Loop step:\n\n"
+            "ON (default): start = end natively, so the clip plays "
+            "forward and STOPS cleanly at the source. Looping is "
+            "NOT needed (and adds nothing — the forward clip alone "
+            "already returns to source).\n"
+            "OFF: model decides the end freely (better motion realism). "
+            "Use the Loop step to seamlessly play forward + reverse, "
+            "which hides any start-to-end mismatch via ping-pong."
+        ))
         self.cfg_scale_label = tk.Label(
             rEF, text="cfg:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.cfg_scale_label.pack(side=tk.LEFT, padx=(0, 3))
+        _cfg_tip = lambda: (
+            "CFG (Classifier-Free Guidance) — how strictly the model "
+            "follows the prompt vs. exercises its own \"taste\".\n\n"
+            "0.0 = loose, model improvises (best for vague prompts)\n"
+            "0.5 = fal.ai default (balanced)\n"
+            "0.7 = recommended for our pipeline (sticks to head-turn\n"
+            "      prompt closely, low surprise)\n"
+            "1.0 = max adherence, can over-tighten\n\n"
+            "If subjects drift off-prompt: raise. If outputs feel "
+            "robotic: lower."
+        )
+        HoverTooltip(self.cfg_scale_label, _cfg_tip)
         self.cfg_scale_var = tk.StringVar(value="0.7")
         self.cfg_scale_entry = tk.Entry(
             rEF, textvariable=self.cfg_scale_var, font=(FONT_FAMILY, 10),
@@ -977,7 +1047,7 @@ class ConfigPanel(tk.Frame):
         self.cfg_scale_entry.bind("<FocusOut>", self._on_cfg_scale_changed)
         self.cfg_scale_entry.bind("<Return>", self._on_cfg_scale_changed)
         self.model_caps_label = tk.Label(
-            rEF, text="", font=(FONT_FAMILY, 8),
+            rEF, text="", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.model_caps_label.pack(side=tk.RIGHT, padx=4)
@@ -1111,7 +1181,7 @@ class ConfigPanel(tk.Frame):
         )
         tk.Label(
             self._negative_prompt_section, text="Negative prompt",
-            font=(FONT_FAMILY, 8, "bold"),
+            font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"], fg=COLORS["text_dim"], anchor="w",
         ).pack(fill=tk.X, pady=(0, 2))
         neg_text_frame = tk.Frame(
@@ -1180,27 +1250,41 @@ class ConfigPanel(tk.Frame):
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.prompt_char_count_label.pack()
-        self.edit_prompt_btn = tk.Button(
-            prompt_footer, text="Edit", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            padx=10, pady=2, relief=tk.FLAT, borderwidth=0,
+        self.edit_prompt_btn = ttk.Button(
+            prompt_footer, text="Edit", style=TTK_BTN_COMPACT,
             command=self._enter_edit_mode,
         )
         self.edit_prompt_btn.pack(side=tk.RIGHT, padx=(4, 0))
-        apply_macos_button_fix(self.edit_prompt_btn)
-        self.save_prompt_btn = tk.Button(
-            prompt_footer, text="Save Prompt", font=(FONT_FAMILY, 9, "bold"),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            activebackground=COLORS["bg_main"], activeforeground=COLORS["text_light"],
-            padx=10, pady=2, relief=tk.FLAT, borderwidth=0,
+        self.save_prompt_btn = ttk.Button(
+            prompt_footer, text="Save Prompt", style=TTK_BTN_COMPACT,
             state="disabled", command=self._save_prompt,
         )
         self.save_prompt_btn.pack(side=tk.RIGHT)
-        apply_macos_button_fix(self.save_prompt_btn)
 
         # Load prompt config now that widgets exist
         self._load_prompt_config()
+
+        # Re-apply the negative-prompt split visibility now that the
+        # widgets exist. When ConfigPanel is constructed with
+        # ``build_prompt=False`` (main_window's split layout —
+        # prompt panel built later via build_prompt_panel here), the
+        # _setup_ui → _load_config → _update_motion_controls chain
+        # runs BEFORE this method creates ``_negative_prompt_section``.
+        # That first call no-ops (the section is None), so without
+        # this re-trigger the split editor stays hidden for models
+        # that support a negative prompt — even though caps say YES.
+        # User feedback 2026-05-21: Kling 2.5 Pro selected but no
+        # negative-prompt half visible.
+        try:
+            current_model = self.config.get(
+                "current_model",
+                "fal-ai/kling-video/v2.1/pro/image-to-video",
+            )
+            self._update_motion_controls(current_model)
+        except Exception:
+            # Never break panel construction over a label/visibility
+            # update.
+            pass
 
         # Mini drop zone (below the prompt area, fills remaining space)
         if self._on_images_dropped is not None:
@@ -1242,36 +1326,36 @@ class ConfigPanel(tk.Frame):
         )
         outer.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
-        inner = tk.Frame(outer, bg=_bg, cursor="hand2")
+        inner = tk.Frame(outer, bg=_bg, cursor="question_arrow")
         inner.pack(fill=tk.BOTH, expand=True)
 
         # Centered content (like original drop_zone.py)
-        center = tk.Frame(inner, bg=_bg, cursor="hand2")
+        center = tk.Frame(inner, bg=_bg, cursor="question_arrow")
         center.place(relx=0.5, rely=0.5, anchor="center")
 
         lbl_icon = tk.Label(
             center, text="\U0001f4e5", font=(EMOJI_FONT_FAMILY, 28),
-            bg=_bg, fg=COLORS["accent_blue"], cursor="hand2",
+            bg=_bg, fg=COLORS["accent_blue"], cursor="question_arrow",
         )
         lbl_icon.pack(pady=(0, 4))
 
         lbl_main = tk.Label(
             center, text="DROP IMAGES HERE",
             font=(FONT_FAMILY, 11, "bold"),
-            bg=_bg, fg=COLORS["text_light"], cursor="hand2",
+            bg=_bg, fg=COLORS["text_light"], cursor="question_arrow",
         )
         lbl_main.pack(pady=1)
 
         lbl_sub = tk.Label(
             center, text="or click to browse",
             font=(FONT_FAMILY, 9),
-            bg=_bg, fg=COLORS["text_dim"], cursor="hand2",
+            bg=_bg, fg=COLORS["text_dim"], cursor="question_arrow",
         )
         lbl_sub.pack(pady=(0, 2))
 
         self._mini_dz_status = tk.Label(
             center, text="", font=(FONT_FAMILY, 9, "bold"),
-            bg=_bg, fg=COLORS["success"], cursor="hand2",
+            bg=_bg, fg=COLORS["success"], cursor="question_arrow",
         )
         self._mini_dz_status.pack()
 
@@ -1676,55 +1760,28 @@ class ConfigPanel(tk.Frame):
         return "\n\n".join(sections)
 
     def _get_oldcam_version_notes(self) -> str:
-        """Return version comparison tooltip for the Oldcam (ⓘ) icon."""
+        """Return version comparison tooltip for the Oldcam (ⓘ) icon.
+
+        One line per version — keeps the tooltip short enough to fit
+        on-screen WITHOUT covering the trigger icon (GPT diagnosis
+        2026-05-21: tall tooltips overlapping the trigger caused a
+        flicker/destroy loop on Windows).
+        """
         lines = [
-            "─── Oldcam Version Comparison ───",
+            "═══ OLDCAM VERSION GUIDE ═══",
             "",
-            "v7   Modern phone imperfection",
-            "     JPEG cycle, arm-sway rolling shutter, AF hunting. No face tracking.",
-            "     Trade-off: too subtle — looked nearly identical to source.",
+            "Default: v24. Use it unless you're A/B testing.",
             "",
-            "v8   Hardware physics upgrade",
-            "     Spring-damper OIS, 3D channel noise, AWB drift, hard bitrate cap.",
-            "     Trade-off: bitrate cap over-compressed and lost detail.",
-            "",
-            "v9   Face-aware portrait pass",
-            "     MediaPipe FaceLandmarker, 4-region masks, AWB drift, soft background.",
-            "     Trade-off: background blur read as fake depth-of-field.",
-            "",
-            "v10  rPPG biological sync",
-            "     FFT on green channel → phase-locked color pulse in 4 face regions.",
-            "     Trade-off: visible color siren; AWB removed to keep FFT signal clean.",
-            "",
-            "v11  Best-of-all combination",
-            "     V10 pulse + V9 AWB, applied AFTER the FFT read.",
-            "     Trade-off: 2D rPPG flagged by modern PAD; global LUT tints sepia.",
-            "",
-            "v12  Pristine hardware-only (anti-spoofing aware)",
-            "     No rPPG, no LUT, no CLAHE, no HSV. Pure OIS / AE / noise / vignette.",
-            "     Best for low-light realism; preserves Kling's color fidelity.",
-            "",
-            "v13  High-end daylight (pristine optics)",
-            "     No sensor noise, no AE hunting, no ghosting, no MediaPipe.",
-            "     Pure OIS / rolling shutter / blooming / AWB drift / aberration / vignette.",
-            "     Trade-off: scalar-add AWB, static pixels, double-lossy encode (V14 fixes these).",
-            "",
-            "v14  Forensic daylight (physics-corrected)",
-            "     V13 optics + true multiplicative AWB, sub-perceptual sensor floor,",
-            "     smoothstep bloom, lossless temp encode, audio-preserving.",
-            "     Trade-off: the preserved sensor floor is a frequency-detector tell",
-            "     (Resemble testing) — V15 removes it and restores ghosting.",
-            "",
-            "v15  Temporal Mute (synthesis)",
-            "     V14 math/encoding + V13 noise-free philosophy + V12 temporal blend.",
-            "     No sensor noise; --ghosting 0.18 bleeds the previous frame to",
-            "     defeat consistency detectors. Superseded as default by v24.",
-            "",
-            "v24  Crush Laundromat (synthesis)   ★ default",
-            "     V15 + a uniform resolution round-trip (downscale x0.40 ->",
-            "     Lanczos upscale + light unsharp) before the encode. Destroys",
-            "     the AI fingerprint uniformly; ~9x better Resemble-API score",
-            "     than v15 while staying visually sharp. Best result.",
+            "v7   Modern phone imperfections — subtle JPEG/OIS/AF artifacts.",
+            "v8   Hardware physics — stronger OIS/noise/AWB; can over-compress.",
+            "v9   Face-aware pass — region masks; blur can look artificial.",
+            "v10  rPPG sync — biological pulse; can show as color pulsing.",
+            "v11  Combined pass — rPPG + AWB; can tint sepia.",
+            "v12  Pristine hardware-only — clean realism, good low-light.",
+            "v13  High-end daylight — pristine optics, no sensor noise.",
+            "v14  Forensic daylight — corrected AWB/bloom; sensor-floor tell.",
+            "v15  Temporal Mute — ghosting blend defeats consistency detectors.",
+            "v24  Crush Laundromat ★ — v15 + resolution round-trip; best tested.",
         ]
         return "\n".join(lines)
 

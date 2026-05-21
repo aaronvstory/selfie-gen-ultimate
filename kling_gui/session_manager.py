@@ -564,3 +564,232 @@ def delete_session(path: str) -> None:
     if os.path.isfile(path):
         os.remove(path)
         logger.info("Session deleted: %s", path)
+
+
+# Folder-rescan vocabulary. Imported from the single sources of truth
+# (path_utils.VALID_EXTENSIONS for images, image_state._VIDEO_EXTENSIONS
+# for videos) so adding a new extension on one side automatically
+# updates the liveness classifier. Replaces the prior copy-paste pair
+# that was a future-bomb (code-review C2 on 4ddb0252).
+from path_utils import VALID_EXTENSIONS as _LIVENESS_IMAGE_EXTS  # noqa: E402
+from .image_state import _VIDEO_EXTENSIONS as _LIVENESS_VIDEO_EXTS  # noqa: E402
+
+# Foreign-OS path detection. The user works on a 3-machine mesh
+# (DMBP14 macOS, DMBP16 macOS, L3 Windows). Sessions saved on one host
+# carry that host's path syntax in the JSON; opened on another, the
+# stored paths can't resolve via os.path.isfile. Without this guard,
+# a Windows session opened on macOS would classify dead and Prune
+# would silently delete it (code-review C1 on 4ddb0252 — silent data
+# loss in the worst case).
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_UNC_PREFIX_RE = re.compile(r"^\\\\[^\\/]+[\\/]")
+
+
+def _is_foreign_path(path: str) -> bool:
+    """Return True if ``path`` was saved by a different OS than the host.
+
+    Windows paths on POSIX: drive-letter prefix (C:\\...), UNC prefix
+    (\\\\server\\share\\...), or any backslash in the body (POSIX never
+    produces backslashes in a saved path).
+
+    POSIX paths on Windows: leading ``/`` that is NOT a UNC share. The
+    earlier ``os.path.isabs`` guard was wrong — on Windows,
+    ``ntpath.isabs("/Users/alice/x")`` returns True, so the predicate
+    ``startswith("/") and not isabs`` was always False and POSIX paths
+    were never flagged as foreign on a Windows host (CodeRabbit
+    critical on 253a9b4). Detect explicitly: ``/`` start but not
+    ``//`` (which is reserved for UNC). Backslashes are a POSIX
+    impossibility, so on Windows we additionally treat their absence
+    as a hint — but the ``/`` prefix is sufficient.
+    """
+    if not path:
+        return False
+    if os.name == "nt":
+        # Windows host — spot POSIX-shaped absolute paths.
+        # POSIX absolute paths start with a single forward slash and
+        # contain no backslashes. Reject UNC-style ``\\server\share``
+        # AND drive-relative ``\Users\…`` (both are Windows-native;
+        # POSIX paths can never contain a backslash). Code-review on
+        # 706466f caught the drive-relative case.
+        if "\\" in path:
+            return False
+        return path.startswith("/") and not path.startswith("//")
+    # POSIX host — spot Windows-shaped paths.
+    if _WINDOWS_DRIVE_RE.match(path):
+        return True
+    if _UNC_PREFIX_RE.match(path):
+        return True
+    if "\\" in path:
+        return True
+    return False
+
+
+def session_liveness(record_path: str) -> dict:
+    """Inspect a session's on-disk state without loading it.
+
+    Returns a dict::
+
+        {
+          "live": bool,        # True iff at least one path / rescan-able file exists
+          "saved_images": int, # count of image entries in the JSON
+          "missing": int,      # how many of those have no file on disk
+          "rescan_imgs": int,  # extra images discoverable via folder rescan
+          "rescan_vids": int,  # extra videos discoverable via folder rescan
+        }
+
+    A session is "dead" when ``live`` is False — every saved image is
+    missing AND no surveyed folder has any image/video the rescan path
+    could surface. Used by the Session Manager to flag prune candidates.
+
+    Cross-platform: only uses os.path.isfile / isdir / listdir / splitext,
+    so saved paths work on whichever OS this runs on (Win sessions opened
+    on macOS will read as "dead" iff the macOS-mounted equivalents don't
+    exist, which is the right answer).
+    """
+    result = {"live": False, "saved_images": 0, "missing": 0,
+              "rescan_imgs": 0, "rescan_vids": 0, "foreign_os": False}
+    try:
+        with open(record_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception as exc:
+        # Unreadable / corrupt JSON — NOT dead, just broken. Let
+        # list_sessions' existing skip-warning handle it; we return
+        # "live" so the user doesn't accidentally lose a fixable file.
+        # H4 (code-review): log at debug so post-mortem after a confused
+        # user report ("my live sessions got pruned") is possible.
+        # Gemini medium PR #43 (3277077726): include exception type so
+        # post-mortem distinguishes PermissionError / OSError (disk-side,
+        # transient) from json.JSONDecodeError (file actually corrupt
+        # and should be quarantined rather than retried).
+        logger.debug(
+            "session_liveness read failed for %s: %s: %s",
+            record_path, type(exc).__name__, exc,
+        )
+        result["live"] = True
+        return result
+
+    images = data.get("session", {}).get("images", [])
+    result["saved_images"] = len(images)
+
+    # C1: if EVERY stored path looks foreign-OS, classify live. The
+    # session was saved on a different host and can't be evaluated
+    # here — prune would lose work that would still be valid back
+    # on its home OS.
+    if images and all(_is_foreign_path(img.get("path", "")) for img in images):
+        result["live"] = True
+        result["foreign_os"] = True
+        return result
+
+    folders: set = set()
+    any_saved_alive = False
+    for img in images:
+        path = img.get("path", "")
+        if not path:
+            continue
+        folders.add(os.path.dirname(path))
+        if os.path.isfile(path):
+            any_saved_alive = True
+        else:
+            result["missing"] += 1
+
+    # Folder rescan vocabulary mirrors the load-path: count any image
+    # or video the rescan WOULD pick up. Treat ANY hit as evidence of
+    # life — a folder with only videos but no saved-image survivors
+    # is still loadable by the rescan path and should not be pruned.
+    #
+    # M1 (code-review): broken-symlink / unmounted-drive detection.
+    # ``os.path.isdir`` returns False both for a permanently-gone
+    # folder AND for a symlink whose target is currently unreachable
+    # (sleeping external drive, dropped network mount). Distinguish
+    # via ``os.path.lexists``: True + isdir False = link/mount
+    # exists but target is currently inaccessible — treat as live
+    # so a re-plug brings the session back.
+    for folder in folders:
+        if not folder:
+            continue
+        if not os.path.isdir(folder):
+            if os.path.lexists(folder):
+                # Folder reference is alive but target is unreachable.
+                # Classify session live so it survives a re-plug.
+                result["live"] = True
+                logger.debug(
+                    "session_liveness: %s folder %s is dangling link/"
+                    "unreachable mount — classifying live",
+                    record_path, folder,
+                )
+                return result
+            continue
+        try:
+            entries = os.listdir(folder)
+        except OSError as exc:
+            logger.debug(
+                "session_liveness: listdir(%s) failed: %s", folder, exc,
+            )
+            continue
+        for fname in entries:
+            full = os.path.join(folder, fname)
+            if not os.path.isfile(full):
+                continue
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in _LIVENESS_IMAGE_EXTS:
+                result["rescan_imgs"] += 1
+            elif ext in _LIVENESS_VIDEO_EXTS:
+                result["rescan_vids"] += 1
+
+    result["live"] = bool(
+        any_saved_alive or result["rescan_imgs"] > 0 or result["rescan_vids"] > 0
+    )
+    return result
+
+
+def find_dead_sessions(app_dir: str) -> List[SessionRecord]:
+    """Return the subset of saved sessions whose source data is gone.
+
+    "Dead" = ``session_liveness(...)["live"] is False`` — the saved
+    image paths all point at missing files AND no surveyed folder has
+    any image/video the rescan path could surface. Safe for prune.
+    """
+    dead: List[SessionRecord] = []
+    for rec in list_sessions(app_dir):
+        try:
+            if not session_liveness(rec.path)["live"]:
+                dead.append(rec)
+        except Exception:
+            # Defensive: any unexpected error means we keep the record
+            # rather than risk a false-positive prune.
+            logger.warning("session_liveness raised for %s", rec.path, exc_info=True)
+    return dead
+
+
+def prune_dead_sessions(
+    app_dir: str,
+    paths: Optional[List[str]] = None,
+) -> List[str]:
+    """Delete sessions classified dead by ``find_dead_sessions``.
+
+    When ``paths`` is None, behaves as before — calls
+    ``find_dead_sessions`` and prunes whatever comes back. When given,
+    deletes exactly those file paths instead (no rescan). Use the
+    explicit-paths form when the caller has already computed the dead
+    set and is showing it to the user (Session Manager dialog's
+    _refresh_list does this) — prevents the case where a folder
+    becomes inaccessible between dialog-open and prune-click and a
+    formerly-live session silently flips dead and gets swept along
+    (code-review H2 on 4ddb0252).
+
+    Returns the list of deleted file paths so the caller can show a
+    confirmation log. Individual delete failures are logged + skipped
+    so one stuck file can't block the whole sweep.
+    """
+    if paths is None:
+        targets = [rec.path for rec in find_dead_sessions(app_dir)]
+    else:
+        targets = list(paths)
+    deleted: List[str] = []
+    for path in targets:
+        try:
+            delete_session(path)
+            deleted.append(path)
+        except OSError as exc:
+            logger.warning("Failed to prune dead session %s: %s", path, exc)
+    return deleted

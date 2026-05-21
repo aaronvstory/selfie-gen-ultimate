@@ -14,9 +14,9 @@ from ..image_state import ImageSession, SIMILARITY_PASS_THRESHOLD, parse_similar
 from ..theme import (
     COLORS,
     FONT_FAMILY,
-    TTK_BTN_PRIMARY,
     TTK_BTN_SECONDARY,
     TTK_BTN_SUCCESS,
+    TTK_BTN_WORKFLOW,
     debounce_command,
 )
 
@@ -126,7 +126,7 @@ class ExpandTab(tk.Frame):
         self._candidate_meta = tk.Label(
             candidate_actions,
             text="",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             anchor="w",
@@ -153,7 +153,11 @@ class ExpandTab(tk.Frame):
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-            font=(FONT_FAMILY, 9),
+            # Unified prompt font (user request 2026-05-21): every
+            # prompt-text Text widget in the app uses (FONT_FAMILY, 10)
+            # to match the video-tab positive + negative prompt
+            # editors. Was (FONT_FAMILY, 9) — visibly smaller.
+            font=(FONT_FAMILY, 10),
             relief=tk.FLAT,
             insertbackground=COLORS["text_light"],
         )
@@ -219,7 +223,7 @@ class ExpandTab(tk.Frame):
             troughcolor=COLORS["bg_input"],
             highlightthickness=0,
             length=200,
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         ).pack(side=tk.LEFT, padx=(6, 3))
         tk.Label(
             self._pct_frame,
@@ -240,7 +244,7 @@ class ExpandTab(tk.Frame):
             tk.Label(
                 self._px_frame,
                 text=f"{label}:",
-                font=(FONT_FAMILY, 8),
+                font=(FONT_FAMILY, 9),
                 bg=COLORS["bg_panel"],
                 fg=COLORS["text_light"],
             ).pack(side=tk.LEFT, padx=(0, 3))
@@ -251,7 +255,7 @@ class ExpandTab(tk.Frame):
                 bg=COLORS["bg_input"],
                 fg=COLORS["text_light"],
                 insertbackground=COLORS["text_light"],
-                font=(FONT_FAMILY, 8),
+                font=(FONT_FAMILY, 9),
             ).pack(side=tk.LEFT, padx=(0, 8))
 
         io_row = tk.Frame(settings_frame, bg=COLORS["bg_panel"])
@@ -343,17 +347,18 @@ class ExpandTab(tk.Frame):
 
         run_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         run_frame.pack(fill=tk.X, padx=10, pady=(4, 4))
+        # Workflow-primary on Step 2.5.
         self._expand_btn = ttk.Button(
             run_frame,
             text="Expand Active Image",
-            style=TTK_BTN_PRIMARY,
+            style=TTK_BTN_WORKFLOW,
             command=debounce_command(self._on_expand_selected, key="expand_run"),
         )
         self._expand_btn.pack(side=tk.LEFT)
         self._status_label = tk.Label(
             run_frame,
             text="",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             anchor="w",
@@ -397,7 +402,7 @@ class ExpandTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
         ).pack(side=tk.LEFT)
         self._send_btn = ttk.Button(
             send_row,

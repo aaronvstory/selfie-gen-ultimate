@@ -102,7 +102,15 @@ from tk_dialogs import select_directory, select_directory_cli_safe, select_open_
 # False -> clean *-rppg name + .metrics.json sidecar).
 # v4 (2026-05-19): minimal-motion default prompt + recommended negative
 # prompt; cfg_scale_value (0.7) + lock_end_frame (true) defaults.
-RECOMMENDED_DEFAULTS_VERSION = 4
+# v5 (2026-05-20, PR #43): rPPG iterative mode mandatory by default
+# (friend confirmed iterative is required for production — single-shot
+# rarely lands at the optimal strength). Also adds the 3 companion
+# flags --iterate-from-baseline / --skip-diagnosis / --skip-kinematic-
+# gate as separate config keys so users can selectively override.
+# CodeRabbit cycle-3 flagged that v4 users pulling the PR-43 update
+# would silently stay on "inject" mode unless the apply-defaults
+# helper was bumped here too.
+RECOMMENDED_DEFAULTS_VERSION = 5
 DEFAULT_KLING_PROMPT_SLOT = 4
 DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT = 3
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
@@ -1759,10 +1767,17 @@ class KlingAutomationUI:
         self.config["automation_oldcam_version"] = "v24"
         self.config["automation_oldcam_required"] = True
         # rPPG injection runs LAST (Kling -> Loop -> Oldcam -> rPPG). It is
-        # the genuinely-untried forward direction, not production-validated;
-        # recommended defaults keep it OFF and non-required (opt-in only).
+        # opt-in (default OFF) — but when the user DOES enable it, the
+        # mode is "iterative" + the three companion flags are ON, per
+        # PR #43 (friend confirmed iterative is mandatory for prod use
+        # because the initial single-shot rarely lands at optimal
+        # strength). Recommended defaults keep the GATE off but set the
+        # MODE so enabling-via-toggle just works without further config.
         self.config["automation_rppg_enabled"] = False
-        self.config["automation_rppg_mode"] = "inject"
+        self.config["automation_rppg_mode"] = "iterative"
+        self.config["automation_rppg_iterate_from_baseline"] = True
+        self.config["automation_rppg_skip_diagnosis"] = True
+        self.config["automation_rppg_skip_kinematic_gate"] = True
         self.config["automation_rppg_required"] = False
         # Clean *-rppg filename + .metrics.json sidecar by default; the
         # injector's metric-suffix rename is opt-in (see automation/rppg.py
@@ -1785,6 +1800,15 @@ class KlingAutomationUI:
         print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 3")
         print(f"  Kling prompt slot: {before['kling_prompt_slot']} -> 4")
         print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> v24 / required")
+        # PR #43: rPPG iterative-mode flags become part of the v5
+        # recommended baseline. They only ACTIVATE when rppg_enabled
+        # is true; the baseline keeps rppg off but pre-sets the
+        # iterative-mode keys so enabling-via-toggle just works.
+        print(
+            "  rPPG mode: iterative + --iterate-from-baseline + "
+            "--skip-diagnosis + --skip-kinematic-gate "
+            "(active only when rPPG is enabled)"
+        )
         print(f"  max cases per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
         print("\nCurrent recommended state:")
         print("  front expand: bfl / percent / 70 / preserve_seamless")
@@ -1794,6 +1818,7 @@ class KlingAutomationUI:
         print("  selfie prompt slot: 3")
         print("  Kling prompt slot: 4")
         print("  oldcam: v24 / required")
+        print("  rPPG: opt-in; when enabled -> iterative + from-baseline + skip-diag/kinematic")
         print(f"  max cases per run: {self._read_max_cases_setting()}")
         self.pause_continue("\nPress Enter to continue...")
 

@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, List, Optional
 
-from ..theme import COLORS, FONT_FAMILY, TTK_BTN_SUCCESS, debounce_command
+from ..theme import COLORS, FONT_FAMILY, TTK_BTN_WORKFLOW, debounce_command
 from ..image_state import ImageSession
 
 
@@ -37,10 +37,11 @@ class VideoTab(tk.Frame):
         use_carousel_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         use_carousel_frame.pack(fill=tk.X, padx=10, pady=(5, 2))
 
+        # Workflow-primary on Step 3 — main "start" action for the tab.
         self.use_carousel_btn = ttk.Button(
             use_carousel_frame,
             text="Start - Using Carousel Image",
-            style=TTK_BTN_SUCCESS,
+            style=TTK_BTN_WORKFLOW,
             command=debounce_command(self._on_use_carousel, key="video_use_carousel"),
         )
         self.use_carousel_btn.pack(side=tk.LEFT)
@@ -48,7 +49,7 @@ class VideoTab(tk.Frame):
         tk.Label(
             use_carousel_frame,
             text="Use active carousel image for video generation",
-            font=(FONT_FAMILY, 8),
+            font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
         ).pack(side=tk.LEFT, padx=8)

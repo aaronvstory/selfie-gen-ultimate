@@ -28,6 +28,8 @@ def derive_display_tag(entry) -> tuple:
         return "[ORIGINAL]", "accent_blue"
     if entry.source_type == "selfie":
         return "[GENERATED]", "success"
+    if entry.source_type == "video":
+        return "[VIDEO]", "warning_light"
 
     if not ops:
         # Final fallback for typed entries without ops

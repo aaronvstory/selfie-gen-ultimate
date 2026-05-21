@@ -2,9 +2,14 @@
 Log Display Widget - Scrolling text log with color-coded messages.
 """
 
+import sys
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
+
+# Local mono font (matches FONT_MONO in theme.py; this widget has its own
+# isolated palette duplicate so it gets its own font constant too).
+FONT_MONO = "Menlo" if sys.platform == "darwin" else "Consolas"
 
 
 # Color palette matching LoopVideo dark theme
@@ -56,7 +61,7 @@ class LogDisplay(tk.Frame):
             wrap=tk.WORD,
             bg=COLORS["bg_main"],
             fg=COLORS["text_light"],
-            font=("Consolas", 8),
+            font=(FONT_MONO, 9),
             state=tk.DISABLED,
             yscrollcommand=self.scrollbar.set,
             padx=4,

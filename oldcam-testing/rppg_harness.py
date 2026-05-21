@@ -87,7 +87,14 @@ def _p2p(sig: list[float]) -> float:
     return (max(sig) - min(sig)) if sig else 0.0
 
 
-def run_injector(src: Path, out: Path) -> int:
+def run_injector(src: Path, out: Path, *, iterative: bool = True) -> int:
+    """Direct injector call (bypasses automation.rppg).
+
+    Defaults to iterative mode + iterate-from-baseline + skip-diagnosis
+    + skip-kinematic-gate to match the production wiring set in
+    automation/rppg.py::run_rppg (PR #43). Pass ``iterative=False`` for
+    one-shot back-to-back calibration.
+    """
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         str(RPPG_LAUNCHER),
@@ -95,8 +102,12 @@ def run_injector(src: Path, out: Path) -> int:
         "--inject",
         "--output",
         str(out),
-        "--skip-kinematic-gate",
     ]
+    if iterative:
+        cmd.append("--iterative")
+        cmd.append("--iterate-from-baseline")
+        cmd.append("--skip-diagnosis")
+    cmd.append("--skip-kinematic-gate")
     print(f"[harness] running: {subprocess.list2cmdline(cmd)}", flush=True)
     # Drain stdout via the shared reader-thread + hard wall-clock helper
     # (single source of truth with the GUI queue and automation pipeline).
@@ -120,7 +131,7 @@ def run_injector(src: Path, out: Path) -> int:
     return rc
 
 
-def run_chain(src: Path) -> Path:
+def run_chain(src: Path, *, iterative: bool = True) -> Path:
     """Full GUI pipeline order: Loop -> Oldcam(v24) -> rPPG, via the
     automation modules so the harness exercises the real wiring."""
     sys.path.insert(0, str(REPO_ROOT))
@@ -159,7 +170,12 @@ def run_chain(src: Path) -> Path:
     if not oc:
         print("[harness] oldcam produced nothing; feeding looped/fixture straight to rPPG", flush=True)
     print(f"[harness] chain step: rPPG on {Path(chain_input).name}", flush=True)
-    rp = run_rppg(video_path=Path(chain_input), repo_root=REPO_ROOT, progress_cb=_cb)
+    rp = run_rppg(
+        video_path=Path(chain_input),
+        repo_root=REPO_ROOT,
+        progress_cb=_cb,
+        iterative=iterative,
+    )
     if not rp:
         raise SystemExit("[harness] rPPG produced no output in chain mode")
     return rp
@@ -169,6 +185,14 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--chain", action="store_true", help="run full Loop->Oldcam->rPPG chain")
     ap.add_argument("--skip-run", action="store_true", help="analyse an existing output only")
+    ap.add_argument(
+        "--one-shot",
+        action="store_true",
+        help=(
+            "Use single-pass --inject (no iterative tuning). Default is "
+            "iterative mode matching production wiring + rPPG/rppg.bat."
+        ),
+    )
     args = ap.parse_args()
 
     if not FIXTURE.exists():
@@ -183,10 +207,14 @@ def main() -> int:
 
     if not args.skip_run:
         if args.chain:
-            produced = run_chain(FIXTURE)
+            # Chain mode goes through automation.rppg.run_rppg which now
+            # reads automation_rppg_mode from config — but the harness
+            # runs without a project config, so we pass the explicit
+            # iterative kwarg via the harness's own --one-shot toggle.
+            produced = run_chain(FIXTURE, iterative=not args.one_shot)
             out_video = Path(produced)
         else:
-            rc = run_injector(FIXTURE, out_video)
+            rc = run_injector(FIXTURE, out_video, iterative=not args.one_shot)
             if rc != 0:
                 print(f"[harness] injector failed (rc={rc})", file=sys.stderr)
                 return 1

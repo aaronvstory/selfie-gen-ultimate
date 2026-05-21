@@ -1789,46 +1789,147 @@ class QueueManager:
 
             output_path = self._build_rppg_output_path(input_path)
             self.log("Applying rPPG injection...", "info")
+            # Iterative-mode flags. Defaults match rPPG/rppg.bat (the
+            # friend's canonical launcher): --iterative is MANDATORY
+            # for production because the initial single-shot rarely
+            # lands at the optimal strength; --iterate-from-baseline
+            # avoids cumulative encoding loss across iterations;
+            # --skip-diagnosis dodges the Claude-API "clod diagnostics"
+            # postscript. All three default ON, user-overridable via
+            # the config keys.
+            cfg = self.get_config()
+            # Reuse the canonical str-to-bool coercion so a JSON value
+            # of "false"/"no"/"0" parses as False instead of True. Raw
+            # bool() on a non-empty string is True — exactly the bug
+            # coderabbit flagged on PR #19 for the similarity strict
+            # gate. Same fix is applied in automation.pipeline._read_bool
+            # (single canonical helper, face_similarity._parse_bool).
+            from face_similarity import _parse_bool
+
+            # The GUI config uses BARE keys (rppg_enabled,
+            # rppg_metrics_in_filename) while the automation pipeline
+            # uses the automation_-prefixed namespace. For PR-43's new
+            # iterative-mode flags the GUI config_panel doesn't yet
+            # surface UI controls, so users who hand-edit the config
+            # may set either the bare key (matches the GUI namespace
+            # convention) OR the automation_ prefix (matches what's in
+            # automation/config.py). Try the bare key first (it's the
+            # canonical GUI name), then fall back to the automation_
+            # name so the two namespaces stay in sync. PR #43 / code-
+            # reviewer P1.
+            def _cfg_get(bare_key: str, automation_key: str, default):
+                val = cfg.get(bare_key, None)
+                if val is None:
+                    val = cfg.get(automation_key, default)
+                return val
+
+            def _cfg_bool(bare_key: str, automation_key: str, default: bool) -> bool:
+                raw = _cfg_get(bare_key, automation_key, default)
+                parsed = _parse_bool(raw)
+                return parsed if parsed is not None else bool(default)
+
+            rppg_mode_raw = _cfg_get("rppg_mode", "automation_rppg_mode", "iterative")
+            rppg_mode = str(rppg_mode_raw or "iterative").strip().lower()
+            iterative = rppg_mode == "iterative"
+            iterate_from_baseline = _cfg_bool(
+                "rppg_iterate_from_baseline",
+                "automation_rppg_iterate_from_baseline",
+                True,
+            )
+            skip_diagnosis = _cfg_bool(
+                "rppg_skip_diagnosis",
+                "automation_rppg_skip_diagnosis",
+                True,
+            )
+            skip_kinematic_gate = _cfg_bool(
+                "rppg_skip_kinematic_gate",
+                "automation_rppg_skip_kinematic_gate",
+                True,
+            )
             run_cmd = [
                 str(launcher),
                 str(input_path),
                 "--inject",
                 "--output",
                 str(output_path),
-                # Deliberate: the injector's v8 kinematic preflight is
-                # README-marked "new, untested". Re-enabling that gate is a
-                # future enhancement (see docs/rppg-wiring.md), not an
-                # oversight.
-                "--skip-kinematic-gate",
             ]
+            # ORDER mirrors rPPG/rppg.bat:
+            #     --inject --iterative --iterate-from-base --skip-diagnosis
+            # Plus --skip-kinematic-gate (preserved from before).
+            if iterative:
+                run_cmd.append("--iterative")
+                if iterate_from_baseline:
+                    run_cmd.append("--iterate-from-baseline")
+                if skip_diagnosis:
+                    run_cmd.append("--skip-diagnosis")
+            if skip_kinematic_gate:
+                # v8 kinematic preflight is README-marked "new, untested"
+                # (see docs/rppg-wiring.md).
+                run_cmd.append("--skip-kinematic-gate")
             output_lines: list[str] = []
             returncode = -1
-            _TIMEOUT = 600
+            # Initial deadline depends on mode (PR #43 friend feedback
+            # "no arbitrary timeout"): iterative mode legitimately runs
+            # ~10min so the old hard 600s was borderline; we bump the
+            # initial to 1800s for iterative and keep 600s for one-shot.
+            # Even past the initial, the deadline RATCHETS FORWARD by
+            # 90s every time the injector emits a new "Iteration N/M"
+            # marker — so a healthy iterative run that keeps making
+            # progress NEVER hits the wall. The wall only fires on a
+            # genuinely-silent injector (real stall / wedge).
+            _TIMEOUT = 1800 if iterative else 600
+
+            # Progress tracker (PR #43, user feedback: "show progress
+            # like we do for oldcam"). Parses Iteration N/M markers
+            # from stdout, emits user-friendly progress at info, and
+            # provides a deadline-extender callback that ratchets the
+            # wall clock forward as long as the injector is making
+            # forward progress. Honors the GUI verbose_logging flag
+            # (or its non-prefixed alias) so "more nitty gritty when
+            # verbose is checked" works.
+            from automation.rppg import _RppgProgressTracker
+            verbose = _cfg_bool(
+                "verbose_logging", "automation_verbose_logging", True,
+            )
+
+            def _progress_report(message: str, level: str) -> None:
+                # Bridge the tracker's (message, level) into self.log.
+                self.log(message, level)
+
+            tracker = _RppgProgressTracker(
+                report_cb=_progress_report, verbose=verbose,
+            )
+            tracker_extender = tracker.deadline_extender if iterative else None
 
             def _on_rppg_line(text: str) -> None:
-                if not _is_tf_noise(text):
-                    level = "debug" if _is_panel_noise(text) else "info"
-                    self.log(text, level)
-                    # The injector emits its OWN internal pass/fail
-                    # self-grade against strict metric targets. At
-                    # the sub-perceptual --strength 0.005 ship
-                    # default it's mathematically impossible to
-                    # satisfy all of phase<=18°, temporal>=0.85,
-                    # harmonic>=0.7 simultaneously, so this line
-                    # routinely reads FAIL even though the pulse was
-                    # successfully injected. The pipeline contract
-                    # is exit-code-based — exit 0 == success — so
-                    # annotate the confusing line to prevent users
-                    # reading it as a pipeline error (user feedback,
-                    # PR #41).
-                    if text.strip().startswith("Test Result:"):
-                        self.log(
-                            "  ^ injector internal self-grade only; "
-                            "pipeline OK if injector exits 0 "
-                            "(sub-perceptual --strength 0.005 "
-                            "can't satisfy all strict targets).",
-                            "debug",
-                        )
+                if _is_tf_noise(text):
+                    return
+                # Panel noise (heavy TF chatter) is always debug-level
+                # regardless of verbose, otherwise pass to the tracker
+                # which decides user-friendly progress + verbose gating.
+                if _is_panel_noise(text):
+                    self.log(text, "debug")
+                else:
+                    tracker.on_line(text)
+                # The injector emits its OWN internal pass/fail
+                # self-grade against strict metric targets. At
+                # the sub-perceptual --strength 0.005 ship default
+                # it's mathematically impossible to satisfy all of
+                # phase<=18°, temporal>=0.85, harmonic>=0.7
+                # simultaneously, so this line routinely reads FAIL
+                # even though the pulse was successfully injected. The
+                # pipeline contract is exit-code-based — exit 0 ==
+                # success — so annotate the confusing line to prevent
+                # users reading it as a pipeline error (user feedback,
+                # PR #41).
+                if text.strip().startswith("Test Result:"):
+                    self.log(
+                        "  ^ injector internal self-grade only; "
+                        "pipeline OK if injector exits 0 "
+                        "(sub-perceptual --strength 0.005 "
+                        "can't satisfy all strict targets).",
+                        "debug",
+                    )
 
             try:
                 # Shared reader-thread + hard wall-clock helper (single
@@ -1846,9 +1947,14 @@ class QueueManager:
                     cwd=str(launcher.parent),
                     timeout_seconds=_TIMEOUT,
                     on_line=_on_rppg_line,
+                    deadline_extender=tracker_extender,
                 )
             except subprocess.TimeoutExpired:
-                self.log("rPPG timed out after 600s; keeping pre-rPPG video", "warning")
+                self.log(
+                    f"rPPG timed out after {_TIMEOUT}s; "
+                    "keeping pre-rPPG video",
+                    "warning",
+                )
                 return None
             except Exception as exc:
                 self.log(f"rPPG launcher error: {exc}; keeping pre-rPPG video", "warning")

@@ -1,6 +1,7 @@
 """Shared theme constants and helpers for the Kling GUI."""
 
 import sys
+import logging
 import time
 import tkinter as tk
 from tkinter import ttk
@@ -9,10 +10,18 @@ from typing import Callable, Dict
 
 IS_MACOS = sys.platform == "darwin"
 
+_LOGGER = logging.getLogger(__name__)
+
 # Global font — change this one line to switch the entire UI typeface.
 # Tk on macOS does not reliably resolve Windows font names.
 FONT_FAMILY = "Helvetica" if IS_MACOS else "Segoe UI"
 EMOJI_FONT_FAMILY = "Apple Color Emoji" if IS_MACOS else "Segoe UI Emoji"
+# Cross-platform monospace family. macOS has Menlo since 10.6 (always
+# available); Windows has Consolas since Vista. Hardcoded "Consolas"
+# elsewhere in the codebase fell back to a default mono on macOS that
+# rendered poorly. Use this constant for any listbox / log / code-style
+# widget instead of bare "Consolas".
+FONT_MONO = "Menlo" if IS_MACOS else "Consolas"
 
 # Unified color palette
 COLORS = {
@@ -74,6 +83,15 @@ TTK_BTN_SUCCESS = "Success.TButton"
 TTK_BTN_SUCCESS_COMPACT = "SuccessCompact.TButton"
 TTK_BTN_COMPACT = "Compact.TButton"
 TTK_BTN_TAB_NAV = "TabNav.TButton"
+# Main-workflow primary action — accent-blue fill, contrasting border,
+# slightly larger typography + padding so users instantly spot "what to
+# click next" on each step. Distinct from TTK_BTN_PRIMARY (which is the
+# generic blue used everywhere). Applied to: Detect Face & Crop / Add to
+# Carousel / Expand Image (step 0), Generate Selfie (step 2), Expand
+# Active Image (step 2.5), Start — Using Carousel Image (step 3).
+TTK_BTN_WORKFLOW = "Workflow.TButton"
+TTK_BTN_SLOT_ACTIVE = "SlotActive.TButton"
+TTK_BTN_SLOT_INACTIVE = "SlotInactive.TButton"
 
 _DEBOUNCE_LAST_CALL: Dict[str, float] = {}
 
@@ -94,62 +112,65 @@ def debounce_command(command: Callable[[], None], key: str, interval_ms: int = 1
 
 
 def create_action_button(parent, text: str, command, style: str = TTK_BTN_SECONDARY, **kwargs):
-    """Create cross-platform action button with macOS click-safe hitbox."""
-    if IS_MACOS:
-        width = kwargs.pop("width", None)
-        state = kwargs.pop("state", tk.NORMAL)
-        palette = {
-            TTK_BTN_PRIMARY: (COLORS["accent_blue"], BUTTON_FILLED_TEXT_COLOR),
-            TTK_BTN_SUCCESS: (COLORS["btn_green"], BUTTON_FILLED_TEXT_COLOR),
-            TTK_BTN_SUCCESS_COMPACT: (COLORS["btn_green"], BUTTON_FILLED_TEXT_COLOR),
-            TTK_BTN_DANGER: (COLORS["btn_red"], BUTTON_FILLED_TEXT_COLOR),
-            TTK_BTN_DANGER_COMPACT: (COLORS["btn_red"], BUTTON_FILLED_TEXT_COLOR),
-            TTK_BTN_SECONDARY: (COLORS["bg_input"], BUTTON_TEXT_COLOR),
-            TTK_BTN_COMPACT: (COLORS["bg_input"], BUTTON_TEXT_COLOR),
-            TTK_BTN_TAB_NAV: (COLORS["bg_input"], BUTTON_TEXT_COLOR),
-        }
-        bg, fg = palette.get(style, (COLORS["bg_input"], BUTTON_TEXT_COLOR))
-        button = tk.Button(
-            parent,
-            text=text,
-            command=command,
-            state=state,
-            font=(FONT_FAMILY, 10, "bold"),
-            bg=bg,
-            fg=fg,
-            activebackground=COLORS["bg_hover"],
-            activeforeground=fg,
-            highlightbackground=bg,
-            highlightcolor=bg,
-            highlightthickness=0,
-            relief=tk.FLAT,
-            bd=0,
-            padx=12,
-            pady=8,
-            cursor="hand2",
-        )
-        if width is not None:
-            button.config(width=width)
-        return button
+    """Create a cross-platform action button that holds its tint on macOS.
+
+    Returns a ``ttk.Button`` on every platform. The Tk root MUST have
+    ``style.theme_use("clam")`` set before this is called — main_window
+    does this in ``_setup_ui`` ahead of any button creation.
+
+    Why not ``tk.Button`` on macOS:
+        On macOS Aqua, a ``tk.Button`` is rendered by the native HIView
+        widget. The HIView ignores ``bg`` and only honors
+        ``highlightbackground`` on the *initial* paint — after the very
+        first event (focus, click, drag), HIView re-renders the button
+        with the default Aqua bezel (white background, black text) and
+        the tint is permanently lost. This was the long-running
+        "buttons go from tinted → plain after one click" bug.
+
+        ``ttk.Button`` under the ``clam`` theme is drawn entirely by
+        Tk's clam rendering code path (HIView is bypassed), so the
+        configured ``background``/``foreground`` colors stick through
+        every event. Verified visually on Sonoma — same buttons that
+        used to revert now stay tinted across click, focus, drag,
+        and window resize.
+
+    Click reliability:
+        The original concern that drove the ``tk.Button`` path was
+        macOS hit-area issues with ``highlightthickness=1`` shrinking
+        the clickable interior. That issue is specific to ``tk.Button``
+        — ``ttk.Button`` doesn't draw an HIView focus ring at all, so
+        the full button bounds are clickable.
+    """
     return ttk.Button(parent, text=text, command=command, style=style, **kwargs)
 
 
 def apply_macos_button_fix(button) -> None:
-    """Make an EXISTING raw ``tk.Button`` honor its color and be
-    reliably clickable on macOS.
+    """Best-effort polish for an EXISTING raw ``tk.Button`` on macOS.
 
-    No-op on Windows/Linux (``tk.Button`` already behaves there). On
-    macOS Aqua a ``tk.Button``'s rendered color comes from
-    ``highlightbackground``, NOT ``bg`` — so a button created with only
-    ``bg=`` shows up plain/grey. And a non-zero ``highlightthickness``
-    draws a focus ring that shrinks the clickable interior, producing
-    the "have to wiggle the cursor and click several times" hit-area
-    bug. This mirrors the create_action_button macOS path for buttons
-    that (for layout reasons) are still built as raw ``tk.Button``:
-    point ``highlightbackground``/``highlightcolor`` at the button's
-    own ``bg`` and zero the thickness. The button's existing
-    ``fg``/padding are left untouched (no contrast regression).
-    Safe to call unconditionally; silently ignores non-tk widgets.
+    No-op on Windows/Linux. On macOS this sets ``highlightbackground``/
+    ``highlightcolor`` to the button's own ``bg``, zeroes the focus
+    ring, drops the native bezel, and sets a hand cursor.
+
+    WARNING — TINT LIMITATION:
+        On macOS Aqua a ``tk.Button`` is HIView-rendered. The HIView
+        only honors ``highlightbackground`` on the *initial* paint —
+        after the very first event (focus, click, drag), it falls
+        back to the default white-bezel-with-black-text Aqua
+        appearance. **No raw ``tk.Button`` can hold a colored tint
+        on macOS after the first event** regardless of how
+        ``highlightthickness``/``highlightbackground``/``bg`` are
+        configured. Verified Sonoma 2026-05-20.
+
+        If you need a button whose tint survives clicks, use
+        ``create_action_button`` (returns a ``ttk.Button`` under the
+        ``clam`` theme, which bypasses HIView entirely).
+
+    What this helper still does usefully on macOS: removes the bevel,
+    sets the hand cursor, points the focus-ring color at the button
+    fill so the FIRST-PAINT appearance matches the intended tint
+    (which is at least the experience the user sees on launch before
+    they interact). Safe to call unconditionally; silently ignores
+    non-tk widgets.
     """
     if not IS_MACOS:
         return
@@ -164,4 +185,12 @@ def apply_macos_button_fix(button) -> None:
         )
     except Exception:
         # Never let a cosmetic tweak break widget construction.
-        pass
+        # CR PR #43 (3273385365): log at debug so real bugs
+        # surface in file logs without surfacing as user-visible
+        # errors. The fallback (raw tk.Button without the fix)
+        # still renders, just without the macOS click-area tweak.
+        _LOGGER.debug(
+            "apply_macos_button_fix failed", exc_info=True,
+        )
+
+

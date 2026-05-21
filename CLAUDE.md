@@ -360,14 +360,188 @@ Output naming: `{imagename}_kling_{model_short}_{pN}.mp4` (model short names der
 - `create_icon.py` generates `kling_ui.ico` from scratch
 - Output goes to `dist/KlingUI/`
 
-## PR Bot Triage (Latest Commit Range)
+## Default Workflow After Feature Work (MANDATORY)
 
-When processing PR review bots:
+User directive (2026-05-21): "i want u to always push commit into pr on
+branch... never work on main, then run code reviewer ur own while bots
+work, then when done implementing subagent findings, should be enough
+time for checking bot comments". This is the **default loop** whenever
+feature/fix work reaches a runnable state — don't skip steps unless the
+user explicitly says "skip review" or "just push".
 
-1. Trigger fresh runs on current head (`@codoki review`, `@coderabbitai review`, `@codex review`).
-2. Collect fresh actionable findings tied to the latest commit range.
-3. Ignore stale historical findings already superseded by newer commits.
-4. Run targeted pytest suites before pushing fix commits.
+### 1. Never work on `main`
+
+All work happens on a feature branch tied to a PR. If `main` is checked
+out, create or switch to the right branch BEFORE editing. Use
+`git rev-parse --abbrev-ref HEAD` to confirm. If unsure which branch to
+use, ask the user rather than guessing.
+
+### 2. Commit + push to the PR branch when work reaches a runnable state
+
+"Runnable state" = tests pass + portability gate green + the change
+doesn't leave the GUI/CLI in a broken intermediate. **Push every such
+commit to the remote PR branch** — the user works on multiple machines
+(macOS + Windows) and pulls from the remote, so unpushed local work is
+invisible. Commit-message contract:
+
+* Type prefix: `feat:` / `fix:` / `perf:` / `chore:` / `refactor:` / `docs:`
+* One-line subject explaining the user-visible outcome
+* Body explains the WHY + cites the finding/bot/issue source if any
+* Last line: `Co-Authored-By: Claude Opus ... <noreply@anthropic.com>`
+
+Pre-commit invariants — fail-fast if any violated:
+
+- `bash scripts/check_macos_portability.sh` exits 0
+- `.venv311/bin/python -m pytest tests/ similarity/tests/ -q` (on macOS)
+  or equivalent on Windows passes
+- EOL invariants preserved on every edited file
+  (`git ls-files --eol` left column == right column, CR counts match
+  HEAD on CRLF files)
+- No `nul` file in tree (`rm -f nul`)
+
+### 3. Trigger bot reviews + spawn code-reviewer subagent in PARALLEL
+
+Right after `git push`, do BOTH of these in the same turn (parallel
+tool calls, not sequential):
+
+**a) Trigger PR bots on the PR.** Single comment listing all active
+   bot mentions:
+
+   ```text
+   Branch head: <sha> — <one-line summary>. Bot pass please.
+
+   @coderabbitai review
+   @codex review
+   @gemini-code-assist review
+   ```
+
+   Skip `@sourcery-ai` until/unless it starts responding again — it's
+   been silent across multiple rounds on PR #43.
+
+**b) Spawn the code-reviewer subagent on the ENTIRE branch diff.** Use
+   the `general-purpose` agent type with a prompt that:
+   * Points it at the FULL branch diff (`git diff main...HEAD`), NOT
+     the latest commit range. User directive 2026-05-21: "i think the
+     subagent codereview should better be ran on the entire branch
+     diff, not just the commit individuals." Reasoning: the subagent's
+     unique value over the bots is cross-cutting analysis — it catches
+     bugs in code that LOOKED safe at commit-time but interacts badly
+     with adjacent code added in earlier commits on the same branch.
+     Bots already do the per-commit review well; the subagent should
+     do what bots are bad at.
+   * Names the project context (macOS + Windows Tk app + the
+     wiring-doc cross-references for similarity / oldcam / rPPG).
+   * Asks for severity-tagged findings (CRITICAL/HIGH/MEDIUM/LOW).
+   * Caps the response length (1500-2000 words).
+   * Includes a list of findings ALREADY ADDRESSED in earlier commits
+     on the same branch with their commit SHAs — tells the subagent
+     NOT to re-flag them. Without this list, the subagent re-discovers
+     the same bugs every round and the report becomes noise.
+   * If branch is large (>1500 LOC of net diff) and would exceed the
+     subagent's effective review window, focus on the high-traffic
+     files (touched in 3+ commits) and the new files. Explicitly say
+     so in the prompt — don't silently sample.
+
+The subagent typically returns in 4-7 minutes; bots typically respond
+in 5-30 minutes. Running them in parallel cuts wall-clock by ~40%.
+
+### 4. Address subagent findings first
+
+The subagent returns before the bots usually do. Triage its findings
+using a SINGLE rubric (the prior draft had two conflicting thresholds —
+fixed here per the code-review M5 finding on 4ddb0252):
+
+- **CRITICAL / HIGH**: fix in this round, write a regression test if
+  the bug was non-obvious, commit + push to the PR branch.
+- **MEDIUM**: fix in this round UNLESS the work is genuinely large
+  (subjectively: ">2 hours of focused work" or "requires an API
+  change in code the user explicitly asked not to touch"). Otherwise
+  do it now. Do NOT preemptively defer mediums as "V2 work" — the
+  user has called this out as a lazy pattern. The shipping cost of
+  carrying a known medium into the next round is always higher than
+  the cost of fixing it now.
+- **LOW**: defer to a cleanup pass at PR-close.
+
+### 5. Check bot comments
+
+By the time subagent fixes are pushed, bots should have responded.
+Pull the new comments using whichever snippet matches the current
+shell. Both forms produce identical filtered output; the difference
+is purely quoting (M6 code-review on 4ddb0252 — the prior single
+bash snippet was unusable from the L3 Windows machine's PowerShell):
+
+**bash / zsh / git-bash** (macOS, WSL, git-bash on Windows):
+```bash
+SINCE="<timestamp-of-trigger>"
+gh api "repos/<owner>/<repo>/pulls/<n>/comments?per_page=50" \
+  --paginate --jq '.[] | select(.created_at > "'"$SINCE"'" \
+  and .user.login != "<your-gh-username>")'
+```
+
+**PowerShell** (native Windows shell):
+```powershell
+$SINCE = "<timestamp-of-trigger>"
+$Q = '.[] | select(.created_at > "' + $SINCE + '" and .user.login != "<your-gh-username>")'
+gh api "repos/<owner>/<repo>/pulls/<n>/comments?per_page=50" `
+  --paginate --jq $Q
+```
+
+Per-bot disposition (per PR #43 retro, evidence-driven):
+
+- **Codex** (chatgpt-codex-connector): highest signal-to-noise. P1/P2
+  badges. Catches semantic contract violations and cross-cutting bugs.
+  Address every P1 same round; P2 same round if tractable.
+- **Gemini** (gemini-code-assist): broadest coverage. HIGH/Medium/Low.
+  Catches widget patterns, perf nits, threading. Address HIGH same
+  round; triage mediums per the V2 rule above.
+- **CodeRabbit** (coderabbitai): thorough but noisy. Major/Minor +
+  inline lint rules. Address Major same round; batch Minors at PR-close.
+  Skip its "Analysis chain" issue-level comments — those are
+  verification scripts CR ran, not findings to address.
+- **Sourcery**: currently silent across PR #43; skip the trigger.
+
+### 6. Address bot findings + reply inline
+
+For each finding:
+
+1. Fix the code if Step 4's triage rules say "this round."
+2. Reply inline on the comment with `gh api -X POST .../comments/<id>/replies`
+   pointing at the fix commit SHA.
+3. If declining/deferring, post a real rationale (NOT "V2 work").
+4. Commit + push the fix batch as ONE commit with a message that
+   itemizes all the addressed findings.
+
+### 7. Post a round wrap-up comment
+
+After pushing the fix batch, post a PR comment summarizing the round:
+a table of "finding → fix commit / disposition", final test count,
+portability gate result, branch head SHA. This is the user's entry
+point when they pull the branch on another machine.
+
+### 8. Loop if findings keep landing
+
+If the bot pass produces findings that warrant a new fix commit, the
+next push triggers a fresh bot round. Repeat from step 3. Two rounds
+is normal; three rounds is acceptable; four rounds usually means a
+CRITICAL was missed in the original implementation and we should
+pause to do a wider audit before continuing.
+
+### Skip conditions (don't run the full loop)
+
+- The user explicitly says "skip review" / "just push" / "WIP"
+- The commit is purely a typo / docs fix
+- The branch is mid-experiment and not ready for review (push without
+  trigger; resume the loop when work stabilizes)
+- The user says "don't engage the bots yet"
+
+### Why this is committed to CLAUDE.md (not just a local memory)
+
+The user works on multiple machines and pulls from the remote branch.
+Local-only memories live in `~/.claude/projects/...` on a single
+machine; CLAUDE.md ships with the repo so the same workflow runs on
+Windows after `git pull`. If you find yourself wanting to add a
+workflow rule that should apply on both OSes, put it HERE, not in a
+local memory.
 
 ---
 
@@ -501,78 +675,54 @@ log_drop_default = int(right_section_w * 0.71)
 
 ## Oldcam Version Wiring
 
-> Full checklist: [`docs/oldcam-wiring.md`](docs/oldcam-wiring.md)
+Full wiring checklist with per-layer tables: [`docs/oldcam-wiring.md`](docs/oldcam-wiring.md).
 
-When adding a new Oldcam version (e.g., v12), these are the required touch-points:
+**Current default version:** v24 (Crush Laundromat; superseded v15). The skipped
+app-version range v16-v23 are bench experiments in `oldcam-testing/` evaluated
+against the resemble-score metric — which turned out NOT to be the metric Persona
+actually uses downstream, so the experiments are paused-pending-re-evaluation,
+not rejected. v14 / v15 / v24 do **not** use mediapipe; v9 / v10 / v11 do.
 
-| Layer | Where | What to do |
-|-------|-------|-----------|
-| Algorithm | `oldcam-vN/` + `oldcam-vN/macOS/` | Create folder with `oldcam.py`, `launcher.py`, `requirements.txt`, `oldcam_launcher.bat` (CRLF) |
-| Launchers (3 levels) | `launchers/windows/`, `launchers/macos/`, `launchers/` | Add 4 new launcher files (2 `.bat` CRLF, 2 `.command` LF) |
-| GUI checkbox | `kling_gui/config_panel.py` | Add to `oldcam_version_vars` dict (~line 514) and loop tuple (~line 522) |
-| MediaPipe flag | `kling_gui/queue_manager.py` | Add to `requires_mediapipe` set if vN uses face landmarks |
-| Tests | `tests/test_oldcam_versions.py`, `tests/test_launcher_hub_wrappers.py` | Version tuple + output path + mediapipe tests + launcher assertions |
-| Dist | `distribution/release_prep.py` | Add new launcher file paths explicitly (algorithm folder auto-included via tree walk) |
-| If new default | `automation/config.py`, root + hub launchers | Set `automation_oldcam_version`, update all 5 `run_oldcam` launchers |
-
-**Auto-discovered (no changes needed):** `_discover_oldcam_versions()` in `queue_manager.py` scans `oldcam-v*` dirs; output filename suffix is generic; face landmarker task searched generically; `automation/pipeline.py` is fully version-agnostic.
-
-**Current default version:** v24 (Crush Laundromat; superseded v15). App version numbers skip v16–v23 — those were rejected `oldcam-testing/` bench experiments, never app versions (see `oldcam-testing/SCOREBOARD.md`). Mediapipe versions: v9, v10, v11. v14/v15/v24 do **not** use mediapipe.
+**Auto-discovered (no changes needed):** `_discover_oldcam_versions()` in
+`queue_manager.py` scans `oldcam-v*` dirs; output filename suffix is generic;
+`automation/pipeline.py` is fully version-agnostic.
 
 ---
 
 ## rPPG Injection Wiring
 
-> Full reference: [`docs/rppg-wiring.md`](docs/rppg-wiring.md)
+Full wiring tables + harness usage: [`docs/rppg-wiring.md`](docs/rppg-wiring.md).
 
-rPPG injection is the **final** post-process: `Kling → Loop → Oldcam → rPPG`
-(rPPG strictly last). It installs a sub-perceptual physiological pulse so
-Persona's passive rPPG stage sees a real signal. **Off by default
-everywhere — opt-in only.** It invokes the gitignored `rPPG/` tool as an
-external launcher and degrades gracefully (skip + log, never crash) if the
-tool is absent or fails. It is NOT the removed crude v10/v11 "siren" pulse.
+**Pipeline order (NON-NEGOTIABLE):** `Kling → Loop → Oldcam → rPPG`. rPPG runs
+**last** so it sees the oldcam-distorted frames as its source, otherwise the
+pulse signal gets washed by the downstream stages. **Off by default everywhere
+— opt-in only.** Invokes the gitignored `rPPG/` external tool; degrades
+gracefully (skip + log, never crash) when the tool is missing or fails.
 
-| Layer | Where | What |
-|-------|-------|------|
-| Manifest registry | `automation/manifest.py` `STEP_NAMES` | `"rppg"` after `"oldcam"` — REQUIRED or `update_step` raises `Unknown step: rppg` |
-| Config | `automation/config.py` | `automation_rppg_enabled` (False), `automation_rppg_mode` ("inject"), `automation_rppg_required` (False) |
-| Automation | `automation/rppg.py` (NEW) | `run_rppg` / `resolve_produced_output` / `build_rppg_output_path` / `resolve_rppg_launcher` (mirrors `automation/oldcam.py`) |
-| Pipeline Step 8 | `automation/pipeline.py` | After oldcam; input = oldcam output else video_generate output; facetrack-style manifest reporting |
-| GUI queue | `kling_gui/queue_manager.py` | `_rppg_*` methods; main queue order + oldcam re-run path |
-| GUI checkbox | `kling_gui/config_panel.py` | Orange row (`#3A2A1F`/`#7D5E3A`) below the violet oldcam frame; `rppg_var`; `_on_rppg_changed`; cleanup list |
-| CLI | `kling_automation_ui.py` | recommended-defaults + `_ask_bool` + `_qs_section_oldcam`; `RECOMMENDED_DEFAULTS_VERSION` bumped |
-
-**Verified injector contract gotcha:** `--output` is NOT honoured
-deterministically — the injector renames to
+**Injector contract gotcha you WILL hit:** `--output` is NOT honoured
+deterministically — the injector renames its output to
 `{stem}-rppg - <metrics>{ext}`. Always resolve the real file via
-`automation.rppg.resolve_produced_output()` (single source of truth; GUI
-queue + harness both use it). `--skip-kinematic-gate` is always passed
-(README-untested gate; re-enabling is a deliberate future enhancement).
+`automation.rppg.resolve_produced_output()` — single source of truth used by
+both the GUI queue and the test harness.
 
-### Permanent rPPG / oldcam test harness (this Windows box)
-
-`oldcam-testing/rppg_harness.py` + `oldcam-testing/run_rppg_harness.bat`
-are a **permanent** validation rig that runs the real injector on a
-permanent gitignored Kling fixture
-(`oldcam-testing/front_crop_nano-banana-2-edit_sim87_001_k25tStd_p4_1.mp4`
-— keep on disk, never commit) and emits an anti-siren `REPORT.md`.
-
-```bat
-oldcam-testing\run_rppg_harness.bat            rem direct rPPG on fixture
-oldcam-testing\run_rppg_harness.bat --chain    rem full Loop->Oldcam->rPPG
-oldcam-testing\run_rppg_harness.bat --skip-run rem re-analyse last output
-```
-
-The harness script + .bat are tracked (permanent infra); the fixture and
-`oldcam-testing/rppg_harness_out/` are gitignored. Use it to validate any
-rPPG/oldcam change before pushing. First real run: **SUB-PERCEPTUAL**
-(green p2p delta 0.26, no siren) — default `--strength 0.005` is correct.
+**Validation rig:** `oldcam-testing/rppg_harness.py` + `run_rppg_harness.bat`
+run the real injector against a permanent gitignored fixture and emit an
+anti-siren `REPORT.md`. Use it before pushing any rPPG/oldcam change. See
+the wiring doc for the three invocation modes (direct / chain / --skip-run).
 
 ---
 
 ## Similarity Stack Wiring (NON-NEGOTIABLE — full surface coverage)
 
-The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, automation CLI pipeline, standalone subproject (own GUI + own CLI), Windows + macOS launchers (per surface), PyInstaller frozen build, dist release zip, and tests. Touching it without updating ALL applicable surfaces ships a broken release.
+Full per-action tables (adding a dep, adding a GUI control, adding a config
+key, adding a launcher, pre-flight checklist):
+[`docs/similarity-wiring.md`](docs/similarity-wiring.md).
+
+**The feature spans TEN distinct surfaces:** main GUI carousel, automation CLI
+pipeline, standalone subproject (own GUI + own CLI), Windows + macOS launchers
+(per surface), PyInstaller frozen build, dist release zip, and tests. Touching
+it without updating ALL applicable surfaces ships a broken release. Use the
+wiring doc's per-action checklist before commit.
 
 **Engine layer (single source of truth — DO NOT duplicate):**
 
@@ -585,60 +735,7 @@ The face-similarity feature spans **TEN distinct surfaces**: main GUI carousel, 
 | Main GUI import | `from face_similarity import compute_face_similarity_details` in `kling_gui/carousel_widget.py` |
 | Standalone GUI/CLI import | `from src.engine import FaceEngine` in `similarity/src/{gui,cli}.py` |
 
-### A. Adding a new ML dependency (e.g., torch, onnxruntime)
-
-| Layer | File | Action |
-|-------|------|--------|
-| Main requirements | `requirements.txt` | `+ pkg>=X,<Y` |
-| Standalone subproject requirements | `similarity/requirements.txt` | `+ pkg>=X,<Y` |
-| Dep-checker registry | `dependency_checker.py:DEPENDENCIES` | Add `Dependency(name=…, import_name=…, pip_name=…, required=False, description=…)` |
-| Auto-repair set | `dependency_checker.py:REPAIRABLE_RUNTIME_IMPORTS` | `+ "import_name"` |
-| Frozen build hidden imports | `kling_gui_direct.spec:hiddenimports` | `+ 'pkg'` and optionally `collect_submodules('pkg')` |
-| Dep stamps (auto-busted) | `.launcher_state/deps_*.ok` and `similarity/.launcher_state/similarity_*.ok` | Auto-busted on `requirements.txt` mtime/size change; manual `rm` if needed |
-
-### B. Adding a similarity GUI control (checkbox/button/etc.)
-
-| Layer | File | Action |
-|-------|------|--------|
-| Main carousel widget | `kling_gui/carousel_widget.py::_build_panel` | Add widget in `sim_row` (controls) or `meta_frame` (status chips) |
-| Bind to engine | `_on_<control>_toggle` method on `ImageCarousel` | Apply to `_get_engine().<attr>` then call `recalc_all_similarity_now(reason=...)` |
-| Standalone GUI mirror | `similarity/src/gui.py` | Add `ctk.CTkCheckBox` / `ctk.CTkSwitch` with the same name |
-| Standalone CLI mirror | `similarity/src/cli.py::apply_runtime_config` + `similarity/main.py` argparse | Add `--<flag>` with `argparse.BooleanOptionalAction` |
-| Config persistence | `kling_config.json` defaults + `face_similarity._apply_config_overrides` | New `automation_similarity_<name>` key |
-| Test stubs (main carousel) | `tests/test_carousel_ref_controls.py` `_FakeButton()` block | Add new attribute on the `tab` instance if `_update_panel` reads it |
-| Test stubs (standalone GUI) | `similarity/tests/test_gui.py::_CTkModuleStub` | Add new widget class to the stub registry |
-
-### C. Adding a new `automation_similarity_*` config key
-
-| Layer | File | Action |
-|-------|------|--------|
-| Default value | `kling_config.json` | Add key with sensible default |
-| Loader | `face_similarity._apply_config_overrides` | Read with `_parse_bool(...)` for booleans (handles `"true"`/`"false"` strings), `str(...).strip()` for strings |
-| Pipeline gate | `automation/pipeline.py` | Read via `self.automation.get("automation_similarity_<key>", default)` |
-| Standalone CLI flag | `similarity/main.py` argparse + `similarity/src/cli.py::apply_runtime_config` | Mirror as a CLI flag |
-| Tests | `tests/test_automation_pipeline.py`, `tests/test_similarity_canonical_path.py` | New gating + adapter tests |
-
-### D. Adding a new launcher (Windows + macOS, GUI + CLI)
-
-| Layer | Windows | macOS | Notes |
-|-------|---------|-------|-------|
-| Root wrapper | `run_<name>.bat` | `run_<name>.command` | Two-line passthrough |
-| Hub wrapper | `launchers/run_<name>.bat` | `launchers/run_<name>.command` | Hop to platform layer |
-| Platform impl | `launchers/windows/run_<name>.bat` (CRLF, `echo(` for blanks) | `launchers/macos/run_<name>.command` (LF — Apple writes the OS as "macOS") | Real venv/dep/exec logic |
-| Standalone subproject | `similarity/run_<name>.{bat,command}` | same | Used by hub wrappers `launchers/{windows,macos}/run_similarity_*` (path stays lowercase, OS name in prose stays "macOS") |
-| Build pipeline | `distribution/release_prep.py:copy_sanitized_tree` | same | Walks tree → auto-included unless excluded |
-
-### E. Pre-flight checklist (run BEFORE every similarity-stack commit)
-
-- [ ] `requirements.txt` updated if new pip dep
-- [ ] `similarity/requirements.txt` updated if new pip dep
-- [ ] `dependency_checker.py` (DEPENDENCIES + REPAIRABLE_RUNTIME_IMPORTS) updated
-- [ ] `kling_gui_direct.spec` hiddenimports updated if new module imported lazily
-- [ ] CLI flag in `similarity/main.py` argparse if user-controllable
-- [ ] CTk stub in `similarity/tests/test_gui.py:_CTkModuleStub` if new widget class used
-- [ ] `_FakeButton` stubs in `tests/test_carousel_ref_controls.py` if `_update_panel` reads new widget
-- [ ] `python -m pytest tests/ similarity/tests/test_cli.py similarity/tests/test_gui.py -q` (all green)
-- [ ] Line endings match per-file convention (`requirements.txt` LF, `kling_gui/main_window.py` CRLF — check with `python -c "..."` snippet from prior commits)
-- [ ] Smoke-tested both real GUI (`launchers/windows/run_gui.bat`) AND standalone GUI (`launchers/windows/run_similarity_gui.bat`)
-
-**Default config keys (current):** `automation_similarity_threshold` (80), `automation_similarity_use_ensemble` (true), `automation_similarity_secondary_model` ("Facenet512"), `automation_similarity_anti_spoofing` (true), `automation_similarity_require_fas_pass` (false).
+**Default config keys (current):** `automation_similarity_threshold` (80),
+`automation_similarity_use_ensemble` (true), `automation_similarity_secondary_model`
+("Facenet512"), `automation_similarity_anti_spoofing` (true),
+`automation_similarity_require_fas_pass` (false).
