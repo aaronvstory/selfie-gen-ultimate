@@ -71,20 +71,27 @@ logger = logging.getLogger(__name__)
 
 
 class HoverTooltip:
-    """Dark-themed floating tooltip shown when hovering a widget."""
+    """Dark-themed floating tooltip shown when hovering a widget.
+
+    Root-cause note (GPT diagnosis 2026-05-21): tall tooltips covering
+    their own hover target cause Tk to fire ``<Leave>`` on the trigger
+    widget the moment the Toplevel paints over it, which destroys the
+    tooltip in ``_hide()`` and starts a flicker/no-show loop. The fix
+    has two parts:
+
+      1. Position the tooltip to the RIGHT of the trigger when there's
+         room (else LEFT, else clamp), so it doesn't overlap the
+         widget that's listening for ``<Leave>``.
+      2. Keep the lifecycle dead-simple: ``<Enter>`` → ``_show``,
+         ``<Leave>`` → ``_hide``. No delayed show, no off-screen
+         staging, no withdraw/deiconify — those layered hacks made the
+         oldcam tooltip stop showing at all on Windows.
+    """
 
     _BG = "#1A1A1E"
     _FG = "#DCDCDC"
     _BORDER = "#6496FF"
     _WRAP = 500  # px wraplength
-
-    # Hover delay before showing — prevents a quick mouseover from
-    # paying the expensive Toplevel-render cost. User feedback
-    # 2026-05-21: tooltips with long text (~75 lines for oldcam) were
-    # flickering for ~5 seconds before stabilizing because Tk's
-    # Label-with-wraplength layout is slow on Windows for big text +
-    # the Toplevel was visible during that layout.
-    _SHOW_DELAY_MS = 400
 
     def __init__(self, widget: tk.Widget, text_func):
         """
@@ -96,11 +103,8 @@ class HoverTooltip:
         self._widget = widget
         self._text_func = text_func
         self._tip: Optional[tk.Toplevel] = None
-        # Track the scheduled show ID so <Leave> within the delay
-        # cancels the pending show instead of letting a flash happen.
-        self._show_after_id: Optional[str] = None
-        widget.bind("<Enter>", self._on_enter)
-        widget.bind("<Leave>", self._on_leave)
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
         # M1 (subagent on cac29c8f): if the widget is destroyed while
         # the tooltip is showing (e.g. pill row torn down on slot-load),
         # <Leave> never fires + the floating Toplevel stays orphaned.
@@ -111,47 +115,12 @@ class HoverTooltip:
         except tk.TclError:
             pass
 
-    def _on_enter(self, event=None):
-        # Schedule the actual show after a short delay so a brief
-        # mouseover doesn't trigger the expensive Toplevel render.
-        if self._show_after_id is not None:
-            return  # already scheduled
-        try:
-            self._show_after_id = self._widget.after(
-                self._SHOW_DELAY_MS, self._show
-            )
-        except tk.TclError:
-            self._show_after_id = None
-
-    def _on_leave(self, event=None):
-        # Cancel any pending show (mouse left before the delay
-        # elapsed), then hide if already showing.
-        if self._show_after_id is not None:
-            try:
-                self._widget.after_cancel(self._show_after_id)
-            except tk.TclError:
-                pass
-            self._show_after_id = None
-        self._hide()
-
-    def _show(self):
-        self._show_after_id = None
+    def _show(self, event=None):
         text = self._text_func()
         if not text or self._tip:
             return
 
-        # Position the Toplevel OFF-SCREEN initially so the Tk-driven
-        # layout for the (potentially huge) Label happens without a
-        # visible flash at the default (0, 0) origin. We DELIBERATELY
-        # do NOT use ``withdraw()`` here: on Windows, calling
-        # ``withdraw()`` BEFORE ``wm_overrideredirect(True)`` plus a
-        # later ``deiconify()`` is unreliable — the Toplevel sometimes
-        # never re-appears at all (Tk-on-Win quirk). Off-screen
-        # geometry + real geometry below is the safe pattern.
-        # (User feedback 2026-05-21: previous withdraw/deiconify
-        # version made the oldcam tooltip not show at all.)
         self._tip = tk.Toplevel(self._widget)
-        self._tip.wm_geometry("+10000+10000")
         self._tip.wm_overrideredirect(True)
 
         outer = tk.Frame(
@@ -178,15 +147,25 @@ class HoverTooltip:
         sw = self._widget.winfo_screenwidth()
         sh = self._widget.winfo_screenheight()
 
-        # Vertical: below the widget by default; flip above only if
-        # there's no room below AND there IS room above. When the
-        # tooltip is taller than the entire workspace (e.g. the big
-        # Oldcam version-comparison block on a low-res screen), pin
-        # to top so the FIRST lines are visible — losing the bottom
-        # is acceptable, losing the top makes the tooltip unreadable.
-        # User feedback 2026-05-21: prior logic flipped above
-        # unconditionally when y+tip_h exceeded screen, producing a
-        # negative y that clipped the top off-screen.
+        # HORIZONTAL — prefer RIGHT of the trigger so the tooltip
+        # doesn't paint over its own hover target (GPT diagnosis
+        # 2026-05-21: covering the trigger was the source of the
+        # flicker loop — Tk fires <Leave> the moment the Toplevel
+        # overlaps the icon, destroying the tooltip).
+        right_x = wx + ww + 8
+        left_x = wx - tip_w - 8
+        if right_x + tip_w <= sw - 20:
+            x = right_x
+        elif left_x >= 20:
+            x = left_x
+        else:
+            # Last-resort clamp — keep on-screen even if it overlaps
+            # (better than off-screen). Try to bias away from the
+            # trigger center.
+            x = max(20, min(wx, sw - tip_w - 20))
+
+        # VERTICAL — below by default; flip above if no room; pin to
+        # top if neither fits (very tall tooltip on low-res screen).
         below_y = wy + wh + 4
         above_y = wy - tip_h - 4
         if below_y + tip_h <= sh - 40:
@@ -194,23 +173,8 @@ class HoverTooltip:
         elif above_y >= 20:
             y = above_y
         else:
-            # No room either way — pin to top of usable area so the
-            # tooltip header is readable.
             y = 20
 
-        # Horizontal: anchor to the right edge of the widget by
-        # default; clamp BOTH ways so a wide tooltip near the right
-        # edge of the screen doesn't get pushed off-screen on the
-        # right (previous code only clamped left with max(0, ...)).
-        x = wx - tip_w + ww
-        if x + tip_w > sw - 20:
-            x = sw - tip_w - 20
-        if x < 20:
-            x = 20
-
-        # Final move to the real position — the layout/measurement
-        # happened off-screen so this is the FIRST time the tooltip
-        # becomes visible.
         self._tip.wm_geometry(f"+{x}+{y}")
 
     def _hide(self, event=None):
@@ -1775,80 +1739,26 @@ class ConfigPanel(tk.Frame):
     def _get_oldcam_version_notes(self) -> str:
         """Return version comparison tooltip for the Oldcam (ⓘ) icon.
 
-        Format chosen for fast scanning (user feedback 2026-05-21):
-          [vN]  Short codename  →  one-line summary
-                Detail bullet
-                Trade-off bullet (or ★ default flag)
+        One line per version — keeps the tooltip short enough to fit
+        on-screen WITHOUT covering the trigger icon (GPT diagnosis
+        2026-05-21: tall tooltips overlapping the trigger caused a
+        flicker/destroy loop on Windows).
         """
         lines = [
-            "═══ OLDCAM VERSION COMPARISON ═══",
+            "═══ OLDCAM VERSION GUIDE ═══",
             "",
-            "Pick which 'shot-on-phone' rebake passes run after Kling.",
-            "Use the ★ default (v24) unless you have a reason to switch.",
+            "Default: v24. Use it unless you're A/B testing.",
             "",
-            "─── EARLY ITERATIONS (v7–v11) ───",
-            "",
-            "v7  ·  Modern phone imperfection",
-            "    What it does: JPEG cycle, arm-sway rolling shutter,",
-            "    autofocus hunting. No face tracking.",
-            "    Trade-off: too subtle — looked nearly identical to source.",
-            "",
-            "v8  ·  Hardware physics upgrade",
-            "    What it does: spring-damper OIS, 3D channel noise,",
-            "    AWB drift, hard bitrate cap.",
-            "    Trade-off: bitrate cap over-compressed and lost detail.",
-            "",
-            "v9  ·  Face-aware portrait pass",
-            "    What it does: MediaPipe FaceLandmarker, 4-region masks,",
-            "    AWB drift, soft background.",
-            "    Trade-off: background blur read as fake depth-of-field.",
-            "",
-            "v10 · rPPG biological sync",
-            "    What it does: FFT on the green channel produces a",
-            "    phase-locked color pulse across 4 face regions.",
-            "    Trade-off: visible color siren; AWB removed.",
-            "",
-            "v11 · Best-of-all combination",
-            "    What it does: v10 pulse + v9 AWB applied AFTER the FFT",
-            "    read so both effects coexist.",
-            "    Trade-off: 2D rPPG flagged by modern PAD; sepia tint.",
-            "",
-            "─── MATURE PROFILES (v12–v15) ───",
-            "",
-            "v12 · Pristine hardware-only (anti-spoofing aware)",
-            "    What it does: no rPPG, no LUT, no CLAHE, no HSV.",
-            "    Pure OIS / AE / noise / vignette.",
-            "    Best for: low-light realism; preserves Kling's color.",
-            "",
-            "v13 · High-end daylight (pristine optics)",
-            "    What it does: no sensor noise, no AE hunting, no ghosting.",
-            "    Pure OIS / rolling shutter / blooming / AWB drift /",
-            "    chromatic aberration / vignette.",
-            "    Trade-off: scalar-add AWB + static pixels + double-lossy",
-            "    encode (v14 fixes these).",
-            "",
-            "v14 · Forensic daylight (physics-corrected)",
-            "    What it does: v13 optics + true multiplicative AWB,",
-            "    sub-perceptual sensor floor, smoothstep bloom, lossless",
-            "    intermediate encode, audio-preserving.",
-            "    Trade-off: the preserved sensor floor is a frequency-",
-            "    detector tell — v15 removes it and adds ghosting.",
-            "",
-            "v15 · Temporal Mute (synthesis)",
-            "    What it does: v14 math/encoding + v13 noise-free",
-            "    philosophy + v12 temporal blend.",
-            "    No sensor noise; --ghosting 0.18 bleeds the previous",
-            "    frame to defeat consistency detectors.",
-            "    Status: superseded by v24 (kept for A/B comparison).",
-            "",
-            "─── CURRENT PRODUCTION DEFAULT ───",
-            "",
-            "v24 · Crush Laundromat (synthesis)   ★ DEFAULT",
-            "    What it does: v15 + a uniform resolution round-trip",
-            "    (downscale ×0.40 → Lanczos upscale + light unsharp)",
-            "    before the encode. Destroys the AI fingerprint uniformly.",
-            "    Result: ~9× better Resemble-API score than v15 while",
-            "    staying visually sharp. Best tested option.",
+            "v7   Modern phone imperfections — subtle JPEG/OIS/AF artifacts.",
+            "v8   Hardware physics — stronger OIS/noise/AWB; can over-compress.",
+            "v9   Face-aware pass — region masks; blur can look artificial.",
+            "v10  rPPG sync — biological pulse; can show as color pulsing.",
+            "v11  Combined pass — rPPG + AWB; can tint sepia.",
+            "v12  Pristine hardware-only — clean realism, good low-light.",
+            "v13  High-end daylight — pristine optics, no sensor noise.",
+            "v14  Forensic daylight — corrected AWB/bloom; sensor-floor tell.",
+            "v15  Temporal Mute — ghosting blend defeats consistency detectors.",
+            "v24  Crush Laundromat ★ — v15 + resolution round-trip; best tested.",
         ]
         return "\n".join(lines)
 
