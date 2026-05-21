@@ -507,7 +507,15 @@ class VideoFrame(tk.Frame):
         try:
             from PIL import Image  # type: ignore
         except ImportError:
-            self.after(0, lambda: self._show_error("PIL not installed"))
+            # Worker thread is posting to Tk; the widget can be
+            # destroyed between this thread's lifecycle and now,
+            # making ``after()`` raise TclError/RuntimeError on a
+            # dead interpreter. Swallow + return so the daemon
+            # exits cleanly. (GPT audit on 2baee4a — P1.)
+            try:
+                self.after(0, lambda: self._show_error("PIL not installed"))
+            except (tk.TclError, RuntimeError):
+                pass
             # Still need to release the cap we were handed even if we
             # can't decode. Single-line try/except for the same reason
             # the main finally has one — never let release() raise.
@@ -647,10 +655,19 @@ class VideoFrame(tk.Frame):
 
                 # Hop back to the Tk thread for the actual widget update.
                 # generation_id flows through so the renderer drops
-                # frames from a superseded worker.
-                self.after(
-                    0, self._render_pil_image, pil_img, frame_index, generation_id,
-                )
+                # frames from a superseded worker. Guard the call —
+                # the widget can be destroyed between any two frames
+                # in this loop, making ``after()`` raise TclError or
+                # RuntimeError on a dead interpreter. Treat it as
+                # "we're done; exit clean" rather than letting the
+                # daemon thread crash into the Tk event queue.
+                # (GPT audit on 2baee4a — P1.)
+                try:
+                    self.after(
+                        0, self._render_pil_image, pil_img, frame_index, generation_id,
+                    )
+                except (tk.TclError, RuntimeError):
+                    return
         finally:
             # Decoder-thread-owned release. Tk's clear() set stop_event
             # and dropped the sentinel; we land here once the in-flight
@@ -1883,11 +1900,22 @@ class VideoInspectorModal(tk.Toplevel):
         return None
 
     def _update_counter(self) -> None:
-        total = max(
-            self._frame_a.get_frame_count(), self._frame_b.get_frame_count()
-        )
-        if total <= 0:
+        # Counter must report the PRIMARY (focused) slot's frame
+        # count — that's the slot whose frame_count ``_tick()`` wraps
+        # ``_master_frame`` against. Using ``max(A, B)`` produced
+        # confusing jumps in A/B compare: a 100f Slot A + 500f Slot
+        # B would show "frame: 100/500" then jump to "frame: 1/500"
+        # at wrap, because the wrap was on the 100f primary but the
+        # display denominator was 500. (GPT audit on 2baee4a — P3.)
+        primary = self._primary_frame()
+        if primary is None:
             self._counter_var.set("frame: -/-")
+            return
+        total = primary.get_frame_count()
+        if total <= 0:
+            # Unknown-length source — show the master frame without
+            # a denominator rather than a misleading max.
+            self._counter_var.set(f"frame: {int(self._master_frame) + 1}/?")
             return
         # master_frame is a float since the FPS-driven refactor — cast
         # to int for the user-facing counter.

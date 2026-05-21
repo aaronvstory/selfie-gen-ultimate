@@ -44,7 +44,7 @@ from .video_metadata import VideoMetadata, parse_video_filename
 # check-then-pop pattern would race. Lock is held only briefly across
 # the eviction + insertion; reads are GIL-atomic dict lookups so the
 # common-case fast path stays uncontended. (Gemini HIGH on 9d9a473.)
-_BEST_VIDEO_CACHE: Dict[Tuple[str, str, float], Optional[Path]] = {}
+_BEST_VIDEO_CACHE: Dict[Tuple[str, str, int], Optional[Path]] = {}
 _BEST_VIDEO_CACHE_MAX = 256  # rough cap — carousel cycles through ~dozens of images
 _BEST_VIDEO_CACHE_LOCK = threading.Lock()
 
@@ -226,7 +226,13 @@ def find_video_for_image(image_path: Path) -> Optional[Path]:
     try:
         if not folder.is_dir():
             return None
-        folder_mtime = folder.stat().st_mtime
+        # st_mtime_ns (not st_mtime) so rapid-fire generations within
+        # the same float-second window still invalidate the cache.
+        # The float mtime has 1-second resolution on many filesystems
+        # (Windows NTFS reports 100ns but Python's st_mtime float
+        # round-trips it through double); st_mtime_ns is the safer
+        # invalidation key. (GPT audit on 2baee4a — P2.)
+        folder_mtime = folder.stat().st_mtime_ns
     except OSError:
         return None
 
