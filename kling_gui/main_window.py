@@ -296,6 +296,41 @@ class FolderPreviewDialog(tk.Toplevel):
         self.destroy()
 
 
+# Module-level guard for the SessionManager ttk style. Mirrors the
+# _INSPECTOR_STYLES_CONFIGURED pattern in video_inspector.py — ttk.Style
+# is a process-global singleton, so re-running ``.configure()`` on
+# every dialog open is wasted work and (on long-running macOS Tk
+# sessions) has been observed to slow down style lookups. Configure
+# once per process. (Subagent on 96bfb00 — kept the two patterns
+# consistent so future dialogs copy the right one.)
+_SESSION_STYLES_CONFIGURED = False
+
+
+def _configure_session_styles() -> None:
+    """Configure the SessionManagerDialog ttk styles once per process.
+
+    Idempotent — safe to call from every ``SessionManagerDialog.__init__``;
+    the actual ``.configure()`` / ``.map()`` calls only run the first
+    time.
+    """
+    global _SESSION_STYLES_CONFIGURED
+    if _SESSION_STYLES_CONFIGURED:
+        return
+    style = ttk.Style()
+    style.configure(
+        "SessionManager.TCheckbutton",
+        background=COLORS["bg_panel"],
+        foreground=COLORS["text_light"],
+        font=(FONT_FAMILY, 10),
+    )
+    style.map(
+        "SessionManager.TCheckbutton",
+        background=[("active", COLORS["bg_panel"])],
+        foreground=[("active", COLORS["text_light"])],
+    )
+    _SESSION_STYLES_CONFIGURED = True
+
+
 class SessionManagerDialog(tk.Toplevel):
     """Dialog for browsing, loading, and managing saved sessions."""
 
@@ -390,18 +425,9 @@ class SessionManagerDialog(tk.Toplevel):
         autosave_frame = tk.Frame(self, bg=COLORS["bg_panel"], padx=14, pady=10)
         autosave_frame.pack(fill=tk.X, padx=18, pady=(0, 10))
 
-        _autosave_style = ttk.Style()
-        _autosave_style.configure(
-            "SessionManager.TCheckbutton",
-            background=COLORS["bg_panel"],
-            foreground=COLORS["text_light"],
-            font=(FONT_FAMILY, 10),
-        )
-        _autosave_style.map(
-            "SessionManager.TCheckbutton",
-            background=[("active", COLORS["bg_panel"])],
-            foreground=[("active", COLORS["text_light"])],
-        )
+        # Idempotent — configure the SessionManager ttk style once per
+        # process. See _configure_session_styles module docstring.
+        _configure_session_styles()
 
         tk.Label(
             autosave_frame, text="Auto-Save:", font=(FONT_FAMILY, 10, "bold"),

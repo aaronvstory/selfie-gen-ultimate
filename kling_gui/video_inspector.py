@@ -946,11 +946,15 @@ def open_video_inspector(
 
 
 class VideoInspectorModal(tk.Toplevel):
-    """A/B video comparison modal. Two VideoFrames + listbox + metadata.
+    """A/B video comparison companion window. Two VideoFrames +
+    listbox + metadata.
 
-    Modal scope: ``transient(parent)`` + ``grab_set()`` (NOT global) +
-    ``focus_set()``. Mirrors SessionManagerDialog so macOS Sonoma
-    behaves (no global focus theft).
+    Non-modal companion: ``transient(parent)`` + ``focus_set()`` only
+    — NO ``grab_set()``. The user keeps full main-GUI control while
+    the inspector is open (this mirrors Compare panel, not the truly-
+    modal SessionManagerDialog). Adding a grab here would steal
+    focus + force-block the main window on macOS Sonoma. Corrected
+    2026-05-21 from a stale docstring that claimed a grab was held.
 
     Geometry persistence: under the ``video_inspector_window`` key in
     the supplied ``config`` dict, written on destroy() via the
@@ -1312,8 +1316,20 @@ class VideoInspectorModal(tk.Toplevel):
     def _clear_all_slots(self) -> None:
         """Reset both VideoFrames to empty state — the 'Start From
         Scratch' affordance. Also resets the master frame counter
-        and pauses playback. (User request 2026-05-21.)"""
+        and pauses playback. (User request 2026-05-21.)
+
+        Cancels the pending master-tick timer (mirroring destroy())
+        so a rapid Clear→Play within one 40ms tick interval can't
+        leave the ticker permanently stopped while _playing is True
+        (subagent LOW on 96bfb00).
+        """
         self._playing = False
+        if self._timer_id is not None:
+            try:
+                self.after_cancel(self._timer_id)
+            except tk.TclError:
+                pass
+            self._timer_id = None
         try:
             self._play_btn.config(text="▶ Play")
         except tk.TclError:
