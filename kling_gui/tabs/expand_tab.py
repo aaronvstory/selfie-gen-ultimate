@@ -71,10 +71,11 @@ class ExpandTab(tk.Frame):
                 self.config.get("outpaint_composite_mode", "none"),
             )
         )
+        # Default flipped to "fal" 2026-05-22 — see face_crop_tab.py for
+        # the rationale (BFL pre-shrink causes visible seam-ring quality
+        # loss). BFL stays available via the dropdown.
         self._provider_var = tk.StringVar(
-            value=self.config.get(
-                "outpaint_provider", "bfl" if self.config.get("bfl_api_key") else "fal"
-            )
+            value=self.config.get("outpaint_provider", "fal")
         )
 
         self._build_ui()

@@ -252,6 +252,14 @@ def build_sanitized_config(
     config["outpaint_double_expand"] = bool(
         template.get("outpaint_double_expand", False)
     )
+    # v2.3 ship defaults (user request 2026-05-22): loop OFF, expand
+    # provider fal. Dev kling_config.json typically still carries
+    # ``loop_videos: True`` and ``outpaint_provider: "bfl"`` from prior
+    # sessions; without the override the new template defaults would
+    # never reach the bundle. OVERRIDE (not setdefault) for the same
+    # reason as outpaint_double_expand above.
+    config["loop_videos"] = bool(template.get("loop_videos", False))
+    config["outpaint_provider"] = str(template.get("outpaint_provider", "fal"))
 
     ensure_key_fields(config)
     for spec in API_KEY_SPECS:

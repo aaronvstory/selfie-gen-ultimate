@@ -1124,7 +1124,7 @@ class KlingGUIWindow:
             "current_model": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
             "model_display_name": "Kling 2.5 Turbo Pro",
             "video_duration": 10,
-            "loop_videos": True,  # Loop videos ON by default
+            "loop_videos": False,  # Loop videos OFF by default (changed 2026-05-22 — most workflows don't need looping)
             "oldcam_videos": True,  # Oldcam Finish ON by default
             "oldcam_version": "v9",
             "oldcam_versions": ["v9"],

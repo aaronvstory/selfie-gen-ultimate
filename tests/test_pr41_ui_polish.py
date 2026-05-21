@@ -159,21 +159,55 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         import json as _j
         d=_j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
         self.assertEqual(d['current_prompt_slot'],3)
-        # Title updated 2026-05-21 per user direction — slot 3 is now the
-        # head-turn 3/4 view (40 degrees each side, Kling 2.5 Pro Turbo).
-        # The title reflects the prompt shape so users can spot which
-        # variant is loaded at a glance.
+        # Title updated 2026-05-22 (polish/v2.3) — slot 3 is now the
+        # "enhanced for Kling 2.5 Pro" prompt with the angle reduced
+        # from 40° to 30° per user direction. Locks both the title and
+        # the 30° angle so future rewrites can't silently revert.
         self.assertEqual(
             d['prompt_titles']['3'],
-            'head-turn 3/4 view (40° each side, kling 2.5 pro)',
+            'enhanced for Kling 2.5 Pro',
         )
-        # New positive prompt mentions the moderate-angle three-quarter-view
-        # shape (not the prior "extremely subtle" wording).
         self.assertIn('three-quarter view', d['saved_prompts']['3'])
-        self.assertIn('40 degrees', d['saved_prompts']['3'])
+        self.assertIn('30 degrees', d['saved_prompts']['3'])
+        self.assertNotIn('40 degrees', d['saved_prompts']['3'])
         self.assertTrue(d['negative_prompts']['3'])
         # slot 1 minimal-motion fallback preserved.
         self.assertIn('very subtle, slow head movement',d['saved_prompts']['1'])
+
+    def test_v23_ship_defaults_loop_off_and_fal_provider(self):
+        """polish/v2.3 ship defaults locked: loop OFF, expand provider
+        fal. Both default to the user's PRIOR live values (True / 'bfl')
+        if missing from the template, so the override path in
+        release_prep.py is the only thing keeping them deterministic.
+        Lock the template values explicitly."""
+        import json as _j
+        d = _j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
+        self.assertEqual(d['loop_videos'], False)
+        self.assertEqual(d['outpaint_provider'], 'fal')
+
+    def test_v23_extra_prompt_slots_shipped(self):
+        """polish/v2.3: saved_prompts slots 5+6 and
+        selfie_wildcard_saved_prompts slots 4+5+6 ship populated so a
+        fresh-clone user sees the user's full Windows prompt collection,
+        not just the original 4 slots."""
+        import json as _j
+        d = _j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
+        for slot in ('5', '6'):
+            self.assertTrue(
+                d['saved_prompts'][slot].strip(),
+                f"saved_prompts[{slot}] must be populated in template",
+            )
+        for slot in ('4', '5', '6'):
+            self.assertTrue(
+                d['selfie_wildcard_saved_prompts'][slot].strip(),
+                f"selfie_wildcard_saved_prompts[{slot}] must be populated",
+            )
+        # And the prompt_titles row reflects user-set titles, not blanks
+        for slot in ('3', '4', '5', '6'):
+            self.assertTrue(
+                d['prompt_titles'][slot].strip(),
+                f"prompt_titles[{slot}] must be set",
+            )
 
 
 class SimilarityScoreVarianceTests(unittest.TestCase):
