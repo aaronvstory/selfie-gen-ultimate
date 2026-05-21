@@ -74,8 +74,14 @@ class ExpandTab(tk.Frame):
         # Default flipped to "fal" 2026-05-22 — see face_crop_tab.py for
         # the rationale (BFL pre-shrink causes visible seam-ring quality
         # loss). BFL stays available via the dropdown.
+        # Default = BFL when a BFL API key is configured, otherwise fal.
+        # Matches the main-branch behaviour the user had visually tuned.
+        # (User feedback 2026-05-22 on the Phase A "fal" hardcode.)
         self._provider_var = tk.StringVar(
-            value=self.config.get("outpaint_provider", "fal")
+            value=self.config.get(
+                "outpaint_provider",
+                "bfl" if self.config.get("bfl_api_key") else "fal",
+            )
         )
 
         self._build_ui()

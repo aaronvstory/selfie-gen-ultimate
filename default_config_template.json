@@ -110,7 +110,6 @@
   "selfie_expand_prompt": "Continuous, out-of-focus background environment. Shallow depth of field, soft lighting, empty neutral space matching the edges. STRICTLY NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO DOCUMENT FEATURES.",
   "outpaint_tab_prompt": "Continuous, out-of-focus background environment. Shallow depth of field, soft lighting, empty neutral space matching the edges. STRICTLY NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO DOCUMENT FEATURES.",
   "outpaint_composite_mode": "preserve_seamless",
-  "outpaint_provider": "fal",
   "outpaint_double_expand": false,
   "automation_front_expand_composite_mode": "preserve_seamless",
   "automation_selfie_expand_composite_mode": "none",

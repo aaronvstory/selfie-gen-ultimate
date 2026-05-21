@@ -208,14 +208,16 @@ class FaceCropTab(tk.Frame):
         self._outpaint_composite_var = tk.StringVar(
             value=config.get("outpaint_composite_mode", "preserve_seamless")
         )
-        # Outpaint provider: "bfl" or "fal". Default flipped to "fal"
-        # 2026-05-22: BFL pre-shrinks to 0.15x to fit its MP envelope,
-        # which the user sees as visible quality loss in the seam ring.
-        # fal.ai's empirical 1536px / 2.0MP envelope is wider for most
-        # input sizes. BFL stays available via the dropdown when the
-        # user wants it (or when their config explicitly pins "bfl").
+        # Outpaint provider: "bfl" or "fal". Default = BFL when a BFL
+        # API key is configured, otherwise fal -- matches the main-branch
+        # behaviour the user had visually tuned and verified.
+        # (User feedback 2026-05-22: Phase A flipped this to a hardcoded
+        # "fal" default which produced visibly worse seamless expand;
+        # reverting just the provider default -- outpaint_generator.py
+        # engine math was already restored to main via the Phase C revert.)
         self._outpaint_provider_var = tk.StringVar(
-            value=config.get("outpaint_provider", "fal")
+            value=config.get("outpaint_provider",
+                             "bfl" if config.get("bfl_api_key") else "fal")
         )
         # Default UNCHECKED 2026-05-21 per user request: "Run 2x" was
         # defaulting ON for new users which doubled their API spend

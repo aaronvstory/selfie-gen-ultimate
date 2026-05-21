@@ -174,16 +174,27 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         # slot 1 minimal-motion fallback preserved.
         self.assertIn('very subtle, slow head movement',d['saved_prompts']['1'])
 
-    def test_v23_ship_defaults_loop_off_and_fal_provider(self):
-        """polish/v2.3 ship defaults locked: loop OFF, expand provider
-        fal. Both default to the user's PRIOR live values (True / 'bfl')
-        if missing from the template, so the override path in
-        release_prep.py is the only thing keeping them deterministic.
-        Lock the template values explicitly."""
+    def test_v23_ship_defaults_loop_off_and_provider_unforced(self):
+        """polish/v2.3 ship defaults locked: loop OFF + outpaint_provider
+        NOT forced (so the GUI default `bfl-if-key-present-else-fal`
+        wins).
+
+        Phase A's original "fal-first" hardcode was reverted on 2026-05-22
+        after the user reported visibly worse seamless expand quality
+        with fal vs. the prior BFL-default behaviour. The provider key
+        is now omitted from the template so the GUI's conditional
+        default (face_crop_tab.py:_outpaint_provider_var) chooses BFL
+        when a BFL API key is configured."""
         import json as _j
         d = _j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
         self.assertEqual(d['loop_videos'], False)
-        self.assertEqual(d['outpaint_provider'], 'fal')
+        self.assertNotIn(
+            'outpaint_provider', d,
+            "outpaint_provider must NOT be in the template — the GUI's "
+            "bfl-if-key-present-else-fal default is the right choice. "
+            "Phase A hardcode was reverted after user feedback on visible "
+            "expand quality regression.",
+        )
 
     def test_v23_three_independent_expand_prompts(self):
         """Phase G of polish/v2.3 (2026-05-22): Step 0 face-crop,
