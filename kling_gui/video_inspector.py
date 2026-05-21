@@ -457,15 +457,13 @@ class VideoFrame(tk.Frame):
             pass
 
     def destroy(self) -> None:
-        # M3: invoke caller-supplied on_close BEFORE super().destroy()
-        # so the parent's reference is cleared even if the teardown
-        # raises.
-        if getattr(self, "_on_close", None) is not None:
-            try:
-                self._on_close()
-            except Exception:
-                logger.debug("on_close callback raised", exc_info=True)
-            self._on_close = None  # one-shot
+        # The earlier ``_on_close`` invocation block here was dead code
+        # cargo-culted from VideoInspectorModal.destroy() — VideoFrame
+        # never sets ``_on_close`` on itself (only the modal does, via
+        # its constructor). Removed 2026-05-21 per code-reviewer
+        # subagent on 891a2d1: the misleading block could trick a
+        # future maintainer into setting ``frame._on_close = cb`` and
+        # being surprised when the callback fires during slot clear.
         try:
             self.clear()
         except Exception:
@@ -870,6 +868,16 @@ def open_video_inspector(
     if existing is not None:
         try:
             if existing.winfo_exists():
+                # Refresh the on_close callback on every reuse — a
+                # caller passing a different closure now would otherwise
+                # silently keep the original one. Today main_window
+                # always passes the same _clear_inspector_ref bound to
+                # the same instance, but future callers (e.g. opening
+                # the modal from a different parent) would be subtly
+                # broken without this. (Code-reviewer subagent on
+                # 891a2d1.)
+                if on_close is not None:
+                    existing._on_close = on_close
                 existing.lift()
                 existing.focus_set()
                 if initial_video is not None:

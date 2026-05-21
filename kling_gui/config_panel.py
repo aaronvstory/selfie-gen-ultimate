@@ -127,13 +127,40 @@ class HoverTooltip:
 
         wx = self._widget.winfo_rootx()
         wy = self._widget.winfo_rooty()
+        ww = self._widget.winfo_width()
         wh = self._widget.winfo_height()
+        sw = self._widget.winfo_screenwidth()
         sh = self._widget.winfo_screenheight()
 
-        x = max(0, wx - tip_w + self._widget.winfo_width())
-        y = wy + wh + 4
-        if y + tip_h > sh - 40:
-            y = wy - tip_h - 4  # flip above if near bottom of screen
+        # Vertical: below the widget by default; flip above only if
+        # there's no room below AND there IS room above. When the
+        # tooltip is taller than the entire workspace (e.g. the big
+        # Oldcam version-comparison block on a low-res screen), pin
+        # to top so the FIRST lines are visible — losing the bottom
+        # is acceptable, losing the top makes the tooltip unreadable.
+        # User feedback 2026-05-21: prior logic flipped above
+        # unconditionally when y+tip_h exceeded screen, producing a
+        # negative y that clipped the top off-screen.
+        below_y = wy + wh + 4
+        above_y = wy - tip_h - 4
+        if below_y + tip_h <= sh - 40:
+            y = below_y
+        elif above_y >= 20:
+            y = above_y
+        else:
+            # No room either way — pin to top of usable area so the
+            # tooltip header is readable.
+            y = 20
+
+        # Horizontal: anchor to the right edge of the widget by
+        # default; clamp BOTH ways so a wide tooltip near the right
+        # edge of the screen doesn't get pushed off-screen on the
+        # right (previous code only clamped left with max(0, ...)).
+        x = wx - tip_w + ww
+        if x + tip_w > sw - 20:
+            x = sw - tip_w - 20
+        if x < 20:
+            x = 20
 
         self._tip.wm_geometry(f"+{x}+{y}")
 
@@ -457,7 +484,7 @@ class ConfigPanel(tk.Frame):
         # ⓘ info icon (larger, no text label) — hover to see model notes
         self.model_info_icon = tk.Label(
             row1, text="\u24D8", font=(FONT_FAMILY, 14),
-            cursor="question_arrow",
+            cursor="hand2",
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.model_info_icon.pack(side=tk.RIGHT, padx=(6, 0))
@@ -569,7 +596,7 @@ class ConfigPanel(tk.Frame):
             _oldcam_label_row,
             text="ⓘ",
             font=(FONT_FAMILY, 11),
-            cursor="question_arrow",
+            cursor="hand2",
             bg="#2A1F34",
             fg=COLORS["text_dim"],
         )
@@ -650,7 +677,7 @@ class ConfigPanel(tk.Frame):
             _rppg_label_row,
             text="ⓘ",
             font=(FONT_FAMILY, 11),
-            cursor="question_arrow",
+            cursor="hand2",
             bg="#3A2A1F",
             fg=COLORS["text_dim"],
         )
@@ -879,7 +906,7 @@ class ConfigPanel(tk.Frame):
         # PR #41).
         self.filter_info_icon = tk.Label(
             rD, text="ⓘ", font=(FONT_FAMILY, 11),
-            cursor="question_arrow",
+            cursor="hand2",
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.filter_info_icon.pack(side=tk.LEFT, padx=(6, 0))
@@ -1697,55 +1724,82 @@ class ConfigPanel(tk.Frame):
         return "\n\n".join(sections)
 
     def _get_oldcam_version_notes(self) -> str:
-        """Return version comparison tooltip for the Oldcam (ⓘ) icon."""
+        """Return version comparison tooltip for the Oldcam (ⓘ) icon.
+
+        Format chosen for fast scanning (user feedback 2026-05-21):
+          [vN]  Short codename  →  one-line summary
+                Detail bullet
+                Trade-off bullet (or ★ default flag)
+        """
         lines = [
-            "─── Oldcam Version Comparison ───",
+            "═══ OLDCAM VERSION COMPARISON ═══",
             "",
-            "v7   Modern phone imperfection",
-            "     JPEG cycle, arm-sway rolling shutter, AF hunting. No face tracking.",
-            "     Trade-off: too subtle — looked nearly identical to source.",
+            "Pick which 'shot-on-phone' rebake passes run after Kling.",
+            "Use the ★ default (v24) unless you have a reason to switch.",
             "",
-            "v8   Hardware physics upgrade",
-            "     Spring-damper OIS, 3D channel noise, AWB drift, hard bitrate cap.",
-            "     Trade-off: bitrate cap over-compressed and lost detail.",
+            "─── EARLY ITERATIONS (v7–v11) ───",
             "",
-            "v9   Face-aware portrait pass",
-            "     MediaPipe FaceLandmarker, 4-region masks, AWB drift, soft background.",
-            "     Trade-off: background blur read as fake depth-of-field.",
+            "v7  ·  Modern phone imperfection",
+            "    What it does: JPEG cycle, arm-sway rolling shutter,",
+            "    autofocus hunting. No face tracking.",
+            "    Trade-off: too subtle — looked nearly identical to source.",
             "",
-            "v10  rPPG biological sync",
-            "     FFT on green channel → phase-locked color pulse in 4 face regions.",
-            "     Trade-off: visible color siren; AWB removed to keep FFT signal clean.",
+            "v8  ·  Hardware physics upgrade",
+            "    What it does: spring-damper OIS, 3D channel noise,",
+            "    AWB drift, hard bitrate cap.",
+            "    Trade-off: bitrate cap over-compressed and lost detail.",
             "",
-            "v11  Best-of-all combination",
-            "     V10 pulse + V9 AWB, applied AFTER the FFT read.",
-            "     Trade-off: 2D rPPG flagged by modern PAD; global LUT tints sepia.",
+            "v9  ·  Face-aware portrait pass",
+            "    What it does: MediaPipe FaceLandmarker, 4-region masks,",
+            "    AWB drift, soft background.",
+            "    Trade-off: background blur read as fake depth-of-field.",
             "",
-            "v12  Pristine hardware-only (anti-spoofing aware)",
-            "     No rPPG, no LUT, no CLAHE, no HSV. Pure OIS / AE / noise / vignette.",
-            "     Best for low-light realism; preserves Kling's color fidelity.",
+            "v10 · rPPG biological sync",
+            "    What it does: FFT on the green channel produces a",
+            "    phase-locked color pulse across 4 face regions.",
+            "    Trade-off: visible color siren; AWB removed.",
             "",
-            "v13  High-end daylight (pristine optics)",
-            "     No sensor noise, no AE hunting, no ghosting, no MediaPipe.",
-            "     Pure OIS / rolling shutter / blooming / AWB drift / aberration / vignette.",
-            "     Trade-off: scalar-add AWB, static pixels, double-lossy encode (V14 fixes these).",
+            "v11 · Best-of-all combination",
+            "    What it does: v10 pulse + v9 AWB applied AFTER the FFT",
+            "    read so both effects coexist.",
+            "    Trade-off: 2D rPPG flagged by modern PAD; sepia tint.",
             "",
-            "v14  Forensic daylight (physics-corrected)",
-            "     V13 optics + true multiplicative AWB, sub-perceptual sensor floor,",
-            "     smoothstep bloom, lossless temp encode, audio-preserving.",
-            "     Trade-off: the preserved sensor floor is a frequency-detector tell",
-            "     (Resemble testing) — V15 removes it and restores ghosting.",
+            "─── MATURE PROFILES (v12–v15) ───",
             "",
-            "v15  Temporal Mute (synthesis)",
-            "     V14 math/encoding + V13 noise-free philosophy + V12 temporal blend.",
-            "     No sensor noise; --ghosting 0.18 bleeds the previous frame to",
-            "     defeat consistency detectors. Superseded as default by v24.",
+            "v12 · Pristine hardware-only (anti-spoofing aware)",
+            "    What it does: no rPPG, no LUT, no CLAHE, no HSV.",
+            "    Pure OIS / AE / noise / vignette.",
+            "    Best for: low-light realism; preserves Kling's color.",
             "",
-            "v24  Crush Laundromat (synthesis)   ★ default",
-            "     V15 + a uniform resolution round-trip (downscale x0.40 ->",
-            "     Lanczos upscale + light unsharp) before the encode. Destroys",
-            "     the AI fingerprint uniformly; ~9x better Resemble-API score",
-            "     than v15 while staying visually sharp. Best result.",
+            "v13 · High-end daylight (pristine optics)",
+            "    What it does: no sensor noise, no AE hunting, no ghosting.",
+            "    Pure OIS / rolling shutter / blooming / AWB drift /",
+            "    chromatic aberration / vignette.",
+            "    Trade-off: scalar-add AWB + static pixels + double-lossy",
+            "    encode (v14 fixes these).",
+            "",
+            "v14 · Forensic daylight (physics-corrected)",
+            "    What it does: v13 optics + true multiplicative AWB,",
+            "    sub-perceptual sensor floor, smoothstep bloom, lossless",
+            "    intermediate encode, audio-preserving.",
+            "    Trade-off: the preserved sensor floor is a frequency-",
+            "    detector tell — v15 removes it and adds ghosting.",
+            "",
+            "v15 · Temporal Mute (synthesis)",
+            "    What it does: v14 math/encoding + v13 noise-free",
+            "    philosophy + v12 temporal blend.",
+            "    No sensor noise; --ghosting 0.18 bleeds the previous",
+            "    frame to defeat consistency detectors.",
+            "    Status: superseded by v24 (kept for A/B comparison).",
+            "",
+            "─── CURRENT PRODUCTION DEFAULT ───",
+            "",
+            "v24 · Crush Laundromat (synthesis)   ★ DEFAULT",
+            "    What it does: v15 + a uniform resolution round-trip",
+            "    (downscale ×0.40 → Lanczos upscale + light unsharp)",
+            "    before the encode. Destroys the AI fingerprint uniformly.",
+            "    Result: ~9× better Resemble-API score than v15 while",
+            "    staying visually sharp. Best tested option.",
         ]
         return "\n".join(lines)
 
