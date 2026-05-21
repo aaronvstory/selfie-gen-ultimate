@@ -1638,28 +1638,44 @@ class KlingGUIWindow:
         # the "main next action" stands out without being garish. Same
         # palette on Win + macOS (clam theme draws identically on both,
         # ignoring the macOS Aqua HIView path).
+        # Darker, more saturated blue + brighter glow ring so the
+        # white text reads sharply and the button visibly "lifts"
+        # off the panel. Same size as TTK_BTN_PRIMARY (padding +
+        # font kept unchanged from prior revision); only the fill
+        # + border colors shift. Clam theme renders identically on
+        # Win + macOS so the visual contract holds cross-platform.
+        # (User request 2026-05-21 — original "accent_blue" #4A8FFF
+        # was too washed-out for white text.)
+        _WORKFLOW_FILL = "#1F4FB8"        # darker saturated blue
+        _WORKFLOW_GLOW = "#7BC0FF"        # bright cyan-blue ring (slightly more visible per user request 2026-05-21)
+        _WORKFLOW_HOVER = "#2D62D8"       # lighter on hover (still darker than accent_blue)
+        _WORKFLOW_PRESSED = "#143985"     # press goes darker
         style.configure(
             TTK_BTN_WORKFLOW,
             font=(FONT_FAMILY, 10, "bold"),
-            # Black text (user request 2026-05-21) reads better against
-            # the accent-blue fill than white on both Win + macOS.
-            foreground="black",
-            background=COLORS["accent_blue"],
-            bordercolor="#0A1A2E",
-            lightcolor=COLORS["accent_blue"],
-            darkcolor=COLORS["accent_blue"],
-            borderwidth=2,
+            foreground="white",
+            background=_WORKFLOW_FILL,
+            bordercolor=_WORKFLOW_GLOW,   # bright ring around the dark fill
+            lightcolor=_WORKFLOW_FILL,
+            darkcolor=_WORKFLOW_FILL,
+            # 3px ring (was 2) — subtly more presence without making the
+            # button itself larger; padding stays the same so layout
+            # doesn't shift. (User request 2026-05-21 — slight bump.)
+            borderwidth=3,
             padding=(14, 7),
         )
         style.map(
             TTK_BTN_WORKFLOW,
             background=[
-                ("active", "#7AA7FF"),
-                ("pressed", "#4A79D8"),
+                ("active", _WORKFLOW_HOVER),
+                ("pressed", _WORKFLOW_PRESSED),
                 ("disabled", "#4B4B4B"),
             ],
             foreground=[("disabled", "#9D9D9D")],
-            bordercolor=[("active", "#0A1A2E"), ("pressed", "#0A1A2E")],
+            bordercolor=[
+                ("active", _WORKFLOW_GLOW),
+                ("pressed", _WORKFLOW_GLOW),
+            ],
         )
 
         # Slot 1/2/3 selector buttons in Step 2 — two ttk styles the

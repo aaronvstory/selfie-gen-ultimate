@@ -23,7 +23,6 @@ from .theme import (
 )
 from .image_state import ImageSession, _VIDEO_EXTENSIONS as _CAROUSEL_VIDEO_EXTS
 from .tag_utils import derive_display_tag
-from .video_discovery import find_video_for_image
 from tk_dialogs import select_open_files
 from path_utils import preflight_image_path
 
@@ -1128,73 +1127,18 @@ class ImageCarousel(tk.Frame):
                             width=2,
                         )
 
-            # Video Inspector play-badge overlay. Draws a circular play
-            # button in the top-right corner of the fitted image rect
-            # when the active image has at least one derived video in
-            # the same folder. Click on the badge opens the inspector
-            # modal pre-loaded with the most-processed variant.
-            #
-            # tag_bind (item-scoped) is used instead of canvas.bind so
-            # the existing <Button-3> global binding (right-click) is
-            # not affected. Re-drawn unconditionally on every render
-            # so re-resize/re-select continues to expose the badge.
-            try:
-                video_path = find_video_for_image(Path(path))
-            except (OSError, ValueError) as exc:
-                # OSError covers folder-stat / permission / I/O issues
-                # against the parent dir; ValueError catches malformed
-                # paths. Anything else propagates (bug we should see).
-                logger.debug(
-                    "video_inspector: discovery failed for %s: %s",
-                    path, exc,
-                )
-                video_path = None
-            if not is_video and video_path is not None and self._on_video_callback is not None:
-                # Badge sizing scales with the visible image rect — a
-                # fixed 18px radius looks dwarfed on a large thumbnail
-                # and grotesque on a small one. Use ~7% of the smaller
-                # image dimension, clamped to [12, 22] so a tiny preview
-                # still shows a clickable target and a huge preview
-                # doesn't get a giant black blob. Margin from edge
-                # scales with the radius so the badge never bleeds
-                # past the image rect.
-                short_dim = min(new_w, new_h)
-                badge_r = max(12, min(22, int(short_dim * 0.07)))
-                margin = badge_r + 4
-                badge_x = cx + new_w / 2 - margin
-                badge_y = cy - new_h / 2 + margin
-                # Explicit integer rounding because create_oval with
-                # float coords can sub-pixel-align differently on
-                # different platforms (causing visible asymmetry on
-                # Windows Aqua). Force integer math.
-                x0, y0 = int(badge_x - badge_r), int(badge_y - badge_r)
-                x1, y1 = int(badge_x + badge_r), int(badge_y + badge_r)
-                bg_id = canvas.create_oval(
-                    x0, y0, x1, y1,
-                    fill="#000000", outline="#FFFFFF", width=2,
-                )
-                # ▶ glyph: font size proportional to badge radius so
-                # the play arrow stays visually balanced inside the
-                # circle regardless of thumbnail size. No extra x-nudge
-                # — Tk's CENTER anchor positions the glyph correctly
-                # by its baseline+halfwidth; the prior `+2` was
-                # over-correcting for the asymmetric U+25B6 right-edge
-                # whitespace and was making the badge LOOK lopsided.
-                play_font_size = max(10, int(badge_r * 1.0))
-                play_id = canvas.create_text(
-                    int(badge_x), int(badge_y),
-                    text="▶",
-                    font=(FONT_FAMILY, play_font_size, "bold"),
-                    fill="#FFFFFF",
-                )
-                cb = self._on_video_callback
-                vp = video_path
-                canvas.tag_bind(
-                    bg_id, "<Button-1>", lambda _e, p=vp: cb(p),
-                )
-                canvas.tag_bind(
-                    play_id, "<Button-1>", lambda _e, p=vp: cb(p),
-                )
+            # Corner black-circle "▶" badge on stills with companion
+            # videos was REMOVED 2026-05-21 per user feedback —
+            # looked ugly on PNG thumbnails (the black blob crowded
+            # the corner of every front-crop/selfie/outpaint that
+            # had ever been animated). The actual VIDEO carousel
+            # entries still get the big centered white ▶ overlay
+            # (see the ``is_video`` branch below), which IS the
+            # intended UX. The previous ``find_video_for_image()``
+            # call here is now also unnecessary — it was only used
+            # to decide whether to draw the corner badge — so it's
+            # been removed to save a folder-mtime stat + dict lookup
+            # per render.
 
             # Big centered ▶ overlay + canvas-wide click binding for
             # video carousel items. Drawn AFTER the main image so it sits
