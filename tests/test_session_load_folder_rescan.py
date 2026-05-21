@@ -751,5 +751,94 @@ def test_compare_panel_video_branch_uses_extract_helper(monkeypatch, tmp_path):
     )
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Post-queue carousel rescan (Phase B of polish/v2.3, 2026-05-22)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_scan_folders_for_new_media_helper_exists_and_is_callable():
+    """Phase B extracted ``_scan_folders_for_new_media`` from the inline
+    session-load block so the post-queue rescan can share the same
+    scanning logic. The source must define the helper + the public
+    rescan method that wraps it."""
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "main_window.py").read_text()
+    assert "def _scan_folders_for_new_media(self, folders)" in src, (
+        "Phase B helper _scan_folders_for_new_media must exist on KlingGUIWindow"
+    )
+    assert "def _rescan_session_folder_for_new_media(self)" in src, (
+        "Phase B public method _rescan_session_folder_for_new_media must exist"
+    )
+
+
+def test_on_item_complete_schedules_post_queue_rescan():
+    """The QueueManager fires _on_item_complete on the worker thread.
+    The rescan touches Tk widgets so it MUST be scheduled via
+    root.after(0) onto the main thread. Source-asserted so a refactor
+    that drops the after() call fails this test."""
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "main_window.py").read_text()
+    # Must call rescan via root.after on the GUI thread.
+    assert "self.root.after(0, self._rescan_session_folder_for_new_media)" in src, (
+        "Phase B: _on_item_complete must schedule the rescan via root.after(0)"
+    )
+    # Must guard against the test-stub case where .root isn't bound.
+    assert 'hasattr(self, "root")' in src, (
+        "Phase B: rescan scheduling must guard against missing .root attribute "
+        "(unit tests construct minimal stubs without it)"
+    )
+
+
+def test_session_load_rescan_uses_shared_helper():
+    """The pre-existing session-load rescan block (2026-05-20) was
+    refactored to call the new shared helper so both paths use the
+    same scanning rules. Don't let a future edit re-introduce the
+    inline scan loop and let the two paths drift."""
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "main_window.py").read_text()
+    # The pre-existing rescan block must call the shared helper.
+    assert "self._scan_folders_for_new_media(folders)" in src, (
+        "session-load rescan must call the shared helper, not inline a copy"
+    )
+
+
+def test_scan_folders_for_new_media_picks_up_new_video(tmp_path, monkeypatch):
+    """End-to-end smoke for the shared helper. Build a session with one
+    image, drop a new mp4 into its folder, call the helper, and assert
+    the video shows up as source_type="video" in the session."""
+    from kling_gui.image_state import ImageSession
+    from kling_gui import main_window as mw
+
+    # Create an image and a video in tmp_path
+    img_path = tmp_path / "existing.png"
+    # Tiny valid PNG (1x1 transparent)
+    img_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR"
+        + struct.pack(">II", 1, 1) + b"\x08\x06\x00\x00\x00"
+        + struct.pack(">I", zlib.crc32(
+            b"IHDR" + struct.pack(">II", 1, 1) + b"\x08\x06\x00\x00\x00"
+        ))
+        + struct.pack(">I", 10)
+        + b"IDAT" + b"\x78\x9c\x62\x00\x00\x00\x00\x05\x00\x01"
+        + struct.pack(">I", 0)
+        + struct.pack(">I", 0) + b"IEND" + struct.pack(">I", 0xae426082)
+    )
+    vid_path = tmp_path / "new_oldcam_v8.mp4"
+    vid_path.write_bytes(b"\x00" * 1024)  # not a real mp4, just needs ext
+
+    session = ImageSession()
+    session.add_image(str(img_path), "input", make_active=True)
+
+    # Build a minimal stub that has just the attributes the helper uses.
+    class Stub:
+        pass
+    stub = Stub()
+    stub.image_session = session
+    # Bind the helper as if it were on the class.
+    helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
+    added_imgs, added_vids = helper({str(tmp_path)})
+    assert added_vids == 1, f"expected 1 new video, got {added_vids}"
+    # The new entry must be a video
+    paths = [(e.path, e.source_type) for e in session.images]
+    assert (str(vid_path), "video") in paths
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

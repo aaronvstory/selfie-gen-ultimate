@@ -4456,6 +4456,93 @@ class KlingGUIWindow:
         if change_description:
             self._log(change_description, "info")
 
+    def _scan_folders_for_new_media(self, folders) -> tuple:
+        """Walk ``folders`` for images + videos not yet in the session
+        and add them. Returns ``(new_image_count, new_video_count)``.
+
+        Shared helper used by both the session-load rescan
+        (``_load_session``) and the post-queue rescan
+        (``_rescan_session_folder_for_new_media``). Same scanning
+        rules: os.scandir for cheap dirent type, sorted entries for
+        determinism, ``VALID_EXTENSIONS`` filter for images,
+        ``find_video_groups`` for the full 5-extension video set.
+        Duplicates are filtered by ``os.path.realpath`` against the
+        current session.
+        """
+        try:
+            from kling_gui.video_discovery import find_video_groups as _find_video_groups
+            from pathlib import Path as _Path
+        except ImportError:
+            return (0, 0)
+        loaded_real = {
+            os.path.realpath(e.path) for e in self.image_session.images
+        }
+        rescan_imgs = 0
+        rescan_vids = 0
+        for folder in sorted(set(folders)):
+            if not folder or not os.path.isdir(folder):
+                continue
+            try:
+                with os.scandir(folder) as it:
+                    entries = sorted(
+                        (e for e in it if e.is_file()),
+                        key=lambda e: e.name,
+                    )
+            except OSError:
+                continue
+            for entry in entries:
+                ext = os.path.splitext(entry.name)[1].lower()
+                if ext not in VALID_EXTENSIONS:
+                    continue
+                full = entry.path
+                real = os.path.realpath(full)
+                if real in loaded_real:
+                    continue
+                self.image_session.add_image(full, "input", make_active=False)
+                loaded_real.add(real)
+                rescan_imgs += 1
+            try:
+                groups = _find_video_groups(_Path(folder))
+            except OSError:
+                groups = []
+            for group in groups:
+                for vmeta in group.videos:
+                    vpath = str(vmeta.path)
+                    real = os.path.realpath(vpath)
+                    if real in loaded_real:
+                        continue
+                    self.image_session.add_image(
+                        vpath, "video", make_active=False,
+                    )
+                    loaded_real.add(real)
+                    rescan_vids += 1
+        return (rescan_imgs, rescan_vids)
+
+    def _rescan_session_folder_for_new_media(self):
+        """Post-queue-completion rescan. Walks every folder that
+        currently has an entry in the session and pulls in any new
+        images/videos that have appeared on disk since the last scan.
+
+        Wired to ``QueueManager._on_processing_complete`` so the user
+        sees fresh oldcam/rPPG outputs in the carousel without
+        restarting the app — fixing the "I processed v8/v13/v24 but
+        nothing shows in the carousel" gripe (user feedback
+        2026-05-22). Must run on the GUI thread; the queue worker
+        thread schedules this via ``root.after(0, ...)``.
+        """
+        if not self.image_session.images:
+            return  # No session loaded — nothing to rescan against.
+        folders = {
+            os.path.dirname(e.path) for e in self.image_session.images
+        }
+        added_imgs, added_vids = self._scan_folders_for_new_media(folders)
+        if added_imgs or added_vids:
+            self._log(
+                f"Post-queue rescan: +{added_imgs} new image(s), "
+                f"+{added_vids} video(s)",
+                "info",
+            )
+
     def _on_item_complete(self, item: QueueItem):
         """Called when an item finishes processing."""
         status = item.status
@@ -4481,6 +4568,25 @@ class KlingGUIWindow:
                 f"Finished {os.path.basename(item.path)} → {item.output_path}",
                 "success",
             )
+
+        # Post-queue carousel rescan (2026-05-22). Each item-complete
+        # nudge re-walks the session folders and adds new oldcam /
+        # rPPG / looped outputs that the worker thread wrote. The
+        # carousel watches ImageSession via add_on_change and updates
+        # automatically. Scheduled on the Tk main thread via
+        # root.after(0) — the carousel touches Tk widgets and
+        # ImageSession changes fire callbacks that touch widgets.
+        # Guarded against:
+        #   - hasattr(self, "root"): unit tests construct minimal
+        #     KlingGUIWindow stubs without .root for callback-shape
+        #     testing (test_stability_improvements.py).
+        #   - tk.TclError / RuntimeError: root destroyed mid-queue
+        #     (app closed while items still processing).
+        if hasattr(self, "root"):
+            try:
+                self.root.after(0, self._rescan_session_folder_for_new_media)
+            except (tk.TclError, RuntimeError):
+                pass
 
         # Sync generator with latest config when queue becomes empty
         # This ensures any settings changed during processing take effect for next run
@@ -4896,74 +5002,18 @@ class KlingGUIWindow:
             # folder and load in everything." Videos become source_type=
             # "video" entries so the carousel renders them with a play
             # glyph and routes clicks to the Video Inspector.
+            # 2026-05-22: extracted into _scan_folders_for_new_media() so
+            # the post-queue-completion rescan path (Phase B) shares the
+            # same scanning logic. Both feed
+            # find_video_groups (all 5 video exts) + VALID_EXTENSIONS
+            # (images) and dedupe via os.path.realpath.
             try:
-                from kling_gui.video_discovery import find_video_groups as _find_video_groups
-                from pathlib import Path as _Path
-                loaded_real = {
-                    os.path.realpath(e.path) for e in self.image_session.images
-                }
                 folders = set()
                 for img in images:
                     p = img.get("path", "")
                     if p:
                         folders.add(os.path.dirname(p))
-                rescan_imgs = 0
-                rescan_vids = 0
-                for folder in sorted(folders):
-                    if not folder or not os.path.isdir(folder):
-                        continue
-                    # os.scandir over os.listdir + os.path.isfile: one
-                    # syscall per entry (the dirent already carries the
-                    # type) instead of two. Material on large folders
-                    # and network shares. We still sort for determinism
-                    # so the rescan order matches save order.
-                    # (Gemini medium PR #43, finding 3277077727.)
-                    try:
-                        with os.scandir(folder) as it:
-                            entries = sorted(
-                                (e for e in it if e.is_file()),
-                                key=lambda e: e.name,
-                            )
-                    except OSError:
-                        continue
-                    for entry in entries:
-                        ext = os.path.splitext(entry.name)[1].lower()
-                        if ext not in VALID_EXTENSIONS:
-                            continue
-                        full = entry.path
-                        real = os.path.realpath(full)
-                        if real in loaded_real:
-                            continue
-                        self.image_session.add_image(full, "input", make_active=False)
-                        loaded_real.add(real)
-                        rescan_imgs += 1
-                    # Videos: find_video_groups handles all 5 extensions
-                    # (mp4/mov/webm/mkv/avi) as of subagent H3 on
-                    # 2eb16f37. For non-mp4 files that don't match the
-                    # Kling/oldcam/rPPG naming pattern, the group is just
-                    # a single-clip group with no siblings.
-                    try:
-                        groups = _find_video_groups(_Path(folder))
-                    except OSError:
-                        groups = []
-                    for group in groups:
-                        for vmeta in group.videos:
-                            vpath = str(vmeta.path)
-                            real = os.path.realpath(vpath)
-                            if real in loaded_real:
-                                continue
-                            self.image_session.add_image(
-                                vpath, "video", make_active=False,
-                            )
-                            loaded_real.add(real)
-                            rescan_vids += 1
-                    # H3 fix (subagent on 2eb16f37): the prior second-pass
-                    # for .mov/.webm/.mkv/.avi is now redundant —
-                    # find_video_groups itself widened to all 5 video
-                    # extensions, so the loop above catches everything
-                    # the carousel can render. Eliminates the wiring
-                    # asymmetry where the Inspector listbox saw only mp4
-                    # but the carousel showed non-mp4 too.
+                rescan_imgs, rescan_vids = self._scan_folders_for_new_media(folders)
                 if rescan_imgs or rescan_vids:
                     self._log(
                         f"Folder rescan: +{rescan_imgs} new image(s), "
