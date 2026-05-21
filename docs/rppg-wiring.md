@@ -16,8 +16,16 @@ pass/fail lever; rPPG is the genuinely-untried forward direction.
 
 This is **not** the crude removed v10/v11 "siren" pulse (which visibly
 strobed the face and was removed at oldcam v12). The injector is the
-friend's mature tool in the gitignored `rPPG/` directory, invoked as an
-external launcher. It is **off by default everywhere** — opt-in only.
+friend's mature tool in the `rPPG/` directory, invoked as an external
+launcher. It is **off by default everywhere** — opt-in only.
+
+> **Versioning note (2026-05-22, Phase D of polish/v2.3):** `rPPG/`
+> was previously gitignored as confidential. Per user direction, the
+> folder is now committed in-tree so a fresh clone on any OS gets
+> the tool without a side-channel install. Older docs / code
+> comments that refer to "the gitignored rPPG/ tool" are out of
+> date — the wiring contract (this document) is unchanged; only the
+> distribution mechanism flipped.
 
 ## Pipeline order (locked)
 
