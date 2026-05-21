@@ -149,7 +149,12 @@ def sanitize_sash_layout(
     # (a narrow log column is still useful for status lines);
     # ceiling is right_section_w - 150 (drop zone never goes below
     # 150px either).
-    clamped_queue = max(queue_min, min(int(sash_queue) if sash_queue else queue_default, queue_max))
+    # Use _clamp_int here too — a corrupted persisted value (e.g.
+    # the config got an "abc" string from a hand-edit, or a None
+    # from a partial migration) would crash startup-layout-restore
+    # via int("abc"). _clamp_int handles type errors as "fall back
+    # to default" rather than raising. (GPT audit on b4ed739.)
+    clamped_queue = _clamp_int(sash_queue, queue_min, queue_max, queue_default)
     right_section_w = max(400, safe_w - clamped_queue)
     log_drop_min = 150
     log_drop_max = max(log_drop_min, right_section_w - 150)

@@ -3936,10 +3936,19 @@ class KlingGUIWindow:
             try:
                 active = self.image_session.active_entry
                 if active is not None and active.path:
-                    from .video_discovery import find_video_for_image
-                    companion = find_video_for_image(_Path(active.path))
-                    if companion is not None:
-                        initial = companion
+                    active_path = _Path(active.path)
+                    # If the active carousel entry IS a video, open
+                    # the Inspector preloaded with it directly — don't
+                    # try to look up a companion (the "companion" of
+                    # a video is itself; find_video_for_image's stem
+                    # match won't even find it). GPT audit on b4ed739.
+                    if getattr(active, "is_video", False):
+                        initial = active_path
+                    else:
+                        from .video_discovery import find_video_for_image
+                        companion = find_video_for_image(active_path)
+                        if companion is not None:
+                            initial = companion
             except Exception:
                 # Discovery is a convenience — never let it block the
                 # modal from opening. The user can still pick a folder
