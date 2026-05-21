@@ -208,16 +208,16 @@ class FaceCropTab(tk.Frame):
         self._outpaint_composite_var = tk.StringVar(
             value=config.get("outpaint_composite_mode", "preserve_seamless")
         )
-        # Outpaint provider: "bfl" or "fal". Default = BFL when a BFL
-        # API key is configured, otherwise fal -- matches the main-branch
-        # behaviour the user had visually tuned and verified.
-        # (User feedback 2026-05-22: Phase A flipped this to a hardcoded
-        # "fal" default which produced visibly worse seamless expand;
-        # reverting just the provider default -- outpaint_generator.py
-        # engine math was already restored to main via the Phase C revert.)
+        # Outpaint provider: "bfl" or "fal". Default = "fal" everywhere
+        # (user direction 2026-05-22 final). The Phase A revert that
+        # restored the BFL-if-key-present default was over-broad: the
+        # user only wanted the macOS composite/feather changes
+        # reverted (the LANCZOS + 16px tolerance edits in
+        # outpaint_generator.py, already rolled back by d48bbc8). The
+        # provider default itself stays "fal" -- switching providers
+        # is a one-click dropdown change.
         self._outpaint_provider_var = tk.StringVar(
-            value=config.get("outpaint_provider",
-                             "bfl" if config.get("bfl_api_key") else "fal")
+            value=config.get("outpaint_provider", "fal")
         )
         # Default UNCHECKED 2026-05-21 per user request: "Run 2x" was
         # defaulting ON for new users which doubled their API spend

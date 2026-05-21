@@ -2731,3 +2731,88 @@ def test_run_rppg_absolutizes_relative_input(tmp_path, monkeypatch):
     assert Path(in_arg).is_absolute(), f"input not absolutized: {in_arg!r}"
     assert Path(out_arg).is_absolute(), f"--output not absolutized: {out_arg!r}"
     assert Path(in_arg) == vid.resolve()
+
+
+def test_pipeline_rppg_fanout_all_fail_does_not_crash(tmp_path, monkeypatch):
+    """Subagent CRITICAL on 69dee05 (2026-05-22): when Phase E's
+    pre-Oldcam rPPG injection SUCCEEDS but the opt-in per-Oldcam
+    fan-out FAILS on every Oldcam output, the headline-pick used a
+    bare ``next(generator)`` over an empty iterator and raised an
+    uncaught StopIteration that crashed the case.
+
+    Repro: rppg_enabled + rppg_per_oldcam_fanout + 2 oldcam versions
+    (v8, v24); pre-Oldcam rPPG succeeds on the base; both v8-rppg
+    and v24-rppg injections return None. With required=False the
+    case must complete with the pre-Oldcam rPPG result as the
+    headline — NOT crash."""
+    from automation.rppg import build_rppg_output_path
+
+    case_dir = tmp_path / "case-fanout-allfail"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    gv = case_dir / "gen-videos"
+    gv.mkdir()
+    base = gv / "existing.mp4"
+    base.write_bytes(b"base")
+    v8 = gv / "existing-oldcam-v8.mp4"
+    v8.write_bytes(b"v8")
+    v24 = gv / "existing-oldcam-v24.mp4"
+    v24.write_bytes(b"v24")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-fanout-allfail")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x", "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "p"}, "current_prompt_slot": 1,
+        "automation_skip_if_video_exists": True,
+        "automation_oldcam_enabled": True,
+        "automation_oldcam_required": False,
+        "automation_rppg_enabled": True,
+        "automation_rppg_required": False,
+        # Opt-in to legacy fan-out — this is the only path that
+        # could hit the StopIteration bug.
+        "automation_rppg_per_oldcam_fanout": True,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **k: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *a, **k: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **k: [("v8", v8), ("v24", v24)])
+
+    def _fake_rppg(
+        *, video_path, repo_root, progress_cb=None,
+        timeout_seconds=600, keep_metrics=False,
+        iterative=True, iterate_from_baseline=True,
+        skip_diagnosis=True, skip_kinematic_gate=True,
+        verbose=False,
+    ):
+        del (
+            repo_root, progress_cb, timeout_seconds, keep_metrics,
+            iterative, iterate_from_baseline, skip_diagnosis,
+            skip_kinematic_gate, verbose,
+        )
+        name = Path(video_path).name
+        # Pre-Oldcam pass on the BASE succeeds; per-Oldcam fan-out
+        # on v8 + v24 BOTH fail (return None).
+        if name == "existing.mp4":
+            out = build_rppg_output_path(Path(video_path))
+            out.write_bytes(b"rppg")
+            return out
+        return None
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", _fake_rppg)
+    runner = AutoPipelineRunner(
+        config=config, automation_config=from_app_config(config), manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(outpaint_factory=lambda: FakeOutpaint(), selfie_factory=lambda: FakeSelfie(), video_factory=lambda: FakeVideo()),
+    )
+    # Must NOT raise. Pre-fix this raised StopIteration.
+    stats = runner.run([record])
+    assert stats["failed"] == 0, f"case must complete, got: {stats}"
+    step = manifest.data["cases"]["case-fanout-allfail"]["steps"].get("rppg", {})
+    assert step.get("status") == "complete"
+    # Headline must be the pre-Oldcam rPPG base (the only success).
+    assert step.get("output", "").endswith("existing-rppg.mp4"), step.get("output")
+    # And the failed per-Oldcam attempts must be recorded.
+    assert "existing-oldcam-v8.mp4" in step.get("meta", {}).get("failed_inputs", [])
+    assert "existing-oldcam-v24.mp4" in step.get("meta", {}).get("failed_inputs", [])

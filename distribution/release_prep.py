@@ -258,18 +258,16 @@ def build_sanitized_config(
     # would never reach the bundle. OVERRIDE (not setdefault) for the
     # same reason as outpaint_double_expand above.
     config["loop_videos"] = bool(template.get("loop_videos", False))
-    # outpaint_provider is INTENTIONALLY NOT forced in the bundle. The
-    # GUI's own conditional default (face_crop_tab.py + expand_tab.py)
-    # is ``"bfl" if config.get("bfl_api_key") else "fal"`` — which
-    # produces the visual look the user had tuned on main. Phase A's
-    # original "force fal" override was reverted (a1c1b099) after the
-    # user reported visible quality regression. Removing the override
-    # from the bundle path too — without it, the dev's
-    # ``outpaint_provider`` (typically "bfl") still gets blanked via
-    # the API-key sanitization below, but the GUI conditional kicks
-    # in on first launch and BFL wins when the BFL key is present.
-    if "outpaint_provider" in config:
-        del config["outpaint_provider"]
+    # v2.3 ship default (user direction 2026-05-22 final): "fal" for
+    # everything everywhere. The Phase A revert (a1c1b099) was over-
+    # broad — what the user actually wanted reverted was just the
+    # macOS LANCZOS + 16px composite tweaks in outpaint_generator.py
+    # (rolled back in d48bbc8), NOT the provider default itself.
+    # Switching providers is a one-click dropdown change in the GUI;
+    # the default should be "fal" out of the box. OVERRIDE (not
+    # setdefault) so a dev kling_config.json carrying "bfl" from a
+    # tuned session doesn't leak into the bundle.
+    config["outpaint_provider"] = str(template.get("outpaint_provider", "fal"))
     # Phase E of polish/v2.3 (2026-05-22): the new pipeline order is
     # Kling -> rPPG -> Loop -> Oldcam. The slower legacy per-Oldcam
     # fan-out (one rPPG injection per Oldcam version) is preserved

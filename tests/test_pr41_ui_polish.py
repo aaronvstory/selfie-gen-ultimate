@@ -155,15 +155,22 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         self.assertEqual(cfg['automation_selfie_expand_composite_mode'],'none')
         self.assertEqual(cfg['outpaint_composite_mode'],'preserve_seamless')
 
-    def test_release_prep_does_not_force_outpaint_provider(self):
-        """Subagent CRITICAL on a1c1b099 (2026-05-22): the Phase A
-        revert removed `outpaint_provider` from the template, but
-        `build_sanitized_config` was ALSO force-writing
-        `outpaint_provider = "fal"` into the shipped bundle. That
-        re-introduced the visible expand-quality regression on
-        every fresh v2.3 install. Lock that the bundle does NOT
-        carry the key — the GUI's
-        `bfl-if-key-present-else-fal` default wins on first launch."""
+    def test_release_prep_force_outpaint_provider_to_template_value(self):
+        """User direction 2026-05-22 final: outpaint_provider default is
+        "fal" everywhere — switching providers is a one-click dropdown
+        change so the silent default should be "fal" out of the box.
+
+        The earlier macOS revert was over-broad — it rolled back BOTH
+        the Phase A "fal-first" default AND the Phase C
+        LANCZOS+16px-tolerance composite tweaks. Only the latter caused
+        the visible expand-quality regression (and was correctly rolled
+        back in d48bbc8). The provider default was incorrectly bundled
+        with that revert and is restored here.
+
+        Lock: a dev kling_config.json carrying "bfl" from a prior tuned
+        session must NOT leak that value into the shipped bundle. The
+        bundle gets the template's "fal" via the OVERRIDE in
+        build_sanitized_config."""
         import json as _j, tempfile, os
         from distribution.release_prep import build_sanitized_config
         from pathlib import Path
@@ -171,17 +178,20 @@ class DistForcesCompositeModesTests(unittest.TestCase):
             t = os.path.join(d, 'default_config_template.json')
             l = os.path.join(d, 'kling_config.json')
             with open(t, 'w', encoding='utf-8') as fp:
-                fp.write(_j.dumps({'loop_videos': False}))
-            # Dev kling_config still has "bfl" from prior sessions.
+                fp.write(_j.dumps({
+                    'loop_videos': False,
+                    'outpaint_provider': 'fal',
+                }))
+            # Dev kling_config still has "bfl" from prior tuned sessions.
             with open(l, 'w', encoding='utf-8') as fp:
                 fp.write(_j.dumps({'outpaint_provider': 'bfl'}))
             cfg = build_sanitized_config(Path(t), Path(l))
-        self.assertNotIn(
-            'outpaint_provider', cfg,
-            "Shipped bundle must NOT carry outpaint_provider so the GUI's "
-            "conditional default wins on first launch. Phase A's hardcoded "
-            "fal-default in this bundle path was reverted after user "
-            "feedback on the visible expand-quality regression.",
+        self.assertEqual(
+            cfg.get('outpaint_provider'),
+            'fal',
+            "Shipped bundle MUST force outpaint_provider to 'fal' "
+            "regardless of the dev kling_config.json value (user "
+            "direction 2026-05-22 final).",
         )
 
     def test_shipped_template_slot3_is_active_with_title(self):
@@ -203,26 +213,24 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         # slot 1 minimal-motion fallback preserved.
         self.assertIn('very subtle, slow head movement',d['saved_prompts']['1'])
 
-    def test_v23_ship_defaults_loop_off_and_provider_unforced(self):
+    def test_v23_ship_defaults_loop_off_and_provider_fal(self):
         """polish/v2.3 ship defaults locked: loop OFF + outpaint_provider
-        NOT forced (so the GUI default `bfl-if-key-present-else-fal`
-        wins).
+        "fal" (user direction 2026-05-22 final).
 
-        Phase A's original "fal-first" hardcode was reverted on 2026-05-22
-        after the user reported visibly worse seamless expand quality
-        with fal vs. the prior BFL-default behaviour. The provider key
-        is now omitted from the template so the GUI's conditional
-        default (face_crop_tab.py:_outpaint_provider_var) chooses BFL
-        when a BFL API key is configured."""
+        The earlier revert was over-broad: only the macOS LANCZOS +
+        16px-tolerance composite tweaks needed rolling back (rolled
+        back in d48bbc8). The provider default itself stays "fal"
+        because switching providers is a one-click dropdown change
+        and the silent default should be "fal" out of the box."""
         import json as _j
         d = _j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
         self.assertEqual(d['loop_videos'], False)
-        self.assertNotIn(
-            'outpaint_provider', d,
-            "outpaint_provider must NOT be in the template — the GUI's "
-            "bfl-if-key-present-else-fal default is the right choice. "
-            "Phase A hardcode was reverted after user feedback on visible "
-            "expand quality regression.",
+        self.assertEqual(
+            d.get('outpaint_provider'),
+            'fal',
+            "outpaint_provider MUST be 'fal' in the template (user "
+            "direction 2026-05-22 final). One-click dropdown switches "
+            "to BFL when the user wants it.",
         )
 
     def test_v23_three_independent_expand_prompts(self):

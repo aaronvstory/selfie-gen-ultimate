@@ -764,8 +764,20 @@ class QueueManager:
                 # carry a ``-rppg`` suffix from the prior step, which
                 # is fine — the looper just emits ``<stem>_looped``
                 # on top.
+                loop_already_satisfied = False
                 if loop_on:
                     if source_video.stem.endswith("_looped"):
+                        # Subagent HIGH on 69dee05: when the user
+                        # selected Loop but the input is ALREADY a
+                        # loop, treat that as a satisfied stage — the
+                        # source_video already IS the loop they
+                        # wanted, so producing nothing new is the
+                        # correct outcome (NOT a failure). Track via a
+                        # separate flag so the no-Oldcam early-return
+                        # branch can report success-with-no-new-output
+                        # instead of "every post-process failed" or
+                        # "nothing to do".
+                        loop_already_satisfied = True
                         self.log(
                             f"Re-Run: source already looped ({source_video.name}); skipping loop step",
                             "info",
@@ -803,6 +815,19 @@ class QueueManager:
                     if any_produced:
                         self.log(
                             f"Re-run complete (no Oldcam selected): {source_video.name}",
+                            "info",
+                        )
+                        if completion_callback:
+                            completion_callback(True, str(source_video), str(source_video), None)
+                        return
+                    # Subagent HIGH on 69dee05: when the only selected
+                    # post-process was Loop AND the input was already
+                    # a loop, the source_video already IS the
+                    # deliverable — report SUCCESS with the original
+                    # path, not failure.
+                    if loop_already_satisfied and not rppg_attempted:
+                        self.log(
+                            f"Re-run complete: source already satisfies Loop ({source_video.name})",
                             "info",
                         )
                         if completion_callback:

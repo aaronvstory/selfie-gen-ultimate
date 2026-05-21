@@ -1290,13 +1290,29 @@ class AutoPipelineRunner:
         else:
             self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
 
-        # Step 8: optional rPPG injection — runs LAST (Kling -> Loop ->
-        # Oldcam -> rPPG). Input is the oldcam output if oldcam produced one,
-        # otherwise the video_generate output (so rPPG works standalone when
-        # oldcam is disabled). DEFAULT OFF; _required=False means a missing
-        # tool / failed injection is a graceful skip, never a hard-fail
-        # (mirrors the facetrack-gate precedent). The injector lives in the
-        # gitignored rPPG/ tool, invoked as an external launcher.
+        # Step 8: optional per-Oldcam rPPG fan-out + final
+        # bookkeeping. The PRIMARY rPPG injection already ran in
+        # Step 7-pre above (Phase E of polish/v2.3, 2026-05-22): new
+        # order is Kling -> rPPG -> Loop -> Oldcam, with rPPG
+        # injected on the raw video_generate output BEFORE Oldcam so
+        # every Oldcam version derives from a single rPPG'd base.
+        #
+        # This Step 8 block now handles two cases:
+        #   1. Default flow (``automation_rppg_per_oldcam_fanout=False``):
+        #      records the pre-Oldcam rPPG result via the already-
+        #      injected fast path (``already`` branch) — no further
+        #      injection runs.
+        #   2. Opt-in legacy fan-out (``automation_rppg_per_oldcam_fanout=True``):
+        #      injects each per-version Oldcam output, in addition to
+        #      the pre-Oldcam base injection. Slower; preserves the
+        #      old per-Oldcam file set on top of the new base.
+        #
+        # DEFAULT OFF; _required=False means a missing tool / failed
+        # injection is a graceful skip, never a hard-fail (mirrors the
+        # facetrack-gate precedent). The injector lives in the rPPG/
+        # directory (committed in-tree as of Phase D, 2026-05-22),
+        # invoked as an external launcher (.bat on Windows, .sh
+        # elsewhere via resolve_rppg_launcher).
         if self._read_bool("automation_rppg_enabled", False):
             oldcam_step = self.manifest.get_step(case_key, "oldcam")
             oldcam_out = oldcam_step.get("output")
@@ -1466,10 +1482,24 @@ class AutoPipelineRunner:
                     # ascending, so the last success is the
                     # highest-priority real deliverable — never a clip
                     # that silently skipped its oldcam injection).
+                    # Subagent CRITICAL on 69dee05: when Phase E's
+                    # pre-Oldcam rPPG succeeded AND every per-Oldcam
+                    # fan-out attempt failed, ``produced`` is non-empty
+                    # (seeded with ``rppg_base_path`` above) but
+                    # ``produced_for`` is empty (only fan-out
+                    # injections populate it). The bare ``next(gen)``
+                    # then raised an uncaught ``StopIteration`` and
+                    # crashed the case. Fall back to ``produced[-1]``
+                    # (the seeded base, which IS the right deliverable
+                    # for that scenario: every Oldcam fanout fail
+                    # leaves the rPPG'd base as the only real output).
                     headline = next(
-                        produced_for[str(s)]
-                        for s in reversed(to_inject)
-                        if str(s) in produced_for
+                        (
+                            produced_for[str(s)]
+                            for s in reversed(to_inject)
+                            if str(s) in produced_for
+                        ),
+                        produced[-1],
                     )
                     status_note = ""
                     if partial:

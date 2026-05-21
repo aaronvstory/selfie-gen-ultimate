@@ -1972,6 +1972,14 @@ class KlingGUIWindow:
         # focuses the existing one if alive, else constructs a new one.
         self._video_inspector_window = None
 
+        # Debounce state for the post-queue carousel rescan
+        # (subagent MEDIUM on 69dee05). Per-item-complete used to
+        # schedule a full folder rescan for every item in a multi-item
+        # queue, redundant N times for an N-item batch. Now we cancel
+        # any pending rescan and reschedule on a 1500ms timer so a
+        # rapid burst of completions collapses to a single rescan.
+        self._rescan_after_id: Optional[str] = None
+
         # Queue panel internals are kept for backend flow, but surface stays hidden in Step 3 UI.
         self._queue_panel_visible = False
         self.queue_frame = tk.Frame(self.video_tab, bg=COLORS["bg_panel"])
@@ -4539,6 +4547,16 @@ class KlingGUIWindow:
                     rescan_vids += 1
         return (rescan_imgs, rescan_vids)
 
+    def _fire_post_queue_rescan(self):
+        """Debounced rescan trigger. Cleared the pending after_id and
+        runs the actual rescan. Separate function so the debounce
+        cancel/reschedule logic at the call site stays simple."""
+        self._rescan_after_id = None
+        try:
+            self._rescan_session_folder_for_new_media()
+        except Exception:
+            logging.getLogger(__name__).exception("post-queue rescan failed")
+
     def _rescan_session_folder_for_new_media(self):
         """Post-queue-completion rescan. Walks every folder that
         currently has an entry in the session and pulls in any new
@@ -4594,9 +4612,16 @@ class KlingGUIWindow:
         # nudge re-walks the session folders and adds new oldcam /
         # rPPG / looped outputs that the worker thread wrote. The
         # carousel watches ImageSession via add_on_change and updates
-        # automatically. Scheduled on the Tk main thread via
-        # root.after(0) — the carousel touches Tk widgets and
-        # ImageSession changes fire callbacks that touch widgets.
+        # automatically. Scheduled on the Tk main thread — the
+        # carousel touches Tk widgets and ImageSession changes fire
+        # callbacks that touch widgets.
+        #
+        # DEBOUNCED at 1500ms (subagent MEDIUM on 69dee05): per-item-
+        # complete used to schedule a full folder rescan for every
+        # item in a multi-item queue, redundant N times for an N-item
+        # batch. Now a rapid burst of completions collapses to a
+        # single rescan — cancel any pending rescan and reschedule.
+        #
         # Guarded against:
         #   - hasattr(self, "root"): unit tests construct minimal
         #     KlingGUIWindow stubs without .root for callback-shape
@@ -4605,7 +4630,16 @@ class KlingGUIWindow:
         #     (app closed while items still processing).
         if hasattr(self, "root"):
             try:
-                self.root.after(0, self._rescan_session_folder_for_new_media)
+                if self._rescan_after_id is not None:
+                    try:
+                        self.root.after_cancel(self._rescan_after_id)
+                    except (tk.TclError, ValueError):
+                        # Already fired or invalid id — fine, just reset.
+                        pass
+                    self._rescan_after_id = None
+                self._rescan_after_id = self.root.after(
+                    1500, self._fire_post_queue_rescan,
+                )
             except (tk.TclError, RuntimeError):
                 pass
 

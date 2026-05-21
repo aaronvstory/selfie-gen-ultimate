@@ -773,17 +773,38 @@ def test_scan_folders_for_new_media_helper_exists_and_is_callable():
 def test_on_item_complete_schedules_post_queue_rescan():
     """The QueueManager fires _on_item_complete on the worker thread.
     The rescan touches Tk widgets so it MUST be scheduled via
-    root.after(0) onto the main thread. Source-asserted so a refactor
-    that drops the after() call fails this test."""
+    root.after onto the main thread. Source-asserted so a refactor
+    that drops the after() call fails this test.
+
+    Subagent MEDIUM on 69dee05 (2026-05-22): now DEBOUNCED at 1500ms
+    so a rapid burst of N item-completes collapses to a single
+    rescan instead of N redundant full-folder walks. Lock both the
+    debounce timer and the cancel-existing-pending pattern."""
     src = (Path(__file__).resolve().parent.parent / "kling_gui" / "main_window.py").read_text()
-    # Must call rescan via root.after on the GUI thread.
-    assert "self.root.after(0, self._rescan_session_folder_for_new_media)" in src, (
-        "Phase B: _on_item_complete must schedule the rescan via root.after(0)"
+    # Must schedule rescan via root.after (1500ms debounce).
+    assert "self.root.after(\n                    1500, self._fire_post_queue_rescan," in src or \
+           "self.root.after(1500, self._fire_post_queue_rescan" in src, (
+        "Phase B: _on_item_complete must schedule the rescan via "
+        "root.after(1500, self._fire_post_queue_rescan) — debounced "
+        "to collapse rapid burst completions into a single rescan."
+    )
+    # Must cancel any pending rescan before rescheduling (debounce contract).
+    assert "self.root.after_cancel(self._rescan_after_id)" in src, (
+        "Phase B debounce: must cancel pending after_id before "
+        "rescheduling so a rapid burst doesn't queue N rescans."
     )
     # Must guard against the test-stub case where .root isn't bound.
     assert 'hasattr(self, "root")' in src, (
         "Phase B: rescan scheduling must guard against missing .root attribute "
         "(unit tests construct minimal stubs without it)"
+    )
+    # The fire-rescan helper exists and clears the after_id.
+    assert "def _fire_post_queue_rescan(self):" in src, (
+        "Phase B debounce: must define _fire_post_queue_rescan helper."
+    )
+    assert "self._rescan_after_id = None" in src, (
+        "Phase B debounce: _fire_post_queue_rescan must clear "
+        "_rescan_after_id so a new burst can re-arm the timer."
     )
 
 
