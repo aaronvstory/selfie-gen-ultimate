@@ -1,0 +1,101 @@
+name: Supply Chain Audit
+
+# Run pip-audit + OSV-Scanner on every push + PR. Fail CI on any
+# advisory hit so we catch a compromised dep BEFORE it merges to main.
+# Also runs nightly so a new CVE landing AFTER our last PR lights up
+# the next morning instead of waiting for the next PR.
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+  pull_request:
+  schedule:
+    # 07:00 UTC daily — gives the PyPA + OSV DBs time to catch up
+    # to overnight advisories before we scan.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    name: pip-audit (PyPA + OSV)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit
+
+      - name: Audit requirements.txt
+        run: |
+          python -m pip_audit -r requirements.txt \
+            --strict --no-deps --progress-spinner off
+
+      - name: Audit similarity/requirements.txt
+        run: |
+          python -m pip_audit -r similarity/requirements.txt \
+            --strict --no-deps --progress-spinner off
+
+      - name: Audit similarity/requirements-test.txt
+        run: |
+          python -m pip_audit -r similarity/requirements-test.txt \
+            --strict --no-deps --progress-spinner off
+
+      - name: Audit each oldcam-v*/requirements.txt
+        run: |
+          set -e
+          shopt -s nullglob
+          for req in oldcam-v*/requirements.txt; do
+            echo "=== $req ==="
+            python -m pip_audit -r "$req" \
+              --strict --no-deps --progress-spinner off
+          done
+
+  osv-scanner:
+    name: OSV-Scanner (Google)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pinned to a specific version + SHA-style tag for supply-chain
+      # discipline — we audit our own audit tooling. Update by reading
+      # the new release notes + bumping ONLY after confirmation.
+      - name: Run OSV-Scanner
+        uses: google/osv-scanner-action/.github/workflows/[email protected]
+        with:
+          scan-args: |-
+            --recursive
+            --skip-git
+            --lockfile=requirements.txt
+            --lockfile=similarity/requirements.txt
+
+  ioc-self-check:
+    name: IoC self-check (detect_compromise.py)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run IoC self-check
+        run: |
+          python scripts/detect_compromise.py

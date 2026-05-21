@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# sandbox_install.sh — isolated dependency install for security review.
+#
+# Creates a fresh venv under .sandbox-venv/ (NOT the project's main venv),
+# installs ONLY from binary wheels (--only-binary :all:), and refuses to
+# fall back to sdist. The user is expected to `unset AWS_PROFILE` etc.
+# BEFORE running this — we don't do it for you because we don't know
+# which creds you have configured.
+#
+# Use this when you want to install a new dep version + audit it in a
+# disposable environment before committing it to the real venv.
+#
+# Docs: docs/security/HARDENING.md §5
+
+set -euo pipefail
+
+SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+REPO_ROOT="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
+cd "${REPO_ROOT}"
+
+SANDBOX_DIR="${REPO_ROOT}/.sandbox-venv"
+
+# Resolve a Python (prefer the same one the main project uses).
+PY=""
+for cand in python3.11 python3.12 python3 python; do
+  if command -v "$cand" >/dev/null 2>&1; then
+    PY="$cand"
+    break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "FATAL: no Python found in PATH"
+  exit 2
+fi
+
+echo "Sandbox install using $PY ($(${PY} --version 2>&1))"
+echo
+
+# Warn if the user has cloud creds loaded — we can't unset them for
+# them, but we can prod.
+WARNED=0
+for var in AWS_ACCESS_KEY_ID AWS_PROFILE GOOGLE_APPLICATION_CREDENTIALS \
+           AZURE_CLIENT_ID GITHUB_TOKEN GH_TOKEN; do
+  if [ -n "${!var:-}" ]; then
+    if [ "$WARNED" -eq 0 ]; then
+      echo "⚠️  WARNING: cloud creds are set in this shell:"
+      WARNED=1
+    fi
+    echo "    \$$var"
+  fi
+done
+if [ "$WARNED" -eq 1 ]; then
+  echo "    Run \`unset <VAR>\` for each before continuing, or accept that"
+  echo "    a malicious install will see them."
+  echo
+fi
+
+# Wipe + recreate the sandbox.
+if [ -d "$SANDBOX_DIR" ]; then
+  echo "Removing existing sandbox at $SANDBOX_DIR..."
+  rm -rf "$SANDBOX_DIR"
+fi
+echo "Creating fresh sandbox venv at $SANDBOX_DIR..."
+"$PY" -m venv "$SANDBOX_DIR"
+
+# Resolve the sandbox python.
+SBPY="$SANDBOX_DIR/bin/python"
+if [ ! -x "$SBPY" ]; then
+  # Windows-style layout fallback (rare on Bash but possible under Git Bash)
+  SBPY="$SANDBOX_DIR/Scripts/python.exe"
+fi
+
+"$SBPY" -m pip install --quiet --upgrade pip pip-audit
+
+# Install — wheels only, fail rather than fall back to sdist.
+echo "Installing requirements.txt --only-binary :all:..."
+"$SBPY" -m pip install --only-binary :all: -r requirements.txt
+
+echo
+echo "=== Sandbox audit (pip-audit on the installed env) ==="
+"$SBPY" -m pip_audit --strict --disable-pip --progress-spinner off
+
+echo
+echo "Sandbox is at: $SANDBOX_DIR"
+echo "Activate with:  source $SANDBOX_DIR/bin/activate"
+echo "Tear down:      rm -rf $SANDBOX_DIR"
