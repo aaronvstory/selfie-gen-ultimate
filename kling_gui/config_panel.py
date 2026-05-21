@@ -78,6 +78,14 @@ class HoverTooltip:
     _BORDER = "#6496FF"
     _WRAP = 500  # px wraplength
 
+    # Hover delay before showing — prevents a quick mouseover from
+    # paying the expensive Toplevel-render cost. User feedback
+    # 2026-05-21: tooltips with long text (~75 lines for oldcam) were
+    # flickering for ~5 seconds before stabilizing because Tk's
+    # Label-with-wraplength layout is slow on Windows for big text +
+    # the Toplevel was visible during that layout.
+    _SHOW_DELAY_MS = 400
+
     def __init__(self, widget: tk.Widget, text_func):
         """
         Args:
@@ -88,8 +96,11 @@ class HoverTooltip:
         self._widget = widget
         self._text_func = text_func
         self._tip: Optional[tk.Toplevel] = None
-        widget.bind("<Enter>", self._show)
-        widget.bind("<Leave>", self._hide)
+        # Track the scheduled show ID so <Leave> within the delay
+        # cancels the pending show instead of letting a flash happen.
+        self._show_after_id: Optional[str] = None
+        widget.bind("<Enter>", self._on_enter)
+        widget.bind("<Leave>", self._on_leave)
         # M1 (subagent on cac29c8f): if the widget is destroyed while
         # the tooltip is showing (e.g. pill row torn down on slot-load),
         # <Leave> never fires + the floating Toplevel stays orphaned.
@@ -100,13 +111,47 @@ class HoverTooltip:
         except tk.TclError:
             pass
 
-    def _show(self, event=None):
+    def _on_enter(self, event=None):
+        # Schedule the actual show after a short delay so a brief
+        # mouseover doesn't trigger the expensive Toplevel render.
+        if self._show_after_id is not None:
+            return  # already scheduled
+        try:
+            self._show_after_id = self._widget.after(
+                self._SHOW_DELAY_MS, self._show
+            )
+        except tk.TclError:
+            self._show_after_id = None
+
+    def _on_leave(self, event=None):
+        # Cancel any pending show (mouse left before the delay
+        # elapsed), then hide if already showing.
+        if self._show_after_id is not None:
+            try:
+                self._widget.after_cancel(self._show_after_id)
+            except tk.TclError:
+                pass
+            self._show_after_id = None
+        self._hide()
+
+    def _show(self):
+        self._show_after_id = None
         text = self._text_func()
         if not text or self._tip:
             return
 
+        # Create the Toplevel HIDDEN — withdraw immediately so Tk's
+        # initial render at default (0,0) position doesn't flash on
+        # screen before we compute the real geometry. Only deiconify
+        # after layout + positioning are complete. This is the
+        # single change that kills the multi-second flicker the
+        # user reported (2026-05-21) — the wraplength-driven Label
+        # layout for ~75 lines of text takes a noticeable chunk of
+        # time on Windows, and previously that time was spent with
+        # the partially-rendered Toplevel visible at (0, 0).
         self._tip = tk.Toplevel(self._widget)
         self._tip.wm_overrideredirect(True)
+        self._tip.withdraw()
 
         outer = tk.Frame(
             self._tip, bg=self._BG,
@@ -163,6 +208,12 @@ class HoverTooltip:
             x = 20
 
         self._tip.wm_geometry(f"+{x}+{y}")
+        # Now reveal the fully-laid-out, correctly-positioned tooltip
+        # in a single frame — no on-screen flicker during layout.
+        try:
+            self._tip.deiconify()
+        except tk.TclError:
+            pass
 
     def _hide(self, event=None):
         if self._tip:
@@ -484,7 +535,7 @@ class ConfigPanel(tk.Frame):
         # ⓘ info icon (larger, no text label) — hover to see model notes
         self.model_info_icon = tk.Label(
             row1, text="\u24D8", font=(FONT_FAMILY, 14),
-            cursor="hand2",
+            cursor="question_arrow",
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.model_info_icon.pack(side=tk.RIGHT, padx=(6, 0))
@@ -596,7 +647,7 @@ class ConfigPanel(tk.Frame):
             _oldcam_label_row,
             text="ⓘ",
             font=(FONT_FAMILY, 11),
-            cursor="hand2",
+            cursor="question_arrow",
             bg="#2A1F34",
             fg=COLORS["text_dim"],
         )
@@ -677,7 +728,7 @@ class ConfigPanel(tk.Frame):
             _rppg_label_row,
             text="ⓘ",
             font=(FONT_FAMILY, 11),
-            cursor="hand2",
+            cursor="question_arrow",
             bg="#3A2A1F",
             fg=COLORS["text_dim"],
         )
@@ -906,7 +957,7 @@ class ConfigPanel(tk.Frame):
         # PR #41).
         self.filter_info_icon = tk.Label(
             rD, text="ⓘ", font=(FONT_FAMILY, 11),
-            cursor="hand2",
+            cursor="question_arrow",
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.filter_info_icon.pack(side=tk.LEFT, padx=(6, 0))
@@ -1290,36 +1341,36 @@ class ConfigPanel(tk.Frame):
         )
         outer.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
-        inner = tk.Frame(outer, bg=_bg, cursor="hand2")
+        inner = tk.Frame(outer, bg=_bg, cursor="question_arrow")
         inner.pack(fill=tk.BOTH, expand=True)
 
         # Centered content (like original drop_zone.py)
-        center = tk.Frame(inner, bg=_bg, cursor="hand2")
+        center = tk.Frame(inner, bg=_bg, cursor="question_arrow")
         center.place(relx=0.5, rely=0.5, anchor="center")
 
         lbl_icon = tk.Label(
             center, text="\U0001f4e5", font=(EMOJI_FONT_FAMILY, 28),
-            bg=_bg, fg=COLORS["accent_blue"], cursor="hand2",
+            bg=_bg, fg=COLORS["accent_blue"], cursor="question_arrow",
         )
         lbl_icon.pack(pady=(0, 4))
 
         lbl_main = tk.Label(
             center, text="DROP IMAGES HERE",
             font=(FONT_FAMILY, 11, "bold"),
-            bg=_bg, fg=COLORS["text_light"], cursor="hand2",
+            bg=_bg, fg=COLORS["text_light"], cursor="question_arrow",
         )
         lbl_main.pack(pady=1)
 
         lbl_sub = tk.Label(
             center, text="or click to browse",
             font=(FONT_FAMILY, 9),
-            bg=_bg, fg=COLORS["text_dim"], cursor="hand2",
+            bg=_bg, fg=COLORS["text_dim"], cursor="question_arrow",
         )
         lbl_sub.pack(pady=(0, 2))
 
         self._mini_dz_status = tk.Label(
             center, text="", font=(FONT_FAMILY, 9, "bold"),
-            bg=_bg, fg=COLORS["success"], cursor="hand2",
+            bg=_bg, fg=COLORS["success"], cursor="question_arrow",
         )
         self._mini_dz_status.pack()
 
