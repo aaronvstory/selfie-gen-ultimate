@@ -96,47 +96,63 @@ def sanitize_sash_layout(
     root_width: int,
     root_height: int,
 ) -> tuple[dict, bool]:
-    """Clamp sash positions to compact, usable bounds for current window size."""
+    """Clamp sash positions to PHYSICALLY usable bounds for current window size.
+
+    Range philosophy (user feedback 2026-05-21: "I asked for this
+    to be fixed like 1000x"):
+
+    The clamp used to enforce AESTHETIC percentages (e.g. carousel
+    must be ≥ 22% of window) which silently bumped user-saved
+    values BACK UP toward the defaults on every launch. User drags
+    the drop zone narrower → it saves → next launch the clamp
+    promotes it back to 22% → user's preference is lost.
+
+    Now: minimums are PHYSICAL usability floors (~200px) and
+    maximums are the actual pane boundary. A user who wants a tiny
+    50px log pane gets 200px (still readable), not a "looks-good
+    25%" reset. Defaults stay the same for fresh installs but
+    saved values are honoured aggressively.
+    """
     safe_w = max(900, int(root_width))
     safe_h = max(620, int(root_height))
 
-    drop_min = 320
-    drop_max = max(drop_min, int(safe_h * 0.75))
+    # Drop zone height: usable floor 200px; ceiling stays at 75% so
+    # a user can't accidentally hide the entire bottom row.
+    drop_min = 200
+    drop_max = max(drop_min, int(safe_h * 0.85))
     drop_default = int(safe_h * 0.58)
 
-    # Left tab panel vs right tools/prompt panel — left panel 54-64% of window
-    # Widened to prevent Oldcam version checkboxes from crushing the folder icon
-    prompt_min = max(500, int(safe_w * 0.54))
-    prompt_max = max(prompt_min, int(safe_w * 0.64))
+    # Prompt-split (left tab panel vs right tools/prompt). Minimum
+    # 400px so the leftmost tab labels stay readable; max 80% so
+    # the right panel never fully disappears.
+    prompt_min = 400
+    prompt_max = max(prompt_min, int(safe_w * 0.80))
     prompt_default = int(safe_w * 0.60)
 
-    # Carousel width: 22-32% of window, default 25%.
-    # v5.2: bumped from 22% to 25% per repeated user request ("carousel a bit
-    # wider"). At 1621px window this gives ~405px carousel (was ~356px).
-    queue_min = max(200, int(safe_w * 0.22))
-    queue_max = max(queue_min, int(safe_w * 0.32))
+    # Carousel width (bottom left). Floor 200px (smallest where
+    # thumbnails + nav arrows still fit); ceiling 50% so the right
+    # log+queue section keeps room. Default stays at 25% for
+    # fresh installs.
+    queue_min = 200
+    queue_max = max(queue_min, int(safe_w * 0.50))
     queue_default = int(safe_w * 0.25)
 
-    log_min = 110
-    log_max = max(log_min, int(safe_h * 0.42))
+    # Log pane height. Floor 80px (~3 lines); ceiling 60%.
+    log_min = 80
+    log_max = max(log_min, int(safe_h * 0.60))
     log_default = int(safe_h * 0.22)
 
-    # Log vs drop zone: sash_log_drop_split is the X coordinate of the sash
-    # measured from the LEFT edge of the right-section paned widget. Since
-    # log_panel is .add()ed FIRST (left side) and drop_zone SECOND (right),
-    # this value IS the log panel's width. Clamp relative to the right
-    # section width (safe_w - clamped queue) so saved values from a different
-    # window size don't blow past the pane boundary.
-    #
-    # v5.2: default bumped from 55% to 71% per repeated user request ("drop
-    # zone too wide, log can be wider"). At 1621w with ~405px carousel,
-    # right_section ≈ 1216, log_default ≈ 863, leaving ~353px for the drop
-    # zone (was ~570px). Ceiling 78%→82% so user can collapse drop zone
-    # further if desired.
+    # Log vs drop zone: sash_log_drop_split is the X coordinate of
+    # the sash measured from the LEFT edge of the right-section
+    # paned widget. log_panel is .add()ed FIRST (left), drop_zone
+    # SECOND, so this value IS the log panel's width. Floor 150px
+    # (a narrow log column is still useful for status lines);
+    # ceiling is right_section_w - 150 (drop zone never goes below
+    # 150px either).
     clamped_queue = max(queue_min, min(int(sash_queue) if sash_queue else queue_default, queue_max))
     right_section_w = max(400, safe_w - clamped_queue)
-    log_drop_min = max(220, int(right_section_w * 0.55))
-    log_drop_max = max(log_drop_min, int(right_section_w * 0.82))
+    log_drop_min = 150
+    log_drop_max = max(log_drop_min, right_section_w - 150)
     log_drop_default = int(right_section_w * 0.71)
 
     sanitized = {

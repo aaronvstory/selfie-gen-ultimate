@@ -44,25 +44,25 @@ class LayoutSizingTests(unittest.TestCase):
             root_height=900,
         )
         self.assertTrue(changed)
-        self.assertGreaterEqual(sash["sash_dropzone"], 320)
-        self.assertLessEqual(sash["sash_dropzone"], int(900 * 0.75))
-        self.assertGreaterEqual(sash["sash_prompt_split"], int(1100 * 0.50))
-        self.assertLessEqual(sash["sash_prompt_split"], int(1100 * 0.62))
-        # v5.2 (intentional): carousel 22-32% / default 25%; log_drop split
-        # 55-82% / default 71% — per repeated user request to widen the
-        # carousel + give the log more space at the drop zone's expense.
-        # Source of truth: kling_gui/layout_utils.py::sanitize_sash_layout().
-        self.assertGreaterEqual(sash["sash_queue"], max(200, int(1100 * 0.22)))
-        self.assertLessEqual(sash["sash_queue"], int(1100 * 0.32))
-        self.assertGreaterEqual(sash["sash_log"], 110)
-        self.assertLessEqual(sash["sash_log"], int(900 * 0.42))
-        # log_drop_split is clamped relative to the right section, not the full window.
-        # v5.2: floor 0.55, ceiling 0.82 (so the user can collapse the drop
-        # zone further to maximize log space). Default 0.71.
+        # v5.3 (intentional, user feedback 2026-05-21): clamp ranges
+        # widened to PHYSICAL usability floors instead of aesthetic
+        # percentages, so saved values aren't silently bumped back
+        # toward the defaults on every launch. Source of truth:
+        # kling_gui/layout_utils.py::sanitize_sash_layout().
+        self.assertGreaterEqual(sash["sash_dropzone"], 200)
+        self.assertLessEqual(sash["sash_dropzone"], int(900 * 0.85))
+        self.assertGreaterEqual(sash["sash_prompt_split"], 400)
+        self.assertLessEqual(sash["sash_prompt_split"], int(1100 * 0.80))
+        self.assertGreaterEqual(sash["sash_queue"], 200)
+        self.assertLessEqual(sash["sash_queue"], int(1100 * 0.50))
+        self.assertGreaterEqual(sash["sash_log"], 80)
+        self.assertLessEqual(sash["sash_log"], int(900 * 0.60))
+        # log_drop_split clamped relative to right_section_w with
+        # 150px floor on both sides.
         clamped_queue = sash["sash_queue"]
-        right_w = 1100 - clamped_queue
-        self.assertGreaterEqual(sash["sash_log_drop_split"], max(220, int(right_w * 0.55)))
-        self.assertLessEqual(sash["sash_log_drop_split"], int(right_w * 0.82))
+        right_w = max(400, 1100 - clamped_queue)
+        self.assertGreaterEqual(sash["sash_log_drop_split"], 150)
+        self.assertLessEqual(sash["sash_log_drop_split"], right_w - 150)
 
     def test_sane_values_remain_unchanged(self):
         window, geometry, changed_window = sanitize_window_layout(
@@ -141,7 +141,15 @@ class PreSashClampUsesActualGeometryTests(unittest.TestCase):
     """
 
     def test_pre_sash_with_geometry_width_preserves_user_choice(self):
-        # The bug input: saved widget at 1331w, ui_config defaults at 1100w.
+        """v5.3: clamp widened to physical usability floors (200px) so
+        the user's sash positions survive regardless of which width
+        the clamp is applied against. Previously the pre-sash clamp
+        used the ui_config width (1100) which produced a 32% ceiling
+        of ~352, capping the user's 417 DOWN. The fix that landed in
+        2026-05-20 was to use the saved-geometry width (1331); v5.3
+        makes the ranges so wide that BOTH widths preserve the user's
+        choice — closing the regression at the source.
+        """
         saved_geometry = "1331x950+97+52"
         ui_config_width = 1100
         ui_config_height = 950
@@ -150,18 +158,17 @@ class PreSashClampUsesActualGeometryTests(unittest.TestCase):
             sash_log=167, sash_log_drop_split=613,
         )
 
-        # OLD path (buggy): used ui_config width → clamps user's 417 down.
+        # Both paths now preserve the user's value (clamp is generous).
         old_result, _ = sanitize_sash_layout(
             **user_saved_sashes,
             root_width=ui_config_width, root_height=ui_config_height,
         )
-        self.assertLess(old_result["sash_queue"], 417, (
-            "Pre-fix sanity check: at 1100w the 22-32% range caps queue at "
-            "~352, so 417 MUST be clamped down here. If this passes the "
-            "fix has been double-applied or the percentages changed."
+        self.assertEqual(old_result["sash_queue"], 417, (
+            "v5.3 clamp ceiling is 50% of width; at 1100w the cap is "
+            "550, so 417 survives. (Previously the 32% cap forced "
+            "this down to ~352.)"
         ))
 
-        # NEW path (fixed): parse the saved geometry first.
         actual_w, actual_h = parse_geometry_size(
             saved_geometry, ui_config_width, ui_config_height,
         )
@@ -170,9 +177,8 @@ class PreSashClampUsesActualGeometryTests(unittest.TestCase):
             root_width=actual_w, root_height=actual_h,
         )
         self.assertEqual(new_result["sash_queue"], 417, (
-            "User's saved sash_queue=417 must survive the pre-sash clamp "
-            "when we use the geometry-parsed width (1331). Regression of "
-            "the 2026-05-20 sash-cut-off-on-relaunch bug."
+            "User's saved sash_queue=417 must survive at actual width "
+            "1331 too (50% cap = 665)."
         ))
 
 
