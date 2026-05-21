@@ -2242,3 +2242,35 @@ def test_rppg_video_accepts_already_injected_input_without_the_tool(tmp_path):
         "even when the rPPG tool is absent (guard must precede launcher check)"
     )
     assert any("already injected" in m.lower() for m, _ in logs)
+
+
+def test_rerun_captures_already_looped_status_before_rppg_renames_file():
+    """CodeRabbit Major on 36b5e0b (2026-05-22): the
+    ``loop_already_satisfied`` check at the Loop step looked at the
+    CURRENT ``source_video.stem`` — but rPPG (which runs FIRST in
+    the new Phase E order) had already renamed
+    ``clip_looped.mp4`` -> ``clip_looped-rppg-<metrics>.mp4``,
+    which no longer ends with ``_looped``. The Loop step then
+    proceeded and produced ``clip_looped-rppg_looped.mp4`` — exactly
+    the ``_looped_looped`` filename pattern Phase E's gate was
+    supposed to prevent.
+
+    Fix in R3: capture ``source_was_already_looped`` from the
+    ORIGINAL source stem BEFORE the rPPG step. Loop check uses the
+    captured flag OR a fresh stem check (belt-and-suspenders).
+
+    Locked via source assertion so a regression that drops the
+    pre-rPPG capture fails this test."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "queue_manager.py").read_text()
+    # The pre-rPPG capture must exist.
+    assert 'source_was_already_looped = source_video.stem.endswith("_looped")' in src, (
+        "R3 fix: rerun worker must capture _looped status from the "
+        "ORIGINAL source stem BEFORE the rPPG step renames it."
+    )
+    # The Loop check must honour the captured flag OR re-check the
+    # current stem (belt-and-suspenders for the rPPG-skipped path).
+    assert "source_was_already_looped or source_video.stem.endswith(" in src, (
+        "R3 fix: Loop step must check the pre-rPPG capture, not just "
+        "the post-rPPG current stem, to avoid _looped_looped.mp4."
+    )

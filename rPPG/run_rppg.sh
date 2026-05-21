@@ -30,9 +30,24 @@ _python_supported() {
 PYTHON_BIN=""
 ENV_KIND=""
 
-if [ -n "${SELFIEGEN_PYTHON:-}" ] && _python_supported "${SELFIEGEN_PYTHON}"; then
-  PYTHON_BIN="${SELFIEGEN_PYTHON}"
-  ENV_KIND="SELFIEGEN_PYTHON override"
+# Codex P1 (2026-05-22): if the user sets SELFIEGEN_PYTHON to
+# explicitly point at a specific interpreter, an unsupported one
+# (e.g. Python 3.13 or 3.7) must fail LOUDLY — not silently fall
+# back to the .venv311/system resolver chain. Silent fallback hides
+# the user's mistake (their override was rejected) and makes
+# version-pinning debugging impossible.
+if [ -n "${SELFIEGEN_PYTHON:-}" ]; then
+  if _python_supported "${SELFIEGEN_PYTHON}"; then
+    PYTHON_BIN="${SELFIEGEN_PYTHON}"
+    ENV_KIND="SELFIEGEN_PYTHON override"
+  else
+    echo "  ERROR: SELFIEGEN_PYTHON is set to '${SELFIEGEN_PYTHON}' but" >&2
+    echo "  that interpreter is outside the supported range (Python 3.9-3.12)," >&2
+    echo "  doesn't exist, or isn't executable. Either fix the env var or" >&2
+    echo "  unset it to fall back to the venv/system resolver chain." >&2
+    echo "[ERROR] SELFIEGEN_PYTHON rejected: ${SELFIEGEN_PYTHON}" >> "${LOG_FILE}"
+    exit 1
+  fi
 fi
 
 # Resolver order: .venv311 first (canonical macOS venv per rule 6),

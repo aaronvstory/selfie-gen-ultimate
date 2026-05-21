@@ -3820,18 +3820,28 @@ class KlingGUIWindow:
                     stages.append("rPPG")
                 if bool(self.config.get("loop_videos", False)):
                     stages.append("Loop")
-                selected_versions = self.config.get("oldcam_versions")
-                if not isinstance(selected_versions, list) or not selected_versions:
+                # CodeRabbit P1 (2026-05-22): distinguish "user
+                # explicitly cleared all Oldcam versions" (empty list)
+                # from "key never set / non-list value" (use the
+                # legacy oldcam_version fallback). The previous code
+                # populated [oldcam_version] in BOTH cases, so the
+                # rerun stage label said "Oldcam vN" even when the
+                # user had explicitly unticked every version — a
+                # misleading promise the queue_manager wouldn't
+                # actually keep (it correctly gates on
+                # _get_oldcam_versions_to_run() returning empty).
+                raw_versions = self.config.get("oldcam_versions")
+                if isinstance(raw_versions, list):
+                    # Honour empty-list as "user disabled Oldcam".
+                    selected_versions = raw_versions
+                else:
+                    # Key absent or non-list (legacy single-version
+                    # config) — fall back to the singular key.
                     selected_versions = [self.config.get("oldcam_version", "v9")]
-                # selected_versions becomes [] only when oldcam disabled —
-                # _get_oldcam_versions_to_run() in queue_manager is the
-                # authoritative gate; this is just the user-facing label.
-                # CodeRabbit Minor (2026-05-21): the actual config key
-                # is ``oldcam_videos`` (set by main_window.py line 1129
-                # default + the queue_manager pause/enable checkbox);
-                # ``oldcam_enabled`` was a misnomer that defaulted True
-                # so the label never turned off when the user unticked
-                # Oldcam in the Step-3 controls.
+                # Oldcam-master-enable key is ``oldcam_videos`` (set
+                # by main_window.py line 1129 default + the
+                # queue_manager pause/enable checkbox); fixed in R2
+                # 36b5e0b from the prior wrong ``oldcam_enabled``.
                 if bool(self.config.get("oldcam_videos", True)) and selected_versions:
                     stages.append(f"Oldcam {','.join(str(v) for v in selected_versions)}")
                 stage_label = " + ".join(stages) if stages else "no-op (nothing selected)"
@@ -4637,17 +4647,21 @@ class KlingGUIWindow:
         #   - hasattr(self, "root"): unit tests construct minimal
         #     KlingGUIWindow stubs without .root for callback-shape
         #     testing (test_stability_improvements.py).
+        #   - getattr(self, "_rescan_after_id", None): same minimal
+        #     stubs don't init that attr either (CodeRabbit Minor
+        #     2026-05-22 on 36b5e0b). Read via getattr with default
+        #     None so partial-init paths don't AttributeError.
         #   - tk.TclError / RuntimeError: root destroyed mid-queue
         #     (app closed while items still processing).
         if hasattr(self, "root"):
             try:
-                if self._rescan_after_id is not None:
+                pending = getattr(self, "_rescan_after_id", None)
+                if pending is not None:
                     try:
-                        self.root.after_cancel(self._rescan_after_id)
+                        self.root.after_cancel(pending)
                     except (tk.TclError, ValueError):
                         # Already fired or invalid id — fine, just reset.
                         pass
-                    self._rescan_after_id = None
                 self._rescan_after_id = self.root.after(
                     1500, self._fire_post_queue_rescan,
                 )

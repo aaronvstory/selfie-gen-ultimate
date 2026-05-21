@@ -212,8 +212,14 @@ class AutoPipelineRunner:
         return self._DEFAULT_OUTPAINT_COMPOSITE_MODE
 
     def resolve_provider_summary(self) -> Dict[str, str]:
-        front_configured = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
-        selfie_configured = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
+        # Fallback default flipped to "fal" 2026-05-22: a live config
+        # without these keys still gets the v2.3 ship default
+        # (user direction final). The DEFAULTS dict in
+        # automation/config.py was updated to match; this fallback
+        # only kicks in when neither the live config nor the merged
+        # defaults have the key set (rare path, but consistent).
+        front_configured = str(self.automation.get("automation_front_expand_provider", "fal")).lower()
+        selfie_configured = str(self.automation.get("automation_selfie_expand_provider", "fal")).lower()
         return {
             "front_configured": front_configured,
             "front_resolved": self._resolve_outpaint_provider(front_configured),
@@ -445,8 +451,8 @@ class AutoPipelineRunner:
         outpaint = self.deps.outpaint_factory()
         outpaint.set_progress_callback(self.progress_cb)
         reprocess_mode = self._effective_reprocess_mode()
-        front_provider = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
-        selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
+        front_provider = str(self.automation.get("automation_front_expand_provider", "fal")).lower()
+        selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "fal")).lower()
         front_composite_mode = self._resolve_composite_mode("front")
         selfie_composite_mode = self._resolve_composite_mode("selfie")
         resolved_front_provider = self._resolve_outpaint_provider(front_provider)

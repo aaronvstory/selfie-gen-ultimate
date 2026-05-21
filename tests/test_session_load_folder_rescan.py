@@ -789,9 +789,18 @@ def test_on_item_complete_schedules_post_queue_rescan():
         "to collapse rapid burst completions into a single rescan."
     )
     # Must cancel any pending rescan before rescheduling (debounce contract).
-    assert "self.root.after_cancel(self._rescan_after_id)" in src, (
+    # R3 (2026-05-22): the read now goes through getattr() so partial-
+    # init minimal stubs don't AttributeError; the cancel call uses
+    # the local ``pending`` variable rather than the attribute.
+    assert "self.root.after_cancel(pending)" in src or \
+           "self.root.after_cancel(self._rescan_after_id)" in src, (
         "Phase B debounce: must cancel pending after_id before "
         "rescheduling so a rapid burst doesn't queue N rescans."
+    )
+    assert 'getattr(self, "_rescan_after_id", None)' in src, (
+        "Phase B R3 hardening: must read _rescan_after_id via getattr "
+        "so minimal-stub tests don't AttributeError (CodeRabbit Minor "
+        "on 36b5e0b)."
     )
     # Must guard against the test-stub case where .root isn't bound.
     assert 'hasattr(self, "root")' in src, (

@@ -29,9 +29,22 @@ set "LOG_FILE=%STATE_DIR%\rppg.log"
 
 set "PYTHON_BIN="
 set "ENV_KIND="
+rem Codex P1 (2026-05-22): if SELFIEGEN_PYTHON is set but invalid,
+rem reject loudly instead of silently falling back. Silent fallback
+rem hides the user's override mistake.
 if not "%SELFIEGEN_PYTHON%"=="" (
-  "%SELFIEGEN_PYTHON%" -V >nul 2>&1
-  if not errorlevel 1 ( set "PYTHON_BIN=%SELFIEGEN_PYTHON%" & set "ENV_KIND=SELFIEGEN_PYTHON override" )
+  "%SELFIEGEN_PYTHON%" -c "import sys; raise SystemExit(0 if (3,9) <= sys.version_info[:2] < (3,13) else 2)" >nul 2>&1
+  if errorlevel 1 (
+    echo   ERROR: SELFIEGEN_PYTHON is set to "%SELFIEGEN_PYTHON%" but
+    echo   that interpreter is outside the supported range ^(3.9-3.12^),
+    echo   doesn't exist, or isn't executable. Either fix the env var or
+    echo   unset it to fall back to the venv resolver chain.
+    >>"%LOG_FILE%" echo [ERROR] SELFIEGEN_PYTHON rejected: %SELFIEGEN_PYTHON%
+    %PAUSE%
+    exit /b 1
+  )
+  set "PYTHON_BIN=%SELFIEGEN_PYTHON%"
+  set "ENV_KIND=SELFIEGEN_PYTHON override"
 )
 if "!PYTHON_BIN!"=="" call :check_py "%REPO_ROOT%\venv\Scripts\python.exe" "shared root venv"
 if "!PYTHON_BIN!"=="" call :check_py "%REPO_ROOT%\.venv311\Scripts\python.exe" "shared root .venv311"

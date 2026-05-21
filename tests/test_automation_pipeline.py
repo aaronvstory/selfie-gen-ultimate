@@ -999,16 +999,25 @@ def test_pipeline_video_disabled_oldcam_required_fails(tmp_path: Path, monkeypat
     assert manifest.data["cases"]["case-m"]["status"] == "failed"
 
 
-def test_pipeline_resolves_auto_provider_to_bfl_for_caps_and_outpaint(tmp_path: Path, monkeypatch):
+def test_pipeline_resolves_auto_provider_to_fal_after_phase_a(tmp_path: Path, monkeypatch):
+    """v2.3 defaults pin both automation providers to "fal" (user
+    direction 2026-05-22 final). Pre-Phase-A this test pinned "bfl"
+    as the auto-resolved value when a BFL key was present. After
+    Phase A + R3's automation-config alignment, "fal" is the
+    deterministic ship default regardless of which keys are
+    configured. CodeRabbit Major on 36b5e0b spotted that R2 only
+    flipped the GUI tabs and left the automation CLI on bfl."""
     case_dir = tmp_path / "case-n"
     case_dir.mkdir()
     front = case_dir / "front.png"
     Image.new("RGB", (1000, 1000), (1, 2, 3)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-n")
 
-    config = merge_automation_defaults({"falai_api_key": "x",
-            "bfl_api_key": "bfl-token",
-            "automation_oldcam_required": False, "bfl_api_key": "bfl-token"})
+    config = merge_automation_defaults({
+        "falai_api_key": "x",
+        "bfl_api_key": "bfl-token",
+        "automation_oldcam_required": False,
+    })
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
@@ -1030,7 +1039,7 @@ def test_pipeline_resolves_auto_provider_to_bfl_for_caps_and_outpaint(tmp_path: 
     stats = runner.run([record])
     assert stats["completed"] == 1
     assert outpaint.calls
-    assert all(call.get("provider") == "bfl" for call in outpaint.calls)
+    assert all(call.get("provider") == "fal" for call in outpaint.calls)
 
 
 def test_pipeline_front_expand_runs_two_passes_when_configured(tmp_path: Path, monkeypatch):

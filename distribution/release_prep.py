@@ -267,7 +267,20 @@ def build_sanitized_config(
     # the default should be "fal" out of the box. OVERRIDE (not
     # setdefault) so a dev kling_config.json carrying "bfl" from a
     # tuned session doesn't leak into the bundle.
+    #
+    # GUI provider key:
     config["outpaint_provider"] = str(template.get("outpaint_provider", "fal"))
+    # Automation pipeline provider keys (CodeRabbit Major on
+    # 36b5e0b 2026-05-22): the GUI ``outpaint_provider`` only
+    # affects the manual tab dispatch. The automation CLI uses two
+    # parallel keys (front + selfie) defaulting to "bfl" in
+    # automation/config.py DEFAULTS. Without these overrides, a dev
+    # kling_config.json carrying the old "bfl" automation defaults
+    # would ship to fresh-clone users and they'd get BFL for
+    # automation runs even though the GUI now defaults to fal.
+    # Force both to "fal" to match Phase A intent.
+    config["automation_front_expand_provider"] = "fal"
+    config["automation_selfie_expand_provider"] = "fal"
     # Phase E of polish/v2.3 (2026-05-22): the new pipeline order is
     # Kling -> rPPG -> Loop -> Oldcam. The slower legacy per-Oldcam
     # fan-out (one rPPG injection per Oldcam version) is preserved

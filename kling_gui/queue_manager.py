@@ -744,6 +744,15 @@ class QueueManager:
                 loop_produced = False
                 rppg_attempted = False
                 loop_attempted = False
+                # CodeRabbit Major (2026-05-22): capture
+                # "already looped" status from the ORIGINAL source
+                # stem BEFORE rPPG renames it. rPPG turns
+                # ``clip_looped.mp4`` into
+                # ``clip_looped-rppg-<metrics>.mp4``, which no longer
+                # ends with ``_looped``. Without this pre-capture the
+                # later Loop step would proceed and produce
+                # ``clip_looped-rppg_looped.mp4`` instead of skipping.
+                source_was_already_looped = source_video.stem.endswith("_looped")
                 if rppg_on and not is_rppg_artifact(source_video):
                     rppg_attempted = True
                     self.log("Re-Run: applying rPPG (rPPG enabled)", "info")
@@ -759,14 +768,19 @@ class QueueManager:
                         )
 
                 # Loop step: same gating as before — skip if the input
-                # is already a loop (stem ends in _looped) to avoid
-                # ``..._looped_looped.mp4``. Now the source may also
-                # carry a ``-rppg`` suffix from the prior step, which
-                # is fine — the looper just emits ``<stem>_looped``
-                # on top.
+                # was already a loop (use the pre-rPPG capture above)
+                # to avoid ``..._looped_looped.mp4``. The source may
+                # now carry a ``-rppg`` suffix from the prior step,
+                # which is fine — the rPPG'd intermediate is still
+                # logically a loop and the looper would just stack
+                # another ``_looped`` on top if we let it.
                 loop_already_satisfied = False
                 if loop_on:
-                    if source_video.stem.endswith("_looped"):
+                    # Belt-and-suspenders: also check the CURRENT stem
+                    # in case rPPG was skipped (then current ==
+                    # original). Either way, if the input is a loop,
+                    # skip the loop step.
+                    if source_was_already_looped or source_video.stem.endswith("_looped"):
                         # Subagent HIGH on 69dee05: when the user
                         # selected Loop but the input is ALREADY a
                         # loop, treat that as a satisfied stage — the
