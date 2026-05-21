@@ -1680,6 +1680,13 @@ class VideoInspectorModal(tk.Toplevel):
             primary = self._primary_frame()
             if primary is None or not primary.is_loaded():
                 self._playing = False
+                # Clear _timer_id too — the finally-block reschedules
+                # when EITHER ``_timer_id is not None`` OR ``_playing``
+                # is True. Without this clear, the finally fires one
+                # more redundant tick before the timer actually stops.
+                # Mirrors the paused-exit branch above. (Gemini MEDIUM
+                # on c199b11.)
+                self._timer_id = None
                 try:
                     self._play_btn.config(text="▶ Play")
                 except tk.TclError:
@@ -1713,6 +1720,11 @@ class VideoInspectorModal(tk.Toplevel):
                 # 9d9a473 — was burning ~25 wakeups/sec uselessly).
                 if primary.has_reached_eof():
                     self._playing = False
+                    # Clear _timer_id so the finally-block reschedule
+                    # doesn't fire one more redundant tick before
+                    # stopping (Gemini MEDIUM on c199b11). Mirrors the
+                    # paused-exit and primary-lost branches above.
+                    self._timer_id = None
                     try:
                         self._play_btn.config(text="▶ Play")
                     except tk.TclError:
