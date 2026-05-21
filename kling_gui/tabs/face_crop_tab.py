@@ -213,8 +213,12 @@ class FaceCropTab(tk.Frame):
             value=config.get("outpaint_provider",
                              "bfl" if config.get("bfl_api_key") else "fal")
         )
+        # Default UNCHECKED 2026-05-21 per user request: "Run 2x" was
+        # defaulting ON for new users which doubled their API spend
+        # silently on first run. Existing users with the key already
+        # in their kling_config.json keep their chosen value.
         self._outpaint_double_expand_var = tk.BooleanVar(
-            value=bool(config.get("outpaint_double_expand", True))
+            value=bool(config.get("outpaint_double_expand", False))
         )
 
         # PhotoImage references (prevent GC)

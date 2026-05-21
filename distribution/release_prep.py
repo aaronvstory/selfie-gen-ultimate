@@ -243,6 +243,15 @@ def build_sanitized_config(
     config["outpaint_composite_mode"] = template.get(
         "outpaint_composite_mode", "preserve_seamless"
     )
+    # Step 0 Generative Expand "Run 2x" checkbox MUST ship unchecked
+    # — a dev-machine kling_config.json with the old default True
+    # would otherwise leak into the bundle and double every new
+    # user's API spend silently on first run (user request 2026-05-21).
+    # OVERRIDE (not setdefault) for the same reason cfg_scale + the
+    # composite modes are forced.
+    config["outpaint_double_expand"] = bool(
+        template.get("outpaint_double_expand", False)
+    )
 
     ensure_key_fields(config)
     for spec in API_KEY_SPECS:
