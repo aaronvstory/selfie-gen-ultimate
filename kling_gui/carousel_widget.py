@@ -130,11 +130,16 @@ def _extract_video_first_frame(video_path: str):
 
 
 # Tracks paths whose async decode is in-flight so we don't spawn a second
-# worker for the same path before the first lands. Tk-thread only — the
-# decoder thread mutates _VIDEO_THUMB_CACHE then schedules its on_done
-# callback via widget.after(0, ...), which removes the path from this set
-# on the Tk thread before re-rendering.
+# worker for the same path before the first lands. MOSTLY Tk-thread —
+# add() at the spawn site and discard() inside _finish() (after()-
+# dispatched, Tk thread). HOWEVER the worker's exception-fallback path
+# also discards (line ~186) so the widget can re-spawn after a
+# widget-destroyed-mid-decode case. That fallback runs on the WORKER
+# thread, so cross-thread mutation IS possible — a lock is required to
+# keep ``add()``+``discard()``+``in`` atomic per path.
+# (Gemini MEDIUM on 19fc413.)
 _VIDEO_THUMB_PENDING: "set[str]" = set()
+_VIDEO_THUMB_PENDING_LOCK = threading.Lock()
 
 
 def _extract_video_first_frame_async(
@@ -164,14 +169,20 @@ def _extract_video_first_frame_async(
         _vt_mtime = 0
     if (video_path, _vt_mtime) in _VIDEO_THUMB_CACHE:
         return False
-    if video_path in _VIDEO_THUMB_PENDING:
-        return False
-    _VIDEO_THUMB_PENDING.add(video_path)
+    # Atomic check-then-add: must be inside the lock to prevent a
+    # racing worker-thread discard() (the widget-destroyed-mid-decode
+    # branch below) from clearing the marker between the check and
+    # the add (Gemini MEDIUM on 19fc413).
+    with _VIDEO_THUMB_PENDING_LOCK:
+        if video_path in _VIDEO_THUMB_PENDING:
+            return False
+        _VIDEO_THUMB_PENDING.add(video_path)
 
     def _worker():
         img = _extract_video_first_frame(video_path)
         def _finish():
-            _VIDEO_THUMB_PENDING.discard(video_path)
+            with _VIDEO_THUMB_PENDING_LOCK:
+                _VIDEO_THUMB_PENDING.discard(video_path)
             try:
                 on_done(img)
             except tk.TclError:
@@ -183,7 +194,9 @@ def _extract_video_first_frame_async(
         except (tk.TclError, RuntimeError):
             # Widget destroyed between spawn and dispatch — drop the
             # pending marker so a later open of the same file can retry.
-            _VIDEO_THUMB_PENDING.discard(video_path)
+            # This is the WORKER-thread mutation that motivates the lock.
+            with _VIDEO_THUMB_PENDING_LOCK:
+                _VIDEO_THUMB_PENDING.discard(video_path)
 
     threading.Thread(
         target=_worker, name=f"video-thumb:{os.path.basename(video_path)}",

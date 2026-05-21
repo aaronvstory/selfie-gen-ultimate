@@ -306,7 +306,10 @@ class VideoFrame(tk.Frame):
             try:
                 cap.release()
             except Exception:
-                pass
+                logger.debug(
+                    "cap.release() after isOpened() False raised",
+                    exc_info=True,
+                )
             self._show_error("Cannot decode this video")
             return False
 
@@ -466,11 +469,11 @@ class VideoFrame(tk.Frame):
         try:
             self.clear()
         except Exception:
-            pass
+            logger.debug("VideoFrame.clear() during destroy raised", exc_info=True)
         try:
             super().destroy()
         except Exception:
-            pass
+            logger.debug("Tk super().destroy() raised", exc_info=True)
 
     # ── Internal: decoder thread ────────────────────────────────────
 
@@ -510,10 +513,16 @@ class VideoFrame(tk.Frame):
             # Still need to release the cap we were handed even if we
             # can't decode. Single-line try/except for the same reason
             # the main finally has one — never let release() raise.
+            # Log at debug so a release-during-PIL-failure regression
+            # is diagnosable without spamming the user log
+            # (CodeRabbit MAJOR on 19fc413).
             try:
                 cap.release()
             except Exception:
-                pass
+                logger.debug(
+                    "cap.release() after PIL ImportError raised",
+                    exc_info=True,
+                )
             return
 
         try:
