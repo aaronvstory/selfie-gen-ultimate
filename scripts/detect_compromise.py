@@ -63,34 +63,52 @@ COMPROMISED_PYPI = (
 # `.pth` file content patterns that indicate executable code (the
 # LiteLLM PyPI compromise technique). A normal `.pth` file is one or
 # more directory-path strings, one per line.
+#
+# CRITICAL: re.MULTILINE is mandatory — a payload that puts a benign-
+# looking path on line 1 and the malicious `import`/`exec` on line 2
+# bypasses non-multiline anchors completely. (Subagent finding on
+# 4cc0bb4 — anchors without MULTILINE only match the start of bytes,
+# not the start of each line.)
 PTH_EXEC_PATTERNS = (
-    re.compile(rb"^\s*import\b"),
-    re.compile(rb"^\s*exec\b"),
-    re.compile(rb"^\s*os\."),
-    re.compile(rb"^\s*subprocess\."),
-    re.compile(rb"^\s*eval\b"),
+    re.compile(rb"^\s*import\b", re.MULTILINE),
+    re.compile(rb"^\s*exec\b", re.MULTILINE),
+    re.compile(rb"^\s*os\.", re.MULTILINE),
+    re.compile(rb"^\s*subprocess\.", re.MULTILINE),
+    re.compile(rb"^\s*eval\b", re.MULTILINE),
     re.compile(rb"\bhttp[s]?://"),  # network IO from a .pth = suspicious
 )
 
 # Allowlist: known-legitimate .pth files that ship executable code.
-# Match by filename. These are inspected once + added here so a future
-# scan doesn't keep alerting. Update with care.
+# Match by filename + EXACT content match against a known-good blob.
+#
+# CRITICAL: prefix-only matching is a bypass. An attacker who replaces
+# `distutils-precedence.pth` with a file that starts with the magic
+# bytes and appends malicious code (well within 300 bytes) sails past
+# the scanner. The allowlist must match the WHOLE content modulo
+# whitespace, not just the prefix. (Subagent CRITICAL on 4cc0bb4.)
 PTH_ALLOWLIST = {
     # setuptools ships this to transparently shim distutils for
-    # older PEP 517 fallbacks. Filename + first-line shape is stable
-    # across setuptools versions; if the file ever grows beyond
-    # ~200 bytes or adds network IO, it stops matching and re-alerts.
+    # older PEP 517 fallbacks. The exact content has been stable
+    # across recent setuptools versions; if it changes upstream we'll
+    # update this allowlist after auditing the new content.
     "distutils-precedence.pth": {
-        "max_size": 300,
-        "must_start_with": b"import os; var = 'SETUPTOOLS_USE_DISTUTILS'",
+        "exact_content_stripped": (
+            b"import os; var = 'SETUPTOOLS_USE_DISTUTILS'; "
+            b"enabled = os.environ.get(var, 'local') == 'local'; "
+            b"enabled and __import__('_distutils_hack').add_shim();"
+        ),
     },
 }
 
 
 def _pth_is_allowlisted(pth: Path) -> bool:
     """Return True if a .pth file matches a known-legitimate allowlist
-    entry by filename + content shape. False = run the exec-pattern
-    scan as normal."""
+    entry by filename + EXACT content match (whitespace-stripped).
+    False = run the exec-pattern scan as normal.
+
+    Subagent CRITICAL on 4cc0bb4: prefix-only matching was a bypass
+    vector. Whole-content match closes it.
+    """
     entry = PTH_ALLOWLIST.get(pth.name)
     if entry is None:
         return False
@@ -98,9 +116,9 @@ def _pth_is_allowlisted(pth: Path) -> bool:
         content = pth.read_bytes()
     except OSError:
         return False
-    if len(content) > entry["max_size"]:
-        return False
-    if not content.lstrip().startswith(entry["must_start_with"]):
+    # Strip leading/trailing whitespace + newlines from BOTH sides so
+    # editors that add a trailing newline don't fail the match.
+    if content.strip() != entry["exact_content_stripped"].strip():
         return False
     return True
 
@@ -201,7 +219,14 @@ def check_pth_files_for_exec_code(venv_paths: List[Path]) -> CheckResult:
     for venv in venv_paths:
         if not venv.exists():
             continue
-        for pth in venv.rglob("site-packages/*.pth"):
+        # Walk ALL .pth files under the venv that live anywhere in a
+        # site-packages tree, not just directly in site-packages/. A
+        # payload that places its .pth in a package sub-directory
+        # (`site-packages/<pkg>/attack.pth`) would otherwise evade
+        # the scanner. (Subagent HIGH on 4cc0bb4.)
+        for pth in venv.rglob("*.pth"):
+            if "site-packages" not in str(pth):
+                continue
             scanned += 1
             # Allowlisted setuptools-shipped .pth files are skipped —
             # they ship executable code legitimately. The allowlist
@@ -371,7 +396,15 @@ def main(argv: List[str] | None = None) -> int:
     do_github = args.github or args.all
 
     print(f"Mini Shai-Hulud IoC self-check — {repo_root}")
-    print(f"  venvs to scan: {[str(v.relative_to(repo_root)) for v in venv_paths] or 'none'}")
+    def _disp(p: Path) -> str:
+        """Display path relative-to-repo if possible, else absolute.
+        Avoids ValueError when --venv points at /opt/shared-venv or
+        any path outside the repo. (Subagent LOW on 4cc0bb4.)"""
+        try:
+            return str(p.relative_to(repo_root))
+        except ValueError:
+            return str(p)
+    print(f"  venvs to scan: {[_disp(v) for v in venv_paths] or 'none'}")
     print(f"  GitHub scan: {'ON' if do_github else 'OFF (use --github to enable)'}")
     print()
 

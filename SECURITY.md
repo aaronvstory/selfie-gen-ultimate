@@ -21,6 +21,9 @@ exemplified by the **Mini Shai-Hulud (TeamPCP)** campaign active through
   and why
 - `docs/security/HARDENING.md` — operational guide (tools, commands, CI)
 - `docs/security/IOC_DETECTION_CHECKLIST.md` — incident response runbook
+- `docs/security/SINGLE_DEV_CHECKLIST.md` — pragmatic personal-hygiene
+  layer for solo developers who can't go full-VM (1Password CLI
+  lockdown, backups, FDE, egress monitoring, token discipline)
 - `scripts/detect_compromise.py` — automated IoC self-check (run weekly)
 - `scripts/audit_deps.sh` / `scripts/audit_deps.bat` — local CVE audit
 - `.github/workflows/supply-chain-audit.yml` — CI runs pip-audit +

@@ -137,14 +137,22 @@ is much larger. Highest-risk packages by surface area:
 
 | Defense | File | Why |
 |---|---|---|
-| Hash-pinned `requirements-hashed.txt` | new | Detects post-publish tampering at install time. |
 | `pip-audit` in CI + `scripts/audit_deps.{sh,bat}` | new | Cross-checks every dep against PyPA + OSV advisory DBs on every PR + on-demand for devs. |
+| Installed-venv audit job | CI | Compensating control for `--no-deps` on the requirements-file audit — catches transitive CVEs. |
 | OSV-Scanner in CI | new | Second-source vulnerability DB (Google) — covers gaps in PyPA. |
-| `detect_compromise.py` IoC self-check | new | One-command scan: GitHub account for reversed-marker repos, suspicious workflows, recent unauthorized publishes. |
+| `detect_compromise.py` IoC self-check | new | One-command scan: known-compromised PyPI packages, `.pth` files with executable code (`re.MULTILINE` + whole-content allowlist matching to prevent prefix-only bypass), git remotes against C2 domains, workflow files for `curl \| bash` patterns, optional GitHub account scan for exfil repos. |
 | `.github/dependabot.yml` | new | Automated security updates with weekly cadence + grouping. |
 | `SECURITY.md` | new | Disclosure policy + threat model link. |
-| `scripts/sandbox_install.{sh,bat}` | new | One-command isolated install (separate venv, ephemeral, no shared creds). |
+| `scripts/sandbox_install.{sh,bat}` | new | One-command isolated install (separate venv, `--only-binary :all:`, pip-audit on the result). |
 | `--only-binary :all:` documented in install workflow | docs update | Avoid sdist execution path for top-level deps. |
+| `docs/security/SINGLE_DEV_CHECKLIST.md` | new | Pragmatic single-developer hardening that doesn't require full VM isolation: 1Password CLI lockdown, npm `ignore-scripts`, backups, FDE, egress monitoring, scoped tokens, install discipline. |
+
+### 3.3 Deferred to a follow-up PR (NOT in this commit)
+
+| Item | Why deferred | Tracked in |
+|---|---|---|
+| Hash-pinned `requirements-hashed.txt` | Needs `piptools compile --generate-hashes` which takes 5+ minutes on this dependency tree (TensorFlow + Torch). Generated artifact will be reviewed in its own commit so the diff is parseable. | `docs/security/HARDENING.md` §2 |
+| CVE remediation of the 20 known advisories pip-audit surfaces (Pillow 11.3 → 12.2, torch 2.12 PYSEC-2025 chain, keras, markdown, joblib) | Mixing remediation with hardening would make the PR hard to review. Hardening infrastructure must land first; CVE bumps tested individually. | `docs/security/HARDENING.md` §8 |
 
 ### 3.3 What we're NOT doing (out of scope or accepting tradeoff)
 

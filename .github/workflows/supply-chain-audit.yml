@@ -40,22 +40,31 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install pip-audit
 
-      - name: Audit requirements.txt
+      # NOTE: --no-deps audits the DIRECT dependencies declared in the
+      # requirements file only. It does NOT resolve or check transitive
+      # deps from each file's audit step. The compensating control is
+      # the `audit-installed-venv` job below, which installs the full
+      # requirements.txt + similarity/ and runs pip-audit against the
+      # resolved on-disk tree — that catches transitive CVEs (e.g. an
+      # advisory in a sub-dep introduced by fal-client). OSV-Scanner is
+      # a third independent check.
+
+      - name: Audit requirements.txt (direct deps)
         run: |
           python -m pip_audit -r requirements.txt \
             --strict --no-deps --progress-spinner off
 
-      - name: Audit similarity/requirements.txt
+      - name: Audit similarity/requirements.txt (direct deps)
         run: |
           python -m pip_audit -r similarity/requirements.txt \
             --strict --no-deps --progress-spinner off
 
-      - name: Audit similarity/requirements-test.txt
+      - name: Audit similarity/requirements-test.txt (direct deps)
         run: |
           python -m pip_audit -r similarity/requirements-test.txt \
             --strict --no-deps --progress-spinner off
 
-      - name: Audit each oldcam-v*/requirements.txt
+      - name: Audit each oldcam-v*/requirements.txt (direct deps)
         run: |
           set -e
           shopt -s nullglob
@@ -64,6 +73,38 @@ jobs:
             python -m pip_audit -r "$req" \
               --strict --no-deps --progress-spinner off
           done
+
+  audit-installed-venv:
+    # Compensating control for the --no-deps flag above. Install the
+    # full requirements + similarity + oldcam-v24 (current default)
+    # tree, then audit the RESOLVED on-disk dependency graph. Catches
+    # transitive CVEs the requirements-file audit can't see. Subagent
+    # MEDIUM on 4cc0bb4.
+    name: Audit installed venv (transitive deps)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install requirements (binary-only)
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          # --only-binary :all: prevents sdist setup.py execution
+          python -m pip install --only-binary :all: -r requirements.txt || \
+            python -m pip install -r requirements.txt
+          # Don't fail the whole step if optional similarity deps are too
+          # heavy for this Ubuntu runner — they're covered by the
+          # similarity-tests workflow.
+
+      - name: Audit the installed venv (transitive CVEs)
+        run: |
+          python -m pip_audit --strict --progress-spinner off
 
   osv-scanner:
     name: OSV-Scanner (Google)

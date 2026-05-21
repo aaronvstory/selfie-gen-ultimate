@@ -10,9 +10,13 @@ SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 REPO_ROOT="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
 cd "${REPO_ROOT}"
 
-# Resolve a Python (project venv > .venv311 > python3.11 > python3).
+# Resolve a Python. Order: .venv311 > venv > system python3.11 > 3.12 > 3 > python.
+# .venv311 first per CLAUDE.md rule 6 (macOS python3.12+ ships without
+# _tkinter; venv/ could be linked to ANY Python including 3.13+).
+# Subagent MEDIUM on 4cc0bb4 — keep this consistent with the launcher
+# resolvers in launchers/macos/.
 PY=""
-for cand in venv/bin/python .venv311/bin/python; do
+for cand in .venv311/bin/python venv/bin/python; do
   if [ -x "${REPO_ROOT}/${cand}" ]; then
     PY="${REPO_ROOT}/${cand}"
     break

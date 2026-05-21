@@ -21,7 +21,7 @@ echo Using Python:
 "%PY%" --version
 
 "%PY%" -m pip_audit --version >nul 2>nul
-if !errorlevel! neq 0 (
+if %errorlevel% neq 0 (
     echo Installing pip-audit...
     "%PY%" -m pip install --quiet --upgrade pip-audit
 )
