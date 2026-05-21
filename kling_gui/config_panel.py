@@ -140,18 +140,19 @@ class HoverTooltip:
         if not text or self._tip:
             return
 
-        # Create the Toplevel HIDDEN — withdraw immediately so Tk's
-        # initial render at default (0,0) position doesn't flash on
-        # screen before we compute the real geometry. Only deiconify
-        # after layout + positioning are complete. This is the
-        # single change that kills the multi-second flicker the
-        # user reported (2026-05-21) — the wraplength-driven Label
-        # layout for ~75 lines of text takes a noticeable chunk of
-        # time on Windows, and previously that time was spent with
-        # the partially-rendered Toplevel visible at (0, 0).
+        # Position the Toplevel OFF-SCREEN initially so the Tk-driven
+        # layout for the (potentially huge) Label happens without a
+        # visible flash at the default (0, 0) origin. We DELIBERATELY
+        # do NOT use ``withdraw()`` here: on Windows, calling
+        # ``withdraw()`` BEFORE ``wm_overrideredirect(True)`` plus a
+        # later ``deiconify()`` is unreliable — the Toplevel sometimes
+        # never re-appears at all (Tk-on-Win quirk). Off-screen
+        # geometry + real geometry below is the safe pattern.
+        # (User feedback 2026-05-21: previous withdraw/deiconify
+        # version made the oldcam tooltip not show at all.)
         self._tip = tk.Toplevel(self._widget)
+        self._tip.wm_geometry("+10000+10000")
         self._tip.wm_overrideredirect(True)
-        self._tip.withdraw()
 
         outer = tk.Frame(
             self._tip, bg=self._BG,
@@ -207,13 +208,10 @@ class HoverTooltip:
         if x < 20:
             x = 20
 
+        # Final move to the real position — the layout/measurement
+        # happened off-screen so this is the FIRST time the tooltip
+        # becomes visible.
         self._tip.wm_geometry(f"+{x}+{y}")
-        # Now reveal the fully-laid-out, correctly-positioned tooltip
-        # in a single frame — no on-screen flicker during layout.
-        try:
-            self._tip.deiconify()
-        except tk.TclError:
-            pass
 
     def _hide(self, event=None):
         if self._tip:
