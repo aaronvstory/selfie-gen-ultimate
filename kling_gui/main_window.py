@@ -3784,9 +3784,14 @@ class KlingGUIWindow:
             self._log("Queue manager not initialized", "error")
             return
 
+        # CodeRabbit Major (2026-05-21): macOS Tk dialogs stall when
+        # parent is withdrawn mid-dialog (e.g. user dragged the file
+        # picker behind the main window). _best_picker_parent() picks
+        # the topmost live Tk window — usually a drop-zone or modal —
+        # so the dialog stays attached to a visible parent.
         from tk_dialogs import select_open_files
         paths = select_open_files(
-            parent=self.root,
+            parent=self._best_picker_parent(),
             title="Select video(s) for re-run",
             filetypes=[
                 ("Video files", "*.mp4 *.mov *.avi *.mkv *.webm *.m4v"),
@@ -3821,7 +3826,13 @@ class KlingGUIWindow:
                 # selected_versions becomes [] only when oldcam disabled —
                 # _get_oldcam_versions_to_run() in queue_manager is the
                 # authoritative gate; this is just the user-facing label.
-                if bool(self.config.get("oldcam_enabled", True)) and selected_versions:
+                # CodeRabbit Minor (2026-05-21): the actual config key
+                # is ``oldcam_videos`` (set by main_window.py line 1129
+                # default + the queue_manager pause/enable checkbox);
+                # ``oldcam_enabled`` was a misnomer that defaulted True
+                # so the label never turned off when the user unticked
+                # Oldcam in the Step-3 controls.
+                if bool(self.config.get("oldcam_videos", True)) and selected_versions:
                     stages.append(f"Oldcam {','.join(str(v) for v in selected_versions)}")
                 stage_label = " + ".join(stages) if stages else "no-op (nothing selected)"
                 self._log(

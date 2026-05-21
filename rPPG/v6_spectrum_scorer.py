@@ -23,6 +23,15 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+# NumPy 2.0 renamed ``np.trapz`` -> ``np.trapezoid``; ``np.trapz``
+# was kept as a deprecated alias in 2.0 and SCHEDULED for removal in
+# a future release. Older environments (NumPy 1.x) don't have
+# ``np.trapezoid`` at all — calling it raises ``AttributeError`` at
+# import-and-use time. Project's ``requirements.txt`` doesn't pin
+# numpy strictly so both 1.x and 2.x are live in production.
+# Gemini security-medium x3 (2026-05-21).
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz  # type: ignore[attr-defined]
+
 
 # ── frequency band definitions (Hz) ─────────────────────────────────────────
 F_DC          = (0.0,  0.10)   # below physiological — should be near zero
@@ -64,7 +73,7 @@ def _band_power(freqs: np.ndarray, psd: np.ndarray,
         mask = (freqs >= lo) & (freqs < hi)
     if not np.any(mask):
         return 0.0
-    return float(np.trapezoid(psd[mask], freqs[mask]))
+    return float(_trapezoid(psd[mask], freqs[mask]))
 
 
 def _trapezoid_score(value: float,
@@ -146,7 +155,7 @@ def score_spectrum(signal: np.ndarray, fps: float,
     if freqs.size != spectrum.size:
         return _zero_score()
 
-    total_power = float(np.trapezoid(spectrum, freqs)) or 1.0
+    total_power = float(_trapezoid(spectrum, freqs)) or 1.0
 
     # ── band powers ─────────────────────────────────────────────────────
     p_dc      = _band_power(freqs, spectrum, *F_DC)

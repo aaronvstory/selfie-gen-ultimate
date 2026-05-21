@@ -573,6 +573,15 @@ def stream_subprocess_with_timeout(
     streaming — both automation/rppg.py and the GUI queue use it so the
     timeout behaviour can't drift between paths.
     """
+    # Codex P1 (2026-05-21): the rPPG .bat launcher has ``pause``
+    # statements on every error path AND end-of-file. When invoked
+    # from this subprocess (stdin not a tty), the .bat blocked
+    # forever waiting for a keypress. Set KLING_NO_PAUSE=1 to
+    # suppress every pause in the launcher (run_rppg.bat /
+    # rppg.bat both honour this gate). No-op on POSIX (the .sh
+    # launcher has no pause).
+    env = dict(os.environ)
+    env["KLING_NO_PAUSE"] = "1"
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -580,6 +589,7 @@ def stream_subprocess_with_timeout(
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=env,
     )
     assert process.stdout is not None
     line_q: "_queue.Queue[Optional[str]]" = _queue.Queue()

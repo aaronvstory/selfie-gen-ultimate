@@ -6,11 +6,21 @@ rem rPPG injector launcher -- runs off the repo main venv.
 rem This dir is gitignored (sensitive friend tool); never committed.
 rem All deps already live in the shared repo venv -- no pip step.
 
+rem Codex P1 / P2 (2026-05-21): when invoked from a Python subprocess
+rem (queue_manager._rppg_video, automation/rppg.py:run_rppg) the four
+rem error-path pause + end-of-file pause statements blocked indefinitely
+rem waiting for keypress on a hidden stdin. Now suppressed via the
+rem KLING_NO_PAUSE env var which the Python callers always set; manual
+rem double-click users still get the pauses (var unset). The PAUSE alias
+rem call expands to "pause" or nothing per the gate.
+set "PAUSE=pause"
+if defined KLING_NO_PAUSE set "PAUSE=rem skip_pause"
+
 set "REPO_ROOT="
 if exist "..\requirements.txt" if exist "..\kling_automation_ui.py" for %%I in ("..") do set "REPO_ROOT=%%~fI"
 if not defined REPO_ROOT (
   echo  [ERROR] Could not locate repo root from %CD%.
-  pause
+  %PAUSE%
   exit /b 1
 )
 set "STATE_DIR=%REPO_ROOT%\.launcher_state"
@@ -30,7 +40,7 @@ if "!PYTHON_BIN!"=="" (
   echo   ERROR: No supported Python ^(3.9-3.12^) found in the repo venv.
   echo   Create it: py -3.11 -m venv "%REPO_ROOT%\venv" then pip install -r requirements.txt
   >>"%LOG_FILE%" echo [ERROR] No supported Python found.
-  pause
+  %PAUSE%
   exit /b 1
 )
 echo   Python: !ENV_KIND! -- !PYTHON_BIN!
@@ -40,7 +50,7 @@ echo   Python: !ENV_KIND! -- !PYTHON_BIN!
 if errorlevel 1 (
   echo   ERROR: Resolved Python outside supported range 3.9-3.12.
   >>"%LOG_FILE%" echo [ERROR] Unsupported Python after resolve.
-  pause
+  %PAUSE%
   exit /b 1
 )
 "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
@@ -48,7 +58,7 @@ if errorlevel 1 (
   echo   ERROR: repo venv missing cv2/numpy/mediapipe/scipy.
   echo   Sync: "%REPO_ROOT%\venv\Scripts\pip" install -r "%REPO_ROOT%\requirements.txt"
   >>"%LOG_FILE%" echo [ERROR] Core imports missing in repo venv.
-  pause
+  %PAUSE%
   exit /b 1
 )
 if exist "%REPO_ROOT%\face_landmarker.task" set "MEDIAPIPE_FACE_LANDMARKER_MODEL=%REPO_ROOT%\face_landmarker.task"
@@ -62,7 +72,7 @@ echo   Launching rppg_injector.py %*
 set "EXIT_CODE=%ERRORLEVEL%"
 echo   Finished with code %EXIT_CODE%.
 >>"%LOG_FILE%" echo [INFO] Finished with code %EXIT_CODE%.
-pause
+%PAUSE%
 exit /b %EXIT_CODE%
 
 :check_py

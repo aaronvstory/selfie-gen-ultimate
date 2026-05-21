@@ -427,21 +427,29 @@ def score_face_kinematics(
                     with_face += 1
                     matrix = np.array(result.facial_transformation_matrixes[0])
                     y, p, r = _euler_from_matrix(matrix)
-                    yaws.append(y); pitches.append(p); rolls.append(r)
+                    yaws.append(y)
+                    pitches.append(p)
+                    rolls.append(r)
                     blinks.append(_blink_score_from_blendshapes(
                         result.face_blendshapes[0]))
                 else:
                     # Mark a gap — interpolate later or just drop.
-                    yaws.append(np.nan); pitches.append(np.nan)
-                    rolls.append(np.nan); blinks.append(0.0)
+                    yaws.append(np.nan)
+                    pitches.append(np.nan)
+                    rolls.append(np.nan)
+                    blinks.append(0.0)
             idx += 1
     finally:
         cap.release()
-        try: landmarker.close()
-        except Exception: pass
+        try:
+            landmarker.close()
+        except Exception:
+            pass
 
-    yaws = np.array(yaws); pitches = np.array(pitches)
-    rolls = np.array(rolls); blink_sig = np.array(blinks)
+    yaws = np.array(yaws)
+    pitches = np.array(pitches)
+    rolls = np.array(rolls)
+    blink_sig = np.array(blinks)
 
     valid = ~np.isnan(yaws)
     if valid.sum() < 5:
