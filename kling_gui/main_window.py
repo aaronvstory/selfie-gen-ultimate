@@ -1641,7 +1641,9 @@ class KlingGUIWindow:
         style.configure(
             TTK_BTN_WORKFLOW,
             font=(FONT_FAMILY, 10, "bold"),
-            foreground="white",
+            # Black text (user request 2026-05-21) reads better against
+            # the accent-blue fill than white on both Win + macOS.
+            foreground="black",
             background=COLORS["accent_blue"],
             bordercolor="#0A1A2E",
             lightcolor=COLORS["accent_blue"],
