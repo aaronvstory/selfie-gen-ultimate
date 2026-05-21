@@ -212,8 +212,11 @@ def check_compromised_pypi_in_deps(repo_root: Path) -> CheckResult:
             #   - end of line
             # (Gemini + Codex on 0e16c8d caught the comment + marker
             # + direct-ref bypasses.)
+            # PEP 508 allows whitespace between the package name and
+            # the extras bracket (``litellm [proxy]`` is legal).
+            # Gemini medium on d53c64f.
             if re.search(
-                rf"^\s*{re.escape(bad)}(?:\[[^\]]+\])?\s*(?:[=<>!~;@#]|$)",
+                rf"^\s*{re.escape(bad)}\s*(?:\[[^\]]+\])?\s*(?:[=<>!~;@#]|$)",
                 text,
                 re.MULTILINE,
             ):
@@ -322,14 +325,24 @@ def check_workflows_for_suspicious_commits(repo_root: Path) -> CheckResult:
         # Word boundary `\b` after the shell name prevents matching
         # ``bashfoo`` as a false positive.
         # (Gemini security-medium on 9a20e14 + 03d05e5.)
+        # The optional sudo section accepts arbitrary args before
+        # the shell name (``sudo -E bash``, ``sudo -u root bash``,
+        # ``sudo --preserve-env bash``, etc.) — Gemini medium on
+        # d53c64f. The pattern is permissive on what comes between
+        # ``sudo`` and the shell (any non-pipe characters), then
+        # requires the shell name with a word-boundary. This is
+        # slightly broader than strictly correct sudo grammar but
+        # the false-positive cost is low (it would require a
+        # legitimate workflow line containing ``sudo`` + a shell
+        # name + a pipe, which is itself suspicious).
         re.compile(
             r"curl\s+[^|\n]+\|\s*"
-            r"(?:[\w/.+\-]+/)?(?:sudo\s+)?(?:[\w/.+\-]+/)?"
+            r"(?:[\w/.+\-]+/)?(?:sudo(?:\s[^|\n]*?)?\s+)?(?:[\w/.+\-]+/)?"
             r"(sh|bash|zsh|python[\d.]*)\b"
         ),
         re.compile(
             r"wget\s+[^|\n]+-O-\s*\|\s*"
-            r"(?:[\w/.+\-]+/)?(?:sudo\s+)?(?:[\w/.+\-]+/)?"
+            r"(?:[\w/.+\-]+/)?(?:sudo(?:\s[^|\n]*?)?\s+)?(?:[\w/.+\-]+/)?"
             r"(sh|bash|zsh|python[\d.]*)\b"
         ),
         re.compile(
@@ -460,10 +473,19 @@ def main(argv: List[str] | None = None) -> int:
             p_candidate = repo_root / candidate
             if p_candidate.exists() and p_candidate not in venv_paths:
                 venv_paths.append(p_candidate)
-        # oldcam-v* venvs (any version)
-        for p_candidate in repo_root.glob("oldcam-v*/.venv"):
-            if p_candidate.exists() and p_candidate not in venv_paths:
-                venv_paths.append(p_candidate)
+        # oldcam-v* venvs (any version × any common venv name).
+        # The root auto-detect block above checks for `venv`,
+        # `.venv`, and `.venv311`; mirror that here so we catch the
+        # poisoned-.pth attack regardless of which naming the user
+        # picked when bootstrapping oldcam-v* deps. Gemini medium on
+        # d53c64f.
+        for p_dir in repo_root.glob("oldcam-v*"):
+            if not p_dir.is_dir():
+                continue
+            for candidate in ("venv", ".venv", ".venv311"):
+                p_candidate = p_dir / candidate
+                if p_candidate.exists() and p_candidate not in venv_paths:
+                    venv_paths.append(p_candidate)
 
     do_github = args.github or args.all
 

