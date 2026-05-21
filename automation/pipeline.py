@@ -537,6 +537,18 @@ class AutoPipelineRunner:
                 executed_passes = 0
                 for pass_index in range(front_passes):
                     pass_output = str(target_output) if pass_index == front_passes - 1 else None
+                    # Phase G of polish/v2.3 (2026-05-22): Step 0
+                    # face-crop expand uses its OWN prompt key. Falls
+                    # back to the legacy shared ``outpaint_prompt`` so
+                    # CLI runs on configs without the new key still
+                    # work. Pre-Phase-G this dispatch passed no prompt
+                    # at all (default empty string), so the section-
+                    # specific key is a strict improvement.
+                    front_expand_prompt = (
+                        self.config.get("face_crop_expand_prompt")
+                        or self.config.get("outpaint_prompt", "")
+                        or ""
+                    )
                     result = outpaint.outpaint(
                         image_path=front_input_path,
                         output_folder=str(case_dir),
@@ -548,6 +560,7 @@ class AutoPipelineRunner:
                         if self.automation.get("automation_front_edge_seal_enabled", True)
                         else 0,
                         poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
+                        prompt=front_expand_prompt,
                         **front_expand_kwargs,
                     )
                     if not result:
@@ -922,6 +935,13 @@ class AutoPipelineRunner:
                 expanded_output = case_dir / "gen-images" / f"{Path(best_path).stem}-expanded.png"
                 if reprocess_mode == "increment":
                     expanded_output = self._next_increment_path(expanded_output)
+                # Phase G: Step 2.5 selfie expand uses its OWN prompt
+                # key. Same fallback chain as Step 0 above.
+                selfie_expand_prompt = (
+                    self.config.get("selfie_expand_prompt")
+                    or self.config.get("outpaint_prompt", "")
+                    or ""
+                )
                 expanded_result = outpaint.outpaint(
                     image_path=best_path,
                     output_folder=str(case_dir / "gen-images"),
@@ -935,6 +955,7 @@ class AutoPipelineRunner:
                     expand_bottom=margins["bottom"],
                     edge_seal_px=0,
                     poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
+                    prompt=selfie_expand_prompt,
                 )
                 if expanded_result:
                     final_still = expanded_result

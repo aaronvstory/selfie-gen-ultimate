@@ -134,15 +134,17 @@ class ExpandTab(tk.Frame):
         )
         self._candidate_meta.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
 
-        # Prompt editor (user request, PR #41) — backed by the
-        # existing outpaint_prompt config key, which the dispatch
-        # path was already reading silently. Now editable in the
-        # tab itself, so the user can tune the prompt sent to
-        # fal.ai or BFL without leaving Step 2.5. Same key as the
-        # standalone Outpaint tab, so edits flow between them.
+        # Prompt editor — Phase G of polish/v2.3 (2026-05-22) gave
+        # this section its own config key (``selfie_expand_prompt``)
+        # so Step 2.5 can carry a scene-matching prompt without
+        # bleeding into Step 0 face-crop expand or the standalone
+        # Outpaint tab. Fallback: when ``selfie_expand_prompt`` is
+        # empty / missing, read the legacy shared ``outpaint_prompt``
+        # so users with old configs see their saved prompt populated
+        # on first launch.
         prompt_frame = tk.LabelFrame(
             self,
-            text="Prompt (sent to fal.ai / BFL)",
+            text="Step 2.5 Expand Prompt (sent to fal.ai / BFL)",
             font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
@@ -162,8 +164,13 @@ class ExpandTab(tk.Frame):
             relief=tk.FLAT,
             insertbackground=COLORS["text_light"],
         )
+        # Phase G fallback chain: section-specific key first, then
+        # legacy shared key, then empty string.
         self._prompt_text.insert(
-            "1.0", self.config.get("outpaint_prompt", "")
+            "1.0",
+            self.config.get("selfie_expand_prompt")
+            or self.config.get("outpaint_prompt", "")
+            or "",
         )
         self._prompt_text.pack(fill=tk.X, padx=6, pady=6)
 
@@ -754,13 +761,18 @@ class ExpandTab(tk.Frame):
 
         max_per_side = 2048 if use_bfl else 700
         output_format = self._format_var.get()
-        # Live editor value — falls back to the persisted config
-        # key if the widget is missing (defensive, mirrors the
-        # outpaint_tab pattern).
+        # Live editor value — falls back to the section-specific
+        # persisted config key (Phase G of polish/v2.3), then to the
+        # legacy shared ``outpaint_prompt`` key, if the widget is
+        # missing (defensive, mirrors the outpaint_tab pattern).
         try:
             prompt = self._prompt_text.get("1.0", "end-1c")
         except Exception:
-            prompt = cfg.get("outpaint_prompt", "")
+            prompt = (
+                cfg.get("selfie_expand_prompt")
+                or cfg.get("outpaint_prompt", "")
+                or ""
+            )
         composite_mode = self._composite_mode_var.get().strip() or "preserve_seamless"
         freeimage_key = cfg.get("freeimage_api_key")
         ref_path = self._get_similarity_reference()
@@ -970,11 +982,17 @@ class ExpandTab(tk.Frame):
             "outpaint_composite_mode": self._composite_mode_var.get(),
             "automation_selfie_expand_composite_mode": self._composite_mode_var.get(),
             "outpaint_provider": self._provider_var.get(),
-            "outpaint_prompt": (
+            # Phase G of polish/v2.3 (2026-05-22): writes go to the
+            # section-specific key. Reads still fall back to the legacy
+            # shared key for back-compat (see _build_ui), but writes
+            # never touch the shared key so a Step 2.5 prompt edit can
+            # NOT silently override Step 0 or Outpaint-tab prompts.
+            "selfie_expand_prompt": (
                 self._prompt_text.get("1.0", "end-1c")
                 if hasattr(self, "_prompt_text")
                 else (
-                    self.config.get("outpaint_prompt", "")
+                    self.config.get("selfie_expand_prompt")
+                    or self.config.get("outpaint_prompt", "")
                     if isinstance(getattr(self, "config", None), dict)
                     else ""
                 )

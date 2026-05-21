@@ -185,6 +185,30 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         self.assertEqual(d['loop_videos'], False)
         self.assertEqual(d['outpaint_provider'], 'fal')
 
+    def test_v23_three_independent_expand_prompts(self):
+        """Phase G of polish/v2.3 (2026-05-22): Step 0 face-crop,
+        Step 2.5 selfie, and the standalone Outpaint tab each have
+        their OWN expand-prompt config key. Default template ships
+        all three with the same starting value so first-launch
+        behaviour matches the prior single-shared-key design."""
+        import json as _j
+        d = _j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
+        # All three keys must exist in the shipped template.
+        for key in ('face_crop_expand_prompt', 'selfie_expand_prompt', 'outpaint_tab_prompt'):
+            self.assertIn(key, d, f"template missing Phase G key {key!r}")
+        # And each tab's source must wire its editor to the right key.
+        fc_src = (_ROOT / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+        self.assertIn('self.config.get("face_crop_expand_prompt")', fc_src)
+        self.assertIn('updates["face_crop_expand_prompt"]', fc_src)
+
+        ex_src = (_ROOT / "kling_gui" / "tabs" / "expand_tab.py").read_text(encoding="utf-8")
+        self.assertIn('self.config.get("selfie_expand_prompt")', ex_src)
+        self.assertIn('"selfie_expand_prompt":', ex_src)
+
+        op_src = (_ROOT / "kling_gui" / "tabs" / "outpaint_tab.py").read_text(encoding="utf-8")
+        self.assertIn('self.config.get("outpaint_tab_prompt")', op_src)
+        self.assertIn('"outpaint_tab_prompt":', op_src)
+
     def test_v23_extra_prompt_slots_shipped(self):
         """polish/v2.3: saved_prompts slots 5+6 and
         selfie_wildcard_saved_prompts slots 4+5+6 ship populated so a
@@ -778,14 +802,17 @@ class Expand25SingleSelectRedesignTests(unittest.TestCase):
 
     def test_prompt_editor_widget_exists_and_loads_config_key(self):
         src = self._src()
-        # tk.Text widget on the tab, backed by outpaint_prompt.
+        # tk.Text widget on the tab, backed by selfie_expand_prompt
+        # (Phase G of polish/v2.3, 2026-05-22). Pre-Phase-G all three
+        # expand-section editors shared the legacy ``outpaint_prompt``
+        # key; now each editor has its own with a back-compat
+        # fallback to the shared key.
         self.assertIn("self._prompt_text = tk.Text(", src)
-        # Loaded from config at construction time.
-        self.assertRegex(
-            src,
-            r'self\._prompt_text\.insert\(\s*"1\.0",\s*'
-            r'self\.config\.get\(\s*"outpaint_prompt",\s*""\s*\)\s*\)',
-        )
+        # Loaded from config at construction time via the new
+        # section-specific key, with the legacy shared key as
+        # back-compat fallback.
+        self.assertIn('self.config.get("selfie_expand_prompt")', src)
+        self.assertIn('self.config.get("outpaint_prompt", "")', src)
 
     def test_prompt_text_is_read_at_dispatch_time(self):
         """The live editor value (not the stale cfg blob) must be what
@@ -821,13 +848,17 @@ class Expand25SingleSelectRedesignTests(unittest.TestCase):
 
     def test_get_config_updates_persists_outpaint_prompt(self):
         """Saving the panel writes the live editor value back so it
-        survives a restart."""
+        survives a restart. Phase G (2026-05-22): the key is now
+        ``selfie_expand_prompt`` (section-specific), not the legacy
+        shared ``outpaint_prompt``. Updates flow ONLY to the new key
+        so a Step 2.5 edit can't silently override Step 0 or the
+        Outpaint tab."""
         src = self._src()
-        # The dict literal must include the outpaint_prompt key wired
-        # to self._prompt_text.get(...).
+        # The dict literal must include the section-specific key
+        # wired to self._prompt_text.get(...).
         self.assertRegex(
             src,
-            r'"outpaint_prompt":\s*\(\s*'
+            r'"selfie_expand_prompt":\s*\(\s*'
             r'self\._prompt_text\.get\(\s*"1\.0",\s*"end-1c"\s*\)',
         )
 

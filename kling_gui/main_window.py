@@ -1143,6 +1143,12 @@ class KlingGUIWindow:
             "selfie_poll_timeout_seconds": 300,
             "selfie_current_prompt_slot": 3,
             "outpaint_fal_timeout_seconds": 150,
+            # Phase G of polish/v2.3 (2026-05-22): per-section expand
+            # prompts. Each tab edits its own key; the legacy shared
+            # ``outpaint_prompt`` stays as a read-fallback for back-compat.
+            "face_crop_expand_prompt": "",
+            "selfie_expand_prompt": "",
+            "outpaint_tab_prompt": "",
             "selfie_saved_prompts": {str(i): "" for i in range(1, 11)},
             "selfie_prompt_titles": {str(i): f"Prompt {i}" for i in range(1, 11)},
             "selfie_selected_models": {

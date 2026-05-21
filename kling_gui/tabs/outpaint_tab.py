@@ -252,8 +252,15 @@ class OutpaintTab(tk.Frame):
             pady=5,
         )
         self.prompt_text.pack(fill=tk.X, padx=5, pady=5)
+        # Phase G of polish/v2.3 (2026-05-22): section-specific
+        # key ``outpaint_tab_prompt``, with the legacy shared
+        # ``outpaint_prompt`` as a back-compat fallback so users
+        # with old configs see their saved prompt on first launch.
         self.prompt_text.insert(
-            "1.0", self.config.get("outpaint_prompt", "")
+            "1.0",
+            self.config.get("outpaint_tab_prompt")
+            or self.config.get("outpaint_prompt", "")
+            or "",
         )
 
         # ── Output format ───────────────────────────────────────────────
@@ -504,7 +511,8 @@ class OutpaintTab(tk.Frame):
             "outpaint_expand_right": self.right_var.get(),
             "outpaint_expand_top": self.top_var.get(),
             "outpaint_expand_bottom": self.bottom_var.get(),
-            "outpaint_prompt": self.prompt_text.get("1.0", tk.END).strip(),
+            # Phase G: writes go to the section-specific key.
+            "outpaint_tab_prompt": self.prompt_text.get("1.0", tk.END).strip(),
             "outpaint_format": self.format_var.get(),
             "outpaint_composite_mode": self._composite_mode_var.get(),
         }

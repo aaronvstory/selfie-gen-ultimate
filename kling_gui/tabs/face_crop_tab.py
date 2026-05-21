@@ -758,8 +758,18 @@ class FaceCropTab(tk.Frame):
                 insertbackground=COLORS["text_light"], font=(FONT_FAMILY, 9),
             ).pack(side=tk.LEFT, padx=(2, 0))
 
-        # Outpaint prompt stored in config (edited via dialog)
-        self._outpaint_prompt_str = self.config.get("outpaint_prompt", "")
+        # Outpaint prompt stored in config (edited via dialog).
+        # Phase G of polish/v2.3 (2026-05-22): the Step 0 face-crop
+        # expand has its own ``face_crop_expand_prompt`` key now,
+        # independent of Step 2.5 (``selfie_expand_prompt``) and
+        # the standalone Outpaint tab (``outpaint_tab_prompt``).
+        # Legacy ``outpaint_prompt`` is read as a fallback so users
+        # with old configs see their saved prompt on first launch.
+        self._outpaint_prompt_str = (
+            self.config.get("face_crop_expand_prompt")
+            or self.config.get("outpaint_prompt", "")
+            or ""
+        )
 
         # Provider + Format + Composite row
         _PROVIDER_LABELS = {
@@ -1691,7 +1701,7 @@ class FaceCropTab(tk.Frame):
     def _open_expand_prompt_editor(self):
         """Open a modal dialog to view/edit the outpaint/expand prompt."""
         dialog = tk.Toplevel(self.winfo_toplevel())
-        dialog.title("Expand Prompt")
+        dialog.title("Step 0 Expand Prompt")
         dialog.transient(self.winfo_toplevel())
         dialog.grab_set()
         dialog.configure(bg=COLORS["bg_main"])
@@ -2076,8 +2086,11 @@ class FaceCropTab(tk.Frame):
             "outpaint_double_expand": self._outpaint_double_expand_var.get(),
             "accordion_expanded": self._expanded_sections,
         }
-        # Persist outpaint prompt
-        updates["outpaint_prompt"] = self._outpaint_prompt_str
+        # Persist Step 0 face-crop expand prompt (Phase G of
+        # polish/v2.3: section-specific key, NOT the legacy
+        # shared key — keeps Step 0 / Step 2.5 / Outpaint-tab
+        # prompts independent of each other).
+        updates["face_crop_expand_prompt"] = self._outpaint_prompt_str
         # Always persist polish prompt (reads from shared config dict)
         updates["face_crop_polish_prompt"] = self.config.get(
             "face_crop_polish_prompt", _DEFAULT_POLISH_PROMPT
