@@ -2176,10 +2176,15 @@ def test_run_oldcam_all_returns_every_succeeded_version(tmp_path, monkeypatch):
 
 
 def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch):
-    """Automation Step 8 must inject rPPG into the BASE (video_generate
-    output — automation has no loop) AND every per-version oldcam output
-    recorded in the oldcam step meta["all_outputs"]. There is no
-    privileged "primary"; plain pre-rPPG files are kept."""
+    """LEGACY behaviour (per-Oldcam fan-out): with the opt-in flag
+    ``automation_rppg_per_oldcam_fanout=True``, automation injects rPPG
+    into the BASE (pre-Oldcam pass, Phase E of polish/v2.3) AND every
+    per-version oldcam output. Plain pre-rPPG files are kept.
+
+    The flag default flipped to False on 2026-05-22 — the new default
+    runs rPPG once on the base, and every Oldcam version derives from
+    that single injection. This test pins the LEGACY behaviour behind
+    the explicit opt-in flag."""
     from automation.rppg import build_rppg_output_path
 
     case_dir = tmp_path / "case-fanout"
@@ -2204,6 +2209,8 @@ def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch
         "automation_oldcam_required": False,
         "automation_rppg_enabled": True,
         "automation_rppg_required": False,
+        # Phase E: explicit opt-in to keep the legacy per-Oldcam fan-out.
+        "automation_rppg_per_oldcam_fanout": True,
     })
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
@@ -2254,8 +2261,91 @@ def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch
     assert len(step.get("meta", {}).get("all_outputs", [])) == 3
 
 
+def test_pipeline_rppg_default_runs_once_on_base_not_each_oldcam(tmp_path, monkeypatch):
+    """Phase E of polish/v2.3 (2026-05-22) — NEW default behaviour:
+    without the ``automation_rppg_per_oldcam_fanout`` opt-in flag,
+    rPPG runs ONCE on the base (via the pre-Oldcam pass) and every
+    Oldcam version derives from THAT injection. The trailing per-
+    Oldcam fan-out is OFF. This locks the user's stated intent:
+    'Kling -> rPPG -> Oldcam (from rPPG'd base), with an opt-in
+    GUI checkbox for the slower per-Oldcam fan-out.'"""
+    from automation.rppg import build_rppg_output_path
+
+    case_dir = tmp_path / "case-newflow"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    gv = case_dir / "gen-videos"
+    gv.mkdir()
+    base = gv / "existing.mp4"
+    base.write_bytes(b"base")
+    v8 = gv / "existing-oldcam-v8.mp4"
+    v8.write_bytes(b"v8")
+    v24 = gv / "existing-oldcam-v24.mp4"
+    v24.write_bytes(b"v24")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-newflow")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x", "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "p"}, "current_prompt_slot": 1,
+        "automation_skip_if_video_exists": True,
+        "automation_oldcam_enabled": True,
+        "automation_oldcam_required": False,
+        "automation_rppg_enabled": True,
+        "automation_rppg_required": False,
+        # NO automation_rppg_per_oldcam_fanout key -> defaults to False.
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **k: [("v8", v8), ("v24", v24)])
+
+    rppg_inputs = []
+
+    def _fake_rppg(
+        *, video_path, repo_root, progress_cb=None,
+        timeout_seconds=600, keep_metrics=False,
+        iterative=True, iterate_from_baseline=True,
+        skip_diagnosis=True, skip_kinematic_gate=True,
+        verbose=False,
+    ):
+        del (
+            repo_root, progress_cb, timeout_seconds, keep_metrics,
+            iterative, iterate_from_baseline, skip_diagnosis,
+            skip_kinematic_gate, verbose,
+        )
+        rppg_inputs.append(Path(video_path))
+        out = build_rppg_output_path(Path(video_path))
+        out.write_bytes(b"rppg")
+        return out
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", _fake_rppg)
+    runner = AutoPipelineRunner(
+        config=config, automation_config=from_app_config(config), manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(outpaint_factory=lambda: FakeOutpaint(), selfie_factory=lambda: FakeSelfie(), video_factory=lambda: FakeVideo()),
+    )
+    stats = runner.run([record])
+    assert stats["failed"] == 0
+    # ONLY ONE rPPG call — the pre-Oldcam pass on the base. NO per-
+    # Oldcam fan-out (that was the legacy default).
+    assert len(rppg_inputs) == 1, f"expected 1 rPPG call, got {len(rppg_inputs)}: {[p.name for p in rppg_inputs]}"
+    assert rppg_inputs[0].name == "existing.mp4"
+    # Step 8 records the pre-Oldcam result as deliverable via the
+    # ``already`` branch.
+    step = manifest.data["cases"]["case-newflow"]["steps"].get("rppg", {})
+    assert step.get("status") == "complete"
+    headline = step.get("output", "")
+    assert headline.endswith("existing-rppg.mp4"), headline
+
+
 def _fanout_partial_case(tmp_path, required, monkeypatch):
-    """Shared rig: base + v8 + v24; v24 rPPG FAILS, base+v8 succeed."""
+    """Shared rig: base + v8 + v24; v24 rPPG FAILS, base+v8 succeed.
+
+    Tests the LEGACY per-Oldcam fan-out behaviour (opt-in via
+    ``automation_rppg_per_oldcam_fanout`` since Phase E of
+    polish/v2.3, 2026-05-22)."""
     from automation.rppg import build_rppg_output_path
 
     case_dir = tmp_path / f"case-partial-{required}"
@@ -2281,6 +2371,8 @@ def _fanout_partial_case(tmp_path, required, monkeypatch):
         "automation_oldcam_required": False,
         "automation_rppg_enabled": True,
         "automation_rppg_required": required,
+        # Phase E: explicit opt-in to keep the legacy per-Oldcam fan-out.
+        "automation_rppg_per_oldcam_fanout": True,
     })
     manifest = AutomationManifest.create_or_load(
         tmp_path / f"m-{required}.json", tmp_path, {})

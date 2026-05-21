@@ -1125,6 +1125,7 @@ class KlingGUIWindow:
             "model_display_name": "Kling 2.5 Turbo Pro",
             "video_duration": 10,
             "loop_videos": False,  # Loop videos OFF by default (changed 2026-05-22 — most workflows don't need looping)
+            "rppg_per_oldcam_fanout": False,  # Phase E of polish/v2.3: legacy "rPPG on every Oldcam" fan-out, opt-in (slower)
             "oldcam_videos": True,  # Oldcam Finish ON by default
             "oldcam_version": "v9",
             "oldcam_versions": ["v9"],

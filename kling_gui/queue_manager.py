@@ -711,14 +711,34 @@ class QueueManager:
                         completion_callback(False, str(source_video), None, message)
                     return
 
-                # Mirror the normal queue's loop step (around line 985-988): if the
-                # user has Loop enabled, re-loop the source before Oldcam so the
-                # output is named ..._looped-oldcam-vN.mp4 and built on a fresh
-                # loop intermediate (looper uses -profile:v high -preset slow
-                # -crf 12 -pix_fmt yuv420p — visually-lossless, plays standalone;
-                # overwrite=True replaces any stale bloated pre-fix _looped.mp4).
-                # Skip when the input is already a loop (stem ends in _looped) to
-                # avoid ..._looped_looped.mp4.
+                # Mirror the normal queue's order (Phase E of polish/v2.3,
+                # 2026-05-22): rPPG -> Loop -> Oldcam. The re-run path's
+                # ``source_video`` plays the same role as the main queue's
+                # raw Kling output: rPPG runs first, then Loop, then Oldcam.
+                #
+                # Skip rPPG step entirely on inputs that are already rPPG
+                # artifacts (the _rppg_video helper enforces this too, but
+                # short-circuiting here also avoids the misleading
+                # "Applying rPPG injection..." log line).
+                from automation.rppg import is_rppg_artifact
+                if self._rppg_enabled() and not is_rppg_artifact(source_video):
+                    self.log("Re-Run: applying rPPG before Loop+Oldcam (rPPG enabled)", "info")
+                    rppg_first = self._rppg_video(str(source_video), QueueItem(str(source_video)))
+                    if rppg_first:
+                        source_video = Path(rppg_first).resolve()
+                        self.log(f"Re-Run rPPG intermediate: {source_video.name}", "debug")
+                    else:
+                        self.log(
+                            "Re-Run: rPPG step failed/skipped; continuing with un-injected source",
+                            "warning",
+                        )
+
+                # Loop step: same gating as before — skip if the input
+                # is already a loop (stem ends in _looped) to avoid
+                # ``..._looped_looped.mp4``. Now the source may also
+                # carry a ``-rppg`` suffix from the prior step, which
+                # is fine — the looper just emits ``<stem>_looped``
+                # on top.
                 if config.get("loop_videos", False):
                     if source_video.stem.endswith("_looped"):
                         self.log(
@@ -793,50 +813,42 @@ class QueueManager:
                     "info",
                 )
                 output_path = self._oldcam_video(str(run_input), QueueItem(str(source_video)))
-                # rPPG fan-out parity with the main queue path: when
-                # enabled, inject the BASE (run_input — already loop-
-                # applied above when looping is on) AND every selected
-                # oldcam output, so the re-run produces the same set as a
-                # fresh run ("<base>-rppg" + one "<base>-oldcam-vN-rppg"
-                # per version). The plain pre-rPPG files all stay on disk.
-                # Graceful skip leaves output_path as the oldcam result.
+                # OPTIONAL per-Oldcam rPPG fan-out (Phase E of
+                # polish/v2.3, 2026-05-22). The main rPPG pass already
+                # ran on ``source_video`` at the top of this worker
+                # (the new Kling -> rPPG -> Loop -> Oldcam order), so
+                # we only run the slower per-Oldcam-output rPPG
+                # injection when the user has explicitly opted in via
+                # the ``rppg_per_oldcam_fanout`` config flag. Default
+                # OFF — most workflows don't need it because Oldcam's
+                # resolution-crush attenuates the pulse and the
+                # already-rPPG'd base is the cleaner deliverable.
                 #
                 # NOTE (deliberate asymmetry, not a bug): this is the
-                # oldcam-specific re-run path — it already early-returned
-                # above when no oldcam versions are selected, so rPPG-only
-                # re-run is NOT reachable here. rPPG-only DOES work in the
-                # normal generation flow (the main queue runs _rppg_video
-                # unconditionally on _rppg_enabled). A shared post-process
-                # re-run button is a documented future direction
-                # (docs/rppg-wiring.md), not an omission.
+                # oldcam-specific re-run path. The early-return above
+                # when no Oldcam versions are selected means rPPG-only
+                # re-run is NOT reachable here — that flow lives in
+                # the main queue path which always runs _rppg_video
+                # when ``rppg_enabled`` is True.
                 summary = self._last_oldcam_run_summary or {}
-                if self._rppg_enabled():
+                if (
+                    self._rppg_enabled()
+                    and config.get("rppg_per_oldcam_fanout", False)
+                ):
                     rerun_oldcam_outputs = list(summary.get("outputs") or [])
-                    # Ordered de-dup (base first, then each oldcam output).
-                    # dict.fromkeys is O(n) vs an O(n^2) list-membership
-                    # loop (gemini-code-assist, PR #40).
-                    rppg_inputs = list(
-                        dict.fromkeys(
-                            s for s in [str(run_input), *rerun_oldcam_outputs] if s
-                        )
-                    )
                     last_rppg: Optional[str] = None
-                    for src in rppg_inputs:
+                    for src in rerun_oldcam_outputs:
                         rppg_path = self._rppg_video(src, QueueItem(str(source_video)))
                         if rppg_path:
                             last_rppg = rppg_path
-                    # This is the OLDCAM-only re-run path. Only adopt the
-                    # rPPG result when oldcam itself produced output
-                    # (output_path truthy). If oldcam produced NOTHING,
-                    # leaving output_path falsy lets the downstream
-                    # "if output_path and exists()" correctly report the
-                    # oldcam rerun as FAILED — a base-only rPPG must not
-                    # mask total oldcam failure as success (CodeRabbit
-                    # Major, PR #40).
+                    # Only adopt the rPPG result when oldcam itself
+                    # produced output (output_path truthy). If oldcam
+                    # produced NOTHING, leaving output_path falsy lets
+                    # the downstream "if output_path and exists()"
+                    # correctly report the oldcam rerun as FAILED — a
+                    # base-only rPPG must not mask total oldcam failure
+                    # as success (CodeRabbit Major, PR #40).
                     if last_rppg and output_path:
-                        # Headline the highest oldcam version's rPPG
-                        # (output_path is that version's path) when its
-                        # injected sibling exists, else the last success.
                         preferred = self._build_rppg_output_path(Path(output_path))
                         output_path = (
                             str(preferred) if preferred.exists() else last_rppg
@@ -1089,26 +1101,43 @@ class QueueManager:
                     item.status = "completed"
                     self.log(f"Completed: {item.filename}", "success")
 
+                    # NEW pipeline order (Phase E of polish/v2.3,
+                    # 2026-05-22): Kling -> rPPG -> Loop -> Oldcam. The
+                    # rPPG'd base feeds Loop, the looped-or-not rPPG'd
+                    # base feeds every Oldcam version. Each Oldcam
+                    # output sits next to its plain pre-Oldcam parent.
+                    # This replaces the prior "rPPG strictly LAST"
+                    # order where rPPG fan-out happened on each Oldcam
+                    # output. The slower legacy mode is preserved
+                    # behind the rppg_per_oldcam_fanout opt-in flag
+                    # below (defaults OFF).
                     final_video = result
-                    # Loop runs ONCE first (Kling -> Loop). Every oldcam
-                    # version + rPPG variant builds off this single looped
-                    # source — nothing is re-looped per-variant. ``base_video``
-                    # is that single source: the looped clip if looping is
-                    # on, else the raw Kling clip. It is rPPG's base target
-                    # (the clearly-labelled "original + rPPG" deliverable),
-                    # independent of any oldcam output.
+
+                    # Step 1: rPPG on raw Kling FIRST when enabled.
+                    # Produces ``<stem>-rppg.mp4`` if it succeeds; on
+                    # graceful skip (tool missing or injection fail),
+                    # leave ``final_video`` as the raw Kling output
+                    # and downstream Loop+Oldcam still run normally.
+                    if self._rppg_enabled():
+                        rppg_base = self._rppg_video(final_video, item)
+                        if rppg_base:
+                            final_video = rppg_base
+
+                    # Step 2: Loop on the rPPG'd (or raw if rPPG was
+                    # OFF/skipped) base. After this step, ``final_video``
+                    # is the single source every Oldcam version + the
+                    # headline output derive from.
                     if config.get("loop_videos", False):
-                        looped_video = self._loop_video(result, item)
+                        looped_video = self._loop_video(final_video, item)
                         if looped_video:
                             final_video = looped_video
-                    base_video = final_video
 
-                    # Oldcam: runs EVERY selected version. _oldcam_video
-                    # returns the highest version's path for callers that
-                    # want one, but _last_oldcam_run_summary["outputs"]
-                    # holds ALL per-version outputs. The plain
-                    # ``-oldcam-vN`` files are KEPT (non-destructive) —
-                    # rPPG produces siblings, it does not replace them.
+                    # Step 3: Oldcam runs EVERY selected version.
+                    # _oldcam_video returns the highest version's path;
+                    # _last_oldcam_run_summary["outputs"] holds ALL
+                    # per-version outputs. The plain pre-Oldcam files
+                    # (raw Kling, rPPG'd, looped) remain on disk
+                    # alongside — non-destructive.
                     oldcam_outputs: List[str] = []
                     if self._get_oldcam_versions_to_run():
                         oldcam_video = self._oldcam_video(final_video, item)
@@ -1117,34 +1146,29 @@ class QueueManager:
                         summary = self._last_oldcam_run_summary or {}
                         oldcam_outputs = list(summary.get("outputs") or [])
 
-                    # rPPG runs LAST. There is NO privileged "primary":
-                    # inject into the BASE (looped/raw) clip AND into EVERY
-                    # selected oldcam output, so the user gets a clearly-
-                    # labelled set: "<base>-rppg" plus one
-                    # "<base>-oldcam-vN-rppg" per selected version. The
-                    # plain pre-rPPG files all remain on disk alongside.
-                    if self._rppg_enabled():
-                        # Ordered de-dup, base first then each oldcam
-                        # output. dict.fromkeys is O(n) vs an O(n^2)
-                        # list-membership loop (gemini-code-assist, PR
-                        # #40). If oldcam produced nothing this is just
-                        # the base — the no-oldcam path.
-                        rppg_inputs = list(
-                            dict.fromkeys(
-                                s for s in [base_video, *oldcam_outputs] if s
-                            )
-                        )
+                    # Step 4 (OPTIONAL): legacy per-Oldcam rPPG fan-out.
+                    # When ``rppg_per_oldcam_fanout`` is True AND rPPG
+                    # itself is enabled, also inject into every Oldcam
+                    # output, producing ``<base>-rppg-oldcam-vN-rppg.mp4``.
+                    # User-direction 2026-05-22: this is slower but lets
+                    # a careful workflow get a fresh-pulse Oldcam variant.
+                    # Default OFF — most workflows do NOT need it because
+                    # Oldcam's resolution-crush attenuates the pulse and
+                    # the rPPG'd base is the cleaner deliverable.
+                    if (
+                        self._rppg_enabled()
+                        and config.get("rppg_per_oldcam_fanout", False)
+                        and oldcam_outputs
+                    ):
                         last_rppg: Optional[str] = None
-                        for src in rppg_inputs:
+                        for src in oldcam_outputs:
                             rppg_video = self._rppg_video(src, item)
                             if rppg_video:
                                 last_rppg = rppg_video
                         if last_rppg:
-                            # Surface the highest-version rPPG output as the
-                            # item's headline path (the others exist on disk
-                            # next to it). Prefer the rPPG of the highest
-                            # oldcam version (final_video's) when present,
-                            # else the last successful injection.
+                            # Surface the highest Oldcam version's rPPG
+                            # as headline when present, else fall back
+                            # to the last successful injection.
                             preferred = self._build_rppg_output_path(
                                 Path(final_video)
                             )

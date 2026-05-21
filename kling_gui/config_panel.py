@@ -698,13 +698,15 @@ class ConfigPanel(tk.Frame):
         HoverTooltip(
             self.rppg_info_icon,
             lambda: (
-                "Sub-perceptual rPPG pulse injection (runs LAST,\n"
-                "after Loop + Oldcam). Aims to give Persona's\n"
-                "passive rPPG stage a physiologically-correct\n"
-                "signal. Untested forward direction — off by\n"
-                "default. Skips gracefully if the rPPG tool is\n"
-                "absent or injection fails (keeps the pre-rPPG\n"
-                "video; never crashes the run)."
+                "Sub-perceptual rPPG pulse injection. As of v2.3\n"
+                "(2026-05-22) it runs FIRST — Kling → rPPG → Loop\n"
+                "→ Oldcam — so every Oldcam version derives from a\n"
+                "single rPPG'd base. Aims to give Persona's passive\n"
+                "rPPG stage a physiologically-correct signal.\n"
+                "Untested forward direction — off by default.\n"
+                "Skips gracefully if the rPPG tool is absent or\n"
+                "injection fails (keeps the pre-rPPG video; never\n"
+                "crashes the run)."
             ),
         )
         self.rppg_var = tk.BooleanVar(value=False)
@@ -723,11 +725,31 @@ class ConfigPanel(tk.Frame):
         self.rppg_checkbox.pack(side=tk.LEFT, anchor="n", padx=(2, 8))
         tk.Label(
             self.rppg_controls_frame,
-            text="(sub-perceptual · runs last · off = unchanged)",
+            text="(sub-perceptual · runs FIRST · default OFF)",
             font=(FONT_FAMILY, 9),
             bg="#3A2A1F",
             fg=COLORS["text_dim"],
         ).pack(side=tk.LEFT, anchor="n", padx=(0, 4))
+
+        # Phase E of polish/v2.3 (2026-05-22): legacy per-Oldcam
+        # fan-out as opt-in. Default OFF — when ON, rPPG ALSO runs
+        # on each Oldcam output (slower but lets a careful workflow
+        # get a fresh-pulse Oldcam variant). Sits to the right of
+        # the main rPPG checkbox so the relationship is visible.
+        self.rppg_per_oldcam_fanout_var = tk.BooleanVar(value=False)
+        self.rppg_per_oldcam_fanout_checkbox = tk.Checkbutton(
+            self.rppg_controls_frame,
+            text="Apply fresh rPPG to each Oldcam version (slower)",
+            variable=self.rppg_per_oldcam_fanout_var,
+            font=(FONT_FAMILY, 9),
+            bg="#3A2A1F",
+            fg=COLORS["text_dim"],
+            selectcolor=COLORS["bg_main"],
+            activebackground="#3A2A1F",
+            activeforeground=COLORS["text_light"],
+            command=self._on_rppg_per_oldcam_fanout_changed,
+        )
+        self.rppg_per_oldcam_fanout_checkbox.pack(side=tk.LEFT, anchor="n", padx=(8, 4))
 
         # ONE shared Re-Run column, packed into the band (rA) to the
         # RIGHT of the Oldcam/rPPG stack — applies to whatever is
@@ -1503,6 +1525,12 @@ class ConfigPanel(tk.Frame):
         self.loop_video_var.set(self.config.get("loop_videos", False))
         # rPPG injection (off by default)
         self.rppg_var.set(self.config.get("rppg_enabled", False))
+        # Per-Oldcam rPPG fan-out (Phase E of polish/v2.3 — opt-in slow
+        # path; default OFF). The legacy 'rPPG on every Oldcam output'
+        # behaviour from PR #40.
+        self.rppg_per_oldcam_fanout_var.set(
+            self.config.get("rppg_per_oldcam_fanout", False)
+        )
         self._check_ffmpeg_status()
         selected_versions = self._resolve_oldcam_versions_from_config()
         for version, var in self.oldcam_version_vars.items():
@@ -1858,6 +1886,20 @@ class ConfigPanel(tk.Frame):
         self.config["rppg_enabled"] = self.rppg_var.get()
         status = "enabled" if self.rppg_var.get() else "disabled"
         self._notify_change(f"rPPG injection {status}")
+
+    def _on_rppg_per_oldcam_fanout_changed(self):
+        """Handle the opt-in per-Oldcam rPPG fan-out checkbox.
+
+        Phase E of polish/v2.3 (2026-05-22): default flow runs rPPG
+        ONCE on the base and every Oldcam version derives from that
+        injection. Enabling this checkbox restores the legacy
+        per-Oldcam fan-out (an additional rPPG pass per Oldcam
+        output — slower but produces a fresh-pulse Oldcam variant).
+        """
+        value = self.rppg_per_oldcam_fanout_var.get()
+        self.config["rppg_per_oldcam_fanout"] = value
+        status = "enabled (slow path)" if value else "disabled"
+        self._notify_change(f"rPPG per-Oldcam fan-out {status}")
 
     def _oldcam_version_key(self, version: str) -> int:
         try:
