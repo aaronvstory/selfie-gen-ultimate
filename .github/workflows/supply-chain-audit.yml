@@ -80,6 +80,15 @@ jobs:
           python -m pip_audit -r similarity/requirements-test.txt \
             --strict --progress-spinner off
 
+      - name: Audit resemble-score/requirements.txt
+        run: |
+          # Resemble-score is a separate subproject with its own
+          # deps. Codex P2 on 03d05e5 caught the missing coverage.
+          if [ -f resemble-score/requirements.txt ]; then
+            python -m pip_audit -r resemble-score/requirements.txt \
+              --strict --progress-spinner off
+          fi
+
       - name: Audit each oldcam-v*/requirements.txt
         run: |
           set -e
@@ -134,7 +143,7 @@ jobs:
           # — a single oldcam version lacking an Ubuntu wheel
           # shouldn't kill the audit of every OTHER manifest.
           FAILED=0
-          for req in requirements.txt similarity/requirements.txt similarity/requirements-test.txt oldcam-v*/requirements.txt; do
+          for req in requirements.txt similarity/requirements.txt similarity/requirements-test.txt resemble-score/requirements.txt oldcam-v*/requirements.txt; do
             [ -f "$req" ] || continue
             VENV_DIR="$(mktemp -d)/audit-venv"
             echo

@@ -16,7 +16,7 @@ cd "${REPO_ROOT}"
 # Subagent MEDIUM on 4cc0bb4 — keep this consistent with the launcher
 # resolvers in launchers/macos/.
 PY=""
-for cand in .venv311/bin/python .venv/bin/python venv/bin/python; do
+for cand in .venv311/bin/python .venv/bin/python venv/bin/python similarity/.venv/bin/python; do
   if [ -x "${REPO_ROOT}/${cand}" ]; then
     PY="${REPO_ROOT}/${cand}"
     break
@@ -52,6 +52,7 @@ for req in \
   requirements.txt \
   similarity/requirements.txt \
   similarity/requirements-test.txt \
+  resemble-score/requirements.txt \
 ; do
   if [ ! -f "$req" ]; then
     continue

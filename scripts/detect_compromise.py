@@ -315,17 +315,33 @@ def check_workflows_for_suspicious_commits(repo_root: Path) -> CheckResult:
     #   - Catch backtick-form eval ``eval `curl ...``` in addition
     #     to ``eval $(curl ...)``.
     bad_patterns = (
-        # Include `python` and `python3` as targets: a multi-stage
-        # payload often does ``curl ... | python -`` to run a stager
-        # without writing to disk. (Gemini security-medium on 9a20e14.)
-        re.compile(r"curl\s+[^|\n]+\|\s*(?:sudo\s+)?(sh|bash|zsh|python3?)"),
-        re.compile(r"wget\s+[^|\n]+-O-\s*\|\s*(?:sudo\s+)?(sh|bash|zsh|python3?)"),
-        re.compile(r"(?:sh|bash|zsh|python3?)\s*<\(\s*(?:curl|wget)"),
-        # Allow optional whitespace inside the subshell — `eval $( curl ...)`
-        # was a Codex-P2 bypass. Also catch wget-form. Backtick form
-        # stays separate (no whitespace tolerance needed — backticks
-        # don't permit a leading space in the standard form).
-        re.compile(r"eval\s*(?:\$\(\s*(?:curl|wget)|`(?:curl|wget))"),
+        # Targets: `sh`, `bash`, `zsh`, `python[3][.N][.N]`.
+        # Optional path prefix BEFORE sudo: catches ``/usr/bin/sudo bash``
+        # and ``/bin/bash``. Optional ``sudo`` prefix THEN optional
+        # path prefix BEFORE the shell name: catches ``sudo /bin/bash``.
+        # Word boundary `\b` after the shell name prevents matching
+        # ``bashfoo`` as a false positive.
+        # (Gemini security-medium on 9a20e14 + 03d05e5.)
+        re.compile(
+            r"curl\s+[^|\n]+\|\s*"
+            r"(?:[\w/.+\-]+/)?(?:sudo\s+)?(?:[\w/.+\-]+/)?"
+            r"(sh|bash|zsh|python[\d.]*)\b"
+        ),
+        re.compile(
+            r"wget\s+[^|\n]+-O-\s*\|\s*"
+            r"(?:[\w/.+\-]+/)?(?:sudo\s+)?(?:[\w/.+\-]+/)?"
+            r"(sh|bash|zsh|python[\d.]*)\b"
+        ),
+        re.compile(
+            r"(?:[\w/.+\-]+/)?(sh|bash|zsh|python[\d.]*)"
+            r"\s*<\(\s*(?:curl|wget)"
+        ),
+        # Allow optional whitespace inside BOTH subshell forms.
+        # `eval $( curl ...)` was Codex-P2 on 9a20e14;
+        # `eval `` curl ...`` ` whitespace was Gemini on 03d05e5.
+        re.compile(
+            r"eval\s*(?:\$\(\s*(?:curl|wget)|`\s*(?:curl|wget))"
+        ),
     )
     # GitHub Actions accepts BOTH `.yml` and `.yaml` extensions. A
     # scanner that only checks `.yml` has a false-negative gap on
@@ -428,11 +444,24 @@ def main(argv: List[str] | None = None) -> int:
 
     repo_root = Path(args.repo_root).resolve()
 
-    # Auto-detect venvs if none provided
+    # Auto-detect venvs if none provided. Includes the subproject
+    # venvs (similarity/, resemble-score/) AND every oldcam-v* version
+    # that may have its own .venv (Gemini medium on 03d05e5 —
+    # oldcam subdirs are first-class parts of the project structure
+    # and host their own dependency trees; missing them means a
+    # poisoned .pth there would evade the scanner).
     venv_paths = [Path(v).resolve() for v in args.venv]
     if not venv_paths or args.all:
-        for candidate in ("venv", ".venv", ".venv311", "similarity/.venv"):
+        for candidate in (
+            "venv", ".venv", ".venv311",
+            "similarity/.venv",
+            "resemble-score/.venv",
+        ):
             p_candidate = repo_root / candidate
+            if p_candidate.exists() and p_candidate not in venv_paths:
+                venv_paths.append(p_candidate)
+        # oldcam-v* venvs (any version)
+        for p_candidate in repo_root.glob("oldcam-v*/.venv"):
             if p_candidate.exists() and p_candidate not in venv_paths:
                 venv_paths.append(p_candidate)
 

@@ -10,6 +10,7 @@ set "PY="
 if exist "%REPO_ROOT%\.venv311\Scripts\python.exe" set "PY=%REPO_ROOT%\.venv311\Scripts\python.exe"
 if not defined PY if exist "%REPO_ROOT%\.venv\Scripts\python.exe" set "PY=%REPO_ROOT%\.venv\Scripts\python.exe"
 if not defined PY if exist "%REPO_ROOT%\venv\Scripts\python.exe" set "PY=%REPO_ROOT%\venv\Scripts\python.exe"
+if not defined PY if exist "%REPO_ROOT%\similarity\.venv\Scripts\python.exe" set "PY=%REPO_ROOT%\similarity\.venv\Scripts\python.exe"
 if not defined PY (
     where python >nul 2>nul && set "PY=python"
 )
@@ -32,6 +33,7 @@ set /a FAILED=0
 call :audit_one "requirements.txt"
 call :audit_one "similarity\requirements.txt"
 call :audit_one "similarity\requirements-test.txt"
+call :audit_one "resemble-score\requirements.txt"
 
 for %%R in (oldcam-v*\requirements.txt) do call :audit_one "%%R"
 
