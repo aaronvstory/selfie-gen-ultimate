@@ -369,7 +369,11 @@ class SelfieTab(tk.Frame):
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-            font=(FONT_MONO, 9),
+            # Unified prompt font (user request 2026-05-21): every
+            # prompt-text Text widget in the app uses (FONT_FAMILY, 10)
+            # to match the video-tab positive + negative prompt
+            # editors. Was (FONT_MONO, 9) — visibly smaller + mono.
+            font=(FONT_FAMILY, 10),
             insertbackground=COLORS["text_light"],
             padx=5,
             pady=4,
@@ -440,7 +444,8 @@ class SelfieTab(tk.Frame):
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-            font=(FONT_MONO, 9),
+            # Unified prompt font — see prompt_template_text above.
+            font=(FONT_FAMILY, 10),
             insertbackground=COLORS["text_light"],
             padx=5,
             pady=4,

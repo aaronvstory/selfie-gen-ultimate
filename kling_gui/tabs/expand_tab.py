@@ -153,7 +153,11 @@ class ExpandTab(tk.Frame):
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-            font=(FONT_FAMILY, 9),
+            # Unified prompt font (user request 2026-05-21): every
+            # prompt-text Text widget in the app uses (FONT_FAMILY, 10)
+            # to match the video-tab positive + negative prompt
+            # editors. Was (FONT_FAMILY, 9) — visibly smaller.
+            font=(FONT_FAMILY, 10),
             relief=tk.FLAT,
             insertbackground=COLORS["text_light"],
         )
