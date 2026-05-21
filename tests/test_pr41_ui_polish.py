@@ -369,6 +369,38 @@ class ApplyUiConfigRespectsNegVisibleTests(unittest.TestCase):
         self.assertEqual(panel._positive_prompt_full_height, 10)
         self.assertEqual(panel._positive_prompt_split_height, 5)
 
+    def test_build_prompt_panel_reapplies_motion_controls(self):
+        """Regression for 3cc93ef: when ConfigPanel is constructed with
+        build_prompt=False (main_window's split layout — prompt panel
+        built externally), the __init__-time _load_config call to
+        _update_motion_controls runs BEFORE _negative_prompt_section
+        exists. The first visibility update no-ops; without an
+        explicit re-call after build_prompt_panel creates the section,
+        the negative-prompt half stays hidden on startup for every
+        model that supports it.
+
+        Static-text check: build_prompt_panel must call
+        _update_motion_controls right after _load_prompt_config so
+        the visibility update sees the now-created section."""
+        from pathlib import Path
+        src = (
+            Path(__file__).resolve().parent.parent
+            / "kling_gui" / "config_panel.py"
+        ).read_text(encoding="utf-8")
+        # Locate the build_prompt_panel method body.
+        start = src.index("def build_prompt_panel")
+        end = src.index("\n    def ", start + 10)
+        body = src[start:end]
+        # The re-call must appear AFTER _load_prompt_config in the
+        # same method. Regex catches either string-literal or
+        # variable-derived current_model.
+        self.assertIn("self._load_prompt_config()", body)
+        load_idx = body.index("self._load_prompt_config()")
+        # _update_motion_controls must appear after the load call.
+        post = body[load_idx:]
+        self.assertIn("_update_motion_controls(", post)
+        self.assertIn("current_model", post)
+
 
 class TemplateDrivenShipModelTests(unittest.TestCase):
     """CodeRabbit Major (PR #41): the bundle's current_model +
