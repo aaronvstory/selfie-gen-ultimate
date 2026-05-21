@@ -1634,6 +1634,21 @@ class VideoInspectorModal(tk.Toplevel):
             self._timer_id = None
 
     def _tick(self) -> None:
+        # Lifecycle guard: if the modal was destroyed between the
+        # last after() scheduling and this callback firing,
+        # winfo_exists() returns 0 and we exit cleanly. Without
+        # this, any sub-call below that touches a destroyed widget
+        # (config(), winfo_*, after_cancel) would raise TclError —
+        # caught downstream, but the callback still runs. Bailing
+        # immediately also prevents the finally-block reschedule
+        # from installing a new timer on the dead Toplevel.
+        # (Gemini MEDIUM on 7096ff8.)
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
         # Reschedule LAST (was first; code-reviewer P3, PR #43). The
         # "reschedule first" pattern was conventional but created a
         # narrow race: destroy() could read self._timer_id and cancel
