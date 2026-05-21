@@ -1522,6 +1522,16 @@ class ImageCarousel(tk.Frame):
         is per-canvas-per-render („unbind” on the non-video branch in
         _show_image_on_canvas clears it when the user navigates back to an
         image item) so stale clips never trigger the wrong video.
+
+        Safety note (Gemini HIGH/MEDIUM 2026-05-21 on 94d9d7a):
+        ``canvas.bind("<Button-1>", ...)`` is widget-level which would
+        normally risk wiping a navigation/selection binding. Confirmed
+        safe here: the ImageCarousel constructor binds ``<Configure>``,
+        ``<Enter>``, ``<Leave>``, ``<Button-3>`` on the canvas — but
+        intentionally NOT ``<Button-1>``. Left-click navigation is
+        handled by the side-arrow buttons + listbox elsewhere. So this
+        function OWNS the canvas's <Button-1> binding; unbind/bind is
+        a deliberate exclusive-ownership swap, not a clobber.
         """
         cb = self._on_video_callback
         if cb is None:
