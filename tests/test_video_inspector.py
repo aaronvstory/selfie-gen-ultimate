@@ -810,15 +810,33 @@ class CarouselOverlayTests(unittest.TestCase):
         self.assertIn("self.video_inspector_btn = ttk.Button", src)
         self.assertIn('text="Videos"', src)
 
-    def test_overlay_block_references_find_video_for_image(self):
+    def test_corner_play_badge_removed_from_stills(self):
+        """The corner black-circle play badge that used to be drawn on
+        PNG thumbnails when a companion video existed was removed
+        2026-05-21 per user feedback (looked ugly cluttering the
+        front-crop/selfie/outpaint corners). VIDEO carousel entries
+        still get the big centered white ▶ overlay.
+
+        Lock both deletions in: (a) the corner badge ``create_oval``
+        + ``tag_bind(bg_id, ...)`` block is gone, (b) the
+        ``find_video_for_image`` import is gone (was only used for
+        this badge).
+        """
         from kling_gui import carousel_widget
         src = Path(carousel_widget.__file__).read_text(encoding="utf-8")
-        self.assertIn("from .video_discovery import find_video_for_image", src)
-        # The overlay block uses tag_bind (scoped) not canvas.bind (global)
-        # so we don't conflict with existing <Button-3> binding.
-        self.assertRegex(
-            src, r"canvas\.tag_bind\(\s*bg_id,\s*\"<Button-1>\""
+        # The corner-badge oval+tag_bind block must NOT exist.
+        self.assertNotIn(
+            "canvas.tag_bind(\n                    bg_id,", src
         )
+        self.assertNotRegex(
+            src, r"canvas\.tag_bind\(\s*bg_id,\s*\"<Button-1>\"",
+        )
+        # And the now-unused import is also gone.
+        self.assertNotIn(
+            "from .video_discovery import find_video_for_image", src,
+        )
+        # The big centered ▶ overlay for actual video items is kept.
+        self.assertIn('text="▶", fill="#FFFFFF"', src)
 
 
 # ──────────────────────────────────────────────────────────────────────

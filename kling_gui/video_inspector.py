@@ -1008,26 +1008,38 @@ class VideoInspectorModal(tk.Toplevel):
     # ── UI construction ──────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        # New layout (PR #43 user feedback: filename column was crushing
-        # long pipeline names like
-        #   "front_crop_nano-banana-2-edit_sim82_001_k25tPro_p3_1-oldcam-v24-rppg - 11.89-...mp4"
-        # with the right side ALWAYS cut off).
+        # Redesigned 2026-05-21 (user feedback on Windows where the
+        # original layout pushed Play/Restart off-screen + made Slot B
+        # impossible to load because the "Slot B" pill looked clickable
+        # but wasn't):
         #
-        #   ┌─────────────────────────────────────────────────────────┐
-        #   │ Slot A canvas              │ Slot B canvas              │
-        #   ├─────────────────────────────────────────────────────────┤
-        #   │ Metadata strip (A | B parsed tags)                       │
-        #   ├─────────────────────────────────────────────────────────┤
-        #   │ Videos in folder:                                        │
-        #   │ [ full-width listbox WITH horizontal scrollbar           │
-        #   │   showing the entire filename ]                          │
-        #   ├─────────────────────────────────────────────────────────┤
-        #   │ [▶ Play] [⏮ Restart] [☐ Lock] frame: X/Y  [Load→A/B] [✕]│
-        #   └─────────────────────────────────────────────────────────┘
+        #   ┌─────────────────────────────────────────────────────────────┐
+        #   │ [▶ Play] [⏮ Restart] [↺ Clear Slots] [☐ Lock] frame: X/Y [✕]│
+        #   ├─────────────────────────────────────────────────────────────┤
+        #   │ Slot A                       │ Slot B                       │
+        #   │ [canvas]                     │ [canvas]                     │
+        #   │ [Slot A][Model][pN tN][...]  │ [Slot B][Model][pN tN][...]  │
+        #   │ [Load Selected → Slot A]     │ [Load Selected → Slot B]     │
+        #   │ [Open Externally]            │ [Open Externally]            │
+        #   ├─────────────────────────────────────────────────────────────┤
+        #   │ Videos in folder · DoubleClick→A · ShiftDouble/RightClick→B │
+        #   │ [ full-width listbox ]                                      │
+        #   └─────────────────────────────────────────────────────────────┘
+        #
+        # Toolbar moved to TOP so Play/Restart are never below the fold
+        # regardless of window height (the old bottom-toolbar layout
+        # could be pushed off when video_panel.expand=True claimed all
+        # remaining vertical space). Pills + Load-Selected-button now
+        # live INSIDE each VideoFrame so the slot anchor is visually
+        # obvious; user no longer has to hunt for which button maps to
+        # which slot.
 
-        # ── Video row (top, full width) ──────────────────────────────
+        # ── Toolbar (TOP — always visible) ─────────────────────────
+        self._build_toolbar()
+
+        # ── Video row (middle, full width, expands) ───────────────
         video_panel = tk.Frame(self, bg=COLORS["bg_main"])
-        video_panel.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
+        video_panel.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=8, pady=(0, 4))
         # 2-column grid with equal weights so Slot A and Slot B ALWAYS
         # get identical widths regardless of inner canvas natural
         # sizes. uniform="slots" is the key — without it Tk's pack
@@ -1047,22 +1059,17 @@ class VideoInspectorModal(tk.Toplevel):
         )
         self._frame_b.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
-        # ── Metadata strip (pill row per slot) ──────────────────────
-        # Each slot (A/B) gets its own row of colored pills showing
-        # the parsed video metadata: model name, slot/take, oldcam
-        # version, rPPG metrics, similarity score, looped flag.
-        # User 2026-05-21 feedback: the prior single-line text
-        # "A: k25tStd · slot 3 · take 1 · oldcam v24 · sim 83%" was
-        # too tiny + monotone to scan; pills give visual grouping.
-        self._meta_container = tk.Frame(self, bg=COLORS["bg_panel"])
-        self._meta_container.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 4))
-        # Two stable slot rows so _refresh_metadata can re-populate
-        # without churning the parent (avoids re-grid + re-pack on
-        # every load).
-        self._meta_row_a = tk.Frame(self._meta_container, bg=COLORS["bg_panel"])
-        self._meta_row_a.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(6, 2))
-        self._meta_row_b = tk.Frame(self._meta_container, bg=COLORS["bg_panel"])
-        self._meta_row_b.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(0, 6))
+        # ── Per-slot meta + load button rows ──────────────────────
+        # Pills + a single explicit "Load Selected → Slot X" button
+        # live INSIDE each VideoFrame so the visual association
+        # between metadata + slot canvas is unambiguous. Build them
+        # by pack-after the existing canvas + open-external button.
+        # The VideoFrame's existing _open_external_btn is already
+        # packed (side=TOP), so anything we pack now lands below it
+        # — that's not what we want. Re-pack the open-external
+        # button to be PAST our new widgets via pack_forget+repack.
+        self._meta_row_a = self._attach_slot_extras(self._frame_a, "A")
+        self._meta_row_b = self._attach_slot_extras(self._frame_b, "B")
 
         # ── Videos-in-folder listbox (full width, BELOW the videos) ──
         list_panel = tk.Frame(self, bg=COLORS["bg_main"])
@@ -1131,15 +1138,31 @@ class VideoInspectorModal(tk.Toplevel):
         self._listbox.bind("<Button-2>", self._on_listbox_right_click)
         self._listbox.bind("<Control-Button-1>", self._on_listbox_right_click)
 
-        # Toolbar (bottom). All buttons use ttk + the clam-themed
-        # TTK_BTN_* styles so they render with the dark theme on macOS.
-        # Raw tk.Button on Aqua loses its tint after the first event
-        # (HIView revert — see commit b3bc7398 for the deep dive), so
-        # the inspector — which has SIX buttons crammed in one row —
-        # was the worst visible offender. Extra pady so the toolbar
-        # reads as breathing-room, not crammed-against-edge.
+        # Toolbar was extracted to _build_toolbar() and packed FIRST
+        # at the top of _build_ui (above video_panel). The old inline
+        # block lived here, BELOW video_panel + listbox, where Tk's
+        # pack(side=TOP, expand=True) on video_panel would push it off
+        # the bottom of short windows (user feedback 2026-05-21).
+
+        # Kick off master timer.
+        self._schedule_tick()
+
+    # ── Toolbar + per-slot extras (extracted from _build_ui per
+    #    user feedback 2026-05-21: toolbar moved to TOP, slot extras
+    #    moved INSIDE each VideoFrame) ──────────────────────────────
+
+    def _build_toolbar(self) -> None:
+        """Render the top toolbar: Play / Restart / Clear Slots /
+        Lock A+B scrub / frame counter / Close.
+
+        Packed at the TOP of the modal so it's always visible
+        regardless of window height (the previous bottom-toolbar
+        layout could be pushed below the fold by video_panel's
+        ``expand=True`` claim). All buttons use ttk + the clam-themed
+        TTK_BTN_* styles so they render with the dark theme on macOS.
+        """
         toolbar = tk.Frame(self, bg=COLORS["bg_main"])
-        toolbar.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(6, 10))
+        toolbar.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(8, 6))
 
         self._play_btn = ttk.Button(
             toolbar,
@@ -1159,16 +1182,20 @@ class VideoInspectorModal(tk.Toplevel):
         )
         self._restart_btn.pack(side=tk.LEFT, padx=(6, 0))
 
+        # Start From Scratch — clear both slots in one click
+        # (user request 2026-05-21).
+        self._clear_btn = ttk.Button(
+            toolbar,
+            text="↺ Clear Slots",
+            command=debounce_command(self._clear_all_slots, key="vinspect_clear"),
+            style=TTK_BTN_SECONDARY,
+            width=12,
+        )
+        self._clear_btn.pack(side=tk.LEFT, padx=(6, 0))
+
         # ttk.Checkbutton instead of tk.Checkbutton: on macOS Aqua the
         # raw tk.Checkbutton reverts to its native white look after the
         # first toggle (same HIView issue as tk.Button — see b3bc7398).
-        # The clam theme is configured at root init in main_window so
-        # ttk widgets inherit the dark palette automatically.
-        # Style configuration is idempotent across modal reopen — ttk.Style
-        # is a process-global singleton, so re-running .configure() on
-        # every open is wasted work and (on long-running macOS Tk sessions)
-        # has been observed to slow down style lookups (code-review on
-        # 706466f).
         _configure_inspector_styles()
         self._lock_chk = ttk.Checkbutton(
             toolbar,
@@ -1176,7 +1203,7 @@ class VideoInspectorModal(tk.Toplevel):
             variable=self._lock_scrub_var,
             style="Inspector.TCheckbutton",
         )
-        self._lock_chk.pack(side=tk.LEFT, padx=(12, 0))
+        self._lock_chk.pack(side=tk.LEFT, padx=(14, 0))
 
         # Frame counter
         self._counter_var = tk.StringVar(value="frame: -/-")
@@ -1186,7 +1213,7 @@ class VideoInspectorModal(tk.Toplevel):
             bg=COLORS["bg_main"],
             fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 9),
-        ).pack(side=tk.LEFT, padx=(12, 0))
+        ).pack(side=tk.LEFT, padx=(14, 0))
 
         close_btn = ttk.Button(
             toolbar,
@@ -1197,29 +1224,80 @@ class VideoInspectorModal(tk.Toplevel):
         )
         close_btn.pack(side=tk.RIGHT)
 
-        # Explicit "Load → A" / "Load → B" buttons live in the toolbar
-        # in the new layout. They use the listbox selection so the user
-        # can click a row and then click the load button (a third
-        # alternative to double-click / shift+double / right-click).
-        self._load_b_btn = ttk.Button(
-            toolbar,
-            text="Load → B",
-            command=lambda: self._load_selection_into("B"),
-            style=TTK_BTN_SECONDARY,
-            width=10,
-        )
-        self._load_b_btn.pack(side=tk.RIGHT, padx=(0, 6))
-        self._load_a_btn = ttk.Button(
-            toolbar,
-            text="Load → A",
-            command=lambda: self._load_selection_into("A"),
-            style=TTK_BTN_SECONDARY,
-            width=10,
-        )
-        self._load_a_btn.pack(side=tk.RIGHT, padx=(0, 6))
+    def _attach_slot_extras(self, frame: "VideoFrame", slot: str) -> tk.Frame:
+        """Build the per-slot pill row + 'Load Selected → Slot X'
+        button INSIDE the given VideoFrame, between the canvas and
+        the existing 'Open Externally' button.
 
-        # Kick off master timer.
-        self._schedule_tick()
+        Returns the (empty) meta-row Frame so _refresh_metadata can
+        populate it. The existing _open_external_btn is repacked
+        below our additions so the visual order stays:
+            [canvas (expand)]
+            [pill row]
+            [Load Selected → Slot X]
+            [Open Externally]
+
+        User feedback 2026-05-21: previous layout had a separate
+        ``_meta_container`` row below BOTH slots, and Load → A/B
+        buttons in the toolbar; that decoupling made it ambiguous
+        which pill row + button mapped to which slot. Moving both
+        inside the VideoFrame ties the slot anchor visually.
+        """
+        # Re-pack the existing "Open Externally" button to be the
+        # LAST sibling so our pills + load button slot above it.
+        try:
+            frame._open_external_btn.pack_forget()
+        except (tk.TclError, AttributeError):
+            pass
+
+        # Pill row (empty until _refresh_metadata fills it).
+        meta_row = tk.Frame(frame, bg=COLORS["bg_main"])
+        meta_row.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(4, 2))
+
+        # Load button — explicit affordance for the listbox selection.
+        # User can also use Double-click / Shift+Double / Right-click
+        # in the listbox; this button is the visible-anchor variant.
+        load_btn = ttk.Button(
+            frame,
+            text=f"Load Selected → Slot {slot}",
+            command=(lambda s=slot: self._load_selection_into(s)),
+            style=TTK_BTN_PRIMARY if slot == "A" else TTK_BTN_SECONDARY,
+        )
+        load_btn.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(2, 4))
+        # Stash on the frame for tests + future programmatic access.
+        setattr(frame, "_load_into_slot_btn", load_btn)
+
+        # Re-pack the open-externally button (was unpacked above) so
+        # it lands LAST. Same options as the original pack in
+        # VideoFrame.__init__.
+        try:
+            frame._open_external_btn.pack(side=tk.TOP, pady=(4, 2))
+        except (tk.TclError, AttributeError):
+            pass
+
+        return meta_row
+
+    def _clear_all_slots(self) -> None:
+        """Reset both VideoFrames to empty state — the 'Start From
+        Scratch' affordance. Also resets the master frame counter
+        and pauses playback. (User request 2026-05-21.)"""
+        self._playing = False
+        try:
+            self._play_btn.config(text="▶ Play")
+        except tk.TclError:
+            pass
+        try:
+            self._frame_a.clear()
+        except Exception:
+            logger.debug("clear slot A failed", exc_info=True)
+        try:
+            self._frame_b.clear()
+        except Exception:
+            logger.debug("clear slot B failed", exc_info=True)
+        self._master_frame = 0.0
+        self._focused_slot = "A"
+        self._refresh_metadata()
+        self._update_counter()
 
     # ── Folder / listbox ─────────────────────────────────────────────
 
@@ -1811,8 +1889,14 @@ class VideoInspectorModal(tk.Toplevel):
 
     def _restore_geometry(self) -> None:
         stored = self._config.get(self._GEOMETRY_KEY)
-        # Defaults
-        w, h = 1100, 560
+        # Defaults bumped 2026-05-21 per user feedback: prior 1100x560
+        # default + 800x420 minimum was too short on Windows — the
+        # bottom toolbar got pushed off-screen. New layout has the
+        # toolbar at TOP and per-slot extras inside each VideoFrame,
+        # which needs more vertical room. Defaults of 1280x780 give
+        # the per-slot pill rows + load buttons + listbox + toolbar
+        # all room to breathe at first open.
+        w, h = 1280, 780
         if isinstance(stored, dict):
             try:
                 w = int(stored.get("w", w))
@@ -1824,8 +1908,10 @@ class VideoInspectorModal(tk.Toplevel):
             sh = self.winfo_screenheight()
         except tk.TclError:
             sw, sh = 1920, 1080
-        w = max(800, min(w, sw - 40))
-        h = max(420, min(h, sh - 80))
+        # Minimums bumped from 800x420 → 1000x640 so the per-slot
+        # extras + toolbar always fit (user request 2026-05-21).
+        w = max(1000, min(w, sw - 40))
+        h = max(640, min(h, sh - 80))
         x = (sw - w) // 2
         y = (sh - h) // 2
         if isinstance(stored, dict):
