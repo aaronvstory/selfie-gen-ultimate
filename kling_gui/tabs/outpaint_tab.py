@@ -256,12 +256,18 @@ class OutpaintTab(tk.Frame):
         # key ``outpaint_tab_prompt``, with the legacy shared
         # ``outpaint_prompt`` as a back-compat fallback so users
         # with old configs see their saved prompt on first launch.
-        self.prompt_text.insert(
-            "1.0",
-            self.config.get("outpaint_tab_prompt")
-            or self.config.get("outpaint_prompt", "")
-            or "",
-        )
+        # Codex P1 on 0967564 (2026-05-22): key-presence
+        # semantics, NOT truthiness. An explicitly-saved empty
+        # ``outpaint_tab_prompt`` is a valid intentional value
+        # (user cleared the prompt) and must NOT be silently
+        # replaced by the legacy shared prompt.
+        _section_prompt = self.config.get("outpaint_tab_prompt")
+        if isinstance(_section_prompt, str):
+            _initial_prompt = _section_prompt
+        else:
+            _legacy = self.config.get("outpaint_prompt")
+            _initial_prompt = _legacy if isinstance(_legacy, str) else ""
+        self.prompt_text.insert("1.0", _initial_prompt)
 
         # ── Output format ───────────────────────────────────────────────
         fmt_frame = tk.Frame(self, bg=COLORS["bg_panel"])

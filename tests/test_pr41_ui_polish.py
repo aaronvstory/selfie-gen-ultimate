@@ -257,6 +257,44 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         self.assertIn('self.config.get("outpaint_tab_prompt")', op_src)
         self.assertIn('"outpaint_tab_prompt":', op_src)
 
+    def test_v23_section_prompts_respect_explicit_empty_string(self):
+        """Codex P1 on 0967564 (2026-05-22): the Phase G fallback
+        chain ``section or legacy or \"\"`` treated an explicitly-saved
+        empty string as missing and silently substituted the legacy
+        shared prompt. R4 fix: use key-presence semantics
+        (isinstance check) so an empty string survives as a valid
+        intentional value.
+
+        Source-asserted in all 6 fallback sites so a regression
+        that reintroduces ``or`` truthiness fails this test."""
+        # Pipeline Step 0 + Step 2.5
+        pp_src = (_ROOT / "automation" / "pipeline.py").read_text(encoding="utf-8")
+        # Both sections must use isinstance check on the section key.
+        self.assertGreaterEqual(
+            pp_src.count('isinstance(_section, str)'),
+            2,
+            "automation/pipeline.py must use isinstance() check at "
+            "BOTH Step 0 and Step 2.5 to preserve empty-string section prompts",
+        )
+        # The forbidden truthiness chain must NOT be back.
+        for forbidden in (
+            'self.config.get("face_crop_expand_prompt")\n                        or self.config.get("outpaint_prompt"',
+            'self.config.get("selfie_expand_prompt")\n                    or self.config.get("outpaint_prompt"',
+        ):
+            self.assertNotIn(
+                forbidden, pp_src,
+                "automation/pipeline.py regressed to `or` truthiness fallback",
+            )
+        # GUI tabs: face_crop_tab + outpaint_tab use isinstance.
+        fc_src = (_ROOT / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+        self.assertIn('isinstance(_section_prompt, str)', fc_src)
+        op_src = (_ROOT / "kling_gui" / "tabs" / "outpaint_tab.py").read_text(encoding="utf-8")
+        self.assertIn('isinstance(_section_prompt, str)', op_src)
+        # expand_tab uses isinstance OR routes through the named helper.
+        ex_src = (_ROOT / "kling_gui" / "tabs" / "expand_tab.py").read_text(encoding="utf-8")
+        self.assertIn('isinstance(_section_prompt, str)', ex_src)
+        self.assertIn('def _fallback_selfie_expand_prompt', ex_src)
+
     def test_v23_extra_prompt_slots_shipped(self):
         """polish/v2.3: saved_prompts slots 5+6 and
         selfie_wildcard_saved_prompts slots 4+5+6 ship populated so a

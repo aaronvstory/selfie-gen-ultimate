@@ -767,11 +767,18 @@ class FaceCropTab(tk.Frame):
         # the standalone Outpaint tab (``outpaint_tab_prompt``).
         # Legacy ``outpaint_prompt`` is read as a fallback so users
         # with old configs see their saved prompt on first launch.
-        self._outpaint_prompt_str = (
-            self.config.get("face_crop_expand_prompt")
-            or self.config.get("outpaint_prompt", "")
-            or ""
-        )
+        # Codex P1 on 0967564 (2026-05-22): key-presence
+        # semantics, NOT truthiness. An explicitly-saved empty
+        # ``face_crop_expand_prompt`` must NOT be silently
+        # replaced by the legacy shared ``outpaint_prompt`` --
+        # the user cleared the prompt on purpose.
+        _section_prompt = self.config.get("face_crop_expand_prompt")
+        if isinstance(_section_prompt, str):
+            self._outpaint_prompt_str = _section_prompt
+        else:
+            self._outpaint_prompt_str = str(
+                self.config.get("outpaint_prompt", "") or ""
+            )
 
         # Provider + Format + Composite row
         _PROVIDER_LABELS = {

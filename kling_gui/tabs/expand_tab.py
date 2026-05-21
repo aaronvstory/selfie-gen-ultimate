@@ -169,13 +169,19 @@ class ExpandTab(tk.Frame):
             insertbackground=COLORS["text_light"],
         )
         # Phase G fallback chain: section-specific key first, then
-        # legacy shared key, then empty string.
-        self._prompt_text.insert(
-            "1.0",
-            self.config.get("selfie_expand_prompt")
-            or self.config.get("outpaint_prompt", "")
-            or "",
-        )
+        # legacy shared key, then empty string. Codex P1 on 0967564
+        # (2026-05-22): key-presence semantics, NOT truthiness. An
+        # explicitly-saved empty ``selfie_expand_prompt`` is a valid
+        # intentional value (user cleared the prompt) and must NOT
+        # be silently replaced by the legacy shared prompt.
+        _section_prompt = self.config.get("selfie_expand_prompt")
+        if isinstance(_section_prompt, str):
+            _initial_prompt = _section_prompt
+        else:
+            _initial_prompt = str(
+                self.config.get("outpaint_prompt", "") or ""
+            )
+        self._prompt_text.insert("1.0", _initial_prompt)
         self._prompt_text.pack(fill=tk.X, padx=6, pady=6)
 
         settings_frame = tk.LabelFrame(
@@ -973,6 +979,24 @@ class ExpandTab(tk.Frame):
         if self._auto_switch_var.get() and self._notebook_switcher_video:
             self._notebook_switcher_video()
 
+    def _fallback_selfie_expand_prompt(self) -> str:
+        """Defensive fallback when ``_prompt_text`` widget is missing.
+
+        Codex P1 on 0967564 (2026-05-22): use key-presence semantics
+        so an explicitly-saved empty ``selfie_expand_prompt`` is
+        preserved (an empty string is a valid intentional value).
+        Only fall through to legacy ``outpaint_prompt`` when the
+        section-specific key is absent or non-str.
+        """
+        cfg = getattr(self, "config", None)
+        if not isinstance(cfg, dict):
+            return ""
+        section = cfg.get("selfie_expand_prompt")
+        if isinstance(section, str):
+            return section
+        legacy = cfg.get("outpaint_prompt")
+        return legacy if isinstance(legacy, str) else ""
+
     def get_config_updates(self) -> dict:
         return {
             "expand25_auto_switch": self._auto_switch_var.get(),
@@ -991,14 +1015,12 @@ class ExpandTab(tk.Frame):
             # shared key for back-compat (see _build_ui), but writes
             # never touch the shared key so a Step 2.5 prompt edit can
             # NOT silently override Step 0 or Outpaint-tab prompts.
+            # Codex P1 on 0967564: defensive fallback also uses
+            # key-presence semantics (not truthiness) so an
+            # explicit empty ``selfie_expand_prompt`` survives.
             "selfie_expand_prompt": (
                 self._prompt_text.get("1.0", "end-1c")
                 if hasattr(self, "_prompt_text")
-                else (
-                    self.config.get("selfie_expand_prompt")
-                    or self.config.get("outpaint_prompt", "")
-                    if isinstance(getattr(self, "config", None), dict)
-                    else ""
-                )
+                else self._fallback_selfie_expand_prompt()
             ),
         }

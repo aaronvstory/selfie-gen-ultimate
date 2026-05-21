@@ -550,11 +550,23 @@ class AutoPipelineRunner:
                     # work. Pre-Phase-G this dispatch passed no prompt
                     # at all (default empty string), so the section-
                     # specific key is a strict improvement.
-                    front_expand_prompt = (
-                        self.config.get("face_crop_expand_prompt")
-                        or self.config.get("outpaint_prompt", "")
-                        or ""
-                    )
+                    # Codex P1 on 0967564 (2026-05-22): use key-
+                    # presence semantics — a user who saves an
+                    # intentionally EMPTY ``face_crop_expand_prompt``
+                    # must NOT see the legacy shared
+                    # ``outpaint_prompt`` re-substituted. ``or "" or``
+                    # treated empty as missing, breaking section-
+                    # specific prompt independence. The helper below
+                    # only falls back when the key is absent or
+                    # non-str; an empty string is a valid intentional
+                    # value.
+                    _section = self.config.get("face_crop_expand_prompt")
+                    if isinstance(_section, str):
+                        front_expand_prompt = _section
+                    else:
+                        front_expand_prompt = str(
+                            self.config.get("outpaint_prompt", "") or ""
+                        )
                     result = outpaint.outpaint(
                         image_path=front_input_path,
                         output_folder=str(case_dir),
@@ -942,12 +954,18 @@ class AutoPipelineRunner:
                 if reprocess_mode == "increment":
                     expanded_output = self._next_increment_path(expanded_output)
                 # Phase G: Step 2.5 selfie expand uses its OWN prompt
-                # key. Same fallback chain as Step 0 above.
-                selfie_expand_prompt = (
-                    self.config.get("selfie_expand_prompt")
-                    or self.config.get("outpaint_prompt", "")
-                    or ""
-                )
+                # key. Codex P1 on 0967564: key-presence semantics,
+                # NOT truthiness — an explicitly-saved empty string
+                # is a valid intentional value (user clearing the
+                # prompt) and must NOT be silently replaced by the
+                # legacy shared prompt.
+                _section = self.config.get("selfie_expand_prompt")
+                if isinstance(_section, str):
+                    selfie_expand_prompt = _section
+                else:
+                    selfie_expand_prompt = str(
+                        self.config.get("outpaint_prompt", "") or ""
+                    )
                 expanded_result = outpaint.outpaint(
                     image_path=best_path,
                     output_folder=str(case_dir / "gen-images"),
