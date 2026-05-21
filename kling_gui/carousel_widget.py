@@ -986,7 +986,18 @@ class ImageCarousel(tk.Frame):
                         path, canvas,
                         on_done=_on_thumb_ready,
                     )
-                    if started or path in _VIDEO_THUMB_PENDING:
+                    # Locked read of the pending set so a future
+                    # refactor that adds a Tk-thread discard
+                    # (e.g. \"Cancel pending decodes\" button)
+                    # doesn't silently turn this into a race.
+                    # Today this runs on the Tk thread and the
+                    # only worker-thread discard is on the
+                    # widget-destroyed-mid-decode path. Match the
+                    # locking discipline documented for this set.
+                    # (Subagent finding on 20b4162.)
+                    with _VIDEO_THUMB_PENDING_LOCK:
+                        _in_flight = path in _VIDEO_THUMB_PENDING
+                    if started or _in_flight:
                         # Render placeholder for this pass; the async
                         # on_done will trigger _update_display when ready.
                         canvas.delete("all")

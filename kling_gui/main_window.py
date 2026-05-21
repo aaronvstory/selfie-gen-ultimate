@@ -4693,8 +4693,17 @@ class KlingGUIWindow:
                 except Exception:
                     pass
 
-        except Exception as e:
-            pass  # Don't fail on layout save errors
+        except Exception:
+            # Layout save is best-effort — never crash the close path
+            # or the debounce tick on it. Log at debug so a genuine
+            # regression in the sash-coord readers is diagnosable
+            # without spamming the user log. (Subagent finding on
+            # 20b4162; matches the project guideline against silent
+            # excepts.)
+            logging.getLogger(__name__).debug(
+                "_save_layout: unexpected error",
+                exc_info=True,
+            )
 
     # ── Session save/load ────────────────────────────────────────────────────
 
