@@ -92,30 +92,57 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install all dependency sets (binary-only)
+      - name: Install pip-audit + virtualenv (host venv)
+        run: |
+          python -m pip install --upgrade pip pip-audit virtualenv
+
+      - name: Audit each manifest in its OWN isolated venv (transitive CVEs)
         run: |
           set -e
           shopt -s nullglob
-          python -m pip install --upgrade pip pip-audit
-          # --only-binary :all: prevents sdist setup.py execution. We
-          # install EVERY requirements file so the resolved venv tree
-          # captures transitive deps from similarity + oldcam-v* — the
-          # Codex P2 finding on 3fe4154 noted that installing only
-          # requirements.txt blinded the audit to those branches.
-          # Per-file fallback to sdist on first wheel-only failure
-          # rather than aborting — a single oldcam version that lacks
-          # a wheel for ubuntu-3.12 shouldn't kill the audit.
+          # Per Codex P1 on 0e16c8d: a SHARED venv lets a later
+          # install's pin overwrite an earlier (potentially
+          # vulnerable) one, hiding the vulnerability from the
+          # final audit. A package can only exist at ONE version
+          # per venv. Solution: each manifest gets its own fresh
+          # ephemeral venv, gets installed in isolation, and is
+          # audited on its own resolved tree. False-negative gap
+          # closed.
+          #
+          # Per-manifest fallback: try wheel-only first (avoids
+          # sdist setup.py execution). On wheel-only failure, fall
+          # back to allowing sdists. On total failure, log + continue
+          # — a single oldcam version lacking an Ubuntu wheel
+          # shouldn't kill the audit of every OTHER manifest.
+          FAILED=0
           for req in requirements.txt similarity/requirements.txt similarity/requirements-test.txt oldcam-v*/requirements.txt; do
             [ -f "$req" ] || continue
-            echo "=== install: $req ==="
-            python -m pip install --only-binary :all: -r "$req" \
-              || python -m pip install -r "$req" \
-              || echo "WARN: install of $req failed; continuing — transitive coverage for THIS file's deps may be incomplete"
+            VENV_DIR="$(mktemp -d)/audit-venv"
+            echo
+            echo "=== audit-isolated: $req ==="
+            python -m virtualenv -q "$VENV_DIR"
+            VENV_PIP="$VENV_DIR/bin/pip"
+            VENV_PY="$VENV_DIR/bin/python"
+            # Quiet pip-audit + venv pip install — these are noisy.
+            "$VENV_PIP" install --quiet --upgrade pip
+            if "$VENV_PIP" install --quiet --only-binary :all: -r "$req" 2>/dev/null \
+              || "$VENV_PIP" install --quiet -r "$req" 2>/dev/null; then
+              # Audit this isolated venv. Continue past failures so
+              # later manifests get checked too.
+              "$VENV_PY" -m pip install --quiet pip-audit
+              if ! "$VENV_PY" -m pip_audit --strict --progress-spinner off; then
+                FAILED=$((FAILED + 1))
+              fi
+            else
+              echo "WARN: install of $req failed in isolated venv — skipping (transitive coverage for THIS manifest may be incomplete)"
+            fi
+            rm -rf "$VENV_DIR"
           done
-
-      - name: Audit the installed venv (transitive CVEs)
-        run: |
-          python -m pip_audit --strict --progress-spinner off
+          if [ "$FAILED" -gt 0 ]; then
+            echo
+            echo "FAILED: $FAILED manifest(s) had transitive CVEs"
+            exit 1
+          fi
 
   osv-scanner:
     name: OSV-Scanner (Google)

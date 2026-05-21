@@ -192,13 +192,24 @@ def check_compromised_pypi_in_deps(repo_root: Path) -> CheckResult:
         except OSError:
             continue
         for bad in COMPROMISED_PYPI:
-            # Match bare name OR `name[extras]` OR `name==1.2.3`.
-            # Optional bracket group catches PEP 508 extras like
-            # `litellm[proxy]` (Gemini HIGH on 3fe4154). Without
-            # this, an install line like `litellm[proxy]==1.30.0`
-            # would slip past the scanner.
+            # Match every legal PEP 508 form for declaring this package:
+            #   bare name:                  `litellm`
+            #   name with extras:           `litellm[proxy]`
+            #   name + version specifier:   `litellm==1.30.0`
+            #   name + environment marker:  `litellm; python_version<"3.12"`
+            #   direct reference URL:       `litellm @ https://...`
+            #   trailing comment:           `litellm  # note`
+            # The post-name group accepts ANY of:
+            #   - `[` (extras start)
+            #   - version operators (=, <, >, !, ~)
+            #   - `;` (marker separator)
+            #   - `@` (direct reference)
+            #   - `#` (trailing comment)
+            #   - end of line
+            # (Gemini + Codex on 0e16c8d caught the comment + marker
+            # + direct-ref bypasses.)
             if re.search(
-                rf"^\s*{re.escape(bad)}(?:\[[^\]]+\])?(?:\s*[=<>!~]|\s*$)",
+                rf"^\s*{re.escape(bad)}(?:\[[^\]]+\])?\s*(?:[=<>!~;@#]|$)",
                 text,
                 re.MULTILINE,
             ):
@@ -291,11 +302,19 @@ def check_workflows_for_suspicious_commits(repo_root: Path) -> CheckResult:
             "No .github/workflows/ directory; skipped.",
         ])
     hits: List[str] = []
+    # Patterns must catch the most common pipe-to-shell payload
+    # delivery variants. Per Gemini MEDIUM on 0e16c8d:
+    #   - Allow an optional ``sudo`` before the shell (sudo-pipe
+    #     is the canonical curl|bash form on hostile tutorials).
+    #   - Match all three common shells (``sh``, ``bash``, ``zsh``)
+    #     not just ``bash`` in the process-substitution variant.
+    #   - Catch backtick-form eval ``eval `curl ...``` in addition
+    #     to ``eval $(curl ...)``.
     bad_patterns = (
-        re.compile(r"curl\s+[^|\n]+\|\s*(sh|bash|zsh)"),
-        re.compile(r"wget\s+[^|\n]+-O-\s*\|\s*(sh|bash|zsh)"),
-        re.compile(r"bash\s*<\(\s*curl"),
-        re.compile(r"eval\s*\$\(curl"),
+        re.compile(r"curl\s+[^|\n]+\|\s*(?:sudo\s+)?(sh|bash|zsh)"),
+        re.compile(r"wget\s+[^|\n]+-O-\s*\|\s*(?:sudo\s+)?(sh|bash|zsh)"),
+        re.compile(r"(?:sh|bash|zsh)\s*<\(\s*(?:curl|wget)"),
+        re.compile(r"eval\s*(?:\$\(curl|`curl)"),
     )
     # GitHub Actions accepts BOTH `.yml` and `.yaml` extensions. A
     # scanner that only checks `.yml` has a false-negative gap on
