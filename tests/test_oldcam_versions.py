@@ -347,9 +347,16 @@ def test_oldcam_rerun_increment_mode_creates_versioned_comparison_output(tmp_pat
     assert result["output"].endswith("clip_looped_2-oldcam-v7.mp4")
 
 
-def test_oldcam_rerun_fails_when_no_versions_selected(tmp_path):
+def test_rerun_fails_only_when_all_stages_unselected(tmp_path):
+    """User feedback 2026-05-22: re-run on a picked video must apply
+    WHATEVER post-processes are selected — not just Oldcam. So the
+    "fail with error" path now requires that ALL of (rPPG, Loop,
+    Oldcam) are unselected. Any one of them being on yields a
+    success path (rPPG-only, Loop-only, or both — see the companion
+    test below for rPPG-only)."""
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")
+    # Nothing selected — rPPG off (default), loop_videos off, oldcam empty.
     manager, _ = make_queue_manager({"oldcam_versions": []})
 
     done = threading.Event()
@@ -365,7 +372,50 @@ def test_oldcam_rerun_fails_when_no_versions_selected(tmp_path):
     assert started is True
     assert done.wait(2)
     assert result["success"] is False
-    assert result["error"] == "Oldcam not selected."
+    assert "nothing to apply" in (result["error"] or "").lower(), (
+        f"unexpected error message: {result['error']!r}"
+    )
+
+
+def test_rerun_rppg_only_succeeds_when_no_oldcam_versions(tmp_path):
+    """User feedback 2026-05-22: with rPPG enabled but no Oldcam
+    versions selected, re-run on a picked video must produce the
+    rPPG'd output and report success — not fail with 'Oldcam not
+    selected'. The rPPG step rebinds source_video; the no-Oldcam
+    early-return reports that path as the rerun output."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    rppg_output = tmp_path / "clip-rppg - HR=72.mp4"
+    rppg_output.write_bytes(b"rppg")
+
+    # rPPG enabled, no oldcam, no loop.
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "rppg_enabled": True,
+    })
+
+    # Patch the helpers the worker calls. Keep _rppg_enabled True
+    # (its config-gated; the config above already turns it on), and
+    # have _rppg_video return our fake output path.
+    with mock.patch.object(manager, "_rppg_video", return_value=str(rppg_output)):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update(
+                {"success": success, "src": src, "output": output, "error": error}
+            )
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    assert result["success"] is True, f"expected success, got error: {result['error']!r}"
+    assert result["output"] == str(rppg_output), (
+        f"expected rPPG'd output as rerun result, got {result['output']!r}"
+    )
+    assert result["error"] is None
 
 
 def test_v10_process_frame_skips_spatial_fluctuation_when_face_not_detected():

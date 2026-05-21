@@ -3779,7 +3779,7 @@ class KlingGUIWindow:
         from tk_dialogs import select_open_files
         paths = select_open_files(
             parent=self.root,
-            title="Select video(s) for Oldcam",
+            title="Select video(s) for re-run",
             filetypes=[
                 ("Video files", "*.mp4 *.mov *.avi *.mkv *.webm *.m4v"),
                 ("All files", "*.*"),
@@ -3798,12 +3798,26 @@ class KlingGUIWindow:
                 completion_callback=self._on_oldcam_rerun_complete_threadsafe,
             )
             if started:
+                # User feedback 2026-05-22: re-run is no longer Oldcam-only.
+                # Surface whichever post-processes are actually selected so
+                # the log explains what the picked video will be transformed
+                # into (rPPG-only / Loop-only / Oldcam-only / any combo).
+                stages = []
+                if bool(self.config.get("rppg_enabled", False)):
+                    stages.append("rPPG")
+                if bool(self.config.get("loop_videos", False)):
+                    stages.append("Loop")
                 selected_versions = self.config.get("oldcam_versions")
                 if not isinstance(selected_versions, list) or not selected_versions:
                     selected_versions = [self.config.get("oldcam_version", "v9")]
+                # selected_versions becomes [] only when oldcam disabled —
+                # _get_oldcam_versions_to_run() in queue_manager is the
+                # authoritative gate; this is just the user-facing label.
+                if bool(self.config.get("oldcam_enabled", True)) and selected_versions:
+                    stages.append(f"Oldcam {','.join(str(v) for v in selected_versions)}")
+                stage_label = " + ".join(stages) if stages else "no-op (nothing selected)"
                 self._log(
-                    f"Oldcam queued (picked): {os.path.basename(source_video)} "
-                    f"({', '.join(str(v) for v in selected_versions)})",
+                    f"Re-run queued (picked): {os.path.basename(source_video)} → {stage_label}",
                     "info",
                 )
 
@@ -3852,12 +3866,12 @@ class KlingGUIWindow:
         if success and output_path:
             self._set_persisted_oldcam_source(source_video)
             self._log(
-                f"Oldcam-only rerun complete: {os.path.basename(source_video)} → {output_path}",
+                f"Re-run complete: {os.path.basename(source_video)} → {output_path}",
                 "success",
             )
         else:
             self._log(
-                f"Oldcam-only rerun failed for {os.path.basename(source_video)}: {error or 'unknown error'}",
+                f"Re-run failed for {os.path.basename(source_video)}: {error or 'unknown error'}",
                 "error",
             )
 

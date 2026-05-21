@@ -704,8 +704,19 @@ class QueueManager:
                 config = self.get_config()
                 versions_to_run = self._get_oldcam_versions_to_run()
                 selected_versions = self._get_selected_oldcam_versions()
-                if not versions_to_run:
-                    message = "Oldcam not selected."
+                rppg_on = self._rppg_enabled()
+                loop_on = bool(config.get("loop_videos", False))
+
+                # User feedback 2026-05-22: re-run on a picked video must
+                # apply WHATEVER post-processes are selected — not just
+                # Oldcam. So rPPG-only, Loop-only, or any combination is
+                # valid. Only error when NONE of (rPPG, Loop, Oldcam) are
+                # selected — genuinely nothing to apply.
+                if not (rppg_on or loop_on or versions_to_run):
+                    message = (
+                        "Re-run: nothing to apply (rPPG, Loop, and Oldcam "
+                        "all unselected — pick at least one post-process)."
+                    )
                     self.log(message, "warning")
                     if completion_callback:
                         completion_callback(False, str(source_video), None, message)
@@ -714,15 +725,15 @@ class QueueManager:
                 # Mirror the normal queue's order (Phase E of polish/v2.3,
                 # 2026-05-22): rPPG -> Loop -> Oldcam. The re-run path's
                 # ``source_video`` plays the same role as the main queue's
-                # raw Kling output: rPPG runs first, then Loop, then Oldcam.
+                # raw Kling output.
                 #
                 # Skip rPPG step entirely on inputs that are already rPPG
                 # artifacts (the _rppg_video helper enforces this too, but
                 # short-circuiting here also avoids the misleading
                 # "Applying rPPG injection..." log line).
                 from automation.rppg import is_rppg_artifact
-                if self._rppg_enabled() and not is_rppg_artifact(source_video):
-                    self.log("Re-Run: applying rPPG before Loop+Oldcam (rPPG enabled)", "info")
+                if rppg_on and not is_rppg_artifact(source_video):
+                    self.log("Re-Run: applying rPPG (rPPG enabled)", "info")
                     rppg_first = self._rppg_video(str(source_video), QueueItem(str(source_video)))
                     if rppg_first:
                         source_video = Path(rppg_first).resolve()
@@ -739,14 +750,14 @@ class QueueManager:
                 # carry a ``-rppg`` suffix from the prior step, which
                 # is fine — the looper just emits ``<stem>_looped``
                 # on top.
-                if config.get("loop_videos", False):
+                if loop_on:
                     if source_video.stem.endswith("_looped"):
                         self.log(
                             f"Re-Run: source already looped ({source_video.name}); skipping loop step",
                             "info",
                         )
                     else:
-                        self.log("Re-Run: re-looping source before Oldcam (loop enabled)", "info")
+                        self.log("Re-Run: looping source (loop enabled)", "info")
                         looped_path = self._loop_video(str(source_video), QueueItem(str(source_video)))
                         if looped_path:
                             source_video = Path(looped_path).resolve()
@@ -759,6 +770,19 @@ class QueueManager:
                                 "Re-Run: loop step failed; falling back to un-looped source",
                                 "warning",
                             )
+
+                # No-Oldcam early-return: rPPG and/or Loop have already
+                # rebinded ``source_video`` to the latest stage's output.
+                # Report that as the re-run output and we're done — Oldcam
+                # has nothing to add (user explicitly didn't select it).
+                if not versions_to_run:
+                    self.log(
+                        f"Re-run complete (no Oldcam selected): {source_video.name}",
+                        "info",
+                    )
+                    if completion_callback:
+                        completion_callback(True, str(source_video), str(source_video), None)
+                    return
 
                 primary_version = max(versions_to_run, key=self._oldcam_version_key)
                 allow_reprocess = bool(config.get("allow_reprocess", False))
@@ -823,13 +847,6 @@ class QueueManager:
                 # OFF — most workflows don't need it because Oldcam's
                 # resolution-crush attenuates the pulse and the
                 # already-rPPG'd base is the cleaner deliverable.
-                #
-                # NOTE (deliberate asymmetry, not a bug): this is the
-                # oldcam-specific re-run path. The early-return above
-                # when no Oldcam versions are selected means rPPG-only
-                # re-run is NOT reachable here — that flow lives in
-                # the main queue path which always runs _rppg_video
-                # when ``rppg_enabled`` is True.
                 summary = self._last_oldcam_run_summary or {}
                 if (
                     self._rppg_enabled()
