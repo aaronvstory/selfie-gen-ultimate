@@ -1263,6 +1263,28 @@ class ConfigPanel(tk.Frame):
         # Load prompt config now that widgets exist
         self._load_prompt_config()
 
+        # Re-apply the negative-prompt split visibility now that the
+        # widgets exist. When ConfigPanel is constructed with
+        # ``build_prompt=False`` (main_window's split layout —
+        # prompt panel built later via build_prompt_panel here), the
+        # _setup_ui → _load_config → _update_motion_controls chain
+        # runs BEFORE this method creates ``_negative_prompt_section``.
+        # That first call no-ops (the section is None), so without
+        # this re-trigger the split editor stays hidden for models
+        # that support a negative prompt — even though caps say YES.
+        # User feedback 2026-05-21: Kling 2.5 Pro selected but no
+        # negative-prompt half visible.
+        try:
+            current_model = self.config.get(
+                "current_model",
+                "fal-ai/kling-video/v2.1/pro/image-to-video",
+            )
+            self._update_motion_controls(current_model)
+        except Exception:
+            # Never break panel construction over a label/visibility
+            # update.
+            pass
+
         # Mini drop zone (below the prompt area, fills remaining space)
         if self._on_images_dropped is not None:
             self._build_mini_drop_zone(right_inner)
