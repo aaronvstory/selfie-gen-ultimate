@@ -2697,7 +2697,11 @@ def test_run_rppg_absolutizes_relative_input(tmp_path, monkeypatch):
 
     rppg_dir = tmp_path / "rPPG"
     rppg_dir.mkdir()
+    # Phase D/F (v2.3, 2026-05-22) made `resolve_rppg_launcher` OS-conditional
+    # — Windows picks run_rppg.bat, macOS/Linux pick run_rppg.sh. Write both
+    # so the fixture works on every host the suite runs on.
     (rppg_dir / "run_rppg.bat").write_text("@echo off", encoding="utf-8")
+    (rppg_dir / "run_rppg.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     (rppg_dir / "rppg_injector.py").write_text("# stub", encoding="utf-8")
 
     work = tmp_path / "work"
