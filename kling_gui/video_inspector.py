@@ -605,6 +605,13 @@ class VideoFrame(tk.Frame):
                     # and fit the source frame INSIDE that box preserving
                     # aspect ratio. cv2 handles the actual resize.
                     src_h, src_w = frame_bgr.shape[:2]
+                    # Fast-skip corrupt frames with zero dims — would
+                    # ZeroDivisionError below and the outer except logs
+                    # at error level on every tick. Skip silently
+                    # (decoder will retry the next frame).
+                    # (Gemini MEDIUM on f0889ac.)
+                    if src_w <= 0 or src_h <= 0:
+                        continue
                     # Pull the canvas dimensions captured by the last
                     # Configure event. Reading the (w, h) tuple is a
                     # single dict-lookup => atomic under the GIL; this
@@ -1844,7 +1851,14 @@ class VideoInspectorModal(tk.Toplevel):
 
     def destroy(self) -> None:
         # Master timer first — must die before super().destroy()
-        # invalidates self.after_cancel.
+        # invalidates self.after_cancel. Setting _playing=False stops
+        # the finally-block reschedule inside any in-flight _tick from
+        # installing a NEW timer on the dead Toplevel between this
+        # cancel and the actual destroy() landing. The winfo_exists()
+        # guard at the top of _tick (c199b11) already catches the
+        # post-destroy case, but stopping playback here closes the
+        # race tighter. (Gemini MEDIUM on f0889ac.)
+        self._playing = False
         if self._timer_id is not None:
             try:
                 self.after_cancel(self._timer_id)
