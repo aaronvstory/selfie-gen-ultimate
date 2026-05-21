@@ -84,7 +84,15 @@ def _extract_video_first_frame(video_path: str):
     except OSError:
         mtime = 0  # missing file — the cv2 open below will None-out anyway
     cache_key = (video_path, mtime)
-    cached = _VIDEO_THUMB_CACHE.get(cache_key)
+    # Guard the read with the same lock as the eviction/insert path
+    # below. Single dict.get is GIL-atomic on simple lookups, but if
+    # another thread is mid-eviction (the FIFO pop in the write path
+    # below) the dict's internal hash table could be momentarily
+    # inconsistent. Holding the lock for the read is cheap (the lock
+    # itself is uncontended ~99.99% of the time) and removes the
+    # last theoretical race. (Gemini MEDIUM on be30379.)
+    with _VIDEO_THUMB_CACHE_LOCK:
+        cached = _VIDEO_THUMB_CACHE.get(cache_key)
     if cached is not None:
         return cached
     try:
@@ -167,8 +175,11 @@ def _extract_video_first_frame_async(
         _vt_mtime = os.path.getmtime(video_path)
     except OSError:
         _vt_mtime = 0
-    if (video_path, _vt_mtime) in _VIDEO_THUMB_CACHE:
-        return False
+    # Lock the cache membership check; same rationale as the .get()
+    # in _extract_video_first_frame (Gemini MEDIUM on be30379).
+    with _VIDEO_THUMB_CACHE_LOCK:
+        if (video_path, _vt_mtime) in _VIDEO_THUMB_CACHE:
+            return False
     # Atomic check-then-add: must be inside the lock to prevent a
     # racing worker-thread discard() (the widget-destroyed-mid-decode
     # branch below) from clearing the marker between the check and
@@ -952,7 +963,10 @@ class ImageCarousel(tk.Frame):
                     _vt_mtime = os.path.getmtime(path)
                 except OSError:
                     _vt_mtime = 0
-                img = _VIDEO_THUMB_CACHE.get((path, _vt_mtime))
+                # Locked read — same rationale as the helper above
+                # (Gemini MEDIUM on be30379).
+                with _VIDEO_THUMB_CACHE_LOCK:
+                    img = _VIDEO_THUMB_CACHE.get((path, _vt_mtime))
                 if img is None:
                     # CR Major (PR #43, bot pass on 907da866): the async
                     # decode can return None for corrupt/unsupported clips

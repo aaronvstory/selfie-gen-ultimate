@@ -565,7 +565,17 @@ class VideoFrame(tk.Frame):
                 # caught this.
                 try:
                     current = int(cap.get(cv2_mod.CAP_PROP_POS_FRAMES) or 0)
-                    if current != frame_index:
+                    # Some OpenCV backends (FFmpeg on certain
+                    # platforms, especially right after open/seek
+                    # failure) return negative values from
+                    # CAP_PROP_POS_FRAMES. A negative ``current``
+                    # would skip the seek (since current != N for any
+                    # non-negative N) but worse, the sequential-read
+                    # fast path's assumption that ``current``
+                    # represents "next frame index" is violated. Force
+                    # a seek in that case so we get a known good
+                    # position. (Gemini MEDIUM on be30379.)
+                    if current < 0 or current != frame_index:
                         cap.set(cv2_mod.CAP_PROP_POS_FRAMES, frame_index)
                     ok, frame_bgr = cap.read()
                 except Exception:
