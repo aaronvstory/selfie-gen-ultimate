@@ -418,6 +418,59 @@ def test_rerun_rppg_only_succeeds_when_no_oldcam_versions(tmp_path):
     assert result["error"] is None
 
 
+def test_rerun_fails_when_rppg_only_but_input_already_rppg_artifact(tmp_path):
+    """Subagent MEDIUM on a1c1b099: case (c) of the rerun worker —
+    `rppg_on=True` but the picked video is already a rPPG artifact
+    (so `rppg_attempted` stays False because the worker short-circuits
+    via `is_rppg_artifact`), AND no Loop / Oldcam selected. The
+    no-Oldcam early-return must report FAILURE with the "nothing to do
+    — already a rPPG artifact" message, NOT success with the unchanged
+    input as the "output"."""
+    # Pick an input that LOOKS like a rPPG artifact via filename suffix.
+    # `is_rppg_artifact` matches the `-rppg` suffix produced by the
+    # injector (e.g. `clip-rppg - HR=72.mp4`).
+    source = tmp_path / "clip-rppg - HR=72.mp4"
+    source.write_bytes(b"already-rppg")
+
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "rppg_enabled": True,
+        "loop_videos": False,
+    })
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update(
+            {"success": success, "src": src, "output": output, "error": error}
+        )
+        done.set()
+
+    # _rppg_video should NOT be invoked at all — assert that's the case.
+    with mock.patch.object(
+        manager, "_rppg_video",
+        side_effect=AssertionError(
+            "_rppg_video must NOT be called when input is already a "
+            "rPPG artifact — the worker should short-circuit via "
+            "is_rppg_artifact and report failure"
+        ),
+    ):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    assert result["success"] is False, (
+        f"already-rPPG input + no other stages selected must fail, "
+        f"not silently succeed. Got: {result!r}"
+    )
+    assert result["output"] is None
+    assert "already a rppg artifact" in (result["error"] or "").lower() or \
+           "nothing to do" in (result["error"] or "").lower(), (
+        f"error must explain why: {result['error']!r}"
+    )
+
+
 def test_rerun_rppg_silent_failure_reports_failure_not_success(tmp_path):
     """Subagent HIGH#3 regression (real-world hit: scipy missing →
     rPPG crashed → unchanged input was reported as 'Re-run complete').

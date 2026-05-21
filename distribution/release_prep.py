@@ -252,14 +252,24 @@ def build_sanitized_config(
     config["outpaint_double_expand"] = bool(
         template.get("outpaint_double_expand", False)
     )
-    # v2.3 ship defaults (user request 2026-05-22): loop OFF, expand
-    # provider fal. Dev kling_config.json typically still carries
-    # ``loop_videos: True`` and ``outpaint_provider: "bfl"`` from prior
-    # sessions; without the override the new template defaults would
-    # never reach the bundle. OVERRIDE (not setdefault) for the same
-    # reason as outpaint_double_expand above.
+    # v2.3 ship defaults (user request 2026-05-22): loop OFF.
+    # Dev kling_config.json typically still carries ``loop_videos: True``
+    # from prior sessions; without the override the new template default
+    # would never reach the bundle. OVERRIDE (not setdefault) for the
+    # same reason as outpaint_double_expand above.
     config["loop_videos"] = bool(template.get("loop_videos", False))
-    config["outpaint_provider"] = str(template.get("outpaint_provider", "fal"))
+    # outpaint_provider is INTENTIONALLY NOT forced in the bundle. The
+    # GUI's own conditional default (face_crop_tab.py + expand_tab.py)
+    # is ``"bfl" if config.get("bfl_api_key") else "fal"`` — which
+    # produces the visual look the user had tuned on main. Phase A's
+    # original "force fal" override was reverted (a1c1b099) after the
+    # user reported visible quality regression. Removing the override
+    # from the bundle path too — without it, the dev's
+    # ``outpaint_provider`` (typically "bfl") still gets blanked via
+    # the API-key sanitization below, but the GUI conditional kicks
+    # in on first launch and BFL wins when the BFL key is present.
+    if "outpaint_provider" in config:
+        del config["outpaint_provider"]
     # Phase E of polish/v2.3 (2026-05-22): the new pipeline order is
     # Kling -> rPPG -> Loop -> Oldcam. The slower legacy per-Oldcam
     # fan-out (one rPPG injection per Oldcam version) is preserved

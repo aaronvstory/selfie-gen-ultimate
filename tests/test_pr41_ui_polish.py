@@ -155,6 +155,35 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         self.assertEqual(cfg['automation_selfie_expand_composite_mode'],'none')
         self.assertEqual(cfg['outpaint_composite_mode'],'preserve_seamless')
 
+    def test_release_prep_does_not_force_outpaint_provider(self):
+        """Subagent CRITICAL on a1c1b099 (2026-05-22): the Phase A
+        revert removed `outpaint_provider` from the template, but
+        `build_sanitized_config` was ALSO force-writing
+        `outpaint_provider = "fal"` into the shipped bundle. That
+        re-introduced the visible expand-quality regression on
+        every fresh v2.3 install. Lock that the bundle does NOT
+        carry the key — the GUI's
+        `bfl-if-key-present-else-fal` default wins on first launch."""
+        import json as _j, tempfile, os
+        from distribution.release_prep import build_sanitized_config
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            t = os.path.join(d, 'default_config_template.json')
+            l = os.path.join(d, 'kling_config.json')
+            with open(t, 'w', encoding='utf-8') as fp:
+                fp.write(_j.dumps({'loop_videos': False}))
+            # Dev kling_config still has "bfl" from prior sessions.
+            with open(l, 'w', encoding='utf-8') as fp:
+                fp.write(_j.dumps({'outpaint_provider': 'bfl'}))
+            cfg = build_sanitized_config(Path(t), Path(l))
+        self.assertNotIn(
+            'outpaint_provider', cfg,
+            "Shipped bundle must NOT carry outpaint_provider so the GUI's "
+            "conditional default wins on first launch. Phase A's hardcoded "
+            "fal-default in this bundle path was reverted after user "
+            "feedback on the visible expand-quality regression.",
+        )
+
     def test_shipped_template_slot3_is_active_with_title(self):
         import json as _j
         d=_j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))

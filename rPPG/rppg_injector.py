@@ -1194,10 +1194,12 @@ class AdvancedRPPGInjector:
         # avoiding the uncatchable abort that would crash the whole
         # rPPG subprocess. CPU is the "slower approach" the Windows
         # session intentionally validated as the macOS workflow.
-        import sys as _sys_for_darwin
+        # `sys` is already imported at module level (line 28); use it
+        # directly. (Subagent MEDIUM cleanup -- removed the redundant
+        # `import sys as _sys_for_darwin` local alias.)
         delegate_used = 'CPU'
         self.face_landmarker = None
-        _try_gpu = _sys_for_darwin.platform != "darwin"
+        _try_gpu = sys.platform != "darwin"
         try:
             if not _try_gpu:
                 raise RuntimeError("macOS arm64 GPU delegate is unstable; using CPU")
