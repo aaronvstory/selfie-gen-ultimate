@@ -1007,13 +1007,14 @@ class ConfigPanel(tk.Frame):
         self.lock_end_frame_checkbox.pack(side=tk.LEFT, padx=(0, 12))
         HoverTooltip(self.lock_end_frame_checkbox, lambda: (
             "Lock End Frame — force the video to end on (or very near) "
-            "the start image. Critical for the ping-pong loop step: "
-            "if start != end the loop shows a visible seam.\n\n"
-            "ON (default): video starts at source, drifts through the "
-            "head-turn, returns to source. Cleanest loops.\n"
-            "OFF: model decides freely — may improve motion realism "
-            "for non-looped output. Disable only if you're NOT going "
-            "to loop the result."
+            "the start image. Pairs with the ping-pong Loop step:\n\n"
+            "ON (default): start = end natively, so the clip plays "
+            "forward and STOPS cleanly at the source. Looping is "
+            "NOT needed (and adds nothing — the forward clip alone "
+            "already returns to source).\n"
+            "OFF: model decides the end freely (better motion realism). "
+            "Use the Loop step to seamlessly play forward + reverse, "
+            "which hides any start-to-end mismatch via ping-pong."
         ))
         self.cfg_scale_label = tk.Label(
             rEF, text="cfg:", font=(FONT_FAMILY, 9),
