@@ -154,7 +154,7 @@ is much larger. Highest-risk packages by surface area:
 |---|---|---|
 | CVE remediation of the 20 known advisories pip-audit surfaces (Pillow 11.3 → 12.2, torch 2.12 PYSEC-2025 chain, keras, markdown, joblib) | Mixing remediation with hardening would make the PR hard to review. Hardening infrastructure must land first; CVE bumps tested individually. | `docs/security/HARDENING.md` §8 |
 
-### 3.3 What we're NOT doing (out of scope or accepting tradeoff)
+### 3.4 What we're NOT doing (out of scope or accepting tradeoff)
 
 - **Vendoring all deps into the repo** — would prevent supply chain attacks
   entirely but cost more than the protection's worth (Tensorflow alone is

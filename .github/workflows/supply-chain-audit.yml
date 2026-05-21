@@ -150,10 +150,15 @@ jobs:
           #
           # Per-manifest fallback: try wheel-only first (avoids
           # sdist setup.py execution). On wheel-only failure, fall
-          # back to allowing sdists. On total failure, log + continue
-          # — a single oldcam version lacking an Ubuntu wheel
-          # shouldn't kill the audit of every OTHER manifest.
+          # back to allowing sdists. On TOTAL install failure, count
+          # the manifest as FAILED — a missing audit IS a coverage
+          # gap and CI must not pass with zero transitive coverage
+          # for a manifest that exists in the tree. Codex P2 on
+          # 15bd7bb: previously logged WARN + continued silently.
+          # The audit job still continues the loop so OTHER
+          # manifests get checked.
           FAILED=0
+          SKIPPED=0
           for req in requirements.txt similarity/requirements.txt similarity/requirements-test.txt resemble-score/requirements.txt oldcam-v*/requirements.txt; do
             [ -f "$req" ] || continue
             VENV_DIR="$(mktemp -d)/audit-venv"
@@ -173,10 +178,17 @@ jobs:
                 FAILED=$((FAILED + 1))
               fi
             else
-              echo "WARN: install of $req failed in isolated venv — skipping (transitive coverage for THIS manifest may be incomplete)"
+              echo "FAIL: install of $req failed in isolated venv — counted as audit coverage gap (Codex P2 on 15bd7bb)"
+              SKIPPED=$((SKIPPED + 1))
             fi
             rm -rf "$VENV_DIR"
           done
+          if [ "$SKIPPED" -gt 0 ]; then
+            echo
+            echo "FAIL: $SKIPPED manifest(s) could not be installed and were never audited."
+            echo "      Either fix the requirements file or remove it from the tree."
+            FAILED=$((FAILED + SKIPPED))
+          fi
           if [ "$FAILED" -gt 0 ]; then
             echo
             echo "FAILED: $FAILED manifest(s) had transitive CVEs"
