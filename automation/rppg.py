@@ -340,6 +340,14 @@ _RPPG_DONE_RE = re.compile(
 # actually used (Windows) or whether the M1 Pro fell back to CPU
 # (CuPy doesn't support Metal — out of scope for now).
 _RPPG_GPU_RE = re.compile(r"^GPU backend:\s*(.+)$")
+# Per-frame progress inside each iteration. The injector prints
+# "Processing frame {idx}/{total}" every `int(fps)` frames (so once per
+# second of source video). Without surfacing these, the GUI shows the
+# "Iteration N/M" header then goes silent until the iteration's metrics
+# summary lands — which on CPU-bound macOS runs is a minute+ gap of
+# apparent stuckness. User feedback 2026-05-22: show progress every
+# ~25% so the panel never looks frozen.
+_RPPG_FRAME_RE = re.compile(r"^Processing frame\s+(\d+)\s*/\s*(\d+)\b")
 
 
 class _RppgProgressTracker:
@@ -376,6 +384,13 @@ class _RppgProgressTracker:
         self._verbose = verbose
         self._iter_current: Optional[int] = None
         self._iter_max: Optional[int] = None
+        # Per-iteration frame progress throttle. We emit at 25% / 50%
+        # / 75% / 100% milestones — so 4 lines per iteration max
+        # regardless of the underlying fps. Reset every time a new
+        # iteration starts. (User feedback 2026-05-22: never go more
+        # than ~25% of an iteration without a progress line.)
+        self._iter_frame_milestone: int = 0
+        self._iter_frame_iter_marker: Optional[int] = None
 
     def deadline_extender(self, line: str) -> int:
         """Return extra seconds to add to the deadline for *line*.
@@ -463,6 +478,45 @@ class _RppgProgressTracker:
                 if self._verbose:
                     _report(self._report_cb, line, "info")
                 return
+
+        # Per-frame progress within an iteration — throttle to 25%
+        # milestones so the panel sees forward motion without flooding.
+        m_frame = _RPPG_FRAME_RE.match(stripped)
+        if m_frame is not None:
+            try:
+                cur = int(m_frame.group(1))
+                total = int(m_frame.group(2))
+            except (TypeError, ValueError):
+                pass
+            else:
+                if total > 0:
+                    # Reset the milestone state when a new iteration
+                    # is in progress (compare against the iter we last
+                    # saw a frame line for — NOT _iter_current alone,
+                    # which only flips on iter-header lines and may
+                    # straddle frame loops).
+                    if self._iter_current != self._iter_frame_iter_marker:
+                        self._iter_frame_iter_marker = self._iter_current
+                        self._iter_frame_milestone = 0
+                    pct = int((cur / total) * 100)
+                    # Snap DOWN to the most recent 25% milestone the
+                    # current pct has crossed.
+                    milestone = (pct // 25) * 25
+                    if milestone > self._iter_frame_milestone and milestone >= 25:
+                        self._iter_frame_milestone = milestone
+                        iter_label = (
+                            f"iter {self._iter_current}/{self._iter_max} "
+                            if self._iter_current and self._iter_max
+                            else ""
+                        )
+                        _report(
+                            self._report_cb,
+                            f"rPPG {iter_label}frame {cur}/{total} (~{milestone}%)",
+                            "info",
+                        )
+            if self._verbose:
+                _report(self._report_cb, line, "info")
+            return
 
         m_done = _RPPG_DONE_RE.match(stripped)
         if m_done is not None:

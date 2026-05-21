@@ -85,14 +85,24 @@ fi
 # Force matplotlib's headless backend so visualize_analysis() doesn't
 # block on a GUI window.
 export MPLBACKEND="Agg"
+# Force unbuffered stdout/stderr. Python defaults to block-buffered when
+# stdout is a pipe (not a TTY), so EVERY print() in rppg_injector.py
+# would sit in the 4-8KB stdio buffer until full / process exit. On
+# slow macOS CPU runs that produced a 7+ minute silence in the GUI
+# panel followed by a flood at the very end. -u (or PYTHONUNBUFFERED=1)
+# makes prints surface in real-time so the user sees frame-level
+# progress as the injector emits it. (User feedback 2026-05-22.)
+export PYTHONUNBUFFERED=1
 
 cd "${SCRIPT_DIR}"
 echo "  Launching rppg_injector.py $*"
 echo "[INFO] Launching rppg_injector.py $*" >> "${LOG_FILE}"
 # errexit OFF for this one call so non-zero exit is captured + echoed
 # (the launcher's contract is "report the exit code, don't swallow").
+# Also pass -u as belt-and-suspenders against PYTHONUNBUFFERED being
+# clobbered by some intermediate wrapper.
 set +e
-"${PYTHON_BIN}" rppg_injector.py "$@"
+"${PYTHON_BIN}" -u rppg_injector.py "$@"
 EXIT_CODE=$?
 set -e
 echo "  Finished with code ${EXIT_CODE}."
