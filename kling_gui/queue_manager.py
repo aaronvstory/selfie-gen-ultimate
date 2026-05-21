@@ -731,12 +731,26 @@ class QueueManager:
                 # artifacts (the _rppg_video helper enforces this too, but
                 # short-circuiting here also avoids the misleading
                 # "Applying rPPG injection..." log line).
+                #
+                # Track which stages actually produced output so the
+                # no-Oldcam early-return below can distinguish "rPPG+Loop
+                # both succeeded → genuine new output" from "all selected
+                # stages failed → reporting the unchanged input as the
+                # rerun output would be a false-success lie" (subagent
+                # HIGH on a17fb658). Each stage flips its slot True only
+                # when it returns a truthy new path.
                 from automation.rppg import is_rppg_artifact
+                rppg_produced = False
+                loop_produced = False
+                rppg_attempted = False
+                loop_attempted = False
                 if rppg_on and not is_rppg_artifact(source_video):
+                    rppg_attempted = True
                     self.log("Re-Run: applying rPPG (rPPG enabled)", "info")
                     rppg_first = self._rppg_video(str(source_video), QueueItem(str(source_video)))
                     if rppg_first:
                         source_video = Path(rppg_first).resolve()
+                        rppg_produced = True
                         self.log(f"Re-Run rPPG intermediate: {source_video.name}", "debug")
                     else:
                         self.log(
@@ -757,10 +771,12 @@ class QueueManager:
                             "info",
                         )
                     else:
+                        loop_attempted = True
                         self.log("Re-Run: looping source (loop enabled)", "info")
                         looped_path = self._loop_video(str(source_video), QueueItem(str(source_video)))
                         if looped_path:
                             source_video = Path(looped_path).resolve()
+                            loop_produced = True
                             # "Looped video saved: <name> (X.Y MB)" already
                             # told the user the loop succeeded; this is just
                             # the structured event for the file log.
@@ -771,17 +787,45 @@ class QueueManager:
                                 "warning",
                             )
 
-                # No-Oldcam early-return: rPPG and/or Loop have already
-                # rebinded ``source_video`` to the latest stage's output.
-                # Report that as the re-run output and we're done — Oldcam
-                # has nothing to add (user explicitly didn't select it).
+                # No-Oldcam early-return path:
+                #   - SUCCESS when rPPG and/or Loop actually produced new
+                #     output (`source_video` now points at it).
+                #   - FAILURE when every selected pre-Oldcam stage either
+                #     was attempted-and-failed (e.g. scipy missing crashing
+                #     rPPG) OR no stage was attempted (e.g. rppg_on was
+                #     True but the source was already a rPPG artifact, AND
+                #     loop_on was False). Reporting the unchanged input
+                #     file as the "rerun output" with success=True was
+                #     the bug subagent HIGH#3 on a17fb658 flagged.
                 if not versions_to_run:
-                    self.log(
-                        f"Re-run complete (no Oldcam selected): {source_video.name}",
-                        "info",
-                    )
+                    any_produced = rppg_produced or loop_produced
+                    any_attempted = rppg_attempted or loop_attempted
+                    if any_produced:
+                        self.log(
+                            f"Re-run complete (no Oldcam selected): {source_video.name}",
+                            "info",
+                        )
+                        if completion_callback:
+                            completion_callback(True, str(source_video), str(source_video), None)
+                        return
+                    # All attempted stages failed, or no stage attempted
+                    # (e.g. rPPG selected but the picked video was already
+                    # a rPPG artifact, AND no other stage selected). Either
+                    # way: nothing was produced — report failure honestly.
+                    if any_attempted:
+                        message = (
+                            "Re-run: every selected post-process "
+                            "(rPPG / Loop) failed — no output produced."
+                        )
+                    else:
+                        message = (
+                            "Re-run: nothing to do — the picked video is "
+                            "already a rPPG artifact and Loop/Oldcam are "
+                            "unselected."
+                        )
+                    self.log(message, "warning")
                     if completion_callback:
-                        completion_callback(True, str(source_video), str(source_video), None)
+                        completion_callback(False, str(source_video), None, message)
                     return
 
                 primary_version = max(versions_to_run, key=self._oldcam_version_key)
@@ -1735,16 +1779,22 @@ class QueueManager:
             return None
 
     # ------------------------------------------------------------------
-    # rPPG injection (runs LAST: Kling -> Loop -> Oldcam -> rPPG)
+    # rPPG injection (Phase E of polish/v2.3, 2026-05-22):
+    #     pipeline order is now Kling -> rPPG -> Loop -> Oldcam.
     #
-    # rPPG runs after oldcam on purpose: loop's ping-pong reverse would
-    # play a pre-injected pulse backwards (detectable) and oldcam's
-    # resolution-crush would attenuate a pre-injected sub-perceptual
-    # pulse. Injecting on the final delivered pixels preserves the
-    # correct physiological signal. The injector lives in the gitignored
-    # rPPG/ tool and is shelled out to via its Windows .bat launcher;
-    # every failure path is a graceful skip (warn + return None) so the
-    # caller keeps the pre-rPPG video and the queue never crashes.
+    # Earlier order was Kling -> Loop -> Oldcam -> rPPG. Inverted because
+    # the user explicitly wants rPPG'd outputs as the primary deliverable
+    # (loop + oldcam are optional flourishes). The opt-in
+    # `rppg_per_oldcam_fanout` config flag re-applies rPPG to each Oldcam
+    # output when the user wants the post-Oldcam pulse on top — default
+    # OFF since Oldcam's resolution-crush attenuates the pulse and the
+    # base rPPG'd frame is the cleaner deliverable.
+    #
+    # The injector lives in `rPPG/` (committed in-tree as of Phase D,
+    # 2026-05-22) and is shelled out to via `run_rppg.bat` on Windows or
+    # `run_rppg.sh` on macOS / Linux. Every failure path is a graceful
+    # skip (warn + return None) so the caller keeps the pre-rPPG video
+    # and the queue never crashes.
     # ------------------------------------------------------------------
     def _rppg_enabled(self) -> bool:
         return bool(self.get_config().get("rppg_enabled", False))

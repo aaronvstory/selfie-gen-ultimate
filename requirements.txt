@@ -18,6 +18,14 @@ retina-face==0.0.17
 # Pinned to a CPU-only-compatible version range; user can swap for the CUDA build manually.
 torch>=2.2,<3
 
+# scipy is required by rPPG/rppg_injector.py (signal, butter, filtfilt,
+# find_peaks, hilbert, gaussian_filter1d, minimize) — Phase D of polish/v2.3
+# committed rPPG/ in-tree but the dep was never wired. Without scipy a
+# fresh macOS/Linux install crashes "No module named 'scipy'" the moment a
+# user triggers any rPPG step (toggle on + run, or picker rerun).
+# Pinned 1.11+ for python 3.9-3.12 compatibility (matches our supported range).
+scipy>=1.11,<2
+
 # GUI drag-and-drop support
 tkinterdnd2>=0.3,<1
 

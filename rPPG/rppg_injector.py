@@ -1184,9 +1184,23 @@ class AdvancedRPPGInjector:
         # Try GPU delegate first; fall back to CPU on any failure. Windows
         # pip wheels often lack a GPU-enabled build so init can raise
         # RuntimeError at create_from_options time, not construction.
+        #
+        # macOS arm64 (2026-05-22): the GPU delegate SUCCEEDS at
+        # create_from_options but SIGABRTs deep in
+        # ImageCloneCalculator::Process during frame inference (the GL
+        # context handoff between the Metal-backed delegate and the
+        # mediapipe scheduler thread is unstable). Skip the GPU attempt
+        # entirely on darwin so we land on the CPU path immediately,
+        # avoiding the uncatchable abort that would crash the whole
+        # rPPG subprocess. CPU is the "slower approach" the Windows
+        # session intentionally validated as the macOS workflow.
+        import sys as _sys_for_darwin
         delegate_used = 'CPU'
         self.face_landmarker = None
+        _try_gpu = _sys_for_darwin.platform != "darwin"
         try:
+            if not _try_gpu:
+                raise RuntimeError("macOS arm64 GPU delegate is unstable; using CPU")
             with suppress_stdout_stderr():
                 gpu_base = mp.tasks.BaseOptions(
                     model_asset_path=model_path,
@@ -1205,7 +1219,10 @@ class AdvancedRPPGInjector:
                 self.face_landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(gpu_options)
             delegate_used = 'GPU'
         except Exception as gpu_exc:
-            print(f"MediaPipe GPU delegate unavailable ({type(gpu_exc).__name__}: {gpu_exc}); using CPU.")
+            if _try_gpu:
+                print(f"MediaPipe GPU delegate unavailable ({type(gpu_exc).__name__}: {gpu_exc}); using CPU.")
+            else:
+                print("MediaPipe: forcing CPU delegate on macOS arm64 (GPU path SIGABRTs in frame inference).")
             with suppress_stdout_stderr():
                 base_options = mp.tasks.BaseOptions(model_asset_path=model_path)
                 options = mp.tasks.vision.FaceLandmarkerOptions(

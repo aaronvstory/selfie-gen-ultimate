@@ -418,6 +418,49 @@ def test_rerun_rppg_only_succeeds_when_no_oldcam_versions(tmp_path):
     assert result["error"] is None
 
 
+def test_rerun_rppg_silent_failure_reports_failure_not_success(tmp_path):
+    """Subagent HIGH#3 regression (real-world hit: scipy missing →
+    rPPG crashed → unchanged input was reported as 'Re-run complete').
+
+    When rPPG is the only selected post-process and `_rppg_video`
+    returns None (failure / skip), the rerun must report FAILURE
+    — NOT success with the unchanged input as the output. Reporting
+    success in that case was lying to the user that processing
+    happened when nothing did."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    # rPPG enabled, no oldcam, no loop — and _rppg_video will fail.
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "rppg_enabled": True,
+    })
+
+    with mock.patch.object(manager, "_rppg_video", return_value=None):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update(
+                {"success": success, "src": src, "output": output, "error": error}
+            )
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    assert result["success"] is False, (
+        f"rPPG silent failure must NOT be reported as success "
+        f"(scipy-missing scenario user hit on 2026-05-22). "
+        f"Got: {result!r}"
+    )
+    assert result["output"] is None
+    assert "failed" in (result["error"] or "").lower(), (
+        f"error message must surface the failure: {result['error']!r}"
+    )
+
+
 def test_v10_process_frame_skips_spatial_fluctuation_when_face_not_detected():
     oldcam_v10 = load_module(ROOT / "oldcam-v10" / "oldcam.py", "oldcam_v10_gate")
     image = np.full((24, 24, 3), 127, dtype=np.uint8)

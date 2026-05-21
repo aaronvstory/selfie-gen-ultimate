@@ -10,7 +10,9 @@
 # rule 9 (.venv311 first per rule 6, with version validation on every
 # candidate). Honours $SELFIEGEN_PYTHON override.
 
-set -uo pipefail
+set -euo pipefail   # CLAUDE.md rule 10 — sibling launchers all use -euo.
+# The `${PYTHON_BIN}` invocation at the bottom intentionally captures
+# exit code so we can echo it without errexit aborting on non-zero.
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 REPO_ROOT="$( cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd )"
@@ -71,19 +73,28 @@ fi
 echo "  Python: ${ENV_KIND} -- ${PYTHON_BIN}"
 echo "[INFO] Using ${ENV_KIND}: ${PYTHON_BIN}" >> "${LOG_FILE}"
 
-# Mirror the .bat's mediapipe model env var (if a sibling-of-repo copy
-# exists) and force matplotlib's headless backend so the injector's
-# visualize_analysis() doesn't block on a GUI window.
-if [ -f "${REPO_ROOT}/face_landmarker.task" ]; then
+# Mediapipe FaceLandmarker model path. Prefer the in-tree copy at
+# rPPG/models/face_landmarker.task (committed in Phase D); fall back to
+# the sibling-of-repo copy if present (legacy layout); else let the
+# injector download on first run.
+if [ -f "${REPO_ROOT}/rPPG/models/face_landmarker.task" ]; then
+  export MEDIAPIPE_FACE_LANDMARKER_MODEL="${REPO_ROOT}/rPPG/models/face_landmarker.task"
+elif [ -f "${REPO_ROOT}/face_landmarker.task" ]; then
   export MEDIAPIPE_FACE_LANDMARKER_MODEL="${REPO_ROOT}/face_landmarker.task"
 fi
+# Force matplotlib's headless backend so visualize_analysis() doesn't
+# block on a GUI window.
 export MPLBACKEND="Agg"
 
 cd "${SCRIPT_DIR}"
 echo "  Launching rppg_injector.py $*"
 echo "[INFO] Launching rppg_injector.py $*" >> "${LOG_FILE}"
+# errexit OFF for this one call so non-zero exit is captured + echoed
+# (the launcher's contract is "report the exit code, don't swallow").
+set +e
 "${PYTHON_BIN}" rppg_injector.py "$@"
 EXIT_CODE=$?
+set -e
 echo "  Finished with code ${EXIT_CODE}."
 echo "[INFO] Finished with code ${EXIT_CODE}." >> "${LOG_FILE}"
 exit "${EXIT_CODE}"
