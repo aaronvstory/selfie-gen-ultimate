@@ -1741,20 +1741,29 @@ class QueueManager:
         return input_path.with_name(f"{input_path.stem}-rppg{input_path.suffix}")
 
     def _resolve_rppg_launcher(self) -> Optional[Path]:
-        """Resolve rPPG/run_rppg.bat for script and frozen builds.
+        """Resolve the rPPG launcher for script and frozen builds.
 
-        Returns None (caller skips gracefully) if the gitignored rPPG/
-        tool — launcher or injector — is absent, or on a non-Windows host
-        (the launcher is a .bat; a macOS launcher is out of scope).
+        Phase D + Phase F of polish/v2.3 (2026-05-22): rPPG/ is now
+        committed in-tree (was gitignored before Phase D), and a
+        ``run_rppg.sh`` was added alongside ``run_rppg.bat`` for
+        macOS / Linux. We pick the right launcher per-OS:
+          - Windows (os.name == 'nt'): run_rppg.bat
+          - Everywhere else:           run_rppg.sh
+
+        Returns None (caller skips gracefully) when the launcher or
+        injector is missing — e.g. a partial clone, or a future
+        packaging that ships only one OS's launcher.
 
         DELIBERATELY distinct from automation.rppg.resolve_rppg_launcher
-        (NOT accidental duplication — do not "dedup" them): the GUI runs
-        in frozen PyInstaller builds where the tool may be relocated, so
-        this searches app_dir / resource_dir / repo-root (mirrors
-        _resolve_oldcam_dir). The automation pipeline always runs from
-        source, so its resolver takes an explicit repo_root and does a
-        single check. Both require launcher AND injector to exist.
+        (NOT accidental duplication — do not "dedup" them): the GUI
+        runs in frozen PyInstaller builds where the tool may be
+        relocated, so this searches app_dir / resource_dir / repo-root
+        (mirrors _resolve_oldcam_dir). The automation pipeline always
+        runs from source, so its resolver takes an explicit repo_root
+        and does a single check. Both require launcher AND injector
+        to exist.
         """
+        launcher_name = "run_rppg.bat" if os.name == "nt" else "run_rppg.sh"
         app_dir = Path(get_app_dir())
         resource_dir = Path(get_resource_dir())
         candidates = [
@@ -1763,7 +1772,7 @@ class QueueManager:
             Path(__file__).parent.parent.resolve() / "rPPG",
         ]
         for base in candidates:
-            launcher = base / "run_rppg.bat"
+            launcher = base / launcher_name
             injector = base / "rppg_injector.py"
             if launcher.exists() and injector.exists():
                 return launcher

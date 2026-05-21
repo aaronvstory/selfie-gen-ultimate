@@ -60,14 +60,26 @@ def _report(progress_cb: ProgressCB, message: str, level: str = "info") -> None:
 
 
 def resolve_rppg_launcher(repo_root: Path) -> Optional[Path]:
-    """Return the rPPG launcher path if the gitignored tool is present.
+    """Return the rPPG launcher path for the current OS.
 
-    Returns ``None`` (caller skips gracefully) when ``rPPG/run_rppg.bat`` or
-    ``rPPG/rppg_injector.py`` is missing — e.g. a release without the tool, or
-    a non-Windows host (the launcher is a .bat).
+    Phase D + Phase F of polish/v2.3 (2026-05-22): rPPG/ is now
+    committed in-tree (not gitignored), and a ``run_rppg.sh`` sibling
+    of the legacy ``run_rppg.bat`` was added for macOS / Linux. We
+    pick the right launcher per-OS:
+
+    - Windows (``os.name == 'nt'``): ``rPPG/run_rppg.bat``
+    - Everywhere else: ``rPPG/run_rppg.sh`` (added 2026-05-22)
+
+    Returns ``None`` (caller skips gracefully) when the launcher or
+    injector is missing — e.g. a partial clone, or a future packaging
+    that ships only one OS's launcher.
     """
-    launcher = repo_root / "rPPG" / "run_rppg.bat"
-    injector = repo_root / "rPPG" / "rppg_injector.py"
+    rppg_dir = repo_root / "rPPG"
+    injector = rppg_dir / "rppg_injector.py"
+    if os.name == "nt":
+        launcher = rppg_dir / "run_rppg.bat"
+    else:
+        launcher = rppg_dir / "run_rppg.sh"
     if not launcher.exists() or not injector.exists():
         return None
     return launcher
