@@ -192,9 +192,16 @@ def check_compromised_pypi_in_deps(repo_root: Path) -> CheckResult:
         except OSError:
             continue
         for bad in COMPROMISED_PYPI:
-            # match bare name + name with version pin
-            if re.search(rf"^\s*{re.escape(bad)}([=<>!~]|\s*$)",
-                         text, re.MULTILINE):
+            # Match bare name OR `name[extras]` OR `name==1.2.3`.
+            # Optional bracket group catches PEP 508 extras like
+            # `litellm[proxy]` (Gemini HIGH on 3fe4154). Without
+            # this, an install line like `litellm[proxy]==1.30.0`
+            # would slip past the scanner.
+            if re.search(
+                rf"^\s*{re.escape(bad)}(?:\[[^\]]+\])?(?:\s*[=<>!~]|\s*$)",
+                text,
+                re.MULTILINE,
+            ):
                 hits.append(f"{req.relative_to(repo_root)} references {bad!r}")
     if hits:
         return CheckResult(name, ok=False, details=hits)
@@ -290,7 +297,11 @@ def check_workflows_for_suspicious_commits(repo_root: Path) -> CheckResult:
         re.compile(r"bash\s*<\(\s*curl"),
         re.compile(r"eval\s*\$\(curl"),
     )
-    for wf in wf_dir.glob("*.yml"):
+    # GitHub Actions accepts BOTH `.yml` and `.yaml` extensions. A
+    # scanner that only checks `.yml` has a false-negative gap on
+    # `.yaml`-style workflows. (CodeRabbit major on 3fe4154.)
+    workflow_files = list(wf_dir.glob("*.yml")) + list(wf_dir.glob("*.yaml"))
+    for wf in workflow_files:
         try:
             text = wf.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -302,7 +313,7 @@ def check_workflows_for_suspicious_commits(repo_root: Path) -> CheckResult:
     if hits:
         return CheckResult(name, ok=False, details=hits)
     return CheckResult(name, ok=True, details=[
-        f"Scanned {len(list(wf_dir.glob('*.yml')))} workflow files; "
+        f"Scanned {len(workflow_files)} workflow files; "
         "no curl|bash or wget|sh patterns found.",
     ])
 
@@ -321,9 +332,11 @@ def check_github_repos_for_marker() -> CheckResult:
             "`gh` CLI not available or not authenticated; skipped.",
             "Install: https://cli.github.com/",
         ])
-    # List user's repos (limit 200 — should cover most accounts).
+    # List user's repos. Limit raised to 1000 (Gemini medium on
+    # 3fe4154) so accounts with many side projects don't have an
+    # un-scanned tail. `gh` will hit pagination automatically.
     rc, out, err = _gh(
-        "repo", "list", "--limit", "200",
+        "repo", "list", "--limit", "1000",
         "--json", "name,description,visibility,createdAt",
     )
     if rc != 0:

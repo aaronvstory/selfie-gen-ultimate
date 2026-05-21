@@ -7,8 +7,9 @@ for %%I in ("%~dp0..") do set "REPO_ROOT=%%~fI"
 cd /d "%REPO_ROOT%"
 
 set "PY="
-if exist "%REPO_ROOT%\venv\Scripts\python.exe" set "PY=%REPO_ROOT%\venv\Scripts\python.exe"
-if not defined PY if exist "%REPO_ROOT%\.venv311\Scripts\python.exe" set "PY=%REPO_ROOT%\.venv311\Scripts\python.exe"
+if exist "%REPO_ROOT%\.venv311\Scripts\python.exe" set "PY=%REPO_ROOT%\.venv311\Scripts\python.exe"
+if not defined PY if exist "%REPO_ROOT%\.venv\Scripts\python.exe" set "PY=%REPO_ROOT%\.venv\Scripts\python.exe"
+if not defined PY if exist "%REPO_ROOT%\venv\Scripts\python.exe" set "PY=%REPO_ROOT%\venv\Scripts\python.exe"
 if not defined PY (
     where python >nul 2>nul && set "PY=python"
 )

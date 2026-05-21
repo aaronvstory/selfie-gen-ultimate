@@ -221,10 +221,14 @@ scripts\sandbox_install.bat
 
 Both create a fresh venv under `.sandbox-venv/`, install with
 `--only-binary :all:` (refuses to fall back to sdist), then run pip-audit
-against the installed tree. They do NOT use `--require-hashes` yet —
-that comes when `requirements-hashed.txt` is generated in the follow-up
-PR per §2.1. They do NOT unset environment creds — that's the user's
-job (`unset AWS_PROFILE GCP_...`) before running.
+against the installed tree. If `requirements-hashed.txt` exists at the
+repo root (it's committed — see §2 below), they install with
+`--require-hashes` too so post-publish tampering on any pinned dep
+fails the install instead of running its payload. If you've updated
+`requirements.txt` but not yet regenerated the hashed file, the
+sandbox falls back to the unhashed install and logs a warning. They
+do NOT unset environment creds — that's the user's job
+(`unset AWS_PROFILE GCP_...`) before running.
 
 ## 6. Disabling pre/post install hooks
 

@@ -92,15 +92,26 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install requirements (binary-only)
+      - name: Install all dependency sets (binary-only)
         run: |
+          set -e
+          shopt -s nullglob
           python -m pip install --upgrade pip pip-audit
-          # --only-binary :all: prevents sdist setup.py execution
-          python -m pip install --only-binary :all: -r requirements.txt || \
-            python -m pip install -r requirements.txt
-          # Don't fail the whole step if optional similarity deps are too
-          # heavy for this Ubuntu runner — they're covered by the
-          # similarity-tests workflow.
+          # --only-binary :all: prevents sdist setup.py execution. We
+          # install EVERY requirements file so the resolved venv tree
+          # captures transitive deps from similarity + oldcam-v* — the
+          # Codex P2 finding on 3fe4154 noted that installing only
+          # requirements.txt blinded the audit to those branches.
+          # Per-file fallback to sdist on first wheel-only failure
+          # rather than aborting — a single oldcam version that lacks
+          # a wheel for ubuntu-3.12 shouldn't kill the audit.
+          for req in requirements.txt similarity/requirements.txt similarity/requirements-test.txt oldcam-v*/requirements.txt; do
+            [ -f "$req" ] || continue
+            echo "=== install: $req ==="
+            python -m pip install --only-binary :all: -r "$req" \
+              || python -m pip install -r "$req" \
+              || echo "WARN: install of $req failed; continuing — transitive coverage for THIS file's deps may be incomplete"
+          done
 
       - name: Audit the installed venv (transitive CVEs)
         run: |
@@ -116,14 +127,22 @@ jobs:
       # Pinned to a specific version + SHA-style tag for supply-chain
       # discipline — we audit our own audit tooling. Update by reading
       # the new release notes + bumping ONLY after confirmation.
+      # The correct action path is the STEP action under the
+      # osv-scanner-action subdirectory, NOT a reusable workflow:
+      # CodeRabbit + Codex caught the prior path on 3fe4154 as
+      # invalid — the workflow silently failed that step on every run.
       - name: Run OSV-Scanner
-        uses: google/osv-scanner-action/.github/workflows/[email protected]
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.5
         with:
+          # --recursive covers oldcam-v*/requirements.txt automatically.
+          # Explicit lockfile entries for the two top-level sets that
+          # aren't under a recursive walk root we'd accidentally skip.
           scan-args: |-
             --recursive
             --skip-git
             --lockfile=requirements.txt
             --lockfile=similarity/requirements.txt
+            --lockfile=similarity/requirements-test.txt
 
   ioc-self-check:
     name: IoC self-check (detect_compromise.py)

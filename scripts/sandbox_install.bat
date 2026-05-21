@@ -52,8 +52,13 @@ if not exist "%SBPY%" (
 
 "%SBPY%" -m pip install --quiet --upgrade pip pip-audit
 
-echo Installing requirements.txt --only-binary :all: ...
-"%SBPY%" -m pip install --only-binary :all: -r requirements.txt
+if exist "requirements-hashed.txt" (
+    echo Installing requirements-hashed.txt --require-hashes --only-binary :all: ...
+    "%SBPY%" -m pip install --require-hashes --only-binary :all: -r requirements-hashed.txt
+) else (
+    echo Installing requirements.txt --only-binary :all: ^(no requirements-hashed.txt - tamper detection OFF^)...
+    "%SBPY%" -m pip install --only-binary :all: -r requirements.txt
+)
 
 echo(
 echo === Sandbox audit (pip-audit on installed env^) ===

@@ -137,8 +137,9 @@ is much larger. Highest-risk packages by surface area:
 
 | Defense | File | Why |
 |---|---|---|
+| Hash-pinned `requirements-hashed.txt` | new | Generated via `pip-tools compile --generate-hashes`. Detects post-publish tampering: a malicious republish under the same version fails the SHA-256 verify on install. `sandbox_install.{sh,bat}` use `--require-hashes` when this file is present. |
 | `pip-audit` in CI + `scripts/audit_deps.{sh,bat}` | new | Cross-checks every dep against PyPA + OSV advisory DBs on every PR + on-demand for devs. |
-| Installed-venv audit job | CI | Compensating control for `--no-deps` on the requirements-file audit — catches transitive CVEs. |
+| Installed-venv audit job | CI | Compensating control for `--no-deps` on the requirements-file audit — catches transitive CVEs. Installs ALL requirements sets (main + similarity + oldcam-v*) so the resolved venv tree captures full transitive coverage. |
 | OSV-Scanner in CI | new | Second-source vulnerability DB (Google) — covers gaps in PyPA. |
 | `detect_compromise.py` IoC self-check | new | One-command scan: known-compromised PyPI packages, `.pth` files with executable code (`re.MULTILINE` + whole-content allowlist matching to prevent prefix-only bypass), git remotes against C2 domains, workflow files for `curl \| bash` patterns, optional GitHub account scan for exfil repos. |
 | `.github/dependabot.yml` | new | Automated security updates with weekly cadence + grouping. |
@@ -151,7 +152,6 @@ is much larger. Highest-risk packages by surface area:
 
 | Item | Why deferred | Tracked in |
 |---|---|---|
-| Hash-pinned `requirements-hashed.txt` | Needs `piptools compile --generate-hashes` which takes 5+ minutes on this dependency tree (TensorFlow + Torch). Generated artifact will be reviewed in its own commit so the diff is parseable. | `docs/security/HARDENING.md` §2 |
 | CVE remediation of the 20 known advisories pip-audit surfaces (Pillow 11.3 → 12.2, torch 2.12 PYSEC-2025 chain, keras, markdown, joblib) | Mixing remediation with hardening would make the PR hard to review. Hardening infrastructure must land first; CVE bumps tested individually. | `docs/security/HARDENING.md` §8 |
 
 ### 3.3 What we're NOT doing (out of scope or accepting tradeoff)
