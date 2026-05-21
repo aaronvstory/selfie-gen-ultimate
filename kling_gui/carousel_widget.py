@@ -1020,6 +1020,20 @@ class ImageCarousel(tk.Frame):
                         self._bind_video_canvas_click(canvas, path)
                         return True
                 if img is None:
+                    # Close a narrow race (CodeRabbit MAJOR on 79e9b6e):
+                    # an async worker may have populated the cache
+                    # between the FIRST get() above and now (e.g. the
+                    # decode finished while we were rendering the
+                    # placeholder for a prior pass and the listbox
+                    # navigated back to this entry). Re-read under the
+                    # lock to confirm we're really still empty before
+                    # memoizing the failure — without this, a valid
+                    # thumbnail can land in _render_failed_paths and
+                    # the entry shows the placeholder until mtime
+                    # changes.
+                    with _VIDEO_THUMB_CACHE_LOCK:
+                        img = _VIDEO_THUMB_CACHE.get((path, _vt_mtime))
+                if img is None:
                     # cv2 unavailable OR decode failed. Show a neutral
                     # placeholder + ▶ so the user still sees that a
                     # video lives here — clicking opens the Inspector

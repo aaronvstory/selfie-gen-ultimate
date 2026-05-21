@@ -3917,10 +3917,38 @@ class KlingGUIWindow:
         the Videos toolbar button (with None). The factory enforces
         singleton lifetime so reopens don't leak decoder threads or
         stack Toplevels.
+
+        When called with None (toolbar "Videos" button), fall back to
+        discovering a companion video for the carousel's ACTIVE entry
+        — so a user viewing a still that has derived videos can open
+        the Inspector preloaded without first hunting for the video
+        in the file listbox. The previous corner-play-badge on stills
+        provided this discovery affordance; it was removed 2026-05-21
+        per user feedback (Codex P2 on 79e9b6e — without the badge
+        AND without this fallback, a fresh-install user with no
+        ``video_inspector_last_folder`` couldn't reach companion
+        videos from a still at all).
         """
         from pathlib import Path as _Path
         from .video_inspector import open_video_inspector
         initial = _Path(video_path) if video_path else None
+        if initial is None:
+            try:
+                active = self.image_session.active_entry
+                if active is not None and active.path:
+                    from .video_discovery import find_video_for_image
+                    companion = find_video_for_image(_Path(active.path))
+                    if companion is not None:
+                        initial = companion
+            except Exception:
+                # Discovery is a convenience — never let it block the
+                # modal from opening. The user can still pick a folder
+                # via the file-list rescan once the modal is up.
+                logging.getLogger(__name__).debug(
+                    "_open_video_inspector: active-entry companion "
+                    "lookup failed",
+                    exc_info=True,
+                )
         def _clear_inspector_ref():
             # M3: null self._video_inspector_window when the inspector
             # closes so a long session opening/closing N times doesn't
