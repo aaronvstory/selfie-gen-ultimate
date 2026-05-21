@@ -91,11 +91,14 @@ jobs:
           done
 
   audit-installed-venv:
-    # Compensating control for the --no-deps flag above. Install the
-    # full requirements + similarity + oldcam-v24 (current default)
-    # tree, then audit the RESOLVED on-disk dependency graph. Catches
-    # transitive CVEs the requirements-file audit can't see. Subagent
-    # MEDIUM on 4cc0bb4.
+    # Belt-and-suspenders for the requirements-file audits above.
+    # Each requirements file is installed into its OWN isolated venv,
+    # so a later install can't overwrite an earlier vulnerable pin
+    # and mask the CVE (Codex P1 on 0e16c8d). Catches the SAME
+    # transitive CVEs the requirements-file audits do, but resolved
+    # against an actual installed tree — a useful independent check
+    # if the pip-audit resolver has bugs or behaves differently on
+    # range-pinned input than expected.
     name: Audit installed venv (transitive deps)
     runs-on: ubuntu-latest
     steps:
