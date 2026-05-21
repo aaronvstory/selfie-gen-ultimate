@@ -233,7 +233,16 @@ class StreamerCallOrderTests(unittest.TestCase):
         # subprocess that emits the same iteration marker forever
         # must NOT push the deadline indefinitely.
         self.assertIn("max_deadline", body)
-        self.assertIn("min(deadline + extra, max_deadline)", body)
+        # Updated 2026-05-21 per Gemini MEDIUM on 0f5c5f3: the
+        # accumulation now floors at ``now + extra`` so a marker
+        # arriving when the deadline has already drifted close to
+        # ``now`` still buys real headroom. The shape is:
+        #   min(max(deadline + extra, now + extra), max_deadline)
+        self.assertIn("max_deadline", body)
+        self.assertRegex(
+            body,
+            r"min\(\s*max\(deadline \+ extra, time\.monotonic\(\) \+ extra\),\s*max_deadline",
+        )
 
 
 if __name__ == "__main__":

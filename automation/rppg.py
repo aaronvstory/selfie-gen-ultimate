@@ -577,17 +577,23 @@ def stream_subprocess_with_timeout(
                 try:
                     extra = deadline_extender(text)
                     if extra and extra > 0:
-                        # Accumulate per-iteration budget: bump the
-                        # ABSOLUTE deadline by `extra` seconds rather
-                        # than rebasing it from `now`. This way a
-                        # well-behaved 10-iter run accrues 10*90s of
-                        # headroom (not just one 90s lump that gets
-                        # capped at max() with the current deadline,
-                        # which was the prior bug). Capped at
+                        # Accumulate per-iteration budget. For a
+                        # well-behaved run the deadline grows
+                        # ``deadline + extra``. For a slow run where
+                        # the deadline has already drifted close to
+                        # ``now``, the previous progress marker buys
+                        # at least ``now + extra`` of headroom — the
+                        # ``max(deadline, now + extra)`` floor —
+                        # otherwise the next iteration could die
+                        # immediately despite explicit progress.
+                        # Both branches are then capped at
                         # max_deadline so a buggy stuck subprocess
-                        # can't push the deadline forever (Gemini
-                        # MEDIUM on 9d9a473).
-                        deadline = min(deadline + extra, max_deadline)
+                        # can't push the deadline forever.
+                        # (Gemini MEDIUM on 0f5c5f3.)
+                        deadline = min(
+                            max(deadline + extra, time.monotonic() + extra),
+                            max_deadline,
+                        )
                 except Exception:
                     # Never let an extender bug kill the subprocess wait.
                     pass

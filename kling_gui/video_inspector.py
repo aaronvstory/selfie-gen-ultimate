@@ -136,6 +136,13 @@ class VideoFrame(tk.Frame):
         (daemon thread; no UI block).
     """
 
+    # Class-level default so tests that bypass __init__ via __new__
+    # (see tests/test_video_inspector.py::_make_frame) still find
+    # the attribute when calling has_reached_eof(). Reset to False
+    # by every __init__ + load() + clear() anyway. (Gemini MEDIUM
+    # on 0f5c5f3.)
+    _eof_reached: bool = False
+
     def __init__(
         self,
         parent: tk.Misc,
