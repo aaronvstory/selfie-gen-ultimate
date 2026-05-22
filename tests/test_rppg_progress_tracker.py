@@ -80,9 +80,13 @@ class ProgressTrackerEmissionTests(unittest.TestCase):
     def test_iter_line_emits_friendly_progress(self):
         t, calls = self._tracker(verbose=False)
         t.on_line("  Iteration 3/10")
-        # User-friendly synthesized line; correct % rounding.
+        # User-friendly synthesized line. PR #48 round 4 changed the
+        # phrasing from "(~30%)" to "starting" — the iteration is just
+        # beginning at that point and the % is misleading (it implies
+        # progress through the run, but iter 3/10 starting != 30%
+        # complete; the per-iter frame progress already shows %).
         self.assertIn(
-            ("info", "rPPG iteration 3/10 (~30%)"),
+            ("info", "rPPG iteration 3/10 starting"),
             calls,
         )
 
@@ -115,28 +119,55 @@ class ProgressTrackerEmissionTests(unittest.TestCase):
 
     def test_non_marker_line_goes_to_debug_when_quiet(self):
         t, calls = self._tracker(verbose=False)
-        t.on_line("  Extracting facial ROIs from frames...")
+        # "Extracting facial ROIs" is in the suppress list (PR #48
+        # round 4): always goes to debug regardless of verbose because
+        # it's per-pixel ROI machinery that doesn't help the user
+        # understand run progress.
+        t.on_line("Extracting facial ROIs from frames...")
         self.assertEqual(
-            calls[-1], ("debug", "  Extracting facial ROIs from frames..."),
+            calls[-1], ("debug", "Extracting facial ROIs from frames..."),
         )
 
     def test_non_marker_line_goes_to_info_when_verbose(self):
+        # PR #48 round 4: the fallthrough now strips leading whitespace
+        # (via the ANSI-cleaning pipeline). Pick a non-suppressed,
+        # non-marker line so we exercise the actual fallthrough path
+        # rather than the suppress list.
         t, calls = self._tracker(verbose=True)
-        t.on_line("  Extracting facial ROIs from frames...")
+        t.on_line("rPPG Corrector v5.10+spectrum (v6 modules active)")
         self.assertEqual(
-            calls[-1], ("info", "  Extracting facial ROIs from frames..."),
+            calls[-1],
+            ("info", "rPPG Corrector v5.10+spectrum (v6 modules active)"),
         )
 
-    def test_verbose_mode_also_emits_raw_iter_line(self):
-        """Verbose users see BOTH the friendly progress AND the raw
-        injector line. Non-verbose only sees friendly."""
+    def test_suppressed_line_stays_debug_even_when_verbose(self):
+        """PR #48 round 4: per-ROI / MediaPipe / knob-internals lines
+        are in the suppress list and ALWAYS go to debug regardless of
+        verbose. The verbose flag controls the FALLTHROUGH path only."""
         t, calls = self._tracker(verbose=True)
+        t.on_line("  forehead: mean=117.78, std=9.21, min=94.56, max=128.46")
+        self.assertEqual(calls[-1][0], "debug")
+
+    def test_ansi_codes_stripped_before_match(self):
+        """PR #48 round 4: the v6 spectrum corrector wraps "Iteration
+        N/M" in ANSI escapes. Strip ANSI BEFORE regex match so the
+        iter-tracker still fires."""
+        t, calls = self._tracker(verbose=False)
+        # Literal ANSI escape: \x1b[1;97m  Iteration 3/10 \x1b[0m
+        t.on_line("\x1b[1;97m  Iteration 3/10 \x1b[0m")
+        self.assertIn(("info", "rPPG iteration 3/10 starting"), calls)
+
+    def test_iter_done_line_emits_completion_marker(self):
+        """PR #48 round 4: "Phase-aligned pulses applied" raw line is
+        converted to a clean "iteration N/M complete" marker that
+        doesn't expose the tmp filename the user doesn't care about."""
+        t, calls = self._tracker(verbose=False)
         t.on_line("  Iteration 3/10")
-        msgs = [m for (_lvl, m) in calls]
-        # Friendly version present...
-        self.assertIn("rPPG iteration 3/10 (~30%)", msgs)
-        # ...plus the raw line as another info line.
-        self.assertIn("  Iteration 3/10", msgs)
+        calls.clear()
+        t.on_line("Phase-aligned pulses applied. Output: temp_iteration_2.mp4")
+        self.assertEqual(
+            calls[-1], ("info", "rPPG iteration 3/10 complete"),
+        )
 
 
 class DeadlineExtenderTests(unittest.TestCase):

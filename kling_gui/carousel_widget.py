@@ -13,7 +13,6 @@ from pathlib import Path
 from .theme import (
     COLORS,
     FONT_FAMILY,
-    IS_MACOS,
     TTK_BTN_COMPACT,
     TTK_BTN_DANGER_COMPACT,
     TTK_BTN_SECONDARY,
@@ -21,6 +20,7 @@ from .theme import (
     BUTTON_TEXT_COLOR,
     BUTTON_DISABLED_TEXT_COLOR,
     debounce_command,
+    mac_int,
 )
 from .image_state import ImageSession, _VIDEO_EXTENSIONS as _CAROUSEL_VIDEO_EXTS
 from .tag_utils import derive_display_tag
@@ -528,8 +528,8 @@ class ImageCarousel(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
-            padx=8 if IS_MACOS else 2,
-            pady=4 if IS_MACOS else 0,
+            padx=mac_int(2, 8),
+            pady=mac_int(0, 4),
         )
         self._show_face_box_chk.pack(side=tk.RIGHT, padx=(0, 0))
 
@@ -544,8 +544,8 @@ class ImageCarousel(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
-            padx=8 if IS_MACOS else 2,
-            pady=4 if IS_MACOS else 0,
+            padx=mac_int(2, 8),
+            pady=mac_int(0, 4),
         )
         self._anti_spoof_chk.pack(side=tk.RIGHT, padx=(0, 8))
 
@@ -559,8 +559,8 @@ class ImageCarousel(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
-            padx=8 if IS_MACOS else 2,
-            pady=4 if IS_MACOS else 0,
+            padx=mac_int(2, 8),
+            pady=mac_int(0, 4),
         )
         self._auto_chk.pack(side=tk.RIGHT, padx=(0, 8))
 

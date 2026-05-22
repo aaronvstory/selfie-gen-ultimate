@@ -238,6 +238,19 @@ def mac_padding(default: tuple, macos: tuple) -> tuple:
     return macos if IS_MACOS else default
 
 
+def mac_int(default: int, macos: int) -> int:
+    """Single-int sibling of ``mac_padding``.
+
+    Use where a raw ``tk.Checkbutton``/``Radiobutton`` constructor
+    already has an explicit ``padx=N`` or ``pady=N`` baked in (so
+    spreading ``**macos_widget_pad()`` would raise a duplicate-kwarg
+    TypeError). E.g. ``padx=mac_int(2, 8)`` reads as "2 on Windows,
+    8 on macOS" — no scattered ``if IS_MACOS`` branch at the call
+    site. Codereview-driven (PR #48 round 4 CodeRabbit Major).
+    """
+    return macos if IS_MACOS else default
+
+
 def macos_widget_pad() -> dict:
     """Return ``{'padx': N, 'pady': M}`` on darwin, ``{}`` elsewhere.
 

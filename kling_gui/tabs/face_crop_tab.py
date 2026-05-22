@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from ..theme import (
     COLORS,
@@ -1989,9 +1989,11 @@ class FaceCropTab(tk.Frame):
                 # from the worker thread; without the after-marshal it
                 # mutates the LogDisplay Tk widget from a non-GUI thread
                 # which is undefined on macOS.
-                tk_safe_log = lambda msg, lvl: self.winfo_toplevel().after(
-                    0, lambda m=msg, l=lvl: self.log(m, l)
-                )
+                def tk_safe_log(message: str, level: str) -> None:
+                    self.winfo_toplevel().after(
+                        0,
+                        lambda m=message, lvl=level: self.log(m, lvl),
+                    )
 
                 freeimage_key = cfg.get("freeimage_api_key")
                 gen = OutpaintGenerator(
@@ -2076,7 +2078,12 @@ class FaceCropTab(tk.Frame):
         self._outpaint_status.config(text="Aborting...", fg=COLORS["warning"])
         self._expand_abort_btn.config(state=tk.DISABLED, text="Aborting...")
 
-    def _on_outpaint_done(self, per_pass_results, total_passes, run_token=None):
+    def _on_outpaint_done(
+        self,
+        per_pass_results: List[Tuple[str, Optional[str], Dict[str, int]]],
+        total_passes: int,
+        run_token: Optional[int] = None,
+    ) -> None:
         """Finalize a Step 0 expand run.
 
         ``per_pass_results`` is a list of ``(path, similarity_str|None,
