@@ -294,6 +294,22 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         ex_src = (_ROOT / "kling_gui" / "tabs" / "expand_tab.py").read_text(encoding="utf-8")
         self.assertIn('isinstance(_section_prompt, str)', ex_src)
         self.assertIn('def _fallback_selfie_expand_prompt', ex_src)
+        # Codex P2 on 6080445 (2026-05-22): the defensive ``except``
+        # fallback at the queue-submit path MUST also route through
+        # the named helper, otherwise an explicitly-saved empty
+        # ``selfie_expand_prompt`` is silently replaced by
+        # ``outpaint_prompt`` whenever ``_prompt_text`` is unavailable
+        # — the exact regression R4 fixed on the happy path.
+        self.assertNotIn(
+            'cfg.get("selfie_expand_prompt")\n                or cfg.get("outpaint_prompt"',
+            ex_src,
+            "expand_tab.py except-fallback regressed to `or` truthiness",
+        )
+        self.assertIn(
+            'prompt = self._fallback_selfie_expand_prompt()',
+            ex_src,
+            "expand_tab.py except-fallback must route through helper",
+        )
 
     def test_v23_extra_prompt_slots_shipped(self):
         """polish/v2.3: saved_prompts slots 5+6 and

@@ -775,14 +775,15 @@ class ExpandTab(tk.Frame):
         # persisted config key (Phase G of polish/v2.3), then to the
         # legacy shared ``outpaint_prompt`` key, if the widget is
         # missing (defensive, mirrors the outpaint_tab pattern).
+        # Codex P2 on 6080445 (2026-05-22): route through the named
+        # helper instead of inline ``or`` truthiness, otherwise an
+        # explicitly-saved empty ``selfie_expand_prompt`` is silently
+        # replaced by ``outpaint_prompt`` in this defensive path —
+        # the same regression R4 fixed on the happy path.
         try:
             prompt = self._prompt_text.get("1.0", "end-1c")
         except Exception:
-            prompt = (
-                cfg.get("selfie_expand_prompt")
-                or cfg.get("outpaint_prompt", "")
-                or ""
-            )
+            prompt = self._fallback_selfie_expand_prompt()
         composite_mode = self._composite_mode_var.get().strip() or "preserve_seamless"
         freeimage_key = cfg.get("freeimage_api_key")
         ref_path = self._get_similarity_reference()
