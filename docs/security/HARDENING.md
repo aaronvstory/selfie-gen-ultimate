@@ -286,3 +286,66 @@ revoke all PATs/tokens, isolate the machine, file a report.
 | Socket.dev | Free tier (public repos) | Paid for org/private + faster scanning | Recommended add |
 | Snyk | Free tier (CLI + ~200 tests/mo) | Paid for unlimited + UI | Optional |
 | Tidelift | Paid only | n/a | Skip (overkill for us) |
+
+## 11. Pre-commit hook installer
+
+`.git/hooks/` is not tracked by git, so a fresh clone (e.g. on a new
+macOS box) does NOT get the supply-chain audit pre-commit hook
+automatically. Install it with:
+
+```bash
+bash scripts/install-precommit.sh
+```
+
+The hook is:
+- **Fast** (~240ms) on commits that don't touch dep manifests — it
+  short-circuits via a pattern match on staged file paths.
+- **Slower** (~45s, project audit only) on commits that touch
+  `requirements*.txt`, `package*.json`, lockfiles, `pyproject.toml`,
+  `.github/workflows/*.yml`, `.pth` files, or `.claude/*.{js,mjs,json}`.
+- **Off** for the machine-wide scan by default (that's ~5min per
+  commit, kept out of the commit path; runs nightly in CI instead).
+
+Override knobs:
+- `SHAI_HULUD_FORCE=1 git commit ...` — run the full project scan
+  even when no dep files changed (e.g. before a release tag).
+- `SHAI_HULUD_MACHINE_AUDIT=1 git commit ...` — also run the
+  ~5min machine-wide OSV.dev scan. Only useful on a machine that
+  has `~/.shai-hulud/shai-hulud-audit.sh` installed.
+
+## 12. Safe-install wrappers
+
+`pip install` and `npm install` are the **actual** attack moment
+for the Shai-Hulud / TeamPCP campaign — a compromised package
+executes its `postinstall` script (npm) or `setup.py` (pip sdist)
+the instant it lands on disk. A pre-commit hook can't help there;
+the damage is already done by the time you `git commit`.
+
+The wrapper scripts run the project audit *immediately after* the
+install finishes, while the bad code is still freshly written and
+detectable:
+
+```bash
+# macOS / Linux / Git Bash
+./scripts/safe_install.sh pip install some-pkg
+./scripts/safe_install.sh npm install some-pkg
+
+# Windows cmd / PowerShell
+scripts\safe_install.bat pip install some-pkg
+scripts\safe_install.bat npm install some-pkg
+```
+
+The wrappers do NOT replace `pip` or `npm` globally — you opt into
+them per-command. For frequent use, define a shell alias:
+
+```bash
+# ~/.bashrc / ~/.zshrc
+alias pipi='./scripts/safe_install.sh pip install'
+alias npmi='./scripts/safe_install.sh npm install'
+```
+
+```cmd
+REM Windows doskey (only for current cmd session)
+doskey pipi=scripts\safe_install.bat pip install $*
+doskey npmi=scripts\safe_install.bat npm install $*
+```

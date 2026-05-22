@@ -475,11 +475,18 @@ def check_github_repos_for_marker() -> CheckResult:
     for repo in repos:
         n = (repo.get("name") or "").lower()
         d = (repo.get("description") or "").lower()
+        # Gemini medium on 9ffd0d9 (2026-05-22): use ``.get()`` consistently.
+        # The lines above already use ``.get("name")`` for the lowercase
+        # comparison key, so using ``repo['name']`` in the alert message
+        # was inconsistent — a ``gh`` output without ``name`` (theoretically
+        # possible if the API schema changes) would crash the alert phase
+        # right when we most want to surface results.
+        repo_name = repo.get("name") or "unknown"
         if REVERSED_MARKER.lower() in d or FORWARD_MARKER.lower() in d:
-            hits.append(f"REPO MARKER MATCH: {repo['name']} ({repo.get('description')!r})")
+            hits.append(f"REPO MARKER MATCH: {repo_name} ({repo.get('description')!r})")
         for pat in DUNE_REPO_PATTERNS:
             if pat.search(n):
-                hits.append(f"REPO DUNE-NAME MATCH: {repo['name']} ({repo.get('description')!r})")
+                hits.append(f"REPO DUNE-NAME MATCH: {repo_name} ({repo.get('description')!r})")
                 break
     if hits:
         return CheckResult(name, ok=False, details=hits)

@@ -575,5 +575,109 @@ class GitRemoteRedactionTests(unittest.TestCase):
         self.assertNotIn("<REDACTED>", out)
 
 
+class GithubReposAlertReportingTests(unittest.TestCase):
+    """Gemini medium on 9ffd0d9 (2026-05-22): the GitHub repos check
+    used ``repo['name']`` for alert messages while using
+    ``repo.get('name')`` for the lowercase comparison key. Inconsistent
+    access — a ``gh`` output without ``name`` (theoretically possible
+    if the API schema changes) would raise ``KeyError`` mid-loop and
+    crash the alert reporting phase. Fix on 9ffd0d9-next: use a
+    ``repo_name = repo.get("name") or "unknown"`` local consistently
+    in the alert message.
+
+    Pin the fix at the source level so a future refactor can't
+    silently reintroduce the indexing-vs-get asymmetry."""
+
+    def test_alert_message_uses_safe_get_not_subscript(self):
+        src = (_REPO_ROOT / "scripts" / "detect_compromise.py").read_text(
+            encoding="utf-8"
+        )
+        # The forbidden patterns: repo['name'] in alert message
+        # construction. (We keep ``repo.get("name")`` for the
+        # lowercase comparison key — that wasn't the bug.)
+        forbidden = (
+            "REPO MARKER MATCH: {repo['name']}",
+            "REPO DUNE-NAME MATCH: {repo['name']}",
+        )
+        for needle in forbidden:
+            self.assertNotIn(
+                needle, src,
+                f"detect_compromise.py reintroduced KeyError-prone "
+                f"alert format: {needle!r}",
+            )
+        # The new safe pattern MUST be present.
+        self.assertIn(
+            'repo_name = repo.get("name") or "unknown"', src,
+            "detect_compromise.py is missing the safe repo_name local",
+        )
+        # And the alert messages MUST use the safe local.
+        self.assertIn(
+            "REPO MARKER MATCH: {repo_name}", src,
+            "REPO MARKER MATCH alert must use the safe repo_name local",
+        )
+        self.assertIn(
+            "REPO DUNE-NAME MATCH: {repo_name}", src,
+            "REPO DUNE-NAME MATCH alert must use the safe repo_name local",
+        )
+
+
+class SandboxInstallBatExitCodeTests(unittest.TestCase):
+    """Codex P1 on 9ffd0d9 (2026-05-22): scripts/sandbox_install.bat
+    ended with unconditional ``exit /b 0`` even if pip install or
+    pip_audit failed. Callers got a false green and continued with
+    a broken / unaudited sandbox. Fix on 9ffd0d9-next: errorlevel
+    checks after each pip step + propagate pip_audit's exit code
+    via a FINAL_RC variable.
+
+    Pin the fix at the source level."""
+
+    def test_bat_propagates_install_failures(self):
+        src = (_REPO_ROOT / "scripts" / "sandbox_install.bat").read_text(
+            encoding="utf-8"
+        )
+        # The forbidden pattern: an unconditional ``exit /b 0`` at the
+        # end of the script. Replaced with ``exit /b !FINAL_RC!``.
+        # We check for the trailing form specifically — earlier
+        # ``exit /b 2/3/4/5/6`` are explicit error exits and must
+        # stay (those handle FATAL: paths).
+        lines = [ln.rstrip() for ln in src.splitlines()]
+        # Locate the final exit line.
+        final_exit = None
+        for ln in reversed(lines):
+            if ln.strip().startswith("exit /b"):
+                final_exit = ln.strip()
+                break
+        self.assertIsNotNone(final_exit, "no exit /b found in sandbox_install.bat")
+        assert final_exit is not None  # for type checkers
+        # Must be the FINAL_RC form, NOT a hard-coded 0.
+        self.assertEqual(
+            final_exit, "exit /b !FINAL_RC!",
+            "sandbox_install.bat must end with ``exit /b !FINAL_RC!`` "
+            f"(got {final_exit!r}) so caller sees real pip_audit exit code",
+        )
+        # FINAL_RC must be captured from pip_audit (errorlevel check
+        # immediately after the pip_audit invocation).
+        self.assertIn("pip_audit --strict", src)
+        self.assertIn('set "FINAL_RC=!errorlevel!"', src)
+
+    def test_bat_propagates_pip_install_failures(self):
+        src = (_REPO_ROOT / "scripts" / "sandbox_install.bat").read_text(
+            encoding="utf-8"
+        )
+        # At least 3 errorlevel checks after pip operations:
+        # 1) pip self-upgrade + pip-audit install
+        # 2) requirements install (hashed or unhashed)
+        # 3) pip_audit
+        # Count distinct ``if errorlevel 1`` blocks; expect >= 4
+        # (the three pip steps + the venv creation step).
+        errorlevel_checks = src.count("if errorlevel 1")
+        self.assertGreaterEqual(
+            errorlevel_checks, 4,
+            f"sandbox_install.bat must check errorlevel after each pip "
+            f"operation; found only {errorlevel_checks} ``if errorlevel 1`` "
+            f"blocks (expected >= 4)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
