@@ -747,3 +747,66 @@ wiring doc's per-action checklist before commit.
 `automation_similarity_use_ensemble` (true), `automation_similarity_secondary_model`
 ("Facenet512"), `automation_similarity_anti_spoofing` (true),
 `automation_similarity_require_fas_pass` (false).
+
+---
+
+## Supply Chain Audit
+
+Two project-level scanners run on every commit that touches a dep manifest,
+workflow, `.pth`, or `.claude/*` file. Both must exit clean. They cover
+different gaps; don't pick one.
+
+| Scanner | Strengths | File |
+|---|---|---|
+| Project scanner | GitHub exfil-repo discovery (`--github`), C2 domain check, Dune-name repo patterns, project-specific IoC tables | `scripts/detect_compromise.py` |
+| Hulud-kit scanner (v1.1) | **`.claude/` persistence detection** (TeamPCP attack vector against Claude Code), spoofed git author check, campaign string markers, SARIF 2.1.0 output | `scripts/hulud_kit_scan.py` |
+
+Both wired into `scripts/git-hooks/pre-commit` and run automatically when a
+matched file is staged. Bypass only with `git commit --no-verify` after a
+manual review.
+
+### Manual invocations
+
+```bash
+# Project scanner (GitHub exfil + project IoCs):
+python scripts/detect_compromise.py --repo-root .
+python scripts/detect_compromise.py --all          # adds --venv + --github
+
+# Hulud-kit scanner (.claude/ persistence + 9 checks):
+python scripts/hulud_kit_scan.py --root .
+python scripts/hulud_kit_scan.py --sarif results.sarif   # for GitHub Security tab
+
+# Machine-wide audit (~30s, queries OSV.dev live):
+/hulud-kit quick                                   # via Claude Code slash command
+~/.shai-hulud/shai-hulud-audit.sh --mode quick     # direct invocation
+```
+
+### When adding a dependency
+
+Vet new versions in a disposable venv before touching the real one:
+
+```bash
+./scripts/sandbox_install.sh <package>==<version>
+```
+
+After any dep change, regenerate the hash-pinned lockfile:
+
+```bash
+pip install pip-tools
+pip-compile --generate-hashes --output-file=requirements-hashed.txt requirements.txt
+```
+
+### When an audit fails
+
+Read findings carefully — `.claude/execution.js` or `.claude/setup.mjs` alerts
+from the kit scanner are TeamPCP persistence payloads, treat as confirmed
+compromise. Then follow `docs/security/IOC_DETECTION_CHECKLIST.md` for the
+incident-response runbook (credential rotation order, what to check next).
+
+### Updating the kit scanner
+
+The kit scanner is sourced from <https://github.com/aaronvstory/shai-hulud-kit>.
+To pull a newer version: `cp /path/to/shai-hulud-kit/scripts/detect_compromise.py
+scripts/hulud_kit_scan.py`, then re-add `"hulud_kit_scan.py"` to the
+`SCANNER_FILENAMES` set in `check_campaign_markers()` so the scanner doesn't
+flag itself.

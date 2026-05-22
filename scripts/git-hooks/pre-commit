@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Pre-commit hook: Shai-Hulud / TeamPCP supply chain audit.
 #
-# Default (fast, ~1-2s):
+# Default (fast, ~1-3s):
 #   - Project-level: scripts/detect_compromise.py (if present)
+#   - Kit scanner:   scripts/hulud_kit_scan.py (if present) — adds .claude/
+#                    persistence detection (TeamPCP attack vector against
+#                    Claude Code) that the project scanner doesn't cover.
 #
 # Opt-in (slow, ~5min — kept out of commit path; runs in CI instead):
 #   - Machine-level: ~/.shai-hulud/shai-hulud-audit.{sh,ps1}
@@ -76,6 +79,24 @@ if [[ -f "$PROJECT_SCRIPT" ]]; then
             echo -e "${RED}[pre-commit] project audit FAILED (exit $code — see findings above)${RESET}" >&2
             FAILED=1
         fi
+    fi
+fi
+
+# --- Kit scanner (shai-hulud-kit v1.1) ---
+# Adds .claude/ persistence detection + spoofed-author check + campaign string
+# markers — gaps the project scanner doesn't cover. Same fast tier as the
+# project scan; both must pass.
+KIT_SCRIPT="$REPO_ROOT/scripts/hulud_kit_scan.py"
+if [[ -f "$KIT_SCRIPT" && -n "${PY:-}" ]]; then
+    echo "[pre-commit] running hulud-kit scanner (.claude/ persistence + IOCs)..."
+    "$PY" "$KIT_SCRIPT" --root "$REPO_ROOT"
+    code=$?
+    # Kit scanner is 3-tier: 0=clean, 1=warnings, 2=alerts.
+    if [[ $code -ge 2 ]]; then
+        echo -e "${RED}[pre-commit] hulud-kit scanner FAILED (alerts — exit $code)${RESET}" >&2
+        FAILED=1
+    elif [[ $code -eq 1 ]]; then
+        echo -e "${YELLOW}[pre-commit] hulud-kit scanner: warnings (continuing)${RESET}" >&2
     fi
 fi
 
