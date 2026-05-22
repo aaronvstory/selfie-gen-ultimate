@@ -1146,6 +1146,21 @@ class KlingGUIWindow:
             # Phase G of polish/v2.3 (2026-05-22): per-section expand
             # prompts. Each tab edits its own key; the legacy shared
             # ``outpaint_prompt`` stays as a read-fallback for back-compat.
+            #
+            # NB: these "" defaults are intentional — the config-load is
+            # layered (Layer 0 in-memory → Layer 1 template merge →
+            # Layer 2 user kling_config.json), and Layer 1 always
+            # populates these three keys with real text from
+            # default_config_template.json (lines 109-111) BEFORE the
+            # "" can persist into the running config. So a fresh
+            # install gets the template prompts, not blanks. The ""
+            # only matters on the cosmetic-degradation path where the
+            # template file is missing/broken (e.g. a frozen PyInstaller
+            # build with a corrupted bundle), and the GUI's isinstance
+            # fallback to legacy ``outpaint_prompt`` covers that case
+            # too. Do not "fix" these to non-empty defaults — that
+            # would actually break R4's "explicit empty string is a
+            # valid intentional value" semantics on subsequent loads.
             "face_crop_expand_prompt": "",
             "selfie_expand_prompt": "",
             "outpaint_tab_prompt": "",
