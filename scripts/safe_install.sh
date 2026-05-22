@@ -42,23 +42,41 @@ if [[ ! -f "$PROJECT_SCRIPT" ]]; then
     exit 0
 fi
 
-PY="python3"
-command -v python3 >/dev/null 2>&1 || PY="python"
+# Subagent HIGH on b807560 (2026-05-22): the prior code did
+# ``PY=python3; command -v python3 || PY=python`` which set PY=python
+# unconditionally when neither was on PATH, then invoked it and got
+# exit 127. Under the old 3-tier ``>= 2 = ALERT`` logic that produced
+# a false security alarm. Fix: explicit ``command -v "$PY"`` gate +
+# distinct "audit skipped" exit path so a missing python is reported
+# as infra issue, not a security finding.
+PY=""
+if command -v python3 >/dev/null 2>&1; then
+    PY="python3"
+elif command -v python >/dev/null 2>&1; then
+    PY="python"
+fi
+if [[ -z "$PY" ]]; then
+    echo -e "${YELLOW}[safe-install] no python found in PATH — audit skipped${RESET}" >&2
+    echo -e "${YELLOW}[safe-install] install completed but was NOT audited; run scripts/detect_compromise.py manually${RESET}" >&2
+    exit 0
+fi
 
 echo -e "${YELLOW}[safe-install] auditing project after install...${RESET}"
-"$PY" "$PROJECT_SCRIPT" --root "$REPO_ROOT"
+"$PY" "$PROJECT_SCRIPT" --repo-root "$REPO_ROOT"
 audit_code=$?
 
-if [[ $audit_code -ge 2 ]]; then
-    echo -e "${RED}[safe-install] AUDIT FOUND ALERTS — review immediately${RESET}" >&2
+# Subagent CRITICAL on b807560 (2026-05-22): detect_compromise.py is
+# a 2-tier producer (0=clean, 1=alerts). The prior caller logic
+# treated audit_code==1 as a warning and exited 0, silently allowing
+# a compromised install to be marked "clean". Fix: any non-zero exit
+# is treated as an alert and propagated.
+if [[ $audit_code -ne 0 ]]; then
+    echo -e "${RED}[safe-install] AUDIT FOUND ALERTS (exit $audit_code) — review immediately${RESET}" >&2
     echo "Recommended next steps:" >&2
     echo "  1. Do NOT run anything in this venv/node_modules" >&2
     echo "  2. Check docs/security/IOC_DETECTION_CHECKLIST.md" >&2
     echo "  3. Run '/hulud-kit quick' for a full machine scan" >&2
     exit $audit_code
-elif [[ $audit_code -eq 1 ]]; then
-    echo -e "${YELLOW}[safe-install] audit has warnings (install completed)${RESET}" >&2
-else
-    echo -e "${GREEN}[safe-install] install + audit clean${RESET}"
 fi
+echo -e "${GREEN}[safe-install] install + audit clean${RESET}"
 exit 0

@@ -32,7 +32,15 @@ FAILED=0
 # Supply chain risk only materializes when dep manifests change. If this commit
 # touches only source code, the scan adds no signal and ~45s of latency.
 # Override: SHAI_HULUD_FORCE=1 to always scan.
-DEP_PATTERN='(^|/)(requirements[^/]*\.txt|package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|pyproject\.toml|Pipfile(\.lock)?|poetry\.lock|uv\.lock|\.pth|\.github/workflows/.*\.ya?ml|\.claude/.*\.(js|mjs|json))$'
+# Subagent HIGH on b807560 (2026-05-22): the original ``\.pth`` arm
+# only matched a file whose entire basename was literally ``.pth``
+# (a hidden file). Real-world malicious .pth files have names like
+# ``litellm.pth`` or ``attack.pth`` and were silently skipped by
+# the hook, defeating the entire dep-trigger logic for the .pth
+# attack class. Fix: ``[^/]*\.pth`` matches any basename ending in
+# .pth (with at least the ``.pth`` literal — the ``[^/]*`` prefix
+# allows zero or more non-slash chars).
+DEP_PATTERN='(^|/)(requirements[^/]*\.txt|package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|pyproject\.toml|Pipfile(\.lock)?|poetry\.lock|uv\.lock|[^/]*\.pth|\.github/workflows/.*\.ya?ml|\.claude/.*\.(js|mjs|json))$'
 if [[ "${SHAI_HULUD_FORCE:-0}" != "1" ]]; then
     if ! git diff --cached --name-only | grep -Eq "$DEP_PATTERN"; then
         echo -e "${GREEN}[pre-commit] no dep/workflow changes — skipping supply chain audit${RESET}" >&2
@@ -54,13 +62,19 @@ if [[ -f "$PROJECT_SCRIPT" ]]; then
     fi
 
     if [[ -n "$PY" ]]; then
-        $PY "$PROJECT_SCRIPT" --root "$REPO_ROOT"
+        # Subagent CRITICAL on b807560 (2026-05-22): detect_compromise.py
+        # is a 2-tier producer (0=clean, 1=alerts) but the prior caller
+        # logic gated FAILED=1 on ``code >= 2`` and printed a yellow
+        # "warnings" line on ``code == 1``. Real IoC alerts (code=1)
+        # silently became "warnings" and the commit went through.
+        # Fix: any non-zero exit blocks the commit. The script doesn't
+        # have a separate "warnings" level today, so the prior elif was
+        # dead code that masqueraded as a safety net.
+        "$PY" "$PROJECT_SCRIPT" --repo-root "$REPO_ROOT"
         code=$?
-        if [[ $code -ge 2 ]]; then
-            echo -e "${RED}[pre-commit] project audit FAILED (alerts present)${RESET}" >&2
+        if [[ $code -ne 0 ]]; then
+            echo -e "${RED}[pre-commit] project audit FAILED (exit $code — see findings above)${RESET}" >&2
             FAILED=1
-        elif [[ $code -eq 1 ]]; then
-            echo -e "${YELLOW}[pre-commit] project audit has warnings (continuing)${RESET}" >&2
         fi
     fi
 fi

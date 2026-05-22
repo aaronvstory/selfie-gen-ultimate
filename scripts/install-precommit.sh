@@ -32,18 +32,41 @@ if [ ! -f "$HOOK_SRC" ]; then
     exit 1
 fi
 
-if [ ! -d "${REPO_ROOT}/.git" ]; then
-    echo "FATAL: not a git repo (no .git/ at $REPO_ROOT)" >&2
+# Subagent MEDIUM on b807560 (2026-05-22): the original guard was
+# ``[ ! -d "$REPO_ROOT/.git" ]`` which returns fatal for git worktrees
+# (where ``.git`` is a FILE pointing at the real gitdir, not a dir).
+# Fix: ask git itself for the gitdir — handles plain repos, worktrees,
+# and submodules uniformly. We CD into the repo before invoking git
+# (rather than ``git -C``) because Git for Windows doesn't accept
+# cygwin-style ``/cygdrive/F/...`` paths via ``-C`` but does accept
+# them as a cwd via the shell's cd builtin.
+if ! GITDIR="$(cd "$REPO_ROOT" && git rev-parse --git-dir 2>/dev/null)"; then
+    echo "FATAL: not a git repo at $REPO_ROOT" >&2
     exit 1
 fi
+# rev-parse --git-dir returns a relative path when run from the repo
+# root; resolve to absolute so the hooks/ path below is unambiguous.
+case "$GITDIR" in
+    /*) ;;                                          # already absolute (rare)
+    [A-Za-z]:[/\\]*) ;;                             # absolute Windows path (C:\..., D:/...)
+    *) GITDIR="${REPO_ROOT}/${GITDIR}" ;;
+esac
+HOOK_DST="${GITDIR}/hooks/pre-commit"
 
-mkdir -p "${REPO_ROOT}/.git/hooks"
+mkdir -p "${GITDIR}/hooks"
 
-# If a hook already exists and differs from our tracked version, warn
-# but proceed (the user can always restore their own version from git).
+# Subagent MEDIUM on b807560 (2026-05-22): the original code backed up
+# to ``.bak`` (single slot). Re-running the installer overwrites that
+# backup — a developer who had a custom pre-commit (lefthook, husky,
+# etc.) and runs the installer twice would lose their original
+# permanently because the second run's .bak holds OUR hook, not theirs.
+# Fix: timestamp the backup so every run preserves the prior state.
 if [ -f "$HOOK_DST" ] && ! cmp -s "$HOOK_SRC" "$HOOK_DST"; then
-    echo "NOTE: replacing existing .git/hooks/pre-commit (current version backed up to .git/hooks/pre-commit.bak)"
-    cp "$HOOK_DST" "${HOOK_DST}.bak"
+    backup_ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    backup_path="${HOOK_DST}.bak.${backup_ts}"
+    echo "NOTE: existing .git/hooks/pre-commit differs from tracked version"
+    echo "      backing up to ${backup_path} before overwriting"
+    cp "$HOOK_DST" "$backup_path"
 fi
 
 cp "$HOOK_SRC" "$HOOK_DST"

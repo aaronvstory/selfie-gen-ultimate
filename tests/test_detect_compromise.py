@@ -679,5 +679,324 @@ class SandboxInstallBatExitCodeTests(unittest.TestCase):
         )
 
 
+class DetectCompromiseExitCodeContractTests(unittest.TestCase):
+    """Subagent CRITICAL on b807560 (2026-05-22): detect_compromise.py
+    emits exit code 0 (clean) or 1 (alerts) — a 2-tier producer. The
+    pre-commit hook + safe_install wrappers were originally written
+    against a hypothetical 3-tier protocol (0=clean, 1=warnings,
+    2+=alerts), gating ``FAILED=1`` on ``code >= 2`` and treating
+    ``code == 1`` as non-blocking warnings.
+
+    Net effect: real IoC alerts (code=1) silently became "warnings"
+    and the commit/install went through. Local developer audit gates
+    were fully bypassed; only CI (which treats any non-zero as
+    failure) was protecting.
+
+    Lock the contract at the source level so a future refactor can't
+    silently reintroduce the 3-tier ``>= 2`` gate."""
+
+    def test_detect_compromise_only_exits_0_or_1(self):
+        """The producer side: confirm detect_compromise.py only emits
+        0 or 1, so callers know the 2-tier contract is real."""
+        src = (_REPO_ROOT / "scripts" / "detect_compromise.py").read_text(
+            encoding="utf-8"
+        )
+        # Find every ``return N`` and ``sys.exit(N)`` in main().
+        # main() is the last function in the file.
+        main_idx = src.find("def main(")
+        self.assertGreater(main_idx, 0, "main() not found in detect_compromise.py")
+        main_body = src[main_idx:]
+        # The only acceptable terminal codes are 0 and 1.
+        # ``return 2`` etc. inside main() would break the caller contract.
+        import re
+        terminal_codes = set(re.findall(r"return\s+([0-9]+)\b", main_body))
+        # main() can call helper functions that themselves return non-0/1
+        # (e.g. CheckResult-builders) — we only care about ``return N``
+        # at the main()-function level. The current main() has return 0
+        # and return 1; check the set is a subset of {"0", "1"}.
+        self.assertTrue(
+            terminal_codes.issubset({"0", "1"}),
+            f"detect_compromise.py main() returns codes outside the 2-tier "
+            f"contract: {terminal_codes - set(['0', '1'])}; update the "
+            f"caller logic in scripts/git-hooks/pre-commit + "
+            f"scripts/safe_install.{{sh,bat}} if you intentionally add a "
+            f"new tier"
+        )
+
+    def test_precommit_hook_treats_any_nonzero_as_block(self):
+        """The consumer side (pre-commit hook): any non-zero exit from
+        detect_compromise.py must block the commit. The prior ``>= 2``
+        gate let alerts through silently."""
+        src = (_REPO_ROOT / "scripts" / "git-hooks" / "pre-commit").read_text(
+            encoding="utf-8"
+        )
+        # The forbidden pattern: the project-audit branch gating ``FAILED=1``
+        # on ``$code -ge 2``. (The machine-audit block legitimately uses
+        # ``-ge 2`` because the external hulud-audit.sh IS 3-tier; we only
+        # care about the detect_compromise.py invocation block here.)
+        # Locate the block that invokes detect_compromise.py.
+        anchor = '"$PY" "$PROJECT_SCRIPT" --repo-root'
+        self.assertIn(
+            anchor, src,
+            f"pre-commit hook must invoke detect_compromise.py with "
+            f"--repo-root (got something else); see anchor {anchor!r}"
+        )
+        anchor_idx = src.find(anchor)
+        # Look at the 400 chars after the anchor — that's the gate block.
+        gate_block = src[anchor_idx:anchor_idx + 400]
+        # MUST contain a ``-ne 0`` gate (block on any non-zero).
+        self.assertIn(
+            "$code -ne 0", gate_block,
+            "pre-commit hook project-audit block must block on -ne 0, "
+            "NOT -ge 2 (the latter silently allows IoC alerts through)",
+        )
+        # MUST NOT contain ``code -ge 2`` in this block.
+        self.assertNotIn(
+            "$code -ge 2", gate_block,
+            "pre-commit hook project-audit block regressed to >= 2 gate "
+            "— this silently allows alerts (code=1) through"
+        )
+
+    def test_safe_install_sh_treats_any_nonzero_as_alert(self):
+        src = (_REPO_ROOT / "scripts" / "safe_install.sh").read_text(
+            encoding="utf-8"
+        )
+        # Whole-file source assertions — the gate behavior is a global
+        # property of the script (only ONE audit_code path), so we don't
+        # need slice surgery here.
+        self.assertIn(
+            "audit_code=$?", src,
+            "safe_install.sh must capture audit exit into audit_code"
+        )
+        # MUST contain the ``-ne 0`` gate.
+        self.assertIn(
+            "$audit_code -ne 0", src,
+            "safe_install.sh must alert on any non-zero audit_code"
+        )
+        # Forbidden patterns: the prior 3-tier gates.
+        self.assertNotIn(
+            "$audit_code -ge 2", src,
+            "safe_install.sh regressed to >= 2 gate (silently allows alerts)"
+        )
+        self.assertNotIn(
+            "audit_code -eq 1", src,
+            "safe_install.sh regressed to ``warnings continue`` branch "
+            "(the old 3-tier shape that masqueraded alerts as warnings)"
+        )
+
+    def test_safe_install_bat_treats_any_nonzero_as_alert(self):
+        src = (_REPO_ROOT / "scripts" / "safe_install.bat").read_text(
+            encoding="utf-8"
+        )
+        # Same contract for the .bat variant: any non-zero audit_code is an alert.
+        self.assertIn(
+            'if not "!audit_code!"=="0"', src,
+            "safe_install.bat must alert on any non-zero audit_code"
+        )
+        # Forbidden: ``GEQ 2`` gate.
+        self.assertNotIn(
+            "audit_code! GEQ 2", src,
+            "safe_install.bat regressed to GEQ 2 gate"
+        )
+        self.assertNotIn(
+            "audit_code% GEQ 2", src,
+            "safe_install.bat regressed to GEQ 2 gate (delayed-expansion variant)"
+        )
+
+
+class PrecommitDepPatternPthCoverageTests(unittest.TestCase):
+    """Subagent HIGH on b807560 (2026-05-22): the pre-commit hook's
+    DEP_PATTERN regex had an arm ``\\.pth`` that only matched a file
+    whose entire basename was literally ``.pth`` (a hidden file). Real
+    malicious .pth files have names like ``litellm.pth`` or
+    ``attack.pth`` and were silently skipped — the .pth attack class
+    bypassed the audit trigger entirely. Fixed: arm is now
+    ``[^/]*\\.pth`` matching any basename ending in .pth.
+
+    Verify the fixed pattern against representative .pth filenames."""
+
+    @staticmethod
+    def _extract_dep_pattern() -> str:
+        """Pull DEP_PATTERN= from the tracked hook source."""
+        src = (_REPO_ROOT / "scripts" / "git-hooks" / "pre-commit").read_text(
+            encoding="utf-8"
+        )
+        import re
+        m = re.search(r"^DEP_PATTERN='([^']+)'", src, re.MULTILINE)
+        if not m:
+            raise AssertionError("DEP_PATTERN= not found in scripts/git-hooks/pre-commit")
+        return m.group(1)
+
+    def test_pth_files_with_real_names_match(self):
+        """The class of .pth files that the original regex MISSED."""
+        import re
+        pattern = self._extract_dep_pattern()
+        # Bash extended regex anchors $ at end-of-string;
+        # Python re respects the same with re.search anchored.
+        rx = re.compile(pattern)
+        positives = [
+            "evil.pth",
+            "litellm.pth",
+            "attack.pth",
+            ".pth",                                          # the historical-only match
+            "site-packages/attack.pth",
+            "venv/lib/python3.12/site-packages/poison.pth",
+        ]
+        for name in positives:
+            self.assertTrue(
+                rx.search(name),
+                f"DEP_PATTERN regression: {name!r} should match .pth arm "
+                f"but doesn't; the .pth attack class can bypass the hook again",
+            )
+
+    def test_non_pth_files_still_dont_falsely_match(self):
+        """The arm must not accidentally match .pth-suffix-but-not-equal."""
+        import re
+        pattern = self._extract_dep_pattern()
+        rx = re.compile(pattern)
+        negatives = [
+            "README.pythonic",       # .pth substring but not a real .pth
+            "foo.pth.bak",           # .pth in middle, not at end
+            "python-config",         # contains 'pth' substring? no — fine
+            "src/main.py",           # totally unrelated
+        ]
+        for name in negatives:
+            self.assertFalse(
+                rx.search(name),
+                f"DEP_PATTERN false positive: {name!r} should NOT match "
+                f"but does"
+            )
+
+
+class SafeInstallNoPythonHandlingTests(unittest.TestCase):
+    """Subagent HIGH on b807560 (2026-05-22): when neither ``python3``
+    nor ``python`` is in PATH, the original safe_install wrappers set
+    ``PY=python`` (fallback), executed it, got exit 127, and under
+    the soon-to-be-fixed ``>= 2 = ALERT`` logic printed a "AUDIT FOUND
+    ALERTS" message. A misconfigured PATH masqueraded as a real
+    security finding.
+
+    Fix: explicit ``command -v`` / ``where`` gate on the chosen PY +
+    distinct "audit skipped" exit path."""
+
+    def test_sh_uses_explicit_command_v_gate(self):
+        src = (_REPO_ROOT / "scripts" / "safe_install.sh").read_text(
+            encoding="utf-8"
+        )
+        # The forbidden pattern: ``PY=python3; command -v python3 || PY=python``
+        # which sets PY=python unconditionally on PATH-miss.
+        self.assertNotIn(
+            'command -v python3 >/dev/null 2>&1 || PY="python"', src,
+            "safe_install.sh regressed to unconditional PY=python fallback"
+        )
+        # The new pattern: PY="" initially + explicit check before invoking.
+        self.assertIn('PY=""', src)
+        self.assertIn("no python found in PATH", src)
+        self.assertIn("audit skipped", src)
+
+    def test_bat_uses_explicit_where_gate(self):
+        src = (_REPO_ROOT / "scripts" / "safe_install.bat").read_text(
+            encoding="utf-8"
+        )
+        # The forbidden pattern: ``where python3 >nul 2>&1; if errorlevel 1
+        # set PY=python; else set PY=python3`` which sets PY=python on
+        # PATH-miss without verifying python exists either.
+        self.assertNotIn(
+            "if errorlevel 1 (set PY=python) else", src,
+            "safe_install.bat regressed to unconditional PY=python fallback"
+        )
+        # The new pattern: empty PY default + ``where`` check on EACH candidate.
+        self.assertIn('set "PY="', src)
+        self.assertIn("no python found in PATH", src)
+        self.assertIn("audit skipped", src)
+
+
+class InstallPrecommitWorktreeTests(unittest.TestCase):
+    """Subagent MEDIUM on b807560 (2026-05-22): the installer's
+    pre-existing repo check was ``[ ! -d "$REPO_ROOT/.git" ]`` which
+    returns fatal for git worktrees (where ``.git`` is a FILE, not a
+    dir, pointing at the real gitdir). Fix: ask git itself for the
+    gitdir via ``git rev-parse --git-dir`` — handles plain repos,
+    worktrees, and submodules uniformly.
+
+    Same commit: timestamped backups instead of single .bak slot
+    so two consecutive runs don't overwrite a developer's custom
+    pre-commit on the second run."""
+
+    def test_installer_uses_git_rev_parse_not_dir_check(self):
+        src = (_REPO_ROOT / "scripts" / "install-precommit.sh").read_text(
+            encoding="utf-8"
+        )
+        # The forbidden pattern: ``[ ! -d "${REPO_ROOT}/.git" ]`` (only checks dir).
+        self.assertNotIn(
+            '[ ! -d "${REPO_ROOT}/.git" ]', src,
+            "install-precommit.sh regressed to dir-only .git check "
+            "(breaks in git worktrees)"
+        )
+        # The new pattern: rev-parse --git-dir.
+        self.assertIn(
+            "git rev-parse --git-dir", src,
+            "install-precommit.sh must use git rev-parse to handle worktrees"
+        )
+
+    def test_installer_uses_timestamped_backups(self):
+        src = (_REPO_ROOT / "scripts" / "install-precommit.sh").read_text(
+            encoding="utf-8"
+        )
+        # The forbidden pattern: backup to fixed ``.bak`` (single slot).
+        self.assertNotIn(
+            'cp "$HOOK_DST" "${HOOK_DST}.bak"', src,
+            "install-precommit.sh regressed to single .bak backup slot "
+            "(second run overwrites developer's custom hook)"
+        )
+        # The new pattern: timestamped backup.
+        self.assertIn(
+            "backup_ts=", src,
+            "install-precommit.sh must use timestamped backup"
+        )
+        self.assertIn(
+            ".bak.${backup_ts}", src,
+            "install-precommit.sh must include timestamp in backup name"
+        )
+
+
+class DetectCompromiseFlagNameTests(unittest.TestCase):
+    """Subagent LOW on b807560 (2026-05-22): callers invoked
+    detect_compromise.py with ``--root`` (relying on argparse's
+    abbreviation matching), but the actual arg is ``--repo-root``.
+    Fragile — if a future ``--root-something`` arg is added, argparse
+    raises ``ambiguous option`` and ALL callers break silently.
+
+    Fix: spell the full flag name everywhere."""
+
+    def test_callers_use_full_flag_name(self):
+        for name in (
+            "scripts/git-hooks/pre-commit",
+            "scripts/safe_install.sh",
+            "scripts/safe_install.bat",
+        ):
+            src = (_REPO_ROOT / name).read_text(encoding="utf-8")
+            # Check the detect_compromise invocation block for ``--root``
+            # (the historical fragile abbreviation) vs ``--repo-root``
+            # (the canonical full spelling).
+            # Grep for the detect_compromise invocation block and check.
+            import re
+            invocations = re.findall(
+                r'detect_compromise(?:\.py)?["\s][^|\n;()]+',
+                src,
+            )
+            # At least one invocation block exists in each caller.
+            self.assertGreater(
+                len(invocations), 0,
+                f"{name} has no detect_compromise invocation"
+            )
+            for inv in invocations:
+                if "--root" in inv and "--repo-root" not in inv:
+                    self.fail(
+                        f"{name} uses --root (argparse abbreviation, "
+                        f"fragile) instead of --repo-root: {inv!r}"
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()

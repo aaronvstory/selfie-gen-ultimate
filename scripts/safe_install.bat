@@ -21,40 +21,55 @@ if "%~1"=="" (
 
 echo [safe-install] running: %*
 %*
-set install_code=%errorlevel%
+set install_code=!errorlevel!
 
-if not "%install_code%"=="0" (
-    echo [safe-install] install failed ^(exit %install_code%^) - skipping audit 1>&2
-    exit /b %install_code%
+if not "!install_code!"=="0" (
+    echo [safe-install] install failed ^(exit !install_code!^) - skipping audit 1>&2
+    exit /b !install_code!
 )
 
 for /f "delims=" %%R in ('git rev-parse --show-toplevel 2^>nul') do set REPO_ROOT=%%R
-if "%REPO_ROOT%"=="" set REPO_ROOT=%cd%
+if "!REPO_ROOT!"=="" set REPO_ROOT=%cd%
 
-set PROJECT_SCRIPT=%REPO_ROOT%\scripts\detect_compromise.py
-if not exist "%PROJECT_SCRIPT%" (
+set PROJECT_SCRIPT=!REPO_ROOT!\scripts\detect_compromise.py
+if not exist "!PROJECT_SCRIPT!" (
     echo [safe-install] no detect_compromise.py - audit skipped 1>&2
     exit /b 0
 )
 
-where python3 >nul 2>&1
-if errorlevel 1 (set PY=python) else (set PY=python3)
+REM Subagent HIGH on b807560 (2026-05-22): the prior code set PY=python
+REM unconditionally when python3 was missing, then tried to invoke it.
+REM Under the old 3-tier ``GEQ 2 = ALERT`` logic, the resulting exit 127
+REM produced a false security alarm. Fix: explicit ``where`` check on
+REM the chosen PY + distinct "audit skipped" exit path so a missing
+REM python is reported as infra issue, not a security finding.
+set "PY="
+where python3 >nul 2>nul && set "PY=python3"
+if not defined PY (
+    where python >nul 2>nul && set "PY=python"
+)
+if not defined PY (
+    echo [safe-install] no python found in PATH - audit skipped 1>&2
+    echo [safe-install] install completed but was NOT audited; run scripts\detect_compromise.py manually 1>&2
+    exit /b 0
+)
 
 echo [safe-install] auditing project after install...
-%PY% "%PROJECT_SCRIPT%" --root "%REPO_ROOT%"
-set audit_code=%errorlevel%
+!PY! "!PROJECT_SCRIPT!" --repo-root "!REPO_ROOT!"
+set audit_code=!errorlevel!
 
-if %audit_code% GEQ 2 (
-    echo [safe-install] AUDIT FOUND ALERTS - review immediately 1>&2
+REM Subagent CRITICAL on b807560 (2026-05-22): detect_compromise.py is
+REM a 2-tier producer (0=clean, 1=alerts). The prior caller logic
+REM treated audit_code==1 as a warning and exited 0, silently allowing
+REM a compromised install to be marked "clean". Fix: any non-zero exit
+REM is treated as an alert and propagated.
+if not "!audit_code!"=="0" (
+    echo [safe-install] AUDIT FOUND ALERTS ^(exit !audit_code!^) - review immediately 1>&2
     echo Recommended next steps: 1>&2
     echo   1. Do NOT run anything in this venv/node_modules 1>&2
     echo   2. Check docs\security\IOC_DETECTION_CHECKLIST.md 1>&2
     echo   3. Run /hulud-kit quick for a full machine scan 1>&2
-    exit /b %audit_code%
-)
-if %audit_code%==1 (
-    echo [safe-install] audit has warnings ^(install completed^) 1>&2
-    exit /b 0
+    exit /b !audit_code!
 )
 echo [safe-install] install + audit clean
 exit /b 0

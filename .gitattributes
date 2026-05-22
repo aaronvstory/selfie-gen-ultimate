@@ -2,3 +2,11 @@
 *.cmd text eol=crlf
 *.command text eol=lf
 *.sh text eol=lf
+# Extensionless git hook scripts — must be LF + executed by git via bash
+# on every platform (including Git for Windows MSYS). Without this rule
+# a Windows clone with core.autocrlf=true converts the shebang to
+# ``#!/usr/bin/env bash\r`` which breaks the hook with an "env: bash\r:
+# No such file or directory" error on macOS / Linux. (Same class of
+# breakage as CLAUDE.md macOS Portability rule 1, scoped to hook bodies.)
+scripts/git-hooks/pre-commit text eol=lf
+
