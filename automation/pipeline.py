@@ -541,8 +541,29 @@ class AutoPipelineRunner:
                 result = None
                 front_input_path = str(case.front_path)
                 executed_passes = 0
+                # For 2-pass mode: pass 1 must NOT overwrite pass 2's
+                # output path (the prior `output_path=None` auto-name
+                # in pass 1 produced `<stem>-expanded.png`, exactly
+                # what pass 2's forced `target_output` was; pass 2
+                # silently clobbered pass 1's file). Plan a distinct
+                # intermediate path for pass 1 so both stages are
+                # retained on disk and the downstream contract
+                # (target_output = `front-expanded.png`) holds.
+                # PR #48 round 4 subagent M3.
+                _pass1_intermediate: Optional[str] = None
+                if front_passes == 2:
+                    _stem = target_output.stem
+                    _ext = target_output.suffix or ".png"
+                    _pass1_intermediate = str(
+                        target_output.with_name(f"{_stem}-stage1{_ext}")
+                    )
                 for pass_index in range(front_passes):
-                    pass_output = str(target_output) if pass_index == front_passes - 1 else None
+                    if pass_index == front_passes - 1:
+                        pass_output = str(target_output)
+                    elif _pass1_intermediate:
+                        pass_output = _pass1_intermediate
+                    else:
+                        pass_output = None
                     # Phase G of polish/v2.3 (2026-05-22): Step 0
                     # face-crop expand uses its OWN prompt key. Falls
                     # back to the legacy shared ``outpaint_prompt`` so

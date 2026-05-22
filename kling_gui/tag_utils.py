@@ -82,50 +82,12 @@ def increment_ops(current_ops: dict, operation: str) -> dict:
     return new_ops
 
 
-def build_expand_filenames(
-    base_stem: str,
-    ext: str,
-    gen_dir: "Path | str",
-    do_2x: bool,
-) -> "tuple[Path, Path | None]":
-    """Plan deterministic output paths for a Step 0 Generative Expand run.
-
-    Returns ``(pass1_path, pass2_path_or_None)`` as ``pathlib.Path`` objects.
-
-    Naming: pass 1 -> ``<stem>-expanded<ext>``; pass 2 (only when
-    ``do_2x``) -> ``<stem>-expanded-2x<ext>``. Collision suffixes are
-    PAIRED in 2x mode — pass 1 and pass 2 share the same ``_vN`` index so
-    a re-run's outputs stay semantically linked on disk (per code-review
-    M2 on subagent ae2dd01f). Without pairing, pass 1 could land at
-    ``_v2`` while pass 2 lands at ``_v3`` (or vice-versa) and the
-    "this 2x belongs to that 1x" relationship is lost in the gen dir.
-
-    Single-pass mode resolves the one path independently as before.
-    """
-    gen_dir = Path(gen_dir)
-    stem = sanitize_stem(base_stem, default="image")
-    if not ext.startswith("."):
-        ext = "." + ext
-
-    def _name(base: str, n: int) -> Path:
-        if n == 1:
-            return gen_dir / f"{base}{ext}"
-        return gen_dir / f"{base}_v{n}{ext}"
-
-    base1 = f"{stem}-expanded"
-    base2 = f"{stem}-expanded-2x"
-
-    if not do_2x:
-        n = 1
-        while _name(base1, n).exists():
-            n += 1
-        return _name(base1, n), None
-
-    # Paired resolution: smallest n where BOTH targets are free.
-    n = 1
-    while _name(base1, n).exists() or _name(base2, n).exists():
-        n += 1
-    return _name(base1, n), _name(base2, n)
+# `build_expand_filenames` was moved to `path_utils.py` so the CLI
+# automation pipeline (`automation/pipeline.py`) and Step 2.5
+# (`expand_tab.py`) can use the same helper that Step 0 uses. The CLI
+# must NOT depend on `kling_gui.*`; `path_utils` is shared root-level.
+# Re-export here so existing call sites keep working.
+from path_utils import build_expand_filenames  # noqa: F401
 
 
 def _parse_legacy_filename(filename: str) -> dict:

@@ -826,7 +826,8 @@ class ExpandTab(tk.Frame):
 
         def _worker():
             from outpaint_generator import OutpaintGenerator
-            from kling_gui.tag_utils import build_ops_filename, increment_ops
+            from kling_gui.tag_utils import increment_ops
+            from path_utils import build_expand_filenames
             from face_similarity import compute_face_similarity_details
 
             gen = OutpaintGenerator(
@@ -859,18 +860,26 @@ class ExpandTab(tk.Frame):
                 output_dir = get_gen_images_folder(entry.path)
                 os.makedirs(output_dir, exist_ok=True)
 
+                # Step 2.5 expand-output naming unified with Step 0 per
+                # PR #48 round 4 user feedback. The previous ops-tag
+                # scheme produced names like `<stem>_exp.png` / `_2-exp`
+                # which conflicted with Step 0's `-expanded` /
+                # `-expanded-2x` form; the user saw two conventions
+                # side-by-side and rightly called it inconsistent.
+                # Ops accounting still happens in ``new_ops`` for the
+                # carousel display tag; only the filename changed.
+                # Collision suffix logic via ``_vN`` (no more
+                # hacky ``_v{counter}{ext}`` injection into
+                # ``build_ops_filename``).
                 new_ops = increment_ops(entry.ops if entry.ops else {}, "exp")
-                ext = f".{output_format}"
                 stem = Path(entry.path).stem
-                output_name = build_ops_filename(stem, new_ops, ext=ext)
-                output_path = os.path.join(output_dir, output_name)
-                counter = 2
-                while os.path.exists(output_path):
-                    output_path = os.path.join(
-                        output_dir,
-                        build_ops_filename(stem, new_ops, ext=f"_v{counter}{ext}"),
-                    )
-                    counter += 1
+                pass1_path, _ = build_expand_filenames(
+                    base_stem=stem,
+                    ext=output_format,
+                    gen_dir=output_dir,
+                    do_2x=False,
+                )
+                output_path = str(pass1_path)
 
                 result = None
                 try:
