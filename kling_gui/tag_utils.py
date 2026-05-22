@@ -81,6 +81,41 @@ def increment_ops(current_ops: dict, operation: str) -> dict:
     return new_ops
 
 
+def build_expand_filenames(base_stem: str, ext: str, gen_dir, do_2x: bool):
+    """Plan deterministic output paths for a Step 0 Generative Expand run.
+
+    Returns ``(pass1_path, pass2_path_or_None)`` as ``pathlib.Path`` objects.
+
+    Naming: pass 1 -> ``<stem>-expanded<ext>``; pass 2 (only when
+    ``do_2x``) -> ``<stem>-expanded-2x<ext>``. Each path's collision is
+    resolved independently with a ``_v2``, ``_v3`` ... suffix so a re-run
+    never overwrites earlier files AND the ``-expanded`` / ``-expanded-2x``
+    suffix stays intact (which the old auto-name fallback in
+    ``outpaint_generator.py`` didn't guarantee when chaining 2 passes).
+    """
+    from pathlib import Path
+
+    gen_dir = Path(gen_dir)
+    stem = sanitize_stem(base_stem, default="image")
+    if not ext.startswith("."):
+        ext = "." + ext
+
+    def _resolve(name_base: str) -> Path:
+        candidate = gen_dir / f"{name_base}{ext}"
+        if not candidate.exists():
+            return candidate
+        n = 2
+        while True:
+            candidate = gen_dir / f"{name_base}_v{n}{ext}"
+            if not candidate.exists():
+                return candidate
+            n += 1
+
+    pass1 = _resolve(f"{stem}-expanded")
+    pass2 = _resolve(f"{stem}-expanded-2x") if do_2x else None
+    return pass1, pass2
+
+
 def _parse_legacy_filename(filename: str) -> dict:
     """Fallback: parse old-format filenames for backward compat."""
     stem = os.path.splitext(filename)[0].lower()

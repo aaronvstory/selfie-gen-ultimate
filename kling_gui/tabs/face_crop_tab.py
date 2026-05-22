@@ -1936,21 +1936,24 @@ class FaceCropTab(tk.Frame):
                 self.log("Invalid pixel values", "error")
                 return
 
-        # Build ops-based filename
-        from kling_gui.tag_utils import increment_ops, build_ops_filename
+        # Plan deterministic per-pass output paths up-front. Step 0 expand
+        # outputs use the dedicated "-expanded" / "-expanded-2x" naming
+        # convention (NOT the ops-tag scheme from build_ops_filename, which
+        # is still used elsewhere for polish/upscale). Each pass gets its
+        # own collision suffix so a re-run never overwrites earlier files.
+        from kling_gui.tag_utils import increment_ops, build_expand_filenames
 
         input_entry = self.image_session.active_entry
         input_ops = input_entry.ops if input_entry else {}
-        new_ops = increment_ops(input_ops, "exp")
+        do_2x = bool(self._outpaint_double_expand_var.get())
 
-        ext = f".{output_format}"
-        stem = Path(image_path).stem
-        output_name = build_ops_filename(stem, new_ops, ext=ext)
-        outpaint_output_path = str(gen_dir / output_name)
-        counter = 2
-        while os.path.exists(outpaint_output_path):
-            outpaint_output_path = str(gen_dir / build_ops_filename(stem, new_ops, ext=f"_v{counter}{ext}"))
-            counter += 1
+        pass1_path, pass2_path = build_expand_filenames(
+            base_stem=Path(image_path).stem,
+            ext=output_format,
+            gen_dir=gen_dir,
+            do_2x=do_2x,
+        )
+        planned_paths = [pass1_path] + ([pass2_path] if pass2_path is not None else [])
 
         ref_path = self._find_crop_ref_path()
         self.log(f"[SIM] outpaint input={Path(image_path).name} ref={Path(ref_path).name if ref_path else 'none'}", "debug")
@@ -1964,7 +1967,6 @@ class FaceCropTab(tk.Frame):
         self._outpaint_status.config(text="Processing...", fg=COLORS["progress"])
 
         bfl_key = cfg.get("bfl_api_key") if use_bfl else None
-        outpaint_passes = 2 if self._outpaint_double_expand_var.get() else 1
         composite_mode = self._outpaint_composite_var.get()
 
         def _worker():
@@ -1982,9 +1984,23 @@ class FaceCropTab(tk.Frame):
                     )
                 )
                 current_input = image_path
-                result = None
-                for pass_index in range(outpaint_passes):
-                    pass_output_path = outpaint_output_path if pass_index == outpaint_passes - 1 else None
+                current_ops = dict(input_ops or {})
+                # Per-pass results: (path, similarity_str_or_None, ops_dict).
+                per_pass_results = []
+                total_passes = len(planned_paths)
+                for pass_index, pass_output_path in enumerate(planned_paths):
+                    pass_no = pass_index + 1
+                    self.winfo_toplevel().after(
+                        0,
+                        lambda i=pass_no, n=total_passes, cm=composite_mode,
+                               inp=Path(current_input).name,
+                               outp=pass_output_path.name:
+                        self.log(
+                            f"Expand pass {i}/{n}: composite_mode={cm} "
+                            f"in={inp} out={outp}",
+                            "info",
+                        ),
+                    )
                     result = gen.outpaint(
                         image_path=current_input,
                         output_folder=str(gen_dir),
@@ -1995,27 +2011,41 @@ class FaceCropTab(tk.Frame):
                         prompt=prompt,
                         output_format=output_format,
                         composite_mode=composite_mode,
-                        output_path=pass_output_path,
+                        output_path=str(pass_output_path),
                         poll_timeout_seconds=get_outpaint_fal_timeout_seconds(cfg),
                         cancel_event=self._outpaint_cancel_event,
                     )
                     if not result:
                         break
+
+                    current_ops = increment_ops(current_ops, "exp")
+
+                    sim = None
+                    if ref_path:
+                        try:
+                            from face_similarity import compute_face_similarity
+                            sim_val = compute_face_similarity(
+                                ref_path, result, report_cb=self.log,
+                            )
+                            if sim_val is not None:
+                                sim = f"{sim_val}%"
+                        except Exception as exc:
+                            self.winfo_toplevel().after(
+                                0,
+                                lambda e=exc, i=pass_no:
+                                self.log(
+                                    f"Sim pass {i}: {type(e).__name__}: {e!r}",
+                                    "warning",
+                                ),
+                            )
+
+                    per_pass_results.append((result, sim, dict(current_ops)))
                     current_input = result
 
-                similarity = None
-                if ref_path and result:
-                    try:
-                        from face_similarity import compute_face_similarity
-                        sim_val = compute_face_similarity(ref_path, result, report_cb=self.log)
-                        if sim_val is not None:
-                            similarity = f"{sim_val}%"
-                    except Exception as exc:
-                        self.winfo_toplevel().after(
-                            0, lambda e=exc: self.log(f"Sim: {type(e).__name__}: {e!r}", "warning")
-                        )
-
-                self.winfo_toplevel().after(0, lambda: self._on_outpaint_done(result, similarity, new_ops, run_token))
+                self.winfo_toplevel().after(
+                    0,
+                    lambda r=per_pass_results: self._on_outpaint_done(r, run_token),
+                )
             except Exception as e:
                 err = str(e)
                 self.winfo_toplevel().after(0, lambda: self._on_outpaint_error(err, run_token))
@@ -2030,7 +2060,14 @@ class FaceCropTab(tk.Frame):
         self._outpaint_status.config(text="Aborting...", fg=COLORS["warning"])
         self._expand_abort_btn.config(state=tk.DISABLED, text="Aborting...")
 
-    def _on_outpaint_done(self, result, similarity=None, ops=None, run_token=None):
+    def _on_outpaint_done(self, per_pass_results, run_token=None):
+        """Finalize a Step 0 expand run.
+
+        ``per_pass_results`` is a list of ``(path, similarity_str|None,
+        ops_dict)`` tuples - one entry per SUCCESSFUL pass. An empty list
+        means all passes failed. A 2-element list (2x mode) adds BOTH
+        pass 1 and pass 2 to the carousel as distinct entries, in order.
+        """
         if run_token is not None and run_token != self._outpaint_run_token:
             return
         if self._outpaint_cancel_event is not None and self._outpaint_cancel_event.is_set():
@@ -2045,12 +2082,18 @@ class FaceCropTab(tk.Frame):
         self._outpaint_cancel_event = None
         self._expand_btn.config(text="Expand Image", state=tk.NORMAL)
         self._expand_abort_btn.config(text="Abort", state=tk.DISABLED)
-        if result:
-            basename = os.path.basename(result)
-            self._outpaint_status.config(text=f"Done: {basename}", fg=COLORS["success"])
-            self.image_session.add_image(result, "outpaint", label=basename,
-                                         similarity=similarity, ops=ops)
-            self.log(f"Outpaint: saved {basename}", "success")
+        if per_pass_results:
+            for path, sim, ops in per_pass_results:
+                basename = os.path.basename(path)
+                self.image_session.add_image(
+                    path, "outpaint", label=basename,
+                    similarity=sim, ops=ops,
+                )
+                self.log(f"Outpaint: saved {basename}", "success")
+            final_basename = os.path.basename(per_pass_results[-1][0])
+            self._outpaint_status.config(
+                text=f"Done: {final_basename}", fg=COLORS["success"],
+            )
         else:
             self._outpaint_status.config(text="Failed", fg=COLORS["error"])
             detail = ""
