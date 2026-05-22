@@ -190,7 +190,8 @@ def check_compromised_pypi_in_deps(repo_root: Path) -> CheckResult:
     # named ``dist`` / ``venv`` (e.g. cloning into
     # ``C:\dist\projects\…``) doesn't disable the scan for everything
     # underneath. Gemini security-high on 3fe4154.
-    exclude_dirs = {".venv", "venv", "site-packages", ".recovery",
+    exclude_dirs = {".venv", "venv", ".venv311", ".venv-macos",
+                    "site-packages", ".recovery",
                     "node_modules", ".sandbox-venv", "dist", ".git"}
 
     def _excluded(p: Path) -> bool:
