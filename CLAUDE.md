@@ -184,6 +184,41 @@ set -e                     # ← restore strict mode
 
 When you add a new sibling pair, set both to `set -euo pipefail` from the start.
 
+### 11. macOS hit-target sizing — route tight `ttk.Button` styles through `mac_padding`
+
+On macOS, raw `tk.Button` was migrated to `ttk.Button` under clam in PR #40 /
+commit `b3bc7398` to fix the HIView tint-reversion bug. That also widened the
+hit area for buttons with comfortable padding `(10, 6)` / `(14, 7)`. But
+several tight styles (SLOT `(6, 3)`, COMPACT `(8, 4)`, SUCCESS/DANGER_COMPACT
+`(7, 4)`, CarouselRef `(8, 4)`) still missed clicks 2-10× before registering.
+
+The fix: every tight ttk button style declares padding via
+`mac_padding((default), (macos))` in `kling_gui/theme.py`. Windows + Linux
+get the original tuple unchanged; macOS gets a bumped tuple. Raw
+`tk.Checkbutton` / `tk.Radiobutton` / `tk.Menubutton` widgets in high-use
+areas spread `**macos_widget_pad()` into their constructor — a no-op on
+non-macOS, a `padx=6 pady=3` bump on macOS.
+
+When you add a new button style or raw tk widget:
+- New `ttk.Button` style with padding tighter than `(10, 6)` → wrap with
+  `mac_padding`. The static test
+  `tests/test_main_window_styles.py::test_no_hardcoded_tight_padding`
+  catches re-introduced `(6, 3)` / `(7, 4)` literals.
+- New raw `tk.Checkbutton` / `tk.Radiobutton` / `tk.Menubutton` in a
+  high-use Step 0 / Step 2 row → spread `**macos_widget_pad()` into the
+  constructor. The helper lives in `kling_gui/theme.py`.
+
+For diagnosing a future "missed clicks on macOS" report:
+```bash
+KLING_DEBUG_CLICKS=1 bash run_gui.command
+```
+then transiently wire `attach_click_diagnostics(self._suspect_btn, "label")`
+in the relevant tab. Logs press/release coords + widget bounds at WARNING
+level. Remove the wiring before commit — the helper is opt-in for a reason.
+
+The `mac_padding` / `macos_widget_pad` / `CLICK_DEBUG` contract is covered
+by `tests/test_theme_mac_padding.py`.
+
 ## Commands
 
 ```bash
