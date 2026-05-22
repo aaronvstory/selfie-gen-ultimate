@@ -783,13 +783,20 @@ python scripts/hulud_kit_scan.py --sarif results.sarif   # for GitHub Security t
 
 ### When adding a dependency
 
-Vet new versions in a disposable venv before touching the real one:
+Audit the full `requirements-hashed.txt` (falling back to `requirements.txt`)
+in a disposable venv before merging any dep change. The script takes no
+positional args — it always re-installs the project's pinned set into a
+fresh venv and runs `pip-audit`:
 
 ```bash
-./scripts/sandbox_install.sh <package>==<version>
+./scripts/sandbox_install.sh         # macOS / Linux
+.\scripts\sandbox_install.bat        # Windows
 ```
 
-After any dep change, regenerate the hash-pinned lockfile:
+After any dep change, regenerate the hash-pinned lockfile. Run this on
+**Windows**, not macOS — the current `requirements-hashed.txt` is pinned
+to Intel/Windows TensorFlow wheels and macOS pip-compile output overwrites
+the Windows wheel set, breaking the bundled release:
 
 ```bash
 pip install pip-tools

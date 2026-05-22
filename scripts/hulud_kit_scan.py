@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-detect_compromise.py — project-level supply chain audit (Python).
+hulud_kit_scan.py — project-level supply chain audit (Python).
+
+Sourced from aaronvstory/shai-hulud-kit@HEAD (canonical name there is
+``detect_compromise.py``; renamed here as ``hulud_kit_scan.py`` to coexist
+alongside this project's pre-existing ``scripts/detect_compromise.py``).
 
 v1.1 — adds Claude Code persistence detection, SARIF output, expanded IOC list.
 
 Nine checks, one exit code:
   1. Compromised PyPI packages in any requirements*.txt (PEP 508 regex)
-  2. Compromised npm packages in package.json / package-lock.json
+  2. Compromised npm packages in package.json / package-lock.json (v1+v2+v3)
   3. .pth files in site-packages with executable code (persistence)
   4. GitHub workflow files with curl|bash / pipe-to-shell / token exfil
   5. Git remote URLs against known C2 domains (with token redaction)
@@ -19,10 +23,10 @@ Exits 0 (clean), 1 (warnings), 2 (alerts).
 No external dependencies. Stdlib only. Python 3.8+. Cross-platform.
 
 Usage:
-    python scripts/detect_compromise.py
-    python scripts/detect_compromise.py --json
-    python scripts/detect_compromise.py --sarif results.sarif
-    python scripts/detect_compromise.py --root /path/to/repo
+    python scripts/hulud_kit_scan.py
+    python scripts/hulud_kit_scan.py --json
+    python scripts/hulud_kit_scan.py --sarif results.sarif
+    python scripts/hulud_kit_scan.py --root /path/to/repo
 
 IOC data is sourced primarily from copyleftdev/mini-shai-hulud-dragnet
 (CC-BY-4.0) plus OSV.dev advisories. Update the constants below as new
@@ -313,8 +317,8 @@ class Finding:
 # ============================================================================
 
 SKIP_PARTS = {
-    "site-packages", ".venv", "venv", ".venv311", "env", ".tox",
-    "node_modules", ".sandbox-venv", "__pycache__", ".git",
+    "site-packages", ".venv", "venv", ".venv311", ".venv-macos",
+    "env", ".tox", "node_modules", ".sandbox-venv", "__pycache__", ".git",
 }
 
 
@@ -431,7 +435,14 @@ def check_compromised_npm(root: Path) -> list[Finding]:
                             _add_npm_finding(findings, pkg, str(ver_spec), path,
                                              dep_section, "package_compromised")
 
-        # package-lock.json: scan resolved package@version entries
+        # package-lock.json: scan resolved package@version entries.
+        # Lockfile v2 / v3 keep resolved entries under top-level
+        # ``packages`` (keyed by node_modules path). Lockfile v1 keeps
+        # them under top-level ``dependencies`` (keyed by package name,
+        # recursively nested). v2 ships both for back-compat; v3 ships
+        # only ``packages``; v1 ships only ``dependencies``. Walk both
+        # so all three formats are covered (Codex P1 on 9ab368ec —
+        # lockfile v1 was previously missed).
         elif path.name == "package-lock.json":
             packages = data.get("packages", {})
             for key, pkg_info in packages.items():
@@ -448,6 +459,30 @@ def check_compromised_npm(root: Path) -> list[Finding]:
                 if not bad_versions or version in bad_versions:
                     _add_npm_finding(findings, name, version, path,
                                      "package-lock", "locked_to_bad_version")
+            # Lockfile v1 fallback: recurse the nested ``dependencies``
+            # tree if the file lacks ``packages`` or declares v1
+            # explicitly. Each node may carry its own nested
+            # ``dependencies`` dict (transitives).
+            lockfile_version = data.get("lockfileVersion", 2)
+            if lockfile_version == 1 or not packages:
+                def _walk_v1_deps(deps: dict) -> None:
+                    for dep_name, info in deps.items():
+                        if not isinstance(info, dict):
+                            continue
+                        canon = canonicalize_npm_name(dep_name)
+                        if canon in COMPROMISED_NPM_CANONICAL:
+                            ver = info.get("version", "")
+                            bads = COMPROMISED_NPM_CANONICAL[canon]
+                            if not bads or ver in bads:
+                                _add_npm_finding(findings, dep_name, ver,
+                                                 path, "package-lock-v1",
+                                                 "locked_to_bad_version")
+                        nested = info.get("dependencies", {})
+                        if isinstance(nested, dict):
+                            _walk_v1_deps(nested)
+                v1_deps = data.get("dependencies", {})
+                if isinstance(v1_deps, dict):
+                    _walk_v1_deps(v1_deps)
     return findings
 
 
@@ -765,7 +800,7 @@ def check_marker_self() -> list[Finding]:
     if MARKER_REVERSED != expected:
         return [Finding(
             section="self", type="marker_tampered", level="WARN",
-            message="reversed marker in detect_compromise.py was modified",
+            message="reversed marker in hulud_kit_scan.py was modified",
             details={"expected": expected, "actual": MARKER_REVERSED},
         )]
     return []
@@ -819,7 +854,7 @@ def to_sarif(findings: list[Finding], root: Path) -> dict:
                 "shortDescription": {"text": f.type.replace("_", " ")},
                 "fullDescription": {
                     "text": f"Supply chain audit finding: {rule_id}. "
-                            f"Detected by detect_compromise.py."
+                            f"Detected by hulud_kit_scan.py."
                 },
                 "defaultConfiguration": {
                     "level": _sarif_level(f.level)
@@ -857,7 +892,7 @@ def to_sarif(findings: list[Finding], root: Path) -> dict:
         "runs": [{
             "tool": {
                 "driver": {
-                    "name": "detect_compromise",
+                    "name": "hulud_kit_scan",
                     "version": "1.1",
                     "informationUri": "https://github.com/copyleftdev/mini-shai-hulud-dragnet",
                     "rules": list(rules.values()),
@@ -900,7 +935,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         exit_code = 0
 
     result = {
-        "tool": "detect_compromise",
+        "tool": "hulud_kit_scan",
         "version": "1.1",
         "root": str(root),
         "summary": {

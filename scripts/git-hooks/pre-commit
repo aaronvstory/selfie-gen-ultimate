@@ -51,34 +51,38 @@ if [[ "${SHAI_HULUD_FORCE:-0}" != "1" ]]; then
     fi
 fi
 
+# --- Resolve Python once (used by BOTH scanners) ---
+# Subagent HIGH on 9ab368ec (2026-05-22): hoisting this above the
+# project-scanner block ensures the kit scanner still runs if the
+# project scanner file is missing/renamed. Previously PY only got
+# assigned inside the project-scanner `if [[ -f ]]` block, so a
+# missing detect_compromise.py silently disabled the kit scanner too.
+if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+else
+    echo -e "${YELLOW}pre-commit: no python found — skipping all supply-chain audits${RESET}" >&2
+    PY=""
+fi
+
 # --- Project-level scan ---
 PROJECT_SCRIPT="$REPO_ROOT/scripts/detect_compromise.py"
-if [[ -f "$PROJECT_SCRIPT" ]]; then
+if [[ -f "$PROJECT_SCRIPT" && -n "$PY" ]]; then
     echo "[pre-commit] running project audit (dep/workflow files changed)..."
-    if command -v python3 >/dev/null 2>&1; then
-        PY=python3
-    elif command -v python >/dev/null 2>&1; then
-        PY=python
-    else
-        echo "${YELLOW}pre-commit: no python found, skipping project audit${RESET}" >&2
-        PY=""
-    fi
-
-    if [[ -n "$PY" ]]; then
-        # Subagent CRITICAL on b807560 (2026-05-22): detect_compromise.py
-        # is a 2-tier producer (0=clean, 1=alerts) but the prior caller
-        # logic gated FAILED=1 on ``code >= 2`` and printed a yellow
-        # "warnings" line on ``code == 1``. Real IoC alerts (code=1)
-        # silently became "warnings" and the commit went through.
-        # Fix: any non-zero exit blocks the commit. The script doesn't
-        # have a separate "warnings" level today, so the prior elif was
-        # dead code that masqueraded as a safety net.
-        "$PY" "$PROJECT_SCRIPT" --repo-root "$REPO_ROOT"
-        code=$?
-        if [[ $code -ne 0 ]]; then
-            echo -e "${RED}[pre-commit] project audit FAILED (exit $code — see findings above)${RESET}" >&2
-            FAILED=1
-        fi
+    # Subagent CRITICAL on b807560 (2026-05-22): detect_compromise.py
+    # is a 2-tier producer (0=clean, 1=alerts) but the prior caller
+    # logic gated FAILED=1 on ``code >= 2`` and printed a yellow
+    # "warnings" line on ``code == 1``. Real IoC alerts (code=1)
+    # silently became "warnings" and the commit went through.
+    # Fix: any non-zero exit blocks the commit. The script doesn't
+    # have a separate "warnings" level today, so the prior elif was
+    # dead code that masqueraded as a safety net.
+    "$PY" "$PROJECT_SCRIPT" --repo-root "$REPO_ROOT"
+    code=$?
+    if [[ $code -ne 0 ]]; then
+        echo -e "${RED}[pre-commit] project audit FAILED (exit $code — see findings above)${RESET}" >&2
+        FAILED=1
     fi
 fi
 
@@ -87,7 +91,7 @@ fi
 # markers — gaps the project scanner doesn't cover. Same fast tier as the
 # project scan; both must pass.
 KIT_SCRIPT="$REPO_ROOT/scripts/hulud_kit_scan.py"
-if [[ -f "$KIT_SCRIPT" && -n "${PY:-}" ]]; then
+if [[ -f "$KIT_SCRIPT" && -n "$PY" ]]; then
     echo "[pre-commit] running hulud-kit scanner (.claude/ persistence + IOCs)..."
     "$PY" "$KIT_SCRIPT" --root "$REPO_ROOT"
     code=$?
