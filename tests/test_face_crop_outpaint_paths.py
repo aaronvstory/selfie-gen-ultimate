@@ -471,22 +471,43 @@ def test_2x_both_passes_preserve_seamless(tmp_path, monkeypatch):
 
 
 def test_2x_pass2_input_is_renamed_pass1(tmp_path, monkeypatch):
-    """Pass 2's image_path is the planned pass-1 target (the renamed
-    file), not the auto-named ``-expanded.png`` that the generator
-    would have produced absent the post-composite rename."""
+    """The post-composite rename actually moves the auto-named pass-1
+    output onto the planner's target, and pass 2's image_path is the
+    RENAMED file — not the auto-name the generator would have produced.
+
+    The previous form of this test passed trivially: with an empty
+    ``tmp_path``, the planner's pass-1 target and the fake's auto-name
+    were both ``front-expanded.png``, so the rename branch
+    (``Path(result) != planned_target``) was False and the rename code
+    was never exercised. Pre-populating ``front-expanded.png`` forces
+    ``build_expand_filenames`` to walk to the paired ``_v2`` slot while
+    the fake still auto-names starting at ``_v1`` — now the rename has
+    actual work to do, and we assert both the move-to (planned target
+    present) and the move-from (auto-name absent).
+    """
     src = tmp_path / "front.png"
     src.write_bytes(b"INPUT")
+    # Force the planner past the first slot — pair walks to _v2.
+    (tmp_path / "front-expanded.png").write_bytes(b"PREEXISTING")
     fake = _make_fake_expand_tab(
         tmp_path=tmp_path, input_image=src, do_2x=True,
     )
     fake_gen = _FakeOutpaintGen()
     _run_outpaint_worker(fake, fake_gen, monkeypatch)
 
-    expected_pass1_target = tmp_path / "front-expanded.png"
+    expected_pass1_target = tmp_path / "front-expanded_v2.png"
+    expected_pass2_target = tmp_path / "front-expanded-2x_v2.png"
+
+    # Pass 2's input is the renamed pass-1 target, not the auto-name.
     assert fake_gen.calls[1]["image_path"] == str(expected_pass1_target)
+    # Both planned targets exist on disk after both renames fired.
     assert expected_pass1_target.exists()
-    # Pass 2's output (after rename) is the -2x target.
-    assert (tmp_path / "front-expanded-2x.png").exists()
+    assert expected_pass2_target.exists()
+    # The auto-named pass-1 output must be gone — proves the rename
+    # ran rather than silently no-op'ing.
+    assert not (tmp_path / "front-expanded_v1.png").exists(), (
+        "post-composite rename did not move the auto-named pass-1 output"
+    )
 
 
 def test_2x_partial_pass1_succeeds_pass2_fails(tmp_path, monkeypatch):
