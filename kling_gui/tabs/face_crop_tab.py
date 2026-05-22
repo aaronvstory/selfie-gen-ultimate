@@ -1977,17 +1977,28 @@ class FaceCropTab(tk.Frame):
         def _worker():
             try:
                 from outpaint_generator import OutpaintGenerator
+                # Hoisted out of the per-pass loop per code-review L5
+                # on subagent ae2dd01f. Python's import cache made the
+                # in-loop import a perf-non-issue, but hoisting makes
+                # the failure surface (ImportError) unambiguous and
+                # matches the OutpaintGenerator import style above.
+                from face_similarity import compute_face_similarity
+
+                # Tk-safe log callback (code-review M1 on subagent
+                # ae2dd01f). face_similarity invokes report_cb directly
+                # from the worker thread; without the after-marshal it
+                # mutates the LogDisplay Tk widget from a non-GUI thread
+                # which is undefined on macOS.
+                tk_safe_log = lambda msg, lvl: self.winfo_toplevel().after(
+                    0, lambda m=msg, l=lvl: self.log(m, l)
+                )
 
                 freeimage_key = cfg.get("freeimage_api_key")
                 gen = OutpaintGenerator(
                     api_key, freeimage_key=freeimage_key, bfl_api_key=bfl_key,
                 )
                 self.outpaint_generator = gen
-                gen.set_progress_callback(
-                    lambda msg, lvl: self.winfo_toplevel().after(
-                        0, lambda m=msg, l=lvl: self.log(m, l)
-                    )
-                )
+                gen.set_progress_callback(tk_safe_log)
                 current_input = image_path
                 current_ops = dict(input_ops or {})
                 # Per-pass results: (path, similarity_str_or_None, ops_dict).
@@ -2028,9 +2039,8 @@ class FaceCropTab(tk.Frame):
                     sim = None
                     if ref_path:
                         try:
-                            from face_similarity import compute_face_similarity
                             sim_val = compute_face_similarity(
-                                ref_path, result, report_cb=self.log,
+                                ref_path, result, report_cb=tk_safe_log,
                             )
                             if sim_val is not None:
                                 sim = f"{sim_val}%"
@@ -2049,7 +2059,8 @@ class FaceCropTab(tk.Frame):
 
                 self.winfo_toplevel().after(
                     0,
-                    lambda r=per_pass_results: self._on_outpaint_done(r, run_token),
+                    lambda r=per_pass_results, t=total_passes:
+                    self._on_outpaint_done(r, t, run_token),
                 )
             except Exception as e:
                 err = str(e)
@@ -2065,41 +2076,66 @@ class FaceCropTab(tk.Frame):
         self._outpaint_status.config(text="Aborting...", fg=COLORS["warning"])
         self._expand_abort_btn.config(state=tk.DISABLED, text="Aborting...")
 
-    def _on_outpaint_done(self, per_pass_results, run_token=None):
+    def _on_outpaint_done(self, per_pass_results, total_passes, run_token=None):
         """Finalize a Step 0 expand run.
 
         ``per_pass_results`` is a list of ``(path, similarity_str|None,
-        ops_dict)`` tuples - one entry per SUCCESSFUL pass. An empty list
-        means all passes failed. A 2-element list (2x mode) adds BOTH
-        pass 1 and pass 2 to the carousel as distinct entries, in order.
+        ops_dict)`` tuples - one entry per SUCCESSFUL pass.
+        ``total_passes`` is how many passes the worker tried (1 for
+        single-pass, 2 for 2x).
+
+        Three success paths:
+        - All passes succeeded → status "Done: <last>", carousel gets
+          every entry.
+        - Some passes succeeded then a later pass failed (partial 2x) →
+          status "Partial: K/N", carousel gets the successful entries,
+          warning log with the underlying error detail (code-review H1
+          on subagent ae2dd01f).
+        - Zero passes succeeded → status "Failed", error log.
+
+        Even on cancellation, successful passes are added to the carousel
+        before the abort short-circuit (code-review H2 on subagent
+        ae2dd01f) — otherwise the on-disk file is orphaned and the user
+        loses real work to a click.
         """
         if run_token is not None and run_token != self._outpaint_run_token:
             return
-        if self._outpaint_cancel_event is not None and self._outpaint_cancel_event.is_set():
-            self._outpaint_busy = False
-            self._outpaint_cancel_event = None
-            self._expand_btn.config(text="Expand Image", state=tk.NORMAL)
-            self._expand_abort_btn.config(text="Abort", state=tk.DISABLED)
-            self._outpaint_status.config(text="Aborted by user", fg=COLORS["warning"])
-            self.log("Expand aborted by user", "warning")
-            return
+        cancelled = (
+            self._outpaint_cancel_event is not None
+            and self._outpaint_cancel_event.is_set()
+        )
         self._outpaint_busy = False
         self._outpaint_cancel_event = None
         self._expand_btn.config(text="Expand Image", state=tk.NORMAL)
         self._expand_abort_btn.config(text="Abort", state=tk.DISABLED)
-        if per_pass_results:
-            for path, sim, ops in per_pass_results:
-                basename = os.path.basename(path)
-                self.image_session.add_image(
-                    path, "outpaint", label=basename,
-                    similarity=sim, ops=ops,
-                )
-                self.log(f"Outpaint: saved {basename}", "success")
-            final_basename = os.path.basename(per_pass_results[-1][0])
-            self._outpaint_status.config(
-                text=f"Done: {final_basename}", fg=COLORS["success"],
+
+        # H2: surface every successfully-saved pass to the carousel
+        # FIRST, regardless of cancel/partial state. The file is on disk
+        # whether or not the user clicked Abort mid-run.
+        for path, sim, ops in per_pass_results:
+            basename = os.path.basename(path)
+            self.image_session.add_image(
+                path, "outpaint", label=basename,
+                similarity=sim, ops=ops,
             )
-        else:
+            self.log(f"Outpaint: saved {basename}", "success")
+
+        if cancelled:
+            self._outpaint_status.config(
+                text="Aborted by user", fg=COLORS["warning"],
+            )
+            if per_pass_results:
+                self.log(
+                    f"Expand aborted by user — kept "
+                    f"{len(per_pass_results)} successful pass(es) "
+                    f"in carousel",
+                    "warning",
+                )
+            else:
+                self.log("Expand aborted by user", "warning")
+            return
+
+        if not per_pass_results:
             self._outpaint_status.config(text="Failed", fg=COLORS["error"])
             detail = ""
             gen = getattr(self, "outpaint_generator", None)
@@ -2108,6 +2144,37 @@ class FaceCropTab(tk.Frame):
             from outpaint_generator import OutpaintGenerator
             msg = OutpaintGenerator.format_error_detail(detail)
             self.log(msg, "error")
+            return
+
+        # H1: distinguish full-success from partial-2x-success.
+        final_basename = os.path.basename(per_pass_results[-1][0])
+        if len(per_pass_results) >= total_passes:
+            self._outpaint_status.config(
+                text=f"Done: {final_basename}", fg=COLORS["success"],
+            )
+        else:
+            failed_pass = len(per_pass_results) + 1
+            detail = ""
+            gen = getattr(self, "outpaint_generator", None)
+            if gen is not None and hasattr(gen, "get_last_outpaint_error_detail"):
+                detail = gen.get_last_outpaint_error_detail() or ""
+            if detail:
+                from outpaint_generator import OutpaintGenerator
+                err_msg = OutpaintGenerator.format_error_detail(detail)
+            else:
+                err_msg = "no detail available"
+            self._outpaint_status.config(
+                text=(
+                    f"Partial: {len(per_pass_results)}/{total_passes} "
+                    f"(pass {failed_pass} failed)"
+                ),
+                fg=COLORS["warning"],
+            )
+            self.log(
+                f"Outpaint: partial 2x — pass {failed_pass}/{total_passes} "
+                f"failed. {err_msg}",
+                "warning",
+            )
 
     def _on_outpaint_error(self, error, run_token=None):
         if run_token is not None and run_token != self._outpaint_run_token:

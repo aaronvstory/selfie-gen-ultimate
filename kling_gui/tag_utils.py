@@ -87,11 +87,14 @@ def build_expand_filenames(base_stem: str, ext: str, gen_dir, do_2x: bool):
     Returns ``(pass1_path, pass2_path_or_None)`` as ``pathlib.Path`` objects.
 
     Naming: pass 1 -> ``<stem>-expanded<ext>``; pass 2 (only when
-    ``do_2x``) -> ``<stem>-expanded-2x<ext>``. Each path's collision is
-    resolved independently with a ``_v2``, ``_v3`` ... suffix so a re-run
-    never overwrites earlier files AND the ``-expanded`` / ``-expanded-2x``
-    suffix stays intact (which the old auto-name fallback in
-    ``outpaint_generator.py`` didn't guarantee when chaining 2 passes).
+    ``do_2x``) -> ``<stem>-expanded-2x<ext>``. Collision suffixes are
+    PAIRED in 2x mode — pass 1 and pass 2 share the same ``_vN`` index so
+    a re-run's outputs stay semantically linked on disk (per code-review
+    M2 on subagent ae2dd01f). Without pairing, pass 1 could land at
+    ``_v2`` while pass 2 lands at ``_v3`` (or vice-versa) and the
+    "this 2x belongs to that 1x" relationship is lost in the gen dir.
+
+    Single-pass mode resolves the one path independently as before.
     """
     from pathlib import Path
 
@@ -100,20 +103,25 @@ def build_expand_filenames(base_stem: str, ext: str, gen_dir, do_2x: bool):
     if not ext.startswith("."):
         ext = "." + ext
 
-    def _resolve(name_base: str) -> Path:
-        candidate = gen_dir / f"{name_base}{ext}"
-        if not candidate.exists():
-            return candidate
-        n = 2
-        while True:
-            candidate = gen_dir / f"{name_base}_v{n}{ext}"
-            if not candidate.exists():
-                return candidate
-            n += 1
+    def _name(base: str, n: int) -> Path:
+        if n == 1:
+            return gen_dir / f"{base}{ext}"
+        return gen_dir / f"{base}_v{n}{ext}"
 
-    pass1 = _resolve(f"{stem}-expanded")
-    pass2 = _resolve(f"{stem}-expanded-2x") if do_2x else None
-    return pass1, pass2
+    base1 = f"{stem}-expanded"
+    base2 = f"{stem}-expanded-2x"
+
+    if not do_2x:
+        n = 1
+        while _name(base1, n).exists():
+            n += 1
+        return _name(base1, n), None
+
+    # Paired resolution: smallest n where BOTH targets are free.
+    n = 1
+    while _name(base1, n).exists() or _name(base2, n).exists():
+        n += 1
+    return _name(base1, n), _name(base2, n)
 
 
 def _parse_legacy_filename(filename: str) -> dict:

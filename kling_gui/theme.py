@@ -247,6 +247,12 @@ def attach_click_diagnostics(widget, label: str = "") -> None:
     Off unless ``KLING_DEBUG_CLICKS=1`` was in the environment at
     import time. The helper is left in tree so future investigations
     can wire it up case-by-case; do NOT call it by default.
+
+    Note: ``CLICK_DEBUG`` is captured ONCE at module import. Toggling
+    the env var at runtime has no effect — restart the app to flip
+    the flag. The test suite uses ``monkeypatch.setattr(theme,
+    "CLICK_DEBUG", True)`` as a test-only escape hatch; that path is
+    not available to end users.
     """
     if not CLICK_DEBUG:
         return
