@@ -125,9 +125,17 @@ def sanitize_sash_layout(
     # Prompt-split (left tab panel vs right tools/prompt). Minimum
     # 400px so the leftmost tab labels stay readable; max 80% so
     # the right panel never fully disappears.
+    #
+    # Default bumped from 60% → 72% (user feedback 2026-05-22): on
+    # Step 3 (Video) the left tab's horizontal controls (model +
+    # output + Oldcam/rPPG checkboxes + Re-Run buttons) consume
+    # significant width, and at 60% the trailing Re-Run column
+    # was getting visually clipped against the right prompt panel.
+    # The right prompt panel itself only needs ~28-30% to comfortably
+    # show slot picker + title + positive/negative prompt previews.
     prompt_min = 400
-    prompt_max = max(prompt_min, int(safe_w * 0.80))
-    prompt_default = int(safe_w * 0.60)
+    prompt_max = max(prompt_min, int(safe_w * 0.82))
+    prompt_default = int(safe_w * 0.72)
 
     # Carousel width (bottom left). Floor 200px (smallest where
     # thumbnails + nav arrows still fit); ceiling 50% so the right

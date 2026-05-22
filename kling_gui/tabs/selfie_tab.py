@@ -360,12 +360,21 @@ class SelfieTab(tk.Frame):
         )
         # Don't pack yet — managed by _apply_prompt_mode_ui()
 
+        # User polish 2026-05-22: cut prompt-editor height from 12 → 8 +
+        # add a scrollbar. The prior ``height=12 + fill=BOTH expand=True``
+        # made the editor eat ~half the visible Step 2 column on Windows,
+        # squeezing the model-selector list, slot picker, and downstream
+        # buttons. Mirror the prep_tab.py pattern (lines 199-221): wrap
+        # Text + ttk.Scrollbar in a frame, pack scrollbar RIGHT-Y +
+        # Text LEFT-X-expand, fixed height=8 so the LabelFrame settles
+        # at its content size and the carousel/queue panes keep their
+        # share. ttk.Scrollbar (not tk.Scrollbar) so the clam theme
+        # renders dark to match the rest of the app on Win + macOS.
+        _template_text_wrap = tk.Frame(self._customized_frame, bg=COLORS["bg_panel"])
+        _template_text_wrap.pack(fill=tk.X, padx=4, pady=(4, 2))
         self.prompt_template_text = tk.Text(
-            self._customized_frame,
-            # height bumped to 12 (2026-05-21): macOS has vertical
-            # headroom that was unused; long wildcard prompts need it
-            # to be readable without scrolling.
-            height=12,
+            _template_text_wrap,
+            height=8,
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
@@ -377,8 +386,15 @@ class SelfieTab(tk.Frame):
             insertbackground=COLORS["text_light"],
             padx=5,
             pady=4,
+            borderwidth=0,
+            highlightthickness=0,
         )
-        self.prompt_template_text.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 2))
+        _template_scroll = ttk.Scrollbar(
+            _template_text_wrap, command=self.prompt_template_text.yview
+        )
+        self.prompt_template_text.config(yscrollcommand=_template_scroll.set)
+        _template_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.prompt_template_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # Load saved template with migration from old {field} → {json.field} syntax
         saved_template = self.config.get("selfie_prompt_template", "")
@@ -438,9 +454,14 @@ class SelfieTab(tk.Frame):
         )
         # Don't pack yet — managed by _apply_prompt_mode_ui()
 
+        # User polish 2026-05-22: same shape as prompt_template_text
+        # above — wrapper frame with ttk.Scrollbar, fixed height=8 so
+        # the editor doesn't eat the rest of Step 2's column on Windows.
+        _wildcard_text_wrap = tk.Frame(self._wildcard_frame, bg=COLORS["bg_panel"])
+        _wildcard_text_wrap.pack(fill=tk.X, padx=4, pady=(4, 2))
         self._wildcard_text = tk.Text(
-            self._wildcard_frame,
-            height=12,  # match customized template height
+            _wildcard_text_wrap,
+            height=8,  # match prompt_template_text height
             wrap=tk.WORD,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
@@ -449,8 +470,15 @@ class SelfieTab(tk.Frame):
             insertbackground=COLORS["text_light"],
             padx=5,
             pady=4,
+            borderwidth=0,
+            highlightthickness=0,
         )
-        self._wildcard_text.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 2))
+        _wildcard_scroll = ttk.Scrollbar(
+            _wildcard_text_wrap, command=self._wildcard_text.yview
+        )
+        self._wildcard_text.config(yscrollcommand=_wildcard_scroll.set)
+        _wildcard_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._wildcard_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         saved_wildcard = self.config.get("selfie_wildcard_template", "")
         self._wildcard_text.insert("1.0", (saved_wildcard or "").strip())
