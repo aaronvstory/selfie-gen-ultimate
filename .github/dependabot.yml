@@ -1,0 +1,81 @@
+# Dependabot configuration — supply chain hardening.
+#
+# Weekly security update PRs for:
+# - Python deps (pip ecosystem) across every requirements file
+# - GitHub Actions workflow deps (so a malicious action update doesn't
+#   silently land in our CI)
+#
+# Grouping: bundle non-security updates into ONE PR per ecosystem per
+# week so we don't drown in PRs. Security updates land immediately as
+# individual PRs so they're easy to review.
+#
+# Docs: docs/security/HARDENING.md §1.3, §4
+
+version: 2
+
+updates:
+  # ── Python: main project requirements ─────────────────────────────
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "supply-chain"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      # All non-security updates in one PR/week per ecosystem.
+      pip-non-security:
+        applies-to: version-updates
+        patterns: ["*"]
+
+  # ── Python: similarity subproject ─────────────────────────────────
+  - package-ecosystem: "pip"
+    directory: "/similarity"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "supply-chain"
+    commit-message:
+      prefix: "deps(similarity)"
+      include: "scope"
+    groups:
+      similarity-non-security:
+        applies-to: version-updates
+        patterns: ["*"]
+
+  # ── GitHub Actions: workflow deps ─────────────────────────────────
+  # Catches malicious action updates (the TanStack OIDC-hijack attack
+  # used poisoned cached actions). Pin actions to SHA in workflows
+  # where possible; Dependabot opens PRs to bump the SHA when upstream
+  # releases a new tag.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "ci"
+      - "supply-chain"
+    commit-message:
+      prefix: "ci(actions)"
+      include: "scope"
+    groups:
+      actions-non-security:
+        applies-to: version-updates
+        patterns: ["*"]

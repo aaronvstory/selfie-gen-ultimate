@@ -1,0 +1,239 @@
+name: Supply Chain Audit
+
+# Run pip-audit + OSV-Scanner on every push + PR. Fail CI on any
+# advisory hit so we catch a compromised dep BEFORE it merges to main.
+# Also runs nightly so a new CVE landing AFTER our last PR lights up
+# the next morning instead of waiting for the next PR.
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+  pull_request:
+  schedule:
+    # 07:00 UTC daily — gives the PyPA + OSV DBs time to catch up
+    # to overnight advisories before we scan.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    name: pip-audit (PyPA + OSV)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit
+
+      # pip-audit's --no-deps flag requires EXACT pins (==). Our
+      # requirements.txt uses range pins (e.g. `requests>=2.31,<3`),
+      # which pip-audit refuses with --no-deps (Codex P1 on 9a20e14).
+      #
+      # Solution: audit the HASHED file for the main project (which IS
+      # exact-pinned via pip-tools), and use --no-deps only for the
+      # files that are exact-pinned at source (similarity + oldcam).
+      # The compensating `audit-installed-venv` job below catches
+      # transitive CVEs by installing + auditing each manifest in its
+      # own isolated venv. OSV-Scanner is a third independent check.
+
+      - name: Audit requirements-hashed.txt (full transitive, hash-verified)
+        run: |
+          # Platform gate (Codex P1 on 2ced5b6): the committed hashed
+          # file is generated on Windows and pins Windows-only wheels
+          # like `tensorflow-intel==2.16.2`. pip-audit's resolver tries
+          # to evaluate every requirement on the host platform and
+          # aborts on Linux when the Windows-only pin can't be
+          # satisfied. Detect the marker and fall back to the
+          # unhashed file on non-Windows runners. Linux runners
+          # still get range-pinned coverage via this fallback; the
+          # `audit-installed-venv` job below does the transitive
+          # resolution check.
+          if [ -f requirements-hashed.txt ] \
+             && ! grep -qE '^tensorflow-intel==' requirements-hashed.txt; then
+            python -m pip_audit -r requirements-hashed.txt \
+              --strict --require-hashes --progress-spinner off
+          else
+            if [ -f requirements-hashed.txt ]; then
+              echo "NOTE: requirements-hashed.txt is Windows-pinned; auditing requirements.txt on this runner."
+            fi
+            python -m pip_audit -r requirements.txt \
+              --strict --progress-spinner off
+          fi
+
+      # The similarity/* and oldcam-v*/ requirements files mix exact
+      # pins (==) and range specifiers (>=,<). pip-audit's --no-deps
+      # rejects ranges, so we let pip-audit resolve transitives via
+      # pip from the requirements file. Slower than --no-deps but
+      # the only correct mode for range-pinned input.
+
+      - name: Audit similarity/requirements.txt
+        run: |
+          python -m pip_audit -r similarity/requirements.txt \
+            --strict --progress-spinner off
+
+      - name: Audit similarity/requirements-test.txt
+        run: |
+          python -m pip_audit -r similarity/requirements-test.txt \
+            --strict --progress-spinner off
+
+      - name: Audit resemble-score/requirements.txt
+        run: |
+          # Resemble-score is a separate subproject with its own
+          # deps. Codex P2 on 03d05e5 caught the missing coverage.
+          if [ -f resemble-score/requirements.txt ]; then
+            python -m pip_audit -r resemble-score/requirements.txt \
+              --strict --progress-spinner off
+          fi
+
+      - name: Audit each oldcam-v*/requirements.txt
+        run: |
+          set -e
+          shopt -s nullglob
+          for req in oldcam-v*/requirements.txt; do
+            echo "=== $req ==="
+            python -m pip_audit -r "$req" \
+              --strict --progress-spinner off
+          done
+
+  audit-installed-venv:
+    # Belt-and-suspenders for the requirements-file audits above.
+    # Each requirements file is installed into its OWN isolated venv,
+    # so a later install can't overwrite an earlier vulnerable pin
+    # and mask the CVE (Codex P1 on 0e16c8d). Catches the SAME
+    # transitive CVEs the requirements-file audits do, but resolved
+    # against an actual installed tree — a useful independent check
+    # if the pip-audit resolver has bugs or behaves differently on
+    # range-pinned input than expected.
+    name: Audit installed venv (transitive deps)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pip-audit + virtualenv (host venv)
+        run: |
+          python -m pip install --upgrade pip pip-audit virtualenv
+
+      - name: Audit each manifest in its OWN isolated venv (transitive CVEs)
+        run: |
+          set -e
+          shopt -s nullglob
+          # Per Codex P1 on 0e16c8d: a SHARED venv lets a later
+          # install's pin overwrite an earlier (potentially
+          # vulnerable) one, hiding the vulnerability from the
+          # final audit. A package can only exist at ONE version
+          # per venv. Solution: each manifest gets its own fresh
+          # ephemeral venv, gets installed in isolation, and is
+          # audited on its own resolved tree. False-negative gap
+          # closed.
+          #
+          # Per-manifest fallback: try wheel-only first (avoids
+          # sdist setup.py execution). On wheel-only failure, fall
+          # back to allowing sdists. On TOTAL install failure, count
+          # the manifest as FAILED — a missing audit IS a coverage
+          # gap and CI must not pass with zero transitive coverage
+          # for a manifest that exists in the tree. Codex P2 on
+          # 15bd7bb: previously logged WARN + continued silently.
+          # The audit job still continues the loop so OTHER
+          # manifests get checked.
+          FAILED=0
+          SKIPPED=0
+          for req in requirements.txt similarity/requirements.txt similarity/requirements-test.txt resemble-score/requirements.txt oldcam-v*/requirements.txt; do
+            [ -f "$req" ] || continue
+            VENV_DIR="$(mktemp -d)/audit-venv"
+            echo
+            echo "=== audit-isolated: $req ==="
+            python -m virtualenv -q "$VENV_DIR"
+            VENV_PIP="$VENV_DIR/bin/pip"
+            VENV_PY="$VENV_DIR/bin/python"
+            # Quiet pip-audit + venv pip install — these are noisy.
+            "$VENV_PIP" install --quiet --upgrade pip
+            if "$VENV_PIP" install --quiet --only-binary :all: -r "$req" 2>/dev/null \
+              || "$VENV_PIP" install --quiet -r "$req" 2>/dev/null; then
+              # Audit this isolated venv. Continue past failures so
+              # later manifests get checked too.
+              "$VENV_PY" -m pip install --quiet pip-audit
+              if ! "$VENV_PY" -m pip_audit --strict --progress-spinner off; then
+                FAILED=$((FAILED + 1))
+              fi
+            else
+              echo "FAIL: install of $req failed in isolated venv — counted as audit coverage gap (Codex P2 on 15bd7bb)"
+              SKIPPED=$((SKIPPED + 1))
+            fi
+            rm -rf "$VENV_DIR"
+          done
+          if [ "$SKIPPED" -gt 0 ]; then
+            echo
+            echo "FAIL: $SKIPPED manifest(s) could not be installed and were never audited."
+            echo "      Either fix the requirements file or remove it from the tree."
+            FAILED=$((FAILED + SKIPPED))
+          fi
+          if [ "$FAILED" -gt 0 ]; then
+            echo
+            echo "FAILED: $FAILED manifest(s) had transitive CVEs"
+            exit 1
+          fi
+
+  osv-scanner:
+    name: OSV-Scanner (Google)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pinned to a specific version + SHA-style tag for supply-chain
+      # discipline — we audit our own audit tooling. Update by reading
+      # the new release notes + bumping ONLY after confirmation.
+      # The correct action path is the STEP action under the
+      # osv-scanner-action subdirectory, NOT a reusable workflow:
+      # CodeRabbit + Codex caught the prior path on 3fe4154 as
+      # invalid — the workflow silently failed that step on every run.
+      - name: Run OSV-Scanner
+        uses: google/osv-scanner-action/osv-scanner-action@v2.3.5
+        with:
+          # --recursive covers oldcam-v*/requirements.txt automatically.
+          # Explicit lockfile entries for the two top-level sets that
+          # aren't under a recursive walk root we'd accidentally skip.
+          scan-args: |-
+            --recursive
+            --skip-git
+            --lockfile=requirements.txt
+            --lockfile=similarity/requirements.txt
+            --lockfile=similarity/requirements-test.txt
+
+  ioc-self-check:
+    name: IoC self-check (detect_compromise.py)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run IoC self-check
+        run: |
+          python scripts/detect_compromise.py
