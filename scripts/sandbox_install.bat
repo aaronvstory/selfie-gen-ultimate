@@ -35,7 +35,10 @@ for %%V in (AWS_ACCESS_KEY_ID AWS_PROFILE GOOGLE_APPLICATION_CREDENTIALS AZURE_C
     )
 )
 if "!WARNED!"=="1" (
-    echo     Run "set %%V=" for each before continuing, or accept that
+    REM Gemini medium on 49702c0 (2026-05-22): %%V is a for-loop
+    REM variable and is undefined outside the loop. Print a generic
+    REM hint instead of a literal "%V" in the user-visible output.
+    echo     Run "set VAR=" for each variable above before continuing, or accept that
     echo     a malicious install will see them.
     echo(
 )

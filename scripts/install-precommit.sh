@@ -51,9 +51,37 @@ case "$GITDIR" in
     [A-Za-z]:[/\\]*) ;;                             # absolute Windows path (C:\..., D:/...)
     *) GITDIR="${REPO_ROOT}/${GITDIR}" ;;
 esac
-HOOK_DST="${GITDIR}/hooks/pre-commit"
 
-mkdir -p "${GITDIR}/hooks"
+# Codex P2 on 49702c0 (2026-05-22): honour ``core.hooksPath`` if set.
+# Git lets users redirect hook lookup with ``git config core.hooksPath``
+# (repo-local OR global). When set, the hook at ``<gitdir>/hooks/X``
+# is IGNORED and git looks at ``$core.hooksPath/X`` instead. Without
+# this branch the installer would report success while writing a hook
+# git never reads, leaving commits unaudited in environments that use
+# lefthook / husky / pre-commit.com or any custom hooksPath.
+HOOKS_DIR="$(cd "$REPO_ROOT" && git config --get core.hooksPath 2>/dev/null || true)"
+if [ -n "$HOOKS_DIR" ]; then
+    # ``git config core.hooksPath`` may return a path relative to the
+    # repo's working tree (per git docs: "It is resolved relative to
+    # the directory where the git command is run"). Normalise to
+    # absolute so the cp below is unambiguous.
+    case "$HOOKS_DIR" in
+        /*|~*) ;;                                       # absolute / home-relative
+        [A-Za-z]:[/\\]*) ;;                             # Windows absolute
+        *) HOOKS_DIR="${REPO_ROOT}/${HOOKS_DIR}" ;;
+    esac
+    # Expand ~ if present (cd handles this naturally).
+    case "$HOOKS_DIR" in
+        ~*) HOOKS_DIR="$(eval echo "$HOOKS_DIR")" ;;
+    esac
+    echo "NOTE: core.hooksPath is set — installing to ${HOOKS_DIR}/pre-commit"
+    echo "      (not ${GITDIR}/hooks/pre-commit, which git would ignore)"
+else
+    HOOKS_DIR="${GITDIR}/hooks"
+fi
+HOOK_DST="${HOOKS_DIR}/pre-commit"
+
+mkdir -p "${HOOKS_DIR}"
 
 # Subagent MEDIUM on b807560 (2026-05-22): the original code backed up
 # to ``.bak`` (single slot). Re-running the installer overwrites that

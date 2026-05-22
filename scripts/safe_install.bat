@@ -20,7 +20,11 @@ if "%~1"=="" (
 )
 
 echo [safe-install] running: %*
-%*
+REM Codex P1 on 49702c0 (2026-05-22): use call so control returns
+REM from npm.cmd / pnpm.cmd / yarn.cmd (Windows batch wrappers). Without
+REM call, control transfers to the wrapper and never comes back to
+REM this script, so the audit section never executes.
+call %*
 set install_code=!errorlevel!
 
 if not "!install_code!"=="0" (

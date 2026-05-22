@@ -457,8 +457,9 @@ def check_github_repos_for_marker() -> CheckResult:
     # List user's repos. Limit raised to 1000 (Gemini medium on
     # 3fe4154) so accounts with many side projects don't have an
     # un-scanned tail. `gh` will hit pagination automatically.
+    REPO_LIMIT = 1000
     rc, out, err = _gh(
-        "repo", "list", "--limit", "1000",
+        "repo", "list", "--limit", str(REPO_LIMIT),
         "--json", "name,description,visibility,createdAt",
     )
     if rc != 0:
@@ -471,6 +472,22 @@ def check_github_repos_for_marker() -> CheckResult:
         return CheckResult(name, ok=False, details=[
             "Could not parse gh repo list output.",
         ])
+    # Gemini security-medium on 49702c0 (2026-05-22): when the account
+    # has MORE than --limit repos, `gh` silently truncates and we'd
+    # miss any exfil repo in the un-scanned tail. Surface the
+    # truncation as an explicit alert so a human knows the scan was
+    # incomplete and can either raise the limit or paginate manually.
+    # (We can't safely auto-paginate via `--limit 0` because that
+    # blocks indefinitely on accounts with tens of thousands of forks.)
+    truncation_warning: List[str] = []
+    if len(repos) >= REPO_LIMIT:
+        truncation_warning.append(
+            f"WARNING: gh repo list returned exactly {len(repos)} repos "
+            f"(== --limit {REPO_LIMIT}). The account likely has MORE "
+            f"repos than were scanned. Re-run with a higher limit or "
+            f"paginate manually to avoid missing an exfil repo in the "
+            f"un-scanned tail."
+        )
     hits: List[str] = []
     for repo in repos:
         n = (repo.get("name") or "").lower()
@@ -489,7 +506,18 @@ def check_github_repos_for_marker() -> CheckResult:
                 hits.append(f"REPO DUNE-NAME MATCH: {repo_name} ({repo.get('description')!r})")
                 break
     if hits:
-        return CheckResult(name, ok=False, details=hits)
+        # Prepend truncation warning to the alert details so the human
+        # responder knows the scan was incomplete BEFORE they triage the
+        # hits (the un-scanned tail might have more).
+        return CheckResult(name, ok=False, details=truncation_warning + hits)
+    if truncation_warning:
+        # No campaign hits in the scanned subset, but the scan was
+        # incomplete — flag as an alert so it surfaces in the run
+        # exit code (rather than silently "passing" the check).
+        return CheckResult(name, ok=False, details=truncation_warning + [
+            f"Scanned only the first {len(repos)} repos; rerun with a "
+            "higher --limit or paginate manually to fully audit this account."
+        ])
     return CheckResult(name, ok=True, details=[
         f"Scanned {len(repos)} GitHub repos; none match the campaign markers "
         "or Dune-themed naming patterns.",

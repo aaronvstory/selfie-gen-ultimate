@@ -732,6 +732,160 @@ class BatFilesNoDevNullTests(unittest.TestCase):
         )
 
 
+class SafeInstallBatCallSemanticsTests(unittest.TestCase):
+    """Codex P1 on 49702c0 (2026-05-22): scripts/safe_install.bat
+    executed ``%*`` to run the install command. On Windows, the npm /
+    pnpm / yarn entry points are batch files (npm.cmd, pnpm.cmd,
+    yarn.cmd). Without ``call`` prefix, control transfers to the
+    invoked batch file and NEVER RETURNS to safe_install.bat — the
+    audit section runs zero times for the very install commands the
+    script advertises supporting. ``call %*`` keeps control in the
+    parent script after the child .cmd exits.
+
+    Lock the fix at the source level so a future refactor can't
+    silently drop the ``call`` prefix."""
+
+    def test_safe_install_bat_uses_call_for_batch_wrappers(self):
+        src = (_REPO_ROOT / "scripts" / "safe_install.bat").read_text(
+            encoding="utf-8"
+        )
+        # The canonical fixed form must be present.
+        self.assertIn(
+            "\ncall %*\n", src,
+            "safe_install.bat must use ``call %*`` so control returns "
+            "from npm.cmd / pnpm.cmd / yarn.cmd batch wrappers"
+        )
+        # The forbidden bare form ``%*\n`` (without call prefix) must
+        # NOT be present as a top-level statement. We check by looking
+        # for a line that consists entirely of ``%*`` (the historical
+        # buggy form). The ``echo`` line ``echo [safe-install] running: %*``
+        # has %* in the middle of a line and is fine.
+        for ln in src.splitlines():
+            stripped = ln.strip()
+            self.assertNotEqual(
+                stripped, "%*",
+                "safe_install.bat regressed to bare ``%*`` invocation "
+                "(without call prefix) — npm.cmd / pnpm.cmd / yarn.cmd "
+                "will not return to this script"
+            )
+
+
+class InstallPrecommitHooksPathTests(unittest.TestCase):
+    """Codex P2 on 49702c0 (2026-05-22): the installer always wrote to
+    ``<gitdir>/hooks/pre-commit``, but git IGNORES that path when
+    ``core.hooksPath`` is set (repo-local or global). Users on
+    lefthook / husky / pre-commit.com setups got a "successfully
+    installed" message while their commits remained unaudited.
+
+    Fix on 49702c0-next: resolve ``git config --get core.hooksPath``
+    first, fall back to ``<gitdir>/hooks`` only when unset."""
+
+    def test_installer_reads_core_hookspath(self):
+        src = (_REPO_ROOT / "scripts" / "install-precommit.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "core.hooksPath", src,
+            "install-precommit.sh must check core.hooksPath before "
+            "writing the hook"
+        )
+        self.assertIn(
+            'git config --get core.hooksPath', src,
+            "install-precommit.sh must use ``git config --get`` to read "
+            "the hooksPath value"
+        )
+        # The fallback chain: HOOKS_DIR = $(read core.hooksPath) OR <gitdir>/hooks.
+        self.assertIn(
+            'HOOKS_DIR="${GITDIR}/hooks"', src,
+            "install-precommit.sh must fall back to <gitdir>/hooks "
+            "when core.hooksPath is unset"
+        )
+
+    def test_installer_announces_hookspath_redirect(self):
+        src = (_REPO_ROOT / "scripts" / "install-precommit.sh").read_text(
+            encoding="utf-8"
+        )
+        # When core.hooksPath IS set, the installer must say so —
+        # silently writing to a different path would confuse the user.
+        self.assertIn(
+            "core.hooksPath is set", src,
+            "install-precommit.sh must announce when redirecting "
+            "to a non-default hooks path"
+        )
+
+
+class SandboxInstallBatForLoopScopeTests(unittest.TestCase):
+    """Gemini medium on 49702c0 (2026-05-22): scripts/sandbox_install.bat
+    referenced ``%%V`` outside the for-loop body where it was defined.
+    In cmd.exe, the for-loop variable is undefined outside the loop
+    so the literal text ``%V`` printed in the user message. Cosmetic
+    but confusing — the user sees ``Run "set %V=" for each before
+    continuing`` and has no idea what to do.
+
+    Fix: replace with a generic ``Run "set VAR=" for each variable
+    above before continuing`` that references the prior loop output
+    by structure, not by variable name."""
+
+    def test_no_loop_var_reference_in_warned_block(self):
+        src = (_REPO_ROOT / "scripts" / "sandbox_install.bat").read_text(
+            encoding="utf-8"
+        )
+        # The specific buggy line: ``Run "set %%V=" for each ...`` inside
+        # the ``if "!WARNED!"=="1" (...)`` block AFTER the for-loop closes.
+        # That block runs in cmd's main scope, where %%V is undefined.
+        # The fix replaces the dynamic-var reference with a generic
+        # ``set VAR=`` placeholder.
+        # Forbidden: any non-commented line that references %%V in the
+        # warning message we print to the user.
+        self.assertNotIn(
+            'Run "set %%V=" for each before continuing', src,
+            "sandbox_install.bat regressed to %%V reference in the user-"
+            "facing warning message (where %%V is undefined outside the "
+            "for-loop scope and prints as literal '%V')"
+        )
+        # The new safe form must be present.
+        self.assertIn(
+            'set VAR=', src,
+            "sandbox_install.bat warning must use generic ``set VAR=`` "
+            "placeholder, not a for-loop variable reference"
+        )
+
+
+class DetectCompromiseRepoLimitWarningTests(unittest.TestCase):
+    """Gemini security-medium on 49702c0 (2026-05-22): when the
+    account has MORE than --limit GitHub repos, ``gh repo list``
+    silently truncates and the scanner could miss an exfil repo in
+    the un-scanned tail. The original code reported "all clear"
+    even when the scan was incomplete.
+
+    Fix: detect when ``len(repos) >= --limit`` and surface a warning
+    in the check details (and flag the check as not-ok so the run's
+    exit code reflects the incomplete scan)."""
+
+    def test_repo_check_warns_on_truncation(self):
+        src = (_REPO_ROOT / "scripts" / "detect_compromise.py").read_text(
+            encoding="utf-8"
+        )
+        # Must define a REPO_LIMIT constant (or equivalent).
+        self.assertIn(
+            "REPO_LIMIT = 1000", src,
+            "detect_compromise.py must define REPO_LIMIT explicitly so "
+            "the truncation check can compare against it"
+        )
+        # Must do the truncation check.
+        self.assertIn(
+            "len(repos) >= REPO_LIMIT", src,
+            "detect_compromise.py must detect truncation by comparing "
+            "the returned count against the requested limit"
+        )
+        # Must surface the warning as a non-ok CheckResult on the no-hits path.
+        self.assertIn(
+            "truncation_warning", src,
+            "detect_compromise.py must use a named truncation_warning "
+            "variable to surface the incomplete-scan finding"
+        )
+
+
 class SandboxInstallPythonDetectionTests(unittest.TestCase):
     """Subagent HIGH on 7653c73 (2026-05-22): sandbox_install.bat
     originally only tried ``where python`` (line 13), unlike its .sh
