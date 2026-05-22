@@ -1124,7 +1124,8 @@ class KlingGUIWindow:
             "current_model": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
             "model_display_name": "Kling 2.5 Turbo Pro",
             "video_duration": 10,
-            "loop_videos": True,  # Loop videos ON by default
+            "loop_videos": False,  # Loop videos OFF by default (changed 2026-05-22 — most workflows don't need looping)
+            "rppg_per_oldcam_fanout": False,  # Phase E of polish/v2.3: legacy "rPPG on every Oldcam" fan-out, opt-in (slower)
             "oldcam_videos": True,  # Oldcam Finish ON by default
             "oldcam_version": "v9",
             "oldcam_versions": ["v9"],
@@ -1142,6 +1143,27 @@ class KlingGUIWindow:
             "selfie_poll_timeout_seconds": 300,
             "selfie_current_prompt_slot": 3,
             "outpaint_fal_timeout_seconds": 150,
+            # Phase G of polish/v2.3 (2026-05-22): per-section expand
+            # prompts. Each tab edits its own key; the legacy shared
+            # ``outpaint_prompt`` stays as a read-fallback for back-compat.
+            #
+            # NB: these "" defaults are intentional — the config-load is
+            # layered (Layer 0 in-memory → Layer 1 template merge →
+            # Layer 2 user kling_config.json), and Layer 1 always
+            # populates these three keys with real text from
+            # default_config_template.json (lines 109-111) BEFORE the
+            # "" can persist into the running config. So a fresh
+            # install gets the template prompts, not blanks. The ""
+            # only matters on the cosmetic-degradation path where the
+            # template file is missing/broken (e.g. a frozen PyInstaller
+            # build with a corrupted bundle), and the GUI's isinstance
+            # fallback to legacy ``outpaint_prompt`` covers that case
+            # too. Do not "fix" these to non-empty defaults — that
+            # would actually break R4's "explicit empty string is a
+            # valid intentional value" semantics on subsequent loads.
+            "face_crop_expand_prompt": "",
+            "selfie_expand_prompt": "",
+            "outpaint_tab_prompt": "",
             "selfie_saved_prompts": {str(i): "" for i in range(1, 11)},
             "selfie_prompt_titles": {str(i): f"Prompt {i}" for i in range(1, 11)},
             "selfie_selected_models": {
@@ -1964,6 +1986,14 @@ class KlingGUIWindow:
         # avoid Toplevel + decoder-thread leaks. open_video_inspector()
         # focuses the existing one if alive, else constructs a new one.
         self._video_inspector_window = None
+
+        # Debounce state for the post-queue carousel rescan
+        # (subagent MEDIUM on 69dee05). Per-item-complete used to
+        # schedule a full folder rescan for every item in a multi-item
+        # queue, redundant N times for an N-item batch. Now we cancel
+        # any pending rescan and reschedule on a 1500ms timer so a
+        # rapid burst of completions collapses to a single rescan.
+        self._rescan_after_id: Optional[str] = None
 
         # Queue panel internals are kept for backend flow, but surface stays hidden in Step 3 UI.
         self._queue_panel_visible = False
@@ -3769,10 +3799,15 @@ class KlingGUIWindow:
             self._log("Queue manager not initialized", "error")
             return
 
+        # CodeRabbit Major (2026-05-21): macOS Tk dialogs stall when
+        # parent is withdrawn mid-dialog (e.g. user dragged the file
+        # picker behind the main window). _best_picker_parent() picks
+        # the topmost live Tk window — usually a drop-zone or modal —
+        # so the dialog stays attached to a visible parent.
         from tk_dialogs import select_open_files
         paths = select_open_files(
-            parent=self.root,
-            title="Select video(s) for Oldcam",
+            parent=self._best_picker_parent(),
+            title="Select video(s) for re-run",
             filetypes=[
                 ("Video files", "*.mp4 *.mov *.avi *.mkv *.webm *.m4v"),
                 ("All files", "*.*"),
@@ -3791,12 +3826,42 @@ class KlingGUIWindow:
                 completion_callback=self._on_oldcam_rerun_complete_threadsafe,
             )
             if started:
-                selected_versions = self.config.get("oldcam_versions")
-                if not isinstance(selected_versions, list) or not selected_versions:
+                # User feedback 2026-05-22: re-run is no longer Oldcam-only.
+                # Surface whichever post-processes are actually selected so
+                # the log explains what the picked video will be transformed
+                # into (rPPG-only / Loop-only / Oldcam-only / any combo).
+                stages = []
+                if bool(self.config.get("rppg_enabled", False)):
+                    stages.append("rPPG")
+                if bool(self.config.get("loop_videos", False)):
+                    stages.append("Loop")
+                # CodeRabbit P1 (2026-05-22): distinguish "user
+                # explicitly cleared all Oldcam versions" (empty list)
+                # from "key never set / non-list value" (use the
+                # legacy oldcam_version fallback). The previous code
+                # populated [oldcam_version] in BOTH cases, so the
+                # rerun stage label said "Oldcam vN" even when the
+                # user had explicitly unticked every version — a
+                # misleading promise the queue_manager wouldn't
+                # actually keep (it correctly gates on
+                # _get_oldcam_versions_to_run() returning empty).
+                raw_versions = self.config.get("oldcam_versions")
+                if isinstance(raw_versions, list):
+                    # Honour empty-list as "user disabled Oldcam".
+                    selected_versions = raw_versions
+                else:
+                    # Key absent or non-list (legacy single-version
+                    # config) — fall back to the singular key.
                     selected_versions = [self.config.get("oldcam_version", "v9")]
+                # Oldcam-master-enable key is ``oldcam_videos`` (set
+                # by main_window.py line 1129 default + the
+                # queue_manager pause/enable checkbox); fixed in R2
+                # 36b5e0b from the prior wrong ``oldcam_enabled``.
+                if bool(self.config.get("oldcam_videos", True)) and selected_versions:
+                    stages.append(f"Oldcam {','.join(str(v) for v in selected_versions)}")
+                stage_label = " + ".join(stages) if stages else "no-op (nothing selected)"
                 self._log(
-                    f"Oldcam queued (picked): {os.path.basename(source_video)} "
-                    f"({', '.join(str(v) for v in selected_versions)})",
+                    f"Re-run queued (picked): {os.path.basename(source_video)} → {stage_label}",
                     "info",
                 )
 
@@ -3845,12 +3910,12 @@ class KlingGUIWindow:
         if success and output_path:
             self._set_persisted_oldcam_source(source_video)
             self._log(
-                f"Oldcam-only rerun complete: {os.path.basename(source_video)} → {output_path}",
+                f"Re-run complete: {os.path.basename(source_video)} → {output_path}",
                 "success",
             )
         else:
             self._log(
-                f"Oldcam-only rerun failed for {os.path.basename(source_video)}: {error or 'unknown error'}",
+                f"Re-run failed for {os.path.basename(source_video)}: {error or 'unknown error'}",
                 "error",
             )
 
@@ -4456,6 +4521,103 @@ class KlingGUIWindow:
         if change_description:
             self._log(change_description, "info")
 
+    def _scan_folders_for_new_media(self, folders) -> tuple:
+        """Walk ``folders`` for images + videos not yet in the session
+        and add them. Returns ``(new_image_count, new_video_count)``.
+
+        Shared helper used by both the session-load rescan
+        (``_load_session``) and the post-queue rescan
+        (``_rescan_session_folder_for_new_media``). Same scanning
+        rules: os.scandir for cheap dirent type, sorted entries for
+        determinism, ``VALID_EXTENSIONS`` filter for images,
+        ``find_video_groups`` for the full 5-extension video set.
+        Duplicates are filtered by ``os.path.realpath`` against the
+        current session.
+        """
+        try:
+            from kling_gui.video_discovery import find_video_groups as _find_video_groups
+            from pathlib import Path as _Path
+        except ImportError:
+            return (0, 0)
+        loaded_real = {
+            os.path.realpath(e.path) for e in self.image_session.images
+        }
+        rescan_imgs = 0
+        rescan_vids = 0
+        for folder in sorted(set(folders)):
+            if not folder or not os.path.isdir(folder):
+                continue
+            try:
+                with os.scandir(folder) as it:
+                    entries = sorted(
+                        (e for e in it if e.is_file()),
+                        key=lambda e: e.name,
+                    )
+            except OSError:
+                continue
+            for entry in entries:
+                ext = os.path.splitext(entry.name)[1].lower()
+                if ext not in VALID_EXTENSIONS:
+                    continue
+                full = entry.path
+                real = os.path.realpath(full)
+                if real in loaded_real:
+                    continue
+                self.image_session.add_image(full, "input", make_active=False)
+                loaded_real.add(real)
+                rescan_imgs += 1
+            try:
+                groups = _find_video_groups(_Path(folder))
+            except OSError:
+                groups = []
+            for group in groups:
+                for vmeta in group.videos:
+                    vpath = str(vmeta.path)
+                    real = os.path.realpath(vpath)
+                    if real in loaded_real:
+                        continue
+                    self.image_session.add_image(
+                        vpath, "video", make_active=False,
+                    )
+                    loaded_real.add(real)
+                    rescan_vids += 1
+        return (rescan_imgs, rescan_vids)
+
+    def _fire_post_queue_rescan(self):
+        """Debounced rescan trigger. Cleared the pending after_id and
+        runs the actual rescan. Separate function so the debounce
+        cancel/reschedule logic at the call site stays simple."""
+        self._rescan_after_id = None
+        try:
+            self._rescan_session_folder_for_new_media()
+        except Exception:
+            logging.getLogger(__name__).exception("post-queue rescan failed")
+
+    def _rescan_session_folder_for_new_media(self):
+        """Post-queue-completion rescan. Walks every folder that
+        currently has an entry in the session and pulls in any new
+        images/videos that have appeared on disk since the last scan.
+
+        Wired to ``QueueManager._on_processing_complete`` so the user
+        sees fresh oldcam/rPPG outputs in the carousel without
+        restarting the app — fixing the "I processed v8/v13/v24 but
+        nothing shows in the carousel" gripe (user feedback
+        2026-05-22). Must run on the GUI thread; the queue worker
+        thread schedules this via ``root.after(0, ...)``.
+        """
+        if not self.image_session.images:
+            return  # No session loaded — nothing to rescan against.
+        folders = {
+            os.path.dirname(e.path) for e in self.image_session.images
+        }
+        added_imgs, added_vids = self._scan_folders_for_new_media(folders)
+        if added_imgs or added_vids:
+            self._log(
+                f"Post-queue rescan: +{added_imgs} new image(s), "
+                f"+{added_vids} video(s)",
+                "info",
+            )
+
     def _on_item_complete(self, item: QueueItem):
         """Called when an item finishes processing."""
         status = item.status
@@ -4481,6 +4643,45 @@ class KlingGUIWindow:
                 f"Finished {os.path.basename(item.path)} → {item.output_path}",
                 "success",
             )
+
+        # Post-queue carousel rescan (2026-05-22). Each item-complete
+        # nudge re-walks the session folders and adds new oldcam /
+        # rPPG / looped outputs that the worker thread wrote. The
+        # carousel watches ImageSession via add_on_change and updates
+        # automatically. Scheduled on the Tk main thread — the
+        # carousel touches Tk widgets and ImageSession changes fire
+        # callbacks that touch widgets.
+        #
+        # DEBOUNCED at 1500ms (subagent MEDIUM on 69dee05): per-item-
+        # complete used to schedule a full folder rescan for every
+        # item in a multi-item queue, redundant N times for an N-item
+        # batch. Now a rapid burst of completions collapses to a
+        # single rescan — cancel any pending rescan and reschedule.
+        #
+        # Guarded against:
+        #   - hasattr(self, "root"): unit tests construct minimal
+        #     KlingGUIWindow stubs without .root for callback-shape
+        #     testing (test_stability_improvements.py).
+        #   - getattr(self, "_rescan_after_id", None): same minimal
+        #     stubs don't init that attr either (CodeRabbit Minor
+        #     2026-05-22 on 36b5e0b). Read via getattr with default
+        #     None so partial-init paths don't AttributeError.
+        #   - tk.TclError / RuntimeError: root destroyed mid-queue
+        #     (app closed while items still processing).
+        if hasattr(self, "root"):
+            try:
+                pending = getattr(self, "_rescan_after_id", None)
+                if pending is not None:
+                    try:
+                        self.root.after_cancel(pending)
+                    except (tk.TclError, ValueError):
+                        # Already fired or invalid id — fine, just reset.
+                        pass
+                self._rescan_after_id = self.root.after(
+                    1500, self._fire_post_queue_rescan,
+                )
+            except (tk.TclError, RuntimeError):
+                pass
 
         # Sync generator with latest config when queue becomes empty
         # This ensures any settings changed during processing take effect for next run
@@ -4896,74 +5097,18 @@ class KlingGUIWindow:
             # folder and load in everything." Videos become source_type=
             # "video" entries so the carousel renders them with a play
             # glyph and routes clicks to the Video Inspector.
+            # 2026-05-22: extracted into _scan_folders_for_new_media() so
+            # the post-queue-completion rescan path (Phase B) shares the
+            # same scanning logic. Both feed
+            # find_video_groups (all 5 video exts) + VALID_EXTENSIONS
+            # (images) and dedupe via os.path.realpath.
             try:
-                from kling_gui.video_discovery import find_video_groups as _find_video_groups
-                from pathlib import Path as _Path
-                loaded_real = {
-                    os.path.realpath(e.path) for e in self.image_session.images
-                }
                 folders = set()
                 for img in images:
                     p = img.get("path", "")
                     if p:
                         folders.add(os.path.dirname(p))
-                rescan_imgs = 0
-                rescan_vids = 0
-                for folder in sorted(folders):
-                    if not folder or not os.path.isdir(folder):
-                        continue
-                    # os.scandir over os.listdir + os.path.isfile: one
-                    # syscall per entry (the dirent already carries the
-                    # type) instead of two. Material on large folders
-                    # and network shares. We still sort for determinism
-                    # so the rescan order matches save order.
-                    # (Gemini medium PR #43, finding 3277077727.)
-                    try:
-                        with os.scandir(folder) as it:
-                            entries = sorted(
-                                (e for e in it if e.is_file()),
-                                key=lambda e: e.name,
-                            )
-                    except OSError:
-                        continue
-                    for entry in entries:
-                        ext = os.path.splitext(entry.name)[1].lower()
-                        if ext not in VALID_EXTENSIONS:
-                            continue
-                        full = entry.path
-                        real = os.path.realpath(full)
-                        if real in loaded_real:
-                            continue
-                        self.image_session.add_image(full, "input", make_active=False)
-                        loaded_real.add(real)
-                        rescan_imgs += 1
-                    # Videos: find_video_groups handles all 5 extensions
-                    # (mp4/mov/webm/mkv/avi) as of subagent H3 on
-                    # 2eb16f37. For non-mp4 files that don't match the
-                    # Kling/oldcam/rPPG naming pattern, the group is just
-                    # a single-clip group with no siblings.
-                    try:
-                        groups = _find_video_groups(_Path(folder))
-                    except OSError:
-                        groups = []
-                    for group in groups:
-                        for vmeta in group.videos:
-                            vpath = str(vmeta.path)
-                            real = os.path.realpath(vpath)
-                            if real in loaded_real:
-                                continue
-                            self.image_session.add_image(
-                                vpath, "video", make_active=False,
-                            )
-                            loaded_real.add(real)
-                            rescan_vids += 1
-                    # H3 fix (subagent on 2eb16f37): the prior second-pass
-                    # for .mov/.webm/.mkv/.avi is now redundant —
-                    # find_video_groups itself widened to all 5 video
-                    # extensions, so the loop above catches everything
-                    # the carousel can render. Eliminates the wiring
-                    # asymmetry where the Inspector listbox saw only mp4
-                    # but the carousel showed non-mp4 too.
+                rescan_imgs, rescan_vids = self._scan_folders_for_new_media(folders)
                 if rescan_imgs or rescan_vids:
                     self._log(
                         f"Folder rescan: +{rescan_imgs} new image(s), "

@@ -155,25 +155,185 @@ class DistForcesCompositeModesTests(unittest.TestCase):
         self.assertEqual(cfg['automation_selfie_expand_composite_mode'],'none')
         self.assertEqual(cfg['outpaint_composite_mode'],'preserve_seamless')
 
+    def test_release_prep_force_outpaint_provider_to_template_value(self):
+        """User direction 2026-05-22 final: outpaint_provider default is
+        "fal" everywhere — switching providers is a one-click dropdown
+        change so the silent default should be "fal" out of the box.
+
+        The earlier macOS revert was over-broad — it rolled back BOTH
+        the Phase A "fal-first" default AND the Phase C
+        LANCZOS+16px-tolerance composite tweaks. Only the latter caused
+        the visible expand-quality regression (and was correctly rolled
+        back in d48bbc8). The provider default was incorrectly bundled
+        with that revert and is restored here.
+
+        Lock: a dev kling_config.json carrying "bfl" from a prior tuned
+        session must NOT leak that value into the shipped bundle. The
+        bundle gets the template's "fal" via the OVERRIDE in
+        build_sanitized_config."""
+        import json as _j, tempfile, os
+        from distribution.release_prep import build_sanitized_config
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            t = os.path.join(d, 'default_config_template.json')
+            l = os.path.join(d, 'kling_config.json')
+            with open(t, 'w', encoding='utf-8') as fp:
+                fp.write(_j.dumps({
+                    'loop_videos': False,
+                    'outpaint_provider': 'fal',
+                }))
+            # Dev kling_config still has "bfl" from prior tuned sessions.
+            with open(l, 'w', encoding='utf-8') as fp:
+                fp.write(_j.dumps({'outpaint_provider': 'bfl'}))
+            cfg = build_sanitized_config(Path(t), Path(l))
+        self.assertEqual(
+            cfg.get('outpaint_provider'),
+            'fal',
+            "Shipped bundle MUST force outpaint_provider to 'fal' "
+            "regardless of the dev kling_config.json value (user "
+            "direction 2026-05-22 final).",
+        )
+
     def test_shipped_template_slot3_is_active_with_title(self):
         import json as _j
         d=_j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
         self.assertEqual(d['current_prompt_slot'],3)
-        # Title updated 2026-05-21 per user direction — slot 3 is now the
-        # head-turn 3/4 view (40 degrees each side, Kling 2.5 Pro Turbo).
-        # The title reflects the prompt shape so users can spot which
-        # variant is loaded at a glance.
+        # Title updated 2026-05-22 (polish/v2.3) — slot 3 is now the
+        # "enhanced for Kling 2.5 Pro" prompt with the angle reduced
+        # from 40° to 30° per user direction. Locks both the title and
+        # the 30° angle so future rewrites can't silently revert.
         self.assertEqual(
             d['prompt_titles']['3'],
-            'head-turn 3/4 view (40° each side, kling 2.5 pro)',
+            'enhanced for Kling 2.5 Pro',
         )
-        # New positive prompt mentions the moderate-angle three-quarter-view
-        # shape (not the prior "extremely subtle" wording).
         self.assertIn('three-quarter view', d['saved_prompts']['3'])
-        self.assertIn('40 degrees', d['saved_prompts']['3'])
+        self.assertIn('30 degrees', d['saved_prompts']['3'])
+        self.assertNotIn('40 degrees', d['saved_prompts']['3'])
         self.assertTrue(d['negative_prompts']['3'])
         # slot 1 minimal-motion fallback preserved.
         self.assertIn('very subtle, slow head movement',d['saved_prompts']['1'])
+
+    def test_v23_ship_defaults_loop_off_and_provider_fal(self):
+        """polish/v2.3 ship defaults locked: loop OFF + outpaint_provider
+        "fal" (user direction 2026-05-22 final).
+
+        The earlier revert was over-broad: only the macOS LANCZOS +
+        16px-tolerance composite tweaks needed rolling back (rolled
+        back in d48bbc8). The provider default itself stays "fal"
+        because switching providers is a one-click dropdown change
+        and the silent default should be "fal" out of the box."""
+        import json as _j
+        d = _j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
+        self.assertEqual(d['loop_videos'], False)
+        self.assertEqual(
+            d.get('outpaint_provider'),
+            'fal',
+            "outpaint_provider MUST be 'fal' in the template (user "
+            "direction 2026-05-22 final). One-click dropdown switches "
+            "to BFL when the user wants it.",
+        )
+
+    def test_v23_three_independent_expand_prompts(self):
+        """Phase G of polish/v2.3 (2026-05-22): Step 0 face-crop,
+        Step 2.5 selfie, and the standalone Outpaint tab each have
+        their OWN expand-prompt config key. Default template ships
+        all three with the same starting value so first-launch
+        behaviour matches the prior single-shared-key design."""
+        import json as _j
+        d = _j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
+        # All three keys must exist in the shipped template.
+        for key in ('face_crop_expand_prompt', 'selfie_expand_prompt', 'outpaint_tab_prompt'):
+            self.assertIn(key, d, f"template missing Phase G key {key!r}")
+        # And each tab's source must wire its editor to the right key.
+        fc_src = (_ROOT / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+        self.assertIn('self.config.get("face_crop_expand_prompt")', fc_src)
+        self.assertIn('updates["face_crop_expand_prompt"]', fc_src)
+
+        ex_src = (_ROOT / "kling_gui" / "tabs" / "expand_tab.py").read_text(encoding="utf-8")
+        self.assertIn('self.config.get("selfie_expand_prompt")', ex_src)
+        self.assertIn('"selfie_expand_prompt":', ex_src)
+
+        op_src = (_ROOT / "kling_gui" / "tabs" / "outpaint_tab.py").read_text(encoding="utf-8")
+        self.assertIn('self.config.get("outpaint_tab_prompt")', op_src)
+        self.assertIn('"outpaint_tab_prompt":', op_src)
+
+    def test_v23_section_prompts_respect_explicit_empty_string(self):
+        """Codex P1 on 0967564 (2026-05-22): the Phase G fallback
+        chain ``section or legacy or \"\"`` treated an explicitly-saved
+        empty string as missing and silently substituted the legacy
+        shared prompt. R4 fix: use key-presence semantics
+        (isinstance check) so an empty string survives as a valid
+        intentional value.
+
+        Source-asserted in all 6 fallback sites so a regression
+        that reintroduces ``or`` truthiness fails this test."""
+        # Pipeline Step 0 + Step 2.5
+        pp_src = (_ROOT / "automation" / "pipeline.py").read_text(encoding="utf-8")
+        # Both sections must use isinstance check on the section key.
+        self.assertGreaterEqual(
+            pp_src.count('isinstance(_section, str)'),
+            2,
+            "automation/pipeline.py must use isinstance() check at "
+            "BOTH Step 0 and Step 2.5 to preserve empty-string section prompts",
+        )
+        # The forbidden truthiness chain must NOT be back.
+        for forbidden in (
+            'self.config.get("face_crop_expand_prompt")\n                        or self.config.get("outpaint_prompt"',
+            'self.config.get("selfie_expand_prompt")\n                    or self.config.get("outpaint_prompt"',
+        ):
+            self.assertNotIn(
+                forbidden, pp_src,
+                "automation/pipeline.py regressed to `or` truthiness fallback",
+            )
+        # GUI tabs: face_crop_tab + outpaint_tab use isinstance.
+        fc_src = (_ROOT / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+        self.assertIn('isinstance(_section_prompt, str)', fc_src)
+        op_src = (_ROOT / "kling_gui" / "tabs" / "outpaint_tab.py").read_text(encoding="utf-8")
+        self.assertIn('isinstance(_section_prompt, str)', op_src)
+        # expand_tab uses isinstance OR routes through the named helper.
+        ex_src = (_ROOT / "kling_gui" / "tabs" / "expand_tab.py").read_text(encoding="utf-8")
+        self.assertIn('isinstance(_section_prompt, str)', ex_src)
+        self.assertIn('def _fallback_selfie_expand_prompt', ex_src)
+        # Codex P2 on 6080445 (2026-05-22): the defensive ``except``
+        # fallback at the queue-submit path MUST also route through
+        # the named helper, otherwise an explicitly-saved empty
+        # ``selfie_expand_prompt`` is silently replaced by
+        # ``outpaint_prompt`` whenever ``_prompt_text`` is unavailable
+        # — the exact regression R4 fixed on the happy path.
+        self.assertNotIn(
+            'cfg.get("selfie_expand_prompt")\n                or cfg.get("outpaint_prompt"',
+            ex_src,
+            "expand_tab.py except-fallback regressed to `or` truthiness",
+        )
+        self.assertIn(
+            'prompt = self._fallback_selfie_expand_prompt()',
+            ex_src,
+            "expand_tab.py except-fallback must route through helper",
+        )
+
+    def test_v23_extra_prompt_slots_shipped(self):
+        """polish/v2.3: saved_prompts slots 5+6 and
+        selfie_wildcard_saved_prompts slots 4+5+6 ship populated so a
+        fresh-clone user sees the user's full Windows prompt collection,
+        not just the original 4 slots."""
+        import json as _j
+        d = _j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
+        for slot in ('5', '6'):
+            self.assertTrue(
+                d['saved_prompts'][slot].strip(),
+                f"saved_prompts[{slot}] must be populated in template",
+            )
+        for slot in ('4', '5', '6'):
+            self.assertTrue(
+                d['selfie_wildcard_saved_prompts'][slot].strip(),
+                f"selfie_wildcard_saved_prompts[{slot}] must be populated",
+            )
+        # And the prompt_titles row reflects user-set titles, not blanks
+        for slot in ('3', '4', '5', '6'):
+            self.assertTrue(
+                d['prompt_titles'][slot].strip(),
+                f"prompt_titles[{slot}] must be set",
+            )
 
 
 class SimilarityScoreVarianceTests(unittest.TestCase):
@@ -744,14 +904,17 @@ class Expand25SingleSelectRedesignTests(unittest.TestCase):
 
     def test_prompt_editor_widget_exists_and_loads_config_key(self):
         src = self._src()
-        # tk.Text widget on the tab, backed by outpaint_prompt.
+        # tk.Text widget on the tab, backed by selfie_expand_prompt
+        # (Phase G of polish/v2.3, 2026-05-22). Pre-Phase-G all three
+        # expand-section editors shared the legacy ``outpaint_prompt``
+        # key; now each editor has its own with a back-compat
+        # fallback to the shared key.
         self.assertIn("self._prompt_text = tk.Text(", src)
-        # Loaded from config at construction time.
-        self.assertRegex(
-            src,
-            r'self\._prompt_text\.insert\(\s*"1\.0",\s*'
-            r'self\.config\.get\(\s*"outpaint_prompt",\s*""\s*\)\s*\)',
-        )
+        # Loaded from config at construction time via the new
+        # section-specific key, with the legacy shared key as
+        # back-compat fallback.
+        self.assertIn('self.config.get("selfie_expand_prompt")', src)
+        self.assertIn('self.config.get("outpaint_prompt", "")', src)
 
     def test_prompt_text_is_read_at_dispatch_time(self):
         """The live editor value (not the stale cfg blob) must be what
@@ -787,13 +950,17 @@ class Expand25SingleSelectRedesignTests(unittest.TestCase):
 
     def test_get_config_updates_persists_outpaint_prompt(self):
         """Saving the panel writes the live editor value back so it
-        survives a restart."""
+        survives a restart. Phase G (2026-05-22): the key is now
+        ``selfie_expand_prompt`` (section-specific), not the legacy
+        shared ``outpaint_prompt``. Updates flow ONLY to the new key
+        so a Step 2.5 edit can't silently override Step 0 or the
+        Outpaint tab."""
         src = self._src()
-        # The dict literal must include the outpaint_prompt key wired
-        # to self._prompt_text.get(...).
+        # The dict literal must include the section-specific key
+        # wired to self._prompt_text.get(...).
         self.assertRegex(
             src,
-            r'"outpaint_prompt":\s*\(\s*'
+            r'"selfie_expand_prompt":\s*\(\s*'
             r'self\._prompt_text\.get\(\s*"1\.0",\s*"end-1c"\s*\)',
         )
 

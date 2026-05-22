@@ -252,9 +252,22 @@ class OutpaintTab(tk.Frame):
             pady=5,
         )
         self.prompt_text.pack(fill=tk.X, padx=5, pady=5)
-        self.prompt_text.insert(
-            "1.0", self.config.get("outpaint_prompt", "")
-        )
+        # Phase G of polish/v2.3 (2026-05-22): section-specific
+        # key ``outpaint_tab_prompt``, with the legacy shared
+        # ``outpaint_prompt`` as a back-compat fallback so users
+        # with old configs see their saved prompt on first launch.
+        # Codex P1 on 0967564 (2026-05-22): key-presence
+        # semantics, NOT truthiness. An explicitly-saved empty
+        # ``outpaint_tab_prompt`` is a valid intentional value
+        # (user cleared the prompt) and must NOT be silently
+        # replaced by the legacy shared prompt.
+        _section_prompt = self.config.get("outpaint_tab_prompt")
+        if isinstance(_section_prompt, str):
+            _initial_prompt = _section_prompt
+        else:
+            _legacy = self.config.get("outpaint_prompt")
+            _initial_prompt = _legacy if isinstance(_legacy, str) else ""
+        self.prompt_text.insert("1.0", _initial_prompt)
 
         # ── Output format ───────────────────────────────────────────────
         fmt_frame = tk.Frame(self, bg=COLORS["bg_panel"])
@@ -504,7 +517,8 @@ class OutpaintTab(tk.Frame):
             "outpaint_expand_right": self.right_var.get(),
             "outpaint_expand_top": self.top_var.get(),
             "outpaint_expand_bottom": self.bottom_var.get(),
-            "outpaint_prompt": self.prompt_text.get("1.0", tk.END).strip(),
+            # Phase G: writes go to the section-specific key.
+            "outpaint_tab_prompt": self.prompt_text.get("1.0", tk.END).strip(),
             "outpaint_format": self.format_var.get(),
             "outpaint_composite_mode": self._composite_mode_var.get(),
         }

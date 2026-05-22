@@ -999,16 +999,25 @@ def test_pipeline_video_disabled_oldcam_required_fails(tmp_path: Path, monkeypat
     assert manifest.data["cases"]["case-m"]["status"] == "failed"
 
 
-def test_pipeline_resolves_auto_provider_to_bfl_for_caps_and_outpaint(tmp_path: Path, monkeypatch):
+def test_pipeline_resolves_auto_provider_to_fal_after_phase_a(tmp_path: Path, monkeypatch):
+    """v2.3 defaults pin both automation providers to "fal" (user
+    direction 2026-05-22 final). Pre-Phase-A this test pinned "bfl"
+    as the auto-resolved value when a BFL key was present. After
+    Phase A + R3's automation-config alignment, "fal" is the
+    deterministic ship default regardless of which keys are
+    configured. CodeRabbit Major on 36b5e0b spotted that R2 only
+    flipped the GUI tabs and left the automation CLI on bfl."""
     case_dir = tmp_path / "case-n"
     case_dir.mkdir()
     front = case_dir / "front.png"
     Image.new("RGB", (1000, 1000), (1, 2, 3)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-n")
 
-    config = merge_automation_defaults({"falai_api_key": "x",
-            "bfl_api_key": "bfl-token",
-            "automation_oldcam_required": False, "bfl_api_key": "bfl-token"})
+    config = merge_automation_defaults({
+        "falai_api_key": "x",
+        "bfl_api_key": "bfl-token",
+        "automation_oldcam_required": False,
+    })
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
@@ -1030,7 +1039,7 @@ def test_pipeline_resolves_auto_provider_to_bfl_for_caps_and_outpaint(tmp_path: 
     stats = runner.run([record])
     assert stats["completed"] == 1
     assert outpaint.calls
-    assert all(call.get("provider") == "bfl" for call in outpaint.calls)
+    assert all(call.get("provider") == "fal" for call in outpaint.calls)
 
 
 def test_pipeline_front_expand_runs_two_passes_when_configured(tmp_path: Path, monkeypatch):
@@ -2176,10 +2185,15 @@ def test_run_oldcam_all_returns_every_succeeded_version(tmp_path, monkeypatch):
 
 
 def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch):
-    """Automation Step 8 must inject rPPG into the BASE (video_generate
-    output — automation has no loop) AND every per-version oldcam output
-    recorded in the oldcam step meta["all_outputs"]. There is no
-    privileged "primary"; plain pre-rPPG files are kept."""
+    """LEGACY behaviour (per-Oldcam fan-out): with the opt-in flag
+    ``automation_rppg_per_oldcam_fanout=True``, automation injects rPPG
+    into the BASE (pre-Oldcam pass, Phase E of polish/v2.3) AND every
+    per-version oldcam output. Plain pre-rPPG files are kept.
+
+    The flag default flipped to False on 2026-05-22 — the new default
+    runs rPPG once on the base, and every Oldcam version derives from
+    that single injection. This test pins the LEGACY behaviour behind
+    the explicit opt-in flag."""
     from automation.rppg import build_rppg_output_path
 
     case_dir = tmp_path / "case-fanout"
@@ -2204,6 +2218,8 @@ def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch
         "automation_oldcam_required": False,
         "automation_rppg_enabled": True,
         "automation_rppg_required": False,
+        # Phase E: explicit opt-in to keep the legacy per-Oldcam fan-out.
+        "automation_rppg_per_oldcam_fanout": True,
     })
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
@@ -2254,8 +2270,91 @@ def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch
     assert len(step.get("meta", {}).get("all_outputs", [])) == 3
 
 
+def test_pipeline_rppg_default_runs_once_on_base_not_each_oldcam(tmp_path, monkeypatch):
+    """Phase E of polish/v2.3 (2026-05-22) — NEW default behaviour:
+    without the ``automation_rppg_per_oldcam_fanout`` opt-in flag,
+    rPPG runs ONCE on the base (via the pre-Oldcam pass) and every
+    Oldcam version derives from THAT injection. The trailing per-
+    Oldcam fan-out is OFF. This locks the user's stated intent:
+    'Kling -> rPPG -> Oldcam (from rPPG'd base), with an opt-in
+    GUI checkbox for the slower per-Oldcam fan-out.'"""
+    from automation.rppg import build_rppg_output_path
+
+    case_dir = tmp_path / "case-newflow"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    gv = case_dir / "gen-videos"
+    gv.mkdir()
+    base = gv / "existing.mp4"
+    base.write_bytes(b"base")
+    v8 = gv / "existing-oldcam-v8.mp4"
+    v8.write_bytes(b"v8")
+    v24 = gv / "existing-oldcam-v24.mp4"
+    v24.write_bytes(b"v24")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-newflow")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x", "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "p"}, "current_prompt_slot": 1,
+        "automation_skip_if_video_exists": True,
+        "automation_oldcam_enabled": True,
+        "automation_oldcam_required": False,
+        "automation_rppg_enabled": True,
+        "automation_rppg_required": False,
+        # NO automation_rppg_per_oldcam_fanout key -> defaults to False.
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **k: [("v8", v8), ("v24", v24)])
+
+    rppg_inputs = []
+
+    def _fake_rppg(
+        *, video_path, repo_root, progress_cb=None,
+        timeout_seconds=600, keep_metrics=False,
+        iterative=True, iterate_from_baseline=True,
+        skip_diagnosis=True, skip_kinematic_gate=True,
+        verbose=False,
+    ):
+        del (
+            repo_root, progress_cb, timeout_seconds, keep_metrics,
+            iterative, iterate_from_baseline, skip_diagnosis,
+            skip_kinematic_gate, verbose,
+        )
+        rppg_inputs.append(Path(video_path))
+        out = build_rppg_output_path(Path(video_path))
+        out.write_bytes(b"rppg")
+        return out
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", _fake_rppg)
+    runner = AutoPipelineRunner(
+        config=config, automation_config=from_app_config(config), manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(outpaint_factory=lambda: FakeOutpaint(), selfie_factory=lambda: FakeSelfie(), video_factory=lambda: FakeVideo()),
+    )
+    stats = runner.run([record])
+    assert stats["failed"] == 0
+    # ONLY ONE rPPG call — the pre-Oldcam pass on the base. NO per-
+    # Oldcam fan-out (that was the legacy default).
+    assert len(rppg_inputs) == 1, f"expected 1 rPPG call, got {len(rppg_inputs)}: {[p.name for p in rppg_inputs]}"
+    assert rppg_inputs[0].name == "existing.mp4"
+    # Step 8 records the pre-Oldcam result as deliverable via the
+    # ``already`` branch.
+    step = manifest.data["cases"]["case-newflow"]["steps"].get("rppg", {})
+    assert step.get("status") == "complete"
+    headline = step.get("output", "")
+    assert headline.endswith("existing-rppg.mp4"), headline
+
+
 def _fanout_partial_case(tmp_path, required, monkeypatch):
-    """Shared rig: base + v8 + v24; v24 rPPG FAILS, base+v8 succeed."""
+    """Shared rig: base + v8 + v24; v24 rPPG FAILS, base+v8 succeed.
+
+    Tests the LEGACY per-Oldcam fan-out behaviour (opt-in via
+    ``automation_rppg_per_oldcam_fanout`` since Phase E of
+    polish/v2.3, 2026-05-22)."""
     from automation.rppg import build_rppg_output_path
 
     case_dir = tmp_path / f"case-partial-{required}"
@@ -2281,6 +2380,8 @@ def _fanout_partial_case(tmp_path, required, monkeypatch):
         "automation_oldcam_required": False,
         "automation_rppg_enabled": True,
         "automation_rppg_required": required,
+        # Phase E: explicit opt-in to keep the legacy per-Oldcam fan-out.
+        "automation_rppg_per_oldcam_fanout": True,
     })
     manifest = AutomationManifest.create_or_load(
         tmp_path / f"m-{required}.json", tmp_path, {})
@@ -2605,7 +2706,11 @@ def test_run_rppg_absolutizes_relative_input(tmp_path, monkeypatch):
 
     rppg_dir = tmp_path / "rPPG"
     rppg_dir.mkdir()
+    # Phase D/F (v2.3, 2026-05-22) made `resolve_rppg_launcher` OS-conditional
+    # — Windows picks run_rppg.bat, macOS/Linux pick run_rppg.sh. Write both
+    # so the fixture works on every host the suite runs on.
     (rppg_dir / "run_rppg.bat").write_text("@echo off", encoding="utf-8")
+    (rppg_dir / "run_rppg.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     (rppg_dir / "rppg_injector.py").write_text("# stub", encoding="utf-8")
 
     work = tmp_path / "work"
@@ -2635,3 +2740,130 @@ def test_run_rppg_absolutizes_relative_input(tmp_path, monkeypatch):
     assert Path(in_arg).is_absolute(), f"input not absolutized: {in_arg!r}"
     assert Path(out_arg).is_absolute(), f"--output not absolutized: {out_arg!r}"
     assert Path(in_arg) == vid.resolve()
+
+
+def test_pipeline_rppg_fanout_all_fail_does_not_crash(tmp_path, monkeypatch):
+    """Subagent CRITICAL on 69dee05 (2026-05-22): when Phase E's
+    pre-Oldcam rPPG injection SUCCEEDS but the opt-in per-Oldcam
+    fan-out FAILS on every Oldcam output, the headline-pick used a
+    bare ``next(generator)`` over an empty iterator and raised an
+    uncaught StopIteration that crashed the case.
+
+    Repro: rppg_enabled + rppg_per_oldcam_fanout + 2 oldcam versions
+    (v8, v24); pre-Oldcam rPPG succeeds on the base; both v8-rppg
+    and v24-rppg injections return None. With required=False the
+    case must complete with the pre-Oldcam rPPG result as the
+    headline — NOT crash."""
+    from automation.rppg import build_rppg_output_path
+
+    case_dir = tmp_path / "case-fanout-allfail"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    gv = case_dir / "gen-videos"
+    gv.mkdir()
+    base = gv / "existing.mp4"
+    base.write_bytes(b"base")
+    v8 = gv / "existing-oldcam-v8.mp4"
+    v8.write_bytes(b"v8")
+    v24 = gv / "existing-oldcam-v24.mp4"
+    v24.write_bytes(b"v24")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-fanout-allfail")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x", "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "p"}, "current_prompt_slot": 1,
+        "automation_skip_if_video_exists": True,
+        "automation_oldcam_enabled": True,
+        "automation_oldcam_required": False,
+        "automation_rppg_enabled": True,
+        "automation_rppg_required": False,
+        # Opt-in to legacy fan-out — this is the only path that
+        # could hit the StopIteration bug.
+        "automation_rppg_per_oldcam_fanout": True,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **k: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *a, **k: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **k: [("v8", v8), ("v24", v24)])
+
+    def _fake_rppg(
+        *, video_path, repo_root, progress_cb=None,
+        timeout_seconds=600, keep_metrics=False,
+        iterative=True, iterate_from_baseline=True,
+        skip_diagnosis=True, skip_kinematic_gate=True,
+        verbose=False,
+    ):
+        del (
+            repo_root, progress_cb, timeout_seconds, keep_metrics,
+            iterative, iterate_from_baseline, skip_diagnosis,
+            skip_kinematic_gate, verbose,
+        )
+        name = Path(video_path).name
+        # Pre-Oldcam pass on the BASE succeeds; per-Oldcam fan-out
+        # on v8 + v24 BOTH fail (return None).
+        if name == "existing.mp4":
+            out = build_rppg_output_path(Path(video_path))
+            out.write_bytes(b"rppg")
+            return out
+        return None
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", _fake_rppg)
+    runner = AutoPipelineRunner(
+        config=config, automation_config=from_app_config(config), manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(outpaint_factory=lambda: FakeOutpaint(), selfie_factory=lambda: FakeSelfie(), video_factory=lambda: FakeVideo()),
+    )
+    # Must NOT raise. Pre-fix this raised StopIteration.
+    stats = runner.run([record])
+    assert stats["failed"] == 0, f"case must complete, got: {stats}"
+    step = manifest.data["cases"]["case-fanout-allfail"]["steps"].get("rppg", {})
+    assert step.get("status") == "complete"
+    # Headline must be the pre-Oldcam rPPG base (the only success).
+    assert step.get("output", "").endswith("existing-rppg.mp4"), step.get("output")
+    # And the failed per-Oldcam attempts must be recorded.
+    assert "existing-oldcam-v8.mp4" in step.get("meta", {}).get("failed_inputs", [])
+    assert "existing-oldcam-v24.mp4" in step.get("meta", {}).get("failed_inputs", [])
+
+
+def test_merge_automation_defaults_bridges_rppg_fanout_gui_key():
+    """Subagent CRITICAL on 286613c (R5, 2026-05-22): the GUI
+    writes the rPPG per-Oldcam fan-out checkbox as
+    ``rppg_per_oldcam_fanout`` (no prefix) — that's the key in
+    default_config_template.json, release_prep.py, the GUI
+    config_panel checkbox handler, AND the GUI runtime
+    queue_manager gate. But the automation CLI pipeline gate at
+    pipeline.py:1381 reads ``automation_rppg_per_oldcam_fanout``
+    (with prefix). Without a bridge, the user's checkbox setting
+    was silently DEAD in the CLI automation path.
+
+    R5 fix: merge_automation_defaults copies the unprefixed GUI
+    key into the prefixed automation key when the latter is
+    absent. Single user-facing setting now drives both the GUI
+    runtime AND the CLI pipeline."""
+    # Case 1: GUI key TRUE → prefixed key inherits True.
+    merged = merge_automation_defaults({"rppg_per_oldcam_fanout": True})
+    assert merged.get("automation_rppg_per_oldcam_fanout") is True, (
+        "GUI-key=True must bridge to automation_*=True"
+    )
+    # Case 2: GUI key FALSE → prefixed key inherits False.
+    merged = merge_automation_defaults({"rppg_per_oldcam_fanout": False})
+    assert merged.get("automation_rppg_per_oldcam_fanout") is False, (
+        "GUI-key=False must bridge to automation_*=False"
+    )
+    # Case 3: prefixed key explicitly set wins over GUI key (back-compat
+    # so existing pipeline tests that pass the prefixed key keep working).
+    merged = merge_automation_defaults({
+        "rppg_per_oldcam_fanout": False,
+        "automation_rppg_per_oldcam_fanout": True,
+    })
+    assert merged.get("automation_rppg_per_oldcam_fanout") is True, (
+        "Explicit automation_* must NOT be overwritten by GUI bridge"
+    )
+    # Case 4: neither key present → key absent (pipeline.get default-False
+    # path; bridge MUST NOT inject the key out of thin air).
+    merged = merge_automation_defaults({})
+    assert "automation_rppg_per_oldcam_fanout" not in merged, (
+        "Bridge must NOT inject the automation key when neither source key is set"
+    )

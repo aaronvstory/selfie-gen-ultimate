@@ -212,8 +212,14 @@ class AutoPipelineRunner:
         return self._DEFAULT_OUTPAINT_COMPOSITE_MODE
 
     def resolve_provider_summary(self) -> Dict[str, str]:
-        front_configured = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
-        selfie_configured = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
+        # Fallback default flipped to "fal" 2026-05-22: a live config
+        # without these keys still gets the v2.3 ship default
+        # (user direction final). The DEFAULTS dict in
+        # automation/config.py was updated to match; this fallback
+        # only kicks in when neither the live config nor the merged
+        # defaults have the key set (rare path, but consistent).
+        front_configured = str(self.automation.get("automation_front_expand_provider", "fal")).lower()
+        selfie_configured = str(self.automation.get("automation_selfie_expand_provider", "fal")).lower()
         return {
             "front_configured": front_configured,
             "front_resolved": self._resolve_outpaint_provider(front_configured),
@@ -445,8 +451,8 @@ class AutoPipelineRunner:
         outpaint = self.deps.outpaint_factory()
         outpaint.set_progress_callback(self.progress_cb)
         reprocess_mode = self._effective_reprocess_mode()
-        front_provider = str(self.automation.get("automation_front_expand_provider", "auto")).lower()
-        selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "auto")).lower()
+        front_provider = str(self.automation.get("automation_front_expand_provider", "fal")).lower()
+        selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "fal")).lower()
         front_composite_mode = self._resolve_composite_mode("front")
         selfie_composite_mode = self._resolve_composite_mode("selfie")
         resolved_front_provider = self._resolve_outpaint_provider(front_provider)
@@ -537,6 +543,30 @@ class AutoPipelineRunner:
                 executed_passes = 0
                 for pass_index in range(front_passes):
                     pass_output = str(target_output) if pass_index == front_passes - 1 else None
+                    # Phase G of polish/v2.3 (2026-05-22): Step 0
+                    # face-crop expand uses its OWN prompt key. Falls
+                    # back to the legacy shared ``outpaint_prompt`` so
+                    # CLI runs on configs without the new key still
+                    # work. Pre-Phase-G this dispatch passed no prompt
+                    # at all (default empty string), so the section-
+                    # specific key is a strict improvement.
+                    # Codex P1 on 0967564 (2026-05-22): use key-
+                    # presence semantics — a user who saves an
+                    # intentionally EMPTY ``face_crop_expand_prompt``
+                    # must NOT see the legacy shared
+                    # ``outpaint_prompt`` re-substituted. ``or "" or``
+                    # treated empty as missing, breaking section-
+                    # specific prompt independence. The helper below
+                    # only falls back when the key is absent or
+                    # non-str; an empty string is a valid intentional
+                    # value.
+                    _section = self.config.get("face_crop_expand_prompt")
+                    if isinstance(_section, str):
+                        front_expand_prompt = _section
+                    else:
+                        front_expand_prompt = str(
+                            self.config.get("outpaint_prompt", "") or ""
+                        )
                     result = outpaint.outpaint(
                         image_path=front_input_path,
                         output_folder=str(case_dir),
@@ -548,6 +578,7 @@ class AutoPipelineRunner:
                         if self.automation.get("automation_front_edge_seal_enabled", True)
                         else 0,
                         poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
+                        prompt=front_expand_prompt,
                         **front_expand_kwargs,
                     )
                     if not result:
@@ -922,6 +953,19 @@ class AutoPipelineRunner:
                 expanded_output = case_dir / "gen-images" / f"{Path(best_path).stem}-expanded.png"
                 if reprocess_mode == "increment":
                     expanded_output = self._next_increment_path(expanded_output)
+                # Phase G: Step 2.5 selfie expand uses its OWN prompt
+                # key. Codex P1 on 0967564: key-presence semantics,
+                # NOT truthiness — an explicitly-saved empty string
+                # is a valid intentional value (user clearing the
+                # prompt) and must NOT be silently replaced by the
+                # legacy shared prompt.
+                _section = self.config.get("selfie_expand_prompt")
+                if isinstance(_section, str):
+                    selfie_expand_prompt = _section
+                else:
+                    selfie_expand_prompt = str(
+                        self.config.get("outpaint_prompt", "") or ""
+                    )
                 expanded_result = outpaint.outpaint(
                     image_path=best_path,
                     output_folder=str(case_dir / "gen-images"),
@@ -935,6 +979,7 @@ class AutoPipelineRunner:
                     expand_bottom=margins["bottom"],
                     edge_seal_px=0,
                     poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
+                    prompt=selfie_expand_prompt,
                 )
                 if expanded_result:
                     final_still = expanded_result
@@ -1145,20 +1190,68 @@ class AutoPipelineRunner:
                 case_key, "facetrack_gate", "skipped", error="facetrack gate disabled"
             )
 
+        # Step 7-pre: rPPG-first pass (Phase E of polish/v2.3,
+        # 2026-05-22). When rPPG is enabled, run injection on the raw
+        # video_generate output BEFORE Oldcam so each Oldcam version
+        # derives from the rPPG'd base. The injector is a graceful-skip
+        # target: if the rPPG/ tool is missing, the launcher returns
+        # None and we keep the raw video as Oldcam's input. The legacy
+        # "rPPG on every Oldcam output" fan-out from the prior order
+        # is preserved behind the ``automation_rppg_per_oldcam_fanout``
+        # opt-in flag, applied in Step 8 below (default OFF).
+        rppg_base_path: Optional[Path] = None
+        if self._read_bool("automation_rppg_enabled", False):
+            video_out = self.manifest.get_step(case_key, "video_generate").get("output")
+            video_out_path = Path(video_out) if video_out else None
+            if (
+                video_out_path
+                and video_out_path.exists()
+                and video_out_path.suffix.lower() == ".mp4"
+                and not is_rppg_artifact(video_out_path)
+            ):
+                rppg_mode = str(self.automation.get("automation_rppg_mode") or "iterative").strip().lower()
+                iterative = rppg_mode == "iterative"
+                iterate_from_baseline = self._read_bool("automation_rppg_iterate_from_baseline", True)
+                skip_diagnosis = self._read_bool("automation_rppg_skip_diagnosis", True)
+                skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
+                keep_metrics = self._read_bool("automation_rppg_metrics_in_filename", False)
+                injected = run_rppg(
+                    video_path=video_out_path,
+                    repo_root=Path(__file__).resolve().parent.parent,
+                    progress_cb=self.progress_cb,
+                    keep_metrics=keep_metrics,
+                    iterative=iterative,
+                    iterate_from_baseline=iterate_from_baseline,
+                    skip_diagnosis=skip_diagnosis,
+                    skip_kinematic_gate=skip_kinematic_gate,
+                )
+                if injected and injected.exists():
+                    rppg_base_path = injected
+                    self.logger.info(
+                        "case %s rppg-first: %s -> %s",
+                        case_key, video_out_path.name, injected.name,
+                    )
+
         # Step 7: optional oldcam pass
         if self.automation.get("automation_oldcam_enabled", True):
-            manifest_video = self.manifest.get_step(case_key, "video_generate").get("output")
-            manifest_video_path = Path(manifest_video) if manifest_video else None
-            if (
-                manifest_video_path
-                and manifest_video_path.exists()
-                and manifest_video_path.suffix.lower() == ".mp4"
-            ):
-                selected_video_path = manifest_video_path
-            elif existing.video_candidate:
-                selected_video_path = Path(existing.video_candidate)
+            # Source video for Oldcam: prefer the rPPG-first injected
+            # base (Phase E above), else the raw video_generate output,
+            # else any existing candidate from disk.
+            if rppg_base_path is not None and rppg_base_path.exists():
+                selected_video_path = rppg_base_path
             else:
-                selected_video_path = None
+                manifest_video = self.manifest.get_step(case_key, "video_generate").get("output")
+                manifest_video_path = Path(manifest_video) if manifest_video else None
+                if (
+                    manifest_video_path
+                    and manifest_video_path.exists()
+                    and manifest_video_path.suffix.lower() == ".mp4"
+                ):
+                    selected_video_path = manifest_video_path
+                elif existing.video_candidate:
+                    selected_video_path = Path(existing.video_candidate)
+                else:
+                    selected_video_path = None
             if selected_video_path and selected_video_path.exists() and selected_video_path.suffix.lower() == ".mp4":
                 self.logger.info("case %s oldcam readiness=ready version=%s required=%s", case_key, self.automation.get("automation_oldcam_version", "v12"), bool(self.automation.get("automation_oldcam_required", False)))
                 self._set_active_step(case_entry, "oldcam")
@@ -1221,13 +1314,29 @@ class AutoPipelineRunner:
         else:
             self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
 
-        # Step 8: optional rPPG injection — runs LAST (Kling -> Loop ->
-        # Oldcam -> rPPG). Input is the oldcam output if oldcam produced one,
-        # otherwise the video_generate output (so rPPG works standalone when
-        # oldcam is disabled). DEFAULT OFF; _required=False means a missing
-        # tool / failed injection is a graceful skip, never a hard-fail
-        # (mirrors the facetrack-gate precedent). The injector lives in the
-        # gitignored rPPG/ tool, invoked as an external launcher.
+        # Step 8: optional per-Oldcam rPPG fan-out + final
+        # bookkeeping. The PRIMARY rPPG injection already ran in
+        # Step 7-pre above (Phase E of polish/v2.3, 2026-05-22): new
+        # order is Kling -> rPPG -> Loop -> Oldcam, with rPPG
+        # injected on the raw video_generate output BEFORE Oldcam so
+        # every Oldcam version derives from a single rPPG'd base.
+        #
+        # This Step 8 block now handles two cases:
+        #   1. Default flow (``automation_rppg_per_oldcam_fanout=False``):
+        #      records the pre-Oldcam rPPG result via the already-
+        #      injected fast path (``already`` branch) — no further
+        #      injection runs.
+        #   2. Opt-in legacy fan-out (``automation_rppg_per_oldcam_fanout=True``):
+        #      injects each per-version Oldcam output, in addition to
+        #      the pre-Oldcam base injection. Slower; preserves the
+        #      old per-Oldcam file set on top of the new base.
+        #
+        # DEFAULT OFF; _required=False means a missing tool / failed
+        # injection is a graceful skip, never a hard-fail (mirrors the
+        # facetrack-gate precedent). The injector lives in the rPPG/
+        # directory (committed in-tree as of Phase D, 2026-05-22),
+        # invoked as an external launcher (.bat on Windows, .sh
+        # elsewhere via resolve_rppg_launcher).
         if self._read_bool("automation_rppg_enabled", False):
             oldcam_step = self.manifest.get_step(case_key, "oldcam")
             oldcam_out = oldcam_step.get("output")
@@ -1245,26 +1354,53 @@ class AutoPipelineRunner:
             skip_diagnosis = self._read_bool("automation_rppg_skip_diagnosis", True)
             skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
 
-            # Fan rPPG over the BASE (video_generate output — the
-            # automation pipeline has no loop step, so this is the raw
-            # generated clip) AND every per-version oldcam output, so the
-            # CLI produces the same set as the GUI queue: "<base>-rppg"
-            # plus one "<base>-oldcam-vN-rppg" per selected version. There
-            # is no privileged "primary"; plain pre-rPPG files are kept.
+            # Phase E of polish/v2.3 (2026-05-22): the BASE rPPG pass
+            # already ran BEFORE Step 7 (Oldcam), so each oldcam output
+            # is built on top of the rPPG'd base — the base injection
+            # need not be repeated here. The legacy "fan rPPG over
+            # every Oldcam output" path is preserved behind the
+            # ``automation_rppg_per_oldcam_fanout`` opt-in flag below
+            # (default OFF; user-direction 2026-05-22).
             #
-            # Back-compat: a manifest whose oldcam step completed BEFORE
-            # meta["all_outputs"] existed has only the legacy single
-            # ``oldcam.output``. Since ``video_out`` is normally also
-            # present, a "fallback only if candidates empty" check never
-            # fires and the already-produced oldcam deliverable is
-            # silently skipped (Codex P2 / CodeRabbit Major, PR #40).
-            # So include ``oldcam_out`` in the source list whenever
+            # When the flag is OFF (default), candidates is just the
+            # base injection target — but rPPG already ran on it in
+            # the pre-Oldcam pass, so the file on disk is an rPPG
+            # artifact and the existing "drop already-injected" guard
+            # will move it into ``already`` and record it as the final
+            # deliverable. That is the intended behaviour: one rPPG'd
+            # base, every Oldcam version built on it, no per-Oldcam
+            # fan-out.
+            #
+            # Back-compat note (still applies): a manifest whose
+            # oldcam step completed BEFORE meta["all_outputs"] existed
+            # has only the legacy single ``oldcam.output``. We include
+            # ``oldcam_out`` in the source list whenever
             # ``all_outputs`` is empty — the seen-set dedups it if it
             # also happens to equal a video/all_outputs entry.
+            per_oldcam_fanout = self._read_bool(
+                "automation_rppg_per_oldcam_fanout", False
+            )
             oldcam_sources = oldcam_all if oldcam_all else ([oldcam_out] if oldcam_out else [])
             candidates: List[Path] = []
             seen: set = set()
-            for raw in [video_out, *oldcam_sources]:
+            # Phase E: substitute the rPPG'd base from the pre-Oldcam
+            # pass so the already-injected guard recognises it as a
+            # deliverable WITHOUT re-running injection. Without this
+            # substitution, the candidate list would contain the raw
+            # ``video_out`` (which is NOT an rPPG artifact) and the
+            # downstream loop would inject it again, producing the
+            # same ``<stem>-rppg.mp4`` output but wasting one full
+            # iterative-injection cycle.
+            base_candidate = (
+                str(rppg_base_path) if rppg_base_path and rppg_base_path.exists()
+                else video_out
+            )
+            # Always include the base candidate. Include oldcam_sources
+            # ONLY when the legacy per-Oldcam fan-out is opted-in.
+            raw_sources = [base_candidate]
+            if per_oldcam_fanout:
+                raw_sources.extend(oldcam_sources)
+            for raw in raw_sources:
                 if not raw:
                     continue
                 p = Path(raw)
@@ -1335,6 +1471,16 @@ class AutoPipelineRunner:
                 # HIGHEST oldcam that actually succeeded (not blindly the
                 # last attempted). to_inject order == priority order.
                 produced_for: dict = {}
+                # Phase E (2026-05-22): seed ``produced`` with the rPPG
+                # output from the pre-Oldcam pass when it exists. The
+                # base rPPG'd file is a legitimate deliverable but
+                # already exists on disk (handled via the ``already``
+                # branch above when the only candidate IS the base).
+                # When per-Oldcam fan-out is on, including it in
+                # ``produced`` keeps ``all_outputs`` complete and lets
+                # downstream code see the full set of injected files.
+                if rppg_base_path is not None and rppg_base_path.exists():
+                    produced.append(str(rppg_base_path))
                 for src in to_inject:
                     out = run_rppg(
                         video_path=src,
@@ -1360,10 +1506,24 @@ class AutoPipelineRunner:
                     # ascending, so the last success is the
                     # highest-priority real deliverable — never a clip
                     # that silently skipped its oldcam injection).
+                    # Subagent CRITICAL on 69dee05: when Phase E's
+                    # pre-Oldcam rPPG succeeded AND every per-Oldcam
+                    # fan-out attempt failed, ``produced`` is non-empty
+                    # (seeded with ``rppg_base_path`` above) but
+                    # ``produced_for`` is empty (only fan-out
+                    # injections populate it). The bare ``next(gen)``
+                    # then raised an uncaught ``StopIteration`` and
+                    # crashed the case. Fall back to ``produced[-1]``
+                    # (the seeded base, which IS the right deliverable
+                    # for that scenario: every Oldcam fanout fail
+                    # leaves the rPPG'd base as the only real output).
                     headline = next(
-                        produced_for[str(s)]
-                        for s in reversed(to_inject)
-                        if str(s) in produced_for
+                        (
+                            produced_for[str(s)]
+                            for s in reversed(to_inject)
+                            if str(s) in produced_for
+                        ),
+                        produced[-1],
                     )
                     status_note = ""
                     if partial:

@@ -16,22 +16,63 @@ pass/fail lever; rPPG is the genuinely-untried forward direction.
 
 This is **not** the crude removed v10/v11 "siren" pulse (which visibly
 strobed the face and was removed at oldcam v12). The injector is the
-friend's mature tool in the gitignored `rPPG/` directory, invoked as an
-external launcher. It is **off by default everywhere** — opt-in only.
+friend's mature tool in the `rPPG/` directory, invoked as an external
+launcher. It is **off by default everywhere** — opt-in only.
 
-## Pipeline order (locked)
+> **Versioning note (2026-05-22, Phase D of polish/v2.3):** `rPPG/`
+> was previously gitignored as confidential. Per user direction, the
+> folder is now committed in-tree so a fresh clone on any OS gets
+> the tool without a side-channel install. Older docs / code
+> comments that refer to "the gitignored rPPG/ tool" are out of
+> date — the wiring contract (this document) is unchanged; only the
+> distribution mechanism flipped.
+
+## Pipeline order (Phase E of polish/v2.3, 2026-05-22 — rPPG FIRST)
 
 ```text
-Kling  ->  Loop  ->  Oldcam  ->  rPPG       (rPPG strictly LAST)
+Kling  ->  rPPG  ->  Loop  ->  Oldcam       (rPPG runs FIRST)
 ```
 
-Why last: Loop's ping-pong reverse would play a pre-injected pulse backwards
-(non-physiological, detectable); oldcam v24's resolution-crush would
-attenuate a pre-injected sub-perceptual pulse. Injecting on the final
-delivered pixels preserves the correct pulse.
+The order flipped on 2026-05-22 per user direction. The previous "rPPG
+strictly LAST" rule produced one rPPG'd file per Oldcam version
+(`<base>-rppg`, `<base>-oldcam-v8-rppg`, `<base>-oldcam-v24-rppg`,
+etc.) — useful when each Oldcam variant was treated as an independent
+deliverable. The new flow runs rPPG ONCE on the raw Kling output and
+every downstream step builds on that single injection:
 
-- Only rPPG, no oldcam → `Kling -> [Loop] -> rPPG`
-- Neither → behaviour unchanged
+```text
+existing.mp4
+  -> existing-rppg.mp4              (rPPG injected, becomes the base)
+  -> existing-rppg_looped.mp4       (Loop, only if loop_videos: true)
+  -> existing-rppg[_looped]-oldcam-v8.mp4    (Oldcam derives from rPPG'd base)
+  -> existing-rppg[_looped]-oldcam-v24.mp4
+```
+
+### Why the flip
+
+Oldcam's resolution-crush attenuates the sub-perceptual pulse — but
+the OLD flow injected the pulse AFTER Oldcam, so the attenuation
+happened upstream of the deliverable and the pulse landed on the
+final pixels with some loss. The NEW flow injects on the raw Kling
+output where the pulse is unattenuated by downstream encoding; Oldcam
+then crushes a clip that ALREADY carries the pulse. Cost: a pre-Oldcam
+inject is one injection cycle (vs. one per Oldcam version in the old
+flow), so it's faster too.
+
+### Legacy per-Oldcam fan-out (opt-in)
+
+The old "rPPG on every Oldcam output" behaviour stays available behind
+a GUI checkbox + the `rppg_per_oldcam_fanout` config key (default OFF).
+When enabled, the trailing per-Oldcam injection ALSO runs, producing
+the legacy file set IN ADDITION to the new base-only injection. Slower
+but useful for careful comparison workflows. The GUI shows it as
+"Apply fresh rPPG to each Oldcam version (slower)" under the main
+"Inject rPPG pulse" checkbox.
+
+### Standalone modes
+
+- Only rPPG, no Oldcam (default flow) → `Kling -> rPPG -> [Loop]`
+- Neither → behaviour unchanged from prior releases
 
 ## Verified injector contract (DO NOT trust the README's path claim)
 

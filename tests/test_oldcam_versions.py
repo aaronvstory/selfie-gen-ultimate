@@ -347,9 +347,16 @@ def test_oldcam_rerun_increment_mode_creates_versioned_comparison_output(tmp_pat
     assert result["output"].endswith("clip_looped_2-oldcam-v7.mp4")
 
 
-def test_oldcam_rerun_fails_when_no_versions_selected(tmp_path):
+def test_rerun_fails_only_when_all_stages_unselected(tmp_path):
+    """User feedback 2026-05-22: re-run on a picked video must apply
+    WHATEVER post-processes are selected — not just Oldcam. So the
+    "fail with error" path now requires that ALL of (rPPG, Loop,
+    Oldcam) are unselected. Any one of them being on yields a
+    success path (rPPG-only, Loop-only, or both — see the companion
+    test below for rPPG-only)."""
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")
+    # Nothing selected — rPPG off (default), loop_videos off, oldcam empty.
     manager, _ = make_queue_manager({"oldcam_versions": []})
 
     done = threading.Event()
@@ -365,7 +372,146 @@ def test_oldcam_rerun_fails_when_no_versions_selected(tmp_path):
     assert started is True
     assert done.wait(2)
     assert result["success"] is False
-    assert result["error"] == "Oldcam not selected."
+    assert "nothing to apply" in (result["error"] or "").lower(), (
+        f"unexpected error message: {result['error']!r}"
+    )
+
+
+def test_rerun_rppg_only_succeeds_when_no_oldcam_versions(tmp_path):
+    """User feedback 2026-05-22: with rPPG enabled but no Oldcam
+    versions selected, re-run on a picked video must produce the
+    rPPG'd output and report success — not fail with 'Oldcam not
+    selected'. The rPPG step rebinds source_video; the no-Oldcam
+    early-return reports that path as the rerun output."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    rppg_output = tmp_path / "clip-rppg - HR=72.mp4"
+    rppg_output.write_bytes(b"rppg")
+
+    # rPPG enabled, no oldcam, no loop.
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "rppg_enabled": True,
+    })
+
+    # Patch the helpers the worker calls. Keep _rppg_enabled True
+    # (its config-gated; the config above already turns it on), and
+    # have _rppg_video return our fake output path.
+    with mock.patch.object(manager, "_rppg_video", return_value=str(rppg_output)):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update(
+                {"success": success, "src": src, "output": output, "error": error}
+            )
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    assert result["success"] is True, f"expected success, got error: {result['error']!r}"
+    assert result["output"] == str(rppg_output), (
+        f"expected rPPG'd output as rerun result, got {result['output']!r}"
+    )
+    assert result["error"] is None
+
+
+def test_rerun_fails_when_rppg_only_but_input_already_rppg_artifact(tmp_path):
+    """Subagent MEDIUM on a1c1b099: case (c) of the rerun worker —
+    `rppg_on=True` but the picked video is already a rPPG artifact
+    (so `rppg_attempted` stays False because the worker short-circuits
+    via `is_rppg_artifact`), AND no Loop / Oldcam selected. The
+    no-Oldcam early-return must report FAILURE with the "nothing to do
+    — already a rPPG artifact" message, NOT success with the unchanged
+    input as the "output"."""
+    # Pick an input that LOOKS like a rPPG artifact via filename suffix.
+    # `is_rppg_artifact` matches the `-rppg` suffix produced by the
+    # injector (e.g. `clip-rppg - HR=72.mp4`).
+    source = tmp_path / "clip-rppg - HR=72.mp4"
+    source.write_bytes(b"already-rppg")
+
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "rppg_enabled": True,
+        "loop_videos": False,
+    })
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update(
+            {"success": success, "src": src, "output": output, "error": error}
+        )
+        done.set()
+
+    # _rppg_video should NOT be invoked at all — assert that's the case.
+    with mock.patch.object(
+        manager, "_rppg_video",
+        side_effect=AssertionError(
+            "_rppg_video must NOT be called when input is already a "
+            "rPPG artifact — the worker should short-circuit via "
+            "is_rppg_artifact and report failure"
+        ),
+    ):
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    assert result["success"] is False, (
+        f"already-rPPG input + no other stages selected must fail, "
+        f"not silently succeed. Got: {result!r}"
+    )
+    assert result["output"] is None
+    assert "already a rppg artifact" in (result["error"] or "").lower() or \
+           "nothing to do" in (result["error"] or "").lower(), (
+        f"error must explain why: {result['error']!r}"
+    )
+
+
+def test_rerun_rppg_silent_failure_reports_failure_not_success(tmp_path):
+    """Subagent HIGH#3 regression (real-world hit: scipy missing →
+    rPPG crashed → unchanged input was reported as 'Re-run complete').
+
+    When rPPG is the only selected post-process and `_rppg_video`
+    returns None (failure / skip), the rerun must report FAILURE
+    — NOT success with the unchanged input as the output. Reporting
+    success in that case was lying to the user that processing
+    happened when nothing did."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    # rPPG enabled, no oldcam, no loop — and _rppg_video will fail.
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "rppg_enabled": True,
+    })
+
+    with mock.patch.object(manager, "_rppg_video", return_value=None):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update(
+                {"success": success, "src": src, "output": output, "error": error}
+            )
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    assert result["success"] is False, (
+        f"rPPG silent failure must NOT be reported as success "
+        f"(scipy-missing scenario user hit on 2026-05-22). "
+        f"Got: {result!r}"
+    )
+    assert result["output"] is None
+    assert "failed" in (result["error"] or "").lower(), (
+        f"error message must surface the failure: {result['error']!r}"
+    )
 
 
 def test_v10_process_frame_skips_spatial_fluctuation_when_face_not_detected():
@@ -2096,3 +2242,35 @@ def test_rppg_video_accepts_already_injected_input_without_the_tool(tmp_path):
         "even when the rPPG tool is absent (guard must precede launcher check)"
     )
     assert any("already injected" in m.lower() for m, _ in logs)
+
+
+def test_rerun_captures_already_looped_status_before_rppg_renames_file():
+    """CodeRabbit Major on 36b5e0b (2026-05-22): the
+    ``loop_already_satisfied`` check at the Loop step looked at the
+    CURRENT ``source_video.stem`` — but rPPG (which runs FIRST in
+    the new Phase E order) had already renamed
+    ``clip_looped.mp4`` -> ``clip_looped-rppg-<metrics>.mp4``,
+    which no longer ends with ``_looped``. The Loop step then
+    proceeded and produced ``clip_looped-rppg_looped.mp4`` — exactly
+    the ``_looped_looped`` filename pattern Phase E's gate was
+    supposed to prevent.
+
+    Fix in R3: capture ``source_was_already_looped`` from the
+    ORIGINAL source stem BEFORE the rPPG step. Loop check uses the
+    captured flag OR a fresh stem check (belt-and-suspenders).
+
+    Locked via source assertion so a regression that drops the
+    pre-rPPG capture fails this test."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "kling_gui" / "queue_manager.py").read_text()
+    # The pre-rPPG capture must exist.
+    assert 'source_was_already_looped = source_video.stem.endswith("_looped")' in src, (
+        "R3 fix: rerun worker must capture _looped status from the "
+        "ORIGINAL source stem BEFORE the rPPG step renames it."
+    )
+    # The Loop check must honour the captured flag OR re-check the
+    # current stem (belt-and-suspenders for the rPPG-skipped path).
+    assert "source_was_already_looped or source_video.stem.endswith(" in src, (
+        "R3 fix: Loop step must check the pre-rPPG capture, not just "
+        "the post-rPPG current stem, to avoid _looped_looped.mp4."
+    )

@@ -71,10 +71,15 @@ class ExpandTab(tk.Frame):
                 self.config.get("outpaint_composite_mode", "none"),
             )
         )
+        # Default = "fal" everywhere (user direction 2026-05-22 final).
+        # The Phase A revert that restored the BFL-if-key-present default
+        # was over-broad: the user only wanted the macOS composite/feather
+        # changes reverted (the LANCZOS + 16px tolerance edits in
+        # outpaint_generator.py, already rolled back by d48bbc8). The
+        # provider default itself stays "fal" — switching between
+        # providers is a one-click dropdown change.
         self._provider_var = tk.StringVar(
-            value=self.config.get(
-                "outpaint_provider", "bfl" if self.config.get("bfl_api_key") else "fal"
-            )
+            value=self.config.get("outpaint_provider", "fal")
         )
 
         self._build_ui()
@@ -133,15 +138,17 @@ class ExpandTab(tk.Frame):
         )
         self._candidate_meta.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
 
-        # Prompt editor (user request, PR #41) — backed by the
-        # existing outpaint_prompt config key, which the dispatch
-        # path was already reading silently. Now editable in the
-        # tab itself, so the user can tune the prompt sent to
-        # fal.ai or BFL without leaving Step 2.5. Same key as the
-        # standalone Outpaint tab, so edits flow between them.
+        # Prompt editor — Phase G of polish/v2.3 (2026-05-22) gave
+        # this section its own config key (``selfie_expand_prompt``)
+        # so Step 2.5 can carry a scene-matching prompt without
+        # bleeding into Step 0 face-crop expand or the standalone
+        # Outpaint tab. Fallback: when ``selfie_expand_prompt`` is
+        # empty / missing, read the legacy shared ``outpaint_prompt``
+        # so users with old configs see their saved prompt populated
+        # on first launch.
         prompt_frame = tk.LabelFrame(
             self,
-            text="Prompt (sent to fal.ai / BFL)",
+            text="Step 2.5 Expand Prompt (sent to fal.ai / BFL)",
             font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
@@ -161,9 +168,20 @@ class ExpandTab(tk.Frame):
             relief=tk.FLAT,
             insertbackground=COLORS["text_light"],
         )
-        self._prompt_text.insert(
-            "1.0", self.config.get("outpaint_prompt", "")
-        )
+        # Phase G fallback chain: section-specific key first, then
+        # legacy shared key, then empty string. Codex P1 on 0967564
+        # (2026-05-22): key-presence semantics, NOT truthiness. An
+        # explicitly-saved empty ``selfie_expand_prompt`` is a valid
+        # intentional value (user cleared the prompt) and must NOT
+        # be silently replaced by the legacy shared prompt.
+        _section_prompt = self.config.get("selfie_expand_prompt")
+        if isinstance(_section_prompt, str):
+            _initial_prompt = _section_prompt
+        else:
+            _initial_prompt = str(
+                self.config.get("outpaint_prompt", "") or ""
+            )
+        self._prompt_text.insert("1.0", _initial_prompt)
         self._prompt_text.pack(fill=tk.X, padx=6, pady=6)
 
         settings_frame = tk.LabelFrame(
@@ -753,13 +771,19 @@ class ExpandTab(tk.Frame):
 
         max_per_side = 2048 if use_bfl else 700
         output_format = self._format_var.get()
-        # Live editor value — falls back to the persisted config
-        # key if the widget is missing (defensive, mirrors the
-        # outpaint_tab pattern).
+        # Live editor value — falls back to the section-specific
+        # persisted config key (Phase G of polish/v2.3), then to the
+        # legacy shared ``outpaint_prompt`` key, if the widget is
+        # missing (defensive, mirrors the outpaint_tab pattern).
+        # Codex P2 on 6080445 (2026-05-22): route through the named
+        # helper instead of inline ``or`` truthiness, otherwise an
+        # explicitly-saved empty ``selfie_expand_prompt`` is silently
+        # replaced by ``outpaint_prompt`` in this defensive path —
+        # the same regression R4 fixed on the happy path.
         try:
             prompt = self._prompt_text.get("1.0", "end-1c")
         except Exception:
-            prompt = cfg.get("outpaint_prompt", "")
+            prompt = self._fallback_selfie_expand_prompt()
         composite_mode = self._composite_mode_var.get().strip() or "preserve_seamless"
         freeimage_key = cfg.get("freeimage_api_key")
         ref_path = self._get_similarity_reference()
@@ -956,6 +980,24 @@ class ExpandTab(tk.Frame):
         if self._auto_switch_var.get() and self._notebook_switcher_video:
             self._notebook_switcher_video()
 
+    def _fallback_selfie_expand_prompt(self) -> str:
+        """Defensive fallback when ``_prompt_text`` widget is missing.
+
+        Codex P1 on 0967564 (2026-05-22): use key-presence semantics
+        so an explicitly-saved empty ``selfie_expand_prompt`` is
+        preserved (an empty string is a valid intentional value).
+        Only fall through to legacy ``outpaint_prompt`` when the
+        section-specific key is absent or non-str.
+        """
+        cfg = getattr(self, "config", None)
+        if not isinstance(cfg, dict):
+            return ""
+        section = cfg.get("selfie_expand_prompt")
+        if isinstance(section, str):
+            return section
+        legacy = cfg.get("outpaint_prompt")
+        return legacy if isinstance(legacy, str) else ""
+
     def get_config_updates(self) -> dict:
         return {
             "expand25_auto_switch": self._auto_switch_var.get(),
@@ -969,13 +1011,17 @@ class ExpandTab(tk.Frame):
             "outpaint_composite_mode": self._composite_mode_var.get(),
             "automation_selfie_expand_composite_mode": self._composite_mode_var.get(),
             "outpaint_provider": self._provider_var.get(),
-            "outpaint_prompt": (
+            # Phase G of polish/v2.3 (2026-05-22): writes go to the
+            # section-specific key. Reads still fall back to the legacy
+            # shared key for back-compat (see _build_ui), but writes
+            # never touch the shared key so a Step 2.5 prompt edit can
+            # NOT silently override Step 0 or Outpaint-tab prompts.
+            # Codex P1 on 0967564: defensive fallback also uses
+            # key-presence semantics (not truthiness) so an
+            # explicit empty ``selfie_expand_prompt`` survives.
+            "selfie_expand_prompt": (
                 self._prompt_text.get("1.0", "end-1c")
                 if hasattr(self, "_prompt_text")
-                else (
-                    self.config.get("outpaint_prompt", "")
-                    if isinstance(getattr(self, "config", None), dict)
-                    else ""
-                )
+                else self._fallback_selfie_expand_prompt()
             ),
         }

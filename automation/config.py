@@ -38,7 +38,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_allow_reprocess": False,
     "automation_reprocess_mode": "skip",  # skip | overwrite | increment
     "automation_front_expand_enabled": True,
-    "automation_front_expand_provider": "bfl",  # auto | bfl | fal
+    "automation_front_expand_provider": "fal",  # auto | bfl | fal (fal default per user direction 2026-05-22)
     "automation_front_expand_mode": "percent",  # document_3x4 | percent
     "automation_front_expand_composite_mode": "preserve_seamless",  # preserve_seamless | feathered | hard | none
     "automation_front_expand_percent": 70,
@@ -69,7 +69,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_selfie_max_attempts_per_model": 1,
     "automation_similarity_threshold": 80,
     "automation_selfie_expand_enabled": True,
-    "automation_selfie_expand_provider": "bfl",
+    "automation_selfie_expand_provider": "fal",  # auto | bfl | fal (fal default per user direction 2026-05-22)
     "automation_selfie_expand_mode": "percent",  # percent | centered_3x4
     "automation_selfie_expand_composite_mode": "none",  # preserve_seamless | feathered | hard | none  (Step 2.5 selfie expand ships raw AI output by default)
     "automation_selfie_expand_percent": 30,
@@ -181,6 +181,23 @@ class AutomationConfig:
 
 def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(config)
+    # Subagent CRITICAL on 286613c (2026-05-22): the GUI writes the
+    # opt-in fan-out flag as ``rppg_per_oldcam_fanout`` (no prefix)
+    # in default_config_template.json, release_prep.py, the GUI
+    # ``config_panel`` checkbox, AND the GUI runtime queue_manager
+    # gate. But the automation pipeline gate at pipeline.py:1381
+    # reads ``automation_rppg_per_oldcam_fanout`` (with prefix).
+    # Without this bridge, the opt-in is silently DEAD in the CLI
+    # automation path regardless of what the user sets — the user
+    # ticks the checkbox, GUI shows it as enabled, but the
+    # automation CLI defaults to False and never fans out.
+    # Bridge: copy the GUI key into the prefixed automation key
+    # when the prefixed key is absent, so a single user-facing
+    # setting drives both the GUI runtime AND the CLI pipeline.
+    if "automation_rppg_per_oldcam_fanout" not in merged and "rppg_per_oldcam_fanout" in merged:
+        merged["automation_rppg_per_oldcam_fanout"] = bool(
+            merged["rppg_per_oldcam_fanout"]
+        )
     for key, value in AUTOMATION_DEFAULTS.items():
         if key not in merged:
             merged[key] = value

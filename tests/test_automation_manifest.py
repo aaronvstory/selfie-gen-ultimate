@@ -278,12 +278,18 @@ def test_manifest_create_or_load_invalid_utf8_backs_up_and_recreates(tmp_path: P
 
 def test_automation_defaults_use_percent_and_nano_model():
     merged = merge_automation_defaults({})
-    assert merged["automation_front_expand_provider"] == "bfl"
+    # CodeRabbit Major on 36b5e0b (2026-05-22): both automation
+    # expand providers default to "fal" per user direction "fal-
+    # first defaults everywhere". The GUI Phase A revert only
+    # touched the GUI tabs; the automation CLI keys had stayed
+    # "bfl" and silently overrode the user's GUI choice. R3
+    # aligns all three (GUI + 2 automation) to fal.
+    assert merged["automation_front_expand_provider"] == "fal"
     assert merged["automation_front_expand_mode"] == "percent"
     assert merged["automation_front_expand_composite_mode"] == "preserve_seamless"
     assert merged["automation_front_expand_percent"] == 70
     assert merged["automation_front_expand_passes"] == 2
-    assert merged["automation_selfie_expand_provider"] == "bfl"
+    assert merged["automation_selfie_expand_provider"] == "fal"
     assert merged["automation_selfie_expand_mode"] == "percent"
     # Step 2.5 selfie expand ships raw AI output by default (composite
     # "none") per user request, PR #41 — front expand stays

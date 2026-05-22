@@ -1,8 +1,11 @@
 """Stable app-facing similarity adapter over the shared similarity engine."""
 
 import json
+import logging
 import os
 from typing import Optional, Callable, Dict, Any
+
+_LOGGER = logging.getLogger(__name__)
 
 SIMILARITY_PASS_THRESHOLD = 80
 # Raw ArcFace cosine-distance threshold (per similarity/CLAUDE.md). Distances
@@ -122,7 +125,17 @@ def compute_face_similarity_details(
             },
         }
 
-    _log(report_cb, f"compare ref={source_path!r} target={target_path!r}", "debug")
+    # User feedback 2026-05-22: panel was flooded with `Sim: compare ref=...`
+    # + `Sim: score=...` + 200-char `Sim: mode=normalized_crop model=ArcFace
+    # detector=... faces=... boxes=... conf=... crop=... dist=... per_model=...
+    # mapped=... fallback_reason=... fas_verdict=...` dumps every comparison.
+    # These were "debug" level but verbose_gui_mode promotes debug to the
+    # panel — and the user wants those lines GONE from the panel. Drop them
+    # from the report_cb path entirely so even verbose mode doesn't surface
+    # them. The diag dict is still returned in ``result["diagnostics"]`` and
+    # the stdlib logger picks it up via ``_LOGGER.debug`` below — so file-log
+    # forensic recovery still works.
+    _LOGGER.debug("compare ref=%r target=%r", source_path, target_path)
     result = engine.compare_images(source_path, target_path)
 
     score_raw = result.get("score", 0.0)
@@ -140,11 +153,12 @@ def compute_face_similarity_details(
 
     if error:
         _log(report_cb, str(error), "warning")
-        # Full diag stays file-only; gated by verbose_gui_mode like the success path.
-        _log(report_cb, _diag_summary(diagnostics), "debug")
+        _LOGGER.debug("diag (err): %s", _diag_summary(diagnostics))
     else:
-        _log(report_cb, f"score={score}% pass={passed} (threshold={SIMILARITY_PASS_THRESHOLD})", "debug")
-        _log(report_cb, _diag_summary(diagnostics), "debug")
+        _LOGGER.debug(
+            "score=%d%% pass=%s (threshold=%d) — %s",
+            score, passed, SIMILARITY_PASS_THRESHOLD, _diag_summary(diagnostics),
+        )
 
     return {
         "score": score,

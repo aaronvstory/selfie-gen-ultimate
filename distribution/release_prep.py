@@ -252,6 +252,63 @@ def build_sanitized_config(
     config["outpaint_double_expand"] = bool(
         template.get("outpaint_double_expand", False)
     )
+    # v2.3 ship defaults (user request 2026-05-22): loop OFF.
+    # Dev kling_config.json typically still carries ``loop_videos: True``
+    # from prior sessions; without the override the new template default
+    # would never reach the bundle. OVERRIDE (not setdefault) for the
+    # same reason as outpaint_double_expand above.
+    config["loop_videos"] = bool(template.get("loop_videos", False))
+    # v2.3 ship default (user direction 2026-05-22 final): "fal" for
+    # everything everywhere. The Phase A revert (a1c1b099) was over-
+    # broad — what the user actually wanted reverted was just the
+    # macOS LANCZOS + 16px composite tweaks in outpaint_generator.py
+    # (rolled back in d48bbc8), NOT the provider default itself.
+    # Switching providers is a one-click dropdown change in the GUI;
+    # the default should be "fal" out of the box. OVERRIDE (not
+    # setdefault) so a dev kling_config.json carrying "bfl" from a
+    # tuned session doesn't leak into the bundle.
+    #
+    # GUI provider key:
+    config["outpaint_provider"] = str(template.get("outpaint_provider", "fal"))
+    # Automation pipeline provider keys (CodeRabbit Major on
+    # 36b5e0b 2026-05-22): the GUI ``outpaint_provider`` only
+    # affects the manual tab dispatch. The automation CLI uses two
+    # parallel keys (front + selfie) defaulting to "bfl" in
+    # automation/config.py DEFAULTS. Without these overrides, a dev
+    # kling_config.json carrying the old "bfl" automation defaults
+    # would ship to fresh-clone users and they'd get BFL for
+    # automation runs even though the GUI now defaults to fal.
+    # Force both to "fal" to match Phase A intent.
+    config["automation_front_expand_provider"] = "fal"
+    config["automation_selfie_expand_provider"] = "fal"
+    # Phase E of polish/v2.3 (2026-05-22): the new pipeline order is
+    # Kling -> rPPG -> Loop -> Oldcam. The slower legacy per-Oldcam
+    # fan-out (one rPPG injection per Oldcam version) is preserved
+    # behind this opt-in flag. Default OFF; dev kling_config.json
+    # values from prior sessions don't leak into the bundle.
+    config["rppg_per_oldcam_fanout"] = bool(
+        template.get("rppg_per_oldcam_fanout", False)
+    )
+    # Subagent HIGH on 286613c (2026-05-22): Phase G per-section
+    # expand prompts (face_crop_expand_prompt, selfie_expand_prompt,
+    # outpaint_tab_prompt) were filled via the earlier setdefault
+    # merge — but setdefault won't overwrite an existing empty
+    # string. A dev kling_config.json that saved any of these as ""
+    # (e.g. while testing R4's "explicit empty string is preserved"
+    # behaviour) would ship a bundle with blank expand prompts.
+    # Fix: replace blank/whitespace-only values with the template
+    # text. Non-empty user values still survive (intentional dev
+    # customisation is preserved into the bundle).
+    for _pk in (
+        "face_crop_expand_prompt",
+        "selfie_expand_prompt",
+        "outpaint_tab_prompt",
+    ):
+        _live = config.get(_pk, "")
+        if not isinstance(_live, str) or not _live.strip():
+            _template_value = template.get(_pk)
+            if isinstance(_template_value, str):
+                config[_pk] = _template_value
 
     ensure_key_fields(config)
     for spec in API_KEY_SPECS:
@@ -303,7 +360,7 @@ def write_bundle_readme(bundle_root: Path) -> None:
         "4) If macOS blocks it, right-click -> Open once.\n"
         "5) On first launch, enter required API keys.\n"
         "6) Fal.ai key is required.\n"
-        "7) BFL key may be required by default automation settings.\n"
+        "7) BFL key is optional (only needed if you switch providers to BFL in the GUI).\n"
         "8) First launch creates a local virtual environment.\n"
         "9) All prompts are stored in kling_config.json (editable by GUI/CLI or manual edit).\n"
     )
