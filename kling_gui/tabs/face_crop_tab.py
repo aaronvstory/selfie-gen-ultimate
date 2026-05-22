@@ -20,6 +20,7 @@ from ..theme import (
     TTK_BTN_TAB_NAV,
     TTK_BTN_WORKFLOW,
     debounce_command,
+    macos_widget_pad,
 )
 from ..image_state import ImageSession
 from ..ml_backend_env import ensure_ml_backend_env
@@ -474,6 +475,7 @@ class FaceCropTab(tk.Frame):
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         )
         self._auto_switch_cb.pack(anchor="w")
 
@@ -679,6 +681,7 @@ class FaceCropTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(10, 0))
         tk.Radiobutton(
             btn_row,
@@ -691,6 +694,7 @@ class FaceCropTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(4, 0))
         tk.Checkbutton(
             btn_row,
@@ -701,6 +705,7 @@ class FaceCropTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(8, 0))
 
         self._outpaint_status = tk.Label(

@@ -1,5 +1,6 @@
 """Shared theme constants and helpers for the Kling GUI."""
 
+import os
 import sys
 import logging
 import time
@@ -192,5 +193,82 @@ def apply_macos_button_fix(button) -> None:
         _LOGGER.debug(
             "apply_macos_button_fix failed", exc_info=True,
         )
+
+
+# ── macOS hit-target sizing helpers ────────────────────────────────────
+#
+# Long-running issue: on macOS Aqua, ttk.Button styles with very tight
+# vertical padding (e.g. SLOT at (6, 3), COMPACT at (8, 4)) and the
+# tiny raw tk.Checkbutton/tk.Radiobutton widgets often need 2-10 clicks
+# before a click registers. The visible button area is fine; the click
+# target inside it is the problem. PR #40 / commit b3bc7398 moved every
+# action button to ttk under clam (fixing the tint reversion and the
+# focus-ring shrink), but didn't enlarge padding — and these tight
+# styles still under-shoot the macOS pointer event resolution.
+#
+# Strategy: bump only the TIGHT styles on macOS. Leave PRIMARY/SECONDARY/
+# WORKFLOW alone (already (10, 6) / (14, 7)) so layout proportions don't
+# shift. Windows path is a true no-op: same tuples in, same tuples out.
+
+def mac_padding(default: tuple, macos: tuple) -> tuple:
+    """Return ``macos`` on darwin, ``default`` everywhere else.
+
+    Centralizes the per-platform padding split so every tight ttk
+    button style and the raw tk widgets share the same rule, without
+    scattered ``if IS_MACOS`` branches at every style declaration.
+    """
+    return macos if IS_MACOS else default
+
+
+def macos_widget_pad() -> dict:
+    """Return ``{'padx': N, 'pady': M}`` on darwin, ``{}`` elsewhere.
+
+    Spread into raw ``tk.Checkbutton`` / ``tk.Radiobutton`` /
+    ``tk.Menubutton`` constructors as ``**macos_widget_pad()`` to grow
+    the macOS hit target without disturbing Windows layout.
+    """
+    if not IS_MACOS:
+        return {}
+    return {"padx": 6, "pady": 3}
+
+
+# ── Opt-in click diagnostics ───────────────────────────────────────────
+#
+# Enabled when env var ``KLING_DEBUG_CLICKS=1``. Bind to a specific
+# widget via ``attach_click_diagnostics(widget, label="Expand Image")``
+# when investigating a missed-click report. No-op by default.
+
+CLICK_DEBUG = os.environ.get("KLING_DEBUG_CLICKS") == "1"
+
+
+def attach_click_diagnostics(widget, label: str = "") -> None:
+    """Log press/release coords + widget bounds when CLICK_DEBUG is on.
+
+    Off unless ``KLING_DEBUG_CLICKS=1`` was in the environment at
+    import time. The helper is left in tree so future investigations
+    can wire it up case-by-case; do NOT call it by default.
+    """
+    if not CLICK_DEBUG:
+        return
+
+    def _on_press(ev):
+        w = ev.widget
+        try:
+            bounds = (w.winfo_width(), w.winfo_height())
+        except Exception:
+            bounds = ("?", "?")
+        _LOGGER.warning(
+            "[click-debug] press %s @ (%d,%d) widget=%s bounds=%s",
+            label or w.winfo_name(), ev.x, ev.y, w, bounds,
+        )
+
+    def _on_release(ev):
+        _LOGGER.warning(
+            "[click-debug] release %s @ (%d,%d)",
+            label or ev.widget.winfo_name(), ev.x, ev.y,
+        )
+
+    widget.bind("<ButtonPress-1>", _on_press, add="+")
+    widget.bind("<ButtonRelease-1>", _on_release, add="+")
 
 
