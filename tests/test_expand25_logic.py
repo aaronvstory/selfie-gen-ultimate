@@ -165,7 +165,11 @@ class Expand25ConfigTests(unittest.TestCase):
         tab._provider_var = self._FakeGetVar("bfl")
 
         updates = tab.get_config_updates()
-        self.assertEqual(updates["outpaint_composite_mode"], "preserve_seamless")
+        # Step 2.5 writes ONLY to its section-specific key. Writing to the
+        # shared `outpaint_composite_mode` clobbered Step 0's user choice
+        # across sessions — see expand_tab.py:get_config_updates docstring
+        # for the full story (PR #48 round 3 fix).
+        self.assertNotIn("outpaint_composite_mode", updates)
         self.assertEqual(updates["automation_selfie_expand_composite_mode"], "preserve_seamless")
 
 

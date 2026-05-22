@@ -65,12 +65,17 @@ class ExpandTab(tk.Frame):
         self._right_var = tk.IntVar(value=self.config.get("outpaint_expand_right", 140))
         self._format_var = tk.StringVar(value=self.config.get("outpaint_format", "png"))
         self._composite_mode_var = tk.StringVar(
+            # Default "none" (raw AI output) for Step 2.5 expand —
+            # user-requested ship default. Reads ONLY from the section-
+            # specific key. The previous back-compat read fallback to
+            # the shared ``outpaint_composite_mode`` was the other half
+            # of the bug where Step 0's user-chosen "preserve_seamless"
+            # silently became "none" — Step 2.5 inherited Step 0's
+            # value, then wrote it back, then on the next session
+            # Step 0 saw the inherited "none" and showed it.
             value=self.config.get(
-                "automation_selfie_expand_composite_mode",
-                # Default "none" (raw AI output) for Step 2.5
-                # expand — user-requested ship default.
-                self.config.get("outpaint_composite_mode", "none"),
-            )
+                "automation_selfie_expand_composite_mode", "none",
+            ),
         )
         # Default = "fal" everywhere (user direction 2026-05-22 final).
         # The Phase A revert that restored the BFL-if-key-present default
@@ -1012,7 +1017,12 @@ class ExpandTab(tk.Frame):
             "outpaint_expand_left": self._left_var.get(),
             "outpaint_expand_right": self._right_var.get(),
             "outpaint_format": self._format_var.get(),
-            "outpaint_composite_mode": self._composite_mode_var.get(),
+            # NEVER write to the SHARED key here. Step 2.5's factory default
+            # is "none" (raw AI output) while Step 0's is "preserve_seamless".
+            # Previously Step 2.5 wrote both keys at session save, which meant
+            # Step 0's user-chosen "preserve_seamless" got silently overwritten
+            # to "none" every time the user opened Step 2.5. Section-specific
+            # key only; Step 0 manages the shared key on its own.
             "automation_selfie_expand_composite_mode": self._composite_mode_var.get(),
             "outpaint_provider": self._provider_var.get(),
             # Phase G of polish/v2.3 (2026-05-22): writes go to the

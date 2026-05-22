@@ -135,14 +135,32 @@ def create_action_button(parent, text: str, command, style: str = TTK_BTN_SECOND
         used to revert now stay tinted across click, focus, drag,
         and window resize.
 
-    Click reliability:
-        The original concern that drove the ``tk.Button`` path was
-        macOS hit-area issues with ``highlightthickness=1`` shrinking
-        the clickable interior. That issue is specific to ``tk.Button``
-        — ``ttk.Button`` doesn't draw an HIView focus ring at all, so
-        the full button bounds are clickable.
+    Click reliability on macOS:
+        Two-part fix — padding bump on tight styles (done in commit
+        6cb2e505) PLUS this eager-focus binding (commit on PR #48 round 3).
+
+        Root cause: on macOS, when a Tk window is not currently the
+        focused window OR the widget hasn't been recently interacted
+        with, the first <ButtonPress-1> can be consumed by the focus
+        dispatcher INSTEAD of firing the button's ``command``. The user
+        then clicks again, which now hits an already-focused button.
+        User-visible symptom: "I have to click 5-10× before it
+        registers." Padding bump alone did not fix this — the hit area
+        was fine, the focus state was wrong.
+
+        Binding ``<Enter>`` to ``focus_set()`` warms the widget so by
+        the time the user clicks, the button already has focus and the
+        click goes straight to the command. Zero risk on Windows/Linux
+        (focus-on-hover is benign there) and matches the de-facto
+        Tk-on-macOS pattern.
     """
-    return ttk.Button(parent, text=text, command=command, style=style, **kwargs)
+    btn = ttk.Button(parent, text=text, command=command, style=style, **kwargs)
+    if IS_MACOS:
+        # Warm focus on hover so the next click invokes the command
+        # immediately rather than being absorbed by focus routing.
+        # ``add="+"`` so we never clobber user-added bindings.
+        btn.bind("<Enter>", lambda ev: ev.widget.focus_set(), add="+")
+    return btn
 
 
 def apply_macos_button_fix(button) -> None:
@@ -288,5 +306,41 @@ def attach_click_diagnostics(widget, label: str = "") -> None:
 
     widget.bind("<ButtonPress-1>", _on_press, add="+")
     widget.bind("<ButtonRelease-1>", _on_release, add="+")
+
+
+def setup_macos_eager_focus(root) -> None:
+    """App-wide ``bind_class`` handler that warms focus on hover.
+
+    Call once at startup AFTER ``style.theme_use("clam")``. No-op on
+    Windows/Linux. Covers EVERY ttk + raw-tk button/checkbutton/
+    radiobutton/menubutton in the app, including widgets created
+    later — ``bind_class`` is installed at the class level, not the
+    instance level, so future widgets pick it up automatically.
+
+    Fixes the macOS "click 5-10x before it registers" issue at the
+    root: focus is the bottleneck, not hit area. By the time the
+    user clicks, the widget is already focused so the click goes
+    straight to the command instead of being eaten by focus
+    routing. Confirmed against PR #48 round 3 user report.
+    """
+    if not IS_MACOS:
+        return
+
+    def _focus_on_enter(ev):
+        try:
+            state = str(ev.widget.cget("state"))
+            if state != "disabled":
+                ev.widget.focus_set()
+        except Exception:
+            pass
+
+    for cls in (
+        "TButton", "TCheckbutton", "TRadiobutton", "TMenubutton",
+        "Button", "Checkbutton", "Radiobutton", "Menubutton",
+    ):
+        try:
+            root.bind_class(cls, "<Enter>", _focus_on_enter, add="+")
+        except Exception:
+            pass
 
 
