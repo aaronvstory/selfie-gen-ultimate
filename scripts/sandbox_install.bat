@@ -10,9 +10,12 @@ cd /d "%REPO_ROOT%"
 set "SANDBOX_DIR=%REPO_ROOT%\.sandbox-venv"
 
 set "PY="
-where python >/dev/null 2>/dev/null && set "PY=python"
+where python3 >nul 2>nul && set "PY=python3"
 if not defined PY (
-    echo FATAL: no Python found in PATH
+    where python >nul 2>nul && set "PY=python"
+)
+if not defined PY (
+    echo FATAL: no Python found in PATH ^(tried python3, python^)
     exit /b 2
 )
 

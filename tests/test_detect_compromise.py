@@ -679,6 +679,96 @@ class SandboxInstallBatExitCodeTests(unittest.TestCase):
         )
 
 
+class BatFilesNoDevNullTests(unittest.TestCase):
+    """Subagent BLOCKER on 7653c73 (2026-05-22): sandbox_install.bat
+    line 13 used ``where python >/dev/null 2>/dev/null`` which on
+    Windows cmd.exe creates a LITERAL file named ``null`` (or a
+    ``dev\\null`` directory tree) in the working directory — direct
+    violation of the CLAUDE.md NON-NEGOTIABLE rule that ``nul`` files
+    must not exist in any commit or working tree.
+
+    The fix in 7653c73-next uses ``>nul 2>nul`` (Windows convention).
+    This test scans every committed .bat / .cmd file in the repo for
+    the forbidden ``/dev/null`` POSIX path so any future contributor
+    or auto-formatter that swaps Windows ``nul`` -> POSIX
+    ``/dev/null`` is caught at test time.
+
+    Pin the rule across the whole .bat surface, not just the one
+    file the subagent flagged. The audit_deps.bat + safe_install.bat
+    siblings already use ``>nul 2>nul`` correctly; this test
+    prevents future drift in either direction."""
+
+    def test_no_bat_file_contains_dev_null(self):
+        offenders: list[str] = []
+        for ext in ("*.bat", "*.cmd"):
+            for p in _REPO_ROOT.rglob(ext):
+                # Skip vendored / third-party stuff if any (rPPG is the
+                # only vendored .bat-bearing subtree on this branch).
+                if "rPPG" in p.parts:
+                    continue
+                # Also skip the .venv and other generated dirs that
+                # might contain shipped .bat scripts from packages.
+                if any(part in {".venv", ".venv311", "venv", "node_modules", "site-packages"} for part in p.parts):
+                    continue
+                try:
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if "/dev/null" in text:
+                    rel = p.relative_to(_REPO_ROOT).as_posix()
+                    # Find the offending lines for a helpful message.
+                    lines = [
+                        f"  {rel}:{i+1}: {ln.rstrip()}"
+                        for i, ln in enumerate(text.splitlines())
+                        if "/dev/null" in ln
+                    ]
+                    offenders.extend(lines)
+        self.assertFalse(
+            offenders,
+            "CLAUDE.md NON-NEGOTIABLE: .bat / .cmd files must NEVER use "
+            "/dev/null (POSIX). On Windows cmd.exe this creates a literal "
+            "``null`` file in the working tree. Use ``>nul 2>nul`` instead.\n\n"
+            "Offending lines:\n" + "\n".join(offenders),
+        )
+
+
+class SandboxInstallPythonDetectionTests(unittest.TestCase):
+    """Subagent HIGH on 7653c73 (2026-05-22): sandbox_install.bat
+    originally only tried ``where python`` (line 13), unlike its .sh
+    sibling which tries ``python3.11 python3.12 python3 python`` and
+    unlike its safe_install.bat sibling which tries python3 then
+    python. On a Chocolatey-style Windows install where python3 is on
+    PATH but python is not (uncommon but real), the .bat aborted with
+    FATAL despite a valid interpreter being available.
+
+    Fix on 7653c73-next: match safe_install.bat's pattern — try
+    python3 first, then python."""
+
+    def test_sandbox_install_bat_tries_python3_first(self):
+        src = (_REPO_ROOT / "scripts" / "sandbox_install.bat").read_text(
+            encoding="utf-8"
+        )
+        # The forbidden pattern: only ``where python`` (no python3 attempt).
+        # We confirm by counting ``where python3`` invocations.
+        self.assertIn(
+            "where python3", src,
+            "sandbox_install.bat must try python3 before python "
+            "(some Chocolatey installs only expose python3 on PATH)"
+        )
+        # And the canonical ``where python3 >nul 2>nul`` pattern.
+        self.assertIn(
+            'where python3 >nul 2>nul && set "PY=python3"', src,
+            "sandbox_install.bat python3 detection must follow the "
+            "canonical ``where ... >nul 2>nul && set PY=...`` pattern"
+        )
+        # Plain ``where python`` (no 3) must still be tried as fallback.
+        self.assertIn(
+            'where python >nul 2>nul && set "PY=python"', src,
+            "sandbox_install.bat must still try plain ``python`` "
+            "as a fallback when python3 is missing"
+        )
+
+
 class DetectCompromiseExitCodeContractTests(unittest.TestCase):
     """Subagent CRITICAL on b807560 (2026-05-22): detect_compromise.py
     emits exit code 0 (clean) or 1 (alerts) — a 2-tier producer. The
