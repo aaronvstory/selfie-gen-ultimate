@@ -2008,6 +2008,45 @@ class FaceCropTab(tk.Frame):
                         lambda m=message, lvl=level: self.log(m, lvl),
                     )
 
+                # Recovery-round banner (PR #48 round 6): make do_2x +
+                # composite_mode + every planned target visible at
+                # worker entry. The user's last "expanded but not
+                # expanded" report had no log line that pinned which
+                # of those three the worker actually saw. Without
+                # this banner the silent-failure modes (composite
+                # disabled, do_2x off when user thought it was on,
+                # wrong target paths) are indistinguishable from a
+                # true compositing regression in the log.
+                self.winfo_toplevel().after(
+                    0,
+                    lambda d=do_2x, cm=composite_mode:
+                    self.log(
+                        f"Step 0 expand: do_2x={d} composite_mode={cm}",
+                        "info",
+                    ),
+                )
+                for _i, _planned in enumerate(planned_paths, start=1):
+                    self.winfo_toplevel().after(
+                        0,
+                        lambda i=_i, name=_planned.name:
+                        self.log(
+                            f"Step 0 expand: planned pass {i} -> {name}",
+                            "info",
+                        ),
+                    )
+                if composite_mode == "none":
+                    self.winfo_toplevel().after(
+                        0,
+                        lambda: self.log(
+                            'Step 0 expand: composite mode is "None" — '
+                            'preserve-seamless blending is DISABLED. '
+                            'Original pixels will NOT be preserved on top '
+                            'of the expanded canvas. Set Composite to '
+                            '"Preserve Seamless" for blended output.',
+                            "warning",
+                        ),
+                    )
+
                 freeimage_key = cfg.get("freeimage_api_key")
                 gen = OutpaintGenerator(
                     api_key, freeimage_key=freeimage_key, bfl_api_key=bfl_key,
@@ -2019,19 +2058,26 @@ class FaceCropTab(tk.Frame):
                 # Per-pass results: (path, similarity_str_or_None, ops_dict).
                 per_pass_results = []
                 total_passes = len(planned_paths)
-                for pass_index, pass_output_path in enumerate(planned_paths):
+                for pass_index, planned_target in enumerate(planned_paths):
                     pass_no = pass_index + 1
                     self.winfo_toplevel().after(
                         0,
                         lambda i=pass_no, n=total_passes, cm=composite_mode,
                                inp=Path(current_input).name,
-                               outp=pass_output_path.name:
+                               outp=planned_target.name:
                         self.log(
                             f"Expand pass {i}/{n}: composite_mode={cm} "
                             f"in={inp} out={outp}",
                             "info",
                         ),
                     )
+                    # PR #48 round 6 recovery: call gen.outpaint with
+                    # output_path=None so the generator auto-names + runs
+                    # its compositing step exactly the way main does. The
+                    # naming convention is then enforced by a best-effort
+                    # rename below. This isolates the naming work from the
+                    # compositing work — any visual blend regression can
+                    # no longer be blamed on the output_path argument.
                     result = gen.outpaint(
                         image_path=current_input,
                         output_folder=str(gen_dir),
@@ -2042,12 +2088,29 @@ class FaceCropTab(tk.Frame):
                         prompt=prompt,
                         output_format=output_format,
                         composite_mode=composite_mode,
-                        output_path=str(pass_output_path),
+                        output_path=None,
                         poll_timeout_seconds=get_outpaint_fal_timeout_seconds(cfg),
                         cancel_event=self._outpaint_cancel_event,
                     )
                     if not result:
                         break
+
+                    if Path(result) != planned_target:
+                        try:
+                            Path(result).replace(planned_target)
+                            result = str(planned_target)
+                        except OSError as exc:
+                            self.winfo_toplevel().after(
+                                0,
+                                lambda e=exc, src=result,
+                                       dst=str(planned_target):
+                                self.log(
+                                    f"Outpaint: rename {Path(src).name} -> "
+                                    f"{Path(dst).name} failed: {e}; "
+                                    f"keeping auto-name",
+                                    "warning",
+                                ),
+                            )
 
                     current_ops = increment_ops(current_ops, "exp")
 

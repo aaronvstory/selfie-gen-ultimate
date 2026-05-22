@@ -291,3 +291,273 @@ def test_done_stale_run_token_no_op():
     )
     fake.image_session.add_image.assert_not_called()
     fake._outpaint_status.config.assert_not_called()
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Worker pass-shape tests — covers PR #48 round 6 recovery commit.
+#
+# The recovery flips the worker so it calls ``gen.outpaint(...)`` with
+# ``output_path=None`` (matching ``main``'s exact call shape) and then
+# performs a post-composite rename onto the planned target. These tests
+# pin the contract: the generator is called the SAME WAY ``main`` calls
+# it, and the rename happens AFTER the generator returns.
+# ────────────────────────────────────────────────────────────────────────
+
+
+class _FakeOutpaintGen:
+    """Fake ``gen.outpaint`` that writes a real placeholder + records calls.
+
+    Mirrors ``outpaint_generator.py``'s auto-naming + collision suffix so
+    the worker's post-composite rename step has a real file to move. A
+    fake that returned a path string without creating the file would
+    make the rename silently no-op and the assertion that pass 2's
+    input is the renamed file would falsely pass for the wrong reason.
+    """
+
+    def __init__(self, *args, **kwargs):
+        self.calls: list[dict] = []
+
+    def set_progress_callback(self, cb):
+        pass
+
+    def get_last_outpaint_error_detail(self):
+        return ""
+
+    def outpaint(
+        self,
+        *,
+        image_path,
+        output_folder,
+        output_path=None,
+        composite_mode,
+        output_format="png",
+        **kwargs,
+    ):
+        if output_path is None:
+            stem = Path(image_path).stem
+            ext = f".{output_format}"
+            out = Path(output_folder) / f"{stem}-expanded{ext}"
+            n = 1
+            while out.exists():
+                out = Path(output_folder) / f"{stem}-expanded_v{n}{ext}"
+                n += 1
+        else:
+            out = Path(output_path)
+        out.write_bytes(b"FAKE_OUTPAINT_RESULT")
+        self.calls.append({
+            "image_path": image_path,
+            "output_folder": str(output_folder),
+            "output_path": output_path,
+            "composite_mode": composite_mode,
+            "output_format": output_format,
+            **kwargs,
+        })
+        return str(out)
+
+
+def _make_fake_expand_tab(
+    *,
+    tmp_path: Path,
+    input_image: Path,
+    do_2x: bool,
+    composite_mode: str = "preserve_seamless",
+):
+    """Build a MagicMock-stubbed FaceCropTab able to drive ``_outpaint_image``.
+
+    ``winfo_toplevel().after`` is wired to execute the scheduled lambda
+    synchronously so log calls (and the eventual ``_on_outpaint_done``
+    dispatch) run inline in the test thread.
+    """
+    fake = MagicMock()
+    fake._outpaint_busy = False
+    fake._outpaint_run_token = 0
+    fake._outpaint_cancel_event = None
+    fake.outpaint_generator = None
+    fake.get_config.return_value = {
+        "falai_api_key": "k_fal",
+        "freeimage_api_key": "k_free",
+        "bfl_api_key": "",
+        "outpaint_fal_timeout_seconds": 60,
+    }
+    fake._outpaint_provider_var.get.return_value = "fal"
+    fake._get_gen_dir.return_value = tmp_path
+    fake._expand_mode_var.get.return_value = "pixels"
+    fake._expand_left_var.get.return_value = 50
+    fake._expand_right_var.get.return_value = 50
+    fake._expand_top_var.get.return_value = 50
+    fake._expand_bottom_var.get.return_value = 50
+    fake._outpaint_format_var.get.return_value = "png"
+    fake._outpaint_prompt_str = ""
+    fake._outpaint_double_expand_var.get.return_value = do_2x
+    fake._outpaint_composite_var.get.return_value = composite_mode
+    fake.image_session.active_image_path = str(input_image)
+    fake.image_session.active_entry = MagicMock(ops={})
+    fake._find_crop_ref_path.return_value = None  # disable similarity branch
+
+    # Synchronous after-marshal — execute scheduled lambdas inline so log
+    # / _on_outpaint_done calls are observable on the fake.
+    fake.winfo_toplevel.return_value.after.side_effect = (
+        lambda _delay, fn, *args, **kw: fn(*args, **kw)
+    )
+    return fake
+
+
+def _run_outpaint_worker(fake, fake_gen, monkeypatch):
+    """Invoke ``FaceCropTab._outpaint_image`` synchronously with patched deps."""
+    from kling_gui.tabs.face_crop_tab import FaceCropTab
+    import outpaint_generator
+    import threading
+
+    monkeypatch.setattr(
+        outpaint_generator, "OutpaintGenerator", lambda *a, **kw: fake_gen,
+    )
+
+    # threading.Thread(...).start() must run the target inline so the
+    # worker finishes before the test assertions run.
+    class _InlineThread:
+        def __init__(self, target=None, daemon=None, **kw):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(threading, "Thread", _InlineThread)
+
+    FaceCropTab._outpaint_image(fake)
+
+
+def _log_messages(fake) -> list[tuple[str, str]]:
+    """Extract (message, level) tuples from every fake.log call."""
+    out = []
+    for c in fake.log.call_args_list:
+        args = c.args
+        if len(args) >= 2:
+            out.append((args[0], args[1]))
+    return out
+
+
+def test_1x_passes_preserve_seamless(tmp_path, monkeypatch):
+    """1x expand: exactly one gen.outpaint call with composite_mode set
+    and output_path=None (recovery: auto-name + post-composite rename)."""
+    src = tmp_path / "front.png"
+    src.write_bytes(b"INPUT")
+    fake = _make_fake_expand_tab(
+        tmp_path=tmp_path, input_image=src, do_2x=False,
+    )
+    fake_gen = _FakeOutpaintGen()
+    _run_outpaint_worker(fake, fake_gen, monkeypatch)
+
+    assert len(fake_gen.calls) == 1
+    call = fake_gen.calls[0]
+    assert call["composite_mode"] == "preserve_seamless"
+    assert call["output_path"] is None
+
+
+def test_2x_both_passes_preserve_seamless(tmp_path, monkeypatch):
+    """2x expand: two gen.outpaint calls, BOTH with composite_mode set
+    and output_path=None."""
+    src = tmp_path / "front.png"
+    src.write_bytes(b"INPUT")
+    fake = _make_fake_expand_tab(
+        tmp_path=tmp_path, input_image=src, do_2x=True,
+    )
+    fake_gen = _FakeOutpaintGen()
+    _run_outpaint_worker(fake, fake_gen, monkeypatch)
+
+    assert len(fake_gen.calls) == 2
+    for call in fake_gen.calls:
+        assert call["composite_mode"] == "preserve_seamless"
+        assert call["output_path"] is None
+
+
+def test_2x_pass2_input_is_renamed_pass1(tmp_path, monkeypatch):
+    """Pass 2's image_path is the planned pass-1 target (the renamed
+    file), not the auto-named ``-expanded.png`` that the generator
+    would have produced absent the post-composite rename."""
+    src = tmp_path / "front.png"
+    src.write_bytes(b"INPUT")
+    fake = _make_fake_expand_tab(
+        tmp_path=tmp_path, input_image=src, do_2x=True,
+    )
+    fake_gen = _FakeOutpaintGen()
+    _run_outpaint_worker(fake, fake_gen, monkeypatch)
+
+    expected_pass1_target = tmp_path / "front-expanded.png"
+    assert fake_gen.calls[1]["image_path"] == str(expected_pass1_target)
+    assert expected_pass1_target.exists()
+    # Pass 2's output (after rename) is the -2x target.
+    assert (tmp_path / "front-expanded-2x.png").exists()
+
+
+def test_2x_partial_pass1_succeeds_pass2_fails(tmp_path, monkeypatch):
+    """If pass 1 succeeds and pass 2 fails, pass 1 still reaches the
+    carousel via _on_outpaint_done (partial-2x success)."""
+    src = tmp_path / "front.png"
+    src.write_bytes(b"INPUT")
+    fake = _make_fake_expand_tab(
+        tmp_path=tmp_path, input_image=src, do_2x=True,
+    )
+
+    class _PartialFailGen(_FakeOutpaintGen):
+        def outpaint(self, **kwargs):
+            if len(self.calls) == 0:
+                return super().outpaint(**kwargs)
+            self.calls.append({**kwargs, "failed": True})
+            return None
+
+    fake_gen = _PartialFailGen()
+    _run_outpaint_worker(fake, fake_gen, monkeypatch)
+
+    # _on_outpaint_done was dispatched with one success + total_passes=2.
+    fake._on_outpaint_done.assert_called_once()
+    per_pass_results, total_passes, *_ = fake._on_outpaint_done.call_args.args
+    assert total_passes == 2
+    assert len(per_pass_results) == 1
+    # Successful result path is the planned pass-1 target.
+    assert per_pass_results[0][0] == str(tmp_path / "front-expanded.png")
+
+
+def test_composite_none_emits_warning(tmp_path, monkeypatch):
+    """When composite_mode == 'none', worker logs the explicit
+    'composite mode is None' warning at run start but still runs."""
+    src = tmp_path / "front.png"
+    src.write_bytes(b"INPUT")
+    fake = _make_fake_expand_tab(
+        tmp_path=tmp_path, input_image=src, do_2x=False,
+        composite_mode="none",
+    )
+    fake_gen = _FakeOutpaintGen()
+    _run_outpaint_worker(fake, fake_gen, monkeypatch)
+
+    # Generator still ran.
+    assert len(fake_gen.calls) == 1
+    assert fake_gen.calls[0]["composite_mode"] == "none"
+    # Warning fired.
+    warnings = [m for m, lvl in _log_messages(fake) if lvl == "warning"]
+    assert any('composite mode is "None"' in m for m in warnings)
+
+
+def test_planned_targets_for_2x_naming(tmp_path, monkeypatch):
+    """Recovery banner logs both planned pass targets, and on-disk
+    files match: pass 1 = '<stem>-expanded.png', pass 2 =
+    '<stem>-expanded-2x.png'."""
+    src = tmp_path / "front.png"
+    src.write_bytes(b"INPUT")
+    fake = _make_fake_expand_tab(
+        tmp_path=tmp_path, input_image=src, do_2x=True,
+    )
+    fake_gen = _FakeOutpaintGen()
+    _run_outpaint_worker(fake, fake_gen, monkeypatch)
+
+    assert (tmp_path / "front-expanded.png").exists()
+    assert (tmp_path / "front-expanded-2x.png").exists()
+
+    info_msgs = [m for m, lvl in _log_messages(fake) if lvl == "info"]
+    # do_2x + composite banner present.
+    assert any(
+        "do_2x=True" in m and "composite_mode=preserve_seamless" in m
+        for m in info_msgs
+    )
+    # Both planned targets surfaced.
+    assert any("planned pass 1 -> front-expanded.png" in m for m in info_msgs)
+    assert any("planned pass 2 -> front-expanded-2x.png" in m for m in info_msgs)
