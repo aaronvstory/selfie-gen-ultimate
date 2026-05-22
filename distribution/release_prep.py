@@ -289,6 +289,26 @@ def build_sanitized_config(
     config["rppg_per_oldcam_fanout"] = bool(
         template.get("rppg_per_oldcam_fanout", False)
     )
+    # Subagent HIGH on 286613c (2026-05-22): Phase G per-section
+    # expand prompts (face_crop_expand_prompt, selfie_expand_prompt,
+    # outpaint_tab_prompt) were filled via the earlier setdefault
+    # merge — but setdefault won't overwrite an existing empty
+    # string. A dev kling_config.json that saved any of these as ""
+    # (e.g. while testing R4's "explicit empty string is preserved"
+    # behaviour) would ship a bundle with blank expand prompts.
+    # Fix: replace blank/whitespace-only values with the template
+    # text. Non-empty user values still survive (intentional dev
+    # customisation is preserved into the bundle).
+    for _pk in (
+        "face_crop_expand_prompt",
+        "selfie_expand_prompt",
+        "outpaint_tab_prompt",
+    ):
+        _live = config.get(_pk, "")
+        if not isinstance(_live, str) or not _live.strip():
+            _template_value = template.get(_pk)
+            if isinstance(_template_value, str):
+                config[_pk] = _template_value
 
     ensure_key_fields(config)
     for spec in API_KEY_SPECS:

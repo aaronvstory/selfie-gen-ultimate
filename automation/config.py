@@ -181,6 +181,23 @@ class AutomationConfig:
 
 def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(config)
+    # Subagent CRITICAL on 286613c (2026-05-22): the GUI writes the
+    # opt-in fan-out flag as ``rppg_per_oldcam_fanout`` (no prefix)
+    # in default_config_template.json, release_prep.py, the GUI
+    # ``config_panel`` checkbox, AND the GUI runtime queue_manager
+    # gate. But the automation pipeline gate at pipeline.py:1381
+    # reads ``automation_rppg_per_oldcam_fanout`` (with prefix).
+    # Without this bridge, the opt-in is silently DEAD in the CLI
+    # automation path regardless of what the user sets — the user
+    # ticks the checkbox, GUI shows it as enabled, but the
+    # automation CLI defaults to False and never fans out.
+    # Bridge: copy the GUI key into the prefixed automation key
+    # when the prefixed key is absent, so a single user-facing
+    # setting drives both the GUI runtime AND the CLI pipeline.
+    if "automation_rppg_per_oldcam_fanout" not in merged and "rppg_per_oldcam_fanout" in merged:
+        merged["automation_rppg_per_oldcam_fanout"] = bool(
+            merged["rppg_per_oldcam_fanout"]
+        )
     for key, value in AUTOMATION_DEFAULTS.items():
         if key not in merged:
             merged[key] = value

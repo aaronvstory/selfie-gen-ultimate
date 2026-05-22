@@ -2825,3 +2825,45 @@ def test_pipeline_rppg_fanout_all_fail_does_not_crash(tmp_path, monkeypatch):
     # And the failed per-Oldcam attempts must be recorded.
     assert "existing-oldcam-v8.mp4" in step.get("meta", {}).get("failed_inputs", [])
     assert "existing-oldcam-v24.mp4" in step.get("meta", {}).get("failed_inputs", [])
+
+
+def test_merge_automation_defaults_bridges_rppg_fanout_gui_key():
+    """Subagent CRITICAL on 286613c (R5, 2026-05-22): the GUI
+    writes the rPPG per-Oldcam fan-out checkbox as
+    ``rppg_per_oldcam_fanout`` (no prefix) — that's the key in
+    default_config_template.json, release_prep.py, the GUI
+    config_panel checkbox handler, AND the GUI runtime
+    queue_manager gate. But the automation CLI pipeline gate at
+    pipeline.py:1381 reads ``automation_rppg_per_oldcam_fanout``
+    (with prefix). Without a bridge, the user's checkbox setting
+    was silently DEAD in the CLI automation path.
+
+    R5 fix: merge_automation_defaults copies the unprefixed GUI
+    key into the prefixed automation key when the latter is
+    absent. Single user-facing setting now drives both the GUI
+    runtime AND the CLI pipeline."""
+    # Case 1: GUI key TRUE → prefixed key inherits True.
+    merged = merge_automation_defaults({"rppg_per_oldcam_fanout": True})
+    assert merged.get("automation_rppg_per_oldcam_fanout") is True, (
+        "GUI-key=True must bridge to automation_*=True"
+    )
+    # Case 2: GUI key FALSE → prefixed key inherits False.
+    merged = merge_automation_defaults({"rppg_per_oldcam_fanout": False})
+    assert merged.get("automation_rppg_per_oldcam_fanout") is False, (
+        "GUI-key=False must bridge to automation_*=False"
+    )
+    # Case 3: prefixed key explicitly set wins over GUI key (back-compat
+    # so existing pipeline tests that pass the prefixed key keep working).
+    merged = merge_automation_defaults({
+        "rppg_per_oldcam_fanout": False,
+        "automation_rppg_per_oldcam_fanout": True,
+    })
+    assert merged.get("automation_rppg_per_oldcam_fanout") is True, (
+        "Explicit automation_* must NOT be overwritten by GUI bridge"
+    )
+    # Case 4: neither key present → key absent (pipeline.get default-False
+    # path; bridge MUST NOT inject the key out of thin air).
+    merged = merge_automation_defaults({})
+    assert "automation_rppg_per_oldcam_fanout" not in merged, (
+        "Bridge must NOT inject the automation key when neither source key is set"
+    )

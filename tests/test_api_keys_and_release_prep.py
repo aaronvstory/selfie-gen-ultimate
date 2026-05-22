@@ -445,3 +445,82 @@ def test_cli_startup_requires_only_fal_when_bfl_not_selected():
     required_keys = {spec.config_key for spec, _reason in ui._startup_required_key_specs()}
     assert "falai_api_key" in required_keys
     assert "bfl_api_key" not in required_keys
+
+
+def test_release_prep_force_overrides_blank_phase_g_prompts(tmp_path: Path):
+    """Subagent HIGH on 286613c (R5, 2026-05-22): a dev
+    kling_config.json carrying empty-string Phase G per-section
+    prompts (face_crop_expand_prompt, selfie_expand_prompt,
+    outpaint_tab_prompt) would ship a bundle with blank expand
+    prompts, because the prior setdefault merge doesn't overwrite
+    existing "" values. R5 fix: replace blank/whitespace-only
+    values with the template text after the merge, so the bundle
+    always ships populated Phase G prompts."""
+    template = tmp_path / "default_config_template.json"
+    template.write_text(
+        json.dumps(
+            {
+                "face_crop_expand_prompt": "TEMPLATE face crop bg text",
+                "selfie_expand_prompt": "TEMPLATE selfie expand bg text",
+                "outpaint_tab_prompt": "TEMPLATE outpaint tab bg text",
+                "outpaint_prompt": "TEMPLATE legacy shared bg text",
+            }
+        ),
+        encoding="utf-8",
+    )
+    live = tmp_path / "kling_config.json"
+    live.write_text(
+        json.dumps(
+            {
+                # Dev cleared all three Phase G keys to ""; without the
+                # R5 fix these blanks would survive into the bundle.
+                "face_crop_expand_prompt": "",
+                "selfie_expand_prompt": "   ",  # whitespace also treated as blank
+                "outpaint_tab_prompt": "",
+                # Legacy outpaint_prompt set explicitly — must survive
+                # because it's not in the Phase G override list.
+                "outpaint_prompt": "DEV custom legacy",
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = build_sanitized_config(template, live)
+    assert cfg["face_crop_expand_prompt"] == "TEMPLATE face crop bg text"
+    assert cfg["selfie_expand_prompt"] == "TEMPLATE selfie expand bg text"
+    assert cfg["outpaint_tab_prompt"] == "TEMPLATE outpaint tab bg text"
+    # Legacy outpaint_prompt is NOT in the Phase G force-override
+    # list — a dev's custom legacy prompt must survive into the bundle.
+    assert cfg["outpaint_prompt"] == "DEV custom legacy"
+
+
+def test_release_prep_preserves_non_blank_phase_g_prompts(tmp_path: Path):
+    """Companion to the above: when a dev has SET intentional
+    non-blank Phase G prompts in their kling_config.json, those
+    values must survive into the bundle. The R5 fix MUST only
+    replace blanks, not overwrite intentional dev customisation."""
+    template = tmp_path / "default_config_template.json"
+    template.write_text(
+        json.dumps(
+            {
+                "face_crop_expand_prompt": "TEMPLATE face crop",
+                "selfie_expand_prompt": "TEMPLATE selfie expand",
+                "outpaint_tab_prompt": "TEMPLATE outpaint tab",
+            }
+        ),
+        encoding="utf-8",
+    )
+    live = tmp_path / "kling_config.json"
+    live.write_text(
+        json.dumps(
+            {
+                "face_crop_expand_prompt": "dev's custom face crop",
+                "selfie_expand_prompt": "dev's custom selfie expand",
+                "outpaint_tab_prompt": "dev's custom outpaint tab",
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = build_sanitized_config(template, live)
+    assert cfg["face_crop_expand_prompt"] == "dev's custom face crop"
+    assert cfg["selfie_expand_prompt"] == "dev's custom selfie expand"
+    assert cfg["outpaint_tab_prompt"] == "dev's custom outpaint tab"
