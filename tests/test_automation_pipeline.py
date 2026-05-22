@@ -12,12 +12,20 @@ from automation.pipeline import AutoPipelineRunner, PipelineDeps
 class FakeOutpaint:
     def __init__(self):
         self.calls = []
+        # Records ALL invocations including image_path + output_path so
+        # tests can verify the CLI 2-pass plumbing (PR #48 round 5 M2).
+        self.invocations = []
 
     def set_progress_callback(self, _cb):
         return None
 
     def outpaint(self, image_path, output_folder, output_path=None, **kwargs):
         self.calls.append(kwargs)
+        self.invocations.append({
+            "image_path": image_path,
+            "output_folder": output_folder,
+            "output_path": output_path,
+        })
         out_path = Path(output_path or (Path(output_folder) / f"{Path(image_path).stem}-expanded.png"))
         out_path.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (64, 64), (120, 120, 120)).save(out_path)
@@ -362,6 +370,86 @@ def test_pipeline_increment_mode_generates_incremented_files(tmp_path: Path, mon
     assert stats["completed"] == 1
     front_out = Path(manifest.data["cases"]["case-e"]["steps"]["front_expand"]["output"])
     assert "_v" in front_out.stem
+
+
+def test_front_expand_2pass_uses_distinct_intermediate_path(tmp_path: Path, monkeypatch):
+    """Subagent a659d166 M2 — pass 1 of CLI 2-pass front_expand must NOT
+    write to the same path pass 2 forces (was the M3 overwrite bug).
+    Captures both `outpaint.outpaint` invocations and asserts:
+      * Pass 1's output_path is distinct from pass 2's.
+      * Pass 1's path ends in `-stage1.png` (the deliberate intermediate
+        marker introduced in d82ccb7d).
+      * After pass 2 succeeds, the stage1 file is cleaned up so the case
+        dir doesn't accumulate junk (subagent M1).
+    """
+    case_dir = tmp_path / "case-g"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-g")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x",
+        "bfl_api_key": "bfl-token",
+        "automation_oldcam_required": False,
+        "saved_prompts": {"1": "prompt"},
+        "current_prompt_slot": 1,
+        "automation_front_expand_passes": 2,  # ← the unit under test
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop",
+                        lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details",
+                        lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
+
+    fake_outpaint = FakeOutpaint()
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: fake_outpaint,
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+
+    # The pipeline calls outpaint a few times (front-expand passes +
+    # selfie-expand and maybe upscale). Filter to the front-expand
+    # invocations: those have image_path equal to `front.png` (pass 1
+    # input) or the pass-1 intermediate result (pass 2 input). Both
+    # live in case_dir, not under gen-images.
+    front_calls = [
+        inv for inv in fake_outpaint.invocations
+        if Path(inv["output_path"] or "").parent == case_dir
+    ]
+    assert len(front_calls) == 2, f"expected 2 front-expand calls, got {front_calls}"
+
+    pass1_out = front_calls[0]["output_path"]
+    pass2_out = front_calls[1]["output_path"]
+    assert pass1_out != pass2_out, "pass 1 and pass 2 must use distinct paths"
+    assert pass1_out.endswith("-stage1.png"), (
+        f"pass 1 should land at <stem>-stage1.png; got {pass1_out}"
+    )
+    assert pass2_out.endswith("front-expanded.png"), (
+        f"pass 2 should land at target_output (front-expanded.png); got {pass2_out}"
+    )
+
+    # Pass 2's input must be pass 1's output (chained).
+    assert front_calls[1]["image_path"] == pass1_out
+
+    # Stage1 intermediate cleaned up after pass 2 succeeds (subagent M1).
+    assert not Path(pass1_out).exists(), (
+        f"stage1 intermediate {pass1_out} should be deleted after pass 2"
+    )
+    # Final pass-2 output survives.
+    assert Path(pass2_out).exists()
 
 
 def test_pipeline_overwrite_mode_reuses_base_output_name(tmp_path: Path, monkeypatch):

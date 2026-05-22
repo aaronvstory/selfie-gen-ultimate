@@ -647,10 +647,16 @@ class _RppgProgressTracker:
 
         # Fallthrough — verbose users get the ANSI-stripped line at
         # info, everyone else gets debug (silently dropped by GUI,
-        # kept in file log).
+        # kept in file log). Skip emission entirely when the line was
+        # pure ANSI escape codes (stripped empty) — re-emitting `line`
+        # in that case would smuggle the escape bytes back into the
+        # log, defeating the cleanup. Per Gemini medium id=3289250631
+        # on PR #48 round 5.
+        if not stripped:
+            return
         _report(
             self._report_cb,
-            stripped if stripped else line,
+            stripped,
             "info" if self._verbose else "debug",
         )
 

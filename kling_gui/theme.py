@@ -154,13 +154,14 @@ def create_action_button(parent, text: str, command, style: str = TTK_BTN_SECOND
         (focus-on-hover is benign there) and matches the de-facto
         Tk-on-macOS pattern.
     """
-    btn = ttk.Button(parent, text=text, command=command, style=style, **kwargs)
-    if IS_MACOS:
-        # Warm focus on hover so the next click invokes the command
-        # immediately rather than being absorbed by focus routing.
-        # ``add="+"`` so we never clobber user-added bindings.
-        btn.bind("<Enter>", lambda ev: ev.widget.focus_set(), add="+")
-    return btn
+    # The macOS focus-on-hover warming is installed once at startup
+    # via `setup_macos_eager_focus(root)` (called from main_window's
+    # `_setup_ui` right after `style.theme_use("clam")`). It uses
+    # `bind_class("TButton", "<Enter>", ...)` which applies to ALL
+    # instances of the class — past AND future. A per-widget binding
+    # here would just call `focus_set` twice on every hover (Gemini
+    # medium id=3289250661 on PR #48 round 5 — removed for cleanliness).
+    return ttk.Button(parent, text=text, command=command, style=style, **kwargs)
 
 
 def apply_macos_button_fix(button) -> None:
@@ -351,8 +352,13 @@ def setup_macos_eager_focus(root) -> None:
 
     def _focus_on_enter(ev):
         try:
+            # ttk widgets can return a tuple-like state spec; `str()`
+            # gives "('disabled',)" in that case. Substring check is
+            # robust across both `tk.*` (returns "disabled") and
+            # `ttk.*` (may return ("disabled",)). Per Gemini medium
+            # id=3289250678 on PR #48 round 5.
             state = str(ev.widget.cget("state"))
-            if state != "disabled":
+            if "disabled" not in state:
                 ev.widget.focus_set()
         except Exception:
             pass

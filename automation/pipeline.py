@@ -616,6 +616,25 @@ class AutoPipelineRunner:
                         return self._finalize_case(case_entry, "failed")
                     front_input_path = result
                     executed_passes += 1
+                # Clean up the pass-1 intermediate now that pass 2 has
+                # consumed it. Leaving it on disk pollutes the case dir
+                # AND triggers session_manager's outpaint-classifier on
+                # any later GUI load (the stage1 file would appear as a
+                # sibling generation in the carousel). Per subagent
+                # a659d166 M1 on PR #48 round 5. Best-effort delete:
+                # not fatal if it fails — the downstream contract
+                # depends only on `target_output`.
+                if front_passes == 2 and _pass1_intermediate:
+                    _stage1 = Path(_pass1_intermediate)
+                    if _stage1.exists():
+                        try:
+                            _stage1.unlink()
+                        except OSError:
+                            self.logger.debug(
+                                "case %s: failed to unlink stage1 intermediate %s",
+                                case_key,
+                                _pass1_intermediate,
+                            )
                 self.manifest.update_step(
                     case_key,
                     "front_expand",
