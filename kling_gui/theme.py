@@ -322,6 +322,16 @@ def setup_macos_eager_focus(root) -> None:
     user clicks, the widget is already focused so the click goes
     straight to the command instead of being eaten by focus
     routing. Confirmed against PR #48 round 3 user report.
+
+    Trade-off: mousing across a button-like widget while typing in
+    a text entry WILL yank focus away mid-keystroke. This is the
+    inverse of the click-eaten symptom and is rated significantly
+    less annoying. `TEntry`/`Text` are NOT in the bind_class
+    list precisely to keep the entry-loses-focus-on-hover from
+    going the other direction. If this becomes a real complaint,
+    the next step is to scope the binding to a deny-list of
+    widgets recently focused by keyboard, but that adds state
+    and is out of scope for the symptom we're treating.
     """
     if not IS_MACOS:
         return
