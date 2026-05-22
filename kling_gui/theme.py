@@ -259,19 +259,31 @@ def attach_click_diagnostics(widget, label: str = "") -> None:
 
     def _on_press(ev):
         w = ev.widget
+        # All Tk-side reads must be guarded — a click immediately
+        # before widget destruction can fire the bound callback against
+        # a half-torn-down widget (TclError on macOS). Per Gemini
+        # review on PR #48.
+        try:
+            name = label or w.winfo_name()
+        except Exception:
+            name = label or "<destroyed>"
         try:
             bounds = (w.winfo_width(), w.winfo_height())
         except Exception:
             bounds = ("?", "?")
         _LOGGER.warning(
             "[click-debug] press %s @ (%d,%d) widget=%s bounds=%s",
-            label or w.winfo_name(), ev.x, ev.y, w, bounds,
+            name, ev.x, ev.y, w, bounds,
         )
 
     def _on_release(ev):
+        try:
+            name = label or ev.widget.winfo_name()
+        except Exception:
+            name = label or "<destroyed>"
         _LOGGER.warning(
             "[click-debug] release %s @ (%d,%d)",
-            label or ev.widget.winfo_name(), ev.x, ev.y,
+            name, ev.x, ev.y,
         )
 
     widget.bind("<ButtonPress-1>", _on_press, add="+")

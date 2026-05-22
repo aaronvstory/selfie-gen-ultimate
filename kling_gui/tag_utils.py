@@ -2,6 +2,7 @@
 
 import os
 import re
+from pathlib import Path
 from path_utils import sanitize_stem, sanitize_filename
 
 _OP_ORDER = ["pol", "ups", "exp"]
@@ -81,7 +82,12 @@ def increment_ops(current_ops: dict, operation: str) -> dict:
     return new_ops
 
 
-def build_expand_filenames(base_stem: str, ext: str, gen_dir, do_2x: bool):
+def build_expand_filenames(
+    base_stem: str,
+    ext: str,
+    gen_dir: "Path | str",
+    do_2x: bool,
+) -> "tuple[Path, Path | None]":
     """Plan deterministic output paths for a Step 0 Generative Expand run.
 
     Returns ``(pass1_path, pass2_path_or_None)`` as ``pathlib.Path`` objects.
@@ -96,8 +102,6 @@ def build_expand_filenames(base_stem: str, ext: str, gen_dir, do_2x: bool):
 
     Single-pass mode resolves the one path independently as before.
     """
-    from pathlib import Path
-
     gen_dir = Path(gen_dir)
     stem = sanitize_stem(base_stem, default="image")
     if not ext.startswith("."):
