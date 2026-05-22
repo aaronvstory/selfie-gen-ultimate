@@ -13,6 +13,7 @@ from pathlib import Path
 from .theme import (
     COLORS,
     FONT_FAMILY,
+    IS_MACOS,
     TTK_BTN_COMPACT,
     TTK_BTN_DANGER_COMPACT,
     TTK_BTN_SECONDARY,
@@ -527,7 +528,8 @@ class ImageCarousel(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
-            padx=2,
+            padx=8 if IS_MACOS else 2,
+            pady=4 if IS_MACOS else 0,
         )
         self._show_face_box_chk.pack(side=tk.RIGHT, padx=(0, 0))
 
@@ -542,7 +544,8 @@ class ImageCarousel(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
-            padx=2,
+            padx=8 if IS_MACOS else 2,
+            pady=4 if IS_MACOS else 0,
         )
         self._anti_spoof_chk.pack(side=tk.RIGHT, padx=(0, 8))
 
@@ -556,7 +559,8 @@ class ImageCarousel(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
-            padx=2,
+            padx=8 if IS_MACOS else 2,
+            pady=4 if IS_MACOS else 0,
         )
         self._auto_chk.pack(side=tk.RIGHT, padx=(0, 8))
 
