@@ -18,6 +18,7 @@ from ..theme import (
     TTK_BTN_SUCCESS,
     TTK_BTN_WORKFLOW,
     debounce_command,
+    macos_widget_pad,
 )
 
 
@@ -206,6 +207,7 @@ class ExpandTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT)
         tk.Radiobutton(
             mode_row,
@@ -218,6 +220,7 @@ class ExpandTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(12, 0))
 
         self._pct_frame = tk.Frame(settings_frame, bg=COLORS["bg_panel"])
@@ -421,6 +424,7 @@ class ExpandTab(tk.Frame):
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT)
         self._send_btn = ttk.Button(
             send_row,

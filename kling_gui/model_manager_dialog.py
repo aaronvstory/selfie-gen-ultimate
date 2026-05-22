@@ -18,6 +18,7 @@ from .theme import (
     TTK_BTN_DANGER,
     TTK_BTN_SECONDARY,
     TTK_BTN_SUCCESS,
+    macos_widget_pad,
 )
 from model_metadata import MODEL_METADATA, get_model_display_name
 
@@ -313,6 +314,7 @@ class ModelManagerDialog(tk.Toplevel):
             font=(FONT_FAMILY, 9), bg=COLORS["bg_panel"], fg=COLORS["text_light"],
             selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
+            **macos_widget_pad(),
         )
         tk.Checkbutton(dur_frame, text="5s", variable=self._dur_5_var, **cb_opts).pack(side=tk.LEFT, padx=(0, 8))
         tk.Checkbutton(dur_frame, text="10s", variable=self._dur_10_var, **cb_opts).pack(side=tk.LEFT, padx=(0, 8))
@@ -326,6 +328,7 @@ class ModelManagerDialog(tk.Toplevel):
             font=(FONT_FAMILY, 9), bg=COLORS["bg_panel"], fg=COLORS["text_light"],
             selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
+            **macos_widget_pad(),
         )
         tk.Radiobutton(def_dur_frame, text="5s", variable=self._default_dur_var, value="5", **rb_opts).pack(side=tk.LEFT, padx=(0, 8))
         tk.Radiobutton(def_dur_frame, text="10s", variable=self._default_dur_var, value="10", **rb_opts).pack(side=tk.LEFT)
