@@ -206,9 +206,22 @@ class FaceCropTab(tk.Frame):
         self._expand_bottom_var = tk.IntVar(value=config.get("outpaint_expand_bottom", 140))
         self._expand_left_var = tk.IntVar(value=config.get("outpaint_expand_left", 140))
         self._expand_right_var = tk.IntVar(value=config.get("outpaint_expand_right", 140))
-        self._outpaint_composite_var = tk.StringVar(
-            value=config.get("outpaint_composite_mode", "preserve_seamless")
-        )
+        # PR #48 round 6: "none" is NEVER a valid load-time default for
+        # Step 0. The raw fal output (composite_mode="none") doesn't
+        # preserve the original pixels — the user sees a "this isn't
+        # expanded" result with the face redrawn/warped inside the
+        # expanded canvas. The user repeatedly reported "it keeps
+        # defaulting to none" because Step 0 saves whatever's in the
+        # var to disk on quit, and a prior session's "none" choice
+        # persists across launches. Force preserve_seamless on load
+        # whenever the saved value is unset/blank/"none". The user
+        # can still pick "None" mid-session via the dropdown if they
+        # explicitly want the raw output for an A/B compare; it just
+        # won't survive the next launch.
+        _saved_composite = config.get("outpaint_composite_mode", "preserve_seamless")
+        if not isinstance(_saved_composite, str) or _saved_composite.strip().lower() in ("", "none"):
+            _saved_composite = "preserve_seamless"
+        self._outpaint_composite_var = tk.StringVar(value=_saved_composite)
         # Outpaint provider: "bfl" or "fal". Default = "fal" everywhere
         # (user direction 2026-05-22 final). The Phase A revert that
         # restored the BFL-if-key-present default was over-broad: the
