@@ -1,5 +1,6 @@
 """Shared theme constants and helpers for the Kling GUI."""
 
+import os
 import sys
 import logging
 import time
@@ -134,13 +135,32 @@ def create_action_button(parent, text: str, command, style: str = TTK_BTN_SECOND
         used to revert now stay tinted across click, focus, drag,
         and window resize.
 
-    Click reliability:
-        The original concern that drove the ``tk.Button`` path was
-        macOS hit-area issues with ``highlightthickness=1`` shrinking
-        the clickable interior. That issue is specific to ``tk.Button``
-        — ``ttk.Button`` doesn't draw an HIView focus ring at all, so
-        the full button bounds are clickable.
+    Click reliability on macOS:
+        Two-part fix — padding bump on tight styles (done in commit
+        6cb2e505) PLUS this eager-focus binding (commit on PR #48 round 3).
+
+        Root cause: on macOS, when a Tk window is not currently the
+        focused window OR the widget hasn't been recently interacted
+        with, the first <ButtonPress-1> can be consumed by the focus
+        dispatcher INSTEAD of firing the button's ``command``. The user
+        then clicks again, which now hits an already-focused button.
+        User-visible symptom: "I have to click 5-10× before it
+        registers." Padding bump alone did not fix this — the hit area
+        was fine, the focus state was wrong.
+
+        Binding ``<Enter>`` to ``focus_set()`` warms the widget so by
+        the time the user clicks, the button already has focus and the
+        click goes straight to the command. Zero risk on Windows/Linux
+        (focus-on-hover is benign there) and matches the de-facto
+        Tk-on-macOS pattern.
     """
+    # The macOS focus-on-hover warming is installed once at startup
+    # via `setup_macos_eager_focus(root)` (called from main_window's
+    # `_setup_ui` right after `style.theme_use("clam")`). It uses
+    # `bind_class("TButton", "<Enter>", ...)` which applies to ALL
+    # instances of the class — past AND future. A per-widget binding
+    # here would just call `focus_set` twice on every hover (Gemini
+    # medium id=3289250661 on PR #48 round 5 — removed for cleanliness).
     return ttk.Button(parent, text=text, command=command, style=style, **kwargs)
 
 
@@ -192,5 +212,164 @@ def apply_macos_button_fix(button) -> None:
         _LOGGER.debug(
             "apply_macos_button_fix failed", exc_info=True,
         )
+
+
+# ── macOS hit-target sizing helpers ────────────────────────────────────
+#
+# Long-running issue: on macOS Aqua, ttk.Button styles with very tight
+# vertical padding (e.g. SLOT at (6, 3), COMPACT at (8, 4)) and the
+# tiny raw tk.Checkbutton/tk.Radiobutton widgets often need 2-10 clicks
+# before a click registers. The visible button area is fine; the click
+# target inside it is the problem. PR #40 / commit b3bc7398 moved every
+# action button to ttk under clam (fixing the tint reversion and the
+# focus-ring shrink), but didn't enlarge padding — and these tight
+# styles still under-shoot the macOS pointer event resolution.
+#
+# Strategy: bump only the TIGHT styles on macOS. Leave PRIMARY/SECONDARY/
+# WORKFLOW alone (already (10, 6) / (14, 7)) so layout proportions don't
+# shift. Windows path is a true no-op: same tuples in, same tuples out.
+
+def mac_padding(default: tuple, macos: tuple) -> tuple:
+    """Return ``macos`` on darwin, ``default`` everywhere else.
+
+    Centralizes the per-platform padding split so every tight ttk
+    button style and the raw tk widgets share the same rule, without
+    scattered ``if IS_MACOS`` branches at every style declaration.
+    """
+    return macos if IS_MACOS else default
+
+
+def mac_int(default: int, macos: int) -> int:
+    """Single-int sibling of ``mac_padding``.
+
+    Use where a raw ``tk.Checkbutton``/``Radiobutton`` constructor
+    already has an explicit ``padx=N`` or ``pady=N`` baked in (so
+    spreading ``**macos_widget_pad()`` would raise a duplicate-kwarg
+    TypeError). E.g. ``padx=mac_int(2, 8)`` reads as "2 on Windows,
+    8 on macOS" — no scattered ``if IS_MACOS`` branch at the call
+    site. Codereview-driven (PR #48 round 4 CodeRabbit Major).
+    """
+    return macos if IS_MACOS else default
+
+
+def macos_widget_pad() -> dict:
+    """Return ``{'padx': N, 'pady': M}`` on darwin, ``{}`` elsewhere.
+
+    Spread into raw ``tk.Checkbutton`` / ``tk.Radiobutton`` /
+    ``tk.Menubutton`` constructors as ``**macos_widget_pad()`` to grow
+    the macOS hit target without disturbing Windows layout.
+    """
+    if not IS_MACOS:
+        return {}
+    return {"padx": 6, "pady": 3}
+
+
+# ── Opt-in click diagnostics ───────────────────────────────────────────
+#
+# Enabled when env var ``KLING_DEBUG_CLICKS=1``. Bind to a specific
+# widget via ``attach_click_diagnostics(widget, label="Expand Image")``
+# when investigating a missed-click report. No-op by default.
+
+CLICK_DEBUG = os.environ.get("KLING_DEBUG_CLICKS") == "1"
+
+
+def attach_click_diagnostics(widget, label: str = "") -> None:
+    """Log press/release coords + widget bounds when CLICK_DEBUG is on.
+
+    Off unless ``KLING_DEBUG_CLICKS=1`` was in the environment at
+    import time. The helper is left in tree so future investigations
+    can wire it up case-by-case; do NOT call it by default.
+
+    Note: ``CLICK_DEBUG`` is captured ONCE at module import. Toggling
+    the env var at runtime has no effect — restart the app to flip
+    the flag. The test suite uses ``monkeypatch.setattr(theme,
+    "CLICK_DEBUG", True)`` as a test-only escape hatch; that path is
+    not available to end users.
+    """
+    if not CLICK_DEBUG:
+        return
+
+    def _on_press(ev):
+        w = ev.widget
+        # All Tk-side reads must be guarded — a click immediately
+        # before widget destruction can fire the bound callback against
+        # a half-torn-down widget (TclError on macOS). Per Gemini
+        # review on PR #48.
+        try:
+            name = label or w.winfo_name()
+        except Exception:
+            name = label or "<destroyed>"
+        try:
+            bounds = (w.winfo_width(), w.winfo_height())
+        except Exception:
+            bounds = ("?", "?")
+        _LOGGER.warning(
+            "[click-debug] press %s @ (%d,%d) widget=%s bounds=%s",
+            name, ev.x, ev.y, w, bounds,
+        )
+
+    def _on_release(ev):
+        try:
+            name = label or ev.widget.winfo_name()
+        except Exception:
+            name = label or "<destroyed>"
+        _LOGGER.warning(
+            "[click-debug] release %s @ (%d,%d)",
+            name, ev.x, ev.y,
+        )
+
+    widget.bind("<ButtonPress-1>", _on_press, add="+")
+    widget.bind("<ButtonRelease-1>", _on_release, add="+")
+
+
+def setup_macos_eager_focus(root) -> None:
+    """App-wide ``bind_class`` handler that warms focus on hover.
+
+    Call once at startup AFTER ``style.theme_use("clam")``. No-op on
+    Windows/Linux. Covers EVERY ttk + raw-tk button/checkbutton/
+    radiobutton/menubutton in the app, including widgets created
+    later — ``bind_class`` is installed at the class level, not the
+    instance level, so future widgets pick it up automatically.
+
+    Fixes the macOS "click 5-10x before it registers" issue at the
+    root: focus is the bottleneck, not hit area. By the time the
+    user clicks, the widget is already focused so the click goes
+    straight to the command instead of being eaten by focus
+    routing. Confirmed against PR #48 round 3 user report.
+
+    Trade-off: mousing across a button-like widget while typing in
+    a text entry WILL yank focus away mid-keystroke. This is the
+    inverse of the click-eaten symptom and is rated significantly
+    less annoying. `TEntry`/`Text` are NOT in the bind_class
+    list precisely to keep the entry-loses-focus-on-hover from
+    going the other direction. If this becomes a real complaint,
+    the next step is to scope the binding to a deny-list of
+    widgets recently focused by keyboard, but that adds state
+    and is out of scope for the symptom we're treating.
+    """
+    if not IS_MACOS:
+        return
+
+    def _focus_on_enter(ev):
+        try:
+            # ttk widgets can return a tuple-like state spec; `str()`
+            # gives "('disabled',)" in that case. Substring check is
+            # robust across both `tk.*` (returns "disabled") and
+            # `ttk.*` (may return ("disabled",)). Per Gemini medium
+            # id=3289250678 on PR #48 round 5.
+            state = str(ev.widget.cget("state"))
+            if "disabled" not in state:
+                ev.widget.focus_set()
+        except Exception:
+            pass
+
+    for cls in (
+        "TButton", "TCheckbutton", "TRadiobutton", "TMenubutton",
+        "Button", "Checkbutton", "Radiobutton", "Menubutton",
+    ):
+        try:
+            root.bind_class(cls, "<Enter>", _focus_on_enter, add="+")
+        except Exception:
+            pass
 
 

@@ -87,9 +87,14 @@ class CompositeNoneDefaultTests(unittest.TestCase):
         src = (_ROOT / "kling_gui" / "tabs" / "expand_tab.py").read_text(
             encoding="utf-8"
         )
+        # Step 2.5 reads ONLY its section-specific key, with "none"
+        # as the ship default. The previous back-compat fallback to
+        # the shared ``outpaint_composite_mode`` was the source of
+        # Step 0 silently being clobbered with Step 2.5's "none"
+        # across sessions (PR #48 round 3 fix).
         self.assertRegex(
             src,
-            r'self\.config\.get\(\s*"outpaint_composite_mode",\s*"none"\s*\)',
+            r'self\.config\.get\(\s*\n?\s*"automation_selfie_expand_composite_mode",\s*"none",\s*\)',
         )
         # The out-of-range guard must also fall back to "none".
         self.assertRegex(

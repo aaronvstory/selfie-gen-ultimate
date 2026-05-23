@@ -60,6 +60,8 @@ from .theme import (
     TTK_BTN_SLOT_INACTIVE,
     create_action_button,
     debounce_command,
+    mac_padding,
+    setup_macos_eager_focus,
 )
 from .layout_utils import (
     parse_geometry_size as _parse_geometry_size,
@@ -1483,6 +1485,15 @@ class KlingGUIWindow:
         # Style configuration
         style = ttk.Style()
         style.theme_use("clam")
+        # macOS: warm focus on hover for every button-like widget in
+        # the app so the next click goes STRAIGHT to the command
+        # instead of being eaten by focus routing. Root cause of the
+        # long-running "I have to click 5-10x before it registers"
+        # report (PR #48 round 3 user feedback). bind_class on the
+        # TButton / TCheckbutton / TRadiobutton classes covers every
+        # widget created from this point forward, including widgets
+        # built lazily by tabs. No-op on Windows + Linux.
+        setup_macos_eager_focus(self.root)
         style.configure(
             "TCombobox",
             fieldbackground=COLORS["bg_input"],
@@ -1619,7 +1630,7 @@ class KlingGUIWindow:
             foreground="white",
             background=COLORS["btn_green"],
             borderwidth=1,
-            padding=(7, 4),
+            padding=mac_padding((7, 4), (11, 7)),
         )
         style.map(
             TTK_BTN_SUCCESS_COMPACT,
@@ -1645,7 +1656,7 @@ class KlingGUIWindow:
             foreground="white",
             background=COLORS["btn_red"],
             borderwidth=1,
-            padding=(7, 4),
+            padding=mac_padding((7, 4), (11, 7)),
         )
         style.map(
             TTK_BTN_DANGER_COMPACT,
@@ -1658,7 +1669,7 @@ class KlingGUIWindow:
             foreground=COLORS["text_light"],
             background=COLORS["bg_input"],
             borderwidth=1,
-            padding=(8, 4),
+            padding=mac_padding((8, 4), (12, 7)),
         )
         style.map(
             TTK_BTN_COMPACT,
@@ -1738,7 +1749,7 @@ class KlingGUIWindow:
             background=COLORS["accent_blue"],
             bordercolor=COLORS["accent_blue"],
             borderwidth=1,
-            padding=(6, 3),
+            padding=mac_padding((6, 3), (11, 7)),
         )
         style.map(
             TTK_BTN_SLOT_ACTIVE,
@@ -1752,7 +1763,7 @@ class KlingGUIWindow:
             background=COLORS["bg_input"],
             bordercolor=COLORS["border"],
             borderwidth=1,
-            padding=(6, 3),
+            padding=mac_padding((6, 3), (11, 7)),
         )
         style.map(
             TTK_BTN_SLOT_INACTIVE,
@@ -1772,7 +1783,7 @@ class KlingGUIWindow:
             font=(FONT_FAMILY, 9, "bold"),
             foreground="#111111",
             background="#E5C100",
-            borderwidth=1, padding=(8, 4),
+            borderwidth=1, padding=mac_padding((8, 4), (12, 7)),
         )
         style.map(
             "CarouselRefActive.TButton",
@@ -1784,7 +1795,7 @@ class KlingGUIWindow:
             font=(FONT_FAMILY, 9, "bold"),
             foreground=COLORS["text_light"],
             background=COLORS["bg_panel"],
-            borderwidth=1, padding=(8, 4),
+            borderwidth=1, padding=mac_padding((8, 4), (12, 7)),
         )
         style.map(
             "CarouselRefInactive.TButton",

@@ -18,6 +18,7 @@ from ..theme import (
     TTK_BTN_SUCCESS,
     TTK_BTN_WORKFLOW,
     debounce_command,
+    macos_widget_pad,
 )
 
 
@@ -64,12 +65,17 @@ class ExpandTab(tk.Frame):
         self._right_var = tk.IntVar(value=self.config.get("outpaint_expand_right", 140))
         self._format_var = tk.StringVar(value=self.config.get("outpaint_format", "png"))
         self._composite_mode_var = tk.StringVar(
+            # Default "none" (raw AI output) for Step 2.5 expand —
+            # user-requested ship default. Reads ONLY from the section-
+            # specific key. The previous back-compat read fallback to
+            # the shared ``outpaint_composite_mode`` was the other half
+            # of the bug where Step 0's user-chosen "preserve_seamless"
+            # silently became "none" — Step 2.5 inherited Step 0's
+            # value, then wrote it back, then on the next session
+            # Step 0 saw the inherited "none" and showed it.
             value=self.config.get(
-                "automation_selfie_expand_composite_mode",
-                # Default "none" (raw AI output) for Step 2.5
-                # expand — user-requested ship default.
-                self.config.get("outpaint_composite_mode", "none"),
-            )
+                "automation_selfie_expand_composite_mode", "none",
+            ),
         )
         # Default = "fal" everywhere (user direction 2026-05-22 final).
         # The Phase A revert that restored the BFL-if-key-present default
@@ -206,6 +212,7 @@ class ExpandTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT)
         tk.Radiobutton(
             mode_row,
@@ -218,6 +225,7 @@ class ExpandTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(12, 0))
 
         self._pct_frame = tk.Frame(settings_frame, bg=COLORS["bg_panel"])
@@ -421,6 +429,7 @@ class ExpandTab(tk.Frame):
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT)
         self._send_btn = ttk.Button(
             send_row,
@@ -817,7 +826,8 @@ class ExpandTab(tk.Frame):
 
         def _worker():
             from outpaint_generator import OutpaintGenerator
-            from kling_gui.tag_utils import build_ops_filename, increment_ops
+            from ..tag_utils import increment_ops
+            from path_utils import build_expand_filenames
             from face_similarity import compute_face_similarity_details
 
             gen = OutpaintGenerator(
@@ -850,18 +860,26 @@ class ExpandTab(tk.Frame):
                 output_dir = get_gen_images_folder(entry.path)
                 os.makedirs(output_dir, exist_ok=True)
 
+                # Step 2.5 expand-output naming unified with Step 0 per
+                # PR #48 round 4 user feedback. The previous ops-tag
+                # scheme produced names like `<stem>_exp.png` / `_2-exp`
+                # which conflicted with Step 0's `-expanded` /
+                # `-expanded-2x` form; the user saw two conventions
+                # side-by-side and rightly called it inconsistent.
+                # Ops accounting still happens in ``new_ops`` for the
+                # carousel display tag; only the filename changed.
+                # Collision suffix logic via ``_vN`` (no more
+                # hacky ``_v{counter}{ext}`` injection into
+                # ``build_ops_filename``).
                 new_ops = increment_ops(entry.ops if entry.ops else {}, "exp")
-                ext = f".{output_format}"
                 stem = Path(entry.path).stem
-                output_name = build_ops_filename(stem, new_ops, ext=ext)
-                output_path = os.path.join(output_dir, output_name)
-                counter = 2
-                while os.path.exists(output_path):
-                    output_path = os.path.join(
-                        output_dir,
-                        build_ops_filename(stem, new_ops, ext=f"_v{counter}{ext}"),
-                    )
-                    counter += 1
+                pass1_path, _ = build_expand_filenames(
+                    base_stem=stem,
+                    ext=output_format,
+                    gen_dir=output_dir,
+                    do_2x=False,
+                )
+                output_path = str(pass1_path)
 
                 result = None
                 try:
@@ -1008,7 +1026,12 @@ class ExpandTab(tk.Frame):
             "outpaint_expand_left": self._left_var.get(),
             "outpaint_expand_right": self._right_var.get(),
             "outpaint_format": self._format_var.get(),
-            "outpaint_composite_mode": self._composite_mode_var.get(),
+            # NEVER write to the SHARED key here. Step 2.5's factory default
+            # is "none" (raw AI output) while Step 0's is "preserve_seamless".
+            # Previously Step 2.5 wrote both keys at session save, which meant
+            # Step 0's user-chosen "preserve_seamless" got silently overwritten
+            # to "none" every time the user opened Step 2.5. Section-specific
+            # key only; Step 0 manages the shared key on its own.
             "automation_selfie_expand_composite_mode": self._composite_mode_var.get(),
             "outpaint_provider": self._provider_var.get(),
             # Phase G of polish/v2.3 (2026-05-22): writes go to the

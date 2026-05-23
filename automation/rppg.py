@@ -349,6 +349,60 @@ _RPPG_GPU_RE = re.compile(r"^GPU backend:\s*(.+)$")
 # ~25% so the panel never looks frozen.
 _RPPG_FRAME_RE = re.compile(r"^Processing frame\s+(\d+)\s*/\s*(\d+)\b")
 
+# ANSI escape sequences leak from the injector's stdout (the v6 spectrum
+# corrector colors its terminal output via raw ESC codes). The Tk log
+# widget renders them as literal "[2m" / "[91m" / "[0m" gibberish AND —
+# more importantly — they break our regex anchors (e.g. a line starting
+# with "\x1b[1;97m  Iteration 1/10 \x1b[0m" fails `^Iteration\s+\d+/\d+`
+# so the iter-tracker never advanced and the user never saw the
+# synthesized "rPPG iteration N/M" lines). Strip on input; rely on the
+# strip for both display cleanup AND regex matching.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+# Lines we always suppress from GUI surfaces because they're per-ROI /
+# per-pixel diagnostic noise that doesn't help a user understand "is my
+# heart-rate injection making progress?". Kept in the file log via the
+# raw-line "debug" path. Matched against the ANSI-stripped, leading-
+# whitespace-stripped form.
+_RPPG_SUPPRESS_PATTERNS = (
+    re.compile(r"^(forehead|left_cheek|right_cheek|chin|nose):\s+mean="),
+    re.compile(r"^(Baseline|Iter\s+\d+)\s+SNR:"),
+    re.compile(r"^PTT phase offsets"),
+    re.compile(r"^Pulse strength:"),
+    re.compile(r"^Tuned knobs:"),
+    re.compile(r"^Controller:"),
+    re.compile(r"^Motion floor guard:"),
+    re.compile(r"^Strength calibration blocked"),
+    re.compile(r"^Breakthrough mode:"),
+    re.compile(r"^Dynamic strength bounds:"),
+    re.compile(r"^Targets:\s+SNR\b"),
+    re.compile(r"^Stage\s+SNR\b"),
+    re.compile(r"^-+\s*$"),
+    re.compile(r"^=+\s*$"),
+    re.compile(r"^I\d{4}\s+\d+\.\d+\s+\d+"),  # MediaPipe init: "I0000 ... gl_context.cc"
+    re.compile(r"^Fiber init:"),
+    re.compile(r"^Using MediaPipe Tasks"),
+    re.compile(r"^MediaPipe:"),
+    re.compile(r"^Extracting facial ROIs"),
+    re.compile(r"^Using cached RGB signals"),
+    re.compile(r"^Final knob diff:"),
+    re.compile(r"^Face coherence:"),
+    re.compile(r"^Baseline face:"),
+    re.compile(r"^Score plateau:"),
+    re.compile(r"^Iteration history saved:"),
+    re.compile(r"^Metrics summary saved:"),
+)
+
+# Per-iteration "scoreboard" line — single most useful row of
+# diagnostic info. We DO keep this one (cleaned). Looks like:
+#   "Iter 1 (best)    11.15   28.1   0.75   0.00   0.67   0.93"
+# or "Baseline   7.43   84.9   0.37   0.00   0.47   0.98"
+_RPPG_SCORE_RE = re.compile(
+    r"^(Baseline|Iter\s+\d+(?:\s*\(best\))?)\s+"
+    r"([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$"
+)
+_RPPG_ITER_DONE_RE = re.compile(r"^Phase-aligned pulses applied\.\s*Output:")
+
 
 class _RppgProgressTracker:
     """Stateful stdout parser for the rPPG injector's iterative mode.
@@ -391,6 +445,10 @@ class _RppgProgressTracker:
         # than ~25% of an iteration without a progress line.)
         self._iter_frame_milestone: int = 0
         self._iter_frame_iter_marker: Optional[int] = None
+        # Wall-clock for the elapsed-time line at run end. Set when
+        # the FIRST stdout line lands (after the injector's own setup
+        # which can take 7-10s of mediapipe + tensorflow imports).
+        self._t_start: Optional[float] = None
 
     def deadline_extender(self, line: str) -> int:
         """Return extra seconds to add to the deadline for *line*.
@@ -409,7 +467,13 @@ class _RppgProgressTracker:
         defeating the adaptive timeout). Self-statefulness is kept as
         defense-in-depth for tests + future callers that may exercise
         the extender independently of on_line."""
-        m = _RPPG_ITER_RE.match(line.strip())
+        # Strip ANSI escapes BEFORE matching — the v6 spectrum corrector
+        # wraps "Iteration N/M" in `\x1b[1;97m  Iteration N/M \x1b[0m`,
+        # which the prior `^Iteration\s+\d+/\d+` regex never matched.
+        # That was the actual cause of "rPPG iteration" never appearing
+        # in the user's log (PR #48 round 4 user report).
+        cleaned = _ANSI_RE.sub("", line).strip()
+        m = _RPPG_ITER_RE.match(cleaned)
         if m is None:
             return 0
         try:
@@ -431,12 +495,31 @@ class _RppgProgressTracker:
         """Called for every non-empty subprocess stdout line. Updates
         internal iteration state and emits user-friendly progress.
 
-        Verbose mode (``automation_verbose_logging=True``): EVERY line
-        is reported at "info" so the user sees the full injector
-        chatter. Non-verbose: only the synthesized progress lines fire
-        at "info"; raw injector chatter goes to "debug" (silently
-        dropped by GUI loggers but kept in the file log)."""
-        stripped = line.strip()
+        Cleans ANSI escape codes (the v6 spectrum corrector colors its
+        terminal output with raw ESC bytes; Tk's log widget renders them
+        as literal "[2m" / "[91m" gibberish). The cleaned line is what
+        runs through every match and what gets emitted on the verbose
+        path.
+
+        Two output tiers:
+        * Curated lines (start banner, iteration markers, frame
+          milestones, per-iter scoreboard, completion summary): ALWAYS
+          emitted at info.
+        * Raw injector chatter (per-ROI stats, MediaPipe boot, knob-
+          adjustment internals): suppressed at the GUI level. In
+          verbose mode they go to info ONLY if they don't match a
+          suppress-pattern. Non-verbose: all raw goes to debug
+          (silently dropped by GUI, kept in the file log).
+        """
+        # Track first-line wall-clock for the elapsed-time summary
+        # at run-end. We initialize on first line rather than at
+        # tracker construction so the elapsed timer skips the
+        # 7-10s of mediapipe + tensorflow imports the injector
+        # does before its first stdout line.
+        if self._t_start is None:
+            self._t_start = time.monotonic()
+
+        stripped = _ANSI_RE.sub("", line).strip()
 
         # GPU detection — always surface this at info, regardless of
         # verbose. User asked: "look into if we can have it utilize
@@ -452,8 +535,6 @@ class _RppgProgressTracker:
                 f"rPPG backend — {m_gpu.group(1)}",
                 "info",
             )
-            if self._verbose:
-                _report(self._report_cb, line, "info")
             return
 
         m_iter = _RPPG_ITER_RE.match(stripped)
@@ -466,17 +547,47 @@ class _RppgProgressTracker:
             else:
                 self._iter_current = cur
                 self._iter_max = total
-                pct = int((cur / max(total, 1)) * 100)
                 _report(
                     self._report_cb,
-                    f"rPPG iteration {cur}/{total} (~{pct}%)",
+                    f"rPPG iteration {cur}/{total} starting",
                     "info",
                 )
-                # The raw injector line itself is debug-level when
-                # not verbose — we've already surfaced the friendly
-                # progress version above.
-                if self._verbose:
-                    _report(self._report_cb, line, "info")
+                return
+
+        # Per-iteration scoreboard row — single line per iter that
+        # summarizes SNR / Phase / Temporal / Motion / Harmonic /
+        # Spectrum. We keep this one (cleaned of ANSI) because it's
+        # the most useful single row of diagnostic info.
+        m_score = _RPPG_SCORE_RE.match(stripped)
+        if m_score is not None:
+            label, snr, phase, temporal, motion, harmonic, spectrum = m_score.groups()
+            _report(
+                self._report_cb,
+                f"rPPG {label}: SNR={snr}dB phase={phase}° "
+                f"temporal={temporal} motion={motion} "
+                f"harmonic={harmonic} spectrum={spectrum}",
+                "info",
+            )
+            return
+
+        if _RPPG_ITER_DONE_RE.match(stripped):
+            # Single concise per-iteration completion marker (replaces
+            # the raw "Phase-aligned pulses applied. Output: temp_X.mp4"
+            # which exposes a tmp filename the user doesn't care about).
+            if self._iter_current and self._iter_max:
+                _report(
+                    self._report_cb,
+                    f"rPPG iteration {self._iter_current}/{self._iter_max} complete",
+                    "info",
+                )
+            return
+
+        # Suppress patterns: per-ROI stats, MediaPipe boot, knob
+        # internals, summary table borders, etc. These go to debug
+        # (kept in file log, dropped by GUI).
+        for pat in _RPPG_SUPPRESS_PATTERNS:
+            if pat.match(stripped):
+                _report(self._report_cb, stripped, "debug")
                 return
 
         # Per-frame progress within an iteration — throttle to 25%
@@ -514,8 +625,10 @@ class _RppgProgressTracker:
                             f"rPPG {iter_label}frame {cur}/{total} (~{milestone}%)",
                             "info",
                         )
-            if self._verbose:
-                _report(self._report_cb, line, "info")
+            # Frame matches always fall through to debug for the raw
+            # line — never to info. The synthesized "rPPG frame X/N
+            # (~25%)" above is the user-facing line.
+            _report(self._report_cb, stripped, "debug")
             return
 
         m_done = _RPPG_DONE_RE.match(stripped)
@@ -530,14 +643,37 @@ class _RppgProgressTracker:
                 )
             else:
                 _report(self._report_cb, f"rPPG: {label}", "info")
-            if self._verbose:
-                _report(self._report_cb, line, "info")
             return
 
-        # All other lines: verbose -> info, non-verbose -> debug.
+        # Fallthrough — verbose users get the ANSI-stripped line at
+        # info, everyone else gets debug (silently dropped by GUI,
+        # kept in file log). Skip emission entirely when the line was
+        # pure ANSI escape codes (stripped empty) — re-emitting `line`
+        # in that case would smuggle the escape bytes back into the
+        # log, defeating the cleanup. Per Gemini medium id=3289250631
+        # on PR #48 round 5.
+        if not stripped:
+            return
         _report(
-            self._report_cb, line, "info" if self._verbose else "debug",
+            self._report_cb,
+            stripped,
+            "info" if self._verbose else "debug",
         )
+
+    def elapsed_str(self) -> str:
+        """Format wall-time since first stdout line as ``Xm Ys`` /
+        ``Ys``. Returns ``"?"`` when no line has landed yet."""
+        if self._t_start is None:
+            return "?"
+        secs = max(0.0, time.monotonic() - self._t_start)
+        if secs >= 60:
+            return f"{int(secs // 60)}m {int(secs % 60)}s"
+        return f"{secs:.1f}s"
+
+    @property
+    def iter_count(self) -> Optional[int]:
+        """The most recent iteration number seen, or None if none."""
+        return self._iter_current
 
 
 def stream_subprocess_with_timeout(
@@ -582,9 +718,21 @@ def stream_subprocess_with_timeout(
     # launcher has no pause).
     env = dict(os.environ)
     env["KLING_NO_PAUSE"] = "1"
+    # stdin=DEVNULL: the rPPG injector calls `input()` at the end of
+    # iterative mode (`_prompt_for_iterations` in rppg_injector.py:4779)
+    # to ask "Save additional iteration(s)?". When stdin inherits the
+    # parent's TTY (which happens on macOS when the GUI is launched
+    # via Terminal/run_gui.command), `sys.stdin.isatty()` returns True
+    # and `input()` blocks FOREVER waiting for a keypress that never
+    # comes. User-reported in PR #48 round 4: rPPG hung at the
+    # Face-coherence line at 22:17:43, no output ever produced. Same
+    # class of bug as the .bat `pause` fix above — sever inherited
+    # interactive input so the injector's non-TTY auto-skip path
+    # (`_prompt_for_iterations` lines 4774-4776) actually fires.
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -801,6 +949,20 @@ def run_rppg(
     if skip_kinematic_gate:
         cmd.append("--skip-kinematic-gate")
     _report(progress_cb, f"rPPG launching: {_format_cmd_for_log(cmd)}", "info")
+    # Up-front expectation banner — user reported "why is this taking so
+    # long and not showing progress" because the prior log went straight
+    # from "Launching rppg_injector.py" to per-iteration metric blocks
+    # with no sense of total run length. ~80s/iteration on M1 Pro CPU,
+    # up to 10 iterations + ~30s final encode → typical 3-7 minutes.
+    if iterative:
+        _report(
+            progress_cb,
+            "rPPG injection: starting (up to 10 iterations, "
+            "typically 3-7 min on CPU)",
+            "info",
+        )
+    else:
+        _report(progress_cb, "rPPG injection: starting (single-pass)", "info")
 
     # Progress tracker: parses Iteration N/M markers from stdout, emits
     # user-friendly progress ("rPPG iteration 3/10 (~30%)") at info,
@@ -851,5 +1013,14 @@ def run_rppg(
     final = finalize_rppg_output(
         produced, output_path, keep_metrics=keep_metrics, progress_cb=progress_cb
     )
-    _report(progress_cb, f"rPPG injection applied: {final.name}", "success")
+    # Final summary: per-user "I need to clearly know when it will be
+    # done" feedback. Reports both iter count and wall-clock so the
+    # user can calibrate their expectation for future runs.
+    iters = tracker.iter_count
+    iter_label = f"{iters} iter{'s' if iters and iters != 1 else ''}" if iters else "completed"
+    _report(
+        progress_cb,
+        f"rPPG injection complete: {iter_label}, {tracker.elapsed_str()} elapsed — {final.name}",
+        "success",
+    )
     return final

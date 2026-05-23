@@ -2,6 +2,7 @@
 
 import os
 import re
+from pathlib import Path
 from path_utils import sanitize_stem, sanitize_filename
 
 _OP_ORDER = ["pol", "ups", "exp"]
@@ -79,6 +80,14 @@ def increment_ops(current_ops: dict, operation: str) -> dict:
     new_ops = dict(current_ops or {})
     new_ops[operation] = new_ops.get(operation, 0) + 1
     return new_ops
+
+
+# `build_expand_filenames` was moved to `path_utils.py` so the CLI
+# automation pipeline (`automation/pipeline.py`) and Step 2.5
+# (`expand_tab.py`) can use the same helper that Step 0 uses. The CLI
+# must NOT depend on `kling_gui.*`; `path_utils` is shared root-level.
+# Re-export here so existing call sites keep working.
+from path_utils import build_expand_filenames  # noqa: F401
 
 
 def _parse_legacy_filename(filename: str) -> dict:

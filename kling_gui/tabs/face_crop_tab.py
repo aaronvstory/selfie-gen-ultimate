@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from ..theme import (
     COLORS,
@@ -20,6 +20,7 @@ from ..theme import (
     TTK_BTN_TAB_NAV,
     TTK_BTN_WORKFLOW,
     debounce_command,
+    macos_widget_pad,
 )
 from ..image_state import ImageSession
 from ..ml_backend_env import ensure_ml_backend_env
@@ -205,9 +206,22 @@ class FaceCropTab(tk.Frame):
         self._expand_bottom_var = tk.IntVar(value=config.get("outpaint_expand_bottom", 140))
         self._expand_left_var = tk.IntVar(value=config.get("outpaint_expand_left", 140))
         self._expand_right_var = tk.IntVar(value=config.get("outpaint_expand_right", 140))
-        self._outpaint_composite_var = tk.StringVar(
-            value=config.get("outpaint_composite_mode", "preserve_seamless")
-        )
+        # PR #48 round 6: "none" is NEVER a valid load-time default for
+        # Step 0. The raw fal output (composite_mode="none") doesn't
+        # preserve the original pixels — the user sees a "this isn't
+        # expanded" result with the face redrawn/warped inside the
+        # expanded canvas. The user repeatedly reported "it keeps
+        # defaulting to none" because Step 0 saves whatever's in the
+        # var to disk on quit, and a prior session's "none" choice
+        # persists across launches. Force preserve_seamless on load
+        # whenever the saved value is unset/blank/"none". The user
+        # can still pick "None" mid-session via the dropdown if they
+        # explicitly want the raw output for an A/B compare; it just
+        # won't survive the next launch.
+        _saved_composite = config.get("outpaint_composite_mode", "preserve_seamless")
+        if not isinstance(_saved_composite, str) or _saved_composite.strip().lower() in ("", "none"):
+            _saved_composite = "preserve_seamless"
+        self._outpaint_composite_var = tk.StringVar(value=_saved_composite)
         # Outpaint provider: "bfl" or "fal". Default = "fal" everywhere
         # (user direction 2026-05-22 final). The Phase A revert that
         # restored the BFL-if-key-present default was over-broad: the
@@ -474,6 +488,7 @@ class FaceCropTab(tk.Frame):
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["text_light"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         )
         self._auto_switch_cb.pack(anchor="w")
 
@@ -679,6 +694,7 @@ class FaceCropTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(10, 0))
         tk.Radiobutton(
             btn_row,
@@ -691,6 +707,7 @@ class FaceCropTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(4, 0))
         tk.Checkbutton(
             btn_row,
@@ -701,6 +718,7 @@ class FaceCropTab(tk.Frame):
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
             font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(8, 0))
 
         self._outpaint_status = tk.Label(
@@ -1936,21 +1954,24 @@ class FaceCropTab(tk.Frame):
                 self.log("Invalid pixel values", "error")
                 return
 
-        # Build ops-based filename
-        from kling_gui.tag_utils import increment_ops, build_ops_filename
+        # Plan deterministic per-pass output paths up-front. Step 0 expand
+        # outputs use the dedicated "-expanded" / "-expanded-2x" naming
+        # convention (NOT the ops-tag scheme from build_ops_filename, which
+        # is still used elsewhere for polish/upscale). Each pass gets its
+        # own collision suffix so a re-run never overwrites earlier files.
+        from ..tag_utils import increment_ops, build_expand_filenames
 
         input_entry = self.image_session.active_entry
         input_ops = input_entry.ops if input_entry else {}
-        new_ops = increment_ops(input_ops, "exp")
+        do_2x = bool(self._outpaint_double_expand_var.get())
 
-        ext = f".{output_format}"
-        stem = Path(image_path).stem
-        output_name = build_ops_filename(stem, new_ops, ext=ext)
-        outpaint_output_path = str(gen_dir / output_name)
-        counter = 2
-        while os.path.exists(outpaint_output_path):
-            outpaint_output_path = str(gen_dir / build_ops_filename(stem, new_ops, ext=f"_v{counter}{ext}"))
-            counter += 1
+        pass1_path, pass2_path = build_expand_filenames(
+            base_stem=Path(image_path).stem,
+            ext=output_format,
+            gen_dir=gen_dir,
+            do_2x=do_2x,
+        )
+        planned_paths = [pass1_path] + ([pass2_path] if pass2_path is not None else [])
 
         ref_path = self._find_crop_ref_path()
         self.log(f"[SIM] outpaint input={Path(image_path).name} ref={Path(ref_path).name if ref_path else 'none'}", "debug")
@@ -1964,27 +1985,99 @@ class FaceCropTab(tk.Frame):
         self._outpaint_status.config(text="Processing...", fg=COLORS["progress"])
 
         bfl_key = cfg.get("bfl_api_key") if use_bfl else None
-        outpaint_passes = 2 if self._outpaint_double_expand_var.get() else 1
         composite_mode = self._outpaint_composite_var.get()
 
         def _worker():
             try:
                 from outpaint_generator import OutpaintGenerator
+                # Hoisted out of the per-pass loop per code-review L5
+                # on subagent ae2dd01f. Python's import cache made the
+                # in-loop import a perf-non-issue, but hoisting makes
+                # the failure surface (ImportError) unambiguous and
+                # matches the OutpaintGenerator import style above.
+                from face_similarity import compute_face_similarity
+
+                # Tk-safe log callback (code-review M1 on subagent
+                # ae2dd01f). face_similarity invokes report_cb directly
+                # from the worker thread; without the after-marshal it
+                # mutates the LogDisplay Tk widget from a non-GUI thread
+                # which is undefined on macOS.
+                def tk_safe_log(message: str, level: str) -> None:
+                    self.winfo_toplevel().after(
+                        0,
+                        lambda m=message, lvl=level: self.log(m, lvl),
+                    )
+
+                # Recovery-round banner (PR #48 round 6): make do_2x +
+                # composite_mode + every planned target visible at
+                # worker entry. The user's last "expanded but not
+                # expanded" report had no log line that pinned which
+                # of those three the worker actually saw. Without
+                # this banner the silent-failure modes (composite
+                # disabled, do_2x off when user thought it was on,
+                # wrong target paths) are indistinguishable from a
+                # true compositing regression in the log.
+                self.winfo_toplevel().after(
+                    0,
+                    lambda d=do_2x, cm=composite_mode:
+                    self.log(
+                        f"Step 0 expand: do_2x={d} composite_mode={cm}",
+                        "info",
+                    ),
+                )
+                for _i, _planned in enumerate(planned_paths, start=1):
+                    self.winfo_toplevel().after(
+                        0,
+                        lambda i=_i, name=_planned.name:
+                        self.log(
+                            f"Step 0 expand: planned pass {i} -> {name}",
+                            "info",
+                        ),
+                    )
+                if composite_mode == "none":
+                    self.winfo_toplevel().after(
+                        0,
+                        lambda: self.log(
+                            'Step 0 expand: composite mode is "None" — '
+                            'preserve-seamless blending is DISABLED. '
+                            'Original pixels will NOT be preserved on top '
+                            'of the expanded canvas. Set Composite to '
+                            '"Preserve Seamless" for blended output.',
+                            "warning",
+                        ),
+                    )
 
                 freeimage_key = cfg.get("freeimage_api_key")
                 gen = OutpaintGenerator(
                     api_key, freeimage_key=freeimage_key, bfl_api_key=bfl_key,
                 )
                 self.outpaint_generator = gen
-                gen.set_progress_callback(
-                    lambda msg, lvl: self.winfo_toplevel().after(
-                        0, lambda m=msg, l=lvl: self.log(m, l)
-                    )
-                )
+                gen.set_progress_callback(tk_safe_log)
                 current_input = image_path
-                result = None
-                for pass_index in range(outpaint_passes):
-                    pass_output_path = outpaint_output_path if pass_index == outpaint_passes - 1 else None
+                current_ops = dict(input_ops or {})
+                # Per-pass results: (path, similarity_str_or_None, ops_dict).
+                per_pass_results = []
+                total_passes = len(planned_paths)
+                for pass_index, planned_target in enumerate(planned_paths):
+                    pass_no = pass_index + 1
+                    self.winfo_toplevel().after(
+                        0,
+                        lambda i=pass_no, n=total_passes, cm=composite_mode,
+                               inp=Path(current_input).name,
+                               outp=planned_target.name:
+                        self.log(
+                            f"Expand pass {i}/{n}: composite_mode={cm} "
+                            f"in={inp} out={outp}",
+                            "info",
+                        ),
+                    )
+                    # PR #48 round 6 recovery: call gen.outpaint with
+                    # output_path=None so the generator auto-names + runs
+                    # its compositing step exactly the way main does. The
+                    # naming convention is then enforced by a best-effort
+                    # rename below. This isolates the naming work from the
+                    # compositing work — any visual blend regression can
+                    # no longer be blamed on the output_path argument.
                     result = gen.outpaint(
                         image_path=current_input,
                         output_folder=str(gen_dir),
@@ -1995,27 +2088,58 @@ class FaceCropTab(tk.Frame):
                         prompt=prompt,
                         output_format=output_format,
                         composite_mode=composite_mode,
-                        output_path=pass_output_path,
+                        output_path=None,
                         poll_timeout_seconds=get_outpaint_fal_timeout_seconds(cfg),
                         cancel_event=self._outpaint_cancel_event,
                     )
                     if not result:
                         break
+
+                    if Path(result) != planned_target:
+                        try:
+                            Path(result).replace(planned_target)
+                            result = str(planned_target)
+                        except OSError as exc:
+                            self.winfo_toplevel().after(
+                                0,
+                                lambda e=exc, src=result,
+                                       dst=str(planned_target):
+                                self.log(
+                                    f"Outpaint: rename {Path(src).name} -> "
+                                    f"{Path(dst).name} failed: {e}; "
+                                    f"keeping auto-name",
+                                    "warning",
+                                ),
+                            )
+
+                    current_ops = increment_ops(current_ops, "exp")
+
+                    sim = None
+                    if ref_path:
+                        try:
+                            sim_val = compute_face_similarity(
+                                ref_path, result, report_cb=tk_safe_log,
+                            )
+                            if sim_val is not None:
+                                sim = f"{sim_val}%"
+                        except Exception as exc:
+                            self.winfo_toplevel().after(
+                                0,
+                                lambda e=exc, i=pass_no:
+                                self.log(
+                                    f"Sim pass {i}: {type(e).__name__}: {e!r}",
+                                    "warning",
+                                ),
+                            )
+
+                    per_pass_results.append((result, sim, dict(current_ops)))
                     current_input = result
 
-                similarity = None
-                if ref_path and result:
-                    try:
-                        from face_similarity import compute_face_similarity
-                        sim_val = compute_face_similarity(ref_path, result, report_cb=self.log)
-                        if sim_val is not None:
-                            similarity = f"{sim_val}%"
-                    except Exception as exc:
-                        self.winfo_toplevel().after(
-                            0, lambda e=exc: self.log(f"Sim: {type(e).__name__}: {e!r}", "warning")
-                        )
-
-                self.winfo_toplevel().after(0, lambda: self._on_outpaint_done(result, similarity, new_ops, run_token))
+                self.winfo_toplevel().after(
+                    0,
+                    lambda r=per_pass_results, t=total_passes:
+                    self._on_outpaint_done(r, t, run_token),
+                )
             except Exception as e:
                 err = str(e)
                 self.winfo_toplevel().after(0, lambda: self._on_outpaint_error(err, run_token))
@@ -2030,28 +2154,71 @@ class FaceCropTab(tk.Frame):
         self._outpaint_status.config(text="Aborting...", fg=COLORS["warning"])
         self._expand_abort_btn.config(state=tk.DISABLED, text="Aborting...")
 
-    def _on_outpaint_done(self, result, similarity=None, ops=None, run_token=None):
+    def _on_outpaint_done(
+        self,
+        per_pass_results: List[Tuple[str, Optional[str], Dict[str, int]]],
+        total_passes: int,
+        run_token: Optional[int] = None,
+    ) -> None:
+        """Finalize a Step 0 expand run.
+
+        ``per_pass_results`` is a list of ``(path, similarity_str|None,
+        ops_dict)`` tuples - one entry per SUCCESSFUL pass.
+        ``total_passes`` is how many passes the worker tried (1 for
+        single-pass, 2 for 2x).
+
+        Three success paths:
+        - All passes succeeded → status "Done: <last>", carousel gets
+          every entry.
+        - Some passes succeeded then a later pass failed (partial 2x) →
+          status "Partial: K/N", carousel gets the successful entries,
+          warning log with the underlying error detail (code-review H1
+          on subagent ae2dd01f).
+        - Zero passes succeeded → status "Failed", error log.
+
+        Even on cancellation, successful passes are added to the carousel
+        before the abort short-circuit (code-review H2 on subagent
+        ae2dd01f) — otherwise the on-disk file is orphaned and the user
+        loses real work to a click.
+        """
         if run_token is not None and run_token != self._outpaint_run_token:
             return
-        if self._outpaint_cancel_event is not None and self._outpaint_cancel_event.is_set():
-            self._outpaint_busy = False
-            self._outpaint_cancel_event = None
-            self._expand_btn.config(text="Expand Image", state=tk.NORMAL)
-            self._expand_abort_btn.config(text="Abort", state=tk.DISABLED)
-            self._outpaint_status.config(text="Aborted by user", fg=COLORS["warning"])
-            self.log("Expand aborted by user", "warning")
-            return
+        cancelled = (
+            self._outpaint_cancel_event is not None
+            and self._outpaint_cancel_event.is_set()
+        )
         self._outpaint_busy = False
         self._outpaint_cancel_event = None
         self._expand_btn.config(text="Expand Image", state=tk.NORMAL)
         self._expand_abort_btn.config(text="Abort", state=tk.DISABLED)
-        if result:
-            basename = os.path.basename(result)
-            self._outpaint_status.config(text=f"Done: {basename}", fg=COLORS["success"])
-            self.image_session.add_image(result, "outpaint", label=basename,
-                                         similarity=similarity, ops=ops)
+
+        # H2: surface every successfully-saved pass to the carousel
+        # FIRST, regardless of cancel/partial state. The file is on disk
+        # whether or not the user clicked Abort mid-run.
+        for path, sim, ops in per_pass_results:
+            basename = os.path.basename(path)
+            self.image_session.add_image(
+                path, "outpaint", label=basename,
+                similarity=sim, ops=ops,
+            )
             self.log(f"Outpaint: saved {basename}", "success")
-        else:
+
+        if cancelled:
+            self._outpaint_status.config(
+                text="Aborted by user", fg=COLORS["warning"],
+            )
+            if per_pass_results:
+                self.log(
+                    f"Expand aborted by user — kept "
+                    f"{len(per_pass_results)} successful pass(es) "
+                    f"in carousel",
+                    "warning",
+                )
+            else:
+                self.log("Expand aborted by user", "warning")
+            return
+
+        if not per_pass_results:
             self._outpaint_status.config(text="Failed", fg=COLORS["error"])
             detail = ""
             gen = getattr(self, "outpaint_generator", None)
@@ -2060,6 +2227,37 @@ class FaceCropTab(tk.Frame):
             from outpaint_generator import OutpaintGenerator
             msg = OutpaintGenerator.format_error_detail(detail)
             self.log(msg, "error")
+            return
+
+        # H1: distinguish full-success from partial-2x-success.
+        final_basename = os.path.basename(per_pass_results[-1][0])
+        if len(per_pass_results) >= total_passes:
+            self._outpaint_status.config(
+                text=f"Done: {final_basename}", fg=COLORS["success"],
+            )
+        else:
+            failed_pass = len(per_pass_results) + 1
+            detail = ""
+            gen = getattr(self, "outpaint_generator", None)
+            if gen is not None and hasattr(gen, "get_last_outpaint_error_detail"):
+                detail = gen.get_last_outpaint_error_detail() or ""
+            if detail:
+                from outpaint_generator import OutpaintGenerator
+                err_msg = OutpaintGenerator.format_error_detail(detail)
+            else:
+                err_msg = "no detail available"
+            self._outpaint_status.config(
+                text=(
+                    f"Partial: {len(per_pass_results)}/{total_passes} "
+                    f"(pass {failed_pass} failed)"
+                ),
+                fg=COLORS["warning"],
+            )
+            self.log(
+                f"Outpaint: partial 2x — pass {failed_pass}/{total_passes} "
+                f"failed. {err_msg}",
+                "warning",
+            )
 
     def _on_outpaint_error(self, error, run_token=None):
         if run_token is not None and run_token != self._outpaint_run_token:
