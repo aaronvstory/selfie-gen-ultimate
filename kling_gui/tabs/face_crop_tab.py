@@ -1959,7 +1959,7 @@ class FaceCropTab(tk.Frame):
         # convention (NOT the ops-tag scheme from build_ops_filename, which
         # is still used elsewhere for polish/upscale). Each pass gets its
         # own collision suffix so a re-run never overwrites earlier files.
-        from kling_gui.tag_utils import increment_ops, build_expand_filenames
+        from ..tag_utils import increment_ops, build_expand_filenames
 
         input_entry = self.image_session.active_entry
         input_ops = input_entry.ops if input_entry else {}

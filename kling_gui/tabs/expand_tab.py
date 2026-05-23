@@ -826,7 +826,7 @@ class ExpandTab(tk.Frame):
 
         def _worker():
             from outpaint_generator import OutpaintGenerator
-            from kling_gui.tag_utils import increment_ops
+            from ..tag_utils import increment_ops
             from path_utils import build_expand_filenames
             from face_similarity import compute_face_similarity_details
 
