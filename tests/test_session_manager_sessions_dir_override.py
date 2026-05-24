@@ -127,8 +127,48 @@ def test_list_sessions_aggregates_legacy_and_instance_dirs(tmp_path, monkeypatch
     recs = sm.list_sessions(str(tmp_path / "app"))
     names = {r.name for r in recs}
     assert "manualA" in names
-    assert "projA_autosave" in names
-    assert "projB_autosave" in names
+    # PR #49 M2: per-instance autosaves get an instance-id tag appended to
+    # the displayed name so the user can disambiguate two siblings on the
+    # same project_key. Legacy autosaves stay tag-less.
+    assert "projA_autosave  [iid-a]" in names
+    assert "projB_autosave  [iid-b]" in names
+
+
+def test_list_sessions_disambiguates_two_instances_on_same_project_key(tmp_path, monkeypatch):
+    """PR #49 M2 (review finding): the same project_key autosave file from
+    two different per-instance dirs MUST both appear in the listing — the
+    earlier (kind, fname) de-dupe silently hid one, so a user with two
+    "untitled" windows would load the wrong window's state."""
+    import json
+    inst_a = tmp_path / "app" / "runtime" / "instances" / "iid-a" / "sessions"
+    inst_b = tmp_path / "app" / "runtime" / "instances" / "iid-b" / "sessions"
+    inst_a.mkdir(parents=True)
+    inst_b.mkdir(parents=True)
+
+    # Both windows are on the "untitled" default project_key
+    for d in (inst_a, inst_b):
+        (d / "untitled_autosave.json").write_text(json.dumps({
+            "name": "untitled_autosave",
+            "timestamp": "2026-01-01T00:00:00",
+            "session_kind": "autosave",
+            "project_key": "untitled",
+            "session": {"images": []},
+        }), encoding="utf-8")
+
+    import path_utils
+    monkeypatch.setattr(path_utils, "_user_data_root", lambda: str(tmp_path / "app"))
+    monkeypatch.setenv("KLING_WORKSPACE", "default")
+
+    recs = sm.list_sessions(str(tmp_path / "app"))
+    autosaves = [r for r in recs if r.session_kind == "autosave"]
+    # Both must appear, distinguishable via the tagged name.
+    assert len(autosaves) == 2, (
+        f"M2 regression: only {len(autosaves)} autosave(s) returned; "
+        f"sibling was silently hidden by (kind, fname) de-dupe"
+    )
+    names = {r.name for r in autosaves}
+    assert "untitled_autosave  [iid-a]" in names
+    assert "untitled_autosave  [iid-b]" in names
 
 
 def test_save_session_default_path_unchanged_without_override(tmp_path):

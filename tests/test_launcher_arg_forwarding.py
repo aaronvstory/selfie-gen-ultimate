@@ -108,14 +108,49 @@ def test_windows_canonical_uses_setup_lock_serialization():
     # Acquire
     assert ':acquire_setup_lock' in src
     assert 'md "%SETUP_LOCK%"' in src, "missing md-based atomic lock acquire"
-    # Release before :launch label (label declaration, not the goto)
-    lock_release_idx = src.find('rd /S /Q "%SETUP_LOCK%"')
-    launch_label_idx = src.find('\r\n:launch\r\n')
-    if launch_label_idx < 0:
-        launch_label_idx = src.find('\n:launch\n')
-    assert lock_release_idx > 0
-    assert launch_label_idx > 0
-    assert lock_release_idx < launch_label_idx, (
-        ":launch label appears before the setup.lock release — "
-        "the GUI would inherit a held lock, blocking siblings."
-    )
+
+
+def test_windows_setup_lock_released_on_every_path_to_launch():
+    """PR #49 H1 (review finding): the stamp-skip fast path uses ``goto :launch``
+    which originally bypassed the ``rd`` release at the bottom of the file,
+    leaking the lock for the entire GUI lifetime and blocking siblings forever.
+
+    Verify EVERY ``goto :launch`` (and the fall-through to the ``:launch``
+    label) is preceded by a ``rd /S /Q "%SETUP_LOCK%"`` release. Parses the
+    .bat as plain text and walks line-by-line — a future regression that
+    introduces a new ``goto :launch`` without a release will trip this guard.
+    """
+    src = _read_text("launchers/windows/run_gui.bat")
+    lines = src.splitlines()
+
+    # Find every "goto :launch" line and every ":launch" label line.
+    # For each, walk backwards through the preceding lines (skipping comments
+    # and blanks) until we either hit a `rd ... %SETUP_LOCK%` or a `:setup_lock_acquired`
+    # label (acquire point — anything between this and the goto MUST have
+    # released, OR the goto must be the release itself's fall-through).
+    def _check_release_precedes(target_idx, context):
+        for i in range(target_idx - 1, -1, -1):
+            stripped = lines[i].strip().lower()
+            if not stripped or stripped.startswith("rem"):
+                continue
+            if 'rd /s /q "%setup_lock%"' in stripped:
+                return  # release found before target
+            if stripped == ":setup_lock_acquired":
+                # Acquired but no release between — bug.
+                raise AssertionError(
+                    f"{context}: reached :setup_lock_acquired without a "
+                    f"`rd /S /Q \"%SETUP_LOCK%\"` release in between. "
+                    f"This is the H1 regression — fast path leaks the lock."
+                )
+            # Otherwise keep walking back.
+        raise AssertionError(
+            f"{context}: no setup_lock release found above; lock would "
+            f"leak indefinitely."
+        )
+
+    for idx, line in enumerate(lines):
+        stripped = line.strip().lower()
+        if stripped == "goto :launch":
+            _check_release_precedes(idx, f"line {idx+1} (goto :launch)")
+        elif stripped == ":launch":
+            _check_release_precedes(idx, f"line {idx+1} (:launch label fall-through)")

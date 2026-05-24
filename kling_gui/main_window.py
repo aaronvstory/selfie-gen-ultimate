@@ -938,17 +938,23 @@ class KlingGUIWindow:
         # If a sibling instance is already running in the same workspace, log a
         # non-blocking heads-up. Two windows can safely coexist (runtime is
         # isolated per instance), but the user may want to know.
+        # PR #49 M4: KLING_ALLOW_SHARED_WORKSPACE=1 (set by gui_launcher when the
+        # --allow-shared-workspace flag is passed) suppresses this log — for
+        # users who intentionally run multiple windows in the same workspace
+        # and don't need the reminder on every launch.
         try:
-            active = workspace_markers.list_active_instances(self.workspace)
-            # Filter out our own marker (registered above) so the count is "siblings".
-            siblings = [m for m in active if m.get("instance_id") != self.instance_id]
-            if siblings:
-                self.logger.info(
-                    "PR #49: another instance is active in workspace %r (sibling pids=%s). "
-                    "Runtime state is isolated per window; preferences are shared (last-writer-wins).",
-                    self.workspace,
-                    [m.get("pid") for m in siblings],
-                )
+            if os.environ.get("KLING_ALLOW_SHARED_WORKSPACE", "").strip() != "1":
+                active = workspace_markers.list_active_instances(self.workspace)
+                # Filter out our own marker (registered above) so the count is "siblings".
+                siblings = [m for m in active if m.get("instance_id") != self.instance_id]
+                if siblings:
+                    self.logger.info(
+                        "PR #49: another instance is active in workspace %r (sibling pids=%s). "
+                        "Runtime state is isolated per window; preferences are shared (last-writer-wins). "
+                        "Pass --allow-shared-workspace to suppress this message.",
+                        self.workspace,
+                        [m.get("pid") for m in siblings],
+                    )
         except Exception:
             pass
 

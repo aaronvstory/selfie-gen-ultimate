@@ -90,6 +90,37 @@ def test_workspace_path_traversal_caught_by_commonpath(monkeypatch):
         )
 
 
+def test_instance_id_rejects_traversal_in_env(monkeypatch):
+    """PR #49 M1: ``KLING_INSTANCE_ID`` is a path component in ``get_runtime_dir``,
+    so a hostile or stale value like ``../escape`` must be rejected. Validator
+    falls back to a fresh ``<YYYYMMDD-HHMMSS>-<PID>`` stamp."""
+    import path_utils as p
+    # Reject: actual traversal patterns (slashes, ..-with-slash, whitespace, length).
+    # Note: leading-dot names like ``.hidden`` are accepted — they create a hidden
+    # dir but don't escape the runtime tree, and a stricter rule could break a
+    # parent launcher that legitimately uses ``.`` in its id format. Path
+    # escape is the actual attack to defend against.
+    for bad in ("../escape", "..\\escape", "a/b", "a\\b", "x with space", "", "a" * 65):
+        monkeypatch.setenv("KLING_INSTANCE_ID", bad)
+        p._INSTANCE_ID_CACHE = None
+        iid = p.get_instance_id()
+        assert iid != bad, f"hostile id {bad!r} accepted without sanitization"
+        # Format guarantee for the fallback
+        assert "/" not in iid and "\\" not in iid and ".." not in iid
+        # And the env was overwritten with the clean value so subprocesses inherit it
+        assert os.environ["KLING_INSTANCE_ID"] == iid
+    p._INSTANCE_ID_CACHE = None
+
+
+def test_instance_id_accepts_valid_inherited_env(monkeypatch):
+    """A well-formed inherited id (e.g. from a parent launcher process) is honored."""
+    import path_utils as p
+    monkeypatch.setenv("KLING_INSTANCE_ID", "20260101-120000-1234")
+    p._INSTANCE_ID_CACHE = None
+    assert p.get_instance_id() == "20260101-120000-1234"
+    p._INSTANCE_ID_CACHE = None
+
+
 def test_instance_id_format(monkeypatch):
     """Instance id format must be `<YYYYMMDD-HHMMSS>-<PID>` — keeps stamps
     sortable and per-process unique even across same-second launches with

@@ -416,6 +416,26 @@ def _derive_session_name(image_session) -> str:
     return f"{_sanitize_name(folder_name)}_{ts}"
 
 
+def _instance_tag_for_dir(directory: str) -> str:
+    """Return a short instance-id tag for a session dir, or "" for legacy.
+
+    Per-instance sessions dirs follow the layout
+    ``<workspace>/runtime/instances/<instance_id>/sessions/`` — pull the
+    ``<instance_id>`` segment so the Session Manager listing can disambiguate
+    two siblings' autosaves on the same ``project_key`` (PR #49 M2). Returns
+    ``""`` for the legacy ``<app_dir>/sessions/`` so back-compat rows render
+    unchanged.
+    """
+    try:
+        normalized = directory.replace("\\", "/").rstrip("/")
+        parts = normalized.split("/")
+        if len(parts) >= 4 and parts[-1] == "sessions" and parts[-3] == "instances":
+            return parts[-2]
+    except Exception:
+        pass
+    return ""
+
+
 def list_sessions(app_dir: str) -> List[SessionRecord]:
     """Return all saved sessions, sorted newest-first.
 
@@ -452,8 +472,16 @@ def list_sessions(app_dir: str) -> List[SessionRecord]:
                 mtime_iso = _file_mtime_iso(fpath)
                 created_at = str(data.get("created_at") or data.get("timestamp") or mtime_iso)
                 updated_at = str(data.get("updated_at") or data.get("timestamp") or mtime_iso)
+                # PR #49 M2: if this autosave came from a per-instance runtime
+                # dir, tag the displayed name with the instance id so the user
+                # can tell two siblings apart in the Session Manager listing.
+                # The legacy <app_dir>/sessions/ dir produces no tag (back-compat).
+                display_name = data.get("name", fname)
+                instance_tag = _instance_tag_for_dir(directory)
+                if instance_tag and kind == SESSION_KIND_AUTOSAVE:
+                    display_name = f"{display_name}  [{instance_tag}]"
                 rec = SessionRecord(
-                    name=data.get("name", fname),
+                    name=display_name,
                     path=fpath,
                     timestamp=updated_at,
                     created_at=created_at,
@@ -462,14 +490,16 @@ def list_sessions(app_dir: str) -> List[SessionRecord]:
                     project_key=project_key,
                     image_count=len(data.get("session", {}).get("images", [])),
                 )
-                # De-dupe on filename for autosaves (same rolling key across
-                # instances). Keep newest. Manual saves should never collide on
-                # filename across dirs (the legacy dir's _N collision counter
-                # made manuals globally unique), so de-dupe by full path stays
-                # correct for them. Use (kind, fname) so a legacy manual + a
-                # newer instance autosave with the same project name don't
-                # shadow each other.
-                key = (kind, fname) if kind == SESSION_KIND_AUTOSAVE else fpath
+                # De-dupe key: include the directory so two instances on the
+                # same project_key both surface (PR #49 M2 — earlier the
+                # (kind, fname) key silently hid the older sibling when both
+                # windows worked on e.g. "untitled" and produced
+                # "untitled_autosave.json" in their respective per-instance
+                # dirs, causing the user to load the wrong window's state).
+                # Dirname-aware de-dupe keeps each instance's autosave visible
+                # while still collapsing genuine in-dir duplicates (which can
+                # only happen if a fresh autosave races a stale-file scan).
+                key = (kind, fname, os.path.normcase(os.path.abspath(directory)))
                 existing = seen.get(key)
                 if existing is None or updated_at > existing.updated_at:
                     seen[key] = rec

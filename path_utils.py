@@ -36,6 +36,12 @@ APP_NAME = "selfie-gen-ultimate"
 
 WORKSPACE_DEFAULT = "default"
 _WORKSPACE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Instance id format: "<YYYYMMDD-HHMMSS>-<PID>". The regex matches that and
+# its component chars only — no slashes/backslashes/dots-as-traversal — so a
+# malicious or stale ``KLING_INSTANCE_ID`` env value can never escape the
+# runtime tree via ``get_runtime_dir`` (which composes it into a path).
+# Code-review M1 on PR #49.
+_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _INSTANCE_ID_CACHE: Optional[str] = None
 _WINDOWS_RESERVED_FOR_WORKSPACE = {
     "CON", "PRN", "AUX", "NUL",
@@ -104,10 +110,15 @@ def get_instance_id() -> str:
     if _INSTANCE_ID_CACHE is not None:
         return _INSTANCE_ID_CACHE
     env_val = os.environ.get("KLING_INSTANCE_ID", "").strip()
-    if env_val:
-        # Trust an inherited id from a parent launcher process.
+    if env_val and _INSTANCE_ID_RE.match(env_val):
+        # Trust an inherited id from a parent launcher process — but only
+        # after validation. Without this, a stale or hostile env value like
+        # "../escape" would land in ``get_runtime_dir()`` as a path component
+        # and write outside the runtime tree. Code-review M1 on PR #49.
         _INSTANCE_ID_CACHE = env_val
         return env_val
+    # Either no env value or it failed validation — generate fresh and
+    # overwrite the env so any subprocess inherits the clean value.
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     fresh = f"{stamp}-{os.getpid()}"
     _INSTANCE_ID_CACHE = fresh

@@ -103,9 +103,23 @@ def test_resolved_crash_log_path_routes_to_runtime(monkeypatch, tmp_path):
 
 
 def test_resolved_crash_log_path_falls_back_when_no_workspace_env(monkeypatch):
-    """When no KLING_WORKSPACE env is set, fall back to legacy shared path."""
+    """When no KLING_WORKSPACE env is set, fall back to legacy shared path.
+
+    PR #49 M3 (review finding): the original test only asserted on basename,
+    which would PASS even if the path was wrongly routed to a per-instance
+    runtime dir via residual ``_INSTANCE_ID_CACHE`` from an earlier test.
+    Tighten the assertion to verify the path is NOT a runtime/instances/...
+    path, and clear the cache first to ensure determinism.
+    """
     monkeypatch.delenv("KLING_WORKSPACE", raising=False)
     monkeypatch.delenv("KLING_INSTANCE_ID", raising=False)
+    path_utils._INSTANCE_ID_CACHE = None
     log_path = gui_launcher._resolved_crash_log_path()
     # Legacy path: <user_data_root or app_dir>/crash_log.txt
     assert log_path.endswith("crash_log.txt")
+    # CRITICAL: must NOT be a per-instance runtime path
+    normalized = log_path.replace("\\", "/")
+    assert "/runtime/instances/" not in normalized, (
+        f"crash log routed to per-instance dir despite no KLING_WORKSPACE env: "
+        f"{log_path!r} — residual cache leaked from an earlier test?"
+    )

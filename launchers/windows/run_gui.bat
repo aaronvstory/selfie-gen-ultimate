@@ -84,6 +84,8 @@ if exist "%STAMP%" (
     echo   [%LAUNCH_TS%] Dependencies up-to-date ^(cached stamp^). Skipping sync.
     echo   Tip: delete .launcher_state\deps_*.ok to force a full re-check.
     echo(
+    rem PR #49: release bootstrap mutex before fast-path launch (H1 fix)
+    rd /S /Q "%SETUP_LOCK%" >nul 2>&1
     goto :launch
 )
 
