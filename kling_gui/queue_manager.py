@@ -2369,7 +2369,8 @@ class QueueManager:
         except Exception as e:
             self.log(
                 f"❌ RPPG FAILED — unexpected error in queue worker "
-                f"({type(e).__name__}: {e}). Continuing without rPPG.",
+                f"({type(e).__name__}: {e}). Continuing without rPPG; "
+                f"filename will be marked with -NORPPG.",
                 "error_bold",
             )
             return None
