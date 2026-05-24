@@ -137,19 +137,30 @@ def test_windows_release_setup_lock_retries_on_failure():
         next_label_idx = len(src)
     block = src[label_idx:next_label_idx]
 
-    # Must contain at least 2 `rd` attempts (initial + retry)
+    # Must contain at least 3 `rd` attempts (initial + 2 retries).
+    # Round-3 review (subagent M1): bumped from 2 attempts to 3 because
+    # Defender deep-scans can hold handles 5-30s; the original 2s window
+    # was insufficient. New budget: 2s + 4s = 6s total before WARN.
     rd_count = block.count('rd /S /Q "%SETUP_LOCK%"')
-    assert rd_count >= 2, (
+    assert rd_count >= 3, (
         f":release_setup_lock has only {rd_count} `rd` attempts — H1 retry "
-        f"regression. The subroutine must retry once after a 2s sleep."
+        f"regression. The subroutine must retry TWICE (initial + 2 retries) "
+        f"with progressively longer sleeps (2s + 4s)."
     )
-    # Must have at least one early-exit guard (`if not exist`)
-    assert 'if not exist "%SETUP_LOCK%" exit /b 0' in block, (
-        "missing early-exit guard between rd attempts — H1 regression"
+    # Must have at least 3 early-exit guards (one after each rd)
+    early_exit_count = block.count('if not exist "%SETUP_LOCK%" exit /b 0')
+    assert early_exit_count >= 3, (
+        f"only {early_exit_count} early-exit guards — H1 regression. Each "
+        f"rd attempt should be followed by `if not exist ... exit /b 0`."
     )
-    # Must have the sleep between attempts (`ping -n 3` ≈ 2s)
+    # Must have both the 2s and 4s sleeps between attempts
     assert 'ping -n 3 127.0.0.1' in block, (
-        "missing sleep between rd attempts — H1 regression"
+        "missing 2s sleep between rd attempts 1 and 2 — H1 regression"
+    )
+    assert 'ping -n 5 127.0.0.1' in block, (
+        "missing 4s sleep between rd attempts 2 and 3 — H1 retry-budget "
+        "regression (the round-3 subagent finding about Defender deep-scan "
+        "holding handles 5-30s is the reason for the longer second sleep)"
     )
     # Must log a warning to LOG_FILE when retry also fails
     assert '%LOG_FILE%' in block, (
