@@ -450,8 +450,9 @@ tool calls, not sequential):
    @gemini-code-assist review
    ```
 
-   Skip `@sourcery-ai` until/unless it starts responding again — it's
-   been silent across multiple rounds on PR #43.
+   Include `@sourcery-ai` — it was silent across PR #43 (hence the prior
+   "skip" advice) but resumed responding with actionable findings on PR #49
+   round 1. Drop the skip until it goes silent on a fresh PR.
 
 **b) Spawn the code-reviewer subagent on the ENTIRE branch diff.** Use
    the `general-purpose` agent type with a prompt that:
@@ -533,7 +534,9 @@ Per-bot disposition (per PR #43 retro, evidence-driven):
   inline lint rules. Address Major same round; batch Minors at PR-close.
   Skip its "Analysis chain" issue-level comments — those are
   verification scripts CR ran, not findings to address.
-- **Sourcery**: currently silent across PR #43; skip the trigger.
+- **Sourcery**: was silent across PR #43; resumed on PR #49. Concise,
+  contract-level findings (docstring drift, no-raise guarantees, etc.).
+  Address Major same round; defer LOW.
 
 ### 6. Address bot findings + reply inline
 
