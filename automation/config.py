@@ -136,7 +136,8 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     # safe sweet spot — measurable per-iter speedup without touching
     # the pulse-injection correctness path. Set to 1 to detect every
     # frame (the injector's own default) when injecting into a
-    # fast-motion source.
+    # fast-motion source. The GUI also accepts the bare
+    # ``rppg_landmark_stride`` alias for this same value.
     "automation_rppg_landmark_stride": 3,
     "automation_rppg_required": False,
     # When False (default) the injector's metric-suffixed filename

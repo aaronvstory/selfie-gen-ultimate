@@ -204,6 +204,21 @@ def test_landmark_stride_invalid_input_falls_back_to_default(
     assert cmd[idx + 1] == "3"
 
 
+def test_landmark_stride_negative_int_floors_to_one(
+    tmp_path, _stub_launcher, _stub_subprocess,
+):
+    """A negative stride is meaningless (`max(1, int(-5)) == 1`). The
+    wrapper must NOT emit the flag in that case (stride 1 == injector
+    default; emitting it would just be confusing log noise).
+    Subagent MEDIUM on PR #52 round 3 — locks in the behaviour so a
+    future refactor that adds a different floor doesn't silently
+    regress to passing a nonsense negative."""
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(video_path=inp, repo_root=tmp_path, landmark_stride=-5)
+    cmd = _stub_subprocess[0]
+    assert "--landmark-stride" not in cmd
+
+
 def _make_extender_capturing_stub(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Captures deadline_extender (in addition to cmd) so tests can assert on it."""
     captured: dict = {}

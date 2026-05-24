@@ -978,6 +978,18 @@ def run_rppg(
         stride = 3
     if stride > 1:
         cmd.extend(["--landmark-stride", str(stride)])
+        # User-actionable advisory so the speedup choice is loud, not
+        # buried in the full argv banner below. Per the injector's own
+        # --landmark-stride help, quality loss is "negligible on mostly-
+        # still faces" — implying NON-negligible on fast-motion source.
+        # If the user reports artifacts on a fast-motion clip, this
+        # line is the breadcrumb that points at the right knob.
+        _report(
+            progress_cb,
+            f"rPPG landmark-stride {stride} (3-5x speedup; may degrade "
+            f"quality on fast-motion source — set to 1 to disable).",
+            "info",
+        )
     _report(progress_cb, f"rPPG launching: {_format_cmd_for_log(cmd)}", "info")
     # Up-front expectation banner — user reported "why is this taking so
     # long and not showing progress" because the prior log went straight
