@@ -31,6 +31,28 @@ echo   Root: %ROOT_DIR%
 echo(
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] GUI launch started
 
+rem --- PR #49: bootstrap mutex (concurrent launches must not race pip) -
+set "SETUP_LOCK=%STATE_DIR%\setup.lock"
+:acquire_setup_lock
+md "%SETUP_LOCK%" >nul 2>&1
+if !errorlevel! equ 0 goto :setup_lock_acquired
+rem Stale-lock check: -d -1 = older than 1 day. Conservative; the .sh
+rem path uses a finer 10-min window. Bootstrap should never take >24h.
+forfiles /P "%STATE_DIR%" /M setup.lock /D -1 >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [setup-lock] removing stale lock
+    rd /S /Q "%SETUP_LOCK%" >nul 2>&1
+    goto :acquire_setup_lock
+)
+if not defined SETUP_LOCK_WAIT_LOGGED (
+    echo   [setup-lock] another launcher is running dependency setup; waiting...
+    set "SETUP_LOCK_WAIT_LOGGED=1"
+)
+rem Sleep 2s. ping is universally available; timeout needs interactive console.
+ping -n 3 127.0.0.1 >nul 2>&1
+goto :acquire_setup_lock
+:setup_lock_acquired
+
 rem --- Create venv if needed ------------------------------------------------
 if not exist "%VENV_PYTHON%" (
     echo   [%LAUNCH_TS%] Creating virtual environment...
@@ -39,6 +61,7 @@ if not exist "%VENV_PYTHON%" (
         echo(
         echo  ERROR: Failed to create venv. Is Python installed and on PATH?
         echo(
+        call :release_setup_lock
         pause
         exit /b 1
     )
@@ -62,6 +85,7 @@ if exist "%STAMP%" (
     echo   [%LAUNCH_TS%] Dependencies up-to-date ^(cached stamp^). Skipping sync.
     echo   Tip: delete .launcher_state\deps_*.ok to force a full re-check.
     echo(
+    call :release_setup_lock
     goto :launch
 )
 
@@ -90,6 +114,7 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             echo(
             echo  ERROR: Dependency bootstrap failed.
             echo(
+            call :release_setup_lock
             pause
             exit /b 1
         )
@@ -105,6 +130,7 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             echo(
             echo  ERROR: Automatic dependency repair failed.
             echo(
+            call :release_setup_lock
             pause
             exit /b 1
         )
@@ -118,13 +144,16 @@ del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 echo   [%LAUNCH_TS%] Stamp written. Next launch will skip dep sync.
 echo(
 
+rem --- PR #49: release bootstrap mutex BEFORE launching the GUI -------
+call :release_setup_lock
+
 :launch
 echo   [%LAUNCH_TS%] Launching GUI...
 echo   Venv: %VENV_PYTHON%
 echo(
 
 set "KLING_GUI_CLI_ERRORS=1"
-"%VENV_PYTHON%" -u "%GUI_SCRIPT%"
+"%VENV_PYTHON%" -u "%GUI_SCRIPT%" %*
 set "EXIT_CODE=!errorlevel!"
 
 echo(
@@ -146,8 +175,16 @@ echo  MediaPipe is required for Oldcam v9/v10.
 echo  Close running Python/GUI processes and retry.
 echo  If it still fails, recreate the venv or run dep repair/bootstrap manually.
 echo(
+call :release_setup_lock
 pause
 endlocal & exit /b 1
+
+:release_setup_lock
+rem PR #49 round-2 H-1: centralize lock release. Called before every
+rem exit/goto out of the bootstrap region so a dep-failure path never
+rem leaves the lock dir for the next sibling launcher to wait on.
+rd /S /Q "%SETUP_LOCK%" >nul 2>&1
+exit /b 0
 
 :INSTALL_REQUIREMENTS
 set "REQ_FILE=%~1"

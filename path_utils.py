@@ -6,11 +6,253 @@ Provides functions to get correct paths whether running as script or frozen exe.
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 
 APP_NAME = "selfie-gen-ultimate"
+
+# ---------------------------------------------------------------------------
+# Concurrent-launch workspace + instance identity (PR #49)
+#
+# Two launches of this app must not bleed runtime state (carousel, session
+# autosave, video history, crash log) into each other. We use two axes:
+#
+#   workspace name  → namespace dir under user_data_dir.
+#                     "default" maps to the existing root so shared files
+#                     (kling_config.json, ui_config.json, kling_gui.log) stay
+#                     exactly where they are. Named workspaces go under
+#                     <root>/workspaces/<name>/.
+#
+#   instance id     → per-process child dir under <workspace>/runtime/instances/.
+#                     Format "<YYYYMMDD-HHMMSS>-<PID>". Always set; even two
+#                     default launches each get their own isolated instance dir.
+#
+# Resolution order: explicit CLI arg → KLING_WORKSPACE env → "default". The env
+# vars KLING_WORKSPACE and KLING_INSTANCE_ID are set early in gui_launcher.main
+# so any subprocess inherits the same identity.
+# ---------------------------------------------------------------------------
+
+WORKSPACE_DEFAULT = "default"
+_WORKSPACE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Instance id format: "<YYYYMMDD-HHMMSS>-<PID>". The regex matches that and
+# its component chars only — no slashes/backslashes/dots-as-traversal — so a
+# malicious or stale ``KLING_INSTANCE_ID`` env value can never escape the
+# runtime tree via ``get_runtime_dir`` (which composes it into a path).
+# Code-review M1 on PR #49.
+_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_INSTANCE_ID_CACHE: Optional[str] = None
+_WINDOWS_RESERVED_FOR_WORKSPACE = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+}
+
+
+def _sanitize_workspace_name(name: str) -> str:
+    """Return the canonical workspace name or raise ValueError.
+
+    Accepts: letters, digits, ``.``, ``_``, ``-``. Length 1-64.
+    Rejects: empty, whitespace, ``..``, leading dot, slashes/backslashes,
+    Windows reserved device names. The leading-dot ban keeps workspace dirs
+    out of dotfile-hidden status on macOS/Linux.
+    """
+    raw = (name or "").strip()
+    if not raw:
+        raise ValueError("workspace name is empty")
+    if len(raw) > 64:
+        raise ValueError("workspace name exceeds 64 chars")
+    if raw == "." or raw == ".." or raw.startswith("."):
+        raise ValueError(f"workspace name starts with '.' or is '..': {raw!r}")
+    if not _WORKSPACE_NAME_RE.match(raw):
+        raise ValueError(
+            f"workspace name has invalid chars (allowed: A-Z a-z 0-9 . _ -): {raw!r}"
+        )
+    if raw.upper() in _WINDOWS_RESERVED_FOR_WORKSPACE:
+        raise ValueError(f"workspace name is a Windows reserved device name: {raw!r}")
+    return raw
+
+
+def set_workspace(name: str) -> str:
+    """Sanitize ``name``, set ``KLING_WORKSPACE`` env, return canonical name.
+
+    Raises ``ValueError`` on invalid input — caller is expected to log and
+    fall back to :data:`WORKSPACE_DEFAULT`.
+    """
+    canonical = _sanitize_workspace_name(name)
+    os.environ["KLING_WORKSPACE"] = canonical
+    return canonical
+
+
+def get_workspace() -> str:
+    """Return the current workspace name (env-or-default, sanitized).
+
+    Never raises — falls back to :data:`WORKSPACE_DEFAULT` if the env var
+    holds a malformed value (e.g. a stale env from a different app).
+    """
+    raw = os.environ.get("KLING_WORKSPACE", WORKSPACE_DEFAULT) or WORKSPACE_DEFAULT
+    try:
+        return _sanitize_workspace_name(raw)
+    except ValueError:
+        return WORKSPACE_DEFAULT
+
+
+def get_instance_id() -> str:
+    """Return the current process's instance id.
+
+    Reads ``KLING_INSTANCE_ID`` if set; otherwise generates
+    ``"<YYYYMMDD-HHMMSS>-<PID>"``, caches it in this module, exports it
+    via env so subprocesses inherit. Subsequent calls in the same process
+    return the cached value — instance id is process-stable.
+    """
+    global _INSTANCE_ID_CACHE
+    if _INSTANCE_ID_CACHE is not None:
+        return _INSTANCE_ID_CACHE
+    env_val = os.environ.get("KLING_INSTANCE_ID", "").strip()
+    if env_val and _INSTANCE_ID_RE.match(env_val):
+        # Trust an inherited id from a parent launcher process — but only
+        # after validation. Without this, a stale or hostile env value like
+        # "../escape" would land in ``get_runtime_dir()`` as a path component
+        # and write outside the runtime tree. Code-review M1 on PR #49.
+        _INSTANCE_ID_CACHE = env_val
+        return env_val
+    # Either no env value or it failed validation — generate fresh and
+    # overwrite the env so any subprocess inherits the clean value.
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    fresh = f"{stamp}-{os.getpid()}"
+    _INSTANCE_ID_CACHE = fresh
+    os.environ["KLING_INSTANCE_ID"] = fresh
+    return fresh
+
+
+def _user_data_root() -> str:
+    """Return the same root that ``get_config_path`` / ``get_log_path`` use.
+
+    macOS: ``~/Library/Application Support/<APP_NAME>``.
+    Windows/Linux: ``get_app_dir()`` (preserves the portable Windows workflow
+    documented in CLAUDE.md — kling_config.json stays next to the exe).
+    """
+    return get_user_data_dir() if sys.platform == "darwin" else get_app_dir()
+
+
+def get_workspace_dir(workspace: Optional[str] = None) -> str:
+    """Return the parent dir for the given workspace's namespaced state.
+
+    For the default workspace this returns the SAME root as today's
+    ``get_config_path`` / ``get_log_path`` — so ``kling_config.json``,
+    ``ui_config.json``, ``kling_gui.log`` stay exactly where they have
+    always lived. Only the new ``runtime/`` subtree is new.
+
+    For named workspaces this returns ``<root>/workspaces/<name>/``.
+
+    Round-2 review (CodeRabbit): the explicit ``workspace`` arg is now
+    sanitized too. Previously, only env-mediated workspace names went
+    through ``_sanitize_workspace_name`` (at ``set_workspace`` / inside
+    ``get_workspace``); a direct call like
+    ``get_workspace_dir(workspace="../escape")`` would attempt to compose
+    a traversal path. The ``commonpath`` defense-in-depth below would
+    still catch the escape, but explicit sanitization is the right layer.
+    Invalid names fall back to ``WORKSPACE_DEFAULT``.
+    """
+    if workspace is None:
+        ws = get_workspace()
+    else:
+        try:
+            ws = _sanitize_workspace_name(workspace)
+        except ValueError:
+            ws = WORKSPACE_DEFAULT
+    root = _user_data_root()
+    if ws == WORKSPACE_DEFAULT:
+        return root
+    candidate = os.path.join(root, "workspaces", ws)
+    try:
+        common = os.path.commonpath([os.path.abspath(candidate), os.path.abspath(root)])
+        if os.path.normcase(common) != os.path.normcase(os.path.abspath(root)):
+            return root
+    except ValueError:
+        return root
+    return candidate
+
+
+def get_runtime_dir(
+    workspace: Optional[str] = None,
+    instance_id: Optional[str] = None,
+) -> str:
+    """Return this process's runtime dir under the given workspace.
+
+    Layout: ``<workspace_dir>/runtime/instances/<instance_id>/``. The
+    per-instance dir holds carousel autosave, video history, crash log —
+    everything that two concurrent processes would otherwise clobber.
+
+    Pure path computation; call :func:`ensure_runtime_dirs` to materialize.
+    """
+    base = get_workspace_dir(workspace)
+    iid = instance_id or get_instance_id()
+    return os.path.join(base, "runtime", "instances", iid)
+
+
+def get_runtime_sessions_dir(
+    workspace: Optional[str] = None,
+    instance_id: Optional[str] = None,
+) -> str:
+    """Return ``<runtime_dir>/sessions/`` — per-instance autosave home."""
+    return os.path.join(get_runtime_dir(workspace, instance_id), "sessions")
+
+
+def get_runtime_crash_log_path(
+    workspace: Optional[str] = None,
+    instance_id: Optional[str] = None,
+) -> str:
+    """Return ``<runtime_dir>/crash_log.txt`` — per-instance crash sink."""
+    return os.path.join(get_runtime_dir(workspace, instance_id), "crash_log.txt")
+
+
+def get_runtime_history_path(
+    workspace: Optional[str] = None,
+    instance_id: Optional[str] = None,
+) -> str:
+    """Return ``<runtime_dir>/kling_history.json`` — per-instance video history."""
+    return os.path.join(get_runtime_dir(workspace, instance_id), "kling_history.json")
+
+
+def get_workspace_markers_dir(workspace: Optional[str] = None) -> str:
+    """Return ``<workspace_dir>/runtime/.markers/`` — liveness markers root.
+
+    One small JSON per active instance. Survives orderly close (deleted)
+    but is also subject to a stale-cleanup on launch — round-2 H-2
+    switched the cleanup gate from a 24h mtime cutoff to a per-marker
+    PID liveness probe (``os.kill(pid, 0)`` POSIX / ``OpenProcess``
+    Windows). A generous 30-day mtime cutoff is the fallback for markers
+    missing/malformed pid. See ``kling_gui.workspace_markers``.
+    """
+    return os.path.join(get_workspace_dir(workspace), "runtime", ".markers")
+
+
+def ensure_runtime_dirs(
+    workspace: Optional[str] = None,
+    instance_id: Optional[str] = None,
+) -> str:
+    """Create the per-instance runtime tree and return the runtime dir.
+
+    Idempotent (``makedirs(exist_ok=True)``). Creates the sessions and
+    markers dirs as well so first-write call sites don't have to.
+    """
+    runtime = get_runtime_dir(workspace, instance_id)
+    for d in (
+        runtime,
+        get_runtime_sessions_dir(workspace, instance_id),
+        get_workspace_markers_dir(workspace),
+    ):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            # Per-instance dirs are best-effort at this layer; the GUI's
+            # autosave layer already tolerates missing sessions dir by
+            # creating it on demand. Re-raising would break the launch
+            # for a write-permission edge case that isn't actionable here.
+            pass
+    return runtime
 
 
 def build_expand_filenames(
