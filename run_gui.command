@@ -1,5 +1,5 @@
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET="${ROOT_DIR}/launchers/run_gui.command"
@@ -14,4 +14,5 @@ if [[ ! -x "${TARGET}" ]]; then
   chmod +x "${TARGET}" || true
 fi
 
-exec "${TARGET}"
+# PR #49: forward args ("--workspace NAME", etc.) to the canonical launcher.
+exec "${TARGET}" "$@"

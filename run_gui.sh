@@ -6,6 +6,46 @@ PYTHON_BIN="${ROOT_DIR}/.venv-macos/bin/python"
 REQUIREMENTS_STAMP="${ROOT_DIR}/.venv-macos/.requirements.sha256"
 HEALTH_STAMP="${ROOT_DIR}/.venv-macos/.health.sha256"
 
+# ---------------------------------------------------------------------------
+# PR #49: bootstrap mutex. Two concurrent launches must not run setup_macos.sh
+# (venv create + pip install) at the same time — they corrupt the shared venv.
+# Held only across the dep-setup block below; released BEFORE exec'ing the
+# GUI, so multiple GUI processes can run concurrently after bootstrap.
+# ---------------------------------------------------------------------------
+LOCK_DIR="${ROOT_DIR}/.launcher_state"
+LOCK_PATH="${LOCK_DIR}/setup.lock"
+LOCK_STALE_SECONDS=600   # 10 min — conservative; most dep installs <3 min
+mkdir -p "${LOCK_DIR}"
+
+_lock_acquired=0
+_lock_waited=0
+while [[ ${_lock_acquired} -eq 0 ]]; do
+  if mkdir "${LOCK_PATH}" 2>/dev/null; then
+    _lock_acquired=1
+    break
+  fi
+  # Check for stale lock (kill -9'd sibling or crashed dep install)
+  if [[ -d "${LOCK_PATH}" ]]; then
+    if command -v stat >/dev/null 2>&1; then
+      _now="$(date +%s)"
+      # macOS stat: -f %m; GNU stat: -c %Y. Try both.
+      _mtime="$(stat -f %m "${LOCK_PATH}" 2>/dev/null || stat -c %Y "${LOCK_PATH}" 2>/dev/null || echo "${_now}")"
+      _age=$(( _now - _mtime ))
+      if (( _age > LOCK_STALE_SECONDS )); then
+        printf '[setup-lock] removing stale lock (age=%ss)\n' "${_age}" >&2
+        rmdir "${LOCK_PATH}" 2>/dev/null || true
+        continue
+      fi
+    fi
+  fi
+  if [[ ${_lock_waited} -eq 0 ]]; then
+    printf '[setup-lock] another launcher is running dependency setup; waiting...\n' >&2
+    _lock_waited=1
+  fi
+  sleep 2
+done
+trap 'rmdir "${LOCK_PATH}" 2>/dev/null || true' EXIT
+
 # setup_macos.sh installs deps and writes REQUIREMENTS_STAMP when they change
 "${ROOT_DIR}/setup_macos.sh"
 export KLING_SKIP_PY_STARTUP_DEP_CHECK=1
@@ -28,6 +68,10 @@ if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
   fi
 fi
 
+# Release the bootstrap lock BEFORE exec'ing the GUI so siblings can launch.
+rmdir "${LOCK_PATH}" 2>/dev/null || true
+trap - EXIT
+
 if ! "${PYTHON_BIN}" -c 'import tkinter' >/dev/null 2>&1; then
   VERSION="$("${PYTHON_BIN}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
   printf 'GUI launch blocked: this Python environment does not provide Tk support.\n\n' >&2
@@ -37,4 +81,4 @@ if ! "${PYTHON_BIN}" -c 'import tkinter' >/dev/null 2>&1; then
   exit 1
 fi
 
-exec "${PYTHON_BIN}" -u "${ROOT_DIR}/gui_launcher.py"
+exec "${PYTHON_BIN}" -u "${ROOT_DIR}/gui_launcher.py" "$@"

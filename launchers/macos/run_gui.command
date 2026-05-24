@@ -20,7 +20,8 @@ if [[ ! -x "${ROOT_DIR}/run_gui.sh" ]]; then
 fi
 
 set +e
-"${ROOT_DIR}/run_gui.sh"
+# PR #49: forward args ("--workspace NAME", etc.) through to gui_launcher.py.
+"${ROOT_DIR}/run_gui.sh" "$@"
 status=$?
 set -e
 

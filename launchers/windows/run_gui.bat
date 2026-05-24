@@ -31,6 +31,28 @@ echo   Root: %ROOT_DIR%
 echo(
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] GUI launch started
 
+rem --- PR #49: bootstrap mutex (concurrent launches must not race pip) -
+set "SETUP_LOCK=%STATE_DIR%\setup.lock"
+:acquire_setup_lock
+md "%SETUP_LOCK%" >nul 2>&1
+if !errorlevel! equ 0 goto :setup_lock_acquired
+rem Stale-lock check: -d -1 = older than 1 day. Conservative; the .sh
+rem path uses a finer 10-min window. Bootstrap should never take >24h.
+forfiles /P "%STATE_DIR%" /M setup.lock /D -1 >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [setup-lock] removing stale lock
+    rd /S /Q "%SETUP_LOCK%" >nul 2>&1
+    goto :acquire_setup_lock
+)
+if not defined SETUP_LOCK_WAIT_LOGGED (
+    echo   [setup-lock] another launcher is running dependency setup; waiting...
+    set "SETUP_LOCK_WAIT_LOGGED=1"
+)
+rem Sleep 2s. ping is universally available; timeout needs interactive console.
+ping -n 3 127.0.0.1 >nul 2>&1
+goto :acquire_setup_lock
+:setup_lock_acquired
+
 rem --- Create venv if needed ------------------------------------------------
 if not exist "%VENV_PYTHON%" (
     echo   [%LAUNCH_TS%] Creating virtual environment...
@@ -118,13 +140,16 @@ del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 echo   [%LAUNCH_TS%] Stamp written. Next launch will skip dep sync.
 echo(
 
+rem --- PR #49: release bootstrap mutex BEFORE launching the GUI -------
+rd /S /Q "%SETUP_LOCK%" >nul 2>&1
+
 :launch
 echo   [%LAUNCH_TS%] Launching GUI...
 echo   Venv: %VENV_PYTHON%
 echo(
 
 set "KLING_GUI_CLI_ERRORS=1"
-"%VENV_PYTHON%" -u "%GUI_SCRIPT%"
+"%VENV_PYTHON%" -u "%GUI_SCRIPT%" %*
 set "EXIT_CODE=!errorlevel!"
 
 echo(

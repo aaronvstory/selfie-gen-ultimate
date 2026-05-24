@@ -557,6 +557,36 @@ Reference implementation: `similarity/run_gui.bat:65-72` (fixed in commit `cb876
 
 ---
 
+## Concurrent launches & workspaces (PR #49)
+
+The GUI tolerates concurrent launches. Each process auto-isolates its
+runtime state (carousel autosave, video history, crash log) under
+`<user_data_root>/runtime/instances/<YYYYMMDD-HHMMSS>-<PID>/`. Named
+workspaces (`--workspace NAME`) put runtime under
+`<user_data_root>/workspaces/<name>/runtime/instances/<...>/`. Shared
+state (`kling_config.json`, `ui_config.json`, manual session saves) stays
+at the existing paths with last-writer-wins semantics — each instance
+reads once at startup and keeps an in-memory copy; no live disk sync.
+
+**Design rule for new on-disk state.** Before adding any file the GUI
+writes at runtime, classify it:
+
+- **Shared:** use `path_utils.get_user_data_dir()` / `get_config_path()`
+  / `get_log_path()`. Document the choice in CLAUDE.md's "Concurrent
+  launches & workspaces" section.
+- **Per-instance:** use `path_utils.get_runtime_dir()` /
+  `get_runtime_sessions_dir()` / `get_runtime_crash_log_path()` /
+  `get_runtime_history_path()`.
+
+Don't introduce new shared writable files without an explicit ADR-style
+note in CLAUDE.md. The bleed bug PR #49 fixed started exactly that way
+— `sessions/<key>_autosave.json` was a shared file two windows would
+overwrite each other on.
+
+Full reference: CLAUDE.md "Concurrent launches & workspaces" section.
+
+---
+
 ## Hard Rules — GUI Sash Layout
 
 ### Saved config wins over code defaults

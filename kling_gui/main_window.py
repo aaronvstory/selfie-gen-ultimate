@@ -33,7 +33,16 @@ from path_utils import (
     preflight_image_path,
     sanitize_path_name,
     sanitize_tree_names_portable_report,
+    # Workspace/instance isolation (PR #49): per-process runtime dirs so
+    # concurrent GUI windows don't bleed autosave / history / crash log.
+    get_workspace,
+    get_instance_id,
+    get_runtime_sessions_dir,
+    get_runtime_history_path,
+    get_runtime_crash_log_path,
+    ensure_runtime_dirs,
 )
+from . import workspace_markers
 
 from .drop_zone import DropZone, create_dnd_root, HAS_DND, DND_FILES, parse_dnd_paths
 from .log_display import LogDisplay
@@ -849,6 +858,16 @@ class KlingGUIWindow:
 
         self.data_dir = get_user_data_dir() if sys.platform == "darwin" else get_app_dir()
 
+        # PR #49: workspace + instance identity. Resolved from env (set by
+        # gui_launcher) — falls back to "default" / fresh PID when running
+        # in tests or if gui_launcher hasn't set them. Per-instance dirs
+        # isolate autosave / history / crash log from sibling windows.
+        self.workspace = get_workspace()
+        self.instance_id = get_instance_id()
+        ensure_runtime_dirs(self.workspace, self.instance_id)
+        self.sessions_dir = get_runtime_sessions_dir(self.workspace, self.instance_id)
+        self._workspace_marker_path: Optional[str] = None  # set in __init__ tail
+
         self.config = self._load_config()
         if ensure_key_fields(self.config):
             self._save_config()
@@ -861,10 +880,11 @@ class KlingGUIWindow:
         self._layout_corrections_pending = False
         self.edit_mode = False
         self.dimension_labels = {}
-        # History file in same directory as config
-        self.history_path = os.path.join(
-            os.path.dirname(self.config_path), "kling_history.json"
-        )
+        # History file: per-instance under runtime/ so two concurrent windows
+        # don't race on append (PR #49). Previously lived next to kling_config.json.
+        # Legacy file at <data_dir>/kling_history.json is left untouched for
+        # back-compat — it just stops growing.
+        self.history_path = get_runtime_history_path(self.workspace, self.instance_id)
 
         # Set up logging BEFORE anything that might call _log()
         self.logger = self._setup_logging()
@@ -901,8 +921,36 @@ class KlingGUIWindow:
             log_callback=self._log,
             logger=self.logger,
             autosave_debounce_ms=self._autosave_debounce_ms,
+            # Per-instance autosave dir (PR #49). Manual saves still go to
+            # self.data_dir/sessions/ (shared) so they show in every window's
+            # Session Manager dialog. Only autosaves are isolated.
+            sessions_dir=self.sessions_dir,
         )
         self.image_session.add_on_change(self._on_image_session_changed)
+
+        # PR #49: workspace liveness marker. Best-effort; failure is non-fatal.
+        # Sweep stale markers (mtime > 24h) first to clear kill -9 orphans.
+        workspace_markers.cleanup_stale_markers(self.workspace)
+        runtime_dir_for_marker = os.path.dirname(self.sessions_dir)  # <runtime>/instances/<id>/
+        self._workspace_marker_path = workspace_markers.register_instance(
+            self.workspace, self.instance_id, runtime_dir_for_marker
+        )
+        # If a sibling instance is already running in the same workspace, log a
+        # non-blocking heads-up. Two windows can safely coexist (runtime is
+        # isolated per instance), but the user may want to know.
+        try:
+            active = workspace_markers.list_active_instances(self.workspace)
+            # Filter out our own marker (registered above) so the count is "siblings".
+            siblings = [m for m in active if m.get("instance_id") != self.instance_id]
+            if siblings:
+                self.logger.info(
+                    "PR #49: another instance is active in workspace %r (sibling pids=%s). "
+                    "Runtime state is isolated per window; preferences are shared (last-writer-wins).",
+                    self.workspace,
+                    [m.get("pid") for m in siblings],
+                )
+        except Exception:
+            pass
 
         # Set app icon (window title bar + taskbar)
         self._set_app_icon()
@@ -5308,6 +5356,14 @@ class KlingGUIWindow:
         if hasattr(self, "config_panel") and self.config_panel:
             self.config_panel.cleanup()
 
+        # PR #49: release the workspace liveness marker (best-effort). The
+        # 24h stale-cleanup sweep on next launch picks up any marker missed
+        # here (kill -9, hard crash, etc.).
+        try:
+            workspace_markers.release_instance(self._workspace_marker_path)
+        except Exception:
+            pass
+
         # Process any pending events and quit mainloop before destroy
         # This ensures cleaner shutdown on Python 3.14+ with stricter thread safety
         try:
@@ -5324,10 +5380,25 @@ class KlingGUIWindow:
 
 
 def write_crash_log(error_type: str, error_msg: str, traceback_str: str):
-    """Write crash information to a log file for debugging."""
+    """Write crash information to a log file for debugging.
+
+    PR #49: routes to the per-instance ``runtime/instances/<id>/crash_log.txt``
+    when ``KLING_WORKSPACE`` / ``KLING_INSTANCE_ID`` env are set (the common
+    case under gui_launcher.py). Falls back to the legacy shared
+    ``crash_log.txt`` if env is missing or runtime resolution fails — better
+    a crash log in the wrong place than a swallowed crash.
+    """
     from datetime import datetime
 
-    crash_log_path = get_crash_log_path()
+    crash_log_path = get_crash_log_path()  # legacy fallback
+    try:
+        if os.environ.get("KLING_WORKSPACE") and os.environ.get("KLING_INSTANCE_ID"):
+            crash_log_path = get_runtime_crash_log_path()
+            # Ensure parent dir exists — gui_launcher normally creates it, but
+            # we may be invoked from a code path that bypassed that.
+            os.makedirs(os.path.dirname(crash_log_path), exist_ok=True)
+    except Exception:
+        pass
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     crash_info = f"""

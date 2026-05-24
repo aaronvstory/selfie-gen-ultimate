@@ -29,10 +29,53 @@ class SessionRecord(NamedTuple):
     image_count: int
 
 
-def _get_sessions_dir(app_dir: str) -> str:
-    d = os.path.join(app_dir, "sessions")
+def _get_sessions_dir(app_dir: str, *, sessions_dir_override: Optional[str] = None) -> str:
+    """Return the sessions dir, optionally overridden.
+
+    When ``sessions_dir_override`` is provided, it is used verbatim — bypasses
+    the ``app_dir/sessions`` convention. Used by per-instance autosaves which
+    live under ``runtime/instances/<id>/sessions/`` so two concurrent windows
+    don't overwrite each other's rolling autosave (PR #49).
+    """
+    d = sessions_dir_override if sessions_dir_override else os.path.join(app_dir, "sessions")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _iter_extra_sessions_dirs(app_dir: str) -> List[str]:
+    """Return all per-instance sessions dirs under the default workspace.
+
+    Scans ``<workspace_dir>/runtime/instances/*/sessions/`` for the *default*
+    workspace, so the Session Manager dialog can aggregate autosaves saved by
+    any concurrent or prior instance. Skips the dir matching THIS process's
+    runtime if it has already been added by the primary sessions_dir scan
+    (the override path), to avoid double-counting.
+
+    Returns absolute paths. Silently returns ``[]`` on any filesystem error —
+    the caller (``list_sessions``) treats this dir set as best-effort.
+
+    Only the default workspace is aggregated. Named workspaces are an
+    intentional separation; their sessions stay confined to that workspace.
+    """
+    dirs: List[str] = []
+    try:
+        from path_utils import get_workspace_dir, get_workspace
+        # Aggregate per-instance dirs only for the active workspace. For named
+        # workspaces, callers passing app_dir get a single sessions dir; aggregation
+        # would defeat the workspace boundary.
+        ws = get_workspace()
+        instances_root = os.path.join(get_workspace_dir(ws), "runtime", "instances")
+        if not os.path.isdir(instances_root):
+            return dirs
+        for entry in os.scandir(instances_root):
+            if not entry.is_dir():
+                continue
+            sessions = os.path.join(entry.path, "sessions")
+            if os.path.isdir(sessions):
+                dirs.append(sessions)
+    except Exception as exc:
+        logger.debug("Failed enumerating per-instance sessions dirs: %s", exc)
+    return dirs
 
 
 def _atomic_write_json(path: str, data: dict) -> None:
@@ -144,14 +187,24 @@ def get_autosave_path(app_dir: str, image_session) -> str:
     return path
 
 
-def get_rolling_autosave_path(app_dir: str, project_key: str) -> str:
+def get_rolling_autosave_path(
+    app_dir: str,
+    project_key: str,
+    *,
+    sessions_dir_override: Optional[str] = None,
+) -> str:
     """Return the single deterministic autosave path for a project.
 
     One rolling file per project (``{project_key}_autosave.json``), overwritten
     in place — no timestamp, no accumulation. The no-timestamp stem is still
     matched by ``_infer_project_key``'s regex (the timestamp group is optional).
+
+    When ``sessions_dir_override`` is set, the autosave goes into that dir
+    instead of ``app_dir/sessions/`` — used by per-instance runtime isolation
+    (PR #49) so two concurrent windows working on the same project_key don't
+    overwrite each other's rolling autosave.
     """
-    sessions_dir = _get_sessions_dir(app_dir)
+    sessions_dir = _get_sessions_dir(app_dir, sessions_dir_override=sessions_dir_override)
     return os.path.join(sessions_dir, f"{_sanitize_name(project_key)}_autosave.json")
 
 
@@ -185,16 +238,27 @@ def _legacy_autosave_pattern(project_key: str) -> "re.Pattern":
     )
 
 
-def _purge_legacy_autosaves(app_dir: str, project_key: str, keep_path: str) -> int:
+def _purge_legacy_autosaves(
+    app_dir: str,
+    project_key: str,
+    keep_path: str,
+    *,
+    sessions_dir_override: Optional[str] = None,
+) -> int:
     """Delete every autosave for ``project_key`` except the rolling file.
 
     Filename-only matching (no JSON parsing) so this stays cheap on the
     autosave hot path even when the directory holds many manual sessions.
     Case-insensitive path compare (Windows) so the rolling file is never
     deleted as its own legacy sibling. Manual saves are untouched.
+
+    When ``sessions_dir_override`` is set, purges within that dir instead
+    of ``app_dir/sessions/`` (PR #49). The per-instance rolling file lives
+    under the override; its legacy siblings (timestamped autosaves from a
+    pre-PR #49 release) live in the legacy shared dir and are left alone.
     """
     removed = 0
-    sessions_dir = _get_sessions_dir(app_dir)
+    sessions_dir = _get_sessions_dir(app_dir, sessions_dir_override=sessions_dir_override)
     keep_norm = os.path.normcase(os.path.abspath(keep_path))
     pattern = _legacy_autosave_pattern(project_key)
     try:
@@ -353,33 +417,72 @@ def _derive_session_name(image_session) -> str:
 
 
 def list_sessions(app_dir: str) -> List[SessionRecord]:
-    """Return all saved sessions, sorted newest-first."""
+    """Return all saved sessions, sorted newest-first.
+
+    Aggregates two sources (PR #49 — concurrent workspaces):
+      1. The legacy shared sessions dir (``<app_dir>/sessions/``) — holds
+         manual saves + any pre-PR #49 autosaves.
+      2. Every per-instance runtime sessions dir
+         (``<workspace_dir>/runtime/instances/*/sessions/``) — holds
+         rolling autosaves saved by THIS instance and any sibling instance
+         that's still alive or that exited cleanly without sweeping its dir.
+
+    Both sources merged so the Session Manager dialog can browse autosaves
+    saved by any window. On duplicate filenames (e.g. same project_key
+    autosave file present in two instance dirs), keep the newest-modified.
+    """
     sessions_dir = _get_sessions_dir(app_dir)
-    records = []
-    for fname in os.listdir(sessions_dir):
-        if not fname.endswith(".json"):
-            continue
-        fpath = os.path.join(sessions_dir, fname)
+    seen: dict = {}
+
+    def _ingest(directory: str) -> None:
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            kind = _normalize_session_kind(data.get("session_kind"), fname)
-            project_key = _infer_project_key(data, fname)
-            mtime_iso = _file_mtime_iso(fpath)
-            created_at = str(data.get("created_at") or data.get("timestamp") or mtime_iso)
-            updated_at = str(data.get("updated_at") or data.get("timestamp") or mtime_iso)
-            records.append(SessionRecord(
-                name=data.get("name", fname),
-                path=fpath,
-                timestamp=updated_at,
-                created_at=created_at,
-                updated_at=updated_at,
-                session_kind=kind,
-                project_key=project_key,
-                image_count=len(data.get("session", {}).get("images", [])),
-            ))
-        except Exception:
-            logger.warning("Skipping corrupt session file: %s", fname)
+            entries = os.listdir(directory)
+        except OSError as exc:
+            logger.debug("list_sessions: scandir(%s) failed: %s", directory, exc)
+            return
+        for fname in entries:
+            if not fname.endswith(".json"):
+                continue
+            fpath = os.path.join(directory, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                kind = _normalize_session_kind(data.get("session_kind"), fname)
+                project_key = _infer_project_key(data, fname)
+                mtime_iso = _file_mtime_iso(fpath)
+                created_at = str(data.get("created_at") or data.get("timestamp") or mtime_iso)
+                updated_at = str(data.get("updated_at") or data.get("timestamp") or mtime_iso)
+                rec = SessionRecord(
+                    name=data.get("name", fname),
+                    path=fpath,
+                    timestamp=updated_at,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    session_kind=kind,
+                    project_key=project_key,
+                    image_count=len(data.get("session", {}).get("images", [])),
+                )
+                # De-dupe on filename for autosaves (same rolling key across
+                # instances). Keep newest. Manual saves should never collide on
+                # filename across dirs (the legacy dir's _N collision counter
+                # made manuals globally unique), so de-dupe by full path stays
+                # correct for them. Use (kind, fname) so a legacy manual + a
+                # newer instance autosave with the same project name don't
+                # shadow each other.
+                key = (kind, fname) if kind == SESSION_KIND_AUTOSAVE else fpath
+                existing = seen.get(key)
+                if existing is None or updated_at > existing.updated_at:
+                    seen[key] = rec
+            except Exception:
+                logger.warning("Skipping corrupt session file: %s", fname)
+
+    _ingest(sessions_dir)
+    for extra in _iter_extra_sessions_dirs(app_dir):
+        if os.path.normcase(os.path.abspath(extra)) == os.path.normcase(os.path.abspath(sessions_dir)):
+            continue  # Don't double-scan the legacy dir if it happens to equal an instance dir
+        _ingest(extra)
+
+    records = list(seen.values())
     records.sort(key=lambda r: r.updated_at, reverse=True)
     return records
 
@@ -443,6 +546,8 @@ def save_session(
     project_key: Optional[str] = None,
     autosave_retention: int = AUTOSAVE_RETENTION_DEFAULT,
     skip_if_unchanged: bool = False,
+    *,
+    sessions_dir_override: Optional[str] = None,
 ) -> Optional[str]:
     """Save session to JSON. Returns the saved file path, or None if skipped.
 
@@ -460,7 +565,7 @@ def save_session(
     retain past it (legacy timestamped piles are purged instead).
     """
     _ = autosave_retention  # accepted for back-compat; see docstring
-    sessions_dir = _get_sessions_dir(app_dir)
+    sessions_dir = _get_sessions_dir(app_dir, sessions_dir_override=sessions_dir_override)
     kind = _normalize_session_kind(session_kind, "")
     effective_project_key = _sanitize_name(project_key or get_project_key(image_session))
     now_iso = _now_iso()
@@ -485,7 +590,11 @@ def save_session(
             pass
     else:
         if kind == SESSION_KIND_AUTOSAVE:
-            fpath = get_rolling_autosave_path(app_dir, effective_project_key)
+            fpath = get_rolling_autosave_path(
+                app_dir,
+                effective_project_key,
+                sessions_dir_override=sessions_dir_override,
+            )
             session_name = os.path.splitext(os.path.basename(fpath))[0]
             # Preserve created_at and short-circuit on unchanged content.
             # A corrupt rolling file self-heals: the read fails, we fall
@@ -547,7 +656,12 @@ def save_session(
         # project tidy (purge anything that isn't the rolling file). Done only
         # after the replace above succeeded, so a failed write never destroys
         # the previous good autosave.
-        _purge_legacy_autosaves(app_dir, effective_project_key, fpath)
+        _purge_legacy_autosaves(
+            app_dir,
+            effective_project_key,
+            fpath,
+            sessions_dir_override=sessions_dir_override,
+        )
 
     logger.info("Session saved: %s", fpath)
     return fpath

@@ -59,7 +59,116 @@ try:
 except Exception:
     PATH_UTILS_AVAILABLE = False
 
+# PR #49: workspace/instance API for concurrent-launch isolation. Imported
+# separately so a missing helper (e.g. an older path_utils on disk) doesn't
+# break the legacy crash-log fallback above.
+try:
+    from path_utils import (
+        set_workspace as _pu_set_workspace,
+        get_instance_id as _pu_get_instance_id,
+        ensure_runtime_dirs as _pu_ensure_runtime_dirs,
+        get_runtime_crash_log_path as _pu_get_runtime_crash_log_path,
+        WORKSPACE_DEFAULT as _PU_WORKSPACE_DEFAULT,
+    )
+    WORKSPACE_API_AVAILABLE = True
+except Exception:
+    WORKSPACE_API_AVAILABLE = False
+
 CLI_ERROR_MODE = os.getenv("KLING_GUI_CLI_ERRORS", "").strip() == "1"
+
+
+def _resolve_workspace_and_instance():
+    """Parse ``--workspace`` and bootstrap runtime dirs early in main().
+
+    Uses ``argparse.parse_known_args`` (NOT ``parse_args``) so the PyInstaller
+    bootloader can inject ``--multiprocessing-fork`` and similar without
+    raising SystemExit. Sets ``KLING_WORKSPACE`` and ``KLING_INSTANCE_ID``
+    env so ``KlingGUIWindow`` (and any subprocess) sees the same identity.
+
+    Returns ``(workspace, instance_id, runtime_dir)`` on success, or
+    ``(None, None, None)`` on any failure — caller falls back to the legacy
+    shared crash-log path in that case. This function MUST NOT raise.
+    """
+    if not WORKSPACE_API_AVAILABLE:
+        return None, None, None
+    try:
+        import argparse
+        parser = argparse.ArgumentParser(prog="gui_launcher", add_help=False)
+        parser.add_argument("--workspace", default=None)
+        parser.add_argument("--allow-shared-workspace", action="store_true")
+        parser.add_argument("-h", "--help", action="store_true")
+        args, _unknown = parser.parse_known_args()
+        if args.help:
+            sys.stderr.write(
+                "gui_launcher.py — Ultimate Selfie-Gen GUI bootstrap\n\n"
+                "  --workspace NAME              Run in named workspace dir\n"
+                "                                (default: 'default'; or env KLING_WORKSPACE).\n"
+                "                                Per-instance runtime isolation applies\n"
+                "                                regardless of workspace.\n"
+                "  --allow-shared-workspace      Suppress the multi-instance heads-up log.\n"
+                "  -h, --help                    Show this message.\n"
+            )
+            sys.exit(0)
+        ws_input = args.workspace or os.environ.get("KLING_WORKSPACE") or _PU_WORKSPACE_DEFAULT
+        try:
+            workspace = _pu_set_workspace(ws_input)
+        except ValueError as exc:
+            sys.stderr.write(
+                f"[selfie-gen] invalid workspace name {ws_input!r}: {exc}; "
+                f"falling back to {_PU_WORKSPACE_DEFAULT!r}\n"
+            )
+            workspace = _pu_set_workspace(_PU_WORKSPACE_DEFAULT)
+        instance_id = _pu_get_instance_id()
+        os.environ["KLING_INSTANCE_ID"] = instance_id
+        if args.allow_shared_workspace:
+            os.environ["KLING_ALLOW_SHARED_WORKSPACE"] = "1"
+        runtime_dir = _pu_ensure_runtime_dirs(workspace, instance_id)
+        sys.stderr.write(
+            f"[selfie-gen] workspace={workspace} instance={instance_id} "
+            f"runtime={runtime_dir}\n"
+        )
+        return workspace, instance_id, runtime_dir
+    except SystemExit:
+        # argparse calling sys.exit (e.g. -h handler above) — let it propagate.
+        raise
+    except Exception as exc:
+        sys.stderr.write(f"[selfie-gen] workspace bootstrap failed: {exc}\n")
+        return None, None, None
+
+
+def _resolved_crash_log_path():
+    """Return the right crash log path for the current launch.
+
+    Prefer the per-instance runtime crash log when workspace bootstrap
+    succeeded; fall back to the shared legacy path otherwise. Never raises.
+
+    Gated on ``PATH_UTILS_AVAILABLE`` first so test fixtures that mock that
+    flag to False (simulating "path_utils import broken") get the legacy
+    relative-path fallback as expected — without this gate, residual env
+    vars from earlier work would silently route the crash log to the real
+    user_data_dir, breaking tests that point _app_dir at a tmpdir.
+    """
+    if (
+        PATH_UTILS_AVAILABLE
+        and WORKSPACE_API_AVAILABLE
+        and os.environ.get("KLING_WORKSPACE")
+        and os.environ.get("KLING_INSTANCE_ID")
+    ):
+        try:
+            path = _pu_get_runtime_crash_log_path()
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+            except OSError:
+                pass
+            return path
+        except Exception:
+            pass
+    if PATH_UTILS_AVAILABLE:
+        try:
+            return get_crash_log_path()
+        except Exception:
+            pass
+    return "crash_log.txt"
 
 
 def _run_dependency_bootstrap() -> bool:
@@ -105,6 +214,12 @@ def show_critical_error(title, message):
 
 def main():
     """Launch the Tkinter GUI directly."""
+    # PR #49: resolve workspace + instance identity FIRST so per-instance
+    # runtime dirs (including crash log) exist before anything else runs.
+    # Failures here are non-fatal — we fall back to the legacy shared paths
+    # so a workspace bug can't block the GUI from launching at all.
+    _resolve_workspace_and_instance()
+
     # Apply TensorFlow/Keras compatibility env before any dependency checks/imports.
     ensure_ml_backend_env()
     _run_dependency_bootstrap()
@@ -128,14 +243,9 @@ def main():
                 f"All dependencies should be bundled internally."
             )
         
-        # Log crash to file if possible
-        crash_log = "crash_log.txt"
-        if PATH_UTILS_AVAILABLE:
-            try:
-                crash_log = get_crash_log_path()
-            except Exception:
-                pass
-        
+        # Log crash to file if possible. PR #49: prefer per-instance runtime
+        # crash log when workspace bootstrap succeeded.
+        crash_log = _resolved_crash_log_path()
         if not os.path.isabs(crash_log):
             crash_log = os.path.join(_app_dir, crash_log)
 
@@ -160,17 +270,11 @@ def main():
         app = KlingGUIWindow()
         app.run()
     except Exception as e:
-        # Log crash to file for debugging
-        crash_log = "crash_log.txt"
-        if PATH_UTILS_AVAILABLE:
-            try:
-                crash_log = get_crash_log_path()
-            except Exception:
-                pass
-        
+        # Log crash to file for debugging. PR #49: per-instance runtime path.
+        crash_log = _resolved_crash_log_path()
         if not os.path.isabs(crash_log):
             crash_log = os.path.join(_app_dir, crash_log)
-        
+
         try:
             with open(crash_log, 'w', encoding='utf-8') as f:
                 f.write("Kling UI Runtime Crash Report\n")

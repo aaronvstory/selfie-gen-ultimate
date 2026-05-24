@@ -21,6 +21,7 @@ class SessionController:
         log_callback: Callable[[str, str], None],
         logger=None,
         autosave_debounce_ms: int = 1200,
+        sessions_dir: Optional[str] = None,
     ):
         self.root = root
         self.data_dir = data_dir
@@ -31,6 +32,11 @@ class SessionController:
         self.autosave_debounce_ms = autosave_debounce_ms
         self.autosave_job = None
         self.autosave_suspended = False
+        # Per-instance autosave dir (PR #49). When None, save_session falls back
+        # to the legacy ``<data_dir>/sessions/`` shared path. main_window passes
+        # ``runtime/instances/<id>/sessions/`` so two concurrent windows on the
+        # same project_key don't overwrite each other's rolling autosave.
+        self._sessions_dir = sessions_dir
 
     @property
     def config(self) -> dict:
@@ -41,6 +47,9 @@ class SessionController:
         if not self.image_session.count:
             return True
         try:
+            # Manual saves stay in the legacy shared sessions dir so they show
+            # up in every window's Session Manager dialog without aggregation
+            # gymnastics. Only autosaves are per-instance (the bleed culprit).
             path = session_manager.save_session(
                 self.data_dir,
                 self.image_session,
@@ -112,6 +121,9 @@ class SessionController:
                 # One rolling file per project; the write is skipped entirely
                 # when content is unchanged (idle ticks / debounced no-ops).
                 skip_if_unchanged=True,
+                # Per-instance dir (PR #49). When None, save_session falls back
+                # to the legacy shared dir — preserves single-instance behavior.
+                sessions_dir_override=self._sessions_dir,
             )
         except Exception as exc:
             if self._logger:
