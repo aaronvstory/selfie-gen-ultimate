@@ -7,6 +7,11 @@ an external SSD** so they can launch the GUI on a virgin Mac without
 re-installing anything from scratch. The SSD is an ExFAT volume mounted
 at `/Volumes/st7Private/code/selfie-gen-ultimate/` when plugged in.
 
+**Path conventions in this doc**: `$REPO_ROOT` refers to your local
+checkout of `selfie-gen-ultimate` (commonly `~/code/selfie-gen-ultimate`);
+`/Volumes/st7Private/...` is the canonical SSD mountpoint when the
+external drive is plugged in. Other paths are literal.
+
 **Two-venv discipline**: the project uses two distinct venvs on the source
 Mac and the playbook calls them out separately on purpose — don't try to
 "normalize" them to one. `.venv311/` is the build-tooling venv that runs
@@ -49,7 +54,7 @@ After `gh pr merge → git checkout main && git pull origin main`:
 ### Step 1: Build the distributable
 
 ```bash
-cd /Users/danielba/code/selfie-gen-ultimate
+cd "$REPO_ROOT"   # your local checkout, e.g. ~/code/selfie-gen-ultimate
 .venv311/bin/python distribution/build_release.py
 ```
 
@@ -134,7 +139,7 @@ If they did change:
 
 ```bash
 # Use the source Mac's freshly-updated .venv-macos as truth
-cd /Users/danielba/code/selfie-gen-ultimate
+cd "$REPO_ROOT"   # your local checkout, e.g. ~/code/selfie-gen-ultimate
 .venv-macos/bin/pip install -r requirements.txt   # refresh local venv
 tar -cf /Volumes/st7Private/code/selfie-gen-ultimate/_user_state/venv-macos.tar \
   --exclude '__pycache__' .venv-macos
@@ -186,7 +191,9 @@ Fix: any third-party cable labeled "10 Gbps" or "USB 3.2 Gen 2" works.
 If someone receives the SSD and wants to use the GUI on a fresh Mac, they
 double-click `START.command` at the project root. That script:
 
-1. Detects/installs Python 3.11+ (via Homebrew if missing)
+1. Detects/installs Python 3.11 specifically (via Homebrew if missing) —
+   per CLAUDE.md rule 6, Homebrew's 3.12/3.13 ship without `_tkinter` so
+   the GUI requires exactly 3.11.
 2. Seeds `~/Library/Application Support/selfie-gen-ultimate/` from
    `_user_state/app_support/`
 3. Extracts `_user_state/venv-macos.tar` to `.venv-macos/`

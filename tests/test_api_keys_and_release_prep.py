@@ -205,17 +205,20 @@ def test_copy_sanitized_tree_excludes_all_venv_variants(tmp_path: Path):
     # be bundled and ballooning the release zip from ~10MB to 532MB.
     # Every venv flavor a contributor might plausibly create — canonical,
     # platform-suffixed, version-suffixed across the Python lifecycle —
-    # must be pruned.
+    # must be pruned. Derive the variants directly from EXCLUDED_DIRS so
+    # this test automatically extends when new entries are added (no
+    # silent drift between implementation and regression guard).
+    from distribution.release_prep import EXCLUDED_DIRS
+
     src = tmp_path / "src"
     dst = tmp_path / "dst"
-    venv_variants = (
-        "venv",
-        ".venv",
-        ".venv-macos",
-        ".venv311",
-        ".venv312",
-        ".venv313",
-        ".venv314",
+    venv_variants = tuple(sorted(
+        name for name in EXCLUDED_DIRS
+        if name == "venv" or name.startswith(".venv")
+    ))
+    assert ".venv311" in venv_variants, (
+        "regression: .venv311 dropped from EXCLUDED_DIRS — this is the "
+        "exact bug this test guards against"
     )
     for v in venv_variants:
         (src / v / "bin").mkdir(parents=True)
