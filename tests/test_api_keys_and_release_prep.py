@@ -199,6 +199,35 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     assert (dst / "normal.py").exists()
 
 
+def test_copy_sanitized_tree_excludes_all_venv_variants(tmp_path: Path):
+    # Regression guard for the build-bloat bug where `.venv311` was
+    # excluded from EXCLUDED_DIRS, ballooning the release zip from ~10MB
+    # to 532MB by including the local Python 3.11 venv. Every venv flavor
+    # a contributor might plausibly create — canonical, platform-suffixed,
+    # version-suffixed across the Python lifecycle — must be pruned.
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    venv_variants = (
+        "venv",
+        ".venv",
+        ".venv-macos",
+        ".venv311",
+        ".venv312",
+        ".venv313",
+        ".venv314",
+    )
+    for v in venv_variants:
+        (src / v / "bin").mkdir(parents=True)
+        (src / v / "bin" / "python").write_text("#!/fake", encoding="utf-8")
+    (src / "kept.py").write_text("ok", encoding="utf-8")
+
+    copy_sanitized_tree(src, dst)
+
+    for v in venv_variants:
+        assert not (dst / v).exists(), f"venv variant {v!r} leaked into release bundle"
+    assert (dst / "kept.py").exists()
+
+
 def test_standalone_windows_launchers_use_stable_python_probes():
     similarity_gui = Path("similarity/run_gui.bat").read_text(encoding="utf-8")
     similarity_cli = Path("similarity/run_cli.bat").read_text(encoding="utf-8")

@@ -48,6 +48,16 @@ def _pid_is_alive(pid: int) -> bool:
 
     Conservative on failure: returns True (don't sweep a marker we can't
     classify; let the fallback mtime path handle truly old ones).
+
+    Known edge case (PID recycling): on a long-running system, an OS may
+    recycle an exited process's PID for an unrelated new process before
+    the old marker is swept. This function would then classify the marker
+    as still alive (the PID exists, just for a different process) and
+    suppress cleanup. The mitigation is the ``_FALLBACK_STALE_SECONDS``
+    mtime window in ``_marker_is_alive`` (30 days) — the misattributed
+    marker eventually gets swept by age regardless. Fixing this precisely
+    would require a stable per-launch token (timestamp+nonce) in the
+    marker JSON, which is more bookkeeping than the failure mode warrants.
     """
     if pid <= 0:
         return False

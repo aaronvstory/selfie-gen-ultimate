@@ -564,6 +564,20 @@ is normal; three rounds is acceptable; four rounds usually means a
 CRITICAL was missed in the original implementation and we should
 pause to do a wider audit before continuing.
 
+### 9. After merge: refresh the SSD + rebuild distributable
+
+Once the PR squash-merges to `main`, immediately do the post-merge
+refresh: `git pull` on the SSD source repo, refresh the
+`_user_state/app_support/` snapshot from the live Application Support
+dir, build a fresh `dist/SelfieGenUltimate-{vX.Y}.zip` and drop it on
+the SSD root. Full playbook + verification commands in
+[`docs/ssd-and-distributables.md`](docs/ssd-and-distributables.md).
+
+Skip the SSD refresh only when `/Volumes/st7Private/` isn't mounted; in
+that case, explicitly tell the user the SSD copy is now stale instead
+of silently ignoring it. Only rebuild the SSD's `venv-macos.tar` if
+the merged PR touched `requirements.txt` or `requirements-hashed.txt`.
+
 ### Skip conditions (don't run the full loop)
 
 - The user explicitly says "skip review" / "just push" / "WIP"
@@ -874,6 +888,39 @@ wiring doc's per-action checklist before commit.
 `automation_similarity_use_ensemble` (true), `automation_similarity_secondary_model`
 ("Facenet512"), `automation_similarity_anti_spoofing` (true),
 `automation_similarity_require_fas_pass` (false).
+
+---
+
+## SSD + Distributables Workflow
+
+Full playbook: [`docs/ssd-and-distributables.md`](docs/ssd-and-distributables.md).
+
+A portable copy of the project lives on an external SSD at
+`/Volumes/st7Private/code/selfie-gen-ultimate/` for plug-and-play
+launching on virgin Macs (one-click `START.command` bootstraps Python,
+seeds Application Support, extracts a pre-built venv, then launches the
+GUI). The SSD repo has `_user_state/` (gitignored locally + in
+`.git/info/exclude` on the SSD repo) carrying `venv-macos.tar`, an
+`app_support/` snapshot, and the install scripts.
+
+**On every merge to main, if the SSD is mounted, also refresh it.**
+
+1. `python distribution/build_release.py` → `dist/SelfieGenUltimate-{vX.Y}.zip` + alias.
+2. `cd /Volumes/st7Private/code/selfie-gen-ultimate && git pull origin main`.
+3. `rsync` the live `~/Library/Application Support/selfie-gen-ultimate/` →
+   `_user_state/app_support/` (keeps API keys + prompts + model cache in sync).
+4. `cp dist/SelfieGenUltimate-*.zip` to SSD root.
+5. Rebuild `_user_state/venv-macos.tar` ONLY if `requirements.txt` or
+   `requirements-hashed.txt` changed in the merged PR. Otherwise leave it.
+
+Check `ls /Volumes/st7Private 2>/dev/null` first. If unmounted, tell the
+user "I'd refresh the SSD but it's not mounted, your copy is now N
+commits behind" — don't silently skip.
+
+Detection of bundle-bloat regressions: a healthy bundle is ~10 MB. If
+`build_release.py` produces hundreds of MB, a venv or build artifact has
+escaped `EXCLUDED_DIRS` in `distribution/release_prep.py` — fix that
+list before shipping.
 
 ---
 

@@ -452,6 +452,21 @@ def list_sessions(app_dir: str) -> List[SessionRecord]:
     Both sources merged so the Session Manager dialog can browse autosaves
     saved by any window. On duplicate filenames (e.g. same project_key
     autosave file present in two instance dirs), keep the newest-modified.
+
+    Sort design (two intentionally different timestamps):
+      * De-dupe tiebreak (above) uses filesystem **mtime** — the ground
+        truth for "which file was actually written most recently on this
+        machine". Resistant to stale JSON from backup restores or hand
+        edits.
+      * Final display sort (below) uses the JSON **updated_at** — the
+        user-provided save timestamp, preserving the "I saved this at
+        time X, show it ordered by X" contract that the Session Manager
+        relies on.
+
+    In the rare case these disagree (e.g. backup-restored file whose
+    mtime is fresh but ``updated_at`` is months old), the display
+    timestamp shows the original save time and the file still loads
+    correctly — acceptable trade-off for honoring user intent on sort.
     """
     sessions_dir = _get_sessions_dir(app_dir)
     seen: dict = {}
