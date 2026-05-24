@@ -267,39 +267,69 @@ def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
       - HIGH: ``oldcam-testing/reports/`` (12 A/B HTML reports) shipping.
     All three classes are now guarded below.
     """
-    from distribution.release_prep import EXCLUDED_DIRS, EXCLUDED_FILES
+    # Round-2 review (subagent M1): derive the expected set from the source of
+    # truth in release_prep.py — same two-pronged pattern as PR #50's
+    # venv-variants test. Anti-circularity (EXPECTED_MINIMUM) catches silent
+    # removals; derive (LOCAL_ONLY_RESEARCH_DIRS) catches silent renames.
+    from distribution.release_prep import (
+        EXCLUDED_DIRS,
+        EXCLUDED_FILES,
+        LOCAL_ONLY_RESEARCH_DIRS,
+        PII_EXCLUDED_FILES,
+    )
 
-    expected_excluded = {
+    EXPECTED_MINIMUM_DIRS = {
         "oldcam_reference_bundle",
         "analysis_frames",
         "test-material",
         "rppg_harness_out",
     }
-    missing = expected_excluded - EXCLUDED_DIRS
-    assert not missing, (
-        f"regression: EXCLUDED_DIRS no longer covers the local-only "
+    missing_minimum = EXPECTED_MINIMUM_DIRS - LOCAL_ONLY_RESEARCH_DIRS
+    assert not missing_minimum, (
+        f"regression: LOCAL_ONLY_RESEARCH_DIRS no longer covers the local-only "
         f"research dirs that bloated the Windows dist zip: "
-        f"{sorted(missing)}"
+        f"{sorted(missing_minimum)}"
+    )
+    # And every name in the constant must actually be in EXCLUDED_DIRS (the
+    # `EXCLUDED_DIRS |= LOCAL_ONLY_RESEARCH_DIRS` merge must hold).
+    assert LOCAL_ONLY_RESEARCH_DIRS <= EXCLUDED_DIRS, (
+        f"regression: LOCAL_ONLY_RESEARCH_DIRS is not merged into EXCLUDED_DIRS — "
+        f"the dir-name match in _should_skip won't fire. "
+        f"Missing: {sorted(LOCAL_ONLY_RESEARCH_DIRS - EXCLUDED_DIRS)}"
     )
 
     # PR #51 round-1 CRITICAL: PII-bearing corpus measurement outputs
-    expected_pii_files = {"sourav_facetrack_results.json", "sourav_kinematic_results.json"}
-    missing_pii = expected_pii_files - EXCLUDED_FILES
-    assert not missing_pii, (
-        f"PII regression: EXCLUDED_FILES no longer covers the corpus "
+    EXPECTED_MINIMUM_PII = {"sourav_facetrack_results.json", "sourav_kinematic_results.json"}
+    missing_pii_minimum = EXPECTED_MINIMUM_PII - PII_EXCLUDED_FILES
+    assert not missing_pii_minimum, (
+        f"PII regression: PII_EXCLUDED_FILES no longer covers the corpus "
         f"measurement outputs containing SSN-format identifiers: "
-        f"{sorted(missing_pii)}"
+        f"{sorted(missing_pii_minimum)}"
     )
+    assert PII_EXCLUDED_FILES <= EXCLUDED_FILES, (
+        f"regression: PII_EXCLUDED_FILES is not merged into EXCLUDED_FILES — "
+        f"the file-name match in _should_skip won't fire. "
+        f"Missing: {sorted(PII_EXCLUDED_FILES - EXCLUDED_FILES)}"
+    )
+
+    expected_excluded = LOCAL_ONLY_RESEARCH_DIRS  # alias for the rest of the test below
 
     src = tmp_path / "src"
     dst = tmp_path / "dst"
-    for d in expected_excluded:
+    # All dirs in expected_excluded are pruned by dir-name match in EXCLUDED_DIRS.
+    # CodeRabbit round-1 finding: ``rppg_harness_out`` is the one case where the
+    # actual leak path is nested (``oldcam-testing/rppg_harness_out/``), not at
+    # repo root — exercise it that way so the fixture mirrors the real bug.
+    for d in expected_excluded - {"rppg_harness_out"}:
         (src / d).mkdir(parents=True)
         (src / d / "fixture.bin").write_bytes(b"x" * 1024)
     # The oldcam-testing/ dir itself ships (frozen A/B test scripts), but
     # the *.mp4 byproducts inside it must be pruned by the path-aware filter.
     # Cover BOTH top-level and nested (`oldcam-testing/sub/inner.mp4`) cases.
     (src / "oldcam-testing").mkdir()
+    # rppg_harness_out at the production leak location (nested under oldcam-testing/)
+    (src / "oldcam-testing" / "rppg_harness_out").mkdir()
+    (src / "oldcam-testing" / "rppg_harness_out" / "fixture.bin").write_bytes(b"x" * 1024)
     (src / "oldcam-testing" / "oldcam_v24.py").write_text("# frozen", encoding="utf-8")
     (src / "oldcam-testing" / "fixture-video.mp4").write_bytes(b"VID" * 1024)
     (src / "oldcam-testing" / "subdir").mkdir()
@@ -324,9 +354,14 @@ def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
 
     copy_sanitized_tree(src, dst)
 
-    # The big bloat dirs are gone entirely
-    for d in expected_excluded:
+    # The big bloat dirs are gone entirely. rppg_harness_out is checked at
+    # its real nested location (oldcam-testing/rppg_harness_out/) per the
+    # CodeRabbit round-1 finding.
+    for d in expected_excluded - {"rppg_harness_out"}:
         assert not (dst / d).exists(), f"local-only dir {d!r} leaked into release bundle"
+    assert not (dst / "oldcam-testing" / "rppg_harness_out").exists(), (
+        "oldcam-testing/rppg_harness_out/ leaked — dir-name EXCLUDED_DIRS regression"
+    )
     # oldcam-testing/ survives but only its .py scripts ship
     assert (dst / "oldcam-testing" / "oldcam_v24.py").exists()
     assert not (dst / "oldcam-testing" / "fixture-video.mp4").exists(), (

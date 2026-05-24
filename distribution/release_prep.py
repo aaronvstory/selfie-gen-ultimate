@@ -62,23 +62,36 @@ EXCLUDED_DIRS: Set[str] = {
     "distribution",
     "tests",
     "tests_tmp",
-    # PR #50 follow-up (Windows-side dist verification): the following dirs
-    # are all gitignored research/A-B-testing artifacts that live on a
-    # contributor's working tree but must never ship in the release bundle.
-    # The release_prep sweep walks the working tree (not git ls-files), so
-    # gitignore alone doesn't shield them. Discovered when a Windows-side
-    # build came in at 182 MB instead of the expected ~10 MB.
-    #   oldcam_reference_bundle/  — confidential analysis docs (~5 MB)
-    #   analysis_frames/          — frame extracts for offline analysis (~3 MB)
-    #   test-material/            — fixture videos used by the test harness (~35 MB)
-    #   oldcam-testing/rppg_harness_out/  — rPPG harness byproducts
-    # Note: oldcam-testing/ itself is kept (frozen A/B oldcam_v*.py files are
-    # tracked + ship). Only the byproduct subdir + the gitignored *.mp4
-    # files inside it are excluded; see _should_skip extension filter.
-    "oldcam_reference_bundle",
-    "analysis_frames",
-    "test-material",
-    "rppg_harness_out",
+}
+
+# PR #51 (Windows-side dist verification): gitignored research/A-B-testing
+# artifacts that must never ship in the release bundle. release_prep sweeps
+# the working tree (not git ls-files), so .gitignore alone doesn't shield
+# them — they must also be in EXCLUDED_DIRS below. Discovered when a
+# Windows-side build came in at 182 MB instead of the expected ~10 MB.
+# Named separately from the legacy EXCLUDED_DIRS entries so tests can
+# derive the expected set from a single source of truth (anti-drift).
+LOCAL_ONLY_RESEARCH_DIRS: Set[str] = {
+    "oldcam_reference_bundle",   # ~5 MB confidential analysis docs
+    "analysis_frames",           # ~3 MB frame extracts for offline analysis
+    "test-material",             # ~35 MB fixture videos
+    "rppg_harness_out",          # rPPG harness byproducts (lives nested
+                                 # under oldcam-testing/ in practice)
+}
+# Note: oldcam-testing/ itself is kept (frozen A/B oldcam_v*.py files are
+# tracked + ship). Only the byproduct subdir + the gitignored *.mp4 / reports/
+# entries inside it are excluded; see _should_skip path-aware filter below.
+EXCLUDED_DIRS |= LOCAL_ONLY_RESEARCH_DIRS
+
+# PR #51 round-1 code review (CRITICAL): gitignored corpus measurement
+# outputs containing SSN-format persona identifiers (78 + 40 hits at
+# the time of discovery). They were leaking to every release zip because
+# .gitignore alone doesn't shield from the release sweep. PII redaction
+# is more important than the bloat savings. Named separately so tests
+# can derive the expected set.
+PII_EXCLUDED_FILES: Set[str] = {
+    "sourav_facetrack_results.json",
+    "sourav_kinematic_results.json",
 }
 
 EXCLUDED_FILES: Set[str] = {
@@ -89,14 +102,7 @@ EXCLUDED_FILES: Set[str] = {
     "kling_history.json",
     "crash_log.txt",
     "ui_config.json",
-    # PR #51 round-1 code review (CRITICAL): both files are gitignored
-    # corpus measurement outputs that contain SSN-format persona identifiers
-    # (confirmed 78 + 40 hits respectively). They were leaking to every
-    # release zip because .gitignore alone doesn't shield from the release
-    # sweep. PII redaction is more important than the bloat savings here.
-    "sourav_facetrack_results.json",
-    "sourav_kinematic_results.json",
-}
+} | PII_EXCLUDED_FILES
 RELEASE_BASENAME = "SelfieGenUltimate"
 VERSIONED_ZIP_NAME = f"SelfieGenUltimate-{RELEASE_VERSION}.zip"
 LATEST_ALIAS_ZIP_NAME = "SelfieGenUltimate.zip"
@@ -134,30 +140,19 @@ def _should_skip(path: Path) -> bool:
     # sibling stray zips, not the release output.
     if path.suffix.lower() == ".zip":
         return True
-    # PR #50 follow-up: drop the gitignored A/B-testing video fixtures
-    # from oldcam-testing/. The dir itself stays (frozen oldcam_v*.py
-    # scripts ship as research artifacts per project memory), but the
-    # *.mp4 byproducts (~134 MB on a contributor's working tree) must
-    # not bloat the release zip. Mirrors the .gitignore patterns:
-    #   oldcam-testing/*.mp4
-    #   oldcam-testing/rppg_harness_out/  (already in EXCLUDED_DIRS above)
-    if (
-        len(path.parts) >= 2
-        and path.parts[0] == "oldcam-testing"
-        and path.suffix.lower() == ".mp4"
-    ):
-        return True
-    # PR #51 round-1 code review (HIGH): the same oldcam-testing/ dir holds a
-    # gitignored ``reports/`` subdir (~112 KB of A/B HTML reports) that the
-    # *.mp4 filter doesn't catch. Adding "reports" to EXCLUDED_DIRS would
-    # be too broad (a future ``reports/`` at repo root would unexpectedly
-    # prune). Scope the rule to oldcam-testing/reports/ specifically.
-    if (
-        len(path.parts) >= 2
-        and path.parts[0] == "oldcam-testing"
-        and path.parts[1] == "reports"
-    ):
-        return True
+    # PR #50/#51 follow-up: prune gitignored byproducts inside oldcam-testing/.
+    # The dir itself stays (frozen oldcam_v*.py scripts ship as research
+    # artifacts), but two byproduct classes must not bloat the release zip:
+    #   - *.mp4 fixtures (~134 MB on a contributor's working tree)
+    #   - reports/ HTML A/B reports (~112 KB — scoping to oldcam-testing/
+    #     specifically because a future repo-root reports/ would be unrelated)
+    # Mirrors the .gitignore patterns oldcam-testing/*.mp4 +
+    # oldcam-testing/reports/. The rppg_harness_out/ dir is already in
+    # EXCLUDED_DIRS above and prunes via the dir-name match. Consolidated
+    # from two adjacent ifs per Gemini round-1 review.
+    if len(path.parts) >= 2 and path.parts[0] == "oldcam-testing":
+        if path.suffix.lower() == ".mp4" or path.parts[1] == "reports":
+            return True
     return False
 
 

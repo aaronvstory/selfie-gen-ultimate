@@ -69,9 +69,25 @@ agent state dirs (`.claude/`, `.serena/`, …), private user files
 DOES ship in the bundle is built from `default_config_template.json`
 overlaid with API-keys-blanked structure from the live `kling_config.json`.
 
+Also excluded (PR #51, Windows-side discovery): local-only research dirs
+(`oldcam_reference_bundle/`, `analysis_frames/`, `test-material/`,
+`oldcam-testing/rppg_harness_out/`), stray `*.zip` siblings, and
+**PII-bearing corpus measurement outputs**
+(`docs/analysis/sourav_*_results.json` — these contain SSN-format
+persona identifiers). The build script sweeps the working tree, NOT
+`git ls-files`, so `.gitignore` alone does NOT shield a dir or file
+from packaging — every gitignored entry must ALSO be in
+`EXCLUDED_DIRS` / `EXCLUDED_FILES` / `LOCAL_ONLY_RESEARCH_DIRS` /
+`PII_EXCLUDED_FILES`. **When adding a new gitignored research dir or
+PII-bearing file, also add it to the corresponding constant in
+`release_prep.py`.** The regression test
+`test_copy_sanitized_tree_excludes_local_only_research_dirs` derives
+the expected sets from those constants.
+
 **Expected bundle size: ~10 MB.** If it balloons to hundreds of MB,
-something escaped the exclusion list (this happened once when `.venv311`
-was missing from `EXCLUDED_DIRS`).
+something escaped the exclusion list (this happened twice: PR #50 fixed
+the `.venv311` miss after a 532 MB zip; PR #51 fixed four more research
+dirs + PII files + stray zips after a 182 MB zip).
 
 ### Step 2: Pull main onto the SSD
 
