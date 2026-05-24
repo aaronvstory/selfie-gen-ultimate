@@ -61,6 +61,7 @@ if not exist "%VENV_PYTHON%" (
         echo(
         echo  ERROR: Failed to create venv. Is Python installed and on PATH?
         echo(
+        call :release_setup_lock
         pause
         exit /b 1
     )
@@ -84,8 +85,7 @@ if exist "%STAMP%" (
     echo   [%LAUNCH_TS%] Dependencies up-to-date ^(cached stamp^). Skipping sync.
     echo   Tip: delete .launcher_state\deps_*.ok to force a full re-check.
     echo(
-    rem PR #49: release bootstrap mutex before fast-path launch (H1 fix)
-    rd /S /Q "%SETUP_LOCK%" >nul 2>&1
+    call :release_setup_lock
     goto :launch
 )
 
@@ -114,6 +114,7 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             echo(
             echo  ERROR: Dependency bootstrap failed.
             echo(
+            call :release_setup_lock
             pause
             exit /b 1
         )
@@ -129,6 +130,7 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             echo(
             echo  ERROR: Automatic dependency repair failed.
             echo(
+            call :release_setup_lock
             pause
             exit /b 1
         )
@@ -143,7 +145,7 @@ echo   [%LAUNCH_TS%] Stamp written. Next launch will skip dep sync.
 echo(
 
 rem --- PR #49: release bootstrap mutex BEFORE launching the GUI -------
-rd /S /Q "%SETUP_LOCK%" >nul 2>&1
+call :release_setup_lock
 
 :launch
 echo   [%LAUNCH_TS%] Launching GUI...
@@ -173,8 +175,16 @@ echo  MediaPipe is required for Oldcam v9/v10.
 echo  Close running Python/GUI processes and retry.
 echo  If it still fails, recreate the venv or run dep repair/bootstrap manually.
 echo(
+call :release_setup_lock
 pause
 endlocal & exit /b 1
+
+:release_setup_lock
+rem PR #49 round-2 H-1: centralize lock release. Called before every
+rem exit/goto out of the bootstrap region so a dep-failure path never
+rem leaves the lock dir for the next sibling launcher to wait on.
+rd /S /Q "%SETUP_LOCK%" >nul 2>&1
+exit /b 0
 
 :INSTALL_REQUIREMENTS
 set "REQ_FILE=%~1"

@@ -71,6 +71,27 @@ def test_get_runtime_subpaths_align(monkeypatch):
     assert path_utils.get_runtime_history_path() == os.path.join(runtime, "kling_history.json")
 
 
+def test_get_workspace_dir_sanitizes_explicit_arg(monkeypatch):
+    """PR #49 round-2 (CodeRabbit): a direct call to ``get_workspace_dir``
+    with a malformed ``workspace`` arg must NOT compose a traversal path.
+    Previously, sanitization happened only at the env-entry layer
+    (``set_workspace``/``get_workspace``); a Python caller bypassing those
+    could slip a bad name through. Now sanitized in-function with fallback
+    to the default workspace."""
+    monkeypatch.delenv("KLING_WORKSPACE", raising=False)
+    root = path_utils._user_data_root()
+    # All these should fall back to default (returning root unchanged)
+    for bad in ("../escape", "..\\escape", "a/b", "a\\b", ".hidden", "", "  ", "CON"):
+        result = path_utils.get_workspace_dir(bad)
+        assert result == root, (
+            f"get_workspace_dir({bad!r}) returned {result!r}; "
+            f"expected fallback to default workspace root {root!r}"
+        )
+    # Valid names still work
+    assert path_utils.get_workspace_dir("shoot-a") == os.path.join(root, "workspaces", "shoot-a")
+    assert path_utils.get_workspace_dir("default") == root
+
+
 def test_workspace_path_traversal_caught_by_commonpath(monkeypatch):
     """Even if a caller bypassed _sanitize_workspace_name somehow, the
     commonpath defense in get_workspace_dir falls back to the root rather

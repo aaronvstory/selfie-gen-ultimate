@@ -43,26 +43,28 @@ def _get_sessions_dir(app_dir: str, *, sessions_dir_override: Optional[str] = No
 
 
 def _iter_extra_sessions_dirs(app_dir: str) -> List[str]:
-    """Return all per-instance sessions dirs under the default workspace.
+    """Return per-instance sessions dirs under the **active** workspace.
 
-    Scans ``<workspace_dir>/runtime/instances/*/sessions/`` for the *default*
-    workspace, so the Session Manager dialog can aggregate autosaves saved by
-    any concurrent or prior instance. Skips the dir matching THIS process's
-    runtime if it has already been added by the primary sessions_dir scan
-    (the override path), to avoid double-counting.
+    Scans ``<workspace_dir>/runtime/instances/*/sessions/`` so the Session
+    Manager dialog can aggregate autosaves saved by any sibling instance
+    in the SAME workspace as this process. Two instances both running in
+    the ``default`` workspace see each other's autosaves; two instances in
+    different named workspaces stay separate (the workspace boundary is
+    intentional — that's the entire point of named workspaces).
 
-    Returns absolute paths. Silently returns ``[]`` on any filesystem error —
-    the caller (``list_sessions``) treats this dir set as best-effort.
+    The ``app_dir`` parameter is unused here — the workspace identity is
+    read from the env (``KLING_WORKSPACE``) via ``get_workspace()``, since
+    a single legacy ``<app_dir>/sessions/`` can serve multiple workspaces
+    in some edge cases. Kept in the signature for symmetry with other
+    ``session_manager`` helpers that DO take ``app_dir``.
 
-    Only the default workspace is aggregated. Named workspaces are an
-    intentional separation; their sessions stay confined to that workspace.
+    Returns absolute paths. Silently returns ``[]`` on any filesystem error
+    — the caller (``list_sessions``) treats this dir set as best-effort.
     """
+    del app_dir  # unused — workspace identity comes from env
     dirs: List[str] = []
     try:
         from path_utils import get_workspace_dir, get_workspace
-        # Aggregate per-instance dirs only for the active workspace. For named
-        # workspaces, callers passing app_dir get a single sessions dir; aggregation
-        # would defeat the workspace boundary.
         ws = get_workspace()
         instances_root = os.path.join(get_workspace_dir(ws), "runtime", "instances")
         if not os.path.isdir(instances_root):
@@ -501,8 +503,26 @@ def list_sessions(app_dir: str) -> List[SessionRecord]:
                 # only happen if a fresh autosave races a stale-file scan).
                 key = (kind, fname, os.path.normcase(os.path.abspath(directory)))
                 existing = seen.get(key)
-                if existing is None or updated_at > existing.updated_at:
+                # Round-2 review (CodeRabbit): use filesystem mtime, not the
+                # JSON-stored ``updated_at``, for the de-dupe tiebreak. The
+                # JSON value can be stale (e.g. a backup tool restored an old
+                # file whose mtime is fresh but updated_at is months old) or
+                # manually edited. Filesystem mtime is the ground truth for
+                # "which file was written most recently on this machine".
+                if existing is None:
                     seen[key] = rec
+                else:
+                    try:
+                        new_mtime = os.path.getmtime(fpath)
+                        existing_mtime = os.path.getmtime(existing.path)
+                    except OSError:
+                        # If either file disappeared between scan and stat,
+                        # prefer the new record (it definitely existed during
+                        # the open() call above).
+                        seen[key] = rec
+                        continue
+                    if new_mtime > existing_mtime:
+                        seen[key] = rec
             except Exception:
                 logger.warning("Skipping corrupt session file: %s", fname)
 

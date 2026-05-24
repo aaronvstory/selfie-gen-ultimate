@@ -929,7 +929,9 @@ class KlingGUIWindow:
         self.image_session.add_on_change(self._on_image_session_changed)
 
         # PR #49: workspace liveness marker. Best-effort; failure is non-fatal.
-        # Sweep stale markers (mtime > 24h) first to clear kill -9 orphans.
+        # cleanup_stale_markers + register_instance themselves swallow OS errors
+        # internally (see workspace_markers.py), so we only need to guard the
+        # subsequent sibling-listing log.
         workspace_markers.cleanup_stale_markers(self.workspace)
         runtime_dir_for_marker = os.path.dirname(self.sessions_dir)  # <runtime>/instances/<id>/
         self._workspace_marker_path = workspace_markers.register_instance(
@@ -955,8 +957,14 @@ class KlingGUIWindow:
                         self.workspace,
                         [m.get("pid") for m in siblings],
                     )
-        except Exception:
-            pass
+        except (OSError, AttributeError) as exc:
+            # OSError: marker dir unreadable; AttributeError: logger not yet set
+            # if init is racing (very unlikely but defensive). Anything else
+            # would be a real bug we want to know about — let it propagate.
+            self.logger.debug(
+                "workspace_markers sibling probe failed: %s: %s",
+                type(exc).__name__, exc,
+            ) if getattr(self, "logger", None) else None
 
         # Set app icon (window title bar + taskbar)
         self._set_app_icon()
@@ -5362,13 +5370,17 @@ class KlingGUIWindow:
         if hasattr(self, "config_panel") and self.config_panel:
             self.config_panel.cleanup()
 
-        # PR #49: release the workspace liveness marker (best-effort). The
-        # 24h stale-cleanup sweep on next launch picks up any marker missed
-        # here (kill -9, hard crash, etc.).
+        # PR #49: release the workspace liveness marker. ``release_instance``
+        # itself catches OSError internally, so this is defense-in-depth for
+        # the rare case where ``self._workspace_marker_path`` is missing or
+        # mistyped. Narrowed from `except Exception` per CodeRabbit review.
         try:
             workspace_markers.release_instance(self._workspace_marker_path)
-        except Exception:
-            pass
+        except (AttributeError, TypeError) as exc:
+            self.logger.debug(
+                "workspace_markers.release_instance failed: %s: %s",
+                type(exc).__name__, exc,
+            )
 
         # Process any pending events and quit mainloop before destroy
         # This ensures cleaner shutdown on Python 3.14+ with stricter thread safety
@@ -5403,8 +5415,15 @@ def write_crash_log(error_type: str, error_msg: str, traceback_str: str):
             # Ensure parent dir exists — gui_launcher normally creates it, but
             # we may be invoked from a code path that bypassed that.
             os.makedirs(os.path.dirname(crash_log_path), exist_ok=True)
-    except Exception:
-        pass
+    except (OSError, PermissionError, ValueError) as exc:
+        # OSError/PermissionError: parent dir create failed (e.g. disk full,
+        # read-only volume). ValueError: get_runtime_crash_log_path raised on
+        # a malformed cached value. Either way, fall back to legacy path —
+        # better a crash log in the wrong place than a swallowed crash.
+        logging.getLogger(__name__).debug(
+            "runtime crash log routing failed (using legacy %s): %s: %s",
+            crash_log_path, type(exc).__name__, exc,
+        )
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     crash_info = f"""

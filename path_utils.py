@@ -145,11 +145,23 @@ def get_workspace_dir(workspace: Optional[str] = None) -> str:
     always lived. Only the new ``runtime/`` subtree is new.
 
     For named workspaces this returns ``<root>/workspaces/<name>/``.
-    Defense-in-depth: after constructing the path, verifies it stays within
-    ``_user_data_root()``; if not (would only happen if sanitization were
-    bypassed somehow) falls back to the default workspace.
+
+    Round-2 review (CodeRabbit): the explicit ``workspace`` arg is now
+    sanitized too. Previously, only env-mediated workspace names went
+    through ``_sanitize_workspace_name`` (at ``set_workspace`` / inside
+    ``get_workspace``); a direct call like
+    ``get_workspace_dir(workspace="../escape")`` would attempt to compose
+    a traversal path. The ``commonpath`` defense-in-depth below would
+    still catch the escape, but explicit sanitization is the right layer.
+    Invalid names fall back to ``WORKSPACE_DEFAULT``.
     """
-    ws = workspace or get_workspace()
+    if workspace is None:
+        ws = get_workspace()
+    else:
+        try:
+            ws = _sanitize_workspace_name(workspace)
+        except ValueError:
+            ws = WORKSPACE_DEFAULT
     root = _user_data_root()
     if ws == WORKSPACE_DEFAULT:
         return root

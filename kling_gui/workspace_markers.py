@@ -6,6 +6,14 @@ Each running GUI window registers a small JSON file under
 The marker is deleted on clean exit and also via :func:`cleanup_stale_markers`
 on launch (catches kill -9 and crashes that bypass ``_on_close``).
 
+Round-2 (review finding H-2): liveness is determined by **PID probe**, not
+``mtime``. The earlier 24h-mtime cutoff would delete still-active markers
+from sessions running >24h — this app legitimately has overnight oldcam /
+rPPG batches that exceed that window. The PID probe correctly classifies
+a process as alive iff its PID is reachable via ``os.kill(pid, 0)``
+(POSIX) / ``OpenProcess`` (Windows). A very-old mtime is now an ADDITIONAL
+fallback only when the marker has no usable pid (corrupt/legacy).
+
 All filesystem ops are wrapped in broad try/except — a marker failure must
 never break a GUI launch. The markers are diagnostic and best-effort.
 """
@@ -23,9 +31,89 @@ import path_utils
 
 logger = logging.getLogger(__name__)
 
-# Markers older than this are presumed orphaned (process crashed / kill -9
-# without _on_close). Conservative — a real GUI session can last a full day.
-_STALE_SECONDS = 24 * 60 * 60
+# Fallback mtime cutoff for markers MISSING a usable pid (corrupt JSON, legacy
+# pre-PID-probe markers from older releases, etc.). Made very generous —
+# 30 days — because the primary liveness signal is now PID, not age.
+_FALLBACK_STALE_SECONDS = 30 * 24 * 60 * 60
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Return True iff ``pid`` corresponds to a running process.
+
+    Cross-platform: ``os.kill(pid, 0)`` works on POSIX (sends signal 0,
+    which is a no-op but raises if the process doesn't exist).
+    On Windows, ``os.kill`` with signal 0 raises ``OSError`` for both
+    "no such process" and "permission denied" — we need ``OpenProcess``
+    via ctypes to disambiguate. PID 0 / negative pids are never alive.
+
+    Conservative on failure: returns True (don't sweep a marker we can't
+    classify; let the fallback mtime path handle truly old ones).
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                # Could be ERROR_INVALID_PARAMETER (no such process) or
+                # ERROR_ACCESS_DENIED (process exists but we lack rights).
+                # GetLastError disambiguates: 5 = access denied (alive),
+                # 87 = invalid parameter (dead).
+                err = kernel32.GetLastError()
+                if err == 5:  # access denied → process exists
+                    return True
+                return False
+            # Got a handle — process is alive. Close it.
+            kernel32.CloseHandle(handle)
+            return True
+        except Exception as exc:
+            logger.debug("PID probe failed for pid=%s: %s", pid, exc)
+            return True  # conservative: don't sweep
+    # POSIX path
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but we lack permission to signal it (different uid).
+        return True
+    except OSError as exc:
+        logger.debug("os.kill probe failed for pid=%s: %s", pid, exc)
+        return True
+
+
+def _marker_is_alive(marker_path: str, marker_data: Optional[dict] = None) -> bool:
+    """Return True iff the process described by the marker is still running.
+
+    Reads the marker JSON if not provided. Falls back to mtime check
+    (``_FALLBACK_STALE_SECONDS``) when the marker has no usable pid —
+    corrupt/legacy markers eventually get swept regardless.
+    """
+    if marker_data is None:
+        try:
+            with open(marker_path, "r", encoding="utf-8") as f:
+                marker_data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            marker_data = None
+    pid = None
+    if isinstance(marker_data, dict):
+        raw_pid = marker_data.get("pid")
+        try:
+            pid = int(raw_pid)
+        except (TypeError, ValueError):
+            pid = None
+    if pid is not None:
+        return _pid_is_alive(pid)
+    # No usable pid — fall back to the generous mtime cutoff for sweeping.
+    try:
+        mtime = os.path.getmtime(marker_path)
+        return (time.time() - mtime) < _FALLBACK_STALE_SECONDS
+    except OSError:
+        return False
 
 
 def _marker_path(workspace: str, instance_id: str) -> str:
@@ -82,29 +170,32 @@ def release_instance(marker_path: Optional[str]) -> None:
 
 
 def list_active_instances(workspace: str) -> List[dict]:
-    """Return the contents of every non-stale marker for ``workspace``.
+    """Return the contents of every still-alive marker for ``workspace``.
 
-    Each dict has at least the keys written by ``register_instance``
+    Round-2 H-2: liveness is determined by PID probe (``_marker_is_alive``),
+    NOT mtime — this app's legitimate workloads (overnight oldcam batches,
+    long rPPG queues) routinely exceed any reasonable mtime window. A
+    sibling whose PID is still running is alive regardless of marker age.
+
+    Each returned dict has at least the keys written by ``register_instance``
     (``instance_id``, ``workspace``, ``pid``, ``started_at``, ``cwd``,
-    ``runtime_dir``). A corrupt/unreadable marker is skipped (logged at
-    debug). Stale markers (mtime > 24h) are excluded but NOT deleted here —
-    use ``cleanup_stale_markers`` for that.
+    ``runtime_dir``). Markers for dead processes are excluded but NOT
+    deleted here — use ``cleanup_stale_markers`` for that.
     """
     out: List[dict] = []
     try:
         markers_dir = path_utils.get_workspace_markers_dir(workspace)
         if not os.path.isdir(markers_dir):
             return out
-        cutoff = time.time() - _STALE_SECONDS
         for entry in os.scandir(markers_dir):
             if not entry.is_file() or not entry.name.endswith(".json"):
                 continue
             try:
-                if entry.stat().st_mtime < cutoff:
-                    continue
                 with open(entry.path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                if isinstance(data, dict):
+                if not isinstance(data, dict):
+                    continue
+                if _marker_is_alive(entry.path, data):
                     out.append(data)
             except (OSError, json.JSONDecodeError) as exc:
                 logger.debug("Skipping bad marker %s: %s", entry.path, exc)
@@ -113,26 +204,86 @@ def list_active_instances(workspace: str) -> List[dict]:
     return out
 
 
-def cleanup_stale_markers(workspace: str) -> int:
-    """Delete markers older than the stale cutoff. Returns the count removed.
+def _safe_rmtree_orphan_runtime(runtime_dir: str) -> None:
+    """Remove an orphaned per-instance runtime dir, but only if it's safe.
 
-    Called from gui_launcher early in startup so a kill-9'd predecessor doesn't
-    pollute the active-instance count indefinitely. Conservative cutoff — only
-    sweeps after 24h, longer than any plausible single GUI session.
+    Round-2 review finding (Gemini): the original cleanup_stale_markers
+    deleted marker files but left orphan ``runtime/instances/<id>/`` dirs
+    forever — each abandoned instance leaks a few KB to MB of carousel
+    autosave + history + crash log on disk.
+
+    Safety rule: only rmtree dirs that contain ONLY the expected ephemeral
+    files (``crash_log.txt``, ``kling_history.json``, ``sessions/`` subtree).
+    Any unexpected file or directory aborts the rmtree so we never destroy
+    user data (e.g. someone copied a manual save into that path). Best-effort
+    on all filesystem errors.
+    """
+    EXPECTED_NAMES = {"crash_log.txt", "kling_history.json", "sessions"}
+    try:
+        if not os.path.isdir(runtime_dir):
+            return
+        entries = list(os.scandir(runtime_dir))
+        for entry in entries:
+            if entry.name not in EXPECTED_NAMES:
+                logger.debug(
+                    "Skipping rmtree of %s: unexpected entry %r — manual user data?",
+                    runtime_dir, entry.name,
+                )
+                return
+        # All entries are expected ephemerals — safe to rmtree.
+        import shutil
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+        logger.debug("Removed orphan runtime dir: %s", runtime_dir)
+    except OSError as exc:
+        logger.debug("Failed orphan rmtree on %s: %s", runtime_dir, exc)
+
+
+def cleanup_stale_markers(workspace: str) -> int:
+    """Delete markers whose process is dead, plus their orphan runtime dirs.
+
+    Returns the count of markers removed (orphan dir removal is best-effort
+    and not counted separately — a marker successfully removed but a dir
+    skipped for safety still increments the count).
+
+    Round-2 H-2: switched from a 24h mtime cutoff to a per-marker PID probe.
+    The old logic would delete the marker of any sibling session running
+    >24h (overnight oldcam batches, multi-hour rPPG queues) — making the
+    new sibling's heads-up log silent and breaking the "is anyone else
+    running" contract. PID probe correctly classifies an active long-running
+    window as alive regardless of marker age.
+
+    Round-2 (Gemini review): also rmtree the orphan
+    ``runtime/instances/<id>/`` dir if it contains only the expected
+    ephemeral files (crash log, history, sessions subtree). See
+    :func:`_safe_rmtree_orphan_runtime` for the safety check.
+
+    Called from gui_launcher early in startup so a kill-9'd predecessor
+    doesn't pollute the active-instance count indefinitely.
     """
     removed = 0
     try:
         markers_dir = path_utils.get_workspace_markers_dir(workspace)
         if not os.path.isdir(markers_dir):
             return 0
-        cutoff = time.time() - _STALE_SECONDS
         for entry in os.scandir(markers_dir):
             if not entry.is_file() or not entry.name.endswith(".json"):
                 continue
             try:
-                if entry.stat().st_mtime < cutoff:
-                    os.remove(entry.path)
-                    removed += 1
+                if _marker_is_alive(entry.path):
+                    continue
+                # Read the marker to find its runtime_dir BEFORE deleting it.
+                runtime_dir = None
+                try:
+                    with open(entry.path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        runtime_dir = data.get("runtime_dir")
+                except (OSError, json.JSONDecodeError):
+                    pass
+                os.remove(entry.path)
+                removed += 1
+                if isinstance(runtime_dir, str) and runtime_dir:
+                    _safe_rmtree_orphan_runtime(runtime_dir)
             except OSError as exc:
                 logger.debug("Failed removing stale marker %s: %s", entry.path, exc)
     except Exception as exc:

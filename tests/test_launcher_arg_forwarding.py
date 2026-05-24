@@ -111,36 +111,45 @@ def test_windows_canonical_uses_setup_lock_serialization():
 
 
 def test_windows_setup_lock_released_on_every_path_to_launch():
-    """PR #49 H1 (review finding): the stamp-skip fast path uses ``goto :launch``
-    which originally bypassed the ``rd`` release at the bottom of the file,
-    leaking the lock for the entire GUI lifetime and blocking siblings forever.
+    """PR #49 H1 (round-1 review finding): the stamp-skip fast path uses
+    ``goto :launch`` which originally bypassed the ``rd`` release at the
+    bottom of the file, leaking the lock for the entire GUI lifetime and
+    blocking siblings forever.
 
-    Verify EVERY ``goto :launch`` (and the fall-through to the ``:launch``
-    label) is preceded by a ``rd /S /Q "%SETUP_LOCK%"`` release. Parses the
-    .bat as plain text and walks line-by-line — a future regression that
-    introduces a new ``goto :launch`` without a release will trip this guard.
+    Round 2 expanded the guard: it also walks every ``exit /b`` and
+    ``goto :DEPENDENCY_FAIL`` (the six error-exit paths between
+    :setup_lock_acquired and :launch that originally leaked the lock too
+    — dep-bootstrap failures are exactly where first launches break, and
+    a 24h stuck lock there would make the concurrent-workspaces feature
+    unreachable from the documented entry point).
+
+    Acceptable release forms (both end in the lock dir being gone):
+      - direct ``rd /S /Q "%SETUP_LOCK%"`` inline
+      - ``call :release_setup_lock`` subroutine call (round-2 refactor)
     """
     src = _read_text("launchers/windows/run_gui.bat")
     lines = src.splitlines()
 
-    # Find every "goto :launch" line and every ":launch" label line.
-    # For each, walk backwards through the preceding lines (skipping comments
-    # and blanks) until we either hit a `rd ... %SETUP_LOCK%` or a `:setup_lock_acquired`
-    # label (acquire point — anything between this and the goto MUST have
-    # released, OR the goto must be the release itself's fall-through).
+    def _is_release(line: str) -> bool:
+        s = line.strip().lower()
+        return (
+            'rd /s /q "%setup_lock%"' in s
+            or 'call :release_setup_lock' in s
+        )
+
     def _check_release_precedes(target_idx, context):
         for i in range(target_idx - 1, -1, -1):
             stripped = lines[i].strip().lower()
             if not stripped or stripped.startswith("rem"):
                 continue
-            if 'rd /s /q "%setup_lock%"' in stripped:
+            if _is_release(lines[i]):
                 return  # release found before target
             if stripped == ":setup_lock_acquired":
                 # Acquired but no release between — bug.
                 raise AssertionError(
                     f"{context}: reached :setup_lock_acquired without a "
-                    f"`rd /S /Q \"%SETUP_LOCK%\"` release in between. "
-                    f"This is the H1 regression — fast path leaks the lock."
+                    f"`rd /S /Q \"%SETUP_LOCK%\"` or `call :release_setup_lock` "
+                    f"release in between. This is the H1 regression."
                 )
             # Otherwise keep walking back.
         raise AssertionError(
@@ -148,9 +157,57 @@ def test_windows_setup_lock_released_on_every_path_to_launch():
             f"leak indefinitely."
         )
 
+    # Find the byte index of :setup_lock_acquired so we only guard paths
+    # that come AFTER it (i.e. paths inside the locked region).
+    acquired_line_idx = next(
+        (i for i, ln in enumerate(lines) if ln.strip().lower() == ":setup_lock_acquired"),
+        None,
+    )
+    assert acquired_line_idx is not None, "missing :setup_lock_acquired label"
+
+    # Find the byte index of :launch (the label declaration, not the goto).
+    launch_label_idx = next(
+        (i for i, ln in enumerate(lines) if ln.strip().lower() == ":launch"),
+        None,
+    )
+    assert launch_label_idx is not None, "missing :launch label"
+
+    # All exit/goto-out points between :setup_lock_acquired and :launch
+    # must release the lock first.
     for idx, line in enumerate(lines):
+        if idx <= acquired_line_idx or idx >= launch_label_idx:
+            continue
         stripped = line.strip().lower()
-        if stripped == "goto :launch":
-            _check_release_precedes(idx, f"line {idx+1} (goto :launch)")
-        elif stripped == ":launch":
-            _check_release_precedes(idx, f"line {idx+1} (:launch label fall-through)")
+        # Match: `exit /b ...`, `goto :launch`, `goto :dependency_fail`
+        if (
+            stripped.startswith("exit /b")
+            or stripped == "goto :launch"
+            or stripped == "goto :dependency_fail"
+        ):
+            _check_release_precedes(idx, f"line {idx+1} ({stripped!r})")
+
+    # Also check the :launch fall-through itself
+    _check_release_precedes(launch_label_idx, f"line {launch_label_idx+1} (:launch fall-through)")
+
+    # AND the :DEPENDENCY_FAIL block exit, even though it's outside the lock
+    # region positionally — it's reachable via `goto` from inside. The
+    # subroutine call inside it is the safety net.
+    depfail_idx = next(
+        (i for i, ln in enumerate(lines) if ln.strip().lower() == ":dependency_fail"),
+        None,
+    )
+    if depfail_idx is not None:
+        # Verify a release appears between :dependency_fail and the block's exit.
+        block_lines = lines[depfail_idx:]
+        # Find the first exit /b in this block
+        rel_exit_idx = next(
+            (i for i, ln in enumerate(block_lines) if ln.strip().lower().startswith("exit /b")),
+            None,
+        )
+        assert rel_exit_idx is not None, ":DEPENDENCY_FAIL block has no exit"
+        # Look for a release call in the lines leading up to that exit
+        preceding = block_lines[: rel_exit_idx]
+        assert any(_is_release(ln) for ln in preceding), (
+            ":DEPENDENCY_FAIL block exits without releasing setup.lock — "
+            "round-2 H-1 regression."
+        )

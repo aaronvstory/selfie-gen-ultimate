@@ -87,7 +87,13 @@ def _resolve_workspace_and_instance():
 
     Returns ``(workspace, instance_id, runtime_dir)`` on success, or
     ``(None, None, None)`` on any failure — caller falls back to the legacy
-    shared crash-log path in that case. This function MUST NOT raise.
+    shared crash-log path in that case.
+
+    **One documented exception to the no-raise contract:** ``-h`` / ``--help``
+    intentionally calls ``sys.exit(0)`` after printing usage. This is the
+    standard contract for an argparse-driven entry point, and the only caller
+    (``main()`` below) is happy with it. Reusable callers should pass
+    ``--workspace`` explicitly without ``--help`` to avoid the exit.
     """
     if not WORKSPACE_API_AVAILABLE:
         return None, None, None
