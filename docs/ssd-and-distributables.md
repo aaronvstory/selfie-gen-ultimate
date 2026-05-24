@@ -7,6 +7,13 @@ an external SSD** so they can launch the GUI on a virgin Mac without
 re-installing anything from scratch. The SSD is an ExFAT volume mounted
 at `/Volumes/st7Private/code/selfie-gen-ultimate/` when plugged in.
 
+**Two-venv discipline**: the project uses two distinct venvs on the source
+Mac and the playbook calls them out separately on purpose — don't try to
+"normalize" them to one. `.venv311/` is the build-tooling venv that runs
+the test suite and `distribution/build_release.py`; `.venv-macos/` is the
+GUI runtime venv that gets tarballed into `_user_state/venv-macos.tar`
+for the SSD bootstrap. Same Python (3.11) but different package sets.
+
 It contains:
 
 - **Source tree** at the project root (git clone of `main`, with
@@ -76,6 +83,7 @@ ignore it.
 ### Step 3: Refresh the app_support snapshot
 
 ```bash
+mkdir -p /Volumes/st7Private/code/selfie-gen-ultimate/_user_state/app_support
 rsync -a \
   ~/Library/Application\ Support/selfie-gen-ultimate/kling_config.json \
   ~/Library/Application\ Support/selfie-gen-ultimate/ui_config.json \
@@ -85,6 +93,10 @@ rsync -a \
   ~/Library/Application\ Support/selfie-gen-ultimate/sessions \
   /Volumes/st7Private/code/selfie-gen-ultimate/_user_state/app_support/
 ```
+
+The `mkdir -p` is a no-op when the dest already exists (refresh case) but
+prevents a "No such file or directory" failure on a first-time SSD setup
+where the bootstrap kit hasn't been laid down yet.
 
 This keeps the SSD's snapshot of API keys, UI layout, prompt slots, and
 model cache in lockstep with the live source Mac.
@@ -107,6 +119,7 @@ ls -la /Volumes/st7Private/code/selfie-gen-ultimate/START.command \
        /Volumes/st7Private/code/selfie-gen-ultimate/_user_state/install_to_appsupport.command \
        /Volumes/st7Private/code/selfie-gen-ultimate/_user_state/app_support/kling_config.json \
        /Volumes/st7Private/code/selfie-gen-ultimate/SelfieGenUltimate-*.zip
+du -h dist/SelfieGenUltimate-*.zip      # sanity-check size ~10MB; hundreds of MB = venv leaked into bundle
 ```
 
 Bootstrap chain must remain intact and the new dist zip must be at root.

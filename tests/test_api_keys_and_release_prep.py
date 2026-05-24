@@ -201,10 +201,11 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
 
 def test_copy_sanitized_tree_excludes_all_venv_variants(tmp_path: Path):
     # Regression guard for the build-bloat bug where `.venv311` was
-    # excluded from EXCLUDED_DIRS, ballooning the release zip from ~10MB
-    # to 532MB by including the local Python 3.11 venv. Every venv flavor
-    # a contributor might plausibly create — canonical, platform-suffixed,
-    # version-suffixed across the Python lifecycle — must be pruned.
+    # MISSING from EXCLUDED_DIRS, causing the local Python 3.11 venv to
+    # be bundled and ballooning the release zip from ~10MB to 532MB.
+    # Every venv flavor a contributor might plausibly create — canonical,
+    # platform-suffixed, version-suffixed across the Python lifecycle —
+    # must be pruned.
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     venv_variants = (

@@ -564,16 +564,21 @@ is normal; three rounds is acceptable; four rounds usually means a
 CRITICAL was missed in the original implementation and we should
 pause to do a wider audit before continuing.
 
-### 9. After merge: refresh the SSD + rebuild distributable
+### 9. After merge: refresh the SSD + rebuild distributable (macOS only)
 
-Once the PR squash-merges to `main`, immediately do the post-merge
-refresh: `git pull` on the SSD source repo, refresh the
+This step is macOS-only — the SSD bootstrap setup at
+`/Volumes/st7Private/code/selfie-gen-ultimate/` doesn't exist on the
+Windows machine. **On Windows, skip step 9 entirely**; the merge itself
+is the end of the loop.
+
+On macOS: once the PR squash-merges to `main`, immediately do the
+post-merge refresh: `git pull` on the SSD source repo, refresh the
 `_user_state/app_support/` snapshot from the live Application Support
 dir, build a fresh `dist/SelfieGenUltimate-{vX.Y}.zip` and drop it on
 the SSD root. Full playbook + verification commands in
 [`docs/ssd-and-distributables.md`](docs/ssd-and-distributables.md).
 
-Skip the SSD refresh only when `/Volumes/st7Private/` isn't mounted; in
+Skip the SSD refresh when `/Volumes/st7Private/` isn't mounted; in
 that case, explicitly tell the user the SSD copy is now stale instead
 of silently ignoring it. Only rebuild the SSD's `venv-macos.tar` if
 the merged PR touched `requirements.txt` or `requirements-hashed.txt`.
@@ -913,9 +918,9 @@ GUI). The SSD repo has `_user_state/` (gitignored locally + in
 5. Rebuild `_user_state/venv-macos.tar` ONLY if `requirements.txt` or
    `requirements-hashed.txt` changed in the merged PR. Otherwise leave it.
 
-Check `ls /Volumes/st7Private 2>/dev/null` first. If unmounted, tell the
-user "I'd refresh the SSD but it's not mounted, your copy is now N
-commits behind" — don't silently skip.
+Check `ls /Volumes/st7Private 2>/dev/null && echo MOUNTED` first. If
+unmounted, tell the user "I'd refresh the SSD but it's not mounted, your
+copy is now N commits behind" — don't silently skip.
 
 Detection of bundle-bloat regressions: a healthy bundle is ~10 MB. If
 `build_release.py` produces hundreds of MB, a venv or build artifact has
