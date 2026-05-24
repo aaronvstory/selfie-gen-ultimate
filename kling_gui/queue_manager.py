@@ -1620,6 +1620,16 @@ class QueueManager:
     # enough that a future launcher variant (e.g. omitting the trailing
     # "complete...") still updates the queue widget bar.
     _OLDCAM_PCT_PAT = re.compile(r"\[Oldcam\]\s+Processing:\s+(\d+)%")
+    # Matches the rPPG progress-tracker's synthesized
+    #   "rPPG iter 3/10 frame 144/242 (~50%)"
+    # progress lines. Class-level for parity with _OLDCAM_PCT_PAT and to
+    # survive __new__-constructed test instances that bypass __init__.
+    # (Gemini medium on PR #52 round 2 — was previously compiled
+    # inside _rppg_video; moving to class level removes one re-compile
+    # per queue item and keeps regex catalogue centralized.)
+    _RPPG_PCT_PAT = re.compile(
+        r"rPPG iter\s+(\d+)/(\d+)\s+frame\s+\d+/\d+\s+\(~(\d+)%\)"
+    )
 
     def _run_oldcam_version(
         self,
@@ -2210,15 +2220,14 @@ class QueueManager:
             # the within-iter frame percent. Assumes max_iters=10 (the
             # injector default); early-stop just means the bar never
             # reaches 100 — fine, the milestone line is the real "done"
-            # signal.
-            _PCT_PAT = re.compile(
-                r"rPPG iter\s+(\d+)/(\d+)\s+frame\s+\d+/\d+\s+\(~(\d+)%\)"
-            )
+            # signal. The regex lives at class level (_RPPG_PCT_PAT)
+            # for consistency with _OLDCAM_PCT_PAT and to survive
+            # __new__-constructed test instances.
 
             def _progress_report(message: str, level: str) -> None:
                 # Bridge the tracker's (message, level) into self.log.
                 self.log(message, level)
-                m = _PCT_PAT.search(message)
+                m = self._RPPG_PCT_PAT.search(message)
                 if m is not None:
                     try:
                         cur_iter = int(m.group(1))
