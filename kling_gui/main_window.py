@@ -3722,7 +3722,11 @@ class KlingGUIWindow:
                 text=f"📋 QUEUE ({stats['pending'] + stats['processing']}/50)"
             )
 
-            # Add items to listbox
+            # Add items to listbox. When an item is mid-processing,
+            # synthesize a unicode progress bar from
+            # (item.stage, item.stage_percent) so the user can see
+            # which stage is running and roughly how far along it is.
+            # Stages: queued/kling/rppg/loop/oldcam/done/failed.
             for item in items:
                 status_icon = {
                     "pending": "⏳",
@@ -3731,7 +3735,20 @@ class KlingGUIWindow:
                     "failed": "❌",
                 }.get(item.status, "?")
 
-                display = f"{status_icon} {item.filename}"
+                stage = getattr(item, "stage", "queued")
+                pct = max(0, min(100, getattr(item, "stage_percent", 0)))
+                if item.status == "processing" and stage not in (
+                    "queued", "done", "failed"
+                ):
+                    BAR_WIDTH = 12
+                    filled = int(BAR_WIDTH * pct / 100)
+                    bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+                    display = (
+                        f"{status_icon} {item.filename}  "
+                        f"[{bar}] {stage} {pct}%"
+                    )
+                else:
+                    display = f"{status_icon} {item.filename}"
                 if item.status == "failed":
                     display += " [RETRY]"
 

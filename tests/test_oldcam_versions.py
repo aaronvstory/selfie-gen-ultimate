@@ -166,7 +166,11 @@ def test_oldcam_all_mode_runs_all_versions_and_returns_highest():
     }
     calls = []
 
-    def _fake_run(_path, version):
+    def _fake_run(_path, version, item=None):
+        # ``item`` (new in PR fix/rppg-failure-visibility) is the
+        # per-queue-item progress-bar handle threaded through from
+        # _oldcam_video. The stub doesn't need to update progress; the
+        # parameter just needs to be accepted to match the new signature.
         calls.append(version)
         return expected_paths[version]
 
@@ -1280,7 +1284,9 @@ def test_oldcam_summary_and_selected_lines_demoted_to_debug(tmp_path):
 
     # Stub _run_oldcam_version so _oldcam_video runs end-to-end without
     # spawning a real Oldcam subprocess.
-    def _fake_run(_path, version):
+    def _fake_run(_path, version, item=None):
+        # ``item`` parameter added in PR fix/rppg-failure-visibility for
+        # per-stage progress reporting; the stub accepts and ignores it.
         produced = manager._build_oldcam_output_path(Path(_path), version)
         produced.write_bytes(b"done")
         return str(produced)

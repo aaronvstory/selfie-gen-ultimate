@@ -345,6 +345,11 @@ class ImageCarousel(tk.Frame):
         self._show_face_box_var = tk.BooleanVar(value=True)
         self._last_known_count: int = 0
         self._suppress_auto_calc: bool = False
+        # Debounce handle for auto-similarity. A drag-drop of N files
+        # fires _on_session_change N times in a single tick; without a
+        # debounce, the lock-race spams "Sim: busy — skipped" N-1
+        # times. Coalesce to one trailing-edge call.
+        self._sim_debounce_after_id: Optional[str] = None
 
         self._build_panel()
 
@@ -659,7 +664,27 @@ class ImageCarousel(tk.Frame):
             self._render_failed_paths.clear()
         self._update_display()
         self.after(50, self._update_display)
-        # Auto-calc similarity for newly added images
+        # Debounce auto-sim so a drag-drop batch of N files coalesces into
+        # exactly one similarity scan instead of N racing scans (which
+        # spammed "Sim: busy — skipped" N-1 times before the fix in
+        # PR fix/rppg-failure-visibility). Trailing-edge: the LAST
+        # session-change wins; earlier scheduled calls are cancelled.
+        if self._sim_debounce_after_id is not None:
+            try:
+                self.after_cancel(self._sim_debounce_after_id)
+            except tk.TclError:
+                pass
+            self._sim_debounce_after_id = None
+        self._sim_debounce_after_id = self.after(250, self._maybe_trigger_auto_sim)
+
+    def _maybe_trigger_auto_sim(self):
+        """Trailing-edge debounce target for ``_on_session_change``.
+
+        Runs the same eligibility check the inline version used to do,
+        then triggers one similarity calc. Always updates
+        ``_last_known_count`` so a subsequent batch is still detected.
+        """
+        self._sim_debounce_after_id = None
         n = self.image_session.count
         if (not self._suppress_auto_calc
                 and self._auto_var.get()

@@ -94,3 +94,15 @@ oldcam-testing/*-rppg - *.mp4
 # rPPG chain-harness loop intermediate (introduced when --chain gained
 # the real Loop step). Same gitignored-byproduct class as above.
 oldcam-testing/*_looped.mp4
+
+# rPPG injector iterative-mode byproducts. The injector writes
+# temp_iteration_N.mp4 files into its own cwd (rPPG/) and never
+# cleans them up if the run crashes. PR fix/rppg-failure-visibility
+# added a best_iteration_snapshot.mp4 alongside them (defensive
+# snapshot of the current best) which is cleaned up at end-of-run
+# but, like the temps, only when the run reaches the cleanup block.
+# Iteration history JSON + TSVs land in rPPG/iteration_history/ on
+# every run — useful locally for debugging but never tracked.
+rPPG/temp_iteration_*.mp4
+rPPG/best_iteration_snapshot.mp4
+rPPG/iteration_history/

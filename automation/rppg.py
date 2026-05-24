@@ -1,17 +1,25 @@
-"""rPPG injection post-process — the LAST stage of the pipeline.
+"""rPPG injection post-process — runs FIRST in the post-Kling chain.
 
-Pipeline order is Kling -> Loop -> Oldcam -> **rPPG**. rPPG runs last on
-purpose: loop's ping-pong reverse would play a pre-injected pulse backwards
-(non-physiological, detectable) and oldcam's resolution-crush would attenuate
-a pre-injected sub-perceptual pulse. Injecting on the final delivered pixels
-preserves the correct physiological signal.
+Pipeline order (Phase E, polish/v2.3, 2026-05-22):
+``Kling -> rPPG -> Loop -> Oldcam``. rPPG injects on the raw Kling
+frames; Loop and Oldcam then preserve the injected pulse through to
+the final deliverable. Empirically the Phase E ordering yields a
+cleaner pulse than the prior "rPPG strictly LAST" arrangement: the
+per-iter PID stabilizes against fresh frames rather than oldcam's
+resolution-crushed output, and the loop ping-pong reverse playback
+of an injected pulse still reads as physiological because the
+sub-perceptual amplitude stays well below the visibility threshold.
+(The slower legacy "fan-out rPPG on each oldcam output" is preserved
+behind the ``rppg_per_oldcam_fanout`` opt-in flag — default OFF.)
 
-This module shells out to the gitignored ``rPPG/`` tool via its Windows
-``run_rppg.bat`` launcher. The injector itself (``rPPG/rppg_injector.py``) is
-never imported or copied into tracked code. The step degrades gracefully:
-if the launcher is absent, the injector errors, or it produces no output, we
-log a warning and return ``None`` — callers keep the pre-rPPG video and the
-run continues. It must never raise into the queue/pipeline.
+This module shells out to the ``rPPG/`` tool via its Windows
+``run_rppg.bat`` launcher (or ``run_rppg.sh`` on macOS / Linux). The
+injector itself (``rPPG/rppg_injector.py``) is never imported. The step
+degrades gracefully: if the launcher is absent, the injector errors,
+or it produces no output, we log a warning and return ``None`` —
+callers keep the pre-rPPG video (and mark its filename with ``-NORPPG``
+in the queue path) and the run continues. It must never raise into
+the queue/pipeline.
 
 Invocation (one-shot, deterministic naming):
     rPPG/run_rppg.bat "<abs in.mp4>" --inject --output "<abs out.mp4>" --skip-kinematic-gate
