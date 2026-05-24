@@ -24,15 +24,21 @@ EXCLUDED_DIRS: Set[str] = {
     ".git",
     # Venv dirs. Cover every flavor a contributor might create:
     # canonical (.venv, venv), platform-suffixed (.venv-macos), and
-    # version-suffixed (.venv311 from `python3.11 -m venv .venv311`).
-    # Forgetting one inflates the release zip by hundreds of MB —
-    # add new variants here whenever a new Python minor lands.
+    # version-suffixed (.venv311 from `python3.11 -m venv .venv311`)
+    # — both dotted and undotted forms, since `python -m venv venv311`
+    # without the leading dot is also accepted and would otherwise leak.
+    # Forgetting one inflates the release zip by hundreds of MB; add
+    # new variants here whenever a new Python minor lands.
     ".venv",
     ".venv-macos",
     ".venv311",
     ".venv312",
     ".venv313",
     ".venv314",
+    "venv311",
+    "venv312",
+    "venv313",
+    "venv314",
     "build",
     "dist",
     "venv",

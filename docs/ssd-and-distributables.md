@@ -196,7 +196,10 @@ double-click `START.command` at the project root. That script:
    the GUI requires exactly 3.11.
 2. Seeds `~/Library/Application Support/selfie-gen-ultimate/` from
    `_user_state/app_support/`
-3. Extracts `_user_state/venv-macos.tar` to `.venv-macos/`
+3. Extracts `_user_state/venv-macos.tar` into the project root (the tarball
+   already includes the `.venv-macos/` prefix, so a plain
+   `tar -xf _user_state/venv-macos.tar -C "$PROJECT_ROOT"` recreates
+   `.venv-macos/` at the root — do NOT pass `-C .venv-macos`, that nests).
 4. Launches the GUI via `run_gui.command`
 
 Subsequent launches skip the bootstrap (everything detected as already in

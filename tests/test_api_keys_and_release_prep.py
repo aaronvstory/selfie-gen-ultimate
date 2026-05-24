@@ -204,21 +204,34 @@ def test_copy_sanitized_tree_excludes_all_venv_variants(tmp_path: Path):
     # MISSING from EXCLUDED_DIRS, causing the local Python 3.11 venv to
     # be bundled and ballooning the release zip from ~10MB to 532MB.
     # Every venv flavor a contributor might plausibly create — canonical,
-    # platform-suffixed, version-suffixed across the Python lifecycle —
-    # must be pruned. Derive the variants directly from EXCLUDED_DIRS so
-    # this test automatically extends when new entries are added (no
-    # silent drift between implementation and regression guard).
+    # platform-suffixed, version-suffixed across the Python lifecycle,
+    # dotted AND undotted forms — must be pruned.
+    #
+    # Two-pronged guard:
+    #   1. Derive variants from EXCLUDED_DIRS so any future addition is
+    #      automatically exercised (no test/impl drift — Sourcery round 1).
+    #   2. Assert the explicit minimum set is present so a silent removal
+    #      from EXCLUDED_DIRS makes the test fail loudly (anti-circularity
+    #      — Gemini round 2). The derive-only form would silently shrink
+    #      its check set in step with the implementation regression.
     from distribution.release_prep import EXCLUDED_DIRS
 
+    EXPECTED_MINIMUM = {
+        "venv", ".venv", ".venv-macos",
+        ".venv311", ".venv312", ".venv313", ".venv314",
+        "venv311", "venv312", "venv313", "venv314",
+    }
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     venv_variants = tuple(sorted(
         name for name in EXCLUDED_DIRS
-        if name == "venv" or name.startswith(".venv")
+        if name.startswith("venv") or name.startswith(".venv")
     ))
-    assert ".venv311" in venv_variants, (
-        "regression: .venv311 dropped from EXCLUDED_DIRS — this is the "
-        "exact bug this test guards against"
+    missing = EXPECTED_MINIMUM - set(venv_variants)
+    assert not missing, (
+        f"regression: EXCLUDED_DIRS no longer covers expected venv "
+        f"variants: {sorted(missing)} — original .venv311 build-bloat "
+        f"bug class"
     )
     for v in venv_variants:
         (src / v / "bin").mkdir(parents=True)
