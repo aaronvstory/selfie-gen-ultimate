@@ -183,7 +183,29 @@ endlocal & exit /b 1
 rem PR #49 round-2 H-1: centralize lock release. Called before every
 rem exit/goto out of the bootstrap region so a dep-failure path never
 rem leaves the lock dir for the next sibling launcher to wait on.
+rem
+rem PR #51 round-3 (H1, Windows-side verification): retry once after a
+rem 2s sleep when the first rd fails. Common cause is a transient handle
+rem held by Windows Defender / Search Indexer / Explorer scan on the
+rem lock dir contents. If even the retry fails, log the path to
+rem %LOG_FILE% so the user has a breadcrumb to clear it manually
+rem (rd /S /Q .launcher_state\setup.lock). Without this, a transient
+rem AV hold would leave the lock for the full 24h forfiles-stale
+rem window, blocking every sibling launch in between.
 rd /S /Q "%SETUP_LOCK%" >nul 2>&1
+if not exist "%SETUP_LOCK%" exit /b 0
+rem Attempt 2: 2s wait. Covers a quick AV scan releasing its handle.
+ping -n 3 127.0.0.1 >nul 2>&1
+rd /S /Q "%SETUP_LOCK%" >nul 2>&1
+if not exist "%SETUP_LOCK%" exit /b 0
+rem Attempt 3: 4s wait. Defender deep-scan on a freshly-extracted wheel
+rem can hold handles 5-30s. ~6s total budget covers the common cases.
+ping -n 5 127.0.0.1 >nul 2>&1
+rd /S /Q "%SETUP_LOCK%" >nul 2>&1
+if not exist "%SETUP_LOCK%" exit /b 0
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] WARN: setup.lock release failed after 3 attempts; manual cleanup: rd /S /Q "%SETUP_LOCK%"
+echo   [setup-lock] WARN: failed to release %SETUP_LOCK% after 3 attempts
+echo   [setup-lock] Manual cleanup: rd /S /Q "%SETUP_LOCK%"
 exit /b 0
 
 :INSTALL_REQUIREMENTS

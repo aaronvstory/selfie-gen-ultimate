@@ -110,6 +110,68 @@ def test_windows_canonical_uses_setup_lock_serialization():
     assert 'md "%SETUP_LOCK%"' in src, "missing md-based atomic lock acquire"
 
 
+def test_windows_release_setup_lock_retries_on_failure():
+    """PR #51 round-3 (H1 from PR #49 round-3 subagent, finally addressed):
+    the :release_setup_lock subroutine must retry the rd after a 2s sleep
+    when the first attempt fails. Common cause is a transient handle held
+    by Windows Defender / Search Indexer / Explorer during file scan.
+
+    Without the retry, a single AV scan during dep-setup would leave the
+    lock dir for the full 24h forfiles-stale window, blocking every sibling
+    launch in between. Behavior verified manually on Windows by holding an
+    open file handle inside the lock dir during the rd call.
+
+    This test asserts the static structure:
+      1. First rd attempt + early-exit on success
+      2. ping -n 3 sleep (~2s)
+      3. Retry rd + early-exit on success
+      4. Log warning to %LOG_FILE% if still failing after retry
+    """
+    src = _read_text("launchers/windows/run_gui.bat")
+    # Find the :release_setup_lock block
+    label_idx = src.find('\n:release_setup_lock\n')
+    assert label_idx > 0, "missing :release_setup_lock label"
+    # Take a generous window after the label (subroutine ends at next :LABEL)
+    next_label_idx = src.find('\n:', label_idx + 1)
+    if next_label_idx < 0:
+        next_label_idx = len(src)
+    block = src[label_idx:next_label_idx]
+
+    # Must contain at least 3 `rd` attempts (initial + 2 retries).
+    # Round-3 review (subagent M1): bumped from 2 attempts to 3 because
+    # Defender deep-scans can hold handles 5-30s; the original 2s window
+    # was insufficient. New budget: 2s + 4s = 6s total before WARN.
+    rd_count = block.count('rd /S /Q "%SETUP_LOCK%"')
+    assert rd_count >= 3, (
+        f":release_setup_lock has only {rd_count} `rd` attempts — H1 retry "
+        f"regression. The subroutine must retry TWICE (initial + 2 retries) "
+        f"with progressively longer sleeps (2s + 4s)."
+    )
+    # Must have at least 3 early-exit guards (one after each rd)
+    early_exit_count = block.count('if not exist "%SETUP_LOCK%" exit /b 0')
+    assert early_exit_count >= 3, (
+        f"only {early_exit_count} early-exit guards — H1 regression. Each "
+        f"rd attempt should be followed by `if not exist ... exit /b 0`."
+    )
+    # Must have both the 2s and 4s sleeps between attempts
+    assert 'ping -n 3 127.0.0.1' in block, (
+        "missing 2s sleep between rd attempts 1 and 2 — H1 regression"
+    )
+    assert 'ping -n 5 127.0.0.1' in block, (
+        "missing 4s sleep between rd attempts 2 and 3 — H1 retry-budget "
+        "regression (the round-3 subagent finding about Defender deep-scan "
+        "holding handles 5-30s is the reason for the longer second sleep)"
+    )
+    # Must log a warning to LOG_FILE when retry also fails
+    assert '%LOG_FILE%' in block, (
+        "missing diagnostic log on persistent rd failure — user has no "
+        "breadcrumb to find the stuck lock"
+    )
+    assert 'WARN' in block or 'warn' in block.lower(), (
+        "log message doesn't carry a WARN tag"
+    )
+
+
 def test_windows_setup_lock_released_on_every_path_to_launch():
     """PR #49 H1 (round-1 review finding): the stamp-skip fast path uses
     ``goto :launch`` which originally bypassed the ``rd`` release at the

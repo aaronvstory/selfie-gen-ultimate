@@ -245,6 +245,161 @@ def test_copy_sanitized_tree_excludes_all_venv_variants(tmp_path: Path):
     assert (dst / "kept.py").exists()
 
 
+def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
+    """Regression guard for the Windows-side dist-bloat bug discovered after
+    PR #50 merged: a contributor's working tree contains several gitignored
+    research/A-B-testing dirs that ``release_prep.copy_sanitized_tree`` was
+    not pruning. The build script sweeps the working tree (not git
+    ls-files), so being in ``.gitignore`` alone doesn't save them — they
+    must also be in ``EXCLUDED_DIRS``.
+
+    Observed before fix: 182 MB release zip (134 MB from oldcam-testing
+    .mp4 fixtures, 35 MB from test-material/, plus oldcam_reference_bundle
+    and analysis_frames). After fix: 9.85 MB. Same bug class as the
+    .venv311 miss in PR #50.
+
+    PR #51 round-1 code review additionally caught:
+      - CRITICAL: ``sourav_facetrack_results.json`` /
+        ``sourav_kinematic_results.json`` shipped to every release with
+        78+40 SSN-format identifiers (real PII leak).
+      - HIGH: stray ``*.zip`` siblings (oldcam_reference_bundle.zip,
+        oldcam-v13.zip, rppg_injector-v8.zip) all gitignored but shipping.
+      - HIGH: ``oldcam-testing/reports/`` (12 A/B HTML reports) shipping.
+    All three classes are now guarded below.
+    """
+    # Round-2 review (subagent M1): derive the expected set from the source of
+    # truth in release_prep.py — same two-pronged pattern as PR #50's
+    # venv-variants test. Anti-circularity (EXPECTED_MINIMUM) catches silent
+    # removals; derive (LOCAL_ONLY_RESEARCH_DIRS) catches silent renames.
+    from distribution.release_prep import (
+        EXCLUDED_DIRS,
+        EXCLUDED_FILES,
+        LOCAL_ONLY_RESEARCH_DIRS,
+        PII_EXCLUDED_FILES,
+    )
+
+    EXPECTED_MINIMUM_DIRS = {
+        "oldcam_reference_bundle",
+        "analysis_frames",
+        "test-material",
+        "rppg_harness_out",
+    }
+    missing_minimum = EXPECTED_MINIMUM_DIRS - LOCAL_ONLY_RESEARCH_DIRS
+    assert not missing_minimum, (
+        f"regression: LOCAL_ONLY_RESEARCH_DIRS no longer covers the local-only "
+        f"research dirs that bloated the Windows dist zip: "
+        f"{sorted(missing_minimum)}"
+    )
+    # And every name in the constant must actually be in EXCLUDED_DIRS (the
+    # `EXCLUDED_DIRS |= LOCAL_ONLY_RESEARCH_DIRS` merge must hold).
+    assert LOCAL_ONLY_RESEARCH_DIRS <= EXCLUDED_DIRS, (
+        f"regression: LOCAL_ONLY_RESEARCH_DIRS is not merged into EXCLUDED_DIRS — "
+        f"the dir-name match in _should_skip won't fire. "
+        f"Missing: {sorted(LOCAL_ONLY_RESEARCH_DIRS - EXCLUDED_DIRS)}"
+    )
+
+    # PR #51 round-1 CRITICAL: PII-bearing corpus measurement outputs
+    EXPECTED_MINIMUM_PII = {"sourav_facetrack_results.json", "sourav_kinematic_results.json"}
+    missing_pii_minimum = EXPECTED_MINIMUM_PII - PII_EXCLUDED_FILES
+    assert not missing_pii_minimum, (
+        f"PII regression: PII_EXCLUDED_FILES no longer covers the corpus "
+        f"measurement outputs containing SSN-format identifiers: "
+        f"{sorted(missing_pii_minimum)}"
+    )
+    assert PII_EXCLUDED_FILES <= EXCLUDED_FILES, (
+        f"regression: PII_EXCLUDED_FILES is not merged into EXCLUDED_FILES — "
+        f"the file-name match in _should_skip won't fire. "
+        f"Missing: {sorted(PII_EXCLUDED_FILES - EXCLUDED_FILES)}"
+    )
+
+    expected_excluded = LOCAL_ONLY_RESEARCH_DIRS  # alias for the rest of the test below
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    # All dirs in expected_excluded are pruned by dir-name match in EXCLUDED_DIRS.
+    # CodeRabbit round-1 finding: ``rppg_harness_out`` is the one case where the
+    # actual leak path is nested (``oldcam-testing/rppg_harness_out/``), not at
+    # repo root — exercise it that way so the fixture mirrors the real bug.
+    for d in expected_excluded - {"rppg_harness_out"}:
+        (src / d).mkdir(parents=True)
+        (src / d / "fixture.bin").write_bytes(b"x" * 1024)
+    # The oldcam-testing/ dir itself ships (frozen A/B test scripts), but
+    # the *.mp4 byproducts inside it must be pruned by the path-aware filter.
+    # Cover BOTH top-level and nested (`oldcam-testing/sub/inner.mp4`) cases.
+    (src / "oldcam-testing").mkdir()
+    # rppg_harness_out at the production leak location (nested under oldcam-testing/)
+    (src / "oldcam-testing" / "rppg_harness_out").mkdir()
+    (src / "oldcam-testing" / "rppg_harness_out" / "fixture.bin").write_bytes(b"x" * 1024)
+    (src / "oldcam-testing" / "oldcam_v24.py").write_text("# frozen", encoding="utf-8")
+    (src / "oldcam-testing" / "fixture-video.mp4").write_bytes(b"VID" * 1024)
+    (src / "oldcam-testing" / "subdir").mkdir()
+    (src / "oldcam-testing" / "subdir" / "nested.mp4").write_bytes(b"NESTED" * 256)
+    # PR #51 round-1 HIGH: gitignored A/B HTML reports must be pruned too
+    (src / "oldcam-testing" / "reports").mkdir()
+    (src / "oldcam-testing" / "reports" / "v24_report.html").write_text("<html/>", encoding="utf-8")
+    # PR #51 round-1 HIGH: stray *.zip siblings (.gitignore: *.zip)
+    (src / "oldcam_reference_bundle.zip").write_bytes(b"ZIP" * 1024)
+    (src / "rPPG").mkdir()
+    (src / "rPPG" / "rppg_injector-v8.zip").write_bytes(b"ZIP" * 1024)
+    # PR #51 round-1 CRITICAL: PII files in docs/analysis/
+    (src / "docs" / "analysis").mkdir(parents=True)
+    (src / "docs" / "analysis" / "sourav_facetrack_results.json").write_text(
+        '[{"persona": "DUPE - 108-62-9880"}]', encoding="utf-8",
+    )
+    (src / "docs" / "analysis" / "sourav_kinematic_results.json").write_text(
+        '[{"persona": "DUPE - 108-62-9880"}]', encoding="utf-8",
+    )
+    (src / "docs" / "analysis" / "harmless_keeper.py").write_text("# ok", encoding="utf-8")
+    (src / "kept.py").write_text("ok", encoding="utf-8")
+
+    copy_sanitized_tree(src, dst)
+
+    # The big bloat dirs are gone entirely. rppg_harness_out is checked at
+    # its real nested location (oldcam-testing/rppg_harness_out/) per the
+    # CodeRabbit round-1 finding.
+    for d in expected_excluded - {"rppg_harness_out"}:
+        assert not (dst / d).exists(), f"local-only dir {d!r} leaked into release bundle"
+    assert not (dst / "oldcam-testing" / "rppg_harness_out").exists(), (
+        "oldcam-testing/rppg_harness_out/ leaked — dir-name EXCLUDED_DIRS regression"
+    )
+    # oldcam-testing/ survives but only its .py scripts ship
+    assert (dst / "oldcam-testing" / "oldcam_v24.py").exists()
+    assert not (dst / "oldcam-testing" / "fixture-video.mp4").exists(), (
+        "oldcam-testing/*.mp4 fixture leaked — path-aware extension filter "
+        "regression"
+    )
+    # Nested mp4 case: path.parts walks the full relative path so the filter
+    # catches `oldcam-testing/subdir/nested.mp4` too. A refactor that scoped
+    # the check to ``path.parent.name == "oldcam-testing"`` would break this
+    # and the subagent flagged the risk in PR #51 round-1.
+    assert not (dst / "oldcam-testing" / "subdir" / "nested.mp4").exists(), (
+        "oldcam-testing/subdir/*.mp4 leaked — nested .mp4 filter regression"
+    )
+    # PR #51 round-1: oldcam-testing/reports/ pruned
+    assert not (dst / "oldcam-testing" / "reports").exists(), (
+        "oldcam-testing/reports/ A/B HTML reports leaked into release zip"
+    )
+    # PR #51 round-1: stray *.zip artifacts pruned
+    assert not (dst / "oldcam_reference_bundle.zip").exists(), (
+        "stray *.zip artifact leaked into release zip — the SAME confidential "
+        "content as the oldcam_reference_bundle/ dir we exclude"
+    )
+    assert not (dst / "rPPG" / "rppg_injector-v8.zip").exists(), (
+        "rPPG/*.zip artifact leaked"
+    )
+    # PR #51 round-1: PII files pruned, surrounding harmless files preserved
+    assert not (dst / "docs" / "analysis" / "sourav_facetrack_results.json").exists(), (
+        "PII LEAK: sourav_facetrack_results.json shipped with SSN-format identifiers"
+    )
+    assert not (dst / "docs" / "analysis" / "sourav_kinematic_results.json").exists(), (
+        "PII LEAK: sourav_kinematic_results.json shipped with SSN-format identifiers"
+    )
+    assert (dst / "docs" / "analysis" / "harmless_keeper.py").exists(), (
+        "PII filter over-matched and pruned a harmless sibling file"
+    )
+    assert (dst / "kept.py").exists()
+
+
 def test_standalone_windows_launchers_use_stable_python_probes():
     similarity_gui = Path("similarity/run_gui.bat").read_text(encoding="utf-8")
     similarity_cli = Path("similarity/run_cli.bat").read_text(encoding="utf-8")
