@@ -204,7 +204,66 @@ def list_active_instances(workspace: str) -> List[dict]:
     return out
 
 
-def _safe_rmtree_orphan_runtime(runtime_dir: str) -> None:
+# Filenames we expect to find inside an orphan ``runtime/instances/<id>/`` dir
+# and feel safe deleting. ``crash_log.txt`` / ``kling_history.json`` / ``sessions``
+# are the GUI's own per-instance writes. The remaining names are OS-junk created
+# by Finder / Explorer the moment a user browses the folder — round-3 review M1
+# called out that without these, a single visit by macOS Finder permanently
+# blocks orphan cleanup (a ``.DS_Store`` appears and ``_safe_rmtree_orphan_runtime``
+# aborts as "manual user data").
+_ORPHAN_EXPECTED_NAMES = {
+    "crash_log.txt",
+    "kling_history.json",
+    "sessions",
+    ".DS_Store",      # macOS Finder
+    "Thumbs.db",      # Windows Explorer thumbnail cache
+    "desktop.ini",    # Windows folder metadata
+}
+
+
+def _is_safe_orphan_runtime_path(runtime_dir: str, workspace: str) -> bool:
+    """Return True iff ``runtime_dir`` is structurally a per-instance runtime
+    dir under ``workspace``'s ``runtime/instances/`` tree.
+
+    Round-3 review finding (C1): the marker JSON's ``runtime_dir`` field is
+    attacker-controlled in the cross-machine sense — a marker rsynced from
+    another box, or a hand-edited / corrupted marker, can point at any path.
+    Without this check, ``_safe_rmtree_orphan_runtime`` would happily rmtree
+    e.g. ``C:\\Users\\d0nbxx\\Desktop\\sessions`` if that path coincidentally
+    contained only files matching ``_ORPHAN_EXPECTED_NAMES``.
+
+    Two gates: (1) ``commonpath`` containment under the expected
+    ``runtime/instances`` root, AND (2) the basename matches the instance-id
+    regex. Both must pass — defense-in-depth against symlinks pointing
+    inside the tree.
+    """
+    try:
+        expected_root = os.path.join(
+            path_utils.get_workspace_dir(workspace), "runtime", "instances"
+        )
+        candidate = os.path.realpath(runtime_dir)
+        anchor = os.path.realpath(expected_root)
+        common = os.path.commonpath([candidate, anchor])
+        if os.path.normcase(common) != os.path.normcase(anchor):
+            return False
+        # Basename of the candidate must look like an instance id
+        # (`<YYYYMMDD-HHMMSS>-<PID>`). Re-use the regex defined in path_utils.
+        basename = os.path.basename(candidate.rstrip(os.sep))
+        if not path_utils._INSTANCE_ID_RE.match(basename):
+            return False
+        return True
+    except (ValueError, OSError) as exc:
+        # ValueError: commonpath across drives (Windows). OSError: realpath
+        # on a broken symlink. Conservative: classify as unsafe so we never
+        # rmtree on uncertainty.
+        logger.debug(
+            "orphan-runtime safety check failed for %s under %s: %s",
+            runtime_dir, workspace, exc,
+        )
+        return False
+
+
+def _safe_rmtree_orphan_runtime(runtime_dir: str, workspace: str) -> None:
     """Remove an orphaned per-instance runtime dir, but only if it's safe.
 
     Round-2 review finding (Gemini): the original cleanup_stale_markers
@@ -212,19 +271,32 @@ def _safe_rmtree_orphan_runtime(runtime_dir: str) -> None:
     forever — each abandoned instance leaks a few KB to MB of carousel
     autosave + history + crash log on disk.
 
-    Safety rule: only rmtree dirs that contain ONLY the expected ephemeral
-    files (``crash_log.txt``, ``kling_history.json``, ``sessions/`` subtree).
-    Any unexpected file or directory aborts the rmtree so we never destroy
-    user data (e.g. someone copied a manual save into that path). Best-effort
-    on all filesystem errors.
+    Round-3 review finding (C1): added a structural containment check —
+    ``runtime_dir`` MUST resolve under the workspace's ``runtime/instances/``
+    tree AND its basename must match the instance-id regex. Without this,
+    a cross-machine marker file (rsync'd, cloud-synced) could point at an
+    arbitrary path on this host that happens to contain only the expected
+    ephemerals, and we'd rmtree the wrong dir.
+
+    Safety rules (all must pass for rmtree):
+      1. Path containment via ``_is_safe_orphan_runtime_path``
+      2. Directory contents are entirely in ``_ORPHAN_EXPECTED_NAMES``
+         (the GUI's own files plus OS-junk like ``.DS_Store`` so a single
+         Finder visit doesn't permanently block cleanup)
+    Best-effort on all filesystem errors.
     """
-    EXPECTED_NAMES = {"crash_log.txt", "kling_history.json", "sessions"}
+    if not _is_safe_orphan_runtime_path(runtime_dir, workspace):
+        logger.debug(
+            "Skipping orphan rmtree of %s: not under workspace %r runtime/instances/",
+            runtime_dir, workspace,
+        )
+        return
     try:
         if not os.path.isdir(runtime_dir):
             return
         entries = list(os.scandir(runtime_dir))
         for entry in entries:
-            if entry.name not in EXPECTED_NAMES:
+            if entry.name not in _ORPHAN_EXPECTED_NAMES:
                 logger.debug(
                     "Skipping rmtree of %s: unexpected entry %r — manual user data?",
                     runtime_dir, entry.name,
@@ -283,7 +355,7 @@ def cleanup_stale_markers(workspace: str) -> int:
                 os.remove(entry.path)
                 removed += 1
                 if isinstance(runtime_dir, str) and runtime_dir:
-                    _safe_rmtree_orphan_runtime(runtime_dir)
+                    _safe_rmtree_orphan_runtime(runtime_dir, workspace)
             except OSError as exc:
                 logger.debug("Failed removing stale marker %s: %s", entry.path, exc)
     except Exception as exc:

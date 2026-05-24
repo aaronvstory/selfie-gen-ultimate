@@ -933,7 +933,11 @@ class KlingGUIWindow:
         # internally (see workspace_markers.py), so we only need to guard the
         # subsequent sibling-listing log.
         workspace_markers.cleanup_stale_markers(self.workspace)
-        runtime_dir_for_marker = os.path.dirname(self.sessions_dir)  # <runtime>/instances/<id>/
+        # Use path_utils directly for symmetry with self.sessions_dir construction
+        # above. Round-3 review (L1): the prior ``os.path.dirname(self.sessions_dir)``
+        # implicitly relied on sessions_dir's layout — fragile if the suffix changes.
+        from path_utils import get_runtime_dir
+        runtime_dir_for_marker = get_runtime_dir(self.workspace, self.instance_id)
         self._workspace_marker_path = workspace_markers.register_instance(
             self.workspace, self.instance_id, runtime_dir_for_marker
         )

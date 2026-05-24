@@ -219,8 +219,12 @@ def get_runtime_history_path(
 def get_workspace_markers_dir(workspace: Optional[str] = None) -> str:
     """Return ``<workspace_dir>/runtime/.markers/`` — liveness markers root.
 
-    One small JSON per active instance. Survives orderly close (deleted) but
-    is also subject to a 24h stale-cleanup on launch (catches kill -9).
+    One small JSON per active instance. Survives orderly close (deleted)
+    but is also subject to a stale-cleanup on launch — round-2 H-2
+    switched the cleanup gate from a 24h mtime cutoff to a per-marker
+    PID liveness probe (``os.kill(pid, 0)`` POSIX / ``OpenProcess``
+    Windows). A generous 30-day mtime cutoff is the fallback for markers
+    missing/malformed pid. See ``kling_gui.workspace_markers``.
     """
     return os.path.join(get_workspace_dir(workspace), "runtime", ".markers")
 
