@@ -199,6 +199,52 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     assert (dst / "normal.py").exists()
 
 
+def test_copy_sanitized_tree_excludes_all_venv_variants(tmp_path: Path):
+    # Regression guard for the build-bloat bug where `.venv311` was
+    # MISSING from EXCLUDED_DIRS, causing the local Python 3.11 venv to
+    # be bundled and ballooning the release zip from ~10MB to 532MB.
+    # Every venv flavor a contributor might plausibly create — canonical,
+    # platform-suffixed, version-suffixed across the Python lifecycle,
+    # dotted AND undotted forms — must be pruned.
+    #
+    # Two-pronged guard:
+    #   1. Derive variants from EXCLUDED_DIRS so any future addition is
+    #      automatically exercised (no test/impl drift — Sourcery round 1).
+    #   2. Assert the explicit minimum set is present so a silent removal
+    #      from EXCLUDED_DIRS makes the test fail loudly (anti-circularity
+    #      — Gemini round 2). The derive-only form would silently shrink
+    #      its check set in step with the implementation regression.
+    from distribution.release_prep import EXCLUDED_DIRS
+
+    EXPECTED_MINIMUM = {
+        "venv", ".venv", ".venv-macos",
+        ".venv311", ".venv312", ".venv313", ".venv314",
+        "venv311", "venv312", "venv313", "venv314",
+    }
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    venv_variants = tuple(sorted(
+        name for name in EXCLUDED_DIRS
+        if name.startswith("venv") or name.startswith(".venv")
+    ))
+    missing = EXPECTED_MINIMUM - set(venv_variants)
+    assert not missing, (
+        f"regression: EXCLUDED_DIRS no longer covers expected venv "
+        f"variants: {sorted(missing)} — original .venv311 build-bloat "
+        f"bug class"
+    )
+    for v in venv_variants:
+        (src / v / "bin").mkdir(parents=True)
+        (src / v / "bin" / "python").write_text("#!/fake", encoding="utf-8")
+    (src / "kept.py").write_text("ok", encoding="utf-8")
+
+    copy_sanitized_tree(src, dst)
+
+    for v in venv_variants:
+        assert not (dst / v).exists(), f"venv variant {v!r} leaked into release bundle"
+    assert (dst / "kept.py").exists()
+
+
 def test_standalone_windows_launchers_use_stable_python_probes():
     similarity_gui = Path("similarity/run_gui.bat").read_text(encoding="utf-8")
     similarity_cli = Path("similarity/run_cli.bat").read_text(encoding="utf-8")

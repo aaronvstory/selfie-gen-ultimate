@@ -48,6 +48,21 @@ def _pid_is_alive(pid: int) -> bool:
 
     Conservative on failure: returns True (don't sweep a marker we can't
     classify; let the fallback mtime path handle truly old ones).
+
+    Known edge case (PID recycling): on a long-running system, an OS may
+    recycle an exited process's PID for an unrelated new process before
+    the old marker is swept. This function then classifies the marker as
+    still alive (the PID exists, just for a different process) and
+    suppresses cleanup. Note: ``_marker_is_alive`` early-returns on this
+    function's result when the marker JSON carries a usable pid, so the
+    ``_FALLBACK_STALE_SECONDS`` mtime path does NOT catch the recycled-PID
+    case — only no-pid / corrupt markers fall through to mtime. A stuck
+    marker would persist until the workspace's markers dir is manually
+    cleared, or until the recycled process itself exits. In practice this
+    is rare (PID space is wide on macOS+Linux; Windows PID recycling is
+    real but typically slow). Fixing it precisely would require a
+    stable per-launch token (timestamp+nonce) in the marker JSON, which
+    is more bookkeeping than the failure mode warrants.
     """
     if pid <= 0:
         return False
