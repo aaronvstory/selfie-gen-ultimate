@@ -2166,6 +2166,28 @@ class QueueManager:
                 "automation_rppg_skip_kinematic_gate",
                 True,
             )
+            # Landmark-detection stride: per the injector's own
+            # ``--landmark-stride`` help, running MediaPipe only every
+            # Nth frame and interpolating between via the ROIStabilizer
+            # gives a "3-5x reduction in per-frame detection cost at
+            # negligible quality loss on mostly-still faces." The Kling
+            # output is almost always a slow controlled head turn
+            # (subject performs the prompted move at near-still speed),
+            # so stride 3 is the safe sweet spot — measurable speedup
+            # without touching the pulse-injection correctness path.
+            # User dial-back to 1 (every frame) via
+            # config["rppg_landmark_stride"] = 1 for the rare case of a
+            # fast-motion source. (PR fix/rppg-failure-visibility v2.5
+            # — user-asked speedup pass.)
+            landmark_stride_raw = _cfg_get(
+                "rppg_landmark_stride",
+                "automation_rppg_landmark_stride",
+                3,
+            )
+            try:
+                landmark_stride = max(1, int(landmark_stride_raw))
+            except (TypeError, ValueError):
+                landmark_stride = 3
             run_cmd = [
                 str(launcher),
                 str(input_path),
@@ -2175,7 +2197,7 @@ class QueueManager:
             ]
             # ORDER mirrors rPPG/rppg.bat:
             #     --inject --iterative --iterate-from-base --skip-diagnosis
-            # Plus --skip-kinematic-gate (preserved from before).
+            # Plus --skip-kinematic-gate + --landmark-stride.
             if iterative:
                 run_cmd.append("--iterative")
                 if iterate_from_baseline:
@@ -2186,6 +2208,8 @@ class QueueManager:
                 # v8 kinematic preflight is README-marked "new, untested"
                 # (see docs/rppg-wiring.md).
                 run_cmd.append("--skip-kinematic-gate")
+            if landmark_stride > 1:
+                run_cmd.extend(["--landmark-stride", str(landmark_stride)])
             output_lines: list[str] = []
             returncode = -1
             # Initial deadline depends on mode (PR #43 friend feedback

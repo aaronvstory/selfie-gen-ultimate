@@ -858,6 +858,7 @@ def run_rppg(
     iterate_from_baseline: bool = True,
     skip_diagnosis: bool = True,
     skip_kinematic_gate: bool = True,
+    landmark_stride: int = 3,
     verbose: bool = False,
 ) -> Optional[Path]:
     """Run rPPG injection. Return the output Path, or None on any
@@ -886,6 +887,16 @@ def run_rppg(
     *skip_kinematic_gate* (default ``True``): bypass the v8 facial-
     kinematic preflight. Per docs/rppg-wiring.md the gate is README-
     marked untested.
+
+    *landmark_stride* (default ``3``): per the injector's own
+    ``--landmark-stride`` documentation, running MediaPipe face
+    detection only every Nth frame (with the ROIStabilizer carrying
+    the shape between detections) gives a 3-5x reduction in per-frame
+    detection cost at "negligible quality loss on mostly-still faces."
+    Default 3 because Kling outputs are almost always slow controlled
+    head moves (the prompts request near-still motion). Set to ``1``
+    to detect every frame (the injector's own default) when injecting
+    into a fast-motion source.
 
     *keep_metrics* selects the delivered filename: ``True`` keeps the
     injector's ``{stem}-rppg - <metrics>{ext}``; ``False`` (default)
@@ -956,6 +967,17 @@ def run_rppg(
             cmd.append("--skip-diagnosis")
     if skip_kinematic_gate:
         cmd.append("--skip-kinematic-gate")
+    # Landmark stride — primary on-CPU speedup lever (3-5x reduction in
+    # per-frame mediapipe detection cost). The injector's own default
+    # is 1; we override to the caller-supplied value (default 3 from
+    # the signature, configurable via automation_rppg_landmark_stride
+    # in the pipeline + rppg_landmark_stride in the GUI config).
+    try:
+        stride = max(1, int(landmark_stride))
+    except (TypeError, ValueError):
+        stride = 3
+    if stride > 1:
+        cmd.extend(["--landmark-stride", str(stride)])
     _report(progress_cb, f"rPPG launching: {_format_cmd_for_log(cmd)}", "info")
     # Up-front expectation banner — user reported "why is this taking so
     # long and not showing progress" because the prior log went straight
