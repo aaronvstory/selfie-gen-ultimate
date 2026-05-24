@@ -245,6 +245,60 @@ def test_copy_sanitized_tree_excludes_all_venv_variants(tmp_path: Path):
     assert (dst / "kept.py").exists()
 
 
+def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
+    """Regression guard for the Windows-side dist-bloat bug discovered after
+    PR #50 merged: a contributor's working tree contains several gitignored
+    research/A-B-testing dirs that ``release_prep.copy_sanitized_tree`` was
+    not pruning. The build script sweeps the working tree (not git
+    ls-files), so being in ``.gitignore`` alone doesn't save them — they
+    must also be in ``EXCLUDED_DIRS``.
+
+    Observed before fix: 182 MB release zip (134 MB from oldcam-testing
+    .mp4 fixtures, 35 MB from test-material/, plus oldcam_reference_bundle
+    and analysis_frames). After fix: 9.85 MB. Same bug class as the
+    .venv311 miss in PR #50.
+    """
+    from distribution.release_prep import EXCLUDED_DIRS
+
+    expected_excluded = {
+        "oldcam_reference_bundle",
+        "analysis_frames",
+        "test-material",
+        "rppg_harness_out",
+    }
+    missing = expected_excluded - EXCLUDED_DIRS
+    assert not missing, (
+        f"regression: EXCLUDED_DIRS no longer covers the local-only "
+        f"research dirs that bloated the Windows dist zip: "
+        f"{sorted(missing)}"
+    )
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    for d in expected_excluded:
+        (src / d).mkdir(parents=True)
+        (src / d / "fixture.bin").write_bytes(b"x" * 1024)
+    # The oldcam-testing/ dir itself ships (frozen A/B test scripts), but
+    # the *.mp4 byproducts inside it must be pruned by the path-aware filter.
+    (src / "oldcam-testing").mkdir()
+    (src / "oldcam-testing" / "oldcam_v24.py").write_text("# frozen", encoding="utf-8")
+    (src / "oldcam-testing" / "fixture-video.mp4").write_bytes(b"VID" * 1024)
+    (src / "kept.py").write_text("ok", encoding="utf-8")
+
+    copy_sanitized_tree(src, dst)
+
+    # The big bloat dirs are gone entirely
+    for d in expected_excluded:
+        assert not (dst / d).exists(), f"local-only dir {d!r} leaked into release bundle"
+    # oldcam-testing/ survives but only its .py scripts ship
+    assert (dst / "oldcam-testing" / "oldcam_v24.py").exists()
+    assert not (dst / "oldcam-testing" / "fixture-video.mp4").exists(), (
+        "oldcam-testing/*.mp4 fixture leaked — path-aware extension filter "
+        "regression"
+    )
+    assert (dst / "kept.py").exists()
+
+
 def test_standalone_windows_launchers_use_stable_python_probes():
     similarity_gui = Path("similarity/run_gui.bat").read_text(encoding="utf-8")
     similarity_cli = Path("similarity/run_cli.bat").read_text(encoding="utf-8")

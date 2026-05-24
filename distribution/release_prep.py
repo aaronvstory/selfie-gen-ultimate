@@ -62,6 +62,23 @@ EXCLUDED_DIRS: Set[str] = {
     "distribution",
     "tests",
     "tests_tmp",
+    # PR #50 follow-up (Windows-side dist verification): the following dirs
+    # are all gitignored research/A-B-testing artifacts that live on a
+    # contributor's working tree but must never ship in the release bundle.
+    # The release_prep sweep walks the working tree (not git ls-files), so
+    # gitignore alone doesn't shield them. Discovered when a Windows-side
+    # build came in at 182 MB instead of the expected ~10 MB.
+    #   oldcam_reference_bundle/  — confidential analysis docs (~5 MB)
+    #   analysis_frames/          — frame extracts for offline analysis (~3 MB)
+    #   test-material/            — fixture videos used by the test harness (~35 MB)
+    #   oldcam-testing/rppg_harness_out/  — rPPG harness byproducts
+    # Note: oldcam-testing/ itself is kept (frozen A/B oldcam_v*.py files are
+    # tracked + ship). Only the byproduct subdir + the gitignored *.mp4
+    # files inside it are excluded; see _should_skip extension filter.
+    "oldcam_reference_bundle",
+    "analysis_frames",
+    "test-material",
+    "rppg_harness_out",
 }
 
 EXCLUDED_FILES: Set[str] = {
@@ -100,6 +117,19 @@ def _should_skip(path: Path) -> bool:
     if path.suffix.lower() in {".pyc", ".pyo", ".log"}:
         return True
     if path.suffix.lower() == ".bak":
+        return True
+    # PR #50 follow-up: drop the gitignored A/B-testing video fixtures
+    # from oldcam-testing/. The dir itself stays (frozen oldcam_v*.py
+    # scripts ship as research artifacts per project memory), but the
+    # *.mp4 byproducts (~134 MB on a contributor's working tree) must
+    # not bloat the release zip. Mirrors the .gitignore patterns:
+    #   oldcam-testing/*.mp4
+    #   oldcam-testing/rppg_harness_out/  (already in EXCLUDED_DIRS above)
+    if (
+        len(path.parts) >= 2
+        and path.parts[0] == "oldcam-testing"
+        and path.suffix.lower() == ".mp4"
+    ):
         return True
     return False
 
