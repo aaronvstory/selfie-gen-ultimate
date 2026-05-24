@@ -1766,7 +1766,7 @@ class KlingAutomationUI:
         self.config["automation_oldcam_enabled"] = True
         self.config["automation_oldcam_version"] = "v24"
         self.config["automation_oldcam_required"] = True
-        # rPPG injection runs LAST (Kling -> Loop -> Oldcam -> rPPG). It is
+        # rPPG injection runs Phase E (Kling -> rPPG -> Loop -> Oldcam). It is
         # opt-in (default OFF) — but when the user DOES enable it, the
         # mode is "iterative" + the three companion flags are ON, per
         # PR #43 (friend confirmed iterative is mandatory for prod use

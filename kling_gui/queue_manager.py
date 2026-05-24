@@ -1286,6 +1286,8 @@ class QueueManager:
                     # Default OFF — most workflows do NOT need it because
                     # Oldcam's resolution-crush attenuates the pulse and
                     # the rPPG'd base is the cleaner deliverable.
+                    fanout_failed = 0
+                    fanout_total = 0
                     if (
                         self._rppg_enabled()
                         and config.get("rppg_per_oldcam_fanout", False)
@@ -1293,9 +1295,29 @@ class QueueManager:
                     ):
                         last_rppg: Optional[str] = None
                         for src in oldcam_outputs:
+                            fanout_total += 1
                             rppg_video = self._rppg_video(src, item)
                             if rppg_video:
                                 last_rppg = rppg_video
+                            else:
+                                fanout_failed += 1
+                        # If any (or all) fan-out injections failed,
+                        # surface it loudly so the user doesn't think
+                        # every requested fresh-pulse oldcam variant
+                        # actually got injected. The summary line built
+                        # below in the "ALL POSTPROCESS DONE" milestone
+                        # adds an explicit "FANOUT-FAILED N/M" segment
+                        # when fanout_failed > 0.
+                        if fanout_failed > 0:
+                            self.log(
+                                f"❌ RPPG per-oldcam fan-out: "
+                                f"{fanout_failed}/{fanout_total} variants "
+                                f"failed to inject. Deliverable still has "
+                                f"the BASE rPPG bake-in (Phase E) — "
+                                f"requested fresh-pulse oldcam variants "
+                                f"were NOT all produced.",
+                                "error_bold",
+                            )
                         if last_rppg:
                             # Surface the highest Oldcam version's rPPG
                             # as headline when present, else fall back
@@ -1329,6 +1351,14 @@ class QueueManager:
                     if oldcam_versions:
                         summary_parts.append(
                             f"OLDCAM-{','.join(str(v) for v in oldcam_versions)}"
+                        )
+                    # Surface per-oldcam fan-out failures so the headline
+                    # summary line is never misleadingly green when the
+                    # opt-in fan-out only partially landed (subagent H2
+                    # on PR #52 round 1).
+                    if fanout_total > 0 and fanout_failed > 0:
+                        summary_parts.append(
+                            f"FANOUT-FAILED-{fanout_failed}/{fanout_total}"
                         )
                     summary = " + ".join(summary_parts) if summary_parts else "kling only"
                     self.log(
@@ -1650,16 +1680,20 @@ class QueueManager:
                     # native progress lines. Capped at 99 here; the
                     # caller flips to 100/done when the success branch
                     # runs. (Avoids a brief flicker of "[████] oldcam 100%"
-                    # before the queue row swaps to the ✅ icon.)
+                    # before the queue row swaps to the ✅ icon.) Skip
+                    # the redraw if the value didn't change — subagent
+                    # M3 on PR #52 round 1 (avoids ~40 redundant
+                    # listbox repaints per rPPG run).
                     if item is not None:
                         m = self._OLDCAM_PCT_PAT.search(line_text)
                         if m is not None:
                             try:
-                                pct = int(m.group(1))
+                                pct = max(0, min(99, int(m.group(1))))
                             except (TypeError, ValueError):
                                 pct = 0
-                            item.stage_percent = max(0, min(99, pct))
-                            self.update_queue_display()
+                            if pct != item.stage_percent:
+                                item.stage_percent = pct
+                                self.update_queue_display()
             returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             if process is not None:
@@ -2192,11 +2226,18 @@ class QueueManager:
                         frame_pct = int(m.group(3))
                     except (TypeError, ValueError):
                         return
-                    overall = int(
-                        ((cur_iter - 1) * 100 + frame_pct) / max_iter
+                    overall = max(
+                        0,
+                        min(
+                            99,
+                            int(((cur_iter - 1) * 100 + frame_pct) / max_iter),
+                        ),
                     )
-                    item.stage_percent = max(0, min(99, overall))
-                    self.update_queue_display()
+                    # Skip the redraw on identical-value re-emissions
+                    # (subagent M3 on PR #52 round 1).
+                    if overall != item.stage_percent:
+                        item.stage_percent = overall
+                        self.update_queue_display()
 
             tracker = _RppgProgressTracker(
                 report_cb=_progress_report, verbose=verbose,

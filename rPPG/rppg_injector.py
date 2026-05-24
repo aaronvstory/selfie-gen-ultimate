@@ -3576,6 +3576,21 @@ class PhaseAlignedRPPGManipulator:
         # Stable filename for the "best so far" iter snapshot. Re-copied
         # every time a new best is picked (see _is_new_best block below).
         # Cleaned up alongside the numbered temp files at end-of-run.
+        #
+        # IMPORTANT cwd contract: this is a BARE RELATIVE path. The
+        # subprocess that runs this injector is always launched with
+        # `cwd=rPPG/` (confirmed at the three known invocation paths:
+        # GUI queue → kling_gui/queue_manager.py::_rppg_video,
+        # automation pipeline → automation/rppg.py::run_rppg with
+        # `cwd=str(launcher.parent)`, and oldcam-testing harness →
+        # oldcam-testing/rppg_harness.py with the same `launcher.parent`
+        # cwd). The post-loop cleanup at line ~4636 compares this name
+        # against `output_path` (absolute) and `video_path` (absolute);
+        # they never compare equal, so the snapshot is deleted
+        # unconditionally — which is correct because the snapshot is
+        # intermediate. Don't make `_BEST_SNAPSHOT_NAME` resolve to the
+        # same file as `output_path` without also updating the cleanup
+        # guard to handle the absolute/relative comparison properly.
         _BEST_SNAPSHOT_NAME = "best_iteration_snapshot.mp4"
 
         current_path = video_path

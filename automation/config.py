@@ -95,7 +95,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_oldcam_enabled": True,
     "automation_oldcam_version": "v24",
     "automation_oldcam_required": True,
-    # rPPG injection (runs LAST: Kling -> Loop -> Oldcam -> rPPG). Installs a
+    # rPPG injection (Phase E: Kling -> rPPG -> Loop -> Oldcam). Installs a
     # physiologically-correct, sub-perceptual pulse so Persona's passive rPPG
     # stage sees a real signal instead of "weak/deformed rPPG". DEFAULT OFF:
     # this is the genuinely-untried forward direction, not yet production-

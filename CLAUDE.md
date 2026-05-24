@@ -268,10 +268,14 @@ Manual GUI and live provider validation are still required for full end-to-end c
 
 The CLI includes a manifest-driven automated pipeline:
 
-`front_expand -> extract_portrait -> selfie_generate -> similarity_gate -> selfie_expand -> video_generate -> oldcam -> rppg`
+`front_expand -> extract_portrait -> selfie_generate -> similarity_gate -> selfie_expand -> video_generate -> rppg -> oldcam`
 
-(`rppg` is the final, opt-in post-process — runs strictly LAST, after
-`oldcam`; off by default. See "rPPG Injection Wiring" below.)
+(`rppg` is opt-in and runs immediately after `video_generate` per
+the Phase E ordering — same as the GUI queue. The legacy "rPPG
+strictly LAST, after oldcam" arrangement is preserved behind the
+`automation_rppg_per_oldcam_fanout` opt-in flag (default OFF) for
+the rare case where a fresh-pulse oldcam variant is needed. See
+"rPPG Injection Wiring" below.)
 
 Core pipeline modules:
 

@@ -3695,6 +3695,16 @@ class KlingGUIWindow:
                 "warning": self.logger.warning,
                 "error": self.logger.error,
                 "debug": self.logger.debug,
+                # Explicit so ❌ RPPG FAILED banners land in the file
+                # log at ERROR level — anyone grepping `kling_gui.log`
+                # for ERROR/WARNING during triage would otherwise miss
+                # them entirely (subagent M1 on PR #52 round 1).
+                "error_bold": self.logger.error,
+                # Milestones are positive informational events; INFO is
+                # the right file-log level. Explicit map keeps the
+                # intent obvious vs. relying on the .get(level, info)
+                # fallback.
+                "milestone": self.logger.info,
             }
             level_map.get(level, self.logger.info)(message)
 
