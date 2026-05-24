@@ -89,6 +89,13 @@ EXCLUDED_FILES: Set[str] = {
     "kling_history.json",
     "crash_log.txt",
     "ui_config.json",
+    # PR #51 round-1 code review (CRITICAL): both files are gitignored
+    # corpus measurement outputs that contain SSN-format persona identifiers
+    # (confirmed 78 + 40 hits respectively). They were leaking to every
+    # release zip because .gitignore alone doesn't shield from the release
+    # sweep. PII redaction is more important than the bloat savings here.
+    "sourav_facetrack_results.json",
+    "sourav_kinematic_results.json",
 }
 RELEASE_BASENAME = "SelfieGenUltimate"
 VERSIONED_ZIP_NAME = f"SelfieGenUltimate-{RELEASE_VERSION}.zip"
@@ -118,6 +125,15 @@ def _should_skip(path: Path) -> bool:
         return True
     if path.suffix.lower() == ".bak":
         return True
+    # PR #51 round-1 code review (HIGH): stray *.zip artifacts in the repo
+    # working tree (oldcam_reference_bundle.zip, oldcam-v13.zip, rPPG
+    # injector zip) were shipping. All gitignored (.gitignore:*.zip) but
+    # release_prep sweeps the working tree, not git ls-files. Skipping all
+    # .zip extensions is safe here because the dist output goes to dist/
+    # which is already in EXCLUDED_DIRS — global .zip skip only affects
+    # sibling stray zips, not the release output.
+    if path.suffix.lower() == ".zip":
+        return True
     # PR #50 follow-up: drop the gitignored A/B-testing video fixtures
     # from oldcam-testing/. The dir itself stays (frozen oldcam_v*.py
     # scripts ship as research artifacts per project memory), but the
@@ -129,6 +145,17 @@ def _should_skip(path: Path) -> bool:
         len(path.parts) >= 2
         and path.parts[0] == "oldcam-testing"
         and path.suffix.lower() == ".mp4"
+    ):
+        return True
+    # PR #51 round-1 code review (HIGH): the same oldcam-testing/ dir holds a
+    # gitignored ``reports/`` subdir (~112 KB of A/B HTML reports) that the
+    # *.mp4 filter doesn't catch. Adding "reports" to EXCLUDED_DIRS would
+    # be too broad (a future ``reports/`` at repo root would unexpectedly
+    # prune). Scope the rule to oldcam-testing/reports/ specifically.
+    if (
+        len(path.parts) >= 2
+        and path.parts[0] == "oldcam-testing"
+        and path.parts[1] == "reports"
     ):
         return True
     return False

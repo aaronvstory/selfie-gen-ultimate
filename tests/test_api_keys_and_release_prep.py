@@ -257,8 +257,17 @@ def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
     .mp4 fixtures, 35 MB from test-material/, plus oldcam_reference_bundle
     and analysis_frames). After fix: 9.85 MB. Same bug class as the
     .venv311 miss in PR #50.
+
+    PR #51 round-1 code review additionally caught:
+      - CRITICAL: ``sourav_facetrack_results.json`` /
+        ``sourav_kinematic_results.json`` shipped to every release with
+        78+40 SSN-format identifiers (real PII leak).
+      - HIGH: stray ``*.zip`` siblings (oldcam_reference_bundle.zip,
+        oldcam-v13.zip, rppg_injector-v8.zip) all gitignored but shipping.
+      - HIGH: ``oldcam-testing/reports/`` (12 A/B HTML reports) shipping.
+    All three classes are now guarded below.
     """
-    from distribution.release_prep import EXCLUDED_DIRS
+    from distribution.release_prep import EXCLUDED_DIRS, EXCLUDED_FILES
 
     expected_excluded = {
         "oldcam_reference_bundle",
@@ -273,6 +282,15 @@ def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
         f"{sorted(missing)}"
     )
 
+    # PR #51 round-1 CRITICAL: PII-bearing corpus measurement outputs
+    expected_pii_files = {"sourav_facetrack_results.json", "sourav_kinematic_results.json"}
+    missing_pii = expected_pii_files - EXCLUDED_FILES
+    assert not missing_pii, (
+        f"PII regression: EXCLUDED_FILES no longer covers the corpus "
+        f"measurement outputs containing SSN-format identifiers: "
+        f"{sorted(missing_pii)}"
+    )
+
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     for d in expected_excluded:
@@ -280,9 +298,28 @@ def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
         (src / d / "fixture.bin").write_bytes(b"x" * 1024)
     # The oldcam-testing/ dir itself ships (frozen A/B test scripts), but
     # the *.mp4 byproducts inside it must be pruned by the path-aware filter.
+    # Cover BOTH top-level and nested (`oldcam-testing/sub/inner.mp4`) cases.
     (src / "oldcam-testing").mkdir()
     (src / "oldcam-testing" / "oldcam_v24.py").write_text("# frozen", encoding="utf-8")
     (src / "oldcam-testing" / "fixture-video.mp4").write_bytes(b"VID" * 1024)
+    (src / "oldcam-testing" / "subdir").mkdir()
+    (src / "oldcam-testing" / "subdir" / "nested.mp4").write_bytes(b"NESTED" * 256)
+    # PR #51 round-1 HIGH: gitignored A/B HTML reports must be pruned too
+    (src / "oldcam-testing" / "reports").mkdir()
+    (src / "oldcam-testing" / "reports" / "v24_report.html").write_text("<html/>", encoding="utf-8")
+    # PR #51 round-1 HIGH: stray *.zip siblings (.gitignore: *.zip)
+    (src / "oldcam_reference_bundle.zip").write_bytes(b"ZIP" * 1024)
+    (src / "rPPG").mkdir()
+    (src / "rPPG" / "rppg_injector-v8.zip").write_bytes(b"ZIP" * 1024)
+    # PR #51 round-1 CRITICAL: PII files in docs/analysis/
+    (src / "docs" / "analysis").mkdir(parents=True)
+    (src / "docs" / "analysis" / "sourav_facetrack_results.json").write_text(
+        '[{"persona": "DUPE - 108-62-9880"}]', encoding="utf-8",
+    )
+    (src / "docs" / "analysis" / "sourav_kinematic_results.json").write_text(
+        '[{"persona": "DUPE - 108-62-9880"}]', encoding="utf-8",
+    )
+    (src / "docs" / "analysis" / "harmless_keeper.py").write_text("# ok", encoding="utf-8")
     (src / "kept.py").write_text("ok", encoding="utf-8")
 
     copy_sanitized_tree(src, dst)
@@ -295,6 +332,35 @@ def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
     assert not (dst / "oldcam-testing" / "fixture-video.mp4").exists(), (
         "oldcam-testing/*.mp4 fixture leaked — path-aware extension filter "
         "regression"
+    )
+    # Nested mp4 case: path.parts walks the full relative path so the filter
+    # catches `oldcam-testing/subdir/nested.mp4` too. A refactor that scoped
+    # the check to ``path.parent.name == "oldcam-testing"`` would break this
+    # and the subagent flagged the risk in PR #51 round-1.
+    assert not (dst / "oldcam-testing" / "subdir" / "nested.mp4").exists(), (
+        "oldcam-testing/subdir/*.mp4 leaked — nested .mp4 filter regression"
+    )
+    # PR #51 round-1: oldcam-testing/reports/ pruned
+    assert not (dst / "oldcam-testing" / "reports").exists(), (
+        "oldcam-testing/reports/ A/B HTML reports leaked into release zip"
+    )
+    # PR #51 round-1: stray *.zip artifacts pruned
+    assert not (dst / "oldcam_reference_bundle.zip").exists(), (
+        "stray *.zip artifact leaked into release zip — the SAME confidential "
+        "content as the oldcam_reference_bundle/ dir we exclude"
+    )
+    assert not (dst / "rPPG" / "rppg_injector-v8.zip").exists(), (
+        "rPPG/*.zip artifact leaked"
+    )
+    # PR #51 round-1: PII files pruned, surrounding harmless files preserved
+    assert not (dst / "docs" / "analysis" / "sourav_facetrack_results.json").exists(), (
+        "PII LEAK: sourav_facetrack_results.json shipped with SSN-format identifiers"
+    )
+    assert not (dst / "docs" / "analysis" / "sourav_kinematic_results.json").exists(), (
+        "PII LEAK: sourav_kinematic_results.json shipped with SSN-format identifiers"
+    )
+    assert (dst / "docs" / "analysis" / "harmless_keeper.py").exists(), (
+        "PII filter over-matched and pruned a harmless sibling file"
     )
     assert (dst / "kept.py").exists()
 
