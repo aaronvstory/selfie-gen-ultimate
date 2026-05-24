@@ -3722,11 +3722,12 @@ class KlingGUIWindow:
                 text=f"📋 QUEUE ({stats['pending'] + stats['processing']}/50)"
             )
 
-            # Add items to listbox. When an item is mid-processing,
+            # Add items to listbox. When an item is mid-pipeline,
             # synthesize a unicode progress bar from
             # (item.stage, item.stage_percent) so the user can see
             # which stage is running and roughly how far along it is.
             # Stages: queued/kling/rppg/loop/oldcam/done/failed.
+            ACTIVE_STAGES = {"kling", "rppg", "loop", "oldcam"}
             for item in items:
                 status_icon = {
                     "pending": "⏳",
@@ -3737,14 +3738,24 @@ class KlingGUIWindow:
 
                 stage = getattr(item, "stage", "queued")
                 pct = max(0, min(100, getattr(item, "stage_percent", 0)))
-                if item.status == "processing" and stage not in (
-                    "queued", "done", "failed"
-                ):
+                # Gate on `stage`, NOT `item.status`. The queue worker
+                # flips status="completed" right after Kling generation
+                # and BEFORE rPPG/loop/oldcam run (queue_manager.py
+                # line ~1212), so a `status == "processing"` gate would
+                # hide the bar during the very post-processing stages
+                # the user most wants to track. Codex P2 on PR #52
+                # round 1 caught this.
+                if stage in ACTIVE_STAGES:
                     BAR_WIDTH = 12
                     filled = int(BAR_WIDTH * pct / 100)
                     bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+                    # During post-process stages the row icon stays at
+                    # 🔄 even though status flipped to "completed" — the
+                    # post-processing pipeline isn't done yet from the
+                    # user's perspective. Override the icon here so the
+                    # row visually matches the bar.
                     display = (
-                        f"{status_icon} {item.filename}  "
+                        f"🔄 {item.filename}  "
                         f"[{bar}] {stage} {pct}%"
                     )
                 else:

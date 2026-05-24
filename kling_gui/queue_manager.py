@@ -1998,7 +1998,13 @@ class QueueManager:
         """
         try:
             p = Path(video_path)
-            if "-NORPPG" in p.stem:
+            # Idempotency check is a terminal-token match so a user
+            # file that happens to contain ``-NORPPG`` mid-stem
+            # (e.g. ``holiday-NORPPG-cut.mp4``) is still marked, not
+            # skipped. Sourcery bug_risk on PR #52 round 1 — substring
+            # matches would silently no-op on legitimately-needing-
+            # marker files.
+            if p.stem.endswith("-NORPPG"):
                 return video_path
             marked = p.with_name(f"{p.stem}-NORPPG{p.suffix}")
             # Stale marked sibling from a previous run would block rename
