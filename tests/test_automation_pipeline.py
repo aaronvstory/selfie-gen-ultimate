@@ -1882,12 +1882,13 @@ def _mk_rppg_case(tmp_path, monkeypatch, *, rppg_enabled, rppg_required=False, r
         iterate_from_baseline=True,
         skip_diagnosis=True,
         skip_kinematic_gate=True,
+        landmark_stride=3,
         verbose=False,
     ):
         del (
             repo_root, progress_cb, timeout_seconds, keep_metrics,
             iterative, iterate_from_baseline, skip_diagnosis,
-            skip_kinematic_gate, verbose,
+            skip_kinematic_gate, landmark_stride, verbose,
         )
         if rppg_returns == "none":
             return None
@@ -2047,12 +2048,13 @@ def test_pipeline_rppg_runs_on_reused_video_when_oldcam_disabled(tmp_path, monke
         timeout_seconds=600, keep_metrics=False,
         iterative=True, iterate_from_baseline=True,
         skip_diagnosis=True, skip_kinematic_gate=True,
+        landmark_stride=3,
         verbose=False,
     ):
         del (
             repo_root, progress_cb, timeout_seconds, keep_metrics,
             iterative, iterate_from_baseline, skip_diagnosis,
-            skip_kinematic_gate, verbose,
+            skip_kinematic_gate, landmark_stride, verbose,
         )
         rppg_calls.append(Path(video_path))
         out = Path(video_path).with_name(Path(video_path).stem + "-rppg" + Path(video_path).suffix)
@@ -2327,12 +2329,13 @@ def test_pipeline_rppg_fans_out_over_base_and_every_oldcam(tmp_path, monkeypatch
         timeout_seconds=600, keep_metrics=False,
         iterative=True, iterate_from_baseline=True,
         skip_diagnosis=True, skip_kinematic_gate=True,
+        landmark_stride=3,
         verbose=False,
     ):
         del (
             repo_root, progress_cb, timeout_seconds, keep_metrics,
             iterative, iterate_from_baseline, skip_diagnosis,
-            skip_kinematic_gate, verbose,
+            skip_kinematic_gate, landmark_stride, verbose,
         )
         rppg_inputs.append(Path(video_path))
         out = build_rppg_output_path(Path(video_path))
@@ -2405,12 +2408,13 @@ def test_pipeline_rppg_default_runs_once_on_base_not_each_oldcam(tmp_path, monke
         timeout_seconds=600, keep_metrics=False,
         iterative=True, iterate_from_baseline=True,
         skip_diagnosis=True, skip_kinematic_gate=True,
+        landmark_stride=3,
         verbose=False,
     ):
         del (
             repo_root, progress_cb, timeout_seconds, keep_metrics,
             iterative, iterate_from_baseline, skip_diagnosis,
-            skip_kinematic_gate, verbose,
+            skip_kinematic_gate, landmark_stride, verbose,
         )
         rppg_inputs.append(Path(video_path))
         out = build_rppg_output_path(Path(video_path))
@@ -2483,12 +2487,13 @@ def _fanout_partial_case(tmp_path, required, monkeypatch):
         timeout_seconds=600, keep_metrics=False,
         iterative=True, iterate_from_baseline=True,
         skip_diagnosis=True, skip_kinematic_gate=True,
+        landmark_stride=3,
         verbose=False,
     ):
         del (
             repo_root, progress_cb, timeout_seconds, keep_metrics,
             iterative, iterate_from_baseline, skip_diagnosis,
-            skip_kinematic_gate, verbose,
+            skip_kinematic_gate, landmark_stride, verbose,
         )
         # v24 injection FAILS (returns None); base + v8 succeed.
         if Path(video_path).name == "existing-oldcam-v24.mp4":
@@ -2881,12 +2886,13 @@ def test_pipeline_rppg_fanout_all_fail_does_not_crash(tmp_path, monkeypatch):
         timeout_seconds=600, keep_metrics=False,
         iterative=True, iterate_from_baseline=True,
         skip_diagnosis=True, skip_kinematic_gate=True,
+        landmark_stride=3,
         verbose=False,
     ):
         del (
             repo_root, progress_cb, timeout_seconds, keep_metrics,
             iterative, iterate_from_baseline, skip_diagnosis,
-            skip_kinematic_gate, verbose,
+            skip_kinematic_gate, landmark_stride, verbose,
         )
         name = Path(video_path).name
         # Pre-Oldcam pass on the BASE succeeds; per-Oldcam fan-out

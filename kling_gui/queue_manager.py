@@ -361,6 +361,17 @@ class QueueItem:
     status: str = "pending"  # "pending", "processing", "completed", "failed"
     error_message: Optional[str] = None
     output_path: Optional[str] = None
+    # rPPG dispatch state — populated by the queue worker so the
+    # post-processing summary line and the NORPPG filename marker can
+    # tell whether rPPG was requested but failed (vs. simply disabled).
+    rppg_requested: bool = False
+    rppg_succeeded: bool = False
+    # Per-item progress for the queue row. ``stage`` is one of
+    # "queued"/"kling"/"rppg"/"loop"/"oldcam"/"done"/"failed".
+    # ``stage_percent`` is 0-100 within the current stage; the queue
+    # widget renders a unicode bar from these two fields.
+    stage: str = "queued"
+    stage_percent: int = 0
 
     @property
     def filename(self) -> str:
@@ -1013,6 +1024,8 @@ class QueueManager:
             for item in self.items:
                 if item.status == "pending":
                     item.status = "processing"
+                    item.stage = "kling"
+                    item.stage_percent = 0
                     return item
         return None
 
@@ -1214,20 +1227,35 @@ class QueueManager:
                     final_video = result
 
                     # Step 1: rPPG on raw Kling FIRST when enabled.
-                    # Produces ``<stem>-rppg.mp4`` if it succeeds; on
+                    # Produces ``<stem>-rppg.mp4`` if it succeeds. On
                     # graceful skip (tool missing or injection fail),
-                    # leave ``final_video`` as the raw Kling output
-                    # and downstream Loop+Oldcam still run normally.
-                    if self._rppg_enabled():
+                    # rename the raw Kling output to insert a
+                    # ``-NORPPG`` marker so the final delivered video
+                    # unambiguously reflects that rPPG was REQUESTED
+                    # but did NOT land. Downstream Loop+Oldcam still
+                    # run on the marked file, producing chains like
+                    # ``..._k25tPro_p3_1-NORPPG-oldcam-v13.mp4``.
+                    item.rppg_requested = self._rppg_enabled()
+                    item.rppg_succeeded = False
+                    if item.rppg_requested:
+                        item.stage = "rppg"
+                        item.stage_percent = 0
+                        self.update_queue_display()
                         rppg_base = self._rppg_video(final_video, item)
                         if rppg_base:
                             final_video = rppg_base
+                            item.rppg_succeeded = True
+                        else:
+                            final_video = self._mark_norppg(final_video)
 
                     # Step 2: Loop on the rPPG'd (or raw if rPPG was
                     # OFF/skipped) base. After this step, ``final_video``
                     # is the single source every Oldcam version + the
                     # headline output derive from.
                     if config.get("loop_videos", False):
+                        item.stage = "loop"
+                        item.stage_percent = 0
+                        self.update_queue_display()
                         looped_video = self._loop_video(final_video, item)
                         if looped_video:
                             final_video = looped_video
@@ -1240,6 +1268,9 @@ class QueueManager:
                     # alongside — non-destructive.
                     oldcam_outputs: List[str] = []
                     if self._get_oldcam_versions_to_run():
+                        item.stage = "oldcam"
+                        item.stage_percent = 0
+                        self.update_queue_display()
                         oldcam_video = self._oldcam_video(final_video, item)
                         if oldcam_video:
                             final_video = oldcam_video
@@ -1255,6 +1286,8 @@ class QueueManager:
                     # Default OFF — most workflows do NOT need it because
                     # Oldcam's resolution-crush attenuates the pulse and
                     # the rPPG'd base is the cleaner deliverable.
+                    fanout_failed = 0
+                    fanout_total = 0
                     if (
                         self._rppg_enabled()
                         and config.get("rppg_per_oldcam_fanout", False)
@@ -1262,9 +1295,29 @@ class QueueManager:
                     ):
                         last_rppg: Optional[str] = None
                         for src in oldcam_outputs:
+                            fanout_total += 1
                             rppg_video = self._rppg_video(src, item)
                             if rppg_video:
                                 last_rppg = rppg_video
+                            else:
+                                fanout_failed += 1
+                        # If any (or all) fan-out injections failed,
+                        # surface it loudly so the user doesn't think
+                        # every requested fresh-pulse oldcam variant
+                        # actually got injected. The summary line built
+                        # below in the "ALL POSTPROCESS DONE" milestone
+                        # adds an explicit "FANOUT-FAILED N/M" segment
+                        # when fanout_failed > 0.
+                        if fanout_failed > 0:
+                            self.log(
+                                f"❌ RPPG per-oldcam fan-out: "
+                                f"{fanout_failed}/{fanout_total} variants "
+                                f"failed to inject. Deliverable still has "
+                                f"the BASE rPPG bake-in (Phase E) — "
+                                f"requested fresh-pulse oldcam variants "
+                                f"were NOT all produced.",
+                                "error_bold",
+                            )
                         if last_rppg:
                             # Surface the highest Oldcam version's rPPG
                             # as headline when present, else fall back
@@ -1278,9 +1331,45 @@ class QueueManager:
                             )
 
                     item.output_path = final_video
+                    item.stage = "done"
+                    item.stage_percent = 100
                     self.log(f"Saved to: {final_video}", "info")
+                    # Synthesize a final summary milestone so the user
+                    # can see, at a glance, what was applied (and what
+                    # was requested but failed). Bot/code-reviewer
+                    # context: order here mirrors the Phase E pipeline
+                    # in this method (rPPG → Loop → Oldcam) so what
+                    # the user reads matches what actually ran.
+                    summary_parts: List[str] = []
+                    if item.rppg_requested:
+                        summary_parts.append(
+                            "RPPG" if item.rppg_succeeded else "RPPG-FAILED"
+                        )
+                    if config.get("loop_videos", False):
+                        summary_parts.append("LOOP")
+                    oldcam_versions = self._get_oldcam_versions_to_run()
+                    if oldcam_versions:
+                        summary_parts.append(
+                            f"OLDCAM-{','.join(str(v) for v in oldcam_versions)}"
+                        )
+                    # Surface per-oldcam fan-out failures so the headline
+                    # summary line is never misleadingly green when the
+                    # opt-in fan-out only partially landed (subagent H2
+                    # on PR #52 round 1).
+                    if fanout_total > 0 and fanout_failed > 0:
+                        summary_parts.append(
+                            f"FANOUT-FAILED-{fanout_failed}/{fanout_total}"
+                        )
+                    summary = " + ".join(summary_parts) if summary_parts else "kling only"
+                    self.log(
+                        f"✅ ALL POSTPROCESS DONE ({summary}) → "
+                        f"{Path(final_video).name}",
+                        "milestone",
+                    )
                 else:
                     item.status = "failed"
+                    item.stage = "failed"
+                    item.stage_percent = 0
                     item.error_message = self._get_generation_error_message()
                     self.log(f"Failed {item.filename}: {item.error_message}", "error")
 
@@ -1526,8 +1615,35 @@ class QueueManager:
                 return candidate
         return app_dir / folder_name
 
-    def _run_oldcam_version(self, video_path: str, version: str) -> Optional[str]:
-        """Run one oldcam version and return output path if successful."""
+    # Matches "[Oldcam] Processing: 50% complete..." style progress lines
+    # emitted by every oldcam launcher we ship. Keeps the regex permissive
+    # enough that a future launcher variant (e.g. omitting the trailing
+    # "complete...") still updates the queue widget bar.
+    _OLDCAM_PCT_PAT = re.compile(r"\[Oldcam\]\s+Processing:\s+(\d+)%")
+    # Matches the rPPG progress-tracker's synthesized
+    #   "rPPG iter 3/10 frame 144/242 (~50%)"
+    # progress lines. Class-level for parity with _OLDCAM_PCT_PAT and to
+    # survive __new__-constructed test instances that bypass __init__.
+    # (Gemini medium on PR #52 round 2 — was previously compiled
+    # inside _rppg_video; moving to class level removes one re-compile
+    # per queue item and keeps regex catalogue centralized.)
+    _RPPG_PCT_PAT = re.compile(
+        r"rPPG iter\s+(\d+)/(\d+)\s+frame\s+\d+/\d+\s+\(~(\d+)%\)"
+    )
+
+    def _run_oldcam_version(
+        self,
+        video_path: str,
+        version: str,
+        item: Optional[QueueItem] = None,
+    ) -> Optional[str]:
+        """Run one oldcam version and return output path if successful.
+
+        ``item`` (optional) is used to update the per-queue-item progress
+        bar as the oldcam launcher reports its 25/50/75/100% milestones.
+        Kept optional so any future call site that doesn't have a
+        ``QueueItem`` in scope doesn't have to fabricate one.
+        """
         oldcam_dir = self._resolve_oldcam_dir(version)
         launcher_path = oldcam_dir / "launcher.py"
         if not launcher_path.exists():
@@ -1570,6 +1686,24 @@ class QueueManager:
                         # else continues to the user-facing panel.
                         level = "debug" if _is_panel_noise(line_text) else "info"
                         self.log(line_text, level)
+                    # Update per-item progress bar from the launcher's
+                    # native progress lines. Capped at 99 here; the
+                    # caller flips to 100/done when the success branch
+                    # runs. (Avoids a brief flicker of "[████] oldcam 100%"
+                    # before the queue row swaps to the ✅ icon.) Skip
+                    # the redraw if the value didn't change — subagent
+                    # M3 on PR #52 round 1 (avoids ~40 redundant
+                    # listbox repaints per rPPG run).
+                    if item is not None:
+                        m = self._OLDCAM_PCT_PAT.search(line_text)
+                        if m is not None:
+                            try:
+                                pct = max(0, min(99, int(m.group(1))))
+                            except (TypeError, ValueError):
+                                pct = 0
+                            if pct != item.stage_percent:
+                                item.stage_percent = pct
+                                self.update_queue_display()
             returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             if process is not None:
@@ -1606,7 +1740,8 @@ class QueueManager:
             input_path = Path(video_path)
             oldcam_output = self._build_oldcam_output_path(input_path, version)
             if oldcam_output.exists():
-                self.log(f"Oldcam {version} Finish applied: {oldcam_output.name}", "success")
+                self.log(f"Oldcam {version} output: {oldcam_output.name}", "success")
+                self.log(f"✅ OLDCAM {version} DONE", "milestone")
                 return str(oldcam_output)
             self.log(f"Oldcam {version} process completed but output file was not found", "warning")
             return None
@@ -1749,9 +1884,9 @@ class QueueManager:
 
         Args:
             video_path: Path to the generated or looped video
-            item: Queue item being processed
+            item: Queue item being processed (used for per-stage
+                progress reporting in the queue widget)
         """
-        del item  # Reserved for future per-item status hooks
         try:
                 versions_to_run = self._get_oldcam_versions_to_run()
                 # The per-version "Applying Oldcam vN Finish..." line that
@@ -1761,7 +1896,12 @@ class QueueManager:
                 outputs: List[Tuple[str, str]] = []
                 failures: List[Tuple[str, str]] = []
                 for version in versions_to_run:
-                    output_path = self._run_oldcam_version(video_path, version)
+                    # Reset percent so the bar shows each version's own
+                    # progression rather than starting where the previous
+                    # version stopped.
+                    item.stage_percent = 0
+                    self.update_queue_display()
+                    output_path = self._run_oldcam_version(video_path, version, item)
                     if output_path:
                         outputs.append((version, output_path))
                     else:
@@ -1884,13 +2024,54 @@ class QueueManager:
                 return launcher
         return None
 
+    def _mark_norppg(self, video_path: str) -> str:
+        """Rename ``video_path`` to insert a ``-NORPPG`` marker so the
+        final delivered video unambiguously reflects that rPPG was
+        REQUESTED but failed. Downstream stages (loop, oldcam) see
+        the renamed file and chain their own suffixes onto it, e.g.::
+
+            ..._k25tPro_p3_1.mp4
+              -> NORPPG marker -> ..._k25tPro_p3_1-NORPPG.mp4
+              -> oldcam        -> ..._k25tPro_p3_1-NORPPG-oldcam-v13.mp4
+
+        Returns the new path on success, or the original path on rename
+        failure (logged at warning — the run keeps going on the unmarked
+        file rather than failing the whole queue item for a cosmetic).
+        Idempotent: if the path already contains a ``-NORPPG`` token in
+        the stem, returns it unchanged.
+        """
+        try:
+            p = Path(video_path)
+            # Idempotency check is a terminal-token match so a user
+            # file that happens to contain ``-NORPPG`` mid-stem
+            # (e.g. ``holiday-NORPPG-cut.mp4``) is still marked, not
+            # skipped. Sourcery bug_risk on PR #52 round 1 — substring
+            # matches would silently no-op on legitimately-needing-
+            # marker files.
+            if p.stem.endswith("-NORPPG"):
+                return video_path
+            marked = p.with_name(f"{p.stem}-NORPPG{p.suffix}")
+            # Stale marked sibling from a previous run would block rename
+            # on Windows. os.replace is atomic same-dir overwrite on both
+            # POSIX and Windows; Path.rename is not.
+            os.replace(str(p), str(marked))
+            return str(marked)
+        except OSError as exc:
+            self.log(
+                f"Could not mark NORPPG on {Path(video_path).name}: "
+                f"{type(exc).__name__}: {exc}",
+                "warning",
+            )
+            return video_path
+
     def _rppg_video(self, video_path: str, item: QueueItem) -> Optional[str]:
         """Run one-shot rPPG injection on ``video_path``.
 
         Returns the injected output path, or None on ANY failure
-        (graceful skip — caller keeps the pre-rPPG video).
+        (graceful skip — caller keeps the pre-rPPG video). ``item`` is
+        used to update the per-queue-item progress bar as the rPPG
+        injector emits synthesized "(~PCT%)" progress lines.
         """
-        del item  # Reserved for future per-item status hooks
         try:
             input_path = Path(video_path)
             if not input_path.exists():
@@ -1985,6 +2166,28 @@ class QueueManager:
                 "automation_rppg_skip_kinematic_gate",
                 True,
             )
+            # Landmark-detection stride: per the injector's own
+            # ``--landmark-stride`` help, running MediaPipe only every
+            # Nth frame and interpolating between via the ROIStabilizer
+            # gives a "3-5x reduction in per-frame detection cost at
+            # negligible quality loss on mostly-still faces." The Kling
+            # output is almost always a slow controlled head turn
+            # (subject performs the prompted move at near-still speed),
+            # so stride 3 is the safe sweet spot — measurable speedup
+            # without touching the pulse-injection correctness path.
+            # User dial-back to 1 (every frame) via
+            # config["rppg_landmark_stride"] = 1 for the rare case of a
+            # fast-motion source. (PR fix/rppg-failure-visibility v2.5
+            # — user-asked speedup pass.)
+            landmark_stride_raw = _cfg_get(
+                "rppg_landmark_stride",
+                "automation_rppg_landmark_stride",
+                3,
+            )
+            try:
+                landmark_stride = max(1, int(landmark_stride_raw))
+            except (TypeError, ValueError):
+                landmark_stride = 3
             run_cmd = [
                 str(launcher),
                 str(input_path),
@@ -1994,7 +2197,7 @@ class QueueManager:
             ]
             # ORDER mirrors rPPG/rppg.bat:
             #     --inject --iterative --iterate-from-base --skip-diagnosis
-            # Plus --skip-kinematic-gate (preserved from before).
+            # Plus --skip-kinematic-gate + --landmark-stride.
             if iterative:
                 run_cmd.append("--iterative")
                 if iterate_from_baseline:
@@ -2005,6 +2208,8 @@ class QueueManager:
                 # v8 kinematic preflight is README-marked "new, untested"
                 # (see docs/rppg-wiring.md).
                 run_cmd.append("--skip-kinematic-gate")
+            if landmark_stride > 1:
+                run_cmd.extend(["--landmark-stride", str(landmark_stride)])
             output_lines: list[str] = []
             returncode = -1
             # Initial deadline depends on mode (PR #43 friend feedback
@@ -2031,9 +2236,41 @@ class QueueManager:
                 "verbose_logging", "automation_verbose_logging", True,
             )
 
+            # The tracker emits synthesized progress lines like
+            #   "rPPG iter 3/10 frame 144/242 (~50%)"
+            # which we parse to update the per-queue-item progress bar
+            # in the queue widget. The bar shows overall rPPG progress
+            # roughly as (completed_iters / max_iters * 100) blended with
+            # the within-iter frame percent. Assumes max_iters=10 (the
+            # injector default); early-stop just means the bar never
+            # reaches 100 — fine, the milestone line is the real "done"
+            # signal. The regex lives at class level (_RPPG_PCT_PAT)
+            # for consistency with _OLDCAM_PCT_PAT and to survive
+            # __new__-constructed test instances.
+
             def _progress_report(message: str, level: str) -> None:
                 # Bridge the tracker's (message, level) into self.log.
                 self.log(message, level)
+                m = self._RPPG_PCT_PAT.search(message)
+                if m is not None:
+                    try:
+                        cur_iter = int(m.group(1))
+                        max_iter = max(1, int(m.group(2)))
+                        frame_pct = int(m.group(3))
+                    except (TypeError, ValueError):
+                        return
+                    overall = max(
+                        0,
+                        min(
+                            99,
+                            int(((cur_iter - 1) * 100 + frame_pct) / max_iter),
+                        ),
+                    )
+                    # Skip the redraw on identical-value re-emissions
+                    # (subagent M3 on PR #52 round 1).
+                    if overall != item.stage_percent:
+                        item.stage_percent = overall
+                        self.update_queue_display()
 
             tracker = _RppgProgressTracker(
                 report_cb=_progress_report, verbose=verbose,
@@ -2089,14 +2326,21 @@ class QueueManager:
                     deadline_extender=tracker_extender,
                 )
             except subprocess.TimeoutExpired:
+                minutes = max(1, int(_TIMEOUT // 60))
                 self.log(
-                    f"rPPG timed out after {_TIMEOUT}s; "
-                    "keeping pre-rPPG video",
-                    "warning",
+                    f"❌ RPPG FAILED — took longer than {minutes} min "
+                    f"and was stopped. Continuing without rPPG; filename "
+                    f"will be marked with -NORPPG.",
+                    "error_bold",
                 )
                 return None
             except Exception as exc:
-                self.log(f"rPPG launcher error: {exc}; keeping pre-rPPG video", "warning")
+                self.log(
+                    f"❌ RPPG FAILED — could not launch the rPPG tool "
+                    f"({type(exc).__name__}: {exc}). Continuing without "
+                    f"rPPG; filename will be marked with -NORPPG.",
+                    "error_bold",
+                )
                 return None
 
             if returncode == 0:
@@ -2132,24 +2376,58 @@ class QueueManager:
                         keep_metrics=keep_metrics,
                         progress_cb=lambda msg, lvl="info": self.log(msg, lvl),
                     )
-                    self.log(f"rPPG injection applied: {final.name}", "success")
+                    self.log(f"rPPG output: {final.name}", "success")
+                    self.log("✅ RPPG DONE", "milestone")
                     return str(final)
                 self.log(
-                    "rPPG process completed but output file was not found; keeping pre-rPPG video",
-                    "warning",
+                    "❌ RPPG FAILED — the rPPG tool finished but no "
+                    "output video was produced. Continuing without "
+                    "rPPG; filename will be marked with -NORPPG.",
+                    "error_bold",
                 )
                 return None
 
+            reason = self._rppg_failure_description(returncode)
             self.log(
-                f"rPPG injection failed (code {returncode}); keeping pre-rPPG video",
-                "warning",
+                f"❌ RPPG FAILED — {reason} Continuing without rPPG; "
+                f"filename will be marked with -NORPPG.",
+                "error_bold",
             )
             if output_lines:
-                self.log(output_lines[-1], "warning")
+                # Tail the last non-empty line for diagnosis. Indent so
+                # it visually belongs to the failure block above and
+                # isn't mistaken for the next stage.
+                self.log(f"   last output: {output_lines[-1]}", "warning")
             return None
         except Exception as e:
-            self.log(f"Error applying rPPG injection: {e}", "warning")
+            self.log(
+                f"❌ RPPG FAILED — unexpected error in queue worker "
+                f"({type(e).__name__}: {e}). Continuing without rPPG; "
+                f"filename will be marked with -NORPPG.",
+                "error_bold",
+            )
             return None
+
+    @staticmethod
+    def _rppg_failure_description(returncode: int) -> str:
+        """Translate a subprocess exit code into plain-English text.
+
+        End users will never know what ``code 1`` means; replace the
+        numeric exit code with a one-sentence description that hints
+        at the actual class of problem. Returncode 0 should never reach
+        here (it's the success path).
+        """
+        if returncode == 1:
+            return "the rPPG processor crashed unexpectedly."
+        if returncode in (124, 137):
+            # 124 = GNU timeout; 137 = SIGKILL (often OOM-killed)
+            return "the rPPG processor was stopped (timeout or out of memory)."
+        if returncode == 2:
+            return "the rPPG processor rejected its arguments (internal bug)."
+        if returncode < 0:
+            # POSIX: returncode = -N means killed by signal N
+            return f"the rPPG processor was killed by signal {-returncode}."
+        return f"the rPPG processor exited unexpectedly (code {returncode})."
 
     def _get_current_prompt(self, config: dict) -> str:
         """Get the current prompt from config."""

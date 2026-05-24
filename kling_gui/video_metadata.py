@@ -41,6 +41,13 @@ _OLDCAM_TAIL_RE = re.compile(r"-oldcam-v(?P<v>\d+)$")
 # oldcam+rPPG chains still associate to their source image.
 # Codex PR #43 P1 finding (3272768118).
 _LOOPED_TAIL_RE = re.compile(r"_looped$")
+# ``-NORPPG`` marker is appended to the raw kling stem by
+# ``kling_gui/queue_manager.py::_mark_norppg`` when rPPG was REQUESTED
+# but its run failed. Sits between the kling tail and any subsequent
+# loop / oldcam suffixes. Strip BEFORE the kling-tail regex so the
+# underlying kling tail still matches (PR #52 round 2 — subagent
+# finding H1, kling_gui/video_metadata.py:247-313).
+_NORPPG_TAIL_RE = re.compile(r"-NORPPG$")
 _RPPG_BARE_TAIL = "-rppg"
 _RPPG_METRIC_PREFIX = "-rppg - "
 _SIMILARITY_RE = re.compile(r"_sim(?P<sim>\d+|na)_\d{3}")
@@ -76,6 +83,11 @@ class VideoMetadata:
     rppg_metrics: Optional[RppgMetrics] = None
     rppg_metrics_source: Optional[str] = None  # "filename" | "sidecar" | None
     has_rppg: bool = False
+    # True when the filename carries the ``-NORPPG`` marker emitted by
+    # ``_mark_norppg`` on a failed-rPPG queue item. Mutually exclusive
+    # with has_rppg (a file can't both have rPPG injected AND carry the
+    # "rPPG was requested but failed" marker).
+    has_norppg: bool = False
     similarity: Optional[int] = None
     similarity_na: bool = False
     raw_suffixes: List[str] = field(default_factory=list)
@@ -122,6 +134,22 @@ def parse_oldcam_segment(stem: str) -> tuple[str, Optional[int]]:
     if m is None:
         return (stem, None)
     return (stem[: m.start()], int(m.group("v")))
+
+
+def parse_norppg_segment(stem: str) -> tuple[str, bool]:
+    """Strip a trailing ``-NORPPG`` marker; return (residual, has_norppg).
+
+    Inserted into the kling stem by ``_mark_norppg`` when an rPPG run
+    was REQUESTED but failed. The marker sits between the kling tail
+    (``_modelshort_pN_M``) and any subsequent loop / oldcam suffixes,
+    so the parser strips it AFTER loop/oldcam (right-to-left) and
+    BEFORE the kling-tail regex (which requires its take digits at
+    end-of-stem).
+    """
+    m = _NORPPG_TAIL_RE.search(stem)
+    if m is None:
+        return (stem, False)
+    return (stem[: m.start()], True)
 
 
 def parse_looped_segment(stem: str) -> tuple[str, bool]:
@@ -280,6 +308,13 @@ def parse_video_filename(path: Path) -> VideoMetadata:
     if is_looped:
         raw_suffixes.append("looped")
 
+    # NORPPG marker sits between the kling tail and the loop/oldcam
+    # chain (see _mark_norppg in queue_manager.py). Strip AFTER loop
+    # so chains like {kling}_p3_1-NORPPG_looped-oldcam-v13 work too.
+    stem, has_norppg = parse_norppg_segment(stem)
+    if has_norppg:
+        raw_suffixes.append("NORPPG")
+
     image_stem, model_short, slot, take = parse_kling_segment(stem)
     similarity, similarity_na = parse_similarity_from_stem(image_stem)
 
@@ -307,6 +342,7 @@ def parse_video_filename(path: Path) -> VideoMetadata:
         rppg_metrics=metrics,
         rppg_metrics_source=metrics_source,
         has_rppg=has_rppg,
+        has_norppg=has_norppg,
         similarity=similarity,
         similarity_na=similarity_na,
         raw_suffixes=raw_suffixes,

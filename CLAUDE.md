@@ -268,10 +268,14 @@ Manual GUI and live provider validation are still required for full end-to-end c
 
 The CLI includes a manifest-driven automated pipeline:
 
-`front_expand -> extract_portrait -> selfie_generate -> similarity_gate -> selfie_expand -> video_generate -> oldcam -> rppg`
+`front_expand -> extract_portrait -> selfie_generate -> similarity_gate -> selfie_expand -> video_generate -> rppg -> oldcam`
 
-(`rppg` is the final, opt-in post-process — runs strictly LAST, after
-`oldcam`; off by default. See "rPPG Injection Wiring" below.)
+(`rppg` is opt-in and runs immediately after `video_generate` per
+the Phase E ordering — same as the GUI queue. The legacy "rPPG
+strictly LAST, after oldcam" arrangement is preserved behind the
+`automation_rppg_per_oldcam_fanout` opt-in flag (default OFF) for
+the rare case where a fresh-pulse oldcam variant is needed. See
+"rPPG Injection Wiring" below.)
 
 Core pipeline modules:
 
@@ -847,17 +851,34 @@ not rejected. v14 / v15 / v24 do **not** use mediapipe; v9 / v10 / v11 do.
 
 Full wiring tables + harness usage: [`docs/rppg-wiring.md`](docs/rppg-wiring.md).
 
-**Pipeline order (NON-NEGOTIABLE):** `Kling → Loop → Oldcam → rPPG`. rPPG runs
-**last** so it sees the oldcam-distorted frames as its source, otherwise the
-pulse signal gets washed by the downstream stages. **Off by default everywhere
-— opt-in only.** Invokes the gitignored `rPPG/` external tool; degrades
-gracefully (skip + log, never crash) when the tool is missing or fails.
+**Pipeline order (Phase E, 2026-05-22):** `Kling → rPPG → Loop → Oldcam`.
+rPPG injects on the raw Kling frames so the per-iter PID stabilizes against
+clean (un-resolution-crushed) source. Loop's ping-pong reverse remains
+physiological because the sub-perceptual amplitude stays well below the
+visibility threshold, and Oldcam's chain preserves the injected pulse.
+The slower legacy "rPPG strictly LAST" (one rPPG'd file per Oldcam
+version) is preserved behind the `rppg_per_oldcam_fanout` opt-in flag
+— default OFF. **rPPG itself is OFF by default everywhere — opt-in only.**
+Invokes the `rPPG/` tool; degrades gracefully (skip + log, never crash)
+when the tool is missing or fails. On graceful skip the GUI queue
+inserts a `-NORPPG` marker into the filename so the final delivered
+video unambiguously reflects that rPPG was REQUESTED but did NOT land.
 
 **Injector contract gotcha you WILL hit:** `--output` is NOT honoured
 deterministically — the injector renames its output to
 `{stem}-rppg - <metrics>{ext}`. Always resolve the real file via
 `automation.rppg.resolve_produced_output()` — single source of truth used by
 both the GUI queue and the test harness.
+
+**Injector contract gotcha #2 (PR `fix/rppg-failure-visibility`):** the
+iterative loop's "best so far" temp file (`temp_iteration_N.mp4`) can be
+pruned mid-loop, causing the final `shutil.copy2` at
+`rPPG/rppg_injector.py:4562` to crash with `FileNotFoundError`. The
+defensive fix in that PR snapshots the current best to a stable name
+(`best_iteration_snapshot.mp4` in the injector cwd) at every
+`_is_new_best` transition and cleans it up at end-of-run. Don't remove
+the snapshot logic — root cause of the mid-loop deletion is still
+unknown.
 
 **Validation rig:** `oldcam-testing/rppg_harness.py` + `run_rppg_harness.bat`
 run the real injector against a permanent gitignored fixture and emit an

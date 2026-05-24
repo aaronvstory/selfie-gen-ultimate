@@ -3573,6 +3573,26 @@ class PhaseAlignedRPPGManipulator:
         """
         c = self._c
 
+        # Stable filename for the "best so far" iter snapshot. Re-copied
+        # every time a new best is picked (see _is_new_best block below).
+        # Cleaned up alongside the numbered temp files at end-of-run.
+        #
+        # IMPORTANT cwd contract: this is a BARE RELATIVE path. The
+        # subprocess that runs this injector is always launched with
+        # `cwd=rPPG/` (confirmed at the three known invocation paths:
+        # GUI queue → kling_gui/queue_manager.py::_rppg_video,
+        # automation pipeline → automation/rppg.py::run_rppg with
+        # `cwd=str(launcher.parent)`, and oldcam-testing harness →
+        # oldcam-testing/rppg_harness.py with the same `launcher.parent`
+        # cwd). The post-loop cleanup at line ~4636 compares this name
+        # against `output_path` (absolute) and `video_path` (absolute);
+        # they never compare equal, so the snapshot is deleted
+        # unconditionally — which is correct because the snapshot is
+        # intermediate. Don't make `_BEST_SNAPSHOT_NAME` resolve to the
+        # same file as `output_path` without also updating the cleanup
+        # guard to handle the absolute/relative comparison properly.
+        _BEST_SNAPSHOT_NAME = "best_iteration_snapshot.mp4"
+
         current_path = video_path
         deband_temp = None
         if legacy_pipeline:
@@ -4413,7 +4433,32 @@ class PhaseAlignedRPPGManipulator:
             _is_new_best = score > best_score
             if _is_new_best:
                 best_score = score
-                best_path = iter_output_path
+                # Snapshot the new best iter to a stable name so the
+                # post-loop face-coherence + final copy can find it
+                # even if interim cleanup prunes the numbered
+                # temp_iteration_N.mp4 file before the loop ends. The
+                # snapshot lives in cwd (rPPG/) alongside the temp
+                # files and is cleaned up in the post-loop cleanup
+                # block. Empirically observed (PR fix/rppg-failure-
+                # visibility) that the "best" iter's temp file
+                # vanishes mid-loop on iterative + iterate-from-base
+                # runs; root cause unknown but defensive snapshot is
+                # cheap and immune to it.
+                try:
+                    if os.path.exists(iter_output_path):
+                        shutil.copy2(iter_output_path, _BEST_SNAPSHOT_NAME)
+                        best_path = _BEST_SNAPSHOT_NAME
+                    else:
+                        best_path = iter_output_path
+                except OSError as exc:
+                    print(c(
+                        f"  Warning: could not snapshot best iter "
+                        f"{iteration} ({type(exc).__name__}: {exc}); "
+                        f"using direct path (vulnerable to mid-loop "
+                        f"cleanup).",
+                        'Y',
+                    ))
+                    best_path = iter_output_path
                 best_iter = iteration
                 best_metrics = dict(m)
                 best_params = params
@@ -4598,6 +4643,10 @@ class PhaseAlignedRPPGManipulator:
         # on success; this catches the unkept ones plus any defensive misses.
         cleanup_paths = [info['path'] for info in iter_files.values()]
         cleanup_paths.append(deband_temp)
+        # The best-iter snapshot maintained during the loop (paired with the
+        # snapshot logic at the _is_new_best site). Already copied to
+        # output_path by the finalize step above; safe to remove.
+        cleanup_paths.append(_BEST_SNAPSHOT_NAME)
         for f in cleanup_paths:
             if f and f != output_path and f != video_path and os.path.exists(f):
                 try:

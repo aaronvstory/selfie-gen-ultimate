@@ -3695,6 +3695,16 @@ class KlingGUIWindow:
                 "warning": self.logger.warning,
                 "error": self.logger.error,
                 "debug": self.logger.debug,
+                # Explicit so ❌ RPPG FAILED banners land in the file
+                # log at ERROR level — anyone grepping `kling_gui.log`
+                # for ERROR/WARNING during triage would otherwise miss
+                # them entirely (subagent M1 on PR #52 round 1).
+                "error_bold": self.logger.error,
+                # Milestones are positive informational events; INFO is
+                # the right file-log level. Explicit map keeps the
+                # intent obvious vs. relying on the .get(level, info)
+                # fallback.
+                "milestone": self.logger.info,
             }
             level_map.get(level, self.logger.info)(message)
 
@@ -3722,7 +3732,12 @@ class KlingGUIWindow:
                 text=f"📋 QUEUE ({stats['pending'] + stats['processing']}/50)"
             )
 
-            # Add items to listbox
+            # Add items to listbox. When an item is mid-pipeline,
+            # synthesize a unicode progress bar from
+            # (item.stage, item.stage_percent) so the user can see
+            # which stage is running and roughly how far along it is.
+            # Stages: queued/kling/rppg/loop/oldcam/done/failed.
+            ACTIVE_STAGES = {"kling", "rppg", "loop", "oldcam"}
             for item in items:
                 status_icon = {
                     "pending": "⏳",
@@ -3731,7 +3746,30 @@ class KlingGUIWindow:
                     "failed": "❌",
                 }.get(item.status, "?")
 
-                display = f"{status_icon} {item.filename}"
+                stage = getattr(item, "stage", "queued")
+                pct = max(0, min(100, getattr(item, "stage_percent", 0)))
+                # Gate on `stage`, NOT `item.status`. The queue worker
+                # flips status="completed" right after Kling generation
+                # and BEFORE rPPG/loop/oldcam run (queue_manager.py
+                # line ~1212), so a `status == "processing"` gate would
+                # hide the bar during the very post-processing stages
+                # the user most wants to track. Codex P2 on PR #52
+                # round 1 caught this.
+                if stage in ACTIVE_STAGES:
+                    BAR_WIDTH = 12
+                    filled = int(BAR_WIDTH * pct / 100)
+                    bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+                    # During post-process stages the row icon stays at
+                    # 🔄 even though status flipped to "completed" — the
+                    # post-processing pipeline isn't done yet from the
+                    # user's perspective. Override the icon here so the
+                    # row visually matches the bar.
+                    display = (
+                        f"🔄 {item.filename}  "
+                        f"[{bar}] {stage} {pct}%"
+                    )
+                else:
+                    display = f"{status_icon} {item.filename}"
                 if item.status == "failed":
                     display += " [RETRY]"
 

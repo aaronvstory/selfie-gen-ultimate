@@ -87,13 +87,18 @@ def _p2p(sig: list[float]) -> float:
     return (max(sig) - min(sig)) if sig else 0.0
 
 
-def run_injector(src: Path, out: Path, *, iterative: bool = True) -> int:
+def run_injector(
+    src: Path, out: Path, *, iterative: bool = True, landmark_stride: int = 3,
+) -> int:
     """Direct injector call (bypasses automation.rppg).
 
     Defaults to iterative mode + iterate-from-baseline + skip-diagnosis
-    + skip-kinematic-gate to match the production wiring set in
-    automation/rppg.py::run_rppg (PR #43). Pass ``iterative=False`` for
-    one-shot back-to-back calibration.
+    + skip-kinematic-gate + landmark-stride=3 to match the production
+    wiring set in automation/rppg.py::run_rppg. Pass ``iterative=False``
+    for one-shot back-to-back calibration; ``landmark_stride=1`` to
+    A/B against the injector's default per-frame detection (only
+    matters for fast-motion sources — see the rPPG injector's
+    --landmark-stride help).
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -108,6 +113,12 @@ def run_injector(src: Path, out: Path, *, iterative: bool = True) -> int:
         cmd.append("--iterate-from-baseline")
         cmd.append("--skip-diagnosis")
     cmd.append("--skip-kinematic-gate")
+    try:
+        stride = max(1, int(landmark_stride))
+    except (TypeError, ValueError):
+        stride = 3
+    if stride > 1:
+        cmd.extend(["--landmark-stride", str(stride)])
     print(f"[harness] running: {subprocess.list2cmdline(cmd)}", flush=True)
     # Drain stdout via the shared reader-thread + hard wall-clock helper
     # (single source of truth with the GUI queue and automation pipeline).
@@ -131,7 +142,7 @@ def run_injector(src: Path, out: Path, *, iterative: bool = True) -> int:
     return rc
 
 
-def run_chain(src: Path, *, iterative: bool = True) -> Path:
+def run_chain(src: Path, *, iterative: bool = True, landmark_stride: int = 3) -> Path:
     """Full GUI pipeline order: Loop -> Oldcam(v24) -> rPPG, via the
     automation modules so the harness exercises the real wiring."""
     sys.path.insert(0, str(REPO_ROOT))
@@ -175,6 +186,7 @@ def run_chain(src: Path, *, iterative: bool = True) -> Path:
         repo_root=REPO_ROOT,
         progress_cb=_cb,
         iterative=iterative,
+        landmark_stride=landmark_stride,
     )
     if not rp:
         raise SystemExit("[harness] rPPG produced no output in chain mode")
@@ -185,6 +197,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--chain", action="store_true", help="run full Loop->Oldcam->rPPG chain")
     ap.add_argument("--skip-run", action="store_true", help="analyse an existing output only")
+    ap.add_argument(
+        "--landmark-stride",
+        type=int,
+        default=3,
+        help=(
+            "Forward to the rPPG injector's --landmark-stride flag "
+            "(default 3, matching production wiring). Pass 1 to A/B "
+            "against per-frame detection on a fast-motion source."
+        ),
+    )
     ap.add_argument(
         "--one-shot",
         action="store_true",
@@ -211,10 +233,19 @@ def main() -> int:
             # reads automation_rppg_mode from config — but the harness
             # runs without a project config, so we pass the explicit
             # iterative kwarg via the harness's own --one-shot toggle.
-            produced = run_chain(FIXTURE, iterative=not args.one_shot)
+            produced = run_chain(
+                FIXTURE,
+                iterative=not args.one_shot,
+                landmark_stride=args.landmark_stride,
+            )
             out_video = Path(produced)
         else:
-            rc = run_injector(FIXTURE, out_video, iterative=not args.one_shot)
+            rc = run_injector(
+                FIXTURE,
+                out_video,
+                iterative=not args.one_shot,
+                landmark_stride=args.landmark_stride,
+            )
             if rc != 0:
                 print(f"[harness] injector failed (rc={rc})", file=sys.stderr)
                 return 1

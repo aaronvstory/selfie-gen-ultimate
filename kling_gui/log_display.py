@@ -30,6 +30,14 @@ COLORS = {
     "resize": "#DDA0DD",      # Plum for resize operations
     "download": "#98FB98",    # Pale green for downloads
     "api": "#DA70D6",         # Orchid for API calls
+    # Stage-completion milestone lines (✅ RPPG DONE, ✅ OLDCAM v13 DONE,
+    # ✅ ALL POSTPROCESS DONE) — bright cyan + bold so they stand out
+    # against the routine info/success/warning chatter.
+    "milestone": "#00FFFF",
+    # ❌ RPPG FAILED-style high-priority error banners — vivid red
+    # rendered bold so the user sees the failure even with the log
+    # autoscrolled to the bottom mid-run.
+    "error_bold": "#FF3030",
 }
 
 
@@ -43,7 +51,7 @@ class LogDisplay(tk.Frame):
         header = tk.Label(
             self,
             text="PROCESSING LOG",
-            font=("Segoe UI", 9, "bold"),
+            font=("Segoe UI", 10, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"]
         )
@@ -56,12 +64,15 @@ class LogDisplay(tk.Frame):
         self.scrollbar = ttk.Scrollbar(self.text_frame)
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # Font sizing: user feedback PR fix/rppg-failure-visibility —
+        # the original 9pt was "very hard to read." 11pt sits in the
+        # comfortable Tk mono range without forcing a layout overhaul.
         self.text = tk.Text(
             self.text_frame,
             wrap=tk.WORD,
             bg=COLORS["bg_main"],
             fg=COLORS["text_light"],
-            font=(FONT_MONO, 9),
+            font=(FONT_MONO, 11),
             state=tk.DISABLED,
             yscrollcommand=self.scrollbar.set,
             padx=4,
@@ -86,6 +97,21 @@ class LogDisplay(tk.Frame):
         self.text.tag_configure("resize", foreground=COLORS["resize"])
         self.text.tag_configure("download", foreground=COLORS["download"])
         self.text.tag_configure("api", foreground=COLORS["api"])
+        # Stage-completion milestones — bold + slightly larger so the
+        # ✅ RPPG DONE / ✅ OLDCAM v13 DONE / ✅ ALL POSTPROCESS DONE
+        # lines stand out in a crowded log.
+        self.text.tag_configure(
+            "milestone",
+            foreground=COLORS["milestone"],
+            font=(FONT_MONO, 12, "bold"),
+        )
+        # ❌ RPPG FAILED-style banners — bold red so the user can spot a
+        # silent-failure path even when the log autoscrolled past it.
+        self.text.tag_configure(
+            "error_bold",
+            foreground=COLORS["error_bold"],
+            font=(FONT_MONO, 11, "bold"),
+        )
 
     def log(self, message: str, level: str = "info"):
         """

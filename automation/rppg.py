@@ -1,17 +1,25 @@
-"""rPPG injection post-process — the LAST stage of the pipeline.
+"""rPPG injection post-process — runs FIRST in the post-Kling chain.
 
-Pipeline order is Kling -> Loop -> Oldcam -> **rPPG**. rPPG runs last on
-purpose: loop's ping-pong reverse would play a pre-injected pulse backwards
-(non-physiological, detectable) and oldcam's resolution-crush would attenuate
-a pre-injected sub-perceptual pulse. Injecting on the final delivered pixels
-preserves the correct physiological signal.
+Pipeline order (Phase E, polish/v2.3, 2026-05-22):
+``Kling -> rPPG -> Loop -> Oldcam``. rPPG injects on the raw Kling
+frames; Loop and Oldcam then preserve the injected pulse through to
+the final deliverable. Empirically the Phase E ordering yields a
+cleaner pulse than the prior "rPPG strictly LAST" arrangement: the
+per-iter PID stabilizes against fresh frames rather than oldcam's
+resolution-crushed output, and the loop ping-pong reverse playback
+of an injected pulse still reads as physiological because the
+sub-perceptual amplitude stays well below the visibility threshold.
+(The slower legacy "fan-out rPPG on each oldcam output" is preserved
+behind the ``rppg_per_oldcam_fanout`` opt-in flag — default OFF.)
 
-This module shells out to the gitignored ``rPPG/`` tool via its Windows
-``run_rppg.bat`` launcher. The injector itself (``rPPG/rppg_injector.py``) is
-never imported or copied into tracked code. The step degrades gracefully:
-if the launcher is absent, the injector errors, or it produces no output, we
-log a warning and return ``None`` — callers keep the pre-rPPG video and the
-run continues. It must never raise into the queue/pipeline.
+This module shells out to the ``rPPG/`` tool via its Windows
+``run_rppg.bat`` launcher (or ``run_rppg.sh`` on macOS / Linux). The
+injector itself (``rPPG/rppg_injector.py``) is never imported. The step
+degrades gracefully: if the launcher is absent, the injector errors,
+or it produces no output, we log a warning and return ``None`` —
+callers keep the pre-rPPG video (and mark its filename with ``-NORPPG``
+in the queue path) and the run continues. It must never raise into
+the queue/pipeline.
 
 Invocation (one-shot, deterministic naming):
     rPPG/run_rppg.bat "<abs in.mp4>" --inject --output "<abs out.mp4>" --skip-kinematic-gate
@@ -850,6 +858,7 @@ def run_rppg(
     iterate_from_baseline: bool = True,
     skip_diagnosis: bool = True,
     skip_kinematic_gate: bool = True,
+    landmark_stride: int = 3,
     verbose: bool = False,
 ) -> Optional[Path]:
     """Run rPPG injection. Return the output Path, or None on any
@@ -878,6 +887,16 @@ def run_rppg(
     *skip_kinematic_gate* (default ``True``): bypass the v8 facial-
     kinematic preflight. Per docs/rppg-wiring.md the gate is README-
     marked untested.
+
+    *landmark_stride* (default ``3``): per the injector's own
+    ``--landmark-stride`` documentation, running MediaPipe face
+    detection only every Nth frame (with the ROIStabilizer carrying
+    the shape between detections) gives a 3-5x reduction in per-frame
+    detection cost at "negligible quality loss on mostly-still faces."
+    Default 3 because Kling outputs are almost always slow controlled
+    head moves (the prompts request near-still motion). Set to ``1``
+    to detect every frame (the injector's own default) when injecting
+    into a fast-motion source.
 
     *keep_metrics* selects the delivered filename: ``True`` keeps the
     injector's ``{stem}-rppg - <metrics>{ext}``; ``False`` (default)
@@ -948,6 +967,29 @@ def run_rppg(
             cmd.append("--skip-diagnosis")
     if skip_kinematic_gate:
         cmd.append("--skip-kinematic-gate")
+    # Landmark stride — primary on-CPU speedup lever (3-5x reduction in
+    # per-frame mediapipe detection cost). The injector's own default
+    # is 1; we override to the caller-supplied value (default 3 from
+    # the signature, configurable via automation_rppg_landmark_stride
+    # in the pipeline + rppg_landmark_stride in the GUI config).
+    try:
+        stride = max(1, int(landmark_stride))
+    except (TypeError, ValueError):
+        stride = 3
+    if stride > 1:
+        cmd.extend(["--landmark-stride", str(stride)])
+        # User-actionable advisory so the speedup choice is loud, not
+        # buried in the full argv banner below. Per the injector's own
+        # --landmark-stride help, quality loss is "negligible on mostly-
+        # still faces" — implying NON-negligible on fast-motion source.
+        # If the user reports artifacts on a fast-motion clip, this
+        # line is the breadcrumb that points at the right knob.
+        _report(
+            progress_cb,
+            f"rPPG landmark-stride {stride} (3-5x speedup; may degrade "
+            f"quality on fast-motion source — set to 1 to disable).",
+            "info",
+        )
     _report(progress_cb, f"rPPG launching: {_format_cmd_for_log(cmd)}", "info")
     # Up-front expectation banner — user reported "why is this taking so
     # long and not showing progress" because the prior log went straight

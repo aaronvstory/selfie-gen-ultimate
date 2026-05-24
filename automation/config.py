@@ -95,7 +95,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_oldcam_enabled": True,
     "automation_oldcam_version": "v24",
     "automation_oldcam_required": True,
-    # rPPG injection (runs LAST: Kling -> Loop -> Oldcam -> rPPG). Installs a
+    # rPPG injection (Phase E: Kling -> rPPG -> Loop -> Oldcam). Installs a
     # physiologically-correct, sub-perceptual pulse so Persona's passive rPPG
     # stage sees a real signal instead of "weak/deformed rPPG". DEFAULT OFF:
     # this is the genuinely-untried forward direction, not yet production-
@@ -127,6 +127,18 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_rppg_iterate_from_baseline": True,
     "automation_rppg_skip_diagnosis": True,
     "automation_rppg_skip_kinematic_gate": True,
+    # Landmark-detection stride for the rPPG injector. Per its own
+    # --landmark-stride documentation, running MediaPipe face landmark
+    # detection only every Nth frame (with the ROIStabilizer carrying
+    # the shape between detections) gives a 3-5x reduction in per-frame
+    # detection cost at "negligible quality loss on mostly-still faces."
+    # Kling outputs are slow controlled head moves so stride 3 is the
+    # safe sweet spot — measurable per-iter speedup without touching
+    # the pulse-injection correctness path. Set to 1 to detect every
+    # frame (the injector's own default) when injecting into a
+    # fast-motion source. The GUI also accepts the bare
+    # ``rppg_landmark_stride`` alias for this same value.
+    "automation_rppg_landmark_stride": 3,
     "automation_rppg_required": False,
     # When False (default) the injector's metric-suffixed filename
     # ("{stem}-rppg - <SNR>-<Phase>-<Temporal>-<Motion>-<Harmonic>{ext}")

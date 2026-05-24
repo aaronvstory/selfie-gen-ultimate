@@ -1255,6 +1255,14 @@ class AutoPipelineRunner:
                 skip_diagnosis = self._read_bool("automation_rppg_skip_diagnosis", True)
                 skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
                 keep_metrics = self._read_bool("automation_rppg_metrics_in_filename", False)
+                # _read_int is the safe coercion helper (used by every
+                # other automation_*_int key). The naive `int(... or 3)`
+                # form would crash the pipeline mid-case on a stringy
+                # config value AND silently rewrite a legitimate ``0``
+                # to the default 3. (Subagent HIGH on PR #52 round 3.)
+                landmark_stride = self._read_int(
+                    "automation_rppg_landmark_stride", 3, min_value=1,
+                )
                 injected = run_rppg(
                     video_path=video_out_path,
                     repo_root=Path(__file__).resolve().parent.parent,
@@ -1264,6 +1272,7 @@ class AutoPipelineRunner:
                     iterate_from_baseline=iterate_from_baseline,
                     skip_diagnosis=skip_diagnosis,
                     skip_kinematic_gate=skip_kinematic_gate,
+                    landmark_stride=landmark_stride,
                 )
                 if injected and injected.exists():
                     rppg_base_path = injected
@@ -1393,6 +1402,11 @@ class AutoPipelineRunner:
             iterate_from_baseline = self._read_bool("automation_rppg_iterate_from_baseline", True)
             skip_diagnosis = self._read_bool("automation_rppg_skip_diagnosis", True)
             skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
+            # _read_int safety wrapper (see Step 6 site above) —
+            # subagent HIGH on PR #52 round 3.
+            landmark_stride = self._read_int(
+                "automation_rppg_landmark_stride", 3, min_value=1,
+            )
 
             # Phase E of polish/v2.3 (2026-05-22): the BASE rPPG pass
             # already ran BEFORE Step 7 (Oldcam), so each oldcam output
@@ -1531,6 +1545,7 @@ class AutoPipelineRunner:
                         iterate_from_baseline=iterate_from_baseline,
                         skip_diagnosis=skip_diagnosis,
                         skip_kinematic_gate=skip_kinematic_gate,
+                        landmark_stride=landmark_stride,
                         verbose=self.verbose_logging,
                     )
                     if out and out.exists():

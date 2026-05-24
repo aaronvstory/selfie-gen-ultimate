@@ -161,6 +161,64 @@ def test_skip_kinematic_gate_can_be_disabled(
     assert "--skip-kinematic-gate" not in cmd
 
 
+def test_landmark_stride_default_is_emitted(
+    tmp_path, _stub_launcher, _stub_subprocess,
+):
+    """Default landmark_stride=3 must materialise as ``--landmark-stride 3``
+    in the injector argv. This is the user-asked speedup lever for the
+    on-CPU macOS path (PR fix/rppg-failure-visibility v2.5) and any
+    regression that drops the flag silently reverts the run time back
+    to the stride=1 baseline."""
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(video_path=inp, repo_root=tmp_path)
+    cmd = _stub_subprocess[0]
+    assert "--landmark-stride" in cmd
+    idx = cmd.index("--landmark-stride")
+    assert cmd[idx + 1] == "3"
+
+
+def test_landmark_stride_one_omits_flag(
+    tmp_path, _stub_launcher, _stub_subprocess,
+):
+    """Stride 1 == "detect every frame", the injector's own default.
+    The wrapper should NOT emit the flag in this case (keeps the cmd
+    visually identical to the canonical rPPG/rppg.bat reference and
+    makes A/B comparisons against the stride=1 baseline trivial)."""
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(video_path=inp, repo_root=tmp_path, landmark_stride=1)
+    cmd = _stub_subprocess[0]
+    assert "--landmark-stride" not in cmd
+
+
+def test_landmark_stride_invalid_input_falls_back_to_default(
+    tmp_path, _stub_launcher, _stub_subprocess,
+):
+    """The pipeline reads landmark_stride from a JSON config that may
+    contain user typos (None, "", "fast"). run_rppg must coerce-or-
+    default rather than crash the queue worker on a bad value."""
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(video_path=inp, repo_root=tmp_path, landmark_stride="bad")  # type: ignore[arg-type]
+    cmd = _stub_subprocess[0]
+    assert "--landmark-stride" in cmd
+    idx = cmd.index("--landmark-stride")
+    assert cmd[idx + 1] == "3"
+
+
+def test_landmark_stride_negative_int_floors_to_one(
+    tmp_path, _stub_launcher, _stub_subprocess,
+):
+    """A negative stride is meaningless (`max(1, int(-5)) == 1`). The
+    wrapper must NOT emit the flag in that case (stride 1 == injector
+    default; emitting it would just be confusing log noise).
+    Subagent MEDIUM on PR #52 round 3 — locks in the behaviour so a
+    future refactor that adds a different floor doesn't silently
+    regress to passing a nonsense negative."""
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(video_path=inp, repo_root=tmp_path, landmark_stride=-5)
+    cmd = _stub_subprocess[0]
+    assert "--landmark-stride" not in cmd
+
+
 def _make_extender_capturing_stub(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Captures deadline_extender (in addition to cmd) so tests can assert on it."""
     captured: dict = {}
