@@ -176,6 +176,68 @@ def test_is_playable_video_timeout_rejects_when_secondary_says_corrupt(
     )
 
 
+def test_quarantine_blacklists_on_rename_failure(monkeypatch, tmp_path: Path):
+    """PR #53 round 6 (reviewer blocker): when path.replace fails
+    (Windows file-handle contention is the common case), the corrupt
+    file's absolute path must be added to the in-memory blacklist so
+    subsequent resolve_produced_output passes skip it instead of
+    re-running 180s ffprobe on it.
+    """
+    # Clean blacklist for test isolation.
+    rppg_mod._corrupt_blacklist.clear()
+
+    victim = tmp_path / "clip-rppg.mp4"
+    victim.write_bytes(b"junk")
+
+    def fail_replace(self, _target):
+        raise PermissionError("simulated Windows handle contention")
+
+    monkeypatch.setattr(
+        "pathlib.Path.replace", fail_replace, raising=True,
+    )
+
+    rppg_mod._quarantine_corrupt(victim)
+    # Even though the rename failed, the path is now blacklisted.
+    assert rppg_mod._is_blacklisted(victim) is True
+
+
+def test_resolve_skips_blacklisted_without_calling_playability_gate(
+    monkeypatch, tmp_path: Path,
+):
+    """PR #53 round 6: the resolver loop short-circuits on blacklisted
+    candidates BEFORE the expensive _is_playable_video call. Without
+    this, a locked corrupt file would eat 180s of ffprobe per
+    resolver invocation forever in this process.
+    """
+    rppg_mod._corrupt_blacklist.clear()
+
+    older = tmp_path / "clip-rppg.mp4"
+    _touch_mp4(older, mtime_offset=-100.0)
+    newer = tmp_path / "clip-rppg - 9.0-3.0-0.5-0.1-0.5.mp4"
+    _touch_mp4(newer, mtime_offset=+100.0)
+
+    # Pre-blacklist the newer file.
+    rppg_mod._blacklist(newer)
+
+    # Track whether the gate was called on the blacklisted candidate.
+    calls: list[Path] = []
+
+    def tracked_playable(path, **_kw):
+        calls.append(path)
+        return True
+
+    monkeypatch.setattr(rppg_mod, "_is_playable_video", tracked_playable)
+
+    result = rppg_mod.resolve_produced_output(older)
+    # The blacklisted candidate is skipped; the older one is checked
+    # and returned.
+    assert result is not None
+    assert str(result) == str(older)
+    # _is_playable_video was called once (on `older`), NOT on `newer`.
+    assert len(calls) == 1
+    assert str(calls[0]) == str(older)
+
+
 def test_is_playable_video_detects_nal_errors(monkeypatch, tmp_path: Path):
     """`_is_playable_video` recognises the H.264 NAL-corruption
     signatures the user reported in their bug.

@@ -593,8 +593,15 @@ class OutpaintGenerator:
                 pass
             return None
 
-        final_canvas_w = orig_full.width + expand_left + expand_right
-        final_canvas_h = orig_full.height + expand_top + expand_bottom
+        # Preserve the unclamped dimensions so the M1 clamp log can
+        # show "<unclamped> -> <clamped>" cleanly. PR #53 round 6
+        # (reviewer): the prior log reconstructed the unclamped width
+        # via `int(_final_mp * 1_000_000 / max(1, final_canvas_h))`,
+        # which is mathematically correct but unnecessarily indirect.
+        unclamped_w = orig_full.width + expand_left + expand_right
+        unclamped_h = orig_full.height + expand_top + expand_bottom
+        final_canvas_w = unclamped_w
+        final_canvas_h = unclamped_h
         # Subagent M1 round 5: clamp the final canvas to a sane envelope
         # so a user that types huge pixel margins doesn't OOM the
         # process via PIL's LANCZOS resize (it allocates the
@@ -612,15 +619,13 @@ class OutpaintGenerator:
         # higher quality than the previous downscaled-upload paste,
         # just not raw input quality at extreme margin sizes).
         _FINAL_CANVAS_MP_CAP = 100.0
-        _final_mp = (final_canvas_w * final_canvas_h) / 1_000_000.0
+        _final_mp = (unclamped_w * unclamped_h) / 1_000_000.0
         composite_margins = (
             expand_left, expand_right, expand_top, expand_bottom,
         )
         if _final_mp > _FINAL_CANVAS_MP_CAP:
             import math as _math
             _scale = _math.sqrt(_FINAL_CANVAS_MP_CAP / _final_mp)
-            _clamped_w = max(1, int(final_canvas_w * _scale))
-            _clamped_h = max(1, int(final_canvas_h * _scale))
             scaled_orig_w = max(1, int(orig_full.width * _scale))
             scaled_orig_h = max(1, int(orig_full.height * _scale))
             try:
@@ -651,14 +656,13 @@ class OutpaintGenerator:
             final_canvas_h = scaled_orig_h + composite_margins[2] + composite_margins[3]
             self._report(
                 (
-                    f"Final canvas {int(_final_mp * 1_000_000 / max(1, final_canvas_h)):d}x"
-                    f"{final_canvas_h} -> "
-                    f"{final_canvas_w}x{final_canvas_h} ({_FINAL_CANVAS_MP_CAP:.0f} "
-                    f"MP envelope clamp); orig_full + margins "
-                    f"proportionally scaled by {_scale:.3f}. "
-                    "If you need the full-margin canvas at original "
-                    "resolution, reduce the expand margins or chain a "
-                    "second pass (Run 2x)."
+                    f"Final canvas {unclamped_w}x{unclamped_h} "
+                    f"({_final_mp:.1f} MP) -> {final_canvas_w}x{final_canvas_h} "
+                    f"({_FINAL_CANVAS_MP_CAP:.0f} MP envelope clamp); "
+                    f"orig_full + margins proportionally scaled by "
+                    f"{_scale:.3f}. If you need the full-margin canvas "
+                    "at original resolution, reduce the expand margins "
+                    "or chain a second pass (Run 2x)."
                 ),
                 "warning",
             )

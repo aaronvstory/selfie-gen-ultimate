@@ -156,19 +156,19 @@ _corrupt_blacklist: set[str] = set()
 
 
 def _is_blacklisted(path: Path) -> bool:
-    """True if *path*'s absolute path is in the corrupt blacklist."""
+    """True if *path*'s absolute form is in the corrupt blacklist."""
     try:
-        return os.fspath(path.resolve()) in _corrupt_blacklist
+        return str(path.resolve()) in _corrupt_blacklist
     except OSError:
-        return os.fspath(path) in _corrupt_blacklist
+        return str(path) in _corrupt_blacklist
 
 
 def _blacklist(path: Path) -> None:
     """Add *path*'s absolute form to the corrupt blacklist."""
     try:
-        _corrupt_blacklist.add(os.fspath(path.resolve()))
+        _corrupt_blacklist.add(str(path.resolve()))
     except OSError:
-        _corrupt_blacklist.add(os.fspath(path))
+        _corrupt_blacklist.add(str(path))
 
 
 def _is_playable_secondary(
@@ -384,11 +384,25 @@ def _quarantine_corrupt(path: Path, progress_cb: ProgressCB = None) -> None:
             f"{quarantine.name} (ffprobe validation failed)",
             "warning",
         )
-    except OSError:
-        # If we can't rename it, deleting is worse than leaving it —
-        # the resolver will keep skipping it as long as the playability
-        # gate keeps returning False.
-        pass
+    except OSError as exc:
+        # Rename failed (Windows file-handle contention is the common
+        # case — Defender / Explorer / a still-running injector child
+        # holds the file). PR #53 round 6 (reviewer): we WIRED the
+        # in-memory _corrupt_blacklist for exactly this case but the
+        # earlier round forgot to actually CALL _blacklist here, so
+        # the next resolve_produced_output pass would re-pick the
+        # corrupt file and re-run the 180s ffprobe check on it. Now
+        # the file's absolute path is recorded so subsequent resolver
+        # passes skip it before the expensive validation.
+        _blacklist(path)
+        _report(
+            progress_cb,
+            f"rPPG: could not quarantine corrupt candidate {path.name} "
+            f"({type(exc).__name__}: {exc}); added to in-memory "
+            f"blacklist so the resolver skips it on subsequent passes "
+            f"this session. Restart the process to clear the blacklist.",
+            "warning",
+        )
 
 
 def resolve_produced_output(
@@ -423,9 +437,13 @@ def resolve_produced_output(
     ext = requested.suffix
     parent = requested.parent
     if not parent.is_dir():
-        if requested.exists() and _is_playable_video(requested, progress_cb=progress_cb):
-            return requested
         if requested.exists():
+            # Skip if blacklisted from a prior failed-quarantine pass
+            # in the same process (PR #53 round 6).
+            if _is_blacklisted(requested):
+                return None
+            if _is_playable_video(requested, progress_cb=progress_cb):
+                return requested
             _quarantine_corrupt(requested, progress_cb)
         return None
     # The injector's rename is specifically "<stem> - <metrics><ext>" with a
@@ -454,6 +472,15 @@ def resolve_produced_output(
         reverse=True,
     )
     for cand in candidates:
+        # PR #53 round 6 (reviewer): skip blacklisted candidates BEFORE
+        # the expensive _is_playable_video call. The blacklist is
+        # populated when _quarantine_corrupt's rename failed (Windows
+        # handle-contention typically). Without this short-circuit,
+        # in rppg_per_oldcam_fanout mode a locked corrupt file would
+        # eat 180s of ffprobe per resolver invocation, per oldcam
+        # version — multi-minute stalls.
+        if _is_blacklisted(cand):
+            continue
         if _is_playable_video(cand, progress_cb=progress_cb):
             return cand
         _quarantine_corrupt(cand, progress_cb)
