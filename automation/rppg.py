@@ -164,6 +164,16 @@ def _is_playable_video(
     with a one-time warning on stderr — we'd rather ship POSSIBLY-broken
     than ship NOTHING just because the validator is unavailable on this
     machine. macOS dev + Windows release builds both bundle ffprobe.
+
+    Timeout semantics (Codex P2 PR #53 round 4): we fail-OPEN on
+    timeout. NAL corruption is detected by ACTIVE stderr error patterns;
+    a timeout means "ffprobe took too long to validate", which is
+    ambiguous (could be a legit long/high-bitrate video, could be a
+    real hang). Quarantining on timeout previously caused a successful
+    injection of a long clip to silently fall back to ``-NORPPG``.
+    Failing open preserves the user's deliverable — if the file IS
+    corrupt they'll notice on play. The base timeout was also bumped
+    60s -> 180s to give 3x more headroom for typical Kling output.
     """
     try:
         proc = subprocess.run(
@@ -176,7 +186,7 @@ def _is_playable_video(
             ],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=180,
         )
     except FileNotFoundError:
         if not getattr(_is_playable_video, "_warned_missing", False):
@@ -193,8 +203,23 @@ def _is_playable_video(
             _report(progress_cb, warn_msg, "warning")
             _is_playable_video._warned_missing = True  # type: ignore[attr-defined]
         return True
-    except (subprocess.TimeoutExpired, OSError):
-        return False
+    except subprocess.TimeoutExpired:
+        # Fail-OPEN (return True). See docstring rationale. Surface
+        # the timeout so it's debuggable.
+        timeout_msg = (
+            f"[rppg] playability gate timed out validating "
+            f"{path.name} (180s); accepting as playable. "
+            f"If the final video is actually corrupt, re-run with "
+            f"a longer ffprobe timeout or inspect manually."
+        )
+        print(timeout_msg, file=sys.stderr)
+        _report(progress_cb, timeout_msg, "warning")
+        return True
+    except OSError:
+        # Real ffprobe invocation failure (binary corrupt, permission
+        # denied). Treat as gate-unavailable, fail-open same as the
+        # FileNotFoundError branch.
+        return True
     if proc.returncode != 0:
         return False
     stderr = proc.stderr or ""

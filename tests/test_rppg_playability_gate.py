@@ -99,6 +99,39 @@ def test_resolve_returns_newest_when_all_playable(
     assert str(result) == str(newer)
 
 
+def test_is_playable_video_timeout_fails_open(monkeypatch, tmp_path: Path):
+    """PR #53 round 4 — Codex P2. A timeout means ffprobe took too
+    long to validate, which is ambiguous (long video vs real hang).
+    We accept the file as playable rather than silently quarantine a
+    successful injection. Corruption is detected via stderr NAL
+    patterns, not via timeout.
+    """
+    import subprocess as _sp
+
+    fake_video = tmp_path / "long.mp4"
+    fake_video.write_bytes(b"junk")
+
+    def raise_timeout(*_a, **_kw):
+        raise _sp.TimeoutExpired(cmd="ffprobe", timeout=180)
+
+    monkeypatch.setattr(_sp, "run", raise_timeout)
+
+    # Capture progress_cb messages so we can confirm the timeout
+    # advisory is surfaced to the user.
+    logged = []
+    rppg_mod._is_playable_video(
+        fake_video, progress_cb=lambda m, l="info": logged.append((l, m)),
+    ) and None  # the return value is asserted below
+    assert rppg_mod._is_playable_video(
+        fake_video,
+        progress_cb=lambda m, l="info": logged.append((l, m)),
+    ) is True
+    assert any(
+        l == "warning" and "playability gate timed out" in m
+        for l, m in logged
+    )
+
+
 def test_is_playable_video_detects_nal_errors(monkeypatch, tmp_path: Path):
     """`_is_playable_video` recognises the H.264 NAL-corruption
     signatures the user reported in their bug.
