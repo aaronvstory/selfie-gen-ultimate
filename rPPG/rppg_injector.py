@@ -103,6 +103,48 @@ def xp_of(arr):
     return np
 
 
+def _snapshot_validates(tmp_snapshot: str, source_iter: str) -> bool:
+    """True if *tmp_snapshot* is a complete copy of *source_iter*.
+
+    Used by the iter-best snapshot adoption flow (search for
+    ``_BEST_SNAPSHOT_NAME``). A bad copy here previously shipped as the
+    final deliverable -- the post-loop final-copy from ``best_path``
+    captured a torn mp4 with broken H.264 NAL units. We reject the
+    snapshot if it differs in bytes from the source OR can't be opened
+    by OpenCV OR reports a different frame count.
+
+    Cheap pre-check (size) catches truncated copies without touching
+    the file decoder; the cv2 reopen is the safety net.
+    """
+    try:
+        if os.path.getsize(tmp_snapshot) != os.path.getsize(source_iter):
+            return False
+    except OSError:
+        return False
+    cap_tmp = cap_src = None
+    try:
+        cap_tmp = cv2.VideoCapture(tmp_snapshot)
+        if not cap_tmp.isOpened():
+            return False
+        cap_src = cv2.VideoCapture(source_iter)
+        if not cap_src.isOpened():
+            return False
+        n_tmp = int(cap_tmp.get(cv2.CAP_PROP_FRAME_COUNT))
+        n_src = int(cap_src.get(cv2.CAP_PROP_FRAME_COUNT))
+        if n_tmp <= 0 or n_tmp != n_src:
+            return False
+        return True
+    except Exception:
+        return False
+    finally:
+        for cap in (cap_tmp, cap_src):
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+
 def to_gpu(arr):
     """Upload a NumPy array to GPU when CuPy is available; pass through otherwise."""
     if GPU_AVAILABLE and arr is not None and not isinstance(arr, _cp.ndarray):
@@ -4436,18 +4478,42 @@ class PhaseAlignedRPPGManipulator:
                 # Snapshot the new best iter to a stable name so the
                 # post-loop face-coherence + final copy can find it
                 # even if interim cleanup prunes the numbered
-                # temp_iteration_N.mp4 file before the loop ends. The
-                # snapshot lives in cwd (rPPG/) alongside the temp
-                # files and is cleaned up in the post-loop cleanup
-                # block. Empirically observed (PR fix/rppg-failure-
-                # visibility) that the "best" iter's temp file
-                # vanishes mid-loop on iterative + iterate-from-base
-                # runs; root cause unknown but defensive snapshot is
-                # cheap and immune to it.
+                # temp_iteration_N.mp4 file before the loop ends.
+                #
+                # Use tmp-copy + validate + atomic replace so a torn
+                # copy never overwrites the previous good snapshot.
+                # Root cause: shutil.copy2 on an mp4 that may still
+                # have an open writer (or be partially flushed)
+                # captures a NAL-incomplete file. Previously we
+                # adopted it directly; the post-loop final-copy then
+                # produced a structurally broken -rppg.mp4 (PR #52
+                # regression — ffprobe Invalid NAL unit size errors
+                # on the delivered file). The tmp+validate+os.replace
+                # flow guarantees we only ever adopt a snapshot that
+                # matches the source iter file's frame count and byte
+                # length.
+                tmp_snapshot = _BEST_SNAPSHOT_NAME + ".tmp.mp4"
+                adopted_snapshot = False
                 try:
                     if os.path.exists(iter_output_path):
-                        shutil.copy2(iter_output_path, _BEST_SNAPSHOT_NAME)
-                        best_path = _BEST_SNAPSHOT_NAME
+                        shutil.copy2(iter_output_path, tmp_snapshot)
+                        if _snapshot_validates(tmp_snapshot, iter_output_path):
+                            os.replace(tmp_snapshot, _BEST_SNAPSHOT_NAME)
+                            best_path = _BEST_SNAPSHOT_NAME
+                            adopted_snapshot = True
+                        else:
+                            try:
+                                os.unlink(tmp_snapshot)
+                            except OSError:
+                                pass
+                            best_path = iter_output_path
+                            print(c(
+                                f"  Warning: best-iter {iteration} snapshot "
+                                f"validation failed (torn copy); keeping "
+                                f"previous good snapshot, using direct iter "
+                                f"path. Vulnerable to mid-loop cleanup.",
+                                'Y',
+                            ))
                     else:
                         best_path = iter_output_path
                 except OSError as exc:
@@ -4458,6 +4524,11 @@ class PhaseAlignedRPPGManipulator:
                         f"cleanup).",
                         'Y',
                     ))
+                    try:
+                        if os.path.exists(tmp_snapshot):
+                            os.unlink(tmp_snapshot)
+                    except OSError:
+                        pass
                     best_path = iter_output_path
                 best_iter = iteration
                 best_metrics = dict(m)
@@ -4645,8 +4716,11 @@ class PhaseAlignedRPPGManipulator:
         cleanup_paths.append(deband_temp)
         # The best-iter snapshot maintained during the loop (paired with the
         # snapshot logic at the _is_new_best site). Already copied to
-        # output_path by the finalize step above; safe to remove.
+        # output_path by the finalize step above; safe to remove. Also clean
+        # up the validate-staging .tmp.mp4 in case the last iter's snapshot
+        # was rejected by _snapshot_validates and the tmp leaked.
         cleanup_paths.append(_BEST_SNAPSHOT_NAME)
+        cleanup_paths.append(_BEST_SNAPSHOT_NAME + ".tmp.mp4")
         for f in cleanup_paths:
             if f and f != output_path and f != video_path and os.path.exists(f):
                 try:

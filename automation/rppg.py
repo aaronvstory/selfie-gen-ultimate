@@ -136,8 +136,106 @@ def is_rppg_artifact(path: Path) -> bool:
     return bool(re.search(r"-rppg(?:$| |-)", stem))
 
 
-def resolve_produced_output(requested: Path) -> Optional[Path]:
-    """Find the file the injector actually produced.
+_FFPROBE_NAL_PATTERNS: Tuple[str, ...] = (
+    "Invalid NAL unit size",
+    "Error splitting the input into NAL units",
+    "missing picture in access unit",
+    "moov atom not found",
+)
+
+
+def _is_playable_video(path: Path, ffprobe_bin: str = "ffprobe") -> bool:
+    """True if *path* is a valid, decodable video file.
+
+    Shells out to ``ffprobe -v error -count_frames -select_streams v:0
+    -show_entries stream=nb_read_frames``. Returns False if:
+
+    * ffprobe exits non-zero, OR
+    * stderr matches a known H.264 / container-corruption pattern
+      (see :data:`_FFPROBE_NAL_PATTERNS`), OR
+    * stdout's ``nb_read_frames`` is missing, 0, or unparseable.
+
+    If ``ffprobe`` is not on PATH the gate is skipped (returns True)
+    with a one-time warning on stderr — we'd rather ship POSSIBLY-broken
+    than ship NOTHING just because the validator is unavailable on this
+    machine. macOS dev + Windows release builds both bundle ffprobe.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe_bin, "-v", "error",
+                "-count_frames", "-select_streams", "v:0",
+                "-show_entries", "stream=nb_read_frames",
+                "-of", "default=nokey=1:noprint_wrappers=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        if not getattr(_is_playable_video, "_warned_missing", False):
+            print(
+                "[rppg] WARNING: ffprobe not on PATH; playability gate "
+                "DISABLED — corrupt rPPG outputs will NOT be quarantined.",
+                file=__import__("sys").stderr,
+            )
+            _is_playable_video._warned_missing = True  # type: ignore[attr-defined]
+        return True
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    if proc.returncode != 0:
+        return False
+    stderr = proc.stderr or ""
+    for pat in _FFPROBE_NAL_PATTERNS:
+        if pat in stderr:
+            return False
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        return False
+    try:
+        nb_frames = int(stdout.splitlines()[0].strip())
+    except (ValueError, IndexError):
+        return False
+    return nb_frames > 0
+
+
+def _quarantine_corrupt(path: Path, progress_cb: ProgressCB = None) -> None:
+    """Rename *path* to ``<name>.corrupt-<ts>.mp4`` so future
+    :func:`resolve_produced_output` glob passes don't re-select it
+    AND the user can still post-mortem the file.
+
+    Glob in :func:`resolve_produced_output` matches
+    ``{stem} - *{ext}`` so a ``.corrupt-...`` suffix breaks the
+    extension match and excludes the file from future selection.
+    """
+    if not path.exists():
+        return
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    quarantine = path.with_name(
+        f"{path.stem}.corrupt-{ts}{path.suffix}.broken"
+    )
+    try:
+        os.replace(str(path), str(quarantine))
+        _report(
+            progress_cb,
+            f"rPPG: quarantined corrupt candidate {path.name} -> "
+            f"{quarantine.name} (ffprobe validation failed)",
+            "warning",
+        )
+    except OSError:
+        # If we can't rename it, deleting is worse than leaving it —
+        # the resolver will keep skipping it as long as the playability
+        # gate keeps returning False.
+        pass
+
+
+def resolve_produced_output(
+    requested: Path,
+    *,
+    progress_cb: ProgressCB = None,
+) -> Optional[Path]:
+    """Find the newest PLAYABLE file the injector actually produced.
 
     Empirically (verified via oldcam-testing/rppg_harness.py against the
     real tool) the injector takes our ``--output`` of ``{stem}-rppg{ext}``
@@ -145,13 +243,30 @@ def resolve_produced_output(requested: Path) -> Optional[Path]:
     -<harmonic>{ext}`` regardless of ``--output`` — the documented
     deterministic-path contract does NOT hold. So accept either the exact
     requested path or the metric-suffixed sibling, whichever is newest.
-    Returns None if nothing matching was produced (graceful-skip caller).
+
+    Each candidate (newest first) is validated via :func:`_is_playable_video`.
+    Corrupt candidates are quarantined (renamed with ``.corrupt-<ts>.broken``)
+    so they are excluded from future selection AND the user can still
+    inspect them. Returns the newest playable candidate, or ``None`` if
+    nothing playable was produced (graceful-skip caller — queue marks
+    ``-NORPPG`` on the kling stem).
+
+    Why a single source of truth: both the automation pipeline AND
+    the GUI queue call into this resolver after the launcher exits;
+    gating playability HERE protects both surfaces. Previously
+    (PR #52) the resolver returned the newest candidate unconditionally
+    — a corrupt rPPG produced by the snapshot race shipped as the final
+    deliverable.
     """
     stem = requested.stem  # e.g. "<clip>-rppg"
     ext = requested.suffix
     parent = requested.parent
     if not parent.is_dir():
-        return requested if requested.exists() else None
+        if requested.exists() and _is_playable_video(requested):
+            return requested
+        if requested.exists():
+            _quarantine_corrupt(requested, progress_cb)
+        return None
     # The injector's rename is specifically "<stem> - <metrics><ext>" with a
     # space-hyphen-space separator (rPPG/rppg_injector.py add_metric_suffix).
     # Match ONLY that exact form (not a loose "<stem>*<ext>" which would also
@@ -177,7 +292,11 @@ def resolve_produced_output(requested: Path) -> Optional[Path]:
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    return candidates[0] if candidates else None
+    for cand in candidates:
+        if _is_playable_video(cand):
+            return cand
+        _quarantine_corrupt(cand, progress_cb)
+    return None
 
 
 # The 5 metrics the injector embeds, in the exact order
@@ -858,7 +977,7 @@ def run_rppg(
     iterate_from_baseline: bool = True,
     skip_diagnosis: bool = True,
     skip_kinematic_gate: bool = True,
-    landmark_stride: int = 3,
+    landmark_stride: int = 1,
     verbose: bool = False,
 ) -> Optional[Path]:
     """Run rPPG injection. Return the output Path, or None on any
@@ -888,15 +1007,23 @@ def run_rppg(
     kinematic preflight. Per docs/rppg-wiring.md the gate is README-
     marked untested.
 
-    *landmark_stride* (default ``3``): per the injector's own
+    *landmark_stride* (default ``1``): per the injector's own
     ``--landmark-stride`` documentation, running MediaPipe face
     detection only every Nth frame (with the ROIStabilizer carrying
     the shape between detections) gives a 3-5x reduction in per-frame
     detection cost at "negligible quality loss on mostly-still faces."
-    Default 3 because Kling outputs are almost always slow controlled
-    head moves (the prompts request near-still motion). Set to ``1``
-    to detect every frame (the injector's own default) when injecting
-    into a fast-motion source.
+
+    Reverted from 3 to 1 in the fix/step0-composite-and-rppg-v2.5
+    branch after PR #52 shipped 3 as the default and a user reported
+    unplayable output (ffprobe Invalid NAL unit size). The root
+    cause was the iter-best snapshot race (now fixed via tmp-validate
+    -atomic-replace in rPPG/rppg_injector.py + a shared playability
+    gate in :func:`resolve_produced_output`), but until we have local
+    smoke-test proof that stride=3 is safe on real Kling output, the
+    slow-but-correct default is the right ship state. Power users
+    can still opt into the speedup via
+    ``automation_rppg_landmark_stride`` in config or
+    ``rppg_landmark_stride`` in the GUI config.
 
     *keep_metrics* selects the delivered filename: ``True`` keeps the
     injector's ``{stem}-rppg - <metrics>{ext}``; ``False`` (default)
@@ -969,13 +1096,16 @@ def run_rppg(
         cmd.append("--skip-kinematic-gate")
     # Landmark stride — primary on-CPU speedup lever (3-5x reduction in
     # per-frame mediapipe detection cost). The injector's own default
-    # is 1; we override to the caller-supplied value (default 3 from
-    # the signature, configurable via automation_rppg_landmark_stride
-    # in the pipeline + rppg_landmark_stride in the GUI config).
+    # is 1; we override to the caller-supplied value (default 1 from
+    # the signature — reverted from 3 in PR fix/step0-composite-and-
+    # rppg-v2.5; users can opt back into 3 via
+    # automation_rppg_landmark_stride in the pipeline +
+    # rppg_landmark_stride in the GUI config).
     try:
         stride = max(1, int(landmark_stride))
     except (TypeError, ValueError):
-        stride = 3
+        # Invalid input -> fall back to the signature default (safe).
+        stride = 1
     if stride > 1:
         cmd.extend(["--landmark-stride", str(stride)])
         # User-actionable advisory so the speedup choice is loud, not
@@ -1048,9 +1178,14 @@ def run_rppg(
             _report(progress_cb, "  (no stdout/stderr captured)", "warning")
         return None
 
-    produced = resolve_produced_output(output_path)
+    produced = resolve_produced_output(output_path, progress_cb=progress_cb)
     if produced is None:
-        _report(progress_cb, "rPPG ran but output missing; keeping pre-rPPG video.", "warning")
+        _report(
+            progress_cb,
+            "rPPG ran but no playable output found; keeping pre-rPPG video "
+            "(corrupt candidates, if any, have been quarantined with .broken).",
+            "warning",
+        )
         return None
     final = finalize_rppg_output(
         produced, output_path, keep_metrics=keep_metrics, progress_cb=progress_cb

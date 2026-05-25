@@ -132,13 +132,18 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     # detection only every Nth frame (with the ROIStabilizer carrying
     # the shape between detections) gives a 3-5x reduction in per-frame
     # detection cost at "negligible quality loss on mostly-still faces."
-    # Kling outputs are slow controlled head moves so stride 3 is the
-    # safe sweet spot — measurable per-iter speedup without touching
-    # the pulse-injection correctness path. Set to 1 to detect every
-    # frame (the injector's own default) when injecting into a
-    # fast-motion source. The GUI also accepts the bare
-    # ``rppg_landmark_stride`` alias for this same value.
-    "automation_rppg_landmark_stride": 3,
+    #
+    # Default reverted from 3 to 1 in fix/step0-composite-and-rppg-v2.5
+    # after PR #52 shipped 3 + a snapshot-race regression that produced
+    # unplayable -rppg.mp4 outputs. The snapshot race itself is now
+    # fixed (rPPG/rppg_injector.py:_snapshot_validates) and the playability
+    # gate (automation/rppg.py::_is_playable_video) catches future
+    # regressions, but until we have local smoke-test proof that
+    # stride>1 is safe on real Kling output the slow-but-correct default
+    # is the right ship state. Power users can set
+    # ``automation_rppg_landmark_stride`` to 3 (or the GUI alias
+    # ``rppg_landmark_stride``) to opt back into the speedup.
+    "automation_rppg_landmark_stride": 1,
     "automation_rppg_required": False,
     # When False (default) the injector's metric-suffixed filename
     # ("{stem}-rppg - <SNR>-<Phase>-<Temporal>-<Motion>-<Harmonic>{ext}")

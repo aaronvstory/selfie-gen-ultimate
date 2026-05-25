@@ -2179,15 +2179,18 @@ class QueueManager:
             # config["rppg_landmark_stride"] = 1 for the rare case of a
             # fast-motion source. (PR fix/rppg-failure-visibility v2.5
             # — user-asked speedup pass.)
+            # Default reverted 3 -> 1 in fix/step0-composite-and-rppg-v2.5
+            # (snapshot-race regression — see automation/config.py
+            # landmark-stride comment for full reasoning).
             landmark_stride_raw = _cfg_get(
                 "rppg_landmark_stride",
                 "automation_rppg_landmark_stride",
-                3,
+                1,
             )
             try:
                 landmark_stride = max(1, int(landmark_stride_raw))
             except (TypeError, ValueError):
-                landmark_stride = 3
+                landmark_stride = 1
             run_cmd = [
                 str(launcher),
                 str(input_path),
