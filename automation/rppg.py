@@ -144,6 +144,87 @@ _FFPROBE_NAL_PATTERNS: Tuple[str, ...] = (
     "moov atom not found",
 )
 
+# In-memory blacklist of corrupt files we've seen this process. Populated
+# by _quarantine_corrupt() when the on-disk rename fails (Windows file-
+# handle contention is the common case — Defender / Explorer / a still-
+# running injector child holds the file). Without this, subsequent
+# resolve_produced_output() passes re-glob the same file, re-run
+# _is_playable_video on it (potentially a 180s timeout on a torn mp4),
+# and in rppg_per_oldcam_fanout mode this compounds to many-minute stalls.
+# Subagent H1 round 5.
+_corrupt_blacklist: set[str] = set()
+
+
+def _is_blacklisted(path: Path) -> bool:
+    """True if *path*'s absolute path is in the corrupt blacklist."""
+    try:
+        return os.fspath(path.resolve()) in _corrupt_blacklist
+    except OSError:
+        return os.fspath(path) in _corrupt_blacklist
+
+
+def _blacklist(path: Path) -> None:
+    """Add *path*'s absolute form to the corrupt blacklist."""
+    try:
+        _corrupt_blacklist.add(os.fspath(path.resolve()))
+    except OSError:
+        _corrupt_blacklist.add(os.fspath(path))
+
+
+def _is_playable_secondary(
+    path: Path, ffprobe_bin: str = "ffprobe",
+) -> Optional[bool]:
+    """Cheap secondary playability check used when the primary
+    (-count_frames) call times out. Parses the container header
+    only — subsecond on healthy files; fast-fails on a torn mp4
+    with a recognizable diagnostic.
+
+    Returns:
+        True   = container probe succeeded, no corruption indicator
+        False  = ffprobe reported a corruption diagnostic
+        None   = couldn't decide (own timeout, ffprobe missing, etc.)
+
+    Subagent H2 round 5 — without this, the fail-open path on
+    -count_frames timeout would ship the very corrupt files the
+    gate is meant to catch (a torn mp4 has good headers + bad
+    deep stream = exactly the input that hangs -count_frames).
+    """
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe_bin, "-v", "error", "-hide_banner",
+                "-show_error", "-show_streams",
+                "-of", "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,  # subsecond on healthy files; cap noise
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    stderr = proc.stderr or ""
+    # Same NAL/splitting/picture patterns as the primary check —
+    # even with -show_error -show_streams, container-level corruption
+    # surfaces on stderr.
+    for pat in _FFPROBE_NAL_PATTERNS:
+        if pat in stderr:
+            return False
+    # Look at the JSON for an "error" object too (show_error puts it
+    # in stdout when the container is unreadable).
+    stdout = (proc.stdout or "").strip()
+    if stdout:
+        try:
+            import json as _json
+            payload = _json.loads(stdout)
+        except (ValueError, TypeError):
+            payload = None
+        if isinstance(payload, dict) and "error" in payload:
+            return False
+    if proc.returncode != 0:
+        return False
+    return True
+
 
 def _is_playable_video(
     path: Path,
@@ -163,7 +244,10 @@ def _is_playable_video(
     If ``ffprobe`` is not on PATH the gate is skipped (returns True)
     with a one-time warning on stderr — we'd rather ship POSSIBLY-broken
     than ship NOTHING just because the validator is unavailable on this
-    machine. macOS dev + Windows release builds both bundle ffprobe.
+    machine. ``dependency_checker.py`` enforces ffprobe presence at
+    first launch on both macOS and Windows; neither launcher chain
+    bundles it in the dist zip (subagent M2 round 5 — earlier comment
+    incorrectly claimed it was bundled).
 
     Timeout semantics (Codex P2 PR #53 round 4): we fail-OPEN on
     timeout. NAL corruption is detected by ACTIVE stderr error patterns;
@@ -204,11 +288,36 @@ def _is_playable_video(
             _is_playable_video._warned_missing = True  # type: ignore[attr-defined]
         return True
     except subprocess.TimeoutExpired:
-        # Fail-OPEN (return True). See docstring rationale. Surface
-        # the timeout so it's debuggable.
+        # Subagent H2 round 5: pure fail-open defeats the gate's
+        # primary purpose — a torn snapshot has correct H.264 sync
+        # words at the top but breaks deep in the stream, and that
+        # is EXACTLY when -count_frames hangs (long reads behind
+        # -v error). So before declaring playable on timeout, run a
+        # cheap secondary check that parses the container header
+        # only: ffprobe -v error -i <path> -hide_banner -show_error
+        # -of json. Subsecond on healthy files; fast-fails with a
+        # "Invalid data found when processing input" / corrupt
+        # container error on torn ones. We treat that as REJECTED
+        # (return False) — same as the active NAL pattern match in
+        # the success path. Only if the secondary check ALSO can't
+        # decide (its own timeout, ffprobe missing, no diagnostic
+        # output) do we fall through to the fail-open behavior.
+        secondary = _is_playable_secondary(path, ffprobe_bin)
+        if secondary is False:
+            reject_msg = (
+                f"[rppg] playability gate: primary check timed out on "
+                f"{path.name} (180s) AND secondary container probe "
+                f"rejected it as corrupt. Quarantining."
+            )
+            print(reject_msg, file=sys.stderr)
+            _report(progress_cb, reject_msg, "warning")
+            return False
+        # secondary is True or None (couldn't decide). Fail-open
+        # with the existing advisory so the user can investigate.
         timeout_msg = (
             f"[rppg] playability gate timed out validating "
-            f"{path.name} (180s); accepting as playable. "
+            f"{path.name} (180s); secondary container probe found "
+            f"no corruption indicator, accepting as playable. "
             f"If the final video is actually corrupt, re-run with "
             f"a longer ffprobe timeout or inspect manually."
         )
@@ -237,19 +346,32 @@ def _is_playable_video(
 
 
 def _quarantine_corrupt(path: Path, progress_cb: ProgressCB = None) -> None:
-    """Rename *path* to ``<name>.corrupt-<ts>.mp4`` so future
-    :func:`resolve_produced_output` glob passes don't re-select it
-    AND the user can still post-mortem the file.
+    """Rename *path* to ``<name>.corrupt-<ts>-<rand>.mp4.broken`` so
+    future :func:`resolve_produced_output` glob passes don't re-select
+    it AND the user can still post-mortem the file.
 
     Glob in :func:`resolve_produced_output` matches
     ``{stem} - *{ext}`` so a ``.corrupt-...`` suffix breaks the
     extension match and excludes the file from future selection.
+
+    When the rename FAILS (Windows file-handle contention is the
+    common case — Defender / Explorer / a still-running injector
+    child holds the file), we add *path* to an in-memory blacklist
+    (:data:`_corrupt_blacklist`) so :func:`resolve_produced_output`
+    skips it on subsequent passes instead of re-running ffprobe
+    (which can stall 180s per call on a torn mp4). Subagents H1 + L1
+    round 5.
     """
     if not path.exists():
         return
+    # Append a random suffix so two quarantines in the same second
+    # don't silently overwrite each other (L1 — strftime granularity
+    # is one second).
+    import secrets as _secrets
     ts = time.strftime("%Y%m%d-%H%M%S")
+    rand = _secrets.token_hex(3)
     quarantine = path.with_name(
-        f"{path.stem}.corrupt-{ts}{path.suffix}.broken"
+        f"{path.stem}.corrupt-{ts}-{rand}{path.suffix}.broken"
     )
     try:
         # Path.replace is the idiomatic Pathlib equivalent of os.replace

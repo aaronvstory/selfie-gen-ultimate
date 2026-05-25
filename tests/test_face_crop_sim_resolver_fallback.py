@@ -107,27 +107,74 @@ def test_resolver_glob_prefers_active_source_stem(tmp_path: Path):
     assert stub._resolve_live_crop_ref() == str(bob_crop)
 
 
-def test_resolver_glob_falls_back_to_mtime_newest_when_stem_unmatched(
+def test_resolver_refuses_generic_fallback_when_multiple_crops_present(
     tmp_path: Path,
 ):
-    """When the active source stem doesn't match any gen-images crop
-    (e.g. user renamed source), fall back to ANY `*_crop.*` ranked
-    by mtime newest-first. Subagent H4 round 1 — old alphabetic
-    sort returned the wrong file.
+    """PR #53 round 5 H3: when the active source's stem doesn't match
+    ANY gen-images crop AND there are multiple `*_crop.*` siblings,
+    REFUSE to pick (silent wrong-identity scoring is worse than
+    skipping similarity entirely). Returns None — caller logs skip
+    at debug.
+
+    This INVERTS the previous round-3 behavior which returned the
+    mtime-newest in that case — subagent (round 5) flagged that
+    behavior was actively unsafe in shared `gen-images/` folders.
     """
     import os as _os
     gen_dir = tmp_path / "gen-images"
     gen_dir.mkdir()
-    older = gen_dir / "alice_crop.jpg"
-    older.write_bytes(b"older")
-    newer = gen_dir / "bob_crop.jpg"
-    newer.write_bytes(b"newer")
-    _os.utime(older, (1_000_000, 1_000_000))
-    _os.utime(newer, (2_000_000, 2_000_000))
+    alice = gen_dir / "alice_crop.jpg"
+    alice.write_bytes(b"alice")
+    bob = gen_dir / "bob_crop.jpg"
+    bob.write_bytes(b"bob")
+    _os.utime(alice, (1_000_000, 1_000_000))
+    _os.utime(bob, (2_000_000, 2_000_000))
     stub = _make_resolver_stub([], None, gen_dir)
-    # Active source stem doesn't match either crop -> mtime fallback
+    # Active source stem matches NEITHER crop AND prefix-relaxed
+    # ("charlie" -> "charlie") also doesn't match -> resolver
+    # returns None instead of guessing which subject to score against.
     stub._source_path = str(tmp_path / "charlie.jpg")
-    assert stub._resolve_live_crop_ref() == str(newer)
+    assert stub._resolve_live_crop_ref() is None
+
+
+def test_resolver_uses_generic_fallback_when_exactly_one_crop_present(
+    tmp_path: Path,
+):
+    """PR #53 round 5 H3: when the active source's stem doesn't
+    match but there's EXACTLY ONE `*_crop.*` in the folder, the
+    resolver returns it — this is the single-subject-folder case
+    where the user moved/renamed the source file but the crop is
+    still uniquely identifiable.
+    """
+    gen_dir = tmp_path / "gen-images"
+    gen_dir.mkdir()
+    only = gen_dir / "alice_crop.jpg"
+    only.write_bytes(b"alice")
+    stub = _make_resolver_stub([], None, gen_dir)
+    stub._source_path = str(tmp_path / "charlie.jpg")
+    assert stub._resolve_live_crop_ref() == str(only)
+
+
+def test_resolver_prefix_relaxed_stem_match(tmp_path: Path):
+    """PR #53 round 5 H3: when the active source is a derived
+    artifact like ``alice-expanded.jpg``, the exact-stem pattern
+    (``alice-expanded_crop.*``) misses. The resolver tries a
+    prefix-relaxed pattern using the first hyphen-split segment
+    (``alice_crop.*``) before falling through to the strict
+    single-crop generic fallback.
+    """
+    gen_dir = tmp_path / "gen-images"
+    gen_dir.mkdir()
+    alice = gen_dir / "alice_crop.jpg"
+    alice.write_bytes(b"alice")
+    # Decoy in same folder — generic fallback would refuse, so the
+    # prefix-relaxed match has to actually hit for this test to
+    # pass.
+    bob = gen_dir / "bob_crop.jpg"
+    bob.write_bytes(b"bob")
+    stub = _make_resolver_stub([], None, gen_dir)
+    stub._source_path = str(tmp_path / "alice-expanded.jpg")
+    assert stub._resolve_live_crop_ref() == str(alice)
 
 
 def test_resolver_returns_none_when_nothing_on_disk(tmp_path: Path):

@@ -99,35 +99,79 @@ def test_resolve_returns_newest_when_all_playable(
     assert str(result) == str(newer)
 
 
-def test_is_playable_video_timeout_fails_open(monkeypatch, tmp_path: Path):
-    """PR #53 round 4 — Codex P2. A timeout means ffprobe took too
-    long to validate, which is ambiguous (long video vs real hang).
-    We accept the file as playable rather than silently quarantine a
-    successful injection. Corruption is detected via stderr NAL
-    patterns, not via timeout.
+def test_is_playable_video_timeout_fails_open_when_secondary_inconclusive(
+    monkeypatch, tmp_path: Path,
+):
+    """PR #53 round 4 — Codex P2 + round 5 H2. A timeout means
+    ffprobe took too long to validate, which is ambiguous (long video
+    vs real hang). We run a cheap secondary container check; if THAT
+    can't decide (own timeout / ffprobe missing), fail-open. If the
+    secondary explicitly rejects the file as corrupt, return False.
+
+    This test covers the inconclusive case — the round-5 H2 fix
+    added the secondary check.
     """
     import subprocess as _sp
 
     fake_video = tmp_path / "long.mp4"
     fake_video.write_bytes(b"junk")
 
+    # Reset _warned_missing so the FNF advisory doesn't bleed across
+    # tests via shared module state. M5 round 5 — subagent flagged
+    # the existing test was order-dependent.
+    monkeypatch.delattr(
+        rppg_mod._is_playable_video, "_warned_missing", raising=False,
+    )
+
     def raise_timeout(*_a, **_kw):
         raise _sp.TimeoutExpired(cmd="ffprobe", timeout=180)
 
     monkeypatch.setattr(_sp, "run", raise_timeout)
+    # Force the secondary check to be inconclusive (returns None).
+    monkeypatch.setattr(rppg_mod, "_is_playable_secondary", lambda *_a, **_k: None)
 
-    # Capture progress_cb messages so we can confirm the timeout
-    # advisory is surfaced to the user.
     logged = []
-    rppg_mod._is_playable_video(
+    result = rppg_mod._is_playable_video(
         fake_video, progress_cb=lambda m, l="info": logged.append((l, m)),
-    ) and None  # the return value is asserted below
-    assert rppg_mod._is_playable_video(
-        fake_video,
-        progress_cb=lambda m, l="info": logged.append((l, m)),
-    ) is True
+    )
+    assert result is True
     assert any(
         l == "warning" and "playability gate timed out" in m
+        for l, m in logged
+    )
+
+
+def test_is_playable_video_timeout_rejects_when_secondary_says_corrupt(
+    monkeypatch, tmp_path: Path,
+):
+    """PR #53 round 5 H2: when -count_frames times out AND the
+    secondary container probe explicitly identifies corruption, we
+    return False (reject) — the gate's primary purpose is to catch
+    torn mp4s, which is EXACTLY the input that hangs -count_frames.
+    """
+    import subprocess as _sp
+
+    fake_video = tmp_path / "torn.mp4"
+    fake_video.write_bytes(b"junk")
+
+    monkeypatch.delattr(
+        rppg_mod._is_playable_video, "_warned_missing", raising=False,
+    )
+
+    def raise_timeout(*_a, **_kw):
+        raise _sp.TimeoutExpired(cmd="ffprobe", timeout=180)
+
+    monkeypatch.setattr(_sp, "run", raise_timeout)
+    # Secondary check says: this IS corrupt.
+    monkeypatch.setattr(rppg_mod, "_is_playable_secondary", lambda *_a, **_k: False)
+
+    logged = []
+    result = rppg_mod._is_playable_video(
+        fake_video, progress_cb=lambda m, l="info": logged.append((l, m)),
+    )
+    assert result is False
+    assert any(
+        l == "warning" and "secondary container probe rejected" in m
         for l, m in logged
     )
 

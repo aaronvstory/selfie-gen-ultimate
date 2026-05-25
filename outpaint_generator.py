@@ -595,6 +595,73 @@ class OutpaintGenerator:
 
         final_canvas_w = orig_full.width + expand_left + expand_right
         final_canvas_h = orig_full.height + expand_top + expand_bottom
+        # Subagent M1 round 5: clamp the final canvas to a sane envelope
+        # so a user that types huge pixel margins doesn't OOM the
+        # process via PIL's LANCZOS resize (it allocates the
+        # destination buffer up-front). 100 MP is comfortably bigger
+        # than any realistic Step 0 expand (which targets fal's
+        # 1536px / 2.0 MP envelope after preflight scale-down anyway)
+        # but small enough that the resize completes in a couple of
+        # seconds on the macOS CPU path.
+        #
+        # When the canvas is clamped, the orig_full + scaled margins
+        # math must still hold so the composite's matchTemplate
+        # alignment works — so we proportionally downscale orig_full
+        # AND the margins together. The center-pixel preservation
+        # contract is then held against the scaled original (still
+        # higher quality than the previous downscaled-upload paste,
+        # just not raw input quality at extreme margin sizes).
+        _FINAL_CANVAS_MP_CAP = 100.0
+        _final_mp = (final_canvas_w * final_canvas_h) / 1_000_000.0
+        composite_margins = (
+            expand_left, expand_right, expand_top, expand_bottom,
+        )
+        if _final_mp > _FINAL_CANVAS_MP_CAP:
+            import math as _math
+            _scale = _math.sqrt(_FINAL_CANVAS_MP_CAP / _final_mp)
+            _clamped_w = max(1, int(final_canvas_w * _scale))
+            _clamped_h = max(1, int(final_canvas_h * _scale))
+            scaled_orig_w = max(1, int(orig_full.width * _scale))
+            scaled_orig_h = max(1, int(orig_full.height * _scale))
+            try:
+                orig_full = orig_full.resize(
+                    (scaled_orig_w, scaled_orig_h),
+                    Image.Resampling.LANCZOS,
+                )
+            except Exception as exc:
+                self._report(
+                    f"Could not scale orig_full to clamped envelope: {exc}",
+                    "error",
+                )
+                self._set_last_outpaint_error_detail(
+                    f"orig_clamp_failed:{type(exc).__name__}"
+                )
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+                return None
+            composite_margins = (
+                max(0, int(expand_left * _scale)),
+                max(0, int(expand_right * _scale)),
+                max(0, int(expand_top * _scale)),
+                max(0, int(expand_bottom * _scale)),
+            )
+            final_canvas_w = scaled_orig_w + composite_margins[0] + composite_margins[1]
+            final_canvas_h = scaled_orig_h + composite_margins[2] + composite_margins[3]
+            self._report(
+                (
+                    f"Final canvas {int(_final_mp * 1_000_000 / max(1, final_canvas_h)):d}x"
+                    f"{final_canvas_h} -> "
+                    f"{final_canvas_w}x{final_canvas_h} ({_FINAL_CANVAS_MP_CAP:.0f} "
+                    f"MP envelope clamp); orig_full + margins "
+                    f"proportionally scaled by {_scale:.3f}. "
+                    "If you need the full-margin canvas at original "
+                    "resolution, reduce the expand margins or chain a "
+                    "second pass (Run 2x)."
+                ),
+                "warning",
+            )
         self._report(
             (
                 "Fal composite downloaded result: "
@@ -642,9 +709,12 @@ class OutpaintGenerator:
                     pass
                 return None
 
+        # composite_margins matches orig_full (both untouched by default,
+        # both scaled together if the canvas was clamped above for M1).
         composite_ok = self._composite_onto_result(
             output_path, orig_full,
-            expand_left, expand_right, expand_top, expand_bottom,
+            composite_margins[0], composite_margins[1],
+            composite_margins[2], composite_margins[3],
             output_format, composite_mode,
         )
 
@@ -696,7 +766,12 @@ class OutpaintGenerator:
             from PIL import ImageFilter, ImageDraw
 
             self._report(f"Compositing original over AI result (mode={composite_mode})...", "debug")
-            result_img = Image.open(output_path).convert("RGB")
+            # Close the source handle before later result_img.save() writes
+            # back to the same path — Gemini PR #53 round 5 HIGH. On
+            # Windows the open handle from PIL's lazy decoder can cause
+            # PermissionError when the same path is reopened for write.
+            with Image.open(output_path) as _src:
+                result_img = _src.convert("RGB")
             orig_rgb = orig.convert("RGB")
 
             # --- 1. INITIAL MATH ESTIMATE ---

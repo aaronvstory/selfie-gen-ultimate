@@ -22,7 +22,7 @@ is the testable unit.
 from pathlib import Path
 
 
-def _import_validator():
+def _import_validator(monkeypatch=None):
     """Import _snapshot_validates without spinning up the injector class.
 
     Returns the function or skips the test if a DEPENDENCY (e.g.,
@@ -31,10 +31,20 @@ def _import_validator():
     real runtime regression in rppg_injector (e.g. SyntaxError, a
     crash at module-import time) fails loudly instead of being
     silently skipped.
+
+    Subagent L2 round 5: when a monkeypatch fixture is passed, use
+    ``syspath_prepend`` so the rPPG/ insertion is reverted on test
+    teardown. Without that, a `sys.path.insert(0, ...)` here leaked
+    for the rest of the pytest process and could shadow same-named
+    modules in later tests.
     """
-    try:
+    rppg_dir = str(Path(__file__).resolve().parent.parent / "rPPG")
+    if monkeypatch is not None:
+        monkeypatch.syspath_prepend(rppg_dir)
+    else:
         import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rPPG"))
+        sys.path.insert(0, rppg_dir)
+    try:
         from rppg_injector import _snapshot_validates
         return _snapshot_validates
     except (ImportError, ModuleNotFoundError) as exc:
@@ -42,11 +52,11 @@ def _import_validator():
         pytest.skip(f"rppg_injector dependency unavailable: {exc}")
 
 
-def test_snapshot_validates_rejects_size_mismatch(tmp_path: Path):
+def test_snapshot_validates_rejects_size_mismatch(tmp_path: Path, monkeypatch):
     """A truncated snapshot (different size from source) is rejected
     before even opening cv2 — the cheap size pre-check catches it.
     """
-    _snapshot_validates = _import_validator()
+    _snapshot_validates = _import_validator(monkeypatch)
 
     src = tmp_path / "iter_5.mp4"
     snapshot = tmp_path / "snapshot.tmp.mp4"
@@ -55,11 +65,11 @@ def test_snapshot_validates_rejects_size_mismatch(tmp_path: Path):
     assert _snapshot_validates(str(snapshot), str(src)) is False
 
 
-def test_snapshot_validates_rejects_missing_file(tmp_path: Path):
+def test_snapshot_validates_rejects_missing_file(tmp_path: Path, monkeypatch):
     """A snapshot path that doesn't exist on disk is rejected
     (getsize raises OSError, caught and treated as failure).
     """
-    _snapshot_validates = _import_validator()
+    _snapshot_validates = _import_validator(monkeypatch)
 
     src = tmp_path / "iter_5.mp4"
     src.write_bytes(b"data")
@@ -67,14 +77,14 @@ def test_snapshot_validates_rejects_missing_file(tmp_path: Path):
     assert _snapshot_validates(str(missing), str(src)) is False
 
 
-def test_snapshot_validates_rejects_unopenable_video(tmp_path: Path):
+def test_snapshot_validates_rejects_unopenable_video(tmp_path: Path, monkeypatch):
     """Even when sizes match, a snapshot that cv2 can't open
     (e.g. zero frames, garbage bytes that happen to be the right
     size) is rejected. This is the safety net for the case where
     the file is "complete" by byte-count but the H.264 container
     header is malformed.
     """
-    _snapshot_validates = _import_validator()
+    _snapshot_validates = _import_validator(monkeypatch)
 
     src = tmp_path / "iter_5.mp4"
     snapshot = tmp_path / "snapshot.tmp.mp4"

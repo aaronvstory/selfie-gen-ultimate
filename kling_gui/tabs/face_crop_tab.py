@@ -251,8 +251,22 @@ class FaceCropTab(tk.Frame):
         # JSON ("false"/"0"/...) parses correctly — a bare bool()
         # treats "false" as truthy. See face_similarity._parse_bool
         # for the helper.
+        #
+        # Subagent M3 round 5: an uncoercible marker value (list/dict/
+        # garbage) returns None from _parse_bool. Treat None as
+        # "marker present, skip migration" — conservative semantics
+        # so we never overwrite a user's explicit (if unusual)
+        # outpaint_double_expand on subsequent launches just because
+        # the marker key has a weird value. The migration is one-time
+        # by design; "weird marker = treat as present" honors that.
         from face_similarity import _parse_bool as _pb
-        if not _pb(config.get("outpaint_2x_default_reset_v2", False)):
+        _marker_raw = config.get("outpaint_2x_default_reset_v2", False)
+        _marker_parsed = _pb(_marker_raw)
+        _migration_already_done = (
+            _marker_parsed is True
+            or _marker_parsed is None  # uncoercible -> treat as done
+        )
+        if not _migration_already_done:
             prior = config.get("outpaint_double_expand", False)
             config["outpaint_double_expand"] = False
             config["outpaint_2x_default_reset_v2"] = True
@@ -284,7 +298,17 @@ class FaceCropTab(tk.Frame):
         # the in-app log display isn't visible yet.
         if self._outpaint_2x_migration_fired:
             try:
-                self._save_config_now()
+                # Subagent M4 round 5: at __init__ time the other tabs
+                # haven't been constructed yet, so calling the full
+                # get_config_updates() round-trip via _save_config_now()
+                # would write the shared config in its pre-tab-load
+                # state. Persist ONLY the two migration keys via the
+                # config_saver — narrower blast radius, no ordering
+                # invariant locked in.
+                if self._config_saver:
+                    # Migration mutated `config` (shared dict) in
+                    # __init__; just trigger the on-disk save.
+                    self._config_saver()
             except Exception as exc:
                 import sys as _sys
                 print(
@@ -1640,6 +1664,21 @@ class FaceCropTab(tk.Frame):
             except (OSError, ValueError):
                 return 0.0
 
+        def _log_source(label: str, hit_path: str) -> None:
+            """Debug-log which fallback source produced the live ref.
+            Subagent L4 round 5: helps triage "similarity score looks
+            wrong" reports without re-running the worker. Best-effort —
+            silently no-op if `self.log` isn't wired yet (this method
+            is also reachable from non-GUI contexts in tests).
+            """
+            try:
+                self.log(
+                    f"[SIM] live crop ref source={label} path={hit_path}",
+                    "debug",
+                )
+            except Exception:
+                pass
+
         # Step 1: walk session entries, verify on-disk. Defensive
         # exception list per PR #53 round 4: an entry whose path was
         # set to None by upstream code (or any non-str type) would
@@ -1658,6 +1697,7 @@ class FaceCropTab(tk.Frame):
             except (OSError, ValueError, TypeError):
                 exists_now = False
             if exists_now:
+                _log_source("session_entry", entry_path)
                 return entry_path
 
         # Step 2: last-saved crop path. Same TypeError guard for the
@@ -1667,6 +1707,7 @@ class FaceCropTab(tk.Frame):
         if last:
             try:
                 if _P(last).is_file():
+                    _log_source("_last_crop_path", last)
                     return last
             except (OSError, ValueError, TypeError):
                 pass
@@ -1713,32 +1754,74 @@ class FaceCropTab(tk.Frame):
                     )
                 except (TypeError, ValueError):
                     active_stem = None
-                patterns = []
+                # Subagent H3 round 5: when the active source is a
+                # derived artifact (e.g. "alice-expanded.jpg"), its
+                # exact-stem pattern ("alice-expanded_crop.*") may miss.
+                # Before falling back to ANY *_crop.*, try a prefix-
+                # relaxed match on the first hyphen-split segment
+                # ("alice_crop.*") — handles the common "{name}-
+                # expanded" / "{name}-cropped" derived-artifact case.
+                # If THAT also misses AND there are multiple *_crop.*
+                # siblings, REFUSE to pick (silent wrong-identity
+                # scoring is worse than skipping similarity). Only
+                # fall back to mtime-newest *_crop.* when there's
+                # EXACTLY ONE candidate.
+                #
+                # All patterns use glob.escape so a stem like
+                # "selfie[final]" or "clip (1)" is matched literally,
+                # not as a glob character class. Same trap addressed in
+                # automation/rppg.py::resolve_produced_output for the
+                # rPPG metric-rename glob.
+                stem_candidates = []
                 if active_stem:
-                    # glob.escape so a stem like "selfie[final]" or
-                    # "clip (1)" is matched literally, not as a glob
-                    # character class. Same trap addressed in
-                    # automation/rppg.py::resolve_produced_output for
-                    # the rPPG metric-rename glob.
-                    patterns.append(f"{_glob.escape(active_stem)}_crop.*")
-                patterns.append("*_crop.*")  # generic fallback
-                for pat in patterns:
+                    stem_candidates.append(active_stem)
+                    # Prefix-relaxed: "alice-expanded" -> "alice".
+                    head = active_stem.split("-", 1)[0]
+                    if head and head != active_stem:
+                        stem_candidates.append(head)
+                # Exact + prefix-relaxed stem patterns (literal-escaped).
+                for stem_idx, stem_cand in enumerate(stem_candidates):
+                    label = (
+                        "glob_stem_exact" if stem_idx == 0
+                        else "glob_stem_prefix"
+                    )
                     try:
                         matches = [
-                            c for c in gen_dir.glob(pat) if c.is_file()
+                            c for c in gen_dir.glob(
+                                f"{_glob.escape(stem_cand)}_crop.*"
+                            )
+                            if c.is_file()
                         ]
                     except OSError:
                         matches = []
                     if matches:
-                        # _safe_mtime handles the race where a
-                        # candidate vanishes between glob() and stat().
                         matches.sort(key=_safe_mtime, reverse=True)
                         for cand in matches:
                             try:
                                 if cand.is_file():
+                                    _log_source(label, str(cand))
                                     return str(cand)
                             except (OSError, ValueError, TypeError):
                                 continue
+                # Last-resort generic pattern. ONLY return a winner
+                # if there is exactly ONE *_crop.* in this folder —
+                # multiple means we'd be guessing which subject's
+                # crop to score against. Skip rather than guess.
+                try:
+                    all_crops = [
+                        c for c in gen_dir.glob("*_crop.*")
+                        if c.is_file()
+                    ]
+                except OSError:
+                    all_crops = []
+                if len(all_crops) == 1:
+                    cand = all_crops[0]
+                    try:
+                        if cand.is_file():
+                            _log_source("glob_solo", str(cand))
+                            return str(cand)
+                    except (OSError, ValueError, TypeError):
+                        pass
 
         return None
 
@@ -2330,15 +2413,17 @@ class FaceCropTab(tk.Frame):
                     # glob before giving up.
                     live_ref = self._resolve_live_crop_ref()
                     if live_ref is None:
-                        self.winfo_toplevel().after(
-                            0,
-                            lambda i=pass_no:
-                            self.log(
-                                f"Sim pass {i}: skipped — no crop reference "
-                                f"on disk (looked in session entries, "
-                                f"_last_crop_path, gen-images/*_crop.*).",
-                                "debug",
-                            ),
+                        # Gemini PR #53 round 5 MED: use the locally-
+                        # scoped tk_safe_log helper instead of an inline
+                        # winfo_toplevel().after — same widget-lifecycle
+                        # safety, less code, matches the rest of this
+                        # worker thread.
+                        tk_safe_log(
+                            f"Sim pass {pass_no}: skipped — no crop "
+                            f"reference on disk (looked in session "
+                            f"entries, _last_crop_path, "
+                            f"gen-images/*_crop.*).",
+                            "debug",
                         )
                     else:
                         try:
@@ -2351,23 +2436,16 @@ class FaceCropTab(tk.Frame):
                             # Disk state changed between resolve and
                             # compute. Downgrade to info — this is a
                             # race, not a real failure.
-                            self.winfo_toplevel().after(
-                                0,
-                                lambda e=exc, i=pass_no:
-                                self.log(
-                                    f"Sim pass {i}: crop vanished mid-call "
-                                    f"({e}); skipping silently.",
-                                    "info",
-                                ),
+                            tk_safe_log(
+                                f"Sim pass {pass_no}: crop vanished "
+                                f"mid-call ({exc}); skipping silently.",
+                                "info",
                             )
                         except Exception as exc:
-                            self.winfo_toplevel().after(
-                                0,
-                                lambda e=exc, i=pass_no:
-                                self.log(
-                                    f"Sim pass {i}: {type(e).__name__}: {e!r}",
-                                    "warning",
-                                ),
+                            tk_safe_log(
+                                f"Sim pass {pass_no}: "
+                                f"{type(exc).__name__}: {exc!r}",
+                                "warning",
                             )
 
                     per_pass_results.append((result, sim, dict(current_ops)))
