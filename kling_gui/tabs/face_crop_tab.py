@@ -276,6 +276,12 @@ class FaceCropTab(tk.Frame):
         # stamped on the way out so the "we reset Run 2x for you" log
         # only fires when there's a NEW migration to surface (rather
         # than confusing users who already saw v2 do its job).
+        # Always stamp v2 at init time so a hypothetical config with
+        # v3 stamped but v2 missing (third-party clear, partial-write
+        # crash, etc.) still has the v2 marker after this method
+        # returns. Subagent L4 round 11 — the prior `setdefault` was
+        # inside the migration branch and only ran when v3 was absent.
+        config.setdefault("outpaint_2x_default_reset_v2", True)
         _marker_v3_raw = config.get("outpaint_2x_default_reset_v3", False)
         _marker_v3_parsed = _pb(_marker_v3_raw)
         _migration_already_done = (
@@ -286,9 +292,6 @@ class FaceCropTab(tk.Frame):
             prior = config.get("outpaint_double_expand", False)
             config["outpaint_double_expand"] = False
             config["outpaint_2x_default_reset_v3"] = True
-            # Keep v2 stamped so any other code that checks v2 still
-            # sees the post-migration state.
-            config.setdefault("outpaint_2x_default_reset_v2", True)
             self._outpaint_2x_migration_fired = True
             self._outpaint_2x_migration_prior = prior
         else:

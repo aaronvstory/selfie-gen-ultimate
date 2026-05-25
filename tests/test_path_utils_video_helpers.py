@@ -48,21 +48,21 @@ def test_is_video_path_handles_falsy_input():
 
 
 def test_video_extensions_matches_image_state_constant():
-    """Sanity-check: the path_utils.VIDEO_EXTENSIONS exported here
-    is a SUPERSET of kling_gui.image_state._VIDEO_EXTENSIONS so the
-    two never silently disagree about what counts as a video. If
-    image_state ever adds a new extension, this test surfaces the
-    drift.
+    """Strict parity: the two sets MUST be equal. PR #53 round 11
+    (subagent M1) tightened this from "superset" to "equal" after a
+    drift was found where path_utils had ``.m4v`` but image_state
+    did not — meaning a dropped ``.m4v`` rendered in the carousel
+    with ``is_video=False`` (broken still-image render). Future
+    additions to either set must update both or this test fails.
     """
     try:
         from kling_gui.image_state import _VIDEO_EXTENSIONS as _legacy
     except ImportError:
         import pytest
         pytest.skip("kling_gui.image_state not importable in this environment")
-    # Every extension image_state recognises as video must also be
-    # in the public path_utils set. path_utils may have MORE (e.g.
-    # .m4v) — that's fine.
-    assert set(_legacy).issubset(path_utils.VIDEO_EXTENSIONS), (
-        f"image_state has extensions not in path_utils.VIDEO_EXTENSIONS: "
-        f"{set(_legacy) - path_utils.VIDEO_EXTENSIONS}"
+    assert set(_legacy) == path_utils.VIDEO_EXTENSIONS, (
+        f"image_state._VIDEO_EXTENSIONS and path_utils.VIDEO_EXTENSIONS "
+        f"have drifted. Only in image_state: "
+        f"{set(_legacy) - path_utils.VIDEO_EXTENSIONS}. Only in "
+        f"path_utils: {path_utils.VIDEO_EXTENSIONS - set(_legacy)}."
     )

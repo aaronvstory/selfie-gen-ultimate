@@ -4259,19 +4259,20 @@ class KlingGUIWindow:
         # PR #53 round 10: surface a friendly message when the user
         # drops/selects video files in the image zone (was cryptic
         # "Skipped carousel add: foo.mp4 (unsupported extension: .mp4)"
-        # before). Detect FIRST so the generic preflight rejection
-        # doesn't fire for video paths.
+        # before). Detect by extension AND verify the file actually
+        # exists — otherwise a stale/missing .mp4 path gets the
+        # misleading "videos aren't accepted here" instead of the
+        # accurate "file not found" reason (subagent L2 round 11).
+        #
+        # Two-pass to honor the "1 collapsed line for multi-drop"
+        # promise (subagent L1 round 11 caught the prior code emitting
+        # both per-file AND summary): first pass classifies each path,
+        # second pass logs based on the collected counts.
         from path_utils import is_video_path as _is_video
-        video_count = 0
+        skipped_videos: List[str] = []
         for path in files:
-            if _is_video(path):
-                video_count += 1
-                self._log(
-                    f"Videos aren't accepted here — use the Step 3 "
-                    f"Video tab for video files. Skipped: "
-                    f"{os.path.basename(path)}",
-                    "warning",
-                )
+            if _is_video(path) and os.path.isfile(path):
+                skipped_videos.append(path)
                 continue
             ok, reason = preflight_image_path(path, allowed_exts=VALID_EXTENSIONS)
             if not ok:
@@ -4286,13 +4287,19 @@ class KlingGUIWindow:
                 )
                 continue
             valid_files.append(path)
-        # Summary if multiple videos got dropped — one collapsed line
-        # instead of N per-file warnings.
-        if video_count > 1:
+        # Log video skips: per-file if 1, single summary if 2+.
+        if len(skipped_videos) == 1:
             self._log(
-                f"{video_count} video file(s) skipped — drop them into "
-                f"the Step 3 Video drop zone instead.",
-                "info",
+                f"Videos aren't accepted here — use the Step 3 Video "
+                f"tab for video files. Skipped: "
+                f"{os.path.basename(skipped_videos[0])}",
+                "warning",
+            )
+        elif len(skipped_videos) > 1:
+            self._log(
+                f"{len(skipped_videos)} video file(s) skipped — drop "
+                f"them into the Step 3 Video drop zone instead.",
+                "warning",
             )
         if not valid_files:
             return 0

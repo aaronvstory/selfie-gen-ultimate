@@ -10,7 +10,14 @@ logger = logging.getLogger(__name__)
 
 
 _VALID_SOURCE_TYPES = {"input", "selfie", "outpaint", "polish", "upscale", "video"}
-_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
+"""Extensions the carousel treats as video. Kept in lockstep with
+``path_utils.VIDEO_EXTENSIONS`` (PR #53 round 10 introduced that
+parallel set for non-GUI ingest sites; round 11 brings ``.m4v``
+into both because the file-picker at
+``kling_gui/main_window.py:3938`` already accepted ``.m4v`` even
+though the carousel ``is_video`` predicate did not, which meant a
+dropped ``.m4v`` rendered as a broken still image)."""
 SIMILARITY_PASS_THRESHOLD = 80
 
 

@@ -619,6 +619,12 @@ class OutpaintGenerator:
 
         if (downloaded_w, downloaded_h) != (expected_canvas_w, expected_canvas_h):
             try:
+                # Intentional EXIF drop on the resize-and-save: the
+                # .convert("RGB") loses any EXIF the provider returned,
+                # and we don't propagate it through. This matches the
+                # composite-side save path (the composite always
+                # rewrites RGB pixels without EXIF). Subagent L5
+                # round 11 — flagged for clarity, not a bug.
                 with Image.open(output_path) as dl:
                     dl_rgb = dl.convert("RGB")
                     resized = dl_rgb.resize(
@@ -1339,24 +1345,71 @@ class OutpaintGenerator:
                 f"(expected {expected_w}x{expected_h})",
                 "debug",
             )
-            if (actual_w, actual_h) != (expected_w, expected_h):
-                self._report(
-                    f"BFL dimension mismatch! Expected {expected_w}x{expected_h}, "
-                    f"got {actual_w}x{actual_h} — composite will adjust paste coords",
-                    "warning",
-                )
         except Exception as exc:
             self._report(f"Could not verify output dimensions: {exc}", "warning")
+            actual_w, actual_h = expected_w, expected_h  # best-effort
+
+        # 6a. composite_mode="none" short-circuit (parity with fal path,
+        # PR #53 round 11 subagent M2). Skip the resize-and-composite
+        # block entirely — user asked for raw provider output.
+        if composite_mode == "none":
+            self._report(
+                "Composite: none — using raw AI output "
+                f"({actual_w}x{actual_h})",
+                "progress",
+            )
+            return output_path
+
+        # 6b. Resize to expected canvas if BFL underflowed (parity with
+        # fal path, PR #53 round 11 subagent M2). BFL clamps less than
+        # fal in practice but the matchTemplate ±15px alignment window
+        # in _composite_onto_result is still vulnerable to a coordinate-
+        # system mismatch on the rare occasions BFL DOES clamp. Cheap
+        # insurance, identical shape to the fal-side resize at the
+        # always-composite block above.
+        if (actual_w, actual_h) != (expected_w, expected_h):
+            try:
+                with Image.open(output_path) as dl:
+                    dl_rgb = dl.convert("RGB")
+                    resized = dl_rgb.resize(
+                        (expected_w, expected_h),
+                        Image.Resampling.LANCZOS,
+                    )
+                save_kwargs = (
+                    {"quality": 95}
+                    if output_format.lower() in ("jpg", "jpeg")
+                    else {}
+                )
+                resized.save(output_path, **save_kwargs)
+                self._report(
+                    (
+                        f"BFL composite: resized output "
+                        f"{actual_w}x{actual_h} -> {expected_w}x{expected_h} "
+                        "(Lanczos) to match provider-coordinate expected canvas"
+                    ),
+                    "info",
+                )
+            except Exception as exc:
+                self._report(
+                    f"Could not resize BFL output to expected canvas: {exc}",
+                    "error",
+                )
+                self._set_last_outpaint_error_detail(
+                    f"bfl_resize_failed:{type(exc).__name__}"
+                )
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+                return None
 
         # 7. Composite: paste original sharp pixels over AI center.
         # Same preserve-contract check as the fal.ai path (PR
         # fix/step0-composite-and-rppg-v2.5): if the composite fails
         # for any preserve mode, reject the output instead of silently
-        # shipping a non-composited result. The full-res-original
-        # upscale path (applied to fal.ai above) could also be wired
-        # here as a future enhancement, but BFL doesn't exhibit the
-        # underflow behaviour fal.ai does, so the current downscaled
-        # composite source is acceptable for now.
+        # shipping a non-composited result. Both paths use the same
+        # provider-coordinate composite source (round 10 revert) —
+        # downscaled `processed_img` + preflight-adjusted margins.
         composite_ok = self._composite_onto_result(
             output_path, processed_img, adj_l, adj_r, adj_t, adj_b,
             output_format, composite_mode,
