@@ -2170,18 +2170,21 @@ class QueueManager:
             # ``--landmark-stride`` help, running MediaPipe only every
             # Nth frame and interpolating between via the ROIStabilizer
             # gives a "3-5x reduction in per-frame detection cost at
-            # negligible quality loss on mostly-still faces." The Kling
-            # output is almost always a slow controlled head turn
-            # (subject performs the prompted move at near-still speed),
-            # so stride 3 is the safe sweet spot — measurable speedup
-            # without touching the pulse-injection correctness path.
-            # User dial-back to 1 (every frame) via
-            # config["rppg_landmark_stride"] = 1 for the rare case of a
-            # fast-motion source. (PR fix/rppg-failure-visibility v2.5
-            # — user-asked speedup pass.)
-            # Default reverted 3 -> 1 in fix/step0-composite-and-rppg-v2.5
-            # (snapshot-race regression — see automation/config.py
-            # landmark-stride comment for full reasoning).
+            # negligible quality loss on mostly-still faces."
+            #
+            # Default is 1 (every frame) for safety after PR #52's
+            # snapshot race produced unplayable output on a real user
+            # run. The snapshot race itself is now fixed
+            # (rPPG/rppg_injector.py::_snapshot_validates) and a
+            # playability gate (automation/rppg.py::_is_playable_video)
+            # catches future regressions, but stride 1 stays the
+            # default until we have local smoke-test proof that
+            # stride > 1 is safe on real Kling output. Users can opt
+            # into the 3-5x speedup via
+            # config["rppg_landmark_stride"] = 3 (or the automation
+            # alias automation_rppg_landmark_stride). CodeRabbit
+            # round 3 on PR #53 — keep this comment in sync with the
+            # actual default below.
             landmark_stride_raw = _cfg_get(
                 "rppg_landmark_stride",
                 "automation_rppg_landmark_stride",

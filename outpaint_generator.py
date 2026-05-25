@@ -31,6 +31,36 @@ def _read_int_env(primary: str, fallback: str, default: int) -> int:
             logger.warning("Invalid %s=%r; ignoring and trying fallback/default", key, raw)
     return default
 
+
+def _read_single_env_int(key: str, default: int) -> int:
+    """Single-key safe int loader. Mirrors _read_int_env but for keys
+    that don't have a fallback alias. PR #53 round 3 — CodeRabbit
+    flagged module-import-time `int(os.environ.get(...))` calls that
+    crash module load on a malformed env var, disabling outpaint
+    entirely. Falls back to *default* on TypeError/ValueError.
+    """
+    raw = os.environ.get(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %d", key, raw, default)
+        return default
+
+
+def _read_single_env_float(key: str, default: float) -> float:
+    """Single-key safe float loader. Same rationale as _read_single_env_int."""
+    raw = os.environ.get(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %g", key, raw, default)
+        return default
+
+
 # BFL polling limits (shared with selfie_generator pattern)
 _BFL_MAX_WAIT_SECONDS = _read_int_env("BFL_MAX_WAIT_SECONDS", "BFL_EXPAND_MAX_WAIT_SECONDS", 30)
 _BFL_POLL_INTERVAL = 5
@@ -38,8 +68,8 @@ _BFL_MAX_CONSECUTIVE_ERRORS = 3
 _BFL_EXPAND_URL = "https://api.bfl.ai/v1/flux-pro-1.0-expand"
 # BFL Expand output limits — BFL recommends ≤2MP for best results (help.bfl.ai).
 # Override via env: BFL_EXPAND_MAX_DIM, BFL_EXPAND_MAX_MP
-_BFL_MAX_CANVAS_DIM = int(os.environ.get("BFL_EXPAND_MAX_DIM", "2048"))
-_BFL_MAX_CANVAS_MP = float(os.environ.get("BFL_EXPAND_MAX_MP", "1.5"))
+_BFL_MAX_CANVAS_DIM = _read_single_env_int("BFL_EXPAND_MAX_DIM", 2048)
+_BFL_MAX_CANVAS_MP = _read_single_env_float("BFL_EXPAND_MAX_MP", 1.5)
 
 
 class OutpaintGenerator:
@@ -48,9 +78,11 @@ class OutpaintGenerator:
     ENDPOINT = "fal-ai/image-apps-v2/outpaint"
 
     # Empirical safe limits — fal.ai clamped 2782x3448 → 1232x1536 in testing.
-    # Override via env: FAL_OUTPAINT_MAX_DIM, FAL_OUTPAINT_MAX_MP
-    _MAX_CANVAS_DIM = int(os.environ.get("FAL_OUTPAINT_MAX_DIM", "1536"))
-    _MAX_CANVAS_MP = float(os.environ.get("FAL_OUTPAINT_MAX_MP", "2.0"))
+    # Override via env: FAL_OUTPAINT_MAX_DIM, FAL_OUTPAINT_MAX_MP. Use the
+    # safe helpers so a malformed env var falls back to the default instead
+    # of crashing module import (CodeRabbit PR #53 round 3).
+    _MAX_CANVAS_DIM = _read_single_env_int("FAL_OUTPAINT_MAX_DIM", 1536)
+    _MAX_CANVAS_MP = _read_single_env_float("FAL_OUTPAINT_MAX_MP", 2.0)
     _PRESERVE_SEAM_BLEND_PX = 24
     _PRESERVE_SEAM_BLEND_STRENGTH = 0.55
 

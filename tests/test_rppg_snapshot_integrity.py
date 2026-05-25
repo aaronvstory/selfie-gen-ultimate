@@ -25,17 +25,21 @@ from pathlib import Path
 def _import_validator():
     """Import _snapshot_validates without spinning up the injector class.
 
-    Returns the function or skips the test if importing the module
-    fails on this machine (e.g. mediapipe unavailable in CI).
+    Returns the function or skips the test if a DEPENDENCY (e.g.,
+    mediapipe) is unavailable in CI. CodeRabbit PR #53 round 3:
+    narrow the except clause to ImportError/ModuleNotFoundError so a
+    real runtime regression in rppg_injector (e.g. SyntaxError, a
+    crash at module-import time) fails loudly instead of being
+    silently skipped.
     """
     try:
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rPPG"))
         from rppg_injector import _snapshot_validates
         return _snapshot_validates
-    except Exception as exc:
+    except (ImportError, ModuleNotFoundError) as exc:
         import pytest
-        pytest.skip(f"rppg_injector unavailable on this machine: {exc}")
+        pytest.skip(f"rppg_injector dependency unavailable: {exc}")
 
 
 def test_snapshot_validates_rejects_size_mismatch(tmp_path: Path):

@@ -1654,28 +1654,48 @@ class FaceCropTab(tk.Frame):
             except (OSError, ValueError):
                 pass
 
-        # Step 3: glob gen-images siblings. Filter by the active
-        # source stem first ({stem}_crop.*) so a multi-source folder
-        # doesn't silently compare bob's expand against alice's crop
-        # (subagent H4 round 1 — alphabetic sort returned alice on
-        # every call). If the stem-filtered glob is empty, fall back
-        # to ANY *_crop.* ranked by mtime (newest first) so a renamed
-        # source still resolves to the most-recently-saved crop.
-        try:
-            gen_dir = self._get_gen_dir()
-        except Exception:
-            gen_dir = None
-        if gen_dir is not None:
-            # Active source stem — used to scope the glob.
-            active_stem = None
-            for _src_attr in ("_source_path", "_original_path"):
-                _src_val = getattr(self, _src_attr, None)
-                if _src_val:
-                    try:
-                        active_stem = _P(_src_val).stem
+        # Step 3: glob gen-images siblings of the CURRENT Step 0
+        # source (NOT self._get_gen_dir() — that helper is anchored
+        # to image_session.images[0] which can be a different folder
+        # in a multi-source carousel; CodeRabbit major round 3).
+        # Resolve gen_dir from `self._source_path` first, falling back
+        # to `self._original_path` then `image_session.active_image_path`.
+        # Filter by active source stem (`{stem}_crop.*`) so a
+        # multi-source folder doesn't silently compare bob's expand
+        # against alice's crop (subagent H4 round 1 — alphabetic sort
+        # returned alice on every call). If the stem-filtered glob is
+        # empty, fall back to ANY *_crop.* ranked by mtime (newest
+        # first) so a renamed source still resolves to the most
+        # recently saved crop.
+        active_src = None
+        for _src_attr in ("_source_path", "_original_path"):
+            _src_val = getattr(self, _src_attr, None)
+            if _src_val:
+                try:
+                    if _P(_src_val).is_file() or _P(_src_val).parent.is_dir():
+                        active_src = _src_val
                         break
-                    except (TypeError, ValueError):
-                        continue
+                except (TypeError, ValueError):
+                    continue
+        if active_src is None:
+            try:
+                _sess_active = self.image_session.active_image_path
+            except AttributeError:
+                _sess_active = None
+            if _sess_active:
+                active_src = _sess_active
+        gen_dir = None
+        if active_src:
+            try:
+                gen_dir = _P(get_gen_images_folder(str(active_src)))
+            except (TypeError, ValueError, OSError):
+                gen_dir = None
+        if gen_dir is not None and gen_dir.is_dir():
+            active_stem = None
+            try:
+                active_stem = _P(active_src).stem if active_src else None
+            except (TypeError, ValueError):
+                active_stem = None
             patterns = []
             if active_stem:
                 patterns.append(f"{active_stem}_crop.*")
