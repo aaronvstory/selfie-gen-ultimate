@@ -4616,8 +4616,11 @@ class PhaseAlignedRPPGManipulator:
                                 ))
                     else:
                         # iter_output_path itself doesn't exist — no
-                        # source for a snapshot. Treat as soft-fail
-                        # (keep prior best if any).
+                        # source for a snapshot. CodeRabbit PR #53
+                        # round 12: NEVER commit a missing path as
+                        # best_path (the downstream finalize+copy
+                        # would crash on a stale reference). Either
+                        # keep the prior good snapshot or hard-fail.
                         if prior_snapshot_good:
                             print(c(
                                 f"  Warning: best-iter {iteration} source "
@@ -4625,8 +4628,18 @@ class PhaseAlignedRPPGManipulator:
                                 f"good snapshot at iter {best_iter}.",
                                 'Y',
                             ))
+                            # _adopted_this_iter stays False.
                         else:
-                            _commit_best(iter_output_path)
+                            # No prior snapshot AND no source file —
+                            # there is no recoverable best at this
+                            # point. Raising is the loud, correct
+                            # signal (vs silently committing a path
+                            # that points at nothing).
+                            raise FileNotFoundError(
+                                f"Best iteration output missing and no "
+                                f"prior snapshot exists: "
+                                f"{iter_output_path!r} (iter {iteration})"
+                            )
                 except OSError as exc:
                     print(c(
                         f"  Warning: could not snapshot best iter "
@@ -4645,8 +4658,20 @@ class PhaseAlignedRPPGManipulator:
                         # snapshot over an OSError'd new copy.
                         # _adopted_this_iter stays False.
                         pass
-                    else:
+                    elif os.path.exists(iter_output_path):
+                        # OSError on copy, but the source iter file
+                        # IS present on disk — adopt the direct path
+                        # (vulnerable to mid-loop cleanup as warned,
+                        # but at least it points at a real file).
                         _commit_best(iter_output_path)
+                    else:
+                        # Same as the inner else above: no prior
+                        # snapshot AND no source file. Hard-fail.
+                        raise FileNotFoundError(
+                            f"Best iteration output missing after copy "
+                            f"failure and no prior snapshot exists: "
+                            f"{iter_output_path!r} (iter {iteration})"
+                        ) from exc
 
             # v5.10d: update revert high-water mark.
             # PR #53 round 8: use _adopted_this_iter, NOT _is_new_best.

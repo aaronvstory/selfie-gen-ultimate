@@ -363,7 +363,7 @@ def test_fal_underflow_resizes_to_expected_provider_canvas(monkeypatch, tmp_path
     res target. fal.ai routinely clamps 1-2% smaller than preflight;
     resizing to the small expected canvas keeps the matchTemplate
     +-15px alignment window valid. Rounds 5..9 incorrectly resized
-    to a full-res target (3.4× upscale in the user's reproducer) and
+    to a full-res target (3.4x upscale in the user's reproducer) and
     the composite silently misaligned.
 
     Underflow scenario: source 640x480 (no preflight scale needed
