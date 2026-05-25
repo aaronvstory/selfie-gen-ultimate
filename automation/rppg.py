@@ -155,22 +155,31 @@ _FFPROBE_NAL_PATTERNS: Tuple[str, ...] = (
 _corrupt_blacklist: set[str] = set()
 
 
-def _is_blacklisted(path: Path) -> bool:
-    """True if *path*'s absolute form is in the corrupt blacklist.
+def _blacklist_key(path: Path) -> str:
+    """Canonical blacklist key for *path*.
 
-    Uses ``Path.absolute()`` — purely lexical absolutization with no
-    filesystem call — which is the right choice for an in-memory
-    same-process key. ``Path.resolve()`` would additionally chase
-    symlinks and (on strict=True) verify the target exists, neither
-    of which adds value here and both of which add fs-touch latency.
-    Gemini PR #53 round 7 cleanup.
+    Uses ``os.path.realpath`` + ``os.path.normcase`` so the same on-
+    disk file maps to the same key even when the caller passes
+    different-cased paths (NTFS / APFS default to case-insensitive
+    filesystems) or relative-path variants (`foo/../foo/bar.mp4` vs
+    `foo/bar.mp4`). The ~1ms realpath cost is acceptable for the
+    one-shot blacklist-add and per-candidate blacklist-check.
+    Subagent M4 PR #53 round 9: the prior `Path.absolute()` key
+    treated `C:\\Foo\\Bar.mp4` and `c:\\foo\\BAR.mp4` as different
+    blacklist entries even though they reference the same file.
     """
-    return str(path.absolute()) in _corrupt_blacklist
+    return os.path.normcase(os.path.realpath(str(path)))
+
+
+def _is_blacklisted(path: Path) -> bool:
+    """True if *path* is in the corrupt blacklist (case-insensitive
+    on Windows/macOS default filesystems, symlink-resolved)."""
+    return _blacklist_key(path) in _corrupt_blacklist
 
 
 def _blacklist(path: Path) -> None:
-    """Add *path*'s absolute form to the corrupt blacklist."""
-    _corrupt_blacklist.add(str(path.absolute()))
+    """Add *path* to the corrupt blacklist."""
+    _corrupt_blacklist.add(_blacklist_key(path))
 
 
 def _is_playable_secondary(

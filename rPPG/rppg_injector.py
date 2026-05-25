@@ -3633,7 +3633,23 @@ class PhaseAlignedRPPGManipulator:
         # intermediate. Don't make `_BEST_SNAPSHOT_NAME` resolve to the
         # same file as `output_path` without also updating the cleanup
         # guard to handle the absolute/relative comparison properly.
-        _BEST_SNAPSHOT_NAME = "best_iteration_snapshot.mp4"
+        #
+        # Subagent M1b PR #53 round 9: the bare name used to be
+        # "best_iteration_snapshot.mp4" — shared across ALL concurrent
+        # rPPG runs because cwd=rPPG/ is shared by all GUI workspaces
+        # (PR #49 workspace isolation does not extend to subprocess
+        # cwd). Two concurrent runs on different inputs could then
+        # collide: run A's `prior_snapshot_good=True` picks up run B's
+        # snapshot, and the round-5 "keep prior good snapshot" branch
+        # commits the WRONG video as best_path. Now include the
+        # process PID + a per-input hash so each run gets its own
+        # snapshot filename. Users typically run rPPG one at a time
+        # (it's a 5-10 min iterative process) so this is mostly
+        # defense-in-depth, but the cost is one extra string format.
+        _video_id = hash(os.path.abspath(video_path)) & 0xFFFFFF
+        _BEST_SNAPSHOT_NAME = (
+            f"best_iteration_snapshot_{os.getpid()}_{_video_id:06x}.mp4"
+        )
 
         current_path = video_path
         deband_temp = None
@@ -4525,14 +4541,31 @@ class PhaseAlignedRPPGManipulator:
                                  _metrics=m, _params=params):
                     """Commit all best_* state in one atomic step so
                     best_score never advances without a matching
-                    best_path / best_iter / best_metrics update."""
+                    best_path / best_iter / best_metrics update.
+
+                    Defaults (``_score=score`` etc.) are bound at def
+                    TIME, not at call time — this captures THIS iter's
+                    values per the snapshot semantics we want (the
+                    closure is rebuilt every iter via the enclosing
+                    `if _is_new_best:` block).
+
+                    Exception safety (subagent M2 PR #53 round 9):
+                    materialise all per-iter copies UPFRONT, then do
+                    the 6 nonlocal assignments together. Previously
+                    the `dict(_metrics)` allocation happened mid-
+                    sequence, so a MemoryError between two assignments
+                    could leave best_score advanced but best_metrics
+                    stale — half-committed state that's exactly what
+                    the round-8 atomicity fix was designed to prevent.
+                    """
                     nonlocal best_score, best_path, best_iter
                     nonlocal best_metrics, best_params
                     nonlocal _adopted_this_iter
+                    _new_metrics = dict(_metrics)  # may raise; do it first
                     best_score = _score
                     best_path = _path
                     best_iter = _iter
-                    best_metrics = dict(_metrics)
+                    best_metrics = _new_metrics
                     best_params = _params
                     _adopted_this_iter = True
 

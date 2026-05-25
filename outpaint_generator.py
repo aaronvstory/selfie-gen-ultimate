@@ -572,6 +572,23 @@ class OutpaintGenerator:
                 pass
             return None
 
+        # PR #53 round 9 — Codex P2: `composite_mode="none"` explicitly
+        # asks for the raw provider output. The always-composite path
+        # below reopens `image_path` to build `orig_full`; if that
+        # reopen failed (source moved or cleaned up between upload and
+        # download), the code would delete the perfectly-good downloaded
+        # output and return None — a regression for raw-output mode
+        # which never needed the source image in the first place.
+        # Short-circuit here so "none" mode goes back to its pre-PR
+        # behavior: download, accept, done.
+        if composite_mode == "none":
+            self._report(
+                "Composite: none — using raw AI output "
+                f"({downloaded_w}x{downloaded_h})",
+                "progress",
+            )
+            return output_path
+
         # Always-composite contract (PR fix/step0-composite-and-rppg-v2.5):
         # the previous code silently returned the raw fal output whenever
         # the provider returned a canvas smaller than preflight expected
@@ -599,7 +616,12 @@ class OutpaintGenerator:
         # the downloaded canvas (Codex P1, PR #53). Mirrors line 76 + 189.
         try:
             with Image.open(image_path) as src:
-                orig_full = ImageOps.exif_transpose(src).convert("RGB").copy()
+                # ImageOps.exif_transpose returns a NEW image (not a
+                # view into `src`), and .convert("RGB") returns
+                # another new image — both materialise pixels, so the
+                # trailing .copy() that the round-1 fix added is
+                # redundant. Removed per Gemini PR #53 round 9 nit.
+                orig_full = ImageOps.exif_transpose(src).convert("RGB")
         except Exception as exc:
             self._report(
                 f"Could not re-open source image for full-res composite: {exc}",

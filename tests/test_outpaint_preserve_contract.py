@@ -259,6 +259,64 @@ def test_full_res_reopen_applies_exif_transpose(monkeypatch, tmp_path: Path):
     assert captured["orig_size"] == (200, 300)
 
 
+def test_composite_mode_none_short_circuits_before_source_reopen(
+    monkeypatch, tmp_path: Path,
+):
+    """PR #53 round 9 — Codex P2: ``composite_mode="none"`` explicitly
+    asks for raw provider output. The always-composite path that
+    reopens ``image_path`` to build ``orig_full`` is irrelevant for
+    "none" mode, so a source-reopen failure (file moved between
+    upload and download) must NOT delete the perfectly-good
+    downloaded output. The "none" branch short-circuits BEFORE the
+    reopen.
+    """
+    gen = OutpaintGenerator(api_key="x")
+    src_path = tmp_path / "input.png"
+    Image.new("RGB", (320, 240), (5, 5, 5)).save(src_path)
+    _stub_fal_for_outpaint(
+        monkeypatch,
+        source_size=(320, 240),
+        uploaded_size=(320, 240),
+        downloaded_size=(440, 320),
+    )
+
+    orig_open = Image.open
+    call_counter = {"n": 0}
+
+    def fake_open(fp, *args, **kwargs):
+        # First two calls (preflight + _prepare_processed_image) succeed.
+        # If outpaint() reaches the 3rd open on src_path the test fails
+        # because the "none" short-circuit should have fired by then.
+        if str(fp) == str(src_path):
+            call_counter["n"] += 1
+            if call_counter["n"] >= 3:
+                raise OSError(
+                    "Source reopen should NOT happen for composite_mode='none'"
+                )
+        return orig_open(fp, *args, **kwargs)
+
+    monkeypatch.setattr("outpaint_generator.Image.open", fake_open)
+
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        expand_left=40,
+        expand_right=40,
+        expand_top=20,
+        expand_bottom=20,
+        provider="fal",
+        composite_mode="none",
+        edge_seal_px=0,
+    )
+
+    assert out is not None
+    import os as _os
+    assert _os.path.exists(out), (
+        "Downloaded output should still exist on disk for "
+        "composite_mode='none' — was the early-return missing?"
+    )
+
+
 def test_source_reopen_failure_rejects_output(monkeypatch, tmp_path: Path):
     """If the source image can't be re-opened for the full-res
     composite (deleted between download and the composite step), the

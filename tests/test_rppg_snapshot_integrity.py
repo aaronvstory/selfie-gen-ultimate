@@ -77,6 +77,42 @@ def test_snapshot_validates_rejects_missing_file(tmp_path: Path, monkeypatch):
     assert _snapshot_validates(str(missing), str(src)) is False
 
 
+def test_blacklist_key_idempotent_for_same_file(tmp_path, monkeypatch):
+    """PR #53 round 9 (subagent M4): the corrupt-file blacklist key
+    function must produce the same key for the same on-disk file
+    even when the caller passes lexically-different paths
+    (e.g. ``foo/../foo/bar.mp4`` vs ``foo/bar.mp4``). Symlinks AND
+    case-insensitivity collapse the same way.
+    """
+    import os as _os
+    import automation.rppg as rppg_mod
+    rppg_mod._corrupt_blacklist.clear()
+
+    target = tmp_path / "victim.mp4"
+    target.write_bytes(b"junk")
+
+    rppg_mod._blacklist(target)
+    assert rppg_mod._is_blacklisted(target) is True
+
+    # Lexically different but referring to the same file: round-trip
+    # via parent/.. — realpath collapses this back to `target`.
+    via_dotdot = tmp_path / "victim.mp4" / ".." / "victim.mp4"
+    assert rppg_mod._is_blacklisted(via_dotdot) is True
+
+    # If the filesystem is case-insensitive AND normcase is non-
+    # identity (Windows), a different-cased path should also hit.
+    # Skip the case-insensitivity branch on platforms where the
+    # combination doesn't hold (POSIX with case-sensitive fs OR
+    # macOS where realpath doesn't canonicalize case AND normcase
+    # is identity).
+    different_case = tmp_path / "VICTIM.MP4"
+    if different_case.exists():
+        canonical_target = _os.path.normcase(_os.path.realpath(str(target)))
+        canonical_dc = _os.path.normcase(_os.path.realpath(str(different_case)))
+        if canonical_target == canonical_dc:
+            assert rppg_mod._is_blacklisted(different_case) is True
+
+
 def test_snapshot_validates_rejects_unopenable_video(tmp_path: Path, monkeypatch):
     """Even when sizes match, a snapshot that cv2 can't open
     (e.g. zero frames, garbage bytes that happen to be the right

@@ -155,6 +155,45 @@ def test_resolver_uses_generic_fallback_when_exactly_one_crop_present(
     assert stub._resolve_live_crop_ref() == str(only)
 
 
+def test_resolver_prefers_original_path_over_source_path(tmp_path: Path):
+    """PR #53 round 8 (CodeRabbit): the Step-3 active-source
+    resolver MUST try ``_original_path`` before ``_source_path``.
+    _source_path is the EXIF-corrected temp copy used internally
+    by the cropper; _original_path is the actual user-selected file.
+    The gen-images anchor we want for the crop fallback is the
+    user's selection.
+
+    Subagent M3 PR #53 round 9: prior tests only set _source_path,
+    so the fallback path was exercised but NOT the priority.
+    A future refactor flipping the for-loop order back would
+    silently re-introduce the bug. This test pins the priority.
+    """
+    # Two different folder roots simulating temp-copy vs user file.
+    original_root = tmp_path / "user_folder"
+    original_root.mkdir()
+    source_root = tmp_path / "exif_temp"
+    source_root.mkdir()
+    # The user's gen-images has the REAL crop.
+    real_gen = original_root / "gen-images"
+    real_gen.mkdir()
+    real_crop = real_gen / "front_crop.jpg"
+    real_crop.write_bytes(b"real")
+    # The temp-copy gen-images has a DECOY (wrong subject).
+    decoy_gen = source_root / "gen-images"
+    decoy_gen.mkdir()
+    decoy_crop = decoy_gen / "front_crop.jpg"
+    decoy_crop.write_bytes(b"decoy")
+
+    stub = _make_resolver_stub([], None, real_gen)
+    stub._original_path = str(original_root / "front.jpg")
+    stub._source_path = str(source_root / "front.jpg")
+    hit = stub._resolve_live_crop_ref()
+    assert hit == str(real_crop), (
+        f"Resolver picked {hit!r} but should have preferred the "
+        f"_original_path gen-images crop at {real_crop!r}"
+    )
+
+
 def test_resolver_prefix_relaxed_stem_match(tmp_path: Path):
     """PR #53 round 5 H3: when the active source is a derived
     artifact like ``alice-expanded.jpg``, the exact-stem pattern
