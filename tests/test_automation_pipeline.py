@@ -1960,7 +1960,7 @@ def test_resolve_produced_output_handles_metric_suffix_rename(tmp_path, monkeypa
     # Patch the gate to always-True so this test exercises the glob/
     # mtime-ranking logic specifically.
     import automation.rppg as _rppg_mod
-    monkeypatch.setattr(_rppg_mod, "_is_playable_video", lambda _p: True)
+    monkeypatch.setattr(_rppg_mod, "_is_playable_video", lambda _p, **_kw: True)
     from automation.rppg import resolve_produced_output
 
     requested = tmp_path / "clip-rppg.mp4"
@@ -2006,7 +2006,7 @@ def test_resolve_produced_output_ignores_loose_siblings(tmp_path, monkeypatch):
     # See test_resolve_produced_output_handles_metric_suffix_rename for
     # why we bypass the ffprobe gate here.
     import automation.rppg as _rppg_mod
-    monkeypatch.setattr(_rppg_mod, "_is_playable_video", lambda _p: True)
+    monkeypatch.setattr(_rppg_mod, "_is_playable_video", lambda _p, **_kw: True)
     from automation.rppg import resolve_produced_output
 
     requested = tmp_path / "clip-rppg.mp4"
@@ -2144,7 +2144,7 @@ def test_resolve_produced_output_handles_glob_metacharacters(tmp_path, monkeypat
     # See test_resolve_produced_output_handles_metric_suffix_rename for
     # why we bypass the ffprobe gate here.
     import automation.rppg as _rppg_mod
-    monkeypatch.setattr(_rppg_mod, "_is_playable_video", lambda _p: True)
+    monkeypatch.setattr(_rppg_mod, "_is_playable_video", lambda _p, **_kw: True)
     from automation.rppg import resolve_produced_output
 
     for stem in ("selfie[final]-rppg", "v[2]-oldcam-v24-rppg", "clip (1)-rppg", "a+b{x}-rppg"):

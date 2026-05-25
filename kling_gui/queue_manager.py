@@ -2359,7 +2359,14 @@ class QueueManager:
                     resolve_produced_output,
                 )
 
-                produced = resolve_produced_output(output_path)
+                # Thread the queue's logger into the resolver so the
+                # playability gate's quarantine messages (PR #53)
+                # actually surface in the GUI log instead of being
+                # swallowed silently. Subagent H1 round 1.
+                produced = resolve_produced_output(
+                    output_path,
+                    progress_cb=lambda m, lvl="info": self.log(m, lvl),
+                )
                 if produced is not None:
                     # _parse_bool tolerates string-backed JSON
                     # ("false"/"0"/...) — a bare bool() treats the string

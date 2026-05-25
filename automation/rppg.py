@@ -145,7 +145,11 @@ _FFPROBE_NAL_PATTERNS: Tuple[str, ...] = (
 )
 
 
-def _is_playable_video(path: Path, ffprobe_bin: str = "ffprobe") -> bool:
+def _is_playable_video(
+    path: Path,
+    ffprobe_bin: str = "ffprobe",
+    progress_cb: ProgressCB = None,
+) -> bool:
     """True if *path* is a valid, decodable video file.
 
     Shells out to ``ffprobe -v error -count_frames -select_streams v:0
@@ -176,11 +180,17 @@ def _is_playable_video(path: Path, ffprobe_bin: str = "ffprobe") -> bool:
         )
     except FileNotFoundError:
         if not getattr(_is_playable_video, "_warned_missing", False):
-            print(
+            warn_msg = (
                 "[rppg] WARNING: ffprobe not on PATH; playability gate "
-                "DISABLED — corrupt rPPG outputs will NOT be quarantined.",
-                file=sys.stderr,
+                "DISABLED — corrupt rPPG outputs will NOT be quarantined. "
+                "Install ffmpeg (which provides ffprobe) to re-enable the "
+                "gate."
             )
+            print(warn_msg, file=sys.stderr)
+            # Also surface to the in-app progress_cb so GUI users see it
+            # in the log display (stderr goes to launcher log file only).
+            # Subagent M7 round 1.
+            _report(progress_cb, warn_msg, "warning")
             _is_playable_video._warned_missing = True  # type: ignore[attr-defined]
         return True
     except (subprocess.TimeoutExpired, OSError):
@@ -263,7 +273,7 @@ def resolve_produced_output(
     ext = requested.suffix
     parent = requested.parent
     if not parent.is_dir():
-        if requested.exists() and _is_playable_video(requested):
+        if requested.exists() and _is_playable_video(requested, progress_cb=progress_cb):
             return requested
         if requested.exists():
             _quarantine_corrupt(requested, progress_cb)
@@ -294,7 +304,7 @@ def resolve_produced_output(
         reverse=True,
     )
     for cand in candidates:
-        if _is_playable_video(cand):
+        if _is_playable_video(cand, progress_cb=progress_cb):
             return cand
         _quarantine_corrupt(cand, progress_cb)
     return None

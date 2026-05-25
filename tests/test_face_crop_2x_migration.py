@@ -51,6 +51,24 @@ def test_parse_bool_returns_none_for_uncoercible():
     assert _parse_bool(None) is None
     assert _parse_bool({"weird": True}) is None
     assert _parse_bool([1, 2, 3]) is None
+    # Ambiguous int (not 0/1) -> None — could be a legacy version code
+    # under a bool-named key.
+    assert _parse_bool(2) is None
+    assert _parse_bool(-1) is None
+
+
+def test_parse_bool_accepts_int_0_and_1():
+    """PR #53 round 2 — subagent M4. A config that programmatically
+    holds the int 1 (e.g., set by a future surface) was previously
+    returned as None — the migration guard then treated it as
+    "marker absent" and re-fired every launch. Accept 0/1 ints
+    strictly.
+    """
+    assert _parse_bool(0) is False
+    assert _parse_bool(1) is True
+    # Real bools still return as themselves (not coerced via int branch).
+    assert _parse_bool(True) is True
+    assert _parse_bool(False) is False
 
 
 def test_template_pre_stamps_migration_marker():

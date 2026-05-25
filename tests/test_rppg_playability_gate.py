@@ -41,7 +41,7 @@ def test_resolve_returns_none_when_all_candidates_corrupt(
     _touch_mp4(requested)
     _touch_mp4(tmp_path / "clip-rppg - 9.0-3.0-0.5-0.1-0.5.mp4")
 
-    monkeypatch.setattr(rppg_mod, "_is_playable_video", lambda _p: False)
+    monkeypatch.setattr(rppg_mod, "_is_playable_video", lambda _p, **_kw: False)
 
     result = resolve_produced_output(requested)
     assert result is None
@@ -68,7 +68,7 @@ def test_resolve_skips_corrupt_returns_next_playable(
     _touch_mp4(newer, mtime_offset=+100.0)
 
     # Newer is corrupt; older is playable.
-    def fake_playable(path):
+    def fake_playable(path, **_kw):
         return str(path) != str(newer)
 
     monkeypatch.setattr(rppg_mod, "_is_playable_video", fake_playable)
@@ -92,7 +92,7 @@ def test_resolve_returns_newest_when_all_playable(
     newer = tmp_path / "clip-rppg - 9.0-3.0-0.5-0.1-0.5.mp4"
     _touch_mp4(newer, mtime_offset=+100.0)
 
-    monkeypatch.setattr(rppg_mod, "_is_playable_video", lambda _p: True)
+    monkeypatch.setattr(rppg_mod, "_is_playable_video", lambda _p, **_kw: True)
 
     result = resolve_produced_output(older)
     assert result is not None

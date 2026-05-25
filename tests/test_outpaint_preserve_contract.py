@@ -138,6 +138,67 @@ def test_preserve_mode_rejects_when_composite_fails(monkeypatch, tmp_path: Path)
     assert not os.path.exists(saw_output_path["path"])
 
 
+def test_fal_realistic_underflow_at_user_bug_ratio(monkeypatch, tmp_path: Path):
+    """PR #53 round 2 — subagent M6: the existing always-composite test
+    uses a 5x upscale (200x150 -> 1040x680) which is far beyond fal.ai's
+    realistic 1-2% clamp. Add a test at the EXACT user-bug ratio
+    (downloaded=1520x1136, target=1535x1151 = 0.98x scale on each axis,
+    per the user's log line). Confirms the always-composite contract
+    holds at the realistic regression ratio.
+    """
+    gen = OutpaintGenerator(api_key="x")
+    src_path = tmp_path / "input.jpg"
+    # Source large enough that user margins drive most of the canvas
+    # (mirrors the user's actual 903x677 source).
+    Image.new("RGB", (903, 677), (100, 100, 100)).save(src_path)
+    _stub_fal_for_outpaint(
+        monkeypatch,
+        source_size=(903, 677),
+        uploaded_size=(903, 677),
+        downloaded_size=(1520, 1136),  # exact user-bug underflow shape
+    )
+
+    captured = {}
+
+    def fake_composite(
+        output_path, orig, margin_left, margin_right,
+        margin_top, margin_bottom, output_format, composite_mode,
+    ):
+        captured["called"] = True
+        captured["orig_size"] = orig.size
+        captured["margins"] = (margin_left, margin_right, margin_top, margin_bottom)
+        from PIL import Image as _Img
+        with _Img.open(output_path) as dl:
+            captured["on_disk_size"] = dl.size
+        return True
+
+    monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
+
+    # User-requested margins from the log: L=525 R=525 T=393 B=393
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        expand_left=525,
+        expand_right=525,
+        expand_top=393,
+        expand_bottom=393,
+        provider="fal",
+        composite_mode="preserve_seamless",
+        edge_seal_px=0,
+    )
+    assert out is not None
+    assert captured.get("called") is True
+    # Full-res original is the paste source
+    assert captured["orig_size"] == (903, 677)
+    # Full-res margins
+    assert captured["margins"] == (525, 525, 393, 393)
+    # On-disk canvas resized to FULL final dims: 903+525+525 = 1953
+    # wide, 677+393+393 = 1463 tall. The fal output (1520x1136, the
+    # underflow shape) has been upscaled to the full canvas before
+    # composite — the matchTemplate alignment can now lock cleanly.
+    assert captured["on_disk_size"] == (1953, 1463)
+
+
 def test_full_res_reopen_applies_exif_transpose(monkeypatch, tmp_path: Path):
     """PR #53 round 1 — Codex P1: a portrait phone photo with EXIF
     Orientation=6 (rotate 270 CW) is stored as a landscape file but

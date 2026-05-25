@@ -277,11 +277,23 @@ class FaceCropTab(tk.Frame):
         # Persist the migration immediately so a user who launches and
         # closes without doing anything still has the marker stamped.
         # The log goes to the GUI log display (now wired by _build_ui).
+        # Subagent M3 round 1: bare except was masking real persistence
+        # failures (disk full, unwritable config path) — if the marker
+        # never lands, the migration re-fires every launch. Log the
+        # exception to stderr so a real failure leaves a trail even if
+        # the in-app log display isn't visible yet.
         if self._outpaint_2x_migration_fired:
             try:
                 self._save_config_now()
-            except Exception:
-                pass
+            except Exception as exc:
+                import sys as _sys
+                print(
+                    f"[face_crop_tab] WARNING: Run 2x migration save "
+                    f"failed ({type(exc).__name__}: {exc}); marker "
+                    f"may not persist and migration may re-fire next "
+                    f"launch.",
+                    file=_sys.stderr,
+                )
             try:
                 if _pb(self._outpaint_2x_migration_prior):
                     self.log(
@@ -289,8 +301,14 @@ class FaceCropTab(tk.Frame):
                         "Re-toggle in Step 0 if you want 2x expand.",
                         "info",
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                import sys as _sys
+                print(
+                    f"[face_crop_tab] WARNING: Run 2x migration log "
+                    f"call failed ({type(exc).__name__}: {exc}); "
+                    f"user won't see the reset notification.",
+                    file=_sys.stderr,
+                )
 
     # ── Config persistence ────────────────────────────────────────
 
@@ -1607,7 +1625,14 @@ class FaceCropTab(tk.Frame):
         """
         from pathlib import Path as _P
 
-        # Step 1: walk session entries, verify on-disk
+        # Step 1: walk session entries, verify on-disk. ImageEntry.exists
+        # is already a @property that re-reads disk on every access (see
+        # kling_gui/image_state.py:93), so we don't need to manually
+        # invalidate the cached flag — re-querying the property elsewhere
+        # automatically reflects current disk state. (Subagent C2 round 1:
+        # the prior `entry.exists = False` attempted assignment was dead
+        # code — the property has no setter, AttributeError was silently
+        # swallowed by the surrounding try/except.)
         for entry in self.image_session.images:
             if entry.source_type != "input":
                 continue
@@ -1619,12 +1644,6 @@ class FaceCropTab(tk.Frame):
                 exists_now = False
             if exists_now:
                 return entry.path
-            # Stale entry — flip the cached flag so other code stops
-            # using it. Don't auto-remove; the user may want to know.
-            try:
-                entry.exists = False
-            except AttributeError:
-                pass
 
         # Step 2: last-saved crop path
         last = getattr(self, "_last_crop_path", None)
@@ -1635,18 +1654,40 @@ class FaceCropTab(tk.Frame):
             except (OSError, ValueError):
                 pass
 
-        # Step 3: glob gen-images siblings
+        # Step 3: glob gen-images siblings. Filter by the active
+        # source stem first ({stem}_crop.*) so a multi-source folder
+        # doesn't silently compare bob's expand against alice's crop
+        # (subagent H4 round 1 — alphabetic sort returned alice on
+        # every call). If the stem-filtered glob is empty, fall back
+        # to ANY *_crop.* ranked by mtime (newest first) so a renamed
+        # source still resolves to the most-recently-saved crop.
         try:
             gen_dir = self._get_gen_dir()
         except Exception:
             gen_dir = None
         if gen_dir is not None:
-            try:
-                for cand in sorted(gen_dir.glob("*_crop.*")):
-                    if cand.is_file():
-                        return str(cand)
-            except OSError:
-                pass
+            # Active source stem — used to scope the glob.
+            active_stem = None
+            for _src_attr in ("_source_path", "_original_path"):
+                _src_val = getattr(self, _src_attr, None)
+                if _src_val:
+                    try:
+                        active_stem = _P(_src_val).stem
+                        break
+                    except (TypeError, ValueError):
+                        continue
+            patterns = []
+            if active_stem:
+                patterns.append(f"{active_stem}_crop.*")
+            patterns.append("*_crop.*")  # generic fallback
+            for pat in patterns:
+                try:
+                    matches = [c for c in gen_dir.glob(pat) if c.is_file()]
+                except OSError:
+                    matches = []
+                if matches:
+                    matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                    return str(matches[0])
 
         return None
 

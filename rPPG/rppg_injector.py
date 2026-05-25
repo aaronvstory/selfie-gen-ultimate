@@ -4493,29 +4493,70 @@ class PhaseAlignedRPPGManipulator:
                 # matches the source iter file's frame count and byte
                 # length.
                 tmp_snapshot = _BEST_SNAPSHOT_NAME + ".tmp.mp4"
-                adopted_snapshot = False
+                # Default fallback when copy/validate fails AND we can't
+                # use a previous good snapshot. Setting it ONLY here so a
+                # successful adoption further down overrides it.
+                fallback_best_path = iter_output_path
+                # Has a prior good snapshot been written this run? If yes
+                # and the new copy fails validation, we MUST point
+                # best_path at the prior snapshot (NOT at the unflushed
+                # iter file we just rejected the snapshot of — subagent
+                # H3 round 1). The prior_snapshot_good flag is set after
+                # the first successful adoption and never cleared.
+                prior_snapshot_good = bool(
+                    os.path.exists(_BEST_SNAPSHOT_NAME)
+                )
                 try:
                     if os.path.exists(iter_output_path):
                         shutil.copy2(iter_output_path, tmp_snapshot)
                         if _snapshot_validates(tmp_snapshot, iter_output_path):
                             os.replace(tmp_snapshot, _BEST_SNAPSHOT_NAME)
                             best_path = _BEST_SNAPSHOT_NAME
-                            adopted_snapshot = True
+                            best_iter = iteration
+                            best_metrics = dict(m)
+                            best_params = params
                         else:
                             try:
                                 os.unlink(tmp_snapshot)
                             except OSError:
                                 pass
-                            best_path = iter_output_path
-                            print(c(
-                                f"  Warning: best-iter {iteration} snapshot "
-                                f"validation failed (torn copy); keeping "
-                                f"previous good snapshot, using direct iter "
-                                f"path. Vulnerable to mid-loop cleanup.",
-                                'Y',
-                            ))
+                            # Snapshot torn. If a previous good snapshot
+                            # exists on disk, KEEP best_path/best_iter/
+                            # best_metrics/best_params unchanged (we
+                            # already recorded the previous iteration's
+                            # win). Do NOT promote this iteration: its
+                            # output is corrupt by definition.
+                            if prior_snapshot_good:
+                                print(c(
+                                    f"  Warning: best-iter {iteration} "
+                                    f"snapshot validation failed (torn "
+                                    f"copy); keeping previous good "
+                                    f"snapshot at iter "
+                                    f"{best_iter}.",
+                                    'Y',
+                                ))
+                            else:
+                                # No prior snapshot — first iter and
+                                # already torn. We have nothing better
+                                # to fall back to; surface this loudly.
+                                best_path = fallback_best_path
+                                best_iter = iteration
+                                best_metrics = dict(m)
+                                best_params = params
+                                print(c(
+                                    f"  WARNING: best-iter {iteration} "
+                                    f"snapshot validation failed AND no "
+                                    f"prior snapshot exists; using "
+                                    f"unflushed iter path. Final output "
+                                    f"may be corrupt; playability gate "
+                                    f"will catch it.",
+                                    'R',
+                                ))
                     else:
-                        best_path = iter_output_path
+                        best_path = fallback_best_path
+                        best_iter = iteration
+                        best_metrics = dict(m)
+                        best_params = params
                 except OSError as exc:
                     print(c(
                         f"  Warning: could not snapshot best iter "
@@ -4529,10 +4570,15 @@ class PhaseAlignedRPPGManipulator:
                             os.unlink(tmp_snapshot)
                     except OSError:
                         pass
-                    best_path = iter_output_path
-                best_iter = iteration
-                best_metrics = dict(m)
-                best_params = params
+                    if prior_snapshot_good:
+                        # Same logic as above: prefer prior good
+                        # snapshot over an OSError'd new copy.
+                        pass
+                    else:
+                        best_path = fallback_best_path
+                        best_iter = iteration
+                        best_metrics = dict(m)
+                        best_params = params
 
             # v5.10d: update revert high-water mark.
             if phase_emergency_revert is not None and _is_new_best:

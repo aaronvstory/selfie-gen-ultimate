@@ -83,7 +83,51 @@ def test_resolver_falls_back_to_gen_images_glob(tmp_path: Path):
     glob_match = gen_dir / "front_crop.jpg"
     glob_match.write_bytes(b"jpg")
     stub = _make_resolver_stub([], None, gen_dir)
+    # Active source stem helps stem-filter the glob.
+    stub._source_path = str(tmp_path / "front.jpg")
     assert stub._resolve_live_crop_ref() == str(glob_match)
+
+
+def test_resolver_glob_prefers_active_source_stem(tmp_path: Path):
+    """PR #53 round 2 — subagent H4. With multiple sources in the same
+    folder, the glob must prefer the active source's `{stem}_crop.*`
+    over alphabetic-first ANY `*_crop.*`. Otherwise bob's expand would
+    silently compare against alice's crop (alice < bob alphabetically).
+    """
+    gen_dir = tmp_path / "gen-images"
+    gen_dir.mkdir()
+    alice_crop = gen_dir / "alice_crop.jpg"
+    alice_crop.write_bytes(b"alice")
+    bob_crop = gen_dir / "bob_crop.jpg"
+    bob_crop.write_bytes(b"bob")
+    stub = _make_resolver_stub([], None, gen_dir)
+    # Active source is bob.jpg -> resolver should pick bob_crop.jpg
+    # NOT alice_crop.jpg (alphabetic first).
+    stub._source_path = str(tmp_path / "bob.jpg")
+    assert stub._resolve_live_crop_ref() == str(bob_crop)
+
+
+def test_resolver_glob_falls_back_to_mtime_newest_when_stem_unmatched(
+    tmp_path: Path,
+):
+    """When the active source stem doesn't match any gen-images crop
+    (e.g. user renamed source), fall back to ANY `*_crop.*` ranked
+    by mtime newest-first. Subagent H4 round 1 — old alphabetic
+    sort returned the wrong file.
+    """
+    import os as _os
+    gen_dir = tmp_path / "gen-images"
+    gen_dir.mkdir()
+    older = gen_dir / "alice_crop.jpg"
+    older.write_bytes(b"older")
+    newer = gen_dir / "bob_crop.jpg"
+    newer.write_bytes(b"newer")
+    _os.utime(older, (1_000_000, 1_000_000))
+    _os.utime(newer, (2_000_000, 2_000_000))
+    stub = _make_resolver_stub([], None, gen_dir)
+    # Active source stem doesn't match either crop -> mtime fallback
+    stub._source_path = str(tmp_path / "charlie.jpg")
+    assert stub._resolve_live_crop_ref() == str(newer)
 
 
 def test_resolver_returns_none_when_nothing_on_disk(tmp_path: Path):
