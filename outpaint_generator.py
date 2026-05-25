@@ -624,8 +624,9 @@ class OutpaintGenerator:
             expand_left, expand_right, expand_top, expand_bottom,
         )
         if _final_mp > _FINAL_CANVAS_MP_CAP:
-            import math as _math
-            _scale = _math.sqrt(_FINAL_CANVAS_MP_CAP / _final_mp)
+            # math is already imported at module top; no need for a
+            # local-alias re-import (Gemini PR #53 round 7 cleanup).
+            _scale = math.sqrt(_FINAL_CANVAS_MP_CAP / _final_mp)
             scaled_orig_w = max(1, int(orig_full.width * _scale))
             scaled_orig_h = max(1, int(orig_full.height * _scale))
             try:

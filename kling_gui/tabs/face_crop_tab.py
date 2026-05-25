@@ -1684,10 +1684,20 @@ class FaceCropTab(tk.Frame):
         # set to None by upstream code (or any non-str type) would
         # raise TypeError on Path() construction; guard against that
         # AND empty-string path before touching the filesystem.
-        for entry in self.image_session.images:
+        #
+        # Snapshot the list before iterating (PR #53 round 7
+        # Gemini cleanup) so a concurrent GUI-thread mutation of
+        # image_session.images can't skip/duplicate entries
+        # mid-iteration. Same idea as list(dict.items()) when the
+        # dict may be mutated under us.
+        for entry in list(self.image_session.images):
             if entry.source_type != "input":
                 continue
-            if "_crop" not in entry.filename:
+            # Guard non-string filename (PR #53 round 7 Gemini).
+            entry_filename = getattr(entry, "filename", None)
+            if not isinstance(entry_filename, str):
+                continue
+            if "_crop" not in entry_filename:
                 continue
             entry_path = getattr(entry, "path", None)
             if not entry_path:

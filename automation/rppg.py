@@ -156,19 +156,21 @@ _corrupt_blacklist: set[str] = set()
 
 
 def _is_blacklisted(path: Path) -> bool:
-    """True if *path*'s absolute form is in the corrupt blacklist."""
-    try:
-        return str(path.resolve()) in _corrupt_blacklist
-    except OSError:
-        return str(path) in _corrupt_blacklist
+    """True if *path*'s absolute form is in the corrupt blacklist.
+
+    Uses ``Path.absolute()`` — purely lexical absolutization with no
+    filesystem call — which is the right choice for an in-memory
+    same-process key. ``Path.resolve()`` would additionally chase
+    symlinks and (on strict=True) verify the target exists, neither
+    of which adds value here and both of which add fs-touch latency.
+    Gemini PR #53 round 7 cleanup.
+    """
+    return str(path.absolute()) in _corrupt_blacklist
 
 
 def _blacklist(path: Path) -> None:
     """Add *path*'s absolute form to the corrupt blacklist."""
-    try:
-        _corrupt_blacklist.add(str(path.resolve()))
-    except OSError:
-        _corrupt_blacklist.add(str(path))
+    _corrupt_blacklist.add(str(path.absolute()))
 
 
 def _is_playable_secondary(
