@@ -2,8 +2,8 @@
 preserve-seamless always-on contract.
 
 These complement tests/test_outpaint_composite_modes.py:
-- `test_fal_underflow_upscales_and_composites` covers the always-composite
-  path on slight underflow.
+- `test_fal_underflow_resizes_to_expected_provider_canvas` covers the
+  always-composite path on slight underflow (provider-coord resize).
 - `test_fal_dimension_read_failure_rejects_output` covers the strict-reject
   path on unreadable downloads.
 
@@ -11,7 +11,16 @@ The tests here cover:
 - `_composite_onto_result` returns the documented bool.
 - Preserve modes that hit the "Original doesn't fit" guard reject the
   output (no silent raw return).
-- Source-image reopen failure also rejects the output.
+- `composite_mode="none"` short-circuits and accepts raw provider output.
+
+PR #53 round 10 REVERTED the rounds-5..9 full-res-original composite
+path that broke alignment in user manual smoke. Tests that asserted
+the full-res behavior (test_full_res_reopen_applies_exif_transpose,
+test_fal_realistic_underflow_at_user_bug_ratio, test_source_reopen_
+failure_rejects_output) have been removed because the code paths
+they exercised no longer exist. The provider-coord behavior they
+implicitly preserve is now asserted in
+test_outpaint_composite_modes.py.
 """
 
 from pathlib import Path
@@ -103,7 +112,9 @@ def test_preserve_mode_rejects_when_composite_fails(monkeypatch, tmp_path: Path)
         monkeypatch,
         source_size=(320, 240),
         uploaded_size=(320, 240),
-        downloaded_size=(440, 320),
+        # Match provider expected canvas exactly (no resize needed) so
+        # the test isolates the composite-failure path.
+        downloaded_size=(320 + 60 + 60, 240 + 40 + 40),
     )
 
     saw_output_path = {"path": None}
@@ -138,137 +149,20 @@ def test_preserve_mode_rejects_when_composite_fails(monkeypatch, tmp_path: Path)
     assert not os.path.exists(saw_output_path["path"])
 
 
-def test_fal_realistic_underflow_at_user_bug_ratio(monkeypatch, tmp_path: Path):
-    """PR #53 round 2 — subagent M6: the existing always-composite test
-    uses a 5x upscale (200x150 -> 1040x680) which is far beyond fal.ai's
-    realistic 1-2% clamp. Add a test at the EXACT user-bug ratio
-    (downloaded=1520x1136, target=1535x1151 = 0.98x scale on each axis,
-    per the user's log line). Confirms the always-composite contract
-    holds at the realistic regression ratio.
-    """
-    gen = OutpaintGenerator(api_key="x")
-    src_path = tmp_path / "input.jpg"
-    # Source large enough that user margins drive most of the canvas
-    # (mirrors the user's actual 903x677 source).
-    Image.new("RGB", (903, 677), (100, 100, 100)).save(src_path)
-    _stub_fal_for_outpaint(
-        monkeypatch,
-        source_size=(903, 677),
-        uploaded_size=(903, 677),
-        downloaded_size=(1520, 1136),  # exact user-bug underflow shape
-    )
-
-    captured = {}
-
-    def fake_composite(
-        output_path, orig, margin_left, margin_right,
-        margin_top, margin_bottom, output_format, composite_mode,
-    ):
-        captured["called"] = True
-        captured["orig_size"] = orig.size
-        captured["margins"] = (margin_left, margin_right, margin_top, margin_bottom)
-        from PIL import Image as _Img
-        with _Img.open(output_path) as dl:
-            captured["on_disk_size"] = dl.size
-        return True
-
-    monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
-
-    # User-requested margins from the log: L=525 R=525 T=393 B=393
-    out = gen.outpaint(
-        image_path=str(src_path),
-        output_folder=str(tmp_path),
-        expand_left=525,
-        expand_right=525,
-        expand_top=393,
-        expand_bottom=393,
-        provider="fal",
-        composite_mode="preserve_seamless",
-        edge_seal_px=0,
-    )
-    assert out is not None
-    assert captured.get("called") is True
-    # Full-res original is the paste source
-    assert captured["orig_size"] == (903, 677)
-    # Full-res margins
-    assert captured["margins"] == (525, 525, 393, 393)
-    # On-disk canvas resized to FULL final dims: 903+525+525 = 1953
-    # wide, 677+393+393 = 1463 tall. The fal output (1520x1136, the
-    # underflow shape) has been upscaled to the full canvas before
-    # composite — the matchTemplate alignment can now lock cleanly.
-    assert captured["on_disk_size"] == (1953, 1463)
-
-
-def test_full_res_reopen_applies_exif_transpose(monkeypatch, tmp_path: Path):
-    """PR #53 round 1 — Codex P1: a portrait phone photo with EXIF
-    Orientation=6 (rotate 270 CW) is stored as a landscape file but
-    must render portrait. preflight + _prepare_processed_image both
-    apply ImageOps.exif_transpose, so the upload + provider canvas are
-    sized in post-rotation coords. The full-res reopen for the composite
-    paste source must do the same, otherwise orig_full is the wrong
-    dimensions vs the downloaded fal canvas and the resize math goes
-    sideways.
-    """
-    from PIL import Image as _Img, ExifTags
-
-    gen = OutpaintGenerator(api_key="x")
-    src_path = tmp_path / "input.jpg"
-    # 200x300 portrait stored as 300x200 landscape with Orientation=6.
-    landscape = _Img.new("RGB", (300, 200), (10, 20, 30))
-    exif = landscape.getexif()
-    orientation_tag = next(
-        k for k, v in ExifTags.TAGS.items() if v == "Orientation"
-    )
-    exif[orientation_tag] = 6  # rotate 270 CW => effective 200x300
-    landscape.save(src_path, exif=exif.tobytes())
-
-    _stub_fal_for_outpaint(
-        monkeypatch,
-        source_size=(200, 300),
-        uploaded_size=(200, 300),
-        downloaded_size=(440, 540),
-    )
-
-    captured = {}
-
-    def fake_composite(
-        output_path, orig, margin_left, margin_right,
-        margin_top, margin_bottom, output_format, composite_mode,
-    ):
-        captured["orig_size"] = orig.size
-        return True
-
-    monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
-
-    out = gen.outpaint(
-        image_path=str(src_path),
-        output_folder=str(tmp_path),
-        expand_left=40,
-        expand_right=40,
-        expand_top=60,
-        expand_bottom=60,
-        provider="fal",
-        composite_mode="preserve_seamless",
-        edge_seal_px=0,
-    )
-
-    assert out is not None
-    # Post-EXIF-transpose dims: 200x300 (portrait), NOT the stored
-    # 300x200 landscape. If the bug were still present the assertion
-    # would see (300, 200) here.
-    assert captured["orig_size"] == (200, 300)
-
-
-def test_composite_mode_none_short_circuits_before_source_reopen(
+def test_composite_mode_none_short_circuits_after_readability_check(
     monkeypatch, tmp_path: Path,
 ):
-    """PR #53 round 9 — Codex P2: ``composite_mode="none"`` explicitly
-    asks for raw provider output. The always-composite path that
-    reopens ``image_path`` to build ``orig_full`` is irrelevant for
-    "none" mode, so a source-reopen failure (file moved between
-    upload and download) must NOT delete the perfectly-good
-    downloaded output. The "none" branch short-circuits BEFORE the
-    reopen.
+    """PR #53 round 9 — Codex P2 + round 10 revert: ``composite_mode=
+    "none"`` returns raw provider output without invoking any
+    composite logic. Under round-10's provider-coord revert, there's
+    no longer a source reopen to short-circuit against, but the
+    early-return still matters: it skips the resize-to-expected
+    branch and the composite call entirely.
+
+    Confirm:
+    - composite_mode="none" returns the downloaded path
+    - _composite_onto_result is NOT called
+    - the file on disk is the raw provider output (no resize applied)
     """
     gen = OutpaintGenerator(api_key="x")
     src_path = tmp_path / "input.png"
@@ -277,25 +171,19 @@ def test_composite_mode_none_short_circuits_before_source_reopen(
         monkeypatch,
         source_size=(320, 240),
         uploaded_size=(320, 240),
-        downloaded_size=(440, 320),
+        # Deliberately MISMATCH the provider expected canvas so the
+        # resize branch WOULD fire if composite_mode were anything
+        # other than "none".
+        downloaded_size=(123, 456),
     )
 
-    orig_open = Image.open
-    call_counter = {"n": 0}
+    composite_calls = {"n": 0}
 
-    def fake_open(fp, *args, **kwargs):
-        # First two calls (preflight + _prepare_processed_image) succeed.
-        # If outpaint() reaches the 3rd open on src_path the test fails
-        # because the "none" short-circuit should have fired by then.
-        if str(fp) == str(src_path):
-            call_counter["n"] += 1
-            if call_counter["n"] >= 3:
-                raise OSError(
-                    "Source reopen should NOT happen for composite_mode='none'"
-                )
-        return orig_open(fp, *args, **kwargs)
+    def fake_composite(*_args, **_kwargs):
+        composite_calls["n"] += 1
+        return True
 
-    monkeypatch.setattr("outpaint_generator.Image.open", fake_open)
+    monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
 
     out = gen.outpaint(
         image_path=str(src_path),
@@ -311,61 +199,11 @@ def test_composite_mode_none_short_circuits_before_source_reopen(
 
     assert out is not None
     import os as _os
-    assert _os.path.exists(out), (
-        "Downloaded output should still exist on disk for "
-        "composite_mode='none' — was the early-return missing?"
-    )
-
-
-def test_source_reopen_failure_rejects_output(monkeypatch, tmp_path: Path):
-    """If the source image can't be re-opened for the full-res
-    composite (deleted between download and the composite step), the
-    new behaviour rejects the output and surfaces an error — not a
-    silent raw output.
-
-    The source must be readable at preflight + upload time
-    (preflight/upload would have failed loud earlier). The narrow
-    window we test is "vanished between upload and the post-download
-    re-open".
-    """
-    gen = OutpaintGenerator(api_key="x")
-    src_path = tmp_path / "input.png"
-    Image.new("RGB", (320, 240), (5, 5, 5)).save(src_path)
-    _stub_fal_for_outpaint(
-        monkeypatch,
-        source_size=(320, 240),
-        uploaded_size=(320, 240),
-        downloaded_size=(440, 320),
-    )
-
-    orig_open = Image.open
-    call_counter = {"n": 0}
-
-    def fake_open(fp, *args, **kwargs):
-        # Let everything succeed until the post-download re-open of
-        # the source image (the 3rd time outpaint() calls Image.open on
-        # src_path: preflight, _prepare_processed_image, then the new
-        # full-res re-open). Count source-path opens specifically.
-        if str(fp) == str(src_path):
-            call_counter["n"] += 1
-            if call_counter["n"] >= 3:
-                raise OSError("simulated source deletion mid-pass")
-        return orig_open(fp, *args, **kwargs)
-
-    monkeypatch.setattr("outpaint_generator.Image.open", fake_open)
-
-    out = gen.outpaint(
-        image_path=str(src_path),
-        output_folder=str(tmp_path),
-        expand_left=60,
-        expand_right=60,
-        expand_top=40,
-        expand_bottom=40,
-        provider="fal",
-        composite_mode="preserve_seamless",
-        edge_seal_px=0,
-    )
-
-    assert out is None
-    detail = gen.get_last_outpaint_error_detail()
-    assert detail and "orig_reopen_failed" in detail
+    assert _os.path.exists(out)
+    # The raw provider output (mismatched size) is preserved exactly —
+    # NOT resized to expected canvas — because none-mode early-returns
+    # before the resize branch.
+    with Image.open(out) as dl:
+        assert dl.size == (123, 456)
+    # And the composite was NEVER called.
+    assert composite_calls["n"] == 0

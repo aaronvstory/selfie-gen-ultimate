@@ -2717,6 +2717,12 @@ class KlingGUIWindow:
             splitlist_fn = None
         files = parse_dnd_paths(data, splitlist_fn=splitlist_fn, require_exists=True)
 
+        # PR #53 round 10: classify before ingest so the drop-zone
+        # status banner can tell the user WHY their drop didn't add
+        # anything (was just "No valid images found" generically).
+        from path_utils import is_video_path as _is_video
+        any_video = any(_is_video(p) for p in files)
+
         added = self._add_input_images_to_session(files)
 
         # Show status on floating drop zone
@@ -2724,6 +2730,11 @@ class KlingGUIWindow:
             status = self._drop_zone_status
             if added:
                 status.config(text=f"Added {added} file(s)", fg=COLORS.get("success", "#50C878"))
+            elif any_video:
+                status.config(
+                    text="Videos go in Step 3 — drop images only here",
+                    fg=COLORS.get("warning", "#FFA500"),
+                )
             else:
                 status.config(text="No valid images found", fg=COLORS.get("warning", "#FFA500"))
             self.root.after(2000, lambda s=status: s.config(text="") if s.winfo_exists() else None)
@@ -4245,7 +4256,23 @@ class KlingGUIWindow:
     def _add_input_images_to_session(self, files: List[str]) -> int:
         """Add input images to working session with front-image session rollover prompt."""
         valid_files: List[str] = []
+        # PR #53 round 10: surface a friendly message when the user
+        # drops/selects video files in the image zone (was cryptic
+        # "Skipped carousel add: foo.mp4 (unsupported extension: .mp4)"
+        # before). Detect FIRST so the generic preflight rejection
+        # doesn't fire for video paths.
+        from path_utils import is_video_path as _is_video
+        video_count = 0
         for path in files:
+            if _is_video(path):
+                video_count += 1
+                self._log(
+                    f"Videos aren't accepted here — use the Step 3 "
+                    f"Video tab for video files. Skipped: "
+                    f"{os.path.basename(path)}",
+                    "warning",
+                )
+                continue
             ok, reason = preflight_image_path(path, allowed_exts=VALID_EXTENSIONS)
             if not ok:
                 self._log(
@@ -4259,6 +4286,14 @@ class KlingGUIWindow:
                 )
                 continue
             valid_files.append(path)
+        # Summary if multiple videos got dropped — one collapsed line
+        # instead of N per-file warnings.
+        if video_count > 1:
+            self._log(
+                f"{video_count} video file(s) skipped — drop them into "
+                f"the Step 3 Video drop zone instead.",
+                "info",
+            )
         if not valid_files:
             return 0
 

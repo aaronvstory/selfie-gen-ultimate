@@ -260,16 +260,35 @@ class FaceCropTab(tk.Frame):
         # the marker key has a weird value. The migration is one-time
         # by design; "weird marker = treat as present" honors that.
         from face_similarity import _parse_bool as _pb
-        _marker_raw = config.get("outpaint_2x_default_reset_v2", False)
-        _marker_parsed = _pb(_marker_raw)
+        # PR #53 round 10 — v3 reset marker.
+        #
+        # User manual smoke at round 9 (commit 4387153a) showed Run 2x
+        # checkbox STILL appearing checked at launch. Root cause: their
+        # config had outpaint_2x_default_reset_v2=true AND
+        # outpaint_double_expand=true simultaneously — v2 got stamped
+        # at some point without the value resetting (likely a stale
+        # test config or a write race when v2 first introduced).
+        # Because the v2 migration sees the marker present, it skips
+        # the reset, leaving the stale True.
+        #
+        # v3 is a fresh marker so this release/test cycle force-resets
+        # once for everyone, then sticky again. We also keep v2
+        # stamped on the way out so the "we reset Run 2x for you" log
+        # only fires when there's a NEW migration to surface (rather
+        # than confusing users who already saw v2 do its job).
+        _marker_v3_raw = config.get("outpaint_2x_default_reset_v3", False)
+        _marker_v3_parsed = _pb(_marker_v3_raw)
         _migration_already_done = (
-            _marker_parsed is True
-            or _marker_parsed is None  # uncoercible -> treat as done
+            _marker_v3_parsed is True
+            or _marker_v3_parsed is None  # uncoercible -> treat as done
         )
         if not _migration_already_done:
             prior = config.get("outpaint_double_expand", False)
             config["outpaint_double_expand"] = False
-            config["outpaint_2x_default_reset_v2"] = True
+            config["outpaint_2x_default_reset_v3"] = True
+            # Keep v2 stamped so any other code that checks v2 still
+            # sees the post-migration state.
+            config.setdefault("outpaint_2x_default_reset_v2", True)
             self._outpaint_2x_migration_fired = True
             self._outpaint_2x_migration_prior = prior
         else:
@@ -2623,10 +2642,13 @@ class FaceCropTab(tk.Frame):
             "outpaint_composite_mode": self._outpaint_composite_var.get(),
             "outpaint_provider": self._outpaint_provider_var.get(),
             "outpaint_double_expand": self._outpaint_double_expand_var.get(),
-            # One-time reset marker — persisted as True after first
-            # launch under fix/step0-composite-and-rppg-v2.5 so
-            # subsequent launches honor the user's sticky choice.
+            # One-time reset markers — persisted as True so subsequent
+            # launches honor the user's sticky choice. v3 was added in
+            # PR #53 round 10 after v2 alone failed to reset some users
+            # whose config carried v2=true AND outpaint_double_expand=
+            # true simultaneously.
             "outpaint_2x_default_reset_v2": True,
+            "outpaint_2x_default_reset_v3": True,
             "accordion_expanded": self._expanded_sections,
         }
         # Persist Step 0 face-crop expand prompt (Phase G of

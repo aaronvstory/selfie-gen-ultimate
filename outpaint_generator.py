@@ -573,14 +573,8 @@ class OutpaintGenerator:
             return None
 
         # PR #53 round 9 — Codex P2: `composite_mode="none"` explicitly
-        # asks for the raw provider output. The always-composite path
-        # below reopens `image_path` to build `orig_full`; if that
-        # reopen failed (source moved or cleaned up between upload and
-        # download), the code would delete the perfectly-good downloaded
-        # output and return None — a regression for raw-output mode
-        # which never needed the source image in the first place.
-        # Short-circuit here so "none" mode goes back to its pre-PR
-        # behavior: download, accept, done.
+        # asks for the raw provider output. Short-circuit before the
+        # always-composite path so a download + raw return stays cheap.
         if composite_mode == "none":
             self._report(
                 "Composite: none — using raw AI output "
@@ -590,142 +584,45 @@ class OutpaintGenerator:
             return output_path
 
         # Always-composite contract (PR fix/step0-composite-and-rppg-v2.5):
-        # the previous code silently returned the raw fal output whenever
-        # the provider returned a canvas smaller than preflight expected
-        # (fal.ai's silent clamp produces 1-2% underflow on most calls).
-        # The "preserve seamless" contract is the entire point of the
-        # composite — skipping it ships a non-composited result and
-        # corrupts every downstream stage. Per user: always do the
-        # composite; resize to whatever fal could deliver.
+        # never silently skip composite on a small underflow — that
+        # shipped a non-composited raw result and broke preserve_seamless
+        # on every pass because fal.ai routinely clamps 1-2% smaller
+        # than preflight. Resize the downloaded fal output to the
+        # provider's EXPECTED canvas (composite_source + adj_* margins
+        # = exactly what fal generated for) so the composite's
+        # matchTemplate alignment can lock cleanly. Then composite with
+        # the downscaled provider source + adjusted margins.
         #
-        # Strategy: composite in the FULL-RES coordinate system, not the
-        # downscaled one. We load the original full-res image as the paste
-        # source, compute the full-res target canvas from the user's
-        # original (un-adjusted) margins, and resize the fal output up to
-        # match. This way:
-        #   * the pasted center pixels are byte-identical to the user's
-        #     input (no double downscale → upscale round-trip),
-        #   * the matchTemplate alignment runs on the full-res image,
-        #   * the surrounding generated area is one Lanczos pass off the
-        #     fal output (visually fine).
-        # EXIF orientation: preflight + _prepare_processed_image both
-        # apply ImageOps.exif_transpose so the upload + provider canvas
-        # are sized in the post-rotation coordinate system. The full-res
-        # original must use the SAME normalization or a phone-camera
-        # portrait photo would have orig_full sized in the wrong axis vs
-        # the downloaded canvas (Codex P1, PR #53). Mirrors line 76 + 189.
-        try:
-            with Image.open(image_path) as src:
-                # ImageOps.exif_transpose returns a NEW image (not a
-                # view into `src`), and .convert("RGB") returns
-                # another new image — both materialise pixels, so the
-                # trailing .copy() that the round-1 fix added is
-                # redundant. Removed per Gemini PR #53 round 9 nit.
-                orig_full = ImageOps.exif_transpose(src).convert("RGB")
-        except Exception as exc:
-            self._report(
-                f"Could not re-open source image for full-res composite: {exc}",
-                "error",
-            )
-            self._set_last_outpaint_error_detail(
-                f"orig_reopen_failed:{type(exc).__name__}"
-            )
-            try:
-                os.unlink(output_path)
-            except OSError:
-                pass
-            return None
-
-        # Preserve the unclamped dimensions so the M1 clamp log can
-        # show "<unclamped> -> <clamped>" cleanly. PR #53 round 6
-        # (reviewer): the prior log reconstructed the unclamped width
-        # via `int(_final_mp * 1_000_000 / max(1, final_canvas_h))`,
-        # which is mathematically correct but unnecessarily indirect.
-        unclamped_w = orig_full.width + expand_left + expand_right
-        unclamped_h = orig_full.height + expand_top + expand_bottom
-        final_canvas_w = unclamped_w
-        final_canvas_h = unclamped_h
-        # Subagent M1 round 5: clamp the final canvas to a sane envelope
-        # so a user that types huge pixel margins doesn't OOM the
-        # process via PIL's LANCZOS resize (it allocates the
-        # destination buffer up-front). 100 MP is comfortably bigger
-        # than any realistic Step 0 expand (which targets fal's
-        # 1536px / 2.0 MP envelope after preflight scale-down anyway)
-        # but small enough that the resize completes in a couple of
-        # seconds on the macOS CPU path.
-        #
-        # When the canvas is clamped, the orig_full + scaled margins
-        # math must still hold so the composite's matchTemplate
-        # alignment works — so we proportionally downscale orig_full
-        # AND the margins together. The center-pixel preservation
-        # contract is then held against the scaled original (still
-        # higher quality than the previous downscaled-upload paste,
-        # just not raw input quality at extreme margin sizes).
-        _FINAL_CANVAS_MP_CAP = 100.0
-        _final_mp = (unclamped_w * unclamped_h) / 1_000_000.0
-        composite_margins = (
-            expand_left, expand_right, expand_top, expand_bottom,
-        )
-        if _final_mp > _FINAL_CANVAS_MP_CAP:
-            # math is already imported at module top; no need for a
-            # local-alias re-import (Gemini PR #53 round 7 cleanup).
-            _scale = math.sqrt(_FINAL_CANVAS_MP_CAP / _final_mp)
-            scaled_orig_w = max(1, int(orig_full.width * _scale))
-            scaled_orig_h = max(1, int(orig_full.height * _scale))
-            try:
-                orig_full = orig_full.resize(
-                    (scaled_orig_w, scaled_orig_h),
-                    Image.Resampling.LANCZOS,
-                )
-            except Exception as exc:
-                self._report(
-                    f"Could not scale orig_full to clamped envelope: {exc}",
-                    "error",
-                )
-                self._set_last_outpaint_error_detail(
-                    f"orig_clamp_failed:{type(exc).__name__}"
-                )
-                try:
-                    os.unlink(output_path)
-                except OSError:
-                    pass
-                return None
-            composite_margins = (
-                max(0, int(expand_left * _scale)),
-                max(0, int(expand_right * _scale)),
-                max(0, int(expand_top * _scale)),
-                max(0, int(expand_bottom * _scale)),
-            )
-            final_canvas_w = scaled_orig_w + composite_margins[0] + composite_margins[1]
-            final_canvas_h = scaled_orig_h + composite_margins[2] + composite_margins[3]
-            self._report(
-                (
-                    f"Final canvas {unclamped_w}x{unclamped_h} "
-                    f"({_final_mp:.1f} MP) -> {final_canvas_w}x{final_canvas_h} "
-                    f"({_FINAL_CANVAS_MP_CAP:.0f} MP envelope clamp); "
-                    f"orig_full + margins proportionally scaled by "
-                    f"{_scale:.3f}. If you need the full-margin canvas "
-                    "at original resolution, reduce the expand margins "
-                    "or chain a second pass (Run 2x)."
-                ),
-                "warning",
-            )
+        # PR #53 round 10 REVERTED an earlier rounds-5..9 experiment
+        # that paste the FULL-RES original (reopen image_path, compute
+        # final_canvas_w = orig_full.width + EXPAND_*, upscale fal
+        # output to that, paste full-res orig at full-res margins).
+        # That mixed two coordinate systems — fal generated around
+        # (downscaled_image, adjusted_margins) but we pasted around
+        # (full_res_image, full_res_margins). On a 3024x4032 source
+        # with 700px margins it produced a 3.4x upscale of fal output
+        # (1296x1520 -> 4424x5432), and the matchTemplate +-15px
+        # search window cannot recover from a coordinate-system delta
+        # of hundreds of pixels — the composite silently misaligned to
+        # the math-default placement. User manual smoke caught it.
+        # Provider-coordinate compositing is the known-good geometry
+        # main shipped with for months; we restore it here while
+        # keeping the always-composite + bool-return contracts.
         self._report(
             (
                 "Fal composite downloaded result: "
                 f"actual={downloaded_w}x{downloaded_h} "
-                f"provider_send_target={expected_canvas_w}x{expected_canvas_h} "
-                f"final_canvas={final_canvas_w}x{final_canvas_h}"
+                f"expected={expected_canvas_w}x{expected_canvas_h}"
             ),
             "debug",
         )
 
-        if (downloaded_w, downloaded_h) != (final_canvas_w, final_canvas_h):
+        if (downloaded_w, downloaded_h) != (expected_canvas_w, expected_canvas_h):
             try:
                 with Image.open(output_path) as dl:
                     dl_rgb = dl.convert("RGB")
                     resized = dl_rgb.resize(
-                        (final_canvas_w, final_canvas_h),
+                        (expected_canvas_w, expected_canvas_h),
                         Image.Resampling.LANCZOS,
                     )
                 save_kwargs = (
@@ -736,16 +633,16 @@ class OutpaintGenerator:
                 resized.save(output_path, **save_kwargs)
                 self._report(
                     (
-                        f"Composite: upscaled fal output "
+                        f"Composite: resized fal output "
                         f"{downloaded_w}x{downloaded_h} -> "
-                        f"{final_canvas_w}x{final_canvas_h} (Lanczos) to "
-                        "preserve original-pixel composite contract"
+                        f"{expected_canvas_w}x{expected_canvas_h} (Lanczos) "
+                        "to match provider-coordinate expected canvas"
                     ),
                     "info",
                 )
             except Exception as exc:
                 self._report(
-                    f"Could not resize fal output to final canvas: {exc}",
+                    f"Could not resize fal output to expected canvas: {exc}",
                     "error",
                 )
                 self._set_last_outpaint_error_detail(
@@ -757,12 +654,13 @@ class OutpaintGenerator:
                     pass
                 return None
 
-        # composite_margins matches orig_full (both untouched by default,
-        # both scaled together if the canvas was clamped above for M1).
+        # Composite in provider/upload coordinate system: the same
+        # composite_source + adjusted margins fal was given. This is
+        # main's geometry, restored after the round-5..9 full-res
+        # experiment caused user-reported misalignment.
         composite_ok = self._composite_onto_result(
-            output_path, orig_full,
-            composite_margins[0], composite_margins[1],
-            composite_margins[2], composite_margins[3],
+            output_path, composite_source,
+            adj_left, adj_right, adj_top, adj_bottom,
             output_format, composite_mode,
         )
 
