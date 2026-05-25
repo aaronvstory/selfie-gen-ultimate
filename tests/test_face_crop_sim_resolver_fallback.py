@@ -161,6 +161,47 @@ def test_resolver_ignores_non_input_entries(tmp_path: Path):
     assert stub._resolve_live_crop_ref() == str(real)
 
 
+def test_resolver_survives_entry_with_none_path(tmp_path: Path):
+    """PR #53 round 4 (reviewer feedback): an entry whose .path was
+    upstream-set to None (or any non-str) used to raise TypeError on
+    Path() construction, which then escaped the broad-except below.
+    The resolver now explicitly bool-checks entry.path AND catches
+    TypeError on Path() so the loop continues safely.
+    """
+    # Create one valid crop so the resolver eventually returns
+    # something — the test specifically checks the bad entry doesn't
+    # crash the iteration.
+    real = tmp_path / "front_crop.jpg"
+    real.write_bytes(b"jpg")
+    bad_entry = _make_entry(str(real))
+    bad_entry.path = None  # type: ignore[assignment]
+    bad_entry.filename = "ghost_crop.jpg"  # so the _crop filter passes
+    good_entry = _make_entry(str(real))
+    entries = [bad_entry, good_entry]
+    stub = _make_resolver_stub(entries, None, tmp_path)
+    # Should not raise; should return the good entry's path.
+    assert stub._resolve_live_crop_ref() == str(real)
+
+
+def test_resolver_glob_escapes_stem_metacharacters(tmp_path: Path):
+    """PR #53 round 4 (reviewer feedback): a source stem containing
+    ``[`` or ``]`` (e.g. ``selfie[final].jpg``) used to be interpreted
+    by Path.glob as a character class, missing the literal-named
+    ``selfie[final]_crop.jpg``. ``glob.escape`` fixes the match.
+    """
+    gen_dir = tmp_path / "gen-images"
+    gen_dir.mkdir()
+    real = gen_dir / "selfie[final]_crop.jpg"
+    real.write_bytes(b"jpg")
+    # Also drop a decoy that WOULD match an unescaped char-class glob:
+    decoy = gen_dir / "selfief_crop.jpg"  # 'f' is in [final]
+    decoy.write_bytes(b"decoy")
+    stub = _make_resolver_stub([], None, gen_dir)
+    stub._source_path = str(tmp_path / "selfie[final].jpg")
+    # Must return the literal-stem match, not the char-class match.
+    assert stub._resolve_live_crop_ref() == str(real)
+
+
 def test_resolver_ignores_entries_without_crop_in_name(tmp_path: Path):
     """Even an `input` entry whose name lacks `_crop` is not picked
     (e.g. the original source image).

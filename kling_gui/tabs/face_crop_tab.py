@@ -1609,74 +1609,84 @@ class FaceCropTab(tk.Frame):
         Resilient version of :meth:`_find_crop_ref_path`. Falls back
         through:
 
-        1. Session entries whose path actually exists on disk now (not
-           just whose cached ``entry.exists`` flag says so). Stale
-           entries get their ``exists`` flag flipped to False in place
-           so subsequent code paths (carousel, comparison panel) stop
-           trusting them.
+        1. Session entries whose path actually exists on disk now.
+           Re-queries presence via ``Path(entry.path).is_file()`` —
+           ``ImageEntry.exists`` is a @property that already re-reads
+           disk on every access (see ``kling_gui/image_state.py:93``),
+           so no manual invalidation is needed; subsequent reads
+           automatically reflect current state.
         2. ``self._last_crop_path`` if set and still on disk — covers
            "the entry got pruned but the file is still there".
-        3. ``gen-images/*_crop.*`` glob next to the current source —
-           covers "the absolute path drifted but the file is still in
-           gen-images on this folder" (e.g. user moved the source
-           folder after a crop was saved).
+        3. ``{stem}_crop.*`` glob in the current Step 0 source's
+           ``gen-images/`` — covers "the absolute path drifted but the
+           file is still in gen-images on this folder" (e.g. user
+           moved the source folder after a crop was saved). Stem is
+           ``glob.escape``d so filenames containing ``[``/``]``/``?``
+           are matched literally.
         4. ``None`` — caller should skip similarity with a debug-level
            log (NOT warning/error). PR fix/step0-composite-and-rppg-v2.5.
         """
+        import glob as _glob
         from pathlib import Path as _P
 
-        # Step 1: walk session entries, verify on-disk. ImageEntry.exists
-        # is already a @property that re-reads disk on every access (see
-        # kling_gui/image_state.py:93), so we don't need to manually
-        # invalidate the cached flag — re-querying the property elsewhere
-        # automatically reflects current disk state. (Subagent C2 round 1:
-        # the prior `entry.exists = False` attempted assignment was dead
-        # code — the property has no setter, AttributeError was silently
-        # swallowed by the surrounding try/except.)
+        def _safe_mtime(p: _P) -> float:
+            """mtime for sort. Falls back to 0.0 if the file vanished
+            between glob() and stat() — a race between the resolver and
+            an external cleanup. Sort still works; the disappeared
+            candidate sinks to the bottom and the next is_file() check
+            filters it out."""
+            try:
+                return p.stat().st_mtime
+            except (OSError, ValueError):
+                return 0.0
+
+        # Step 1: walk session entries, verify on-disk. Defensive
+        # exception list per PR #53 round 4: an entry whose path was
+        # set to None by upstream code (or any non-str type) would
+        # raise TypeError on Path() construction; guard against that
+        # AND empty-string path before touching the filesystem.
         for entry in self.image_session.images:
             if entry.source_type != "input":
                 continue
             if "_crop" not in entry.filename:
                 continue
+            entry_path = getattr(entry, "path", None)
+            if not entry_path:
+                continue
             try:
-                exists_now = _P(entry.path).is_file()
-            except (OSError, ValueError):
+                exists_now = _P(entry_path).is_file()
+            except (OSError, ValueError, TypeError):
                 exists_now = False
             if exists_now:
-                return entry.path
+                return entry_path
 
-        # Step 2: last-saved crop path
+        # Step 2: last-saved crop path. Same TypeError guard for the
+        # same reason — _last_crop_path is set from many call sites and
+        # could go non-string in a future refactor.
         last = getattr(self, "_last_crop_path", None)
         if last:
             try:
                 if _P(last).is_file():
                     return last
-            except (OSError, ValueError):
+            except (OSError, ValueError, TypeError):
                 pass
 
         # Step 3: glob gen-images siblings of the CURRENT Step 0
         # source (NOT self._get_gen_dir() — that helper is anchored
         # to image_session.images[0] which can be a different folder
         # in a multi-source carousel; CodeRabbit major round 3).
-        # Resolve gen_dir from `self._source_path` first, falling back
-        # to `self._original_path` then `image_session.active_image_path`.
-        # Filter by active source stem (`{stem}_crop.*`) so a
-        # multi-source folder doesn't silently compare bob's expand
-        # against alice's crop (subagent H4 round 1 — alphabetic sort
-        # returned alice on every call). If the stem-filtered glob is
-        # empty, fall back to ANY *_crop.* ranked by mtime (newest
-        # first) so a renamed source still resolves to the most
-        # recently saved crop.
         active_src = None
         for _src_attr in ("_source_path", "_original_path"):
             _src_val = getattr(self, _src_attr, None)
-            if _src_val:
-                try:
-                    if _P(_src_val).is_file() or _P(_src_val).parent.is_dir():
-                        active_src = _src_val
-                        break
-                except (TypeError, ValueError):
-                    continue
+            if not _src_val:
+                continue
+            try:
+                _p = _P(_src_val)
+                if _p.is_file() or _p.parent.is_dir():
+                    active_src = _src_val
+                    break
+            except (TypeError, ValueError, OSError):
+                continue
         if active_src is None:
             try:
                 _sess_active = self.image_session.active_image_path
@@ -1690,24 +1700,45 @@ class FaceCropTab(tk.Frame):
                 gen_dir = _P(get_gen_images_folder(str(active_src)))
             except (TypeError, ValueError, OSError):
                 gen_dir = None
-        if gen_dir is not None and gen_dir.is_dir():
-            active_stem = None
+        if gen_dir is not None:
             try:
-                active_stem = _P(active_src).stem if active_src else None
-            except (TypeError, ValueError):
+                gen_dir_is_dir = gen_dir.is_dir()
+            except (OSError, ValueError, TypeError):
+                gen_dir_is_dir = False
+            if gen_dir_is_dir:
                 active_stem = None
-            patterns = []
-            if active_stem:
-                patterns.append(f"{active_stem}_crop.*")
-            patterns.append("*_crop.*")  # generic fallback
-            for pat in patterns:
                 try:
-                    matches = [c for c in gen_dir.glob(pat) if c.is_file()]
-                except OSError:
-                    matches = []
-                if matches:
-                    matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                    return str(matches[0])
+                    active_stem = (
+                        _P(active_src).stem if active_src else None
+                    )
+                except (TypeError, ValueError):
+                    active_stem = None
+                patterns = []
+                if active_stem:
+                    # glob.escape so a stem like "selfie[final]" or
+                    # "clip (1)" is matched literally, not as a glob
+                    # character class. Same trap addressed in
+                    # automation/rppg.py::resolve_produced_output for
+                    # the rPPG metric-rename glob.
+                    patterns.append(f"{_glob.escape(active_stem)}_crop.*")
+                patterns.append("*_crop.*")  # generic fallback
+                for pat in patterns:
+                    try:
+                        matches = [
+                            c for c in gen_dir.glob(pat) if c.is_file()
+                        ]
+                    except OSError:
+                        matches = []
+                    if matches:
+                        # _safe_mtime handles the race where a
+                        # candidate vanishes between glob() and stat().
+                        matches.sort(key=_safe_mtime, reverse=True)
+                        for cand in matches:
+                            try:
+                                if cand.is_file():
+                                    return str(cand)
+                            except (OSError, ValueError, TypeError):
+                                continue
 
         return None
 

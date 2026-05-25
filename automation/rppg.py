@@ -227,7 +227,10 @@ def _quarantine_corrupt(path: Path, progress_cb: ProgressCB = None) -> None:
         f"{path.stem}.corrupt-{ts}{path.suffix}.broken"
     )
     try:
-        os.replace(str(path), str(quarantine))
+        # Path.replace is the idiomatic Pathlib equivalent of os.replace
+        # for two Path objects — cleaner than the str() round-trip.
+        # Gemini PR #53 stylistic suggestion.
+        path.replace(quarantine)
         _report(
             progress_cb,
             f"rPPG: quarantined corrupt candidate {path.name} -> "
