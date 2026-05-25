@@ -1726,8 +1726,14 @@ class FaceCropTab(tk.Frame):
         # source (NOT self._get_gen_dir() — that helper is anchored
         # to image_session.images[0] which can be a different folder
         # in a multi-source carousel; CodeRabbit major round 3).
+        # CodeRabbit PR #53 round 8: prefer `_original_path` over
+        # `_source_path`. _source_path is the EXIF-corrected temp
+        # copy used by the cropper; _original_path is the actual
+        # user-selected file on disk. The gen-images folder we want
+        # for the crop fallback is anchored to the user's selection,
+        # not to the temp file.
         active_src = None
-        for _src_attr in ("_source_path", "_original_path"):
+        for _src_attr in ("_original_path", "_source_path"):
             _src_val = getattr(self, _src_attr, None)
             if not _src_val:
                 continue

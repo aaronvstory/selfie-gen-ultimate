@@ -4472,9 +4472,27 @@ class PhaseAlignedRPPGManipulator:
                 'score': float(score),
             }
 
+            # "Would-be-best" — the score IS better than the current
+            # best, but we still have to successfully adopt the
+            # snapshot before we commit the new best_* tuple. See
+            # _adopted_this_iter below.
             _is_new_best = score > best_score
+            # PR #53 round 8 (CodeRabbit): best_score, best_path,
+            # best_iter, best_metrics, best_params are committed
+            # TOGETHER and ONLY when the new snapshot is actually
+            # accepted. Previously best_score advanced before
+            # snapshot adoption succeeded, so a rejected/torn
+            # snapshot would leave best_score pointing at the
+            # rejected iter's score — poisoning the next iter's
+            # `score > best_score` comparison + the plateau-
+            # detection logic that reads best_score. The
+            # `_adopted_this_iter` local tracks whether we
+            # genuinely promoted this iter; the revert high-water
+            # mark gate uses THAT, not the raw `_is_new_best`
+            # (which only said "score would beat the current
+            # best", not "we successfully adopted it").
+            _adopted_this_iter = False
             if _is_new_best:
-                best_score = score
                 # Snapshot the new best iter to a stable name so the
                 # post-loop face-coherence + final copy can find it
                 # even if interim cleanup prunes the numbered
@@ -4493,10 +4511,6 @@ class PhaseAlignedRPPGManipulator:
                 # matches the source iter file's frame count and byte
                 # length.
                 tmp_snapshot = _BEST_SNAPSHOT_NAME + ".tmp.mp4"
-                # Default fallback when copy/validate fails AND we can't
-                # use a previous good snapshot. Setting it ONLY here so a
-                # successful adoption further down overrides it.
-                fallback_best_path = iter_output_path
                 # Has a prior good snapshot been written this run? If yes
                 # and the new copy fails validation, we MUST point
                 # best_path at the prior snapshot (NOT at the unflushed
@@ -4506,26 +4520,40 @@ class PhaseAlignedRPPGManipulator:
                 prior_snapshot_good = bool(
                     os.path.exists(_BEST_SNAPSHOT_NAME)
                 )
+
+                def _commit_best(_path, _score=score, _iter=iteration,
+                                 _metrics=m, _params=params):
+                    """Commit all best_* state in one atomic step so
+                    best_score never advances without a matching
+                    best_path / best_iter / best_metrics update."""
+                    nonlocal best_score, best_path, best_iter
+                    nonlocal best_metrics, best_params
+                    nonlocal _adopted_this_iter
+                    best_score = _score
+                    best_path = _path
+                    best_iter = _iter
+                    best_metrics = dict(_metrics)
+                    best_params = _params
+                    _adopted_this_iter = True
+
                 try:
                     if os.path.exists(iter_output_path):
                         shutil.copy2(iter_output_path, tmp_snapshot)
                         if _snapshot_validates(tmp_snapshot, iter_output_path):
                             os.replace(tmp_snapshot, _BEST_SNAPSHOT_NAME)
-                            best_path = _BEST_SNAPSHOT_NAME
-                            best_iter = iteration
-                            best_metrics = dict(m)
-                            best_params = params
+                            _commit_best(_BEST_SNAPSHOT_NAME)
                         else:
                             try:
                                 os.unlink(tmp_snapshot)
                             except OSError:
                                 pass
                             # Snapshot torn. If a previous good snapshot
-                            # exists on disk, KEEP best_path/best_iter/
-                            # best_metrics/best_params unchanged (we
-                            # already recorded the previous iteration's
-                            # win). Do NOT promote this iteration: its
-                            # output is corrupt by definition.
+                            # exists on disk, KEEP best_score AND
+                            # best_path/best_iter/best_metrics/best_params
+                            # all unchanged — the previous iteration's
+                            # win stays canonical. Do NOT promote this
+                            # iteration: its output is corrupt by
+                            # definition.
                             if prior_snapshot_good:
                                 print(c(
                                     f"  Warning: best-iter {iteration} "
@@ -4538,11 +4566,12 @@ class PhaseAlignedRPPGManipulator:
                             else:
                                 # No prior snapshot — first iter and
                                 # already torn. We have nothing better
-                                # to fall back to; surface this loudly.
-                                best_path = fallback_best_path
-                                best_iter = iteration
-                                best_metrics = dict(m)
-                                best_params = params
+                                # to fall back to; commit the direct
+                                # iter path so SOMETHING is best_path.
+                                # The playability gate at end-of-run
+                                # will reject it if final output is
+                                # corrupt.
+                                _commit_best(iter_output_path)
                                 print(c(
                                     f"  WARNING: best-iter {iteration} "
                                     f"snapshot validation failed AND no "
@@ -4553,10 +4582,18 @@ class PhaseAlignedRPPGManipulator:
                                     'R',
                                 ))
                     else:
-                        best_path = fallback_best_path
-                        best_iter = iteration
-                        best_metrics = dict(m)
-                        best_params = params
+                        # iter_output_path itself doesn't exist — no
+                        # source for a snapshot. Treat as soft-fail
+                        # (keep prior best if any).
+                        if prior_snapshot_good:
+                            print(c(
+                                f"  Warning: best-iter {iteration} source "
+                                f"file missing on disk; keeping previous "
+                                f"good snapshot at iter {best_iter}.",
+                                'Y',
+                            ))
+                        else:
+                            _commit_best(iter_output_path)
                 except OSError as exc:
                     print(c(
                         f"  Warning: could not snapshot best iter "
@@ -4573,15 +4610,17 @@ class PhaseAlignedRPPGManipulator:
                     if prior_snapshot_good:
                         # Same logic as above: prefer prior good
                         # snapshot over an OSError'd new copy.
+                        # _adopted_this_iter stays False.
                         pass
                     else:
-                        best_path = fallback_best_path
-                        best_iter = iteration
-                        best_metrics = dict(m)
-                        best_params = params
+                        _commit_best(iter_output_path)
 
             # v5.10d: update revert high-water mark.
-            if phase_emergency_revert is not None and _is_new_best:
+            # PR #53 round 8: use _adopted_this_iter, NOT _is_new_best.
+            # The high-water mark should only update when we actually
+            # ADOPTED the new best — a "would-be-best" iter whose
+            # snapshot validation failed didn't actually contribute.
+            if phase_emergency_revert is not None and _adopted_this_iter:
                 revert_high_water_mark = True
             elif phase_emergency_revert is None:
                 revert_high_water_mark = False

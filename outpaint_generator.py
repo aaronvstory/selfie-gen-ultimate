@@ -38,27 +38,48 @@ def _read_single_env_int(key: str, default: int) -> int:
     flagged module-import-time `int(os.environ.get(...))` calls that
     crash module load on a malformed env var, disabling outpaint
     entirely. Falls back to *default* on TypeError/ValueError.
+
+    PR #53 round 8 (CodeRabbit): also rejects non-positive values
+    (``0``, negatives) — these are nonsensical for size/MP caps and
+    would silently disable the pre-flight clamp downstream.
     """
     raw = os.environ.get(key)
     if raw is None or str(raw).strip() == "":
         return default
     try:
-        return int(raw)
+        parsed = int(raw)
     except (TypeError, ValueError):
         logger.warning("Invalid %s=%r; using default %d", key, raw, default)
         return default
+    if parsed <= 0:
+        logger.warning(
+            "Non-positive %s=%r; using default %d", key, raw, default,
+        )
+        return default
+    return parsed
 
 
 def _read_single_env_float(key: str, default: float) -> float:
-    """Single-key safe float loader. Same rationale as _read_single_env_int."""
+    """Single-key safe float loader. Same rationale as
+    _read_single_env_int — and PR #53 round 8 also rejects NaN /
+    +/-inf / non-positive values so a malformed env can never
+    propagate as a math-poisoning cap downstream.
+    """
     raw = os.environ.get(key)
     if raw is None or str(raw).strip() == "":
         return default
     try:
-        return float(raw)
+        parsed = float(raw)
     except (TypeError, ValueError):
         logger.warning("Invalid %s=%r; using default %g", key, raw, default)
         return default
+    if not math.isfinite(parsed) or parsed <= 0:
+        logger.warning(
+            "Non-finite or non-positive %s=%r; using default %g",
+            key, raw, default,
+        )
+        return default
+    return parsed
 
 
 # BFL polling limits (shared with selfie_generator pattern)

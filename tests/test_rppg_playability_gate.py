@@ -132,12 +132,12 @@ def test_is_playable_video_timeout_fails_open_when_secondary_inconclusive(
 
     logged = []
     result = rppg_mod._is_playable_video(
-        fake_video, progress_cb=lambda m, l="info": logged.append((l, m)),
+        fake_video, progress_cb=lambda m, lvl="info": logged.append((lvl, m)),
     )
     assert result is True
     assert any(
-        l == "warning" and "playability gate timed out" in m
-        for l, m in logged
+        lvl == "warning" and "playability gate timed out" in m
+        for lvl, m in logged
     )
 
 
@@ -167,12 +167,12 @@ def test_is_playable_video_timeout_rejects_when_secondary_says_corrupt(
 
     logged = []
     result = rppg_mod._is_playable_video(
-        fake_video, progress_cb=lambda m, l="info": logged.append((l, m)),
+        fake_video, progress_cb=lambda m, lvl="info": logged.append((lvl, m)),
     )
     assert result is False
     assert any(
-        l == "warning" and "secondary container probe rejected" in m
-        for l, m in logged
+        lvl == "warning" and "secondary container probe rejected" in m
+        for lvl, m in logged
     )
 
 

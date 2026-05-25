@@ -314,14 +314,22 @@ def _is_playable_video(
             print(reject_msg, file=sys.stderr)
             _report(progress_cb, reject_msg, "warning")
             return False
-        # secondary is True or None (couldn't decide). Fail-open
-        # with the existing advisory so the user can investigate.
+        # secondary is True (clean) or None (inconclusive — own
+        # timeout or ffprobe missing). Disambiguate in the log so a
+        # later "the file was actually broken" report doesn't have
+        # to ask which branch fired. PR #53 round 8 (CodeRabbit).
+        secondary_note = (
+            "secondary container probe found no corruption indicator"
+            if secondary is True
+            else "secondary container probe was INCONCLUSIVE "
+                 "(its own timeout or ffprobe missing)"
+        )
         timeout_msg = (
             f"[rppg] playability gate timed out validating "
-            f"{path.name} (180s); secondary container probe found "
-            f"no corruption indicator, accepting as playable. "
-            f"If the final video is actually corrupt, re-run with "
-            f"a longer ffprobe timeout or inspect manually."
+            f"{path.name} (180s); {secondary_note}, "
+            "accepting as playable. If the final video is actually "
+            "corrupt, re-run with a longer ffprobe timeout or "
+            "inspect manually."
         )
         print(timeout_msg, file=sys.stderr)
         _report(progress_cb, timeout_msg, "warning")
