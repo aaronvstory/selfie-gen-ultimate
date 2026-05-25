@@ -43,6 +43,7 @@ import queue as _queue
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -178,7 +179,7 @@ def _is_playable_video(path: Path, ffprobe_bin: str = "ffprobe") -> bool:
             print(
                 "[rppg] WARNING: ffprobe not on PATH; playability gate "
                 "DISABLED — corrupt rPPG outputs will NOT be quarantined.",
-                file=__import__("sys").stderr,
+                file=sys.stderr,
             )
             _is_playable_video._warned_missing = True  # type: ignore[attr-defined]
         return True

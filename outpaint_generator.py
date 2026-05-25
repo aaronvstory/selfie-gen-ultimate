@@ -538,9 +538,15 @@ class OutpaintGenerator:
         #   * the matchTemplate alignment runs on the full-res image,
         #   * the surrounding generated area is one Lanczos pass off the
         #     fal output (visually fine).
+        # EXIF orientation: preflight + _prepare_processed_image both
+        # apply ImageOps.exif_transpose so the upload + provider canvas
+        # are sized in the post-rotation coordinate system. The full-res
+        # original must use the SAME normalization or a phone-camera
+        # portrait photo would have orig_full sized in the wrong axis vs
+        # the downloaded canvas (Codex P1, PR #53). Mirrors line 76 + 189.
         try:
             with Image.open(image_path) as src:
-                orig_full = src.convert("RGB").copy()
+                orig_full = ImageOps.exif_transpose(src).convert("RGB").copy()
         except Exception as exc:
             self._report(
                 f"Could not re-open source image for full-res composite: {exc}",

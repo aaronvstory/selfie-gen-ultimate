@@ -138,6 +138,66 @@ def test_preserve_mode_rejects_when_composite_fails(monkeypatch, tmp_path: Path)
     assert not os.path.exists(saw_output_path["path"])
 
 
+def test_full_res_reopen_applies_exif_transpose(monkeypatch, tmp_path: Path):
+    """PR #53 round 1 — Codex P1: a portrait phone photo with EXIF
+    Orientation=6 (rotate 270 CW) is stored as a landscape file but
+    must render portrait. preflight + _prepare_processed_image both
+    apply ImageOps.exif_transpose, so the upload + provider canvas are
+    sized in post-rotation coords. The full-res reopen for the composite
+    paste source must do the same, otherwise orig_full is the wrong
+    dimensions vs the downloaded fal canvas and the resize math goes
+    sideways.
+    """
+    from PIL import Image as _Img, ExifTags
+
+    gen = OutpaintGenerator(api_key="x")
+    src_path = tmp_path / "input.jpg"
+    # 200x300 portrait stored as 300x200 landscape with Orientation=6.
+    landscape = _Img.new("RGB", (300, 200), (10, 20, 30))
+    exif = landscape.getexif()
+    orientation_tag = next(
+        k for k, v in ExifTags.TAGS.items() if v == "Orientation"
+    )
+    exif[orientation_tag] = 6  # rotate 270 CW => effective 200x300
+    landscape.save(src_path, exif=exif.tobytes())
+
+    _stub_fal_for_outpaint(
+        monkeypatch,
+        source_size=(200, 300),
+        uploaded_size=(200, 300),
+        downloaded_size=(440, 540),
+    )
+
+    captured = {}
+
+    def fake_composite(
+        output_path, orig, margin_left, margin_right,
+        margin_top, margin_bottom, output_format, composite_mode,
+    ):
+        captured["orig_size"] = orig.size
+        return True
+
+    monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
+
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        expand_left=40,
+        expand_right=40,
+        expand_top=60,
+        expand_bottom=60,
+        provider="fal",
+        composite_mode="preserve_seamless",
+        edge_seal_px=0,
+    )
+
+    assert out is not None
+    # Post-EXIF-transpose dims: 200x300 (portrait), NOT the stored
+    # 300x200 landscape. If the bug were still present the assertion
+    # would see (300, 200) here.
+    assert captured["orig_size"] == (200, 300)
+
+
 def test_source_reopen_failure_rejects_output(monkeypatch, tmp_path: Path):
     """If the source image can't be re-opened for the full-res
     composite (deleted between download and the composite step), the
