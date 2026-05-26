@@ -208,6 +208,102 @@ def test_gpu_ready_cache_revalidates_via_probe(monkeypatch):
     )
 
 
+def test_unsupported_cuda_major_short_circuits_to_no_nvidia(monkeypatch):
+    """Subagent MEDIUM on PR #54 round 1: CUDA 11.x / 10.x / 14+ has no
+    current-stable CuPy wheel. Before the fix, install_cupy returned
+    False three launches in a row before the install_failed cap fired,
+    polluting the log with three "CuPy install failed" messages on
+    every launch for a CUDA 11 user. The fix: short-circuit BEFORE
+    acquiring the lock, write a permanent no_nvidia stamp with
+    descriptive cuda_major + last_error so a future debugger sees
+    "GPU was there, just unsupported by current CuPy."
+    """
+    monkeypatch.setattr(
+        gpu_bootstrap, "detect_nvidia",
+        lambda: {"driver_version": "470.82", "cuda_major": 11},
+    )
+    install_called = []
+    monkeypatch.setattr(
+        gpu_bootstrap, "install_cupy",
+        lambda exe, major: install_called.append((exe, major)) or (False, "should not run"),
+    )
+    result = gpu_bootstrap.bootstrap("python_unused")
+    assert result == "no_nvidia"
+    assert install_called == [], (
+        "unsupported CUDA major must short-circuit BEFORE the lock + "
+        "install path"
+    )
+    payload = json.loads(gpu_bootstrap.STAMP_PATH.read_text())
+    assert payload["result"] == "no_nvidia"
+    assert payload["cuda_major"] == 11, (
+        "the stamp must preserve cuda_major so a debugger can see "
+        "GPU detection worked but CuPy didn't have a matching wheel"
+    )
+    assert payload["driver_version"] == "470.82"
+    assert "CUDA 11" in (payload.get("last_error") or ""), (
+        "stamp must carry a human-readable reason"
+    )
+
+
+def test_install_failed_concurrent_attempts_increment_monotonically(monkeypatch):
+    """Subagent HIGH on PR #54 round 1: simulate the race where two
+    launchers both load the stamp pre-lock, both pass the cap check,
+    and serialize on the GPU bootstrap lock. The second launcher must
+    re-read the stamp INSIDE the lock so its attempts increment from
+    the post-first-launcher state, not from its own stale in-memory
+    snapshot — otherwise the second launcher clobbers the first's
+    attempts=2 with another attempts=2 and the cap is never reached.
+
+    We can't truly run two processes inside a unit test, but we can
+    verify the fix by simulating the on-disk state transition: write
+    attempts=1, then run bootstrap() with the in-memory stamp at
+    attempts=1 but the on-disk stamp at attempts=2 (the state another
+    process would have just written), and assert the new stamp has
+    attempts=3 (not 2).
+    """
+    # Initial stamp on disk: attempts=1 (matches what we load).
+    gpu_bootstrap._write_stamp({
+        "result": "install_failed",
+        "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "driver_version": "555.52", "cuda_major": 12,
+        "cupy_package": "cupy-cuda12x[ctk]", "cupy_version": None,
+        "attempts": 1, "last_error": "first failure",
+    })
+    monkeypatch.setattr(
+        gpu_bootstrap, "detect_nvidia",
+        lambda: {"driver_version": "555.52", "cuda_major": 12},
+    )
+    # Force install to fail so we hit the increment path.
+    monkeypatch.setattr(
+        gpu_bootstrap, "install_cupy",
+        lambda *a, **kw: (False, "still failing"),
+    )
+
+    # Simulate process A writing attempts=2 between THIS process's
+    # initial stamp read and the in-lock re-read. We patch _acquire_lock
+    # to do this side-effect for us, mimicking the race.
+    def _spy_acquire_lock(quiet=False):
+        # Mid-flight write to disk — what process A would have done.
+        gpu_bootstrap._write_stamp({
+            "result": "install_failed",
+            "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "driver_version": "555.52", "cuda_major": 12,
+            "cupy_package": "cupy-cuda12x[ctk]", "cupy_version": None,
+            "attempts": 2, "last_error": "process A second failure",
+        })
+        return True
+    monkeypatch.setattr(gpu_bootstrap, "_acquire_lock", _spy_acquire_lock)
+    monkeypatch.setattr(gpu_bootstrap, "_release_lock", lambda: None)
+
+    gpu_bootstrap.bootstrap("python_unused")
+    payload = json.loads(gpu_bootstrap.STAMP_PATH.read_text())
+    assert payload["attempts"] == 3, (
+        f"expected attempts=3 (process A wrote 2 inside the lock, this "
+        f"process must re-read + write 3), got {payload['attempts']} — "
+        f"the H1 lock re-read regression has reappeared"
+    )
+
+
 def test_gpu_ready_cache_falls_through_when_probe_fails(monkeypatch):
     """If the probe returns None (venv broken) we MUST NOT return
     gpu_ready off the cache — fall through to fresh detection +

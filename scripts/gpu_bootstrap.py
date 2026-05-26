@@ -325,15 +325,53 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
         _log("CPU mode (no NVIDIA found)")
         return "no_nvidia"
 
-    # NVIDIA present — acquire lock + install.
+    # M1 (subagent MEDIUM): unsupported CUDA major (10, 11, 14+) must NOT
+    # enter the install-retry loop — install_cupy would return False
+    # three launches in a row before the cap fires, polluting the user's
+    # log with "CuPy install failed" messages that aren't going to
+    # resolve until CuPy ships a wheel for that CUDA major (or never,
+    # for 11.x). Short-circuit to a permanent no_nvidia stamp with a
+    # descriptive cuda_major + driver_version so a future debugger can
+    # see "GPU was there, just unsupported by current CuPy."
+    if info["cuda_major"] not in _CUDA_TO_CUPY:
+        _write_stamp({
+            "result": "no_nvidia",
+            "driver_version": info["driver_version"],
+            "cuda_major": info["cuda_major"],
+            "cupy_package": None,
+            "cupy_version": None,
+            "last_error": (
+                f"CUDA {info['cuda_major']}.x detected but no matching "
+                f"CuPy wheel in current stable (need 12.x or 13.x)"
+            ),
+        })
+        _log(
+            f"CPU mode -- NVIDIA driver {info['driver_version']} present "
+            f"but CUDA {info['cuda_major']}.x has no current-stable CuPy "
+            "wheel (CuPy ships 12.x and 13.x). Stamped as no_nvidia."
+        )
+        return "no_nvidia"
+
+    # NVIDIA present + CUDA supported — acquire lock + install.
     if not _acquire_lock():
         _log("lock acquisition timed out; falling back to CPU this launch")
         return "lock_timeout"
     try:
+        # H1 (subagent HIGH): re-read the stamp from disk INSIDE the lock
+        # before computing prior_attempts. Two concurrent launchers can
+        # both load the stamp pre-lock with attempts=1, both fall
+        # through the cap check, then both serialize on the lock. The
+        # second to acquire the lock would otherwise read its in-memory
+        # stamp (still attempts=1) and write attempts=2, clobbering
+        # process A's attempts=2 → counter sticks at 2 instead of
+        # reaching the 3-attempt cap. Re-reading fresh inside the lock
+        # gives process B the post-A view (attempts=2) and lets it
+        # write attempts=3 correctly.
+        locked_stamp = _load_stamp()
         _log(
             f"NVIDIA driver {info['driver_version']} / CUDA "
             f"{info['cuda_major']}.x detected -- installing "
-            f"{_CUDA_TO_CUPY.get(info['cuda_major'], '(unsupported)')} "
+            f"{_CUDA_TO_CUPY[info['cuda_major']]} "
             "(one-time, may take ~30-120s)..."
         )
         ok, msg = install_cupy(python_exe, info["cuda_major"])
@@ -342,18 +380,20 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
                 "result": "gpu_ready",
                 "driver_version": info["driver_version"],
                 "cuda_major": info["cuda_major"],
-                "cupy_package": _CUDA_TO_CUPY.get(info["cuda_major"]),
+                "cupy_package": _CUDA_TO_CUPY[info["cuda_major"]],
                 "cupy_version": msg,
                 "attempts": 0,
             })
             _log(f"CuPy {msg} ready -- rPPG injector will use GPU")
             return "gpu_installed_now"
-        prior_attempts = (stamp or {}).get("attempts", 0)
+        # Read attempts from the locked re-load so concurrent retries
+        # increment monotonically.
+        prior_attempts = (locked_stamp or {}).get("attempts", 0)
         _write_stamp({
             "result": "install_failed",
             "driver_version": info["driver_version"],
             "cuda_major": info["cuda_major"],
-            "cupy_package": _CUDA_TO_CUPY.get(info["cuda_major"]),
+            "cupy_package": _CUDA_TO_CUPY[info["cuda_major"]],
             "cupy_version": None,
             "attempts": prior_attempts + 1,
             "last_error": msg,
@@ -388,11 +428,17 @@ def main(argv: Optional[list] = None) -> int:
              "wiring so repeat launches stay clean.",
     )
     args = parser.parse_args(argv)
-    result = bootstrap(args.python_exe, quiet_if_cached=args.quiet_if_cached)
-    return 0 if result in {
-        "gpu_ready", "gpu_installed_now", "no_nvidia",
-        "cached_no_nvidia", "skipped",
-    } else 0  # ALWAYS exit 0: GPU bootstrap failure must never block GUI launch
+    bootstrap(args.python_exe, quiet_if_cached=args.quiet_if_cached)
+    # H2 (subagent HIGH): always exit 0. GPU bootstrap is best-effort —
+    # any failure (no NVIDIA, install crashed, lock timed out, etc.)
+    # MUST fall back to CPU silently and let the GUI launch normally.
+    # The launcher chain treats a non-zero exit as fatal, so a buggy
+    # "return 1 on install_failed" would block legitimate launches on
+    # transient pip failures. The prior `0 if ... else 0` ternary
+    # signalled this intent but read as a bug; reduce to a single
+    # return so a future contributor can't accidentally flip the
+    # `else` branch.
+    return 0
 
 
 if __name__ == "__main__":

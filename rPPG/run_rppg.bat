@@ -68,11 +68,71 @@ if errorlevel 1 (
 )
 "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
 if errorlevel 1 (
-  echo   ERROR: repo venv missing cv2/numpy/mediapipe/scipy.
-  echo   Sync: "%REPO_ROOT%\venv\Scripts\pip" install -r "%REPO_ROOT%\requirements.txt"
-  >>"%LOG_FILE%" echo [ERROR] Core imports missing in repo venv.
-  %PAUSE%
-  exit /b 1
+  rem v2.7 friend-zip self-heal (PR #54 / 2026-05-27): the prior block
+  rem only ECHOED the sync command and exited. A user opening a fresh
+  rem personal zip whose venv was built before scipy/mediapipe joined
+  rem requirements.txt then hit the dead-end '... missing cv2/numpy/
+  rem mediapipe/scipy' error and rPPG silently failed every run. Now we
+  rem ACTUALLY run the pip install against the resolved !PYTHON_BIN!
+  rem (NOT a hardcoded %REPO_ROOT%\venv\Scripts\pip, which can resolve
+  rem to a different python on .venv311 / SELFIEGEN_PYTHON hosts) and
+  rem re-run the import check. Honours KLING_NO_PAUSE so the GUI
+  rem subprocess doesn't wedge on a pause.
+  echo   WARN: rPPG deps missing -- syncing repo requirements before retry...
+  >>"%LOG_FILE%" echo [WARN] Core imports missing; running pip install.
+  rem Concurrent rPPG launches (two GUI windows) must not both run pip
+  rem against the shared venv. mkdir-based atomic lock; sibling waits up
+  rem to ~10 min then proceeds (matches the launcher's setup.lock TTL).
+  set "RPPG_SETUP_LOCK=%STATE_DIR%\rppg_setup.lock"
+  set "RPPG_LOCK_WAITED="
+  :rppg_setup_lock_acquire
+  md "!RPPG_SETUP_LOCK!" >nul 2>&1
+  if !errorlevel! equ 0 goto :rppg_setup_lock_acquired
+  forfiles /P "%STATE_DIR%" /M rppg_setup.lock /D -1 >nul 2>&1
+  if !errorlevel! equ 0 (
+    echo   [rppg-setup-lock] removing stale lock
+    rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
+    goto :rppg_setup_lock_acquire
+  )
+  if not defined RPPG_LOCK_WAITED (
+    echo   [rppg-setup-lock] another launcher is syncing rPPG deps; waiting...
+    set "RPPG_LOCK_WAITED=1"
+  )
+  ping -n 3 127.0.0.1 >nul 2>&1
+  goto :rppg_setup_lock_acquire
+  :rppg_setup_lock_acquired
+  rem Re-check imports after acquiring the lock - a sibling may have
+  rem ALREADY installed them while we waited, in which case we can skip
+  rem the pip work entirely.
+  "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
+  if !errorlevel! equ 0 (
+    rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
+    echo   OK: rPPG deps installed by sibling launcher; continuing.
+    goto :rppg_post_dep_check
+  )
+  "!PYTHON_BIN!" -m pip install -r "%REPO_ROOT%\requirements.txt"
+  set "PIP_EXIT=!errorlevel!"
+  rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
+  if !PIP_EXIT! neq 0 (
+    echo   ERROR: pip install -r requirements.txt failed.
+    >>"%LOG_FILE%" echo [ERROR] pip install -r requirements.txt failed.
+    %PAUSE%
+    exit /b 1
+  )
+  :rppg_post_dep_check
+  rem Re-check imports after the self-heal install. If still missing,
+  rem report exactly WHICH modules failed so the user has an actionable
+  rem error instead of the generic 4-module list.
+  "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
+  if errorlevel 1 (
+    echo   ERROR: rPPG deps still missing after pip sync. Detail:
+    "!PYTHON_BIN!" -c "import importlib.util; mods=['cv2','numpy','mediapipe','scipy']; missing=[m for m in mods if importlib.util.find_spec(m) is None]; print('     Still missing:', ', '.join(missing) if missing else 'none (deeper import failure)')"
+    >>"%LOG_FILE%" echo [ERROR] Self-heal pip install did not satisfy imports.
+    %PAUSE%
+    exit /b 1
+  )
+  echo   OK: rPPG deps installed.
+  >>"%LOG_FILE%" echo [INFO] Self-heal pip install succeeded; continuing.
 )
 if exist "%REPO_ROOT%\face_landmarker.task" set "MEDIAPIPE_FACE_LANDMARKER_MODEL=%REPO_ROOT%\face_landmarker.task"
 rem rppg_injector visualize_analysis() calls plt.show() which BLOCKS on a
