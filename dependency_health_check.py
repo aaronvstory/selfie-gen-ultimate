@@ -178,6 +178,12 @@ def run_torch_cpu_fallback() -> tuple[bool, str]:
     ``run_repair`` when ``check_runtime_dependencies`` flagged a CUDA load
     failure, so users on broken-CUDA Windows nvidia setups end up with a
     working CPU-only torch instead of the launcher dead-ending.
+
+    Gemini PR #55 round 4 HIGH: bare ``--index-url`` restricts pip to
+    search **only** the PyTorch CPU wheel index — which doesn't host
+    torch's runtime deps (``filelock``, ``sympy``, ``networkx``, etc).
+    Adding ``--extra-index-url https://pypi.org/simple`` lets pip fall
+    back to PyPI for those, so the install actually resolves.
     """
     cmd = [
         sys.executable,
@@ -189,6 +195,8 @@ def run_torch_cpu_fallback() -> tuple[bool, str]:
         "--no-cache-dir",
         "--index-url",
         _TORCH_CPU_INDEX_URL,
+        "--extra-index-url",
+        "https://pypi.org/simple",
         "torch",
     ]
     completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -211,17 +219,24 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
     environment. Without the failures list, behaves identically to prior
     versions (face-stack-only repair) for back-compat with any external
     caller that invokes ``run_repair()`` with no args.
+
+    Codex PR #55 round 4 P2: face-stack repair runs UNCONDITIONALLY, even
+    when the CPU fallback fails. The face stack (TF/tf-keras/retinaface)
+    is independently repairable — if download.pytorch.org is blocked or
+    flaky, the user can still get a working face_crop / video path. Only
+    if BOTH the CPU fallback AND the face-stack install fail does
+    ``run_repair`` return False. The combined message records both
+    outcomes so the launcher's diagnostic log is clear.
     """
     messages: list[str] = []
+    cuda_ok = True  # Treated as "no fallback needed" when no CUDA failure.
 
     if failures and _failures_indicate_torch_cuda_break(failures):
         cuda_ok, cuda_msg = run_torch_cpu_fallback()
         messages.append(cuda_msg)
-        if not cuda_ok:
-            # CUDA fallback failed — bubble up so the launcher emits an
-            # actionable error rather than running TF reinstall on top of
-            # a still-broken torch.
-            return False, "; ".join(messages)
+        # Do NOT early-return on cuda_ok=False — the face stack is
+        # independently repairable. The combined success/failure status
+        # is computed from BOTH outcomes at the end of the method.
 
     cmd = [
         sys.executable,
@@ -236,15 +251,17 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
     completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if completed.returncode == 0:
         messages.append("repair install completed")
-        return True, "; ".join(messages)
+        face_ok = True
+    else:
+        stderr = (completed.stderr or "").strip()
+        stdout = (completed.stdout or "").strip()
+        details = stderr if stderr else stdout
+        if details:
+            details = details.splitlines()[-1]
+        messages.append(f"repair failed (code {completed.returncode}): {details}")
+        face_ok = False
 
-    stderr = (completed.stderr or "").strip()
-    stdout = (completed.stdout or "").strip()
-    details = stderr if stderr else stdout
-    if details:
-        details = details.splitlines()[-1]
-    messages.append(f"repair failed (code {completed.returncode}): {details}")
-    return False, "; ".join(messages)
+    return (cuda_ok and face_ok), "; ".join(messages)
 
 
 def verify_in_fresh_process() -> tuple[bool, list[str]]:

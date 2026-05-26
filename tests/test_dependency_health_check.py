@@ -300,10 +300,14 @@ class TorchCudaFallbackTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(call_order, ["face_stack_repair"])
 
-    def test_run_repair_bubbles_cpu_fallback_failure_without_face_stack_install(self):
-        """If the CPU fallback itself fails, the face-stack repair MUST NOT
-        run — installing TF on top of a still-broken torch is wasted work
-        and the error message would mislead the user."""
+    def test_run_repair_continues_face_stack_when_cpu_fallback_fails(self):
+        """Codex PR #55 round 4 P2: if the CPU fallback fails (e.g.
+        download.pytorch.org blocked or flaky), the face-stack repair
+        MUST still run. The face stack is independently repairable; the
+        user benefits from a working face_crop / video path even if
+        torch stays broken. ``run_repair`` returns False overall only
+        because CUDA fallback failed, but the message captures BOTH
+        outcomes so the launcher's diagnostic log is clear."""
         call_order = []
 
         def fake_run(cmd, *args, **kwargs):
@@ -322,9 +326,70 @@ class TorchCudaFallbackTests(unittest.TestCase):
                 failures=["torch_cuda_failure:cudart: ImportError"]
             )
 
+        # Overall NOT ok because cuda_ok was False, but face_stack DID run.
         self.assertFalse(ok)
-        self.assertEqual(call_order, ["cpu_fallback"])
+        self.assertEqual(call_order, ["cpu_fallback", "face_stack_repair"])
         self.assertIn("torch CPU fallback failed", message)
+        self.assertIn("repair install completed", message)
+
+    def test_run_repair_succeeds_only_when_both_paths_succeed(self):
+        """Sanity guard: with a CUDA failure on input, the overall ``ok``
+        return value is the AND of (cpu_fallback_ok, face_stack_ok). This
+        prevents accidental future change that returns True when only one
+        path succeeded — the launcher needs both for a fully-recovered env.
+        """
+        def all_ok(cmd, *args, **kwargs):
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch("dependency_health_check.subprocess.run", side_effect=all_ok):
+            ok, message = dhc.run_repair(
+                failures=["torch_cuda_failure:cudart: ImportError"]
+            )
+        self.assertTrue(ok)
+        self.assertIn("CPU-only fallback", message)
+        self.assertIn("repair install completed", message)
+
+        # Now face-stack fails; cuda fallback ok. Overall should be False.
+        seq = [
+            types.SimpleNamespace(returncode=0, stdout="", stderr=""),  # cuda ok
+            types.SimpleNamespace(returncode=1, stdout="", stderr="pip resolution conflict"),
+        ]
+        with mock.patch("dependency_health_check.subprocess.run", side_effect=seq):
+            ok, message = dhc.run_repair(
+                failures=["torch_cuda_failure:cudart: ImportError"]
+            )
+        self.assertFalse(ok)
+        self.assertIn("CPU-only fallback", message)
+        self.assertIn("repair failed", message)
+
+    def test_torch_cpu_fallback_uses_extra_index_url_for_pypi(self):
+        """Gemini PR #55 round 4 HIGH: ``--index-url`` alone restricts pip
+        to ONLY the PyTorch CPU wheel index, which doesn't host torch's
+        runtime deps (filelock, sympy, networkx, jinja2, etc). Must add
+        ``--extra-index-url https://pypi.org/simple`` so pip falls back
+        to PyPI for those non-PyTorch packages.
+        """
+        captured_cmds: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            captured_cmds.append(list(cmd))
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch("dependency_health_check.subprocess.run", side_effect=fake_run):
+            ok, _ = dhc.run_torch_cpu_fallback()
+
+        self.assertTrue(ok)
+        self.assertEqual(len(captured_cmds), 1)
+        cmd = captured_cmds[0]
+        # `--index-url` -> PyTorch CPU wheel index
+        idx_iu = cmd.index("--index-url")
+        self.assertEqual(cmd[idx_iu + 1], dhc._TORCH_CPU_INDEX_URL)
+        # `--extra-index-url` -> PyPI (so non-torch wheels are findable)
+        idx_eiu = cmd.index("--extra-index-url")
+        self.assertEqual(cmd[idx_eiu + 1], "https://pypi.org/simple")
+        # Final positional arg is `torch` (not a pinned version — let pip
+        # resolve the latest CPU wheel that matches Python + platform).
+        self.assertEqual(cmd[-1], "torch")
 
 
 if __name__ == "__main__":
