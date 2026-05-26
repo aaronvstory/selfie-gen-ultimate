@@ -48,8 +48,17 @@ def _stub_subprocess(monkeypatch: pytest.MonkeyPatch) -> list:
     Return a list that the test reads after run_rppg returns."""
     captured: list = []
 
-    def _fake_stream(cmd, *, cwd, timeout_seconds, on_line, deadline_extender=None):
-        del cwd, timeout_seconds, on_line, deadline_extender
+    def _fake_stream(
+        cmd, *, cwd, timeout_seconds, on_line, deadline_extender=None,
+        on_heartbeat=None, heartbeat_interval_seconds=60.0,
+    ):
+        # Swallow the v2.7 heartbeat kwargs added by the streamer; the
+        # cmd-shape tests only care about argv content, not progress
+        # signalling.
+        del (
+            cwd, timeout_seconds, on_line, deadline_extender,
+            on_heartbeat, heartbeat_interval_seconds,
+        )
         captured.append(list(cmd))
         return (0, ["fake-stdout"])
 
@@ -225,8 +234,11 @@ def _make_extender_capturing_stub(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Captures deadline_extender (in addition to cmd) so tests can assert on it."""
     captured: dict = {}
 
-    def _fake_stream(cmd, *, cwd, timeout_seconds, on_line, deadline_extender=None):
-        del cwd, on_line
+    def _fake_stream(
+        cmd, *, cwd, timeout_seconds, on_line, deadline_extender=None,
+        on_heartbeat=None, heartbeat_interval_seconds=60.0,
+    ):
+        del cwd, on_line, on_heartbeat, heartbeat_interval_seconds
         captured["cmd"] = list(cmd)
         captured["timeout"] = timeout_seconds
         captured["extender"] = deadline_extender

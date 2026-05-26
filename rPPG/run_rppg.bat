@@ -78,6 +78,11 @@ if exist "%REPO_ROOT%\face_landmarker.task" set "MEDIAPIPE_FACE_LANDMARKER_MODEL
 rem rppg_injector visualize_analysis() calls plt.show() which BLOCKS on a
 rem GUI window; force headless Agg so it never waits for a window close.
 set "MPLBACKEND=Agg"
+rem v2.7 fix: flush every `print` from the injector child immediately so the
+rem GUI sees natural progress cadence instead of a multi-minute silent gap
+rem while MediaPipe loads + baseline ROIs extract. The wrapper streamer ALSO
+rem sets this in its subprocess env (belt + suspenders).
+set "PYTHONUNBUFFERED=1"
 
 echo   Launching rppg_injector.py %*
 >>"%LOG_FILE%" echo [INFO] Launching rppg_injector.py %*

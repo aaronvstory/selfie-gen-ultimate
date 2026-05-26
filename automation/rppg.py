@@ -691,6 +691,8 @@ def stream_subprocess_with_timeout(
     timeout_seconds: int,
     on_line: Optional[Callable[[str], None]] = None,
     deadline_extender: Optional[Callable[[str], int]] = None,
+    on_heartbeat: Optional[Callable[[float], None]] = None,
+    heartbeat_interval_seconds: float = 60.0,
 ) -> Tuple[int, List[str]]:
     """Run *cmd*, stream stdout line-by-line, and enforce a wall-clock
     timeout that fires even if the child stalls mid-line with no newline
@@ -711,6 +713,20 @@ def stream_subprocess_with_timeout(
     — so a legitimate 10-iteration run isn't killed mid-iter just
     because the user picked a low initial timeout.
 
+    *on_heartbeat* (v2.7): optional callback fired with the float
+    "seconds since launch with no stdout yet" when the heartbeat
+    interval elapses without any output. The injector takes ~7-8
+    minutes between "Launching rppg_injector.py..." and its first
+    stdout line on CPU (MediaPipe model load + baseline ROI extraction
+    happen silently), so without a heartbeat the user thinks the
+    process is wedged. The callback fires at most once per
+    *heartbeat_interval_seconds* and STOPS firing the instant the
+    first stdout line arrives (the existing per-iteration progress
+    takes over from there). Per ChatGPT's v2.7 steering: this MUST
+    live in the parent streamer, not in the child-side
+    ``_RppgProgressTracker``, because the silent window is BEFORE
+    the child emits anything.
+
     Returns ``(returncode, output_lines)``. Raises
     ``subprocess.TimeoutExpired`` on timeout (caller treats that as a
     graceful skip). The single source of truth for rPPG subprocess
@@ -726,6 +742,17 @@ def stream_subprocess_with_timeout(
     # launcher has no pause).
     env = dict(os.environ)
     env["KLING_NO_PAUSE"] = "1"
+    # PYTHONUNBUFFERED=1 (v2.7): the injector is a Python child whose
+    # stdout otherwise buffers to a 4KB block. On CPU the MediaPipe
+    # load + baseline ROI extraction produce ~50-200 bytes per
+    # ``print``, all of which sit in the buffer for minutes. The user's
+    # 2026-05-27 run gapped 8 minutes between "Launching
+    # rppg_injector.py" and the injector's first visible line; this
+    # env var (belt) plus the .bat launcher's own ``set
+    # PYTHONUNBUFFERED=1`` (suspenders) make each ``print`` flush
+    # immediately, so the GUI sees the injector's natural progress
+    # cadence.
+    env["PYTHONUNBUFFERED"] = "1"
     # stdin=DEVNULL: the rPPG injector calls `input()` at the end of
     # iterative mode (`_prompt_for_iterations` in rppg_injector.py:4779)
     # to ask "Save additional iteration(s)?". When stdin inherits the
@@ -765,6 +792,14 @@ def stream_subprocess_with_timeout(
     output_lines: List[str] = []
     start_time = time.monotonic()
     deadline = start_time + timeout_seconds
+    # Heartbeat state — fires every ``heartbeat_interval_seconds``
+    # while the child has produced ZERO stdout lines. Stops the moment
+    # the first line lands (per-line progress is now meaningful so the
+    # heartbeat would just add noise).
+    heartbeat_silenced = False
+    next_heartbeat_at = (
+        start_time + heartbeat_interval_seconds if on_heartbeat else None
+    )
     # Hard cap on cumulative extensions — without this, a stuck
     # subprocess that emits the same "Iteration N/M" marker in a
     # loop could push the deadline out indefinitely. 8× the initial
@@ -790,12 +825,36 @@ def stream_subprocess_with_timeout(
         try:
             item = line_q.get(timeout=min(remaining, 1.0))
         except _queue.Empty:
+            # No output in the last 1s. Re-check the wall clock + maybe
+            # fire the heartbeat. Heartbeat only runs in the silent-
+            # startup window (before the child has produced ANY line);
+            # past that, the child's own per-iter progress is the user-
+            # visible signal and another stream of "still alive" lines
+            # would just be noise.
+            if (
+                on_heartbeat is not None
+                and not heartbeat_silenced
+                and next_heartbeat_at is not None
+                and time.monotonic() >= next_heartbeat_at
+            ):
+                try:
+                    on_heartbeat(time.monotonic() - start_time)
+                except Exception:
+                    # Heartbeat reporting must NEVER kill the subprocess
+                    # wait — same guarantee as the deadline_extender.
+                    pass
+                next_heartbeat_at = (
+                    time.monotonic() + heartbeat_interval_seconds
+                )
             continue  # re-check the wall clock; child may be silent
         if item is None:
             eof = True
             break
         text = item.rstrip()
         if text:
+            # First real line arrives → silence the heartbeat. The
+            # per-iter progress tracker takes it from here.
+            heartbeat_silenced = True
             output_lines.append(text)
             # ORDER MATTERS (CodeRabbit Major 3272966501 + Codex P1
             # 3272968645 caught the same bug on 91af11f): the
@@ -1024,6 +1083,24 @@ def run_rppg(
     # minutes because each Iteration line added ~90s to the deadline.
     extender = tracker.deadline_extender if (iterative and timeout_seconds and timeout_seconds > 0) else None
     output_lines: List[str] = []
+
+    # Heartbeat — emit a "still warming up" line every 60s while the
+    # injector has produced ZERO stdout. The injector spends ~7-8 min
+    # silently loading MediaPipe + extracting baseline ROIs before its
+    # first ``print``; without a heartbeat the user (and the test
+    # harness) believe the process is wedged. Fires through the same
+    # progress_cb the rest of the wrapper uses so it appears inline
+    # with the other rPPG log lines. Auto-silenced when the first
+    # injector line lands (see stream_subprocess_with_timeout).
+    def _heartbeat(elapsed_seconds: float) -> None:
+        mins = int(elapsed_seconds // 60)
+        _report(
+            progress_cb,
+            f"rPPG warming up... {mins} min elapsed (loading MediaPipe + "
+            f"extracting baseline ROIs)",
+            "info",
+        )
+
     try:
         completed_returncode, output_lines = stream_subprocess_with_timeout(
             cmd,
@@ -1031,6 +1108,7 @@ def run_rppg(
             timeout_seconds=timeout_seconds,
             on_line=tracker.on_line,
             deadline_extender=extender,
+            on_heartbeat=_heartbeat,
         )
     except subprocess.TimeoutExpired:
         _report(progress_cb, f"rPPG timed out after {timeout_seconds}s", "warning")

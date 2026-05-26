@@ -2315,12 +2315,32 @@ class QueueManager:
                 # killed + skipped on schedule.
                 from automation.rppg import stream_subprocess_with_timeout
 
+                # Heartbeat callback — v2.7 fix for the "8-min silent
+                # gap" UX bug. The rPPG injector takes ~7-8 min on CPU
+                # between "Launching rppg_injector.py" and its first
+                # visible stdout line (MediaPipe model load + baseline
+                # ROI extraction happen silently). Without a heartbeat
+                # the user thinks the process is wedged. Fires every
+                # 60s during the silent window, stops the moment the
+                # first injector line arrives. Lives in the PARENT
+                # streamer (not the child progress tracker) because
+                # the silent window is BEFORE the child emits anything.
+                def _on_rppg_heartbeat(elapsed_seconds: float) -> None:
+                    mins = int(elapsed_seconds // 60)
+                    self.log(
+                        f"⏳ rPPG warming up... {mins} min elapsed "
+                        f"(loading MediaPipe model + extracting "
+                        f"baseline ROIs; first iteration starts soon)",
+                        "info",
+                    )
+
                 returncode, output_lines = stream_subprocess_with_timeout(
                     run_cmd,
                     cwd=str(launcher.parent),
                     timeout_seconds=_TIMEOUT,
                     on_line=_on_rppg_line,
                     deadline_extender=tracker_extender,
+                    on_heartbeat=_on_rppg_heartbeat,
                 )
             except subprocess.TimeoutExpired:
                 minutes = max(1, int(_TIMEOUT // 60))
