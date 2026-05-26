@@ -40,10 +40,12 @@ class DependencyHealthCheckTests(unittest.TestCase):
     def _healthy_module_set(self):
         """Module stubs for the happy-path probe.
 
-        ``torch`` exposes a no-op ``zeros`` so the eager-init probe (added
-        for the CUDA fallback) doesn't blow up under the stub. Production
-        ``torch.zeros(1)`` allocates a real CPU tensor; the stub just
-        returns ``None`` since the probe only cares whether it raises.
+        ``torch.cuda.is_available`` is the canonical eager-init call the
+        probe now uses (subagent PR #55 round 5 MED — previous
+        ``torch.zeros(1)`` defaulted to ``device='cpu'`` and never forced
+        CUDA init, missing the deferred-CUDA-init class of failures).
+        Stub returns False (i.e. CPU-only torch) since the probe only
+        cares whether the call raises.
         """
         return {
             "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
@@ -52,7 +54,9 @@ class DependencyHealthCheckTests(unittest.TestCase):
             "retinaface": types.SimpleNamespace(RetinaFace=object()),
             "cv2": types.SimpleNamespace(),
             "numpy": types.SimpleNamespace(),
-            "torch": types.SimpleNamespace(zeros=lambda _n: None),
+            "torch": types.SimpleNamespace(
+                cuda=types.SimpleNamespace(is_available=lambda: False),
+            ),
         }
 
     def test_passes_for_valid_import_set(self):
@@ -96,6 +100,67 @@ class DependencyHealthCheckTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertIn("tensorflow missing __version__", failures)
+
+    def test_repair_mode_returns_zero_on_partial_success_face_stack_healthy(self):
+        """Subagent PR #55 round 5 HIGH: when ``run_repair`` returns False
+        because the CPU-torch fallback couldn't reach download.pytorch.org
+        BUT the face-stack repair succeeded, ``main`` must still return 0
+        so the launcher proceeds with GUI launch — face_crop / video paths
+        work fine on the now-healthy face stack, and the app doesn't use
+        torch.cuda.* in production. The previous shape collapsed any
+        repair failure to exit 1, denying GUI launch unnecessarily."""
+        # Initial check: torch CUDA failure + tf import failure
+        initial = (
+            False,
+            ["torch_cuda_failure:cudart: ImportError", "tensorflow import failed: foo"],
+        )
+        # Repair returns False (CPU fallback failed) but messages capture
+        # face-stack repair succeeded.
+        repair_result = (
+            False,
+            "torch CPU fallback failed (code 1): network error; repair install completed",
+        )
+        # Fresh-process verify: only the torch_cuda_failure remains; face
+        # stack is clean.
+        verify_result = (False, ["torch_cuda_failure:cudart: ImportError"])
+
+        with mock.patch(
+            "dependency_health_check.check_runtime_dependencies",
+            return_value=initial,
+        ), mock.patch(
+            "dependency_health_check.run_repair",
+            return_value=repair_result,
+        ), mock.patch(
+            "dependency_health_check.verify_in_fresh_process",
+            return_value=verify_result,
+        ):
+            exit_code = dhc.main(["--mode", "repair"])
+
+        self.assertEqual(exit_code, 0, "Partial success (face stack OK) must exit 0")
+
+    def test_repair_mode_returns_one_when_non_cuda_failures_remain(self):
+        """Counterpart to the partial-success case: if the fresh verify
+        still shows TF/retinaface failures (i.e. face stack is broken),
+        ``main`` must return 1 — those failures mean the GUI's face_crop
+        tab cannot work, and the launcher SHOULD abort to surface the
+        actionable error."""
+        initial = (False, ["tensorflow import failed: foo"])
+        repair_result = (False, "repair failed (code 1): pip resolution conflict")
+        verify_result = (False, ["tensorflow import failed: still broken"])
+
+        with mock.patch(
+            "dependency_health_check.check_runtime_dependencies",
+            return_value=initial,
+        ), mock.patch(
+            "dependency_health_check.run_repair",
+            return_value=repair_result,
+        ), mock.patch(
+            "dependency_health_check.verify_in_fresh_process",
+            return_value=verify_result,
+        ):
+            exit_code = dhc.main(["--mode", "repair"])
+
+        self.assertEqual(exit_code, 1, "Non-CUDA failures remaining must exit 1")
 
     def test_repair_mode_uses_fresh_process_verification(self):
         with mock.patch(
@@ -176,14 +241,15 @@ class TorchCudaFallbackTests(unittest.TestCase):
         self.assertIn("torch_cuda_failure:cudart", combined, combined)
         self.assertTrue(dhc._failures_indicate_torch_cuda_break(failures))
 
-    def test_check_classifies_eager_op_cuda_failure(self):
-        """A torch import that succeeds but whose ``zeros(1)`` triggers a
-        CUDA error must also land as ``torch_cuda_failure:`` — production
-        torch defers CUDA init until first op or first ``.cuda()`` call,
-        and the wheel might have a successful Python-side import but a
-        broken DLL load that only surfaces here."""
+    def test_check_classifies_eager_cuda_init_failure(self):
+        """A torch import that succeeds but whose ``torch.cuda.is_available()``
+        triggers a CUDA error must land as ``torch_cuda_failure:`` —
+        production torch defers CUDA-runtime DLL load until first
+        ``torch.cuda.*`` call (subagent PR #55 round 5 MED catch — the
+        previous probe ``torch.zeros(1)`` defaulted to ``device='cpu'``
+        and would have missed this entirely)."""
 
-        def bad_zeros(_n):
+        def bad_is_available():
             raise RuntimeError("CUDA runtime error: device kernel image is invalid")
 
         modules = {
@@ -193,7 +259,9 @@ class TorchCudaFallbackTests(unittest.TestCase):
             "retinaface": types.SimpleNamespace(RetinaFace=object()),
             "cv2": types.SimpleNamespace(),
             "numpy": types.SimpleNamespace(),
-            "torch": types.SimpleNamespace(zeros=bad_zeros),
+            "torch": types.SimpleNamespace(
+                cuda=types.SimpleNamespace(is_available=bad_is_available),
+            ),
         }
 
         def fake_importer(name: str):
@@ -208,6 +276,33 @@ class TorchCudaFallbackTests(unittest.TestCase):
         self.assertFalse(ok)
         combined = "\n".join(failures)
         self.assertIn("torch_cuda_failure:cuda runtime", combined, combined)
+
+    def test_check_tolerates_torch_without_cuda_attribute(self):
+        """Some torch builds (CPU-only nightlies on certain platforms) ship
+        without a ``torch.cuda`` submodule. The probe must NOT crash on
+        ``AttributeError: module has no attribute 'cuda'`` — it should
+        just skip the eager probe (no failure to surface)."""
+        modules = {
+            "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
+            "tensorflow.compat.v2": types.SimpleNamespace(),
+            "tf_keras": types.SimpleNamespace(__version__="2.16.0"),
+            "retinaface": types.SimpleNamespace(RetinaFace=object()),
+            "cv2": types.SimpleNamespace(),
+            "numpy": types.SimpleNamespace(),
+            "torch": types.SimpleNamespace(),  # no .cuda attribute
+        }
+
+        def fake_importer(name: str):
+            if name in modules:
+                return modules[name]
+            raise ModuleNotFoundError(name)
+
+        ok, failures = dhc.check_runtime_dependencies(
+            importer=fake_importer,
+            runtime_probe=lambda: (object(), ""),
+        )
+        self.assertTrue(ok, failures)
+        self.assertEqual(failures, [])
 
     def test_check_classifies_plain_torch_import_failure_distinct_from_cuda(self):
         """A torch import that fails with NO CUDA signature should land as

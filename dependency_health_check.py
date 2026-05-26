@@ -45,7 +45,11 @@ _TORCH_CUDA_FAILURE_SIGNATURES = (
     "cudnn",
     "cublas",
     "cusparse",
+    "cusolver",   # subagent PR #55 round 5 MED — linear algebra; shipped w/torch
+    "cufft",      # subagent PR #55 round 5 MED — FFT; shipped w/torch
     "nvrtc",
+    "nvjpeg",     # subagent PR #55 round 5 MED — torchvision image codecs
+    "nvtx",       # subagent PR #55 round 5 MED — NVTX profiling
     "nccl",
     "cuda runtime",
     "cuda driver",
@@ -128,12 +132,21 @@ def check_runtime_dependencies(
         except Exception as exc:
             failures.append(f"{module_name} import failed: {type(exc).__name__}: {exc}")
 
-    # Torch probe: import + force backend init via a tiny op so a broken
-    # CUDA wheel surfaces here (a successful `import torch` doesn't always
-    # touch CUDA; the trap is delayed until first op or `.cuda()` call).
-    # If import is fine but the CUDA sub-stack is broken, we can transparently
-    # fall back to CPU-only torch in `run_repair` — the app doesn't use
+    # Torch probe: import + force CUDA runtime init so a broken CUDA wheel
+    # surfaces here (a successful `import torch` doesn't always touch the
+    # CUDA sub-stack; the trap is delayed until first `.cuda()` call or
+    # first CUDA op). If import is fine but CUDA is broken, we transparently
+    # fall back to CPU-only torch in `run_repair` — production doesn't use
     # `torch.cuda.*` (verified by ripgrep on the production tree).
+    #
+    # Subagent PR #55 round 5 MED: the previous probe `torch.zeros(1)`
+    # defaults to `device='cpu'` and never touches CUDA, so it did NOT
+    # surface deferred-CUDA-init failures (the dominant non-import-time
+    # mode). `torch.cuda.is_available()` is the canonical eager-init call
+    # — it lazily loads the CUDA runtime DLLs the first time it's called,
+    # which is when a broken cudart64_*.dll surfaces. The function returns
+    # False gracefully on CPU-only torch, so the probe is safe on both
+    # build variants.
     try:
         torch_module = importer("torch")
     except Exception as exc:
@@ -143,11 +156,12 @@ def check_runtime_dependencies(
         else:
             failures.append(f"torch import failed: {type(exc).__name__}: {exc}")
     else:
-        # `torch.zeros(1)` forces eager initialization. On a broken CUDA
-        # install this is where the CUDART / cuDNN DLL load fails. CPU-only
-        # wheels handle this op trivially.
         try:
-            torch_module.zeros(1)
+            cuda_ns = getattr(torch_module, "cuda", None)
+            if cuda_ns is not None and callable(getattr(cuda_ns, "is_available", None)):
+                # Side-effect: loads CUDA runtime DLLs. Returns False on
+                # CPU-only torch or when no GPU is present — both fine.
+                cuda_ns.is_available()
         except Exception as exc:
             sig = _torch_cuda_load_failure_signature(exc)
             if sig:
@@ -311,12 +325,38 @@ def main(argv: list[str] | None = None) -> int:
 
     repaired, message = run_repair(failures=failures)
     print(f"[dep-health] {message}")
-    if not repaired:
-        return 1
 
+    # Subagent PR #55 round 5 HIGH: Codex P2 made `run_repair` continue the
+    # face-stack repair even when the CPU-torch fallback fails. But the old
+    # `if not repaired: return 1` collapsed the partial-success case back to
+    # a binary failure — the launcher's "REPAIR FAILED" branch would then
+    # exit before launching the GUI, even though face_crop / video would
+    # work fine on the now-repaired face stack (and the app doesn't use
+    # torch.cuda.* in production).
+    #
+    # Always verify in a fresh process. If the fresh probe comes back clean
+    # OR clean-except-for-`torch_cuda_failure:`-prefixed failures, the GUI
+    # is launchable — exit 0 with a warning. The launcher's diagnostic log
+    # captures the combined repair message either way.
     ok_after, failures_after = verify_in_fresh_process()
     if ok_after:
         print("[dep-health] Repair verification passed")
+        return 0
+
+    # Partial success — face stack is now healthy but torch CUDA still
+    # broken (probably because download.pytorch.org was blocked/flaky).
+    non_cuda_failures = [
+        f for f in failures_after if not f.startswith("torch_cuda_failure:")
+    ]
+    if not non_cuda_failures:
+        print(
+            "[dep-health] Repair verification: face stack healthy; "
+            "torch CUDA still broken (CPU fallback could not reach "
+            "download.pytorch.org). GUI is launchable — face_crop and "
+            "video paths work fine on CPU."
+        )
+        for failure in failures_after:
+            print(f"[dep-health] WARN: {failure}")
         return 0
 
     print("[dep-health] Repair verification failed:")
