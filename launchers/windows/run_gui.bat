@@ -80,10 +80,74 @@ set "STAMP_KEY=%STAMP_KEY:/=-%"
 set "STAMP_KEY=%STAMP_KEY::=-%"
 set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,60%.ok"
 
-rem --- Skip dep work if stamp is current -----------------------------------
+rem --- Stamp present? Skip the expensive pip-install sync, but STILL run a
+rem --- runtime health check on every launch and auto-repair if it fails.
+rem ---
+rem --- Background: PR fix/windows-tf-health-check addressed a user report
+rem --- where a friend ran run_gui.bat once, got a successful CUDA install,
+rem --- then saw "RetinaFace/TensorFlow import failed. Run run_gui.bat for
+rem --- automatic dependency repair." in the GUI. Re-running run_gui.bat
+rem --- did nothing because the previous "successful" install wrote
+rem --- deps_*.ok and the launcher skipped EVERY check on the next pass —
+rem --- including the health probe that would have caught the broken
+rem --- TF/retinaface stack. The user was stuck in an infinite "re-run the
+rem --- bat" loop with no recovery path. Now we always probe runtime
+rem --- health (~3-5s) and if it fails, we clear the stamp, run
+rem --- `--mode repair` (which itself does verify_in_fresh_process), and
+rem --- bubble up a CLEAR diagnostic on persistent failure instead of
+rem --- telling users to "re-run run_gui.bat".
 if exist "%STAMP%" (
-    echo   [%LAUNCH_TS%] Dependencies up-to-date ^(cached stamp^). Skipping sync.
-    echo   Tip: delete .launcher_state\deps_*.ok to force a full re-check.
+    if exist "%DEP_HEALTH_SCRIPT%" (
+        echo   [%LAUNCH_TS%] Cached deps stamp present — running quick health probe...
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe START ^(cached-stamp path^)
+        "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode check >"%STATE_DIR%\last_health.log" 2>&1
+        if !errorlevel! neq 0 (
+            echo(
+            echo   [%LAUNCH_TS%] Runtime health probe FAILED. Recent output:
+            type "%STATE_DIR%\last_health.log"
+            echo(
+            >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe FAIL ^(cached-stamp path^); clearing stamp + running repair
+            echo   [%LAUNCH_TS%] Clearing cached deps stamp + running auto-repair...
+            del "%STATE_DIR%\deps_*.ok" >nul 2>&1
+            "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode repair
+            if !errorlevel! neq 0 (
+                echo(
+                echo  ============================================================
+                echo  ERROR: Automatic dependency repair FAILED.
+                echo  ============================================================
+                echo  The cached install is broken AND the auto-repair did not
+                echo  fix it. Re-running %~nx0 alone will not help — the stamp
+                echo  has already been cleared, so the next run will retry the
+                echo  full install, but if pip can't resolve the conflict on
+                echo  its own you need to recover manually:
+                echo(
+                echo    1. Delete the venv folder ^(rd /S /Q "%VENV_DIR%"^) and
+                echo       run %~nx0 from a clean state.
+                echo    2. Force-reinstall the face stack manually:
+                echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^
+                echo         --no-cache-dir tensorflow==2.16.2 tf-keras==2.16.0 ^^
+                echo         retina-face==0.0.17
+                echo    3. Inspect the diagnostic log at:
+                echo       %STATE_DIR%\last_health.log
+                echo    4. Inspect the launch log at:
+                echo       %LOG_FILE%
+                echo(
+                >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-repair FAIL ^(cached-stamp path^); exiting
+                call :release_setup_lock
+                pause
+                exit /b 1
+            )
+            echo   [%LAUNCH_TS%] Repair succeeded; re-writing stamp.
+            >>"%STAMP%" echo %LAUNCH_TS% repair
+            >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-repair OK ^(cached-stamp path^); stamp re-written
+        ) else (
+            echo   [%LAUNCH_TS%] Runtime health: OK ^(cached deps^).
+            >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe OK ^(cached-stamp path^)
+        )
+    ) else (
+        echo   [%LAUNCH_TS%] Dependencies up-to-date ^(cached stamp; no health script^).
+    )
+    echo   Tip: delete .launcher_state\deps_*.ok to force a full re-sync.
     echo(
     call :release_setup_lock
     goto :launch
@@ -121,19 +185,47 @@ if exist "%DEP_HEALTH_SCRIPT%" (
     )
 
     echo   [%LAUNCH_TS%] Validating runtime dependency health...
-    "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode check
+    >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe START ^(fresh-install path^)
+    "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode check >"%STATE_DIR%\last_health.log" 2>&1
     if !errorlevel! neq 0 (
         echo(
-        echo   [%LAUNCH_TS%] Health check failed. Attempting auto-repair...
+        echo   [%LAUNCH_TS%] Health check FAILED. Recent output:
+        type "%STATE_DIR%\last_health.log"
+        echo(
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe FAIL ^(fresh-install path^); attempting repair
+        echo   [%LAUNCH_TS%] Attempting auto-repair...
         "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode repair
         if !errorlevel! neq 0 (
             echo(
-            echo  ERROR: Automatic dependency repair failed.
+            echo  ============================================================
+            echo  ERROR: Automatic dependency repair FAILED ^(fresh install^).
+            echo  ============================================================
+            echo  The pip-install sync just completed BUT the runtime health
+            echo  check still failed AND auto-repair could not fix it. This
+            echo  usually means a CUDA/CPU TensorFlow conflict, a partially
+            echo  downloaded wheel from a flaky connection, or an antivirus
+            echo  quarantine on TF DLLs.
             echo(
+            echo  Manual recovery options:
+            echo    1. Delete the venv folder ^(rd /S /Q "%VENV_DIR%"^) and
+            echo       run %~nx0 from a clean state.
+            echo    2. Force-reinstall the face stack manually:
+            echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^
+            echo         --no-cache-dir tensorflow==2.16.2 tf-keras==2.16.0 ^^
+            echo         retina-face==0.0.17
+            echo    3. Inspect the diagnostic log at:
+            echo       %STATE_DIR%\last_health.log
+            echo    4. Inspect the launch log at:
+            echo       %LOG_FILE%
+            echo(
+            >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-repair FAIL ^(fresh-install path^); exiting
             call :release_setup_lock
             pause
             exit /b 1
         )
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-repair OK ^(fresh-install path^)
+    ) else (
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe OK ^(fresh-install path^)
     )
     echo   [%LAUNCH_TS%] Runtime health: OK
 )

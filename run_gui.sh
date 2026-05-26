@@ -50,21 +50,73 @@ trap 'rmdir "${LOCK_PATH}" 2>/dev/null || true' EXIT
 "${ROOT_DIR}/setup_macos.sh"
 export KLING_SKIP_PY_STARTUP_DEP_CHECK=1
 
-# Only run dep_health_check when requirements changed since last health check
+# Runtime dependency health check.
+#
+# Behavior contract (PR fix/windows-tf-health-check-and-error-msg):
+#   - Probe runtime health on EVERY launch (~3-5s overhead). The previous
+#     shape — skip when REQUIREMENTS_STAMP == HEALTH_STAMP — could lock in
+#     a broken install: once the stamps match, a subsequent failure (e.g.
+#     a TF DLL the OS quarantined, a venv corrupted by `rm -rf` mid-pip)
+#     was never detected. Cheap continuous validation beats stamp-based
+#     skipping for a stack this fragile.
+#   - On failure: ALWAYS clear the HEALTH_STAMP first so a repair-then-
+#     fail leaves a "needs re-check" signal for the next launch. The
+#     previous shape rewrote the stamp unconditionally, masking failures.
+#   - On repair failure: emit an actionable, copy-pasteable recovery
+#     hint, write the diagnostic to .launcher_state/last_health.log,
+#     and exit non-zero. Do not silently launch the GUI into a state
+#     that will produce "Run run_gui.bat for automatic dependency
+#     repair" toasts in the in-GUI log — that toast (face_crop_tab.py
+#     ~L1330) creates an infinite re-run loop with no recovery action.
+LAUNCH_DIAG_LOG="${LOCK_DIR}/launch.log"
+LAUNCH_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+HEALTH_OUTPUT_LOG="${LOCK_DIR}/last_health.log"
+
 if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
-  _run_health=1
-  if [[ -f "${REQUIREMENTS_STAMP}" && -f "${HEALTH_STAMP}" ]]; then
-    if [[ "$(<"${REQUIREMENTS_STAMP}")" == "$(<"${HEALTH_STAMP}")" ]]; then
-      _run_health=0
+  printf '[%s] health-probe START\n' "${LAUNCH_TS}" >> "${LAUNCH_DIAG_LOG}"
+  printf '[%s] Validating runtime dependency health...\n' "${LAUNCH_TS}"
+  if "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode check \
+        > "${HEALTH_OUTPUT_LOG}" 2>&1; then
+    printf '[%s] Runtime health: OK\n' "${LAUNCH_TS}"
+    printf '[%s] health-probe OK\n' "${LAUNCH_TS}" >> "${LAUNCH_DIAG_LOG}"
+    # Refresh the HEALTH_STAMP only on success so it actually reflects truth.
+    [[ -f "${REQUIREMENTS_STAMP}" ]] \
+      && cp "${REQUIREMENTS_STAMP}" "${HEALTH_STAMP}" 2>/dev/null || true
+  else
+    printf '\n[%s] Runtime health probe FAILED. Recent output:\n' "${LAUNCH_TS}" >&2
+    cat "${HEALTH_OUTPUT_LOG}" >&2
+    printf '\n[%s] Attempting auto-repair...\n' "${LAUNCH_TS}" >&2
+    printf '[%s] health-probe FAIL; attempting repair\n' "${LAUNCH_TS}" >> "${LAUNCH_DIAG_LOG}"
+    # Always invalidate the health stamp BEFORE we attempt repair so a
+    # crash/kill during repair leaves a re-check signal for next launch.
+    rm -f "${HEALTH_STAMP}"
+    if "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode repair; then
+      printf '[%s] Repair succeeded.\n' "${LAUNCH_TS}" >&2
+      printf '[%s] health-repair OK\n' "${LAUNCH_TS}" >> "${LAUNCH_DIAG_LOG}"
+      [[ -f "${REQUIREMENTS_STAMP}" ]] \
+        && cp "${REQUIREMENTS_STAMP}" "${HEALTH_STAMP}" 2>/dev/null || true
+    else
+      printf '\n============================================================\n' >&2
+      printf 'ERROR: Automatic dependency repair FAILED.\n' >&2
+      printf '============================================================\n' >&2
+      printf 'The runtime health probe failed AND auto-repair did not fix\n' >&2
+      printf 'it. Re-running %s alone will not help — the next run will\n' "$(basename "${BASH_SOURCE[0]}")" >&2
+      printf 'just re-probe and re-fail. You need to recover manually:\n\n' >&2
+      printf '  1. Delete the venv and re-bootstrap:\n' >&2
+      printf '       rm -rf "%s" && bash "%s"\n\n' "${ROOT_DIR}/.venv-macos" "${BASH_SOURCE[0]}"
+      printf '  2. Force-reinstall the face stack:\n' >&2
+      printf '       "%s" -m pip install --force-reinstall \\\n' "${PYTHON_BIN}" >&2
+      printf '         --no-cache-dir tensorflow==2.16.2 tf-keras==2.16.0 \\\n' >&2
+      printf '         retina-face==0.0.17\n\n' >&2
+      printf '  3. Inspect the diagnostic log:\n' >&2
+      printf '       %s\n\n' "${HEALTH_OUTPUT_LOG}" >&2
+      printf '  4. Inspect the launch log:\n' >&2
+      printf '       %s\n\n' "${LAUNCH_DIAG_LOG}" >&2
+      printf '[%s] health-repair FAIL; exiting\n' "${LAUNCH_TS}" >> "${LAUNCH_DIAG_LOG}"
+      rmdir "${LOCK_PATH}" 2>/dev/null || true
+      trap - EXIT
+      exit 1
     fi
-  fi
-  if [[ "${_run_health}" -eq 1 ]]; then
-    "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode check || {
-      echo "Runtime dependency health check failed. Attempting auto-repair..." >&2
-      "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode repair
-    }
-    # Record that health was checked against this requirements version
-    cp "${REQUIREMENTS_STAMP}" "${HEALTH_STAMP}" 2>/dev/null || true
   fi
 fi
 

@@ -70,6 +70,44 @@ def _platform_gui_repair_launcher() -> str:
     return "run_gui.sh"
 
 
+def _platform_face_repair_recovery_hint() -> str:
+    """Return a per-platform copy-pasteable recovery hint for the RetinaFace
+    import-failure toast.
+
+    Background: the previous toast told users to "Run run_gui.bat for
+    automatic dependency repair," which created an infinite re-run loop
+    when the launcher's deps stamp was already present (the cached-stamp
+    path skipped every check). The companion launcher fix forces a runtime
+    health probe on every launch and self-repairs when it fails, so the
+    toast should now only fire if (a) the user opened the GUI manually
+    bypassing the launcher, or (b) auto-repair already ran and still
+    couldn't fix the stack. Either way, just re-running the launcher
+    won't always help — point users at a deterministic manual recovery
+    instead.
+    """
+    system = platform.system()
+    if system == "Windows":
+        return (
+            "Manual recovery: rd /S /Q .launcher_state\\deps_*.ok && run_gui.bat "
+            "(forces a fresh dep sync + health check). If that fails too, "
+            "run `dependency_health_check.py --mode repair` directly inside "
+            "the venv, or delete venv\\ and re-launch."
+        )
+    if system == "Darwin":
+        return (
+            "Manual recovery: rm -f .launcher_state/health.sha256 && "
+            "bash run_gui.sh (forces a runtime health probe + repair). "
+            "If that fails too, run "
+            "`.venv-macos/bin/python dependency_health_check.py --mode repair`, "
+            "or delete .venv-macos/ and re-launch."
+        )
+    return (
+        "Manual recovery: bash run_gui.sh (re-probes deps). If that fails "
+        "too, run `python dependency_health_check.py --mode repair` inside "
+        "your venv, or recreate the venv from scratch."
+    )
+
+
 def _format_image_info(path: str) -> str:
     """Return '(WxH, X.X KB)' for a file, or '' on error."""
     try:
@@ -1214,14 +1252,22 @@ class FaceCropTab(tk.Frame):
             return
         retinaface_cls, retinaface_error = _load_retinaface()
         if retinaface_cls is None:
-            repair_launcher = _platform_gui_repair_launcher()
+            recovery_hint = _platform_face_repair_recovery_hint()
             self._status_label.config(
                 text=f"RetinaFace unavailable (TensorFlow/Keras backend mismatch or missing deps): {retinaface_error}",
                 fg=COLORS["error"],
             )
+            # The full message has three parts: WHAT failed, the exact
+            # exception detail, and an actionable recovery path. We split
+            # over two log lines so the recovery hint is the LAST thing
+            # in the user's eye line — long-form retinaface tracebacks
+            # would otherwise push the actionable step off the log tail.
             self.log(
-                "Face Crop: RetinaFace/TensorFlow import failed. "
-                f"Run {repair_launcher} for automatic dependency repair.",
+                f"Face Crop: RetinaFace/TensorFlow import failed — {retinaface_error}",
+                "error",
+            )
+            self.log(
+                f"Face Crop: {recovery_hint}",
                 "error",
             )
             return
