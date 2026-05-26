@@ -147,6 +147,14 @@ echo(
 rem --- PR #49: release bootstrap mutex BEFORE launching the GUI -------
 call :release_setup_lock
 
+rem --- Auto-detect NVIDIA + bootstrap CuPy. Idempotent + cached via
+rem --- .launcher_state\gpu_status.json. Never blocks launch on
+rem --- failure (script always exits 0). User opt-out:
+rem ---     set KLING_SKIP_GPU_BOOTSTRAP=1
+if exist "%ROOT_DIR%\scripts\gpu_bootstrap.py" (
+    "%VENV_PYTHON%" "%ROOT_DIR%\scripts\gpu_bootstrap.py" --quiet-if-cached
+)
+
 :launch
 echo   [%LAUNCH_TS%] Launching GUI...
 echo   Venv: %VENV_PYTHON%

@@ -113,6 +113,11 @@ del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 echo   [%LAUNCH_TS%] Stamp written. Next launch will skip dep sync.
 echo(
 
+rem --- Auto-detect NVIDIA + bootstrap CuPy (same as run_gui.bat) ----
+if exist "%ROOT_DIR%\scripts\gpu_bootstrap.py" (
+    "%VENV_PYTHON%" "%ROOT_DIR%\scripts\gpu_bootstrap.py" --quiet-if-cached
+)
+
 :launch
 echo(
 echo   [%LAUNCH_TS%] Launching CLI...

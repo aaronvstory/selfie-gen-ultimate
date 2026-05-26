@@ -72,6 +72,17 @@ fi
 rmdir "${LOCK_PATH}" 2>/dev/null || true
 trap - EXIT
 
+# Auto-detect NVIDIA + bootstrap CuPy. On Darwin nvidia-smi is absent
+# so the script short-circuits to "no_nvidia" instantly and stamps it
+# (CuPy has no Metal backend — Apple Silicon stays CPU). On a CUDA
+# Linux host it installs cupy-cuda12x[ctk] / cupy-cuda13x[ctk] once.
+# Idempotent + cached via .launcher_state/gpu_status.json. Never
+# blocks launch on failure (script always exits 0). User opt-out:
+#     export KLING_SKIP_GPU_BOOTSTRAP=1
+if [[ -f "${ROOT_DIR}/scripts/gpu_bootstrap.py" ]]; then
+  "${PYTHON_BIN}" "${ROOT_DIR}/scripts/gpu_bootstrap.py" --quiet-if-cached || true
+fi
+
 if ! "${PYTHON_BIN}" -c 'import tkinter' >/dev/null 2>&1; then
   VERSION="$("${PYTHON_BIN}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
   printf 'GUI launch blocked: this Python environment does not provide Tk support.\n\n' >&2
