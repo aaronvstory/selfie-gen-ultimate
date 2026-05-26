@@ -65,18 +65,41 @@ _orig_should_skip = release_prep._should_skip
 
 
 def _slim_should_skip(path: Path) -> bool:
-    """Wrap release_prep._should_skip to also drop test fixtures."""
+    """Wrap release_prep._should_skip to also drop test fixtures.
+
+    Round-2 review fix: the prior body indexed ``path.parts[0]``
+    directly. The CURRENT caller (release_prep.bundle_release) always
+    passes a repo-relative path, so this worked — but a future caller
+    handing in an absolute path would silently lose every fixture
+    exclusion (parts[0] would be ``"F:\\"`` or ``"/"`` instead of
+    ``"oldcam-testing"``) and the slim builder would ship the
+    fixtures it's supposed to strip.
+
+    Defend by normalising to repo-relative when the path is
+    absolute. If the path is absolute AND outside the repo
+    (shouldn't happen), fall through to ``_orig_should_skip``'s
+    judgement and don't try to apply slim rules.
+    """
     if _orig_should_skip(path):
         return True
-    parts = path.parts
+    rel = path
+    if path.is_absolute():
+        try:
+            rel = path.relative_to(ROOT)
+        except ValueError:
+            # Absolute path outside the repo — slim rules don't
+            # apply; trust the original predicate's verdict (False
+            # here, since we passed its `if` above).
+            return False
+    parts = rel.parts
     if parts and parts[0] in _FIXTURE_DIRS:
         return True
     if len(parts) >= 2 and parts[0] == "oldcam-testing":
         if parts[1] in _FIXTURE_SUBDIRS_OF_OLDCAM_TESTING:
             return True
-    if path.suffix.lower() in _FIXTURE_FILE_EXTS:
+    if rel.suffix.lower() in _FIXTURE_FILE_EXTS:
         return True
-    if path.name in _FIXTURE_FILES:
+    if rel.name in _FIXTURE_FILES:
         return True
     return False
 
@@ -110,11 +133,19 @@ def _personal_build_config(
     for k in release_prep._DIST_BLANKED_PATH_KEYS:
         if k in config:
             config[k] = ""
+    # Round-2 review fix: replace bare ``except Exception: pass``.
+    # Narrow to ImportError (api_keys missing in a partial checkout —
+    # legitimately swallowable) and re-raise anything else so a real
+    # bug in ensure_key_fields doesn't silently corrupt the personal
+    # config payload.
     try:
         from api_keys import ensure_key_fields  # type: ignore
-        ensure_key_fields(config)
-    except Exception:
-        pass
+    except ImportError:
+        # api_keys.py absent — minimal-checkout build path, skip key
+        # normalisation entirely. Config still has the 4 fields blanked
+        # by the loop above so the share-safety contract holds.
+        return config
+    ensure_key_fields(config)
     return config
 
 

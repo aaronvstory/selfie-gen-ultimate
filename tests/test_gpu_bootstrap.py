@@ -304,6 +304,109 @@ def test_install_failed_concurrent_attempts_increment_monotonically(monkeypatch)
     )
 
 
+def test_gpu_ready_recheck_after_lock_short_circuits_install(monkeypatch):
+    """CodeRabbit major (PR #54 round 1): after acquiring the lock,
+    re-check the stamp for a FRESH gpu_ready before doing any install
+    work. A sibling launcher may have just installed CuPy while we
+    were waiting on the lock — running another pip install would be
+    redundant.
+
+    Simulate: pre-lock stamp is install_failed (so we enter the lock),
+    but DURING lock acquisition a sibling writes a gpu_ready stamp.
+    The current process must short-circuit on the in-lock fresh stamp
+    read, NOT proceed to install_cupy."""
+    gpu_bootstrap._write_stamp({
+        "result": "install_failed",
+        "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "driver_version": "555.52", "cuda_major": 12,
+        "cupy_package": "cupy-cuda12x[ctk]", "cupy_version": None,
+        "attempts": 1, "last_error": "transient",
+    })
+    monkeypatch.setattr(
+        gpu_bootstrap, "detect_nvidia",
+        lambda: {"driver_version": "555.52", "cuda_major": 12},
+    )
+    install_called = []
+    monkeypatch.setattr(
+        gpu_bootstrap, "install_cupy",
+        lambda exe, major: install_called.append((exe, major)) or (True, "13.3.0"),
+    )
+    # Probe returns success — pretending the sibling's install IS valid.
+    monkeypatch.setattr(gpu_bootstrap, "probe_cupy", lambda exe: "13.3.0")
+
+    def _spy_acquire_lock(quiet=False):
+        # Simulate the sibling completing its install while we waited.
+        gpu_bootstrap._write_stamp({
+            "result": "gpu_ready",
+            "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "driver_version": "555.52", "cuda_major": 12,
+            "cupy_package": "cupy-cuda12x[ctk]", "cupy_version": "13.3.0",
+            "attempts": 0,
+        })
+        return True
+    monkeypatch.setattr(gpu_bootstrap, "_acquire_lock", _spy_acquire_lock)
+    monkeypatch.setattr(gpu_bootstrap, "_release_lock", lambda: None)
+
+    result = gpu_bootstrap.bootstrap("python_unused")
+    assert result == "gpu_ready", (
+        "post-lock fresh-stamp gpu_ready re-check must short-circuit "
+        "BEFORE install_cupy runs"
+    )
+    assert install_called == [], (
+        "install_cupy must NOT be called when a sibling already wrote "
+        "gpu_ready while we were waiting on the lock"
+    )
+
+
+def test_write_stamp_swallows_oserror(monkeypatch):
+    """Gemini medium (PR #54 round 1): _write_stamp must degrade
+    gracefully when the state dir is read-only / disk is full / a
+    permission error fires — the launcher chain treats a non-zero
+    exit from gpu_bootstrap as fatal, so an unhandled OSError here
+    would block legitimate GUI launches."""
+    def _raise(*args, **kwargs):
+        raise PermissionError("simulated read-only mount")
+    monkeypatch.setattr(gpu_bootstrap.Path, "write_text", _raise)
+    # Must NOT raise.
+    gpu_bootstrap._write_stamp({"result": "no_nvidia"})
+
+
+def test_acquire_lock_returns_false_on_state_dir_oserror(monkeypatch):
+    """Gemini medium (PR #54 round 1): _acquire_lock degrades to
+    "False" (which the caller treats as "fall back to CPU this
+    launch") when STATE_DIR.mkdir raises a non-FileExistsError
+    OSError — restricted filesystems must NOT crash the bootstrap."""
+    real_mkdir = gpu_bootstrap.Path.mkdir
+    def _selective_mkdir(self, *args, **kwargs):
+        # First call (STATE_DIR) raises, subsequent calls work — but
+        # we should never get there because the function returns
+        # immediately on the first failure.
+        raise PermissionError("simulated permission denied")
+    monkeypatch.setattr(gpu_bootstrap.Path, "mkdir", _selective_mkdir)
+    result = gpu_bootstrap._acquire_lock()
+    assert result is False, (
+        "lock acquisition must return False (degrade to CPU) when "
+        "the state dir cannot be created, not raise"
+    )
+
+
+def test_pip_install_timeout_constant_is_strictly_less_than_lock_stale():
+    """CodeRabbit major + Sourcery (PR #54 round 1): the
+    lock-staleness window MUST be larger than the pip-install
+    timeout, otherwise a slow but legitimate first-time install
+    could trip the stale-lock check and a second launcher would
+    rmdir the live lock and kick off a parallel pip install into
+    the shared venv."""
+    assert (
+        gpu_bootstrap.LOCK_STALE_SECONDS > gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS
+    ), (
+        f"LOCK_STALE_SECONDS ({gpu_bootstrap.LOCK_STALE_SECONDS}) must be "
+        f"strictly greater than PIP_INSTALL_TIMEOUT_SECONDS "
+        f"({gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS}) or a slow valid "
+        f"pip install could be misclassified as stale"
+    )
+
+
 def test_gpu_ready_cache_falls_through_when_probe_fails(monkeypatch):
     """If the probe returns None (venv broken) we MUST NOT return
     gpu_ready off the cache — fall through to fresh detection +

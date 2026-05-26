@@ -110,7 +110,13 @@ from tk_dialogs import select_directory, select_directory_cli_safe, select_open_
 # CodeRabbit cycle-3 flagged that v4 users pulling the PR-43 update
 # would silently stay on "inject" mode unless the apply-defaults
 # helper was bumped here too.
-RECOMMENDED_DEFAULTS_VERSION = 5
+# v6 (2026-05-27, PR #54): automation_rppg_landmark_stride default
+# reverted 3 -> 1 (quality-first; the v2.5 speedup pass was dialled
+# back because Kling output occasionally moves faster than the
+# prompt asks for and silently degrading those clips is worse than
+# the slowdown). Without this bump, v5 users would silently keep
+# stride=3 in their saved config and not get prompted to refresh.
+RECOMMENDED_DEFAULTS_VERSION = 6
 DEFAULT_KLING_PROMPT_SLOT = 4
 DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT = 3
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (

@@ -1036,7 +1036,7 @@ first.** The version chip rendered in the GUI top-bar header (right of
 the "Ultimate-Selfie-Gen" title) reads `app_version.RELEASE_VERSION`,
 which is the same constant `distribution/release_prep.py` uses for zip
 naming. A stale `app_version.py` ships a `v2.7` zip that the GUI still
-labels `v2.6` — silent version drift that costs the user a "is this
+labels `v2.6` — silent version drift that costs the user an "is this
 the new one?" cycle on every cross-machine pull.
 
 Concretely:

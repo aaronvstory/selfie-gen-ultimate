@@ -102,9 +102,21 @@ def test_heartbeat_fires_during_silent_window():
 def test_heartbeat_silences_after_first_line():
     """Once the child has emitted ANY line, the heartbeat must stop —
     the per-iteration progress is now the user-visible signal and
-    additional heartbeats would just be noise."""
+    additional heartbeats would just be noise.
+
+    Round-2 review fix (Gemini MEDIUM): the original heartbeat_interval
+    was 0.3s with the child emitting at 0.2s. Python interpreter
+    startup on a loaded CI box can take 0.5-1s, so the "early" line
+    could land AFTER the first heartbeat interval and falsely fail
+    the silence assertion. Bump the interval to 3s so the
+    interpreter-startup jitter (well under 1s in practice) can never
+    push the first emit past the heartbeat threshold. The child still
+    sleeps 1.5s after the emit so the streamer has time to detect
+    any spurious heartbeat firing before exit.
+    """
     received = []
-    # Child emits a line at 0.2s then sleeps 1.5s.
+    # Child emits a line IMMEDIATELY on launch, then sleeps 1.5s so
+    # the streamer has time to observe (and assert) zero heartbeats.
     code = (
         "import sys, time; "
         "sys.stdout.write('early\\n'); sys.stdout.flush(); "
@@ -116,11 +128,11 @@ def test_heartbeat_silences_after_first_line():
         cwd=os.getcwd(),
         timeout_seconds=30,
         on_heartbeat=lambda elapsed: received.append(elapsed),
-        heartbeat_interval_seconds=0.3,
+        heartbeat_interval_seconds=3.0,
     )
-    # The first line lands at ~0.2s. Heartbeat interval is 0.3s. So the
-    # first heartbeat (would have been at 0.3s) MUST already be
-    # silenced by the early line. We expect ZERO heartbeats.
+    # Heartbeat interval is 3s, child runs ~1.5s total → interval is
+    # never reached, regardless of CI-startup jitter. Receiving ANY
+    # heartbeat indicates the silence logic is broken.
     assert received == [], (
         "heartbeat must silence after first line; got "
         f"{received} despite the line landing before the first interval"
@@ -137,6 +149,39 @@ def test_no_heartbeat_callback_means_no_silent_window_logging():
     )
     assert rc == 0
     assert lines == ["done"]
+
+
+def test_tracker_anchor_start_time_aligns_with_subprocess_launch():
+    """CodeRabbit minor (PR #54 round 1): the heartbeat reports
+    minutes since subprocess launch, but ``tracker.elapsed_str()``
+    defaults to anchoring on first stdout line. The completion
+    banner would then say "1m 20s elapsed" for a job whose heartbeat
+    just logged "7 min elapsed" — visually contradictory.
+
+    Fix: ``_RppgProgressTracker.anchor_start_time(t)`` accepts a
+    caller-supplied launch timestamp. ``run_rppg`` anchors it to
+    ``time.monotonic()`` BEFORE the streamer fires so both timers
+    measure from the same origin.
+    """
+    tracker = rppg_module._RppgProgressTracker(report_cb=None)
+    # Anchor 3.5 minutes ago.
+    import time
+    anchor = time.monotonic() - 210.0
+    tracker.anchor_start_time(anchor)
+    elapsed = tracker.elapsed_str()
+    # Format is "Xm Ys"; we just verify it reports ~3 minutes, not "?"
+    assert elapsed != "?", (
+        "after anchor_start_time(), elapsed_str must report real "
+        "elapsed time even before the first stdout line lands"
+    )
+    assert "m " in elapsed, (
+        f"expected 'Xm Ys' format for an anchor 3.5 min ago, got {elapsed!r}"
+    )
+    # Heartbeat would log mins=int(210/60)=3; tracker should agree.
+    assert elapsed.startswith("3m "), (
+        f"tracker.elapsed_str() ({elapsed!r}) must report the same "
+        "minutes the heartbeat would compute from the same anchor"
+    )
 
 
 def test_heartbeat_exception_does_not_kill_subprocess(monkeypatch):

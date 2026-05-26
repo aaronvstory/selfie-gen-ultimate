@@ -640,12 +640,13 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_rppg_iterate_from_baseline"] is True
     assert ui.config["automation_rppg_skip_diagnosis"] is True
     assert ui.config["automation_rppg_skip_kinematic_gate"] is True
-    # Version bumped from 4 to 5 — drives the "apply recommended
-    # defaults" yellow prompt on the automation menu for users still
-    # at v4 from before the rPPG-iterative migration.
+    # Version bumped 5 -> 6 in PR #54 (2026-05-27) when
+    # automation_rppg_landmark_stride default was reverted 3 -> 1.
+    # Drives the "apply recommended defaults" yellow prompt on the
+    # automation menu for v5 users still carrying stride=3.
     from kling_automation_ui import RECOMMENDED_DEFAULTS_VERSION
-    assert RECOMMENDED_DEFAULTS_VERSION == 5
-    assert ui.config["automation_recommended_defaults_version"] == 5
+    assert RECOMMENDED_DEFAULTS_VERSION == 6
+    assert ui.config["automation_recommended_defaults_version"] == 6
     assert ui.config["automation_max_cases_per_run"] == "all"
     assert ui.config["falai_api_key"] == "keep-fal-key"
     assert ui.config["bfl_api_key"] == "keep-bfl-key"

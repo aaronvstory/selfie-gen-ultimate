@@ -76,8 +76,18 @@ LOCK_PATH = STATE_DIR / "gpu_bootstrap.lock"
 
 NO_NVIDIA_TTL_DAYS = 30
 INSTALL_FAILED_MAX_ATTEMPTS = 3
-LOCK_STALE_SECONDS = 600   # 10 min; a hung pip install on a slow line
-                            # can take ~5 min, so 10 is generous.
+
+# Round-2 review fix: keep the stale-lock window STRICTLY LARGER than
+# the pip-install subprocess timeout. If they're equal (the original
+# 600 = 600), a slow but legitimate first-time CuPy install on a thin
+# line could hit ~LOCK_STALE_SECONDS while pip is still working, and
+# a second launcher arriving at that moment would `rmdir` the live
+# lock and kick off a parallel pip install into the same venv. Margin
+# of 300s gives plenty of headroom for pip's own warm-down +
+# clock-skew between processes.
+PIP_INSTALL_TIMEOUT_SECONDS = 900   # 15 min: covers the +500 MB CuPy
+                                    # wheel + CUDA component fetches.
+LOCK_STALE_SECONDS = PIP_INSTALL_TIMEOUT_SECONDS + 300
 
 # Map CUDA major → PyPI package name. Per CuPy 14+ install docs the
 # stable wheels are cupy-cuda12x and cupy-cuda13x; older 11.x is no
@@ -116,9 +126,22 @@ def _load_stamp() -> Optional[dict]:
 
 
 def _write_stamp(payload: dict) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    payload.setdefault("checked_at", _now_iso())
-    STAMP_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    """Persist the bootstrap result stamp. Round-2 review fix: filesystem
+    failures (disk full, read-only mount, permission denied on the
+    state dir) MUST degrade silently to CPU mode rather than crashing
+    the bootstrap and blocking GUI launch. The launcher chain treats
+    a non-zero exit from this script as fatal; an unhandled OSError
+    here would block legitimate users whose `.launcher_state/` got
+    chmod-restricted by an antivirus quarantine or similar."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        payload.setdefault("checked_at", _now_iso())
+        STAMP_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        # The next launch will re-detect + re-attempt; no stamp = no
+        # cache, which is the correct degraded behaviour.
+        _log(f"could not persist stamp ({type(exc).__name__}: {exc}); "
+             "next launch will re-check")
 
 
 def _stamp_age_days(stamp: dict) -> float:
@@ -221,7 +244,8 @@ def install_cupy(python_exe: str, cuda_major: int) -> tuple[bool, str]:
     ]
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=900
+            cmd, capture_output=True, text=True,
+            timeout=PIP_INSTALL_TIMEOUT_SECONDS,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return (False, f"pip subprocess error: {exc!r}")
@@ -238,8 +262,20 @@ def _acquire_lock(quiet: bool = False) -> bool:
     """mkdir-based atomic lock. Returns True when acquired. False
     only when a sibling launcher's lock is still active AND we time
     out waiting for it (shouldn't happen in practice; we wait up to
-    LOCK_STALE_SECONDS)."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    LOCK_STALE_SECONDS).
+
+    Round-2 review fix: filesystem failures creating the state dir or
+    the lock dir (permission denied, read-only mount) MUST degrade
+    to "lock not acquired" rather than crashing. The caller treats
+    `False` as "fall back to CPU this launch" — same outcome as a
+    sibling holding the lock too long, which is the documented
+    contract."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _log(f"could not create state dir ({type(exc).__name__}: {exc}); "
+             "falling back to CPU this launch")
+        return False
     waited = 0
     waited_logged = False
     while True:
@@ -248,6 +284,12 @@ def _acquire_lock(quiet: bool = False) -> bool:
             return True
         except FileExistsError:
             pass
+        except OSError as exc:
+            # Other filesystem failure (permission denied, parent dir
+            # vanished mid-flight, etc.) — treat as un-acquirable.
+            _log(f"could not create lock dir ({type(exc).__name__}: {exc}); "
+                 "falling back to CPU this launch")
+            return False
         # Check stale
         try:
             age = time.time() - LOCK_PATH.stat().st_mtime
@@ -357,6 +399,25 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
         _log("lock acquisition timed out; falling back to CPU this launch")
         return "lock_timeout"
     try:
+        # CodeRabbit major (PR #54 round 1): re-check the stamp for a
+        # FRESH gpu_ready BEFORE doing any install work. A sibling
+        # launcher may have just installed CuPy successfully while we
+        # were waiting on the lock — in that case we should short-
+        # circuit to gpu_ready (after probing to confirm) instead of
+        # running a redundant pip install. This is separate from the
+        # H1 attempts-counter re-read below (which only triggers on
+        # the install-failure path).
+        fresh_stamp = _load_stamp()
+        if fresh_stamp and fresh_stamp.get("result") == "gpu_ready":
+            version = probe_cupy(python_exe)
+            if version is not None:
+                _log(
+                    f"NVIDIA ready -- CuPy {version} on CUDA "
+                    f"{fresh_stamp.get('cuda_major')} (installed by "
+                    "sibling launcher while we were waiting)",
+                    quiet=quiet_if_cached,
+                )
+                return "gpu_ready"
         # H1 (subagent HIGH): re-read the stamp from disk INSIDE the lock
         # before computing prior_attempts. Two concurrent launchers can
         # both load the stamp pre-lock with attempts=1, both fall
@@ -366,8 +427,10 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
         # process A's attempts=2 → counter sticks at 2 instead of
         # reaching the 3-attempt cap. Re-reading fresh inside the lock
         # gives process B the post-A view (attempts=2) and lets it
-        # write attempts=3 correctly.
-        locked_stamp = _load_stamp()
+        # write attempts=3 correctly. ``fresh_stamp`` above already
+        # holds the in-lock re-read used by the gpu_ready check; we
+        # reuse it here so we don't issue a redundant stat+read.
+        locked_stamp = fresh_stamp
         _log(
             f"NVIDIA driver {info['driver_version']} / CUDA "
             f"{info['cuda_major']}.x detected -- installing "

@@ -453,10 +453,25 @@ class _RppgProgressTracker:
         # than ~25% of an iteration without a progress line.)
         self._iter_frame_milestone: int = 0
         self._iter_frame_iter_marker: Optional[int] = None
-        # Wall-clock for the elapsed-time line at run end. Set when
-        # the FIRST stdout line lands (after the injector's own setup
-        # which can take 7-10s of mediapipe + tensorflow imports).
+        # Wall-clock for the elapsed-time line at run end. Default
+        # behaviour: set when the FIRST stdout line lands (after the
+        # injector's own ~7-10s of mediapipe + tensorflow imports).
+        # CodeRabbit minor (PR #54 round 1): with the new heartbeat
+        # firing during that warm-up window, this anchor diverged
+        # from the heartbeat's launch-time anchor — heartbeat could
+        # log "7 min elapsed" then completion would say "1m 20s
+        # elapsed" for the SAME job. Callers can now anchor to
+        # subprocess launch time via :meth:`anchor_start_time`
+        # so both timers agree.
         self._t_start: Optional[float] = None
+
+    def anchor_start_time(self, t: float) -> None:
+        """Force the elapsed-time anchor to a caller-supplied
+        ``time.monotonic()`` value. Used by the parent streamer to
+        align the completion banner's elapsed clock with the
+        heartbeat's "minutes since launch" clock so the two never
+        contradict each other."""
+        self._t_start = t
 
     def deadline_extender(self, line: str) -> int:
         """Return extra seconds to add to the deadline for *line*.
@@ -1076,6 +1091,16 @@ def run_rppg(
     # mode it also extends the wall-clock deadline by ~90s every time
     # a new iteration starts (friend feedback "no arbitrary timeout").
     tracker = _RppgProgressTracker(report_cb=progress_cb, verbose=verbose)
+    # CodeRabbit minor (PR #54 round 1): anchor the tracker's elapsed
+    # clock to subprocess launch time so the completion banner
+    # ("rPPG injection complete: ... 1m 20s elapsed") matches the
+    # heartbeat's "N min elapsed (warming up)" output. Without this
+    # the user would see "7 min elapsed" during warm-up then "1m 20s
+    # elapsed" at completion — visually contradictory for the same
+    # job. Using time.monotonic() here matches what
+    # stream_subprocess_with_timeout uses internally.
+    launch_time = time.monotonic()
+    tracker.anchor_start_time(launch_time)
     # Codex P2 (PR #43, bot pass on 2a32f938): caller contract is that
     # timeout_seconds=0 pins a HARD deadline with no adaptive extension.
     # The prior code enabled the extender unconditionally on iterative,
