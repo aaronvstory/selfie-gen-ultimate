@@ -46,6 +46,27 @@ while [[ ${_lock_acquired} -eq 0 ]]; do
 done
 trap 'rmdir "${LOCK_PATH}" 2>/dev/null || true' EXIT
 
+# Heavy-install user banner — only shown when setup is about to do a full
+# install (no REQUIREMENTS_STAMP yet). Mirrors the same banner pattern in
+# the Windows BAT. Sets expectations so users don't kill the process
+# thinking it's frozen during the multi-GB CUDA torch download.
+if [[ ! -f "${REQUIREMENTS_STAMP}" ]]; then
+  printf '\n'
+  printf '  ============================================================\n'
+  printf '   FIRST-RUN DEP INSTALL -- expect 5 to 15 minutes\n'
+  printf '  ============================================================\n'
+  printf '   - torch wheels: ~2GB (CPU build on macOS; no CUDA)\n'
+  printf '   - tensorflow + mediapipe + opencv: ~1-2GB more\n'
+  printf '   - subsequent launches skip this entire block\n'
+  printf '   - pip will print progress below; if 60+ sec of silence,\n'
+  printf '     check your network or Ctrl+C and re-run.\n'
+  printf '  ============================================================\n\n'
+  if [[ -d "${LOCK_DIR}" ]]; then
+    printf '[%s] dep-install banner shown (first-run path)\n' \
+      "$(date '+%Y-%m-%d %H:%M:%S')" >> "${LOCK_DIR}/launch.log"
+  fi
+fi
+
 # setup_macos.sh installs deps and writes REQUIREMENTS_STAMP when they change
 "${ROOT_DIR}/setup_macos.sh"
 export KLING_SKIP_PY_STARTUP_DEP_CHECK=1

@@ -359,6 +359,60 @@ def test_face_crop_tab_recovery_hints_have_no_backticks(monkeypatch):
         )
 
 
+def test_windows_launcher_first_run_dep_install_banner_present():
+    """The Windows launcher must show a "FIRST-RUN DEP INSTALL — expect
+    5 to 15 minutes" banner BEFORE the pip-install block on the full-sync
+    path. The friend who kicked off this PR killed run_gui.bat at ~10min
+    during the CUDA wheel download, thinking it was frozen — the banner
+    sets expectations up front so the panic-kill doesn't happen.
+    """
+    src = _read(WIN_BAT)
+    # Banner must appear AFTER the cached-stamp `goto :launch` and BEFORE
+    # the first pip-install call. Locate both anchors and assert the
+    # banner text falls between them.
+    cached_path_end = src.find("goto :launch")
+    assert cached_path_end > 0
+    first_pip_install = src.find('-m pip install --upgrade pip')
+    assert first_pip_install > cached_path_end
+    between = src[cached_path_end:first_pip_install]
+
+    assert "FIRST-RUN DEP INSTALL" in between, (
+        "First-run dep-install banner missing from full-sync path. "
+        "Users must be told to expect a 5-15 min wait so they don't "
+        "kill the process thinking it's frozen."
+    )
+    assert "expect 5 to 15 minutes" in between
+    assert "torch wheels" in between
+    assert "subsequent launches skip" in between
+
+
+def test_macos_launcher_first_run_dep_install_banner_present():
+    """Symmetric requirement on `run_gui.sh` — banner before
+    `setup_macos.sh` runs, gated on the absence of REQUIREMENTS_STAMP
+    (so the banner only shows on actual first install, not every launch).
+    """
+    src = _read(MAC_SH)
+    setup_call_idx = src.find('"${ROOT_DIR}/setup_macos.sh"')
+    assert setup_call_idx > 0, "Couldn't find setup_macos.sh invocation in run_gui.sh"
+    # Banner must appear somewhere before the setup call.
+    pre_setup = src[:setup_call_idx]
+    assert "FIRST-RUN DEP INSTALL" in pre_setup, (
+        "First-run dep-install banner missing from run_gui.sh."
+    )
+    assert "expect 5 to 15 minutes" in pre_setup
+    # And it must be gated on REQUIREMENTS_STAMP absence so it doesn't
+    # show on every launch.
+    assert "REQUIREMENTS_STAMP" in pre_setup, (
+        "Banner must be conditional on REQUIREMENTS_STAMP absence — "
+        "showing it every launch is noise."
+    )
+    # Sanity: banner block uses `[[ ! -f ... ]]` gate
+    assert "[[ ! -f \"${REQUIREMENTS_STAMP}\" ]]" in pre_setup, (
+        "Banner gate must use [[ ! -f \"${REQUIREMENTS_STAMP}\" ]] — "
+        "the bash idiom checked elsewhere in run_gui.sh."
+    )
+
+
 def test_face_crop_tab_error_log_no_longer_loops_on_relaunch():
     """The Face Crop import-failure log must NOT instruct users to 're-run
     the launcher' alone — that's the friend's infinite loop. Instead it

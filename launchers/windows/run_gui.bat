@@ -166,6 +166,23 @@ if exist "%STAMP%" (
 rem --- Full dep sync (requirements changed or first run) -------------------
 echo   [%LAUNCH_TS%] Requirements changed -- syncing dependencies...
 echo(
+rem --- Heavy-install user banner. Explains the 5-15 min wait so users
+rem --- don't kill the process thinking it's frozen. Real-world data
+rem --- point: a friend on Windows nvidia killed run_gui.bat at ~10 min
+rem --- during the CUDA wheel download (~2GB), leaving a half-installed
+rem --- state that then triggered the in-GUI "RetinaFace import failed"
+rem --- toast that this PR was opened to fix. Set expectations up front.
+echo  ============================================================
+echo   FIRST-RUN DEP INSTALL -- expect 5 to 15 minutes
+echo  ============================================================
+echo   - torch wheels: ~2GB on Windows nvidia ^(CUDA-aware build^)
+echo   - tensorflow + mediapipe + opencv: ~1-2GB more
+echo   - subsequent launches skip this entire block ^(cached stamp^)
+echo   - pip will print progress below; if 60+ sec of silence,
+echo     check your network or Ctrl+C and re-run %~nx0.
+echo  ============================================================
+echo(
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] dep-install banner shown ^(full-sync path^)
 "%VENV_PYTHON%" -m pip install --upgrade pip >nul 2>&1
 call :INSTALL_REQUIREMENTS "%REQUIREMENTS%" "base"
 if !errorlevel! neq 0 goto :DEPENDENCY_FAIL
