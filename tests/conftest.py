@@ -36,3 +36,25 @@ def _reset_instance_id_cache():
     _clear_instance_id_cache()
     yield
     _clear_instance_id_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kling_workspace(monkeypatch):
+    """Force tests into an unused workspace so ``_iter_extra_sessions_dirs``
+    never resolves to the developer's real per-instance autosave tree.
+
+    Without this, ``session_manager.list_sessions`` /
+    ``find_dead_sessions`` / ``prune_dead_sessions`` aggregate the user's
+    live ``~/Library/Application Support/.../workspaces/default/runtime/
+    instances/*/sessions/`` rolling autosaves into the test result — making
+    assertions on returned record counts flake on dev machines that have
+    real GUI history. CI is clean so the bug only surfaces locally.
+
+    Setting an unused workspace name makes ``get_workspace_dir`` resolve to
+    a directory that doesn't exist; ``_iter_extra_sessions_dirs``'s
+    ``os.path.isdir`` guard then returns ``[]``. Tests that explicitly want
+    a different workspace value override this baseline via their own
+    ``monkeypatch.setenv`` / ``monkeypatch.delenv`` — pytest's monkeypatch
+    handles the override + unwind correctly.
+    """
+    monkeypatch.setenv("KLING_WORKSPACE", "_pytest_isolated")
