@@ -127,18 +127,17 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_rppg_iterate_from_baseline": True,
     "automation_rppg_skip_diagnosis": True,
     "automation_rppg_skip_kinematic_gate": True,
-    # Landmark-detection stride for the rPPG injector. Per its own
-    # --landmark-stride documentation, running MediaPipe face landmark
-    # detection only every Nth frame (with the ROIStabilizer carrying
-    # the shape between detections) gives a 3-5x reduction in per-frame
-    # detection cost at "negligible quality loss on mostly-still faces."
-    # Kling outputs are slow controlled head moves so stride 3 is the
-    # safe sweet spot — measurable per-iter speedup without touching
-    # the pulse-injection correctness path. Set to 1 to detect every
-    # frame (the injector's own default) when injecting into a
-    # fast-motion source. The GUI also accepts the bare
-    # ``rppg_landmark_stride`` alias for this same value.
-    "automation_rppg_landmark_stride": 3,
+    # Landmark-detection stride for the rPPG injector. Default 1
+    # (every frame) — the injector's own default and the quality-first
+    # setting; we reverted the 2026-05-25 v2.5 default-of-3 speedup
+    # pass on 2026-05-27 because Kling output occasionally moves faster
+    # than the prompt asks for and silently degrading those clips is
+    # worse than the slowdown on the slow-majority. Raise to 3 to
+    # restore the 3-5x speedup on confirmed near-still source. (Once
+    # the auto-NVIDIA bootstrap activates CuPy on a CUDA host the
+    # per-frame mediapipe cost matters far less anyway.) The GUI also
+    # accepts the bare ``rppg_landmark_stride`` alias.
+    "automation_rppg_landmark_stride": 1,
     "automation_rppg_required": False,
     # When False (default) the injector's metric-suffixed filename
     # ("{stem}-rppg - <SNR>-<Phase>-<Temporal>-<Motion>-<Harmonic>{ext}")

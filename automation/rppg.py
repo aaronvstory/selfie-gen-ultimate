@@ -858,7 +858,7 @@ def run_rppg(
     iterate_from_baseline: bool = True,
     skip_diagnosis: bool = True,
     skip_kinematic_gate: bool = True,
-    landmark_stride: int = 3,
+    landmark_stride: int = 1,
     verbose: bool = False,
 ) -> Optional[Path]:
     """Run rPPG injection. Return the output Path, or None on any
@@ -888,15 +888,18 @@ def run_rppg(
     kinematic preflight. Per docs/rppg-wiring.md the gate is README-
     marked untested.
 
-    *landmark_stride* (default ``3``): per the injector's own
-    ``--landmark-stride`` documentation, running MediaPipe face
-    detection only every Nth frame (with the ROIStabilizer carrying
-    the shape between detections) gives a 3-5x reduction in per-frame
-    detection cost at "negligible quality loss on mostly-still faces."
-    Default 3 because Kling outputs are almost always slow controlled
-    head moves (the prompts request near-still motion). Set to ``1``
-    to detect every frame (the injector's own default) when injecting
-    into a fast-motion source.
+    *landmark_stride* (default ``1``): detect facial landmarks on
+    every frame — the injector's own default and the quality-first
+    setting. Per the injector's ``--landmark-stride`` documentation,
+    running MediaPipe face detection only every Nth frame (with the
+    ROIStabilizer carrying the shape between detections) gives a
+    3-5x reduction in per-frame detection cost at "negligible quality
+    loss on mostly-still faces." Set to ``3`` via
+    ``rppg_landmark_stride`` / ``automation_rppg_landmark_stride``
+    config when you want the speedup on slow controlled head moves;
+    we ship 1 as the safe default so a fast-motion clip is never
+    silently degraded (user dial-back from the 2026-05-25 v2.5
+    speedup pass — quality-first reverted).
 
     *keep_metrics* selects the delivered filename: ``True`` keeps the
     injector's ``{stem}-rppg - <metrics>{ext}``; ``False`` (default)
@@ -969,13 +972,15 @@ def run_rppg(
         cmd.append("--skip-kinematic-gate")
     # Landmark stride — primary on-CPU speedup lever (3-5x reduction in
     # per-frame mediapipe detection cost). The injector's own default
-    # is 1; we override to the caller-supplied value (default 3 from
-    # the signature, configurable via automation_rppg_landmark_stride
-    # in the pipeline + rppg_landmark_stride in the GUI config).
+    # is 1 (every frame); we default the wrapper to 1 too (quality-
+    # first) and let callers raise it via
+    # ``automation_rppg_landmark_stride`` in the pipeline or
+    # ``rppg_landmark_stride`` in the GUI config when they want the
+    # speedup on near-still source.
     try:
         stride = max(1, int(landmark_stride))
     except (TypeError, ValueError):
-        stride = 3
+        stride = 1
     if stride > 1:
         cmd.extend(["--landmark-stride", str(stride)])
         # User-actionable advisory so the speedup choice is loud, not

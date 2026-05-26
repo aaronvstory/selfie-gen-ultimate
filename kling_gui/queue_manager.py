@@ -2166,28 +2166,25 @@ class QueueManager:
                 "automation_rppg_skip_kinematic_gate",
                 True,
             )
-            # Landmark-detection stride: per the injector's own
-            # ``--landmark-stride`` help, running MediaPipe only every
-            # Nth frame and interpolating between via the ROIStabilizer
-            # gives a "3-5x reduction in per-frame detection cost at
-            # negligible quality loss on mostly-still faces." The Kling
-            # output is almost always a slow controlled head turn
-            # (subject performs the prompted move at near-still speed),
-            # so stride 3 is the safe sweet spot — measurable speedup
-            # without touching the pulse-injection correctness path.
-            # User dial-back to 1 (every frame) via
-            # config["rppg_landmark_stride"] = 1 for the rare case of a
-            # fast-motion source. (PR fix/rppg-failure-visibility v2.5
-            # — user-asked speedup pass.)
+            # Landmark-detection stride. Default 1 (detect every frame)
+            # — the injector's own default and the quality-first choice.
+            # User dial-up to 3 via ``rppg_landmark_stride`` /
+            # ``automation_rppg_landmark_stride`` enables the 3-5x
+            # speedup at the cost of measurable quality loss on
+            # fast-motion source. (User dial-back from the 2026-05-25
+            # v2.5 speedup pass — quality-first reverted because Kling
+            # output occasionally contains a quicker move than the
+            # prompt asks for, and silently degrading those clips is
+            # worse than the 3-5x slowdown on the slow-motion majority.)
             landmark_stride_raw = _cfg_get(
                 "rppg_landmark_stride",
                 "automation_rppg_landmark_stride",
-                3,
+                1,
             )
             try:
                 landmark_stride = max(1, int(landmark_stride_raw))
             except (TypeError, ValueError):
-                landmark_stride = 3
+                landmark_stride = 1
             run_cmd = [
                 str(launcher),
                 str(input_path),

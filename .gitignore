@@ -24,6 +24,10 @@ ui_config.json
 kling_history.json
 chrome_profile/
 *.log
+# Per-instance GUI runtime tree (autosaves, crash logs, instance markers).
+# PR #49 introduced the runtime/instances/<id>/ layout; the dir itself can
+# materialise in the workspace root and was missing from this list.
+runtime/
 
 # Build artifacts
 build/

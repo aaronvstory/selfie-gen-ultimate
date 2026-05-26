@@ -1256,12 +1256,13 @@ class AutoPipelineRunner:
                 skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
                 keep_metrics = self._read_bool("automation_rppg_metrics_in_filename", False)
                 # _read_int is the safe coercion helper (used by every
-                # other automation_*_int key). The naive `int(... or 3)`
+                # other automation_*_int key). The naive `int(... or 1)`
                 # form would crash the pipeline mid-case on a stringy
                 # config value AND silently rewrite a legitimate ``0``
-                # to the default 3. (Subagent HIGH on PR #52 round 3.)
+                # to the default. (Subagent HIGH on PR #52 round 3.)
+                # Default 1 from 2026-05-27 v2.6 quality-first revert.
                 landmark_stride = self._read_int(
-                    "automation_rppg_landmark_stride", 3, min_value=1,
+                    "automation_rppg_landmark_stride", 1, min_value=1,
                 )
                 injected = run_rppg(
                     video_path=video_out_path,
@@ -1403,9 +1404,10 @@ class AutoPipelineRunner:
             skip_diagnosis = self._read_bool("automation_rppg_skip_diagnosis", True)
             skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
             # _read_int safety wrapper (see Step 6 site above) —
-            # subagent HIGH on PR #52 round 3.
+            # subagent HIGH on PR #52 round 3. Default 1 from
+            # 2026-05-27 v2.6 quality-first revert.
             landmark_stride = self._read_int(
-                "automation_rppg_landmark_stride", 3, min_value=1,
+                "automation_rppg_landmark_stride", 1, min_value=1,
             )
 
             # Phase E of polish/v2.3 (2026-05-22): the BASE rPPG pass
