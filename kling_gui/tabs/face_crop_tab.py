@@ -87,15 +87,26 @@ def _platform_face_repair_recovery_hint() -> str:
     """
     system = platform.system()
     if system == "Windows":
+        # `deps_*.ok` is a file pattern — must use `del` (rd is for dirs only).
+        # Subagent round 1 CRITICAL: original wording used `rd /S /Q` which
+        # errors with "The system cannot find the file specified." when the
+        # user copy-pastes it, recreating the same dead-end the PR is fixing.
         return (
-            "Manual recovery: rd /S /Q .launcher_state\\deps_*.ok && run_gui.bat "
+            "Manual recovery: del /Q .launcher_state\\deps_*.ok && run_gui.bat "
             "(forces a fresh dep sync + health check). If that fails too, "
             "run `dependency_health_check.py --mode repair` directly inside "
             "the venv, or delete venv\\ and re-launch."
         )
     if system == "Darwin":
+        # HEALTH_STAMP path MUST match `run_gui.sh:7` (`HEALTH_STAMP=
+        # "${ROOT_DIR}/.venv-macos/.health.sha256"`). Subagent round 1
+        # CRITICAL: original wording pointed at `.launcher_state/health.sha256`
+        # which doesn't exist; `rm -f` silently no-ops and the still-present
+        # `.venv-macos/.health.sha256` keeps short-circuiting on the next
+        # launch — recreating the macOS-side version of the infinite loop
+        # this PR is meant to eliminate.
         return (
-            "Manual recovery: rm -f .launcher_state/health.sha256 && "
+            "Manual recovery: rm -f .venv-macos/.health.sha256 && "
             "bash run_gui.sh (forces a runtime health probe + repair). "
             "If that fails too, run "
             "`.venv-macos/bin/python dependency_health_check.py --mode repair`, "

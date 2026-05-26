@@ -88,7 +88,7 @@ rem --- where a friend ran run_gui.bat once, got a successful CUDA install,
 rem --- then saw "RetinaFace/TensorFlow import failed. Run run_gui.bat for
 rem --- automatic dependency repair." in the GUI. Re-running run_gui.bat
 rem --- did nothing because the previous "successful" install wrote
-rem --- deps_*.ok and the launcher skipped EVERY check on the next pass —
+rem --- deps_*.ok and the launcher skipped EVERY check on the next pass -
 rem --- including the health probe that would have caught the broken
 rem --- TF/retinaface stack. The user was stuck in an infinite "re-run the
 rem --- bat" loop with no recovery path. Now we always probe runtime
@@ -98,7 +98,7 @@ rem --- bubble up a CLEAR diagnostic on persistent failure instead of
 rem --- telling users to "re-run run_gui.bat".
 if exist "%STAMP%" (
     if exist "%DEP_HEALTH_SCRIPT%" (
-        echo   [%LAUNCH_TS%] Cached deps stamp present — running quick health probe...
+        echo   [%LAUNCH_TS%] Cached deps stamp present -- running quick health probe...
         >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe START ^(cached-stamp path^)
         "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode check >"%STATE_DIR%\last_health.log" 2>&1
         if !errorlevel! neq 0 (
@@ -116,7 +116,7 @@ if exist "%STAMP%" (
                 echo  ERROR: Automatic dependency repair FAILED.
                 echo  ============================================================
                 echo  The cached install is broken AND the auto-repair did not
-                echo  fix it. Re-running %~nx0 alone will not help — the stamp
+                echo  fix it. Re-running %~nx0 alone will not help -- the stamp
                 echo  has already been cleared, so the next run will retry the
                 echo  full install, but if pip can't resolve the conflict on
                 echo  its own you need to recover manually:

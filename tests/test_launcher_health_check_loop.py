@@ -178,30 +178,86 @@ def test_macos_launcher_writes_per_launch_diag_log():
 # ────────────────────────────────────────────────────────────────────
 
 
-def test_face_crop_tab_exposes_per_platform_recovery_hint():
-    """``_platform_face_repair_recovery_hint`` must exist and return per-OS hints."""
-    from kling_gui.tabs.face_crop_tab import _platform_face_repair_recovery_hint
+def test_face_crop_tab_exposes_per_platform_recovery_hint(monkeypatch):
+    """``_platform_face_repair_recovery_hint`` must exist and return per-OS hints.
 
-    # Force each platform branch via monkeypatch.
+    Uses ``monkeypatch.setattr`` (subagent round 1 HIGH): pytest restores
+    automatically on test teardown including under exceptions, where the
+    prior bare ``try/finally`` could miss restoration on ``BaseException``.
+    """
     import platform as _platform
 
-    saved = _platform.system
-    try:
-        _platform.system = lambda: "Windows"
-        win = _platform_face_repair_recovery_hint()
-        assert "run_gui.bat" in win
-        assert "deps_*.ok" in win, "Windows hint must mention the deps_*.ok stamp deletion"
+    from kling_gui.tabs.face_crop_tab import _platform_face_repair_recovery_hint
 
-        _platform.system = lambda: "Darwin"
-        mac = _platform_face_repair_recovery_hint()
-        assert "run_gui.sh" in mac
-        assert ".venv-macos" in mac
+    monkeypatch.setattr(_platform, "system", lambda: "Windows")
+    win = _platform_face_repair_recovery_hint()
+    assert "run_gui.bat" in win
+    assert "deps_*.ok" in win, "Windows hint must mention the deps_*.ok stamp deletion"
 
-        _platform.system = lambda: "Linux"
-        lin = _platform_face_repair_recovery_hint()
-        assert "run_gui.sh" in lin
-    finally:
-        _platform.system = saved
+    monkeypatch.setattr(_platform, "system", lambda: "Darwin")
+    mac = _platform_face_repair_recovery_hint()
+    assert "run_gui.sh" in mac
+    assert ".venv-macos" in mac
+
+    monkeypatch.setattr(_platform, "system", lambda: "Linux")
+    lin = _platform_face_repair_recovery_hint()
+    assert "run_gui.sh" in lin
+
+
+def test_recovery_hint_uses_del_not_rd_for_file_glob(monkeypatch):
+    """The Windows hint must use ``del`` (file deletion) NOT ``rd`` (directory
+    removal) for the ``deps_*.ok`` glob.
+
+    Subagent round 1 CRITICAL: ``deps_*.ok`` is a file pattern; ``rd /S /Q``
+    errors out with "The system cannot find the file specified." when the
+    user copy-pastes the recovery hint — recreating the exact dead-end the
+    PR is fixing. This test pins the correct command verb.
+    """
+    import platform as _platform
+
+    from kling_gui.tabs.face_crop_tab import _platform_face_repair_recovery_hint
+
+    monkeypatch.setattr(_platform, "system", lambda: "Windows")
+    win = _platform_face_repair_recovery_hint()
+    assert "del /Q" in win or "del " in win, (
+        f"Windows hint must use `del` for file glob; got: {win!r}"
+    )
+    assert "rd /S /Q .launcher_state" not in win and "rd /S /Q deps_" not in win, (
+        f"Windows hint uses `rd` for a file glob — see subagent CRITICAL round 1. Hint: {win!r}"
+    )
+
+
+def test_macos_recovery_hint_health_stamp_path_matches_run_gui_sh(monkeypatch):
+    """The macOS recovery hint MUST point at the same HEALTH_STAMP path that
+    ``run_gui.sh`` actually invalidates.
+
+    Subagent round 1 CRITICAL: the original hint pointed at
+    ``.launcher_state/health.sha256``, but ``run_gui.sh:7`` declares
+    ``HEALTH_STAMP="${ROOT_DIR}/.venv-macos/.health.sha256"``. ``rm -f`` on
+    the non-existent path silently no-ops; the actual stamp keeps short-
+    circuiting on the next launch — recreating the loop the PR is fixing,
+    on the macOS side this time. This test catches future drift between
+    the hint and the actual stamp path.
+    """
+    import platform as _platform
+
+    from kling_gui.tabs.face_crop_tab import _platform_face_repair_recovery_hint
+
+    monkeypatch.setattr(_platform, "system", lambda: "Darwin")
+    mac = _platform_face_repair_recovery_hint()
+
+    # Grep `run_gui.sh` for the authoritative HEALTH_STAMP path component.
+    sh_src = MAC_SH.read_text(encoding="utf-8")
+    # Source defines HEALTH_STAMP="${ROOT_DIR}/.venv-macos/.health.sha256"
+    # — the path component after ${ROOT_DIR}/ is what the hint must reference.
+    assert '${ROOT_DIR}/.venv-macos/.health.sha256' in sh_src, (
+        "run_gui.sh's HEALTH_STAMP definition changed — update this test "
+        "AND the macOS recovery hint together."
+    )
+    assert '.venv-macos/.health.sha256' in mac, (
+        f"macOS recovery hint must reference the real HEALTH_STAMP path "
+        f"(.venv-macos/.health.sha256). Got: {mac!r}"
+    )
 
 
 def test_face_crop_tab_error_log_no_longer_loops_on_relaunch():

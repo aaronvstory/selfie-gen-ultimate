@@ -103,7 +103,7 @@ if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
       printf 'it. Re-running %s alone will not help — the next run will\n' "$(basename "${BASH_SOURCE[0]}")" >&2
       printf 'just re-probe and re-fail. You need to recover manually:\n\n' >&2
       printf '  1. Delete the venv and re-bootstrap:\n' >&2
-      printf '       rm -rf "%s" && bash "%s"\n\n' "${ROOT_DIR}/.venv-macos" "${BASH_SOURCE[0]}"
+      printf '       rm -rf "%s" && bash "%s"\n\n' "${ROOT_DIR}/.venv-macos" "${BASH_SOURCE[0]}" >&2
       printf '  2. Force-reinstall the face stack:\n' >&2
       printf '       "%s" -m pip install --force-reinstall \\\n' "${PYTHON_BIN}" >&2
       printf '         --no-cache-dir tensorflow==2.16.2 tf-keras==2.16.0 \\\n' >&2
