@@ -123,10 +123,13 @@ if exist "%STAMP%" (
                 echo(
                 echo    1. Delete the venv folder ^(rd /S /Q "%VENV_DIR%"^) and
                 echo       run %~nx0 from a clean state.
-                echo    2. Force-reinstall the face stack manually:
+                echo    2. Force-reinstall the face stack manually ^(mirrors
+                echo       REPAIR_PACKAGES in dependency_health_check.py^):
                 echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^
-                echo         --no-cache-dir tensorflow==2.16.2 tf-keras==2.16.0 ^^
-                echo         retina-face==0.0.17
+                echo         --no-cache-dir tensorflow==2.16.2 ^^
+                echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^
+                echo         tf-keras==2.16.0 retina-face==0.0.17 ^^
+                echo         deepface==0.0.92
                 echo    3. Inspect the diagnostic log at:
                 echo       %STATE_DIR%\last_health.log
                 echo    4. Inspect the launch log at:
@@ -209,10 +212,13 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             echo  Manual recovery options:
             echo    1. Delete the venv folder ^(rd /S /Q "%VENV_DIR%"^) and
             echo       run %~nx0 from a clean state.
-            echo    2. Force-reinstall the face stack manually:
+            echo    2. Force-reinstall the face stack manually ^(mirrors
+            echo       REPAIR_PACKAGES in dependency_health_check.py^):
             echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^
-            echo         --no-cache-dir tensorflow==2.16.2 tf-keras==2.16.0 ^^
-            echo         retina-face==0.0.17
+            echo         --no-cache-dir tensorflow==2.16.2 ^^
+            echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^
+            echo         tf-keras==2.16.0 retina-face==0.0.17 ^^
+            echo         deepface==0.0.92
             echo    3. Inspect the diagnostic log at:
             echo       %STATE_DIR%\last_health.log
             echo    4. Inspect the launch log at:

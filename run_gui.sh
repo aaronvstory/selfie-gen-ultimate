@@ -104,10 +104,12 @@ if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
       printf 'just re-probe and re-fail. You need to recover manually:\n\n' >&2
       printf '  1. Delete the venv and re-bootstrap:\n' >&2
       printf '       rm -rf "%s" && bash "%s"\n\n' "${ROOT_DIR}/.venv-macos" "${BASH_SOURCE[0]}" >&2
-      printf '  2. Force-reinstall the face stack:\n' >&2
+      printf '  2. Force-reinstall the face stack (mirrors REPAIR_PACKAGES\n' >&2
+      printf '     in dependency_health_check.py):\n' >&2
       printf '       "%s" -m pip install --force-reinstall \\\n' "${PYTHON_BIN}" >&2
-      printf '         --no-cache-dir tensorflow==2.16.2 tf-keras==2.16.0 \\\n' >&2
-      printf '         retina-face==0.0.17\n\n' >&2
+      printf '         --no-cache-dir tensorflow==2.16.2 \\\n' >&2
+      printf '         protobuf==4.25.3 tf-keras==2.16.0 \\\n' >&2
+      printf '         retina-face==0.0.17 deepface==0.0.92\n\n' >&2
       printf '  3. Inspect the diagnostic log:\n' >&2
       printf '       %s\n\n' "${HEALTH_OUTPUT_LOG}" >&2
       printf '  4. Inspect the launch log:\n' >&2

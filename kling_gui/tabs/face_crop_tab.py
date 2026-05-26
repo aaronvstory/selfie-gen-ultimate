@@ -85,6 +85,12 @@ def _platform_face_repair_recovery_hint() -> str:
     won't always help — point users at a deterministic manual recovery
     instead.
     """
+    # Hints are written to be LITERALLY copy-pasteable into a Windows cmd /
+    # bash / zsh prompt. CodeRabbit round 1 caught backticks around the
+    # `dependency_health_check.py --mode repair` substring — backticks in
+    # bash/zsh execute the wrapped command, so a user copy-pasting the hint
+    # via shell wouldn't get what they expected. No backticks anywhere in
+    # the returned strings.
     system = platform.system()
     if system == "Windows":
         # `deps_*.ok` is a file pattern — must use `del` (rd is for dirs only).
@@ -94,8 +100,8 @@ def _platform_face_repair_recovery_hint() -> str:
         return (
             "Manual recovery: del /Q .launcher_state\\deps_*.ok && run_gui.bat "
             "(forces a fresh dep sync + health check). If that fails too, "
-            "run `dependency_health_check.py --mode repair` directly inside "
-            "the venv, or delete venv\\ and re-launch."
+            "run: venv\\Scripts\\python.exe dependency_health_check.py "
+            "--mode repair  ... or delete venv\\ and re-launch."
         )
     if system == "Darwin":
         # HEALTH_STAMP path MUST match `run_gui.sh:7` (`HEALTH_STAMP=
@@ -108,14 +114,14 @@ def _platform_face_repair_recovery_hint() -> str:
         return (
             "Manual recovery: rm -f .venv-macos/.health.sha256 && "
             "bash run_gui.sh (forces a runtime health probe + repair). "
-            "If that fails too, run "
-            "`.venv-macos/bin/python dependency_health_check.py --mode repair`, "
-            "or delete .venv-macos/ and re-launch."
+            "If that fails too, run: .venv-macos/bin/python "
+            "dependency_health_check.py --mode repair  ... or delete "
+            ".venv-macos/ and re-launch."
         )
     return (
         "Manual recovery: bash run_gui.sh (re-probes deps). If that fails "
-        "too, run `python dependency_health_check.py --mode repair` inside "
-        "your venv, or recreate the venv from scratch."
+        "too, run: python dependency_health_check.py --mode repair  ... "
+        "inside your venv, or recreate the venv from scratch."
     )
 
 

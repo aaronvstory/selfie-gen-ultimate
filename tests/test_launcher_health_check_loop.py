@@ -260,6 +260,63 @@ def test_macos_recovery_hint_health_stamp_path_matches_run_gui_sh(monkeypatch):
     )
 
 
+def test_launcher_manual_recovery_pip_command_matches_repair_packages():
+    """Both launcher manual-recovery blocks must list EVERY pinned package
+    from ``dependency_health_check.REPAIR_PACKAGES`` — drift between the
+    auto-repair contract and the human-readable manual recovery hint
+    silently introduces version mismatches.
+
+    CodeRabbit round 1 Major: the Windows BAT's manual recovery only
+    listed tensorflow + tf-keras + retina-face, but REPAIR_PACKAGES also
+    pins protobuf, deepface, and (Windows-only) tensorflow-intel. A user
+    who followed the manual recovery would end up with a different state
+    than ``--mode repair`` produces.
+    """
+    from dependency_health_check import REPAIR_PACKAGES
+
+    bat_src = _read(WIN_BAT)
+    sh_src = _read(MAC_SH)
+
+    for pkg in REPAIR_PACKAGES:
+        # Manual recovery on Windows mirrors REPAIR_PACKAGES exactly,
+        # including the win32 conditional `tensorflow-intel==2.16.2`.
+        assert pkg in bat_src, (
+            f"Windows BAT manual recovery missing REPAIR_PACKAGES entry: {pkg!r}. "
+            f"Drift between auto-repair and manual hint silently introduces "
+            f"version mismatches when users follow the manual fallback."
+        )
+
+    # The macOS sh manual recovery skips Windows-only tensorflow-intel.
+    for pkg in REPAIR_PACKAGES:
+        if "tensorflow-intel" in pkg:
+            continue
+        assert pkg in sh_src, (
+            f"run_gui.sh manual recovery missing REPAIR_PACKAGES entry: {pkg!r}"
+        )
+
+
+def test_face_crop_tab_recovery_hints_have_no_backticks(monkeypatch):
+    """Hint strings must be literal copy-pasteable text.
+
+    CodeRabbit round 1 Major: original hints wrapped
+    ``dependency_health_check.py --mode repair`` in backticks. Bash/zsh
+    interpret backticks as command substitution; a user copy-pasting
+    the hint into their shell would get a NameError or "command not
+    found" before pip ever ran. No backticks.
+    """
+    import platform as _platform
+
+    from kling_gui.tabs.face_crop_tab import _platform_face_repair_recovery_hint
+
+    for system_name in ("Windows", "Darwin", "Linux"):
+        monkeypatch.setattr(_platform, "system", lambda s=system_name: s)
+        hint = _platform_face_repair_recovery_hint()
+        assert "`" not in hint, (
+            f"{system_name} hint contains a backtick — bash/zsh would interpret "
+            f"it as command substitution and break copy-paste. Hint: {hint!r}"
+        )
+
+
 def test_face_crop_tab_error_log_no_longer_loops_on_relaunch():
     """The Face Crop import-failure log must NOT instruct users to 're-run
     the launcher' alone — that's the friend's infinite loop. Instead it
