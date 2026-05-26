@@ -1785,6 +1785,14 @@ class KlingAutomationUI:
         self.config["automation_rppg_skip_diagnosis"] = True
         self.config["automation_rppg_skip_kinematic_gate"] = True
         self.config["automation_rppg_required"] = False
+        # Round-3 subagent CRITICAL (PR #54): the v5 -> v6 bump exists
+        # SPECIFICALLY to push stride 3 -> 1 to v5 users (quality-first
+        # revert of the v2.5 speedup pass). The apply-defaults function
+        # must actually write the new stride or v5 users will see
+        # version=6 in their config but keep running the degraded
+        # stride=3 fast path. (Without this line the whole v6 migration
+        # is a no-op for the only key it was bumped for.)
+        self.config["automation_rppg_landmark_stride"] = 1
         # Clean *-rppg filename + .metrics.json sidecar by default; the
         # injector's metric-suffix rename is opt-in (see automation/rppg.py
         # finalize_rppg_output).

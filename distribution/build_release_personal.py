@@ -113,7 +113,17 @@ def _personal_build_config(
     """
     template: Dict[str, object] = {}
     if template_path.exists():
-        loaded = json.loads(template_path.read_text(encoding="utf-8"))
+        # Round-3 subagent MEDIUM (PR #54): guard the template read
+        # symmetrically with the live-config read below. The personal
+        # builder is an ad-hoc by-hand script, so a one-time
+        # corruption of default_config_template.json (mid-edit by the
+        # user, or a partial git checkout) shouldn't crash the build —
+        # fall back to an empty template (the live config still
+        # provides the user's actual values).
+        try:
+            loaded = json.loads(template_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, ValueError):
+            loaded = None
         if isinstance(loaded, dict):
             template.update(loaded)
     config: Dict[str, object] = {}

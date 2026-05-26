@@ -85,6 +85,32 @@ def test_no_nvidia_writes_stamp(monkeypatch):
     assert payload["cuda_major"] is None
 
 
+def test_detect_nvidia_returns_none_when_smi_missing_macos(monkeypatch):
+    """macOS contract: nvidia-smi is not installed on Darwin, so the
+    real subprocess.run call raises FileNotFoundError. detect_nvidia
+    MUST swallow that and return None — the bootstrap then short-
+    circuits to no_nvidia with NO install attempt (CuPy has no Metal
+    backend, so the M1/M2 path stays CPU forever). This test
+    simulates the macOS-without-NVIDIA case on any platform.
+
+    User question 2026-05-27 ("make sure this keeps working fine on
+    mac"): yes — this is the path."""
+    import subprocess as _sp
+    original_run = _sp.run
+
+    def _fake_run(*args, **kwargs):
+        raise FileNotFoundError("nvidia-smi not found (simulated macOS)")
+
+    monkeypatch.setattr(gpu_bootstrap.subprocess, "run", _fake_run)
+    try:
+        assert gpu_bootstrap.detect_nvidia() is None, (
+            "detect_nvidia must swallow FileNotFoundError and return None "
+            "on hosts without nvidia-smi (macOS, Linux-without-NVIDIA, etc.)"
+        )
+    finally:
+        monkeypatch.setattr(gpu_bootstrap.subprocess, "run", original_run)
+
+
 def test_cached_no_nvidia_short_circuits_within_ttl(monkeypatch):
     """A recent no_nvidia stamp must not re-run detection — the user
     swapping GPUs is rare and the TTL handles it."""

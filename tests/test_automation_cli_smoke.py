@@ -640,6 +640,15 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_rppg_iterate_from_baseline"] is True
     assert ui.config["automation_rppg_skip_diagnosis"] is True
     assert ui.config["automation_rppg_skip_kinematic_gate"] is True
+    # Round-3 subagent CRITICAL on PR #54: the apply-defaults function
+    # MUST write stride=1 so the v5 -> v6 migration actually flips the
+    # knob it was bumped for. Without this assertion the prior version-
+    # bump test passed but the stride stayed at whatever the user had
+    # saved (3 for v5 users from the v2.5 speedup pass).
+    assert ui.config["automation_rppg_landmark_stride"] == 1, (
+        "v6 apply-defaults must reset landmark_stride to 1 — that's "
+        "the entire reason the version bumped from 5 to 6"
+    )
     # Version bumped 5 -> 6 in PR #54 (2026-05-27) when
     # automation_rppg_landmark_stride default was reverted 3 -> 1.
     # Drives the "apply recommended defaults" yellow prompt on the

@@ -2272,6 +2272,18 @@ class QueueManager:
             tracker = _RppgProgressTracker(
                 report_cb=_progress_report, verbose=verbose,
             )
+            # Round-3 subagent HIGH (PR #54): anchor the tracker's
+            # elapsed clock to subprocess launch time so the
+            # completion banner matches the heartbeat output. Without
+            # this, the GUI heartbeat would log "⏳ rPPG warming up...
+            # 7 min elapsed" then the tracker would say "1m 20s
+            # elapsed" at completion — visually contradictory for the
+            # same job. The CLI path (automation/rppg.py:run_rppg) got
+            # the same fix in commit 93d1fbe; this is the missing
+            # GUI-side sibling. Use time.monotonic() to match what
+            # stream_subprocess_with_timeout uses internally.
+            import time as _time
+            tracker.anchor_start_time(_time.monotonic())
             tracker_extender = tracker.deadline_extender if iterative else None
 
             def _on_rppg_line(text: str) -> None:
