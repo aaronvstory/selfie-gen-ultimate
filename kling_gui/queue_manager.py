@@ -492,7 +492,7 @@ class QueueManager:
         self.is_paused = False
         self.worker_thread = threading.Thread(target=self._process_queue, daemon=True)
         self.worker_thread.start()
-        self.log("Processing started", "info")
+        self.log("▶ Processing started", "info")
 
     def pause_processing(self):
         """Pause processing after current item completes."""
@@ -1042,11 +1042,11 @@ class QueueManager:
             if item is None:
                 # No more items to process
                 self.is_running = False
-                self.log("Queue processing complete", "success")
+                self.log("🏁 Queue processing complete", "success")
                 return
 
             self.update_queue_display()
-            self.log(f"Processing: {item.filename}", "info")
+            self.log(f"🎬 Processing: {item.filename}", "info")
 
             try:
                 # Capture timestamp at start of processing (for consistent filenames)
@@ -1212,7 +1212,7 @@ class QueueManager:
 
                 if result:
                     item.status = "completed"
-                    self.log(f"Completed: {item.filename}", "success")
+                    self.log(f"✓ Completed: {item.filename}", "success")
 
                     # NEW pipeline order (Phase E of polish/v2.3,
                     # 2026-05-22): Kling -> rPPG -> Loop -> Oldcam. The
@@ -1333,7 +1333,7 @@ class QueueManager:
                     item.output_path = final_video
                     item.stage = "done"
                     item.stage_percent = 100
-                    self.log(f"Saved to: {final_video}", "info")
+                    self.log(f"💾 Saved to: {final_video}", "info")
                     # Synthesize a final summary milestone so the user
                     # can see, at a glance, what was applied (and what
                     # was requested but failed). Bot/code-reviewer
@@ -1654,7 +1654,7 @@ class QueueManager:
             self.log(f"Skipping Oldcam {version} Finish due to missing dependencies", "warning")
             return None
 
-        self.log(f"Applying Oldcam {version} Finish...", "info")
+        self.log(f"📷 Applying Oldcam {version} Finish...", "info")
         run_cmd = [sys.executable, "-u", str(launcher_path), video_path]
         output_lines: list[str] = []
         returncode = -1
@@ -2108,7 +2108,7 @@ class QueueManager:
                 return None
 
             output_path = self._build_rppg_output_path(input_path)
-            self.log("Applying rPPG injection...", "info")
+            self.log("🩺 Applying rPPG injection...", "info")
             # Iterative-mode flags. Defaults match rPPG/rppg.bat (the
             # friend's canonical launcher): --iterative is MANDATORY
             # for production because the initial single-shot rarely
@@ -2393,7 +2393,7 @@ class QueueManager:
                         keep_metrics=keep_metrics,
                         progress_cb=lambda msg, lvl="info": self.log(msg, lvl),
                     )
-                    self.log(f"rPPG output: {final.name}", "success")
+                    self.log(f"✓ rPPG output: {final.name}", "success")
                     self.log("✅ RPPG DONE", "milestone")
                     return str(final)
                 self.log(
