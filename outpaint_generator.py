@@ -1336,7 +1336,14 @@ class OutpaintGenerator:
             self._report("BFL download failed", "error")
             return None
 
-        # 6. Post-download dimension check
+        # 6. Post-download dimension check.
+        # Gemini PR #53 round 13: align with the fal-path fail-fast at
+        # line ~559 — silently falling back to expected dimensions on
+        # an unreadable download (a) returns a corrupt file to the
+        # caller in the composite_mode="none" short-circuit and (b)
+        # produces a misleading `bfl_composite_failed` later when the
+        # composite step re-opens the file. An unreadable file is an
+        # IO failure, not a dimension underflow; fail loudly.
         try:
             with Image.open(output_path) as dl_img:
                 actual_w, actual_h = dl_img.size
@@ -1346,8 +1353,18 @@ class OutpaintGenerator:
                 "debug",
             )
         except Exception as exc:
-            self._report(f"Could not verify output dimensions: {exc}", "warning")
-            actual_w, actual_h = expected_w, expected_h  # best-effort
+            self._report(
+                f"Could not read downloaded BFL outpaint output: {exc}",
+                "error",
+            )
+            self._set_last_outpaint_error_detail(
+                f"bfl_download_unreadable:{type(exc).__name__}"
+            )
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            return None
 
         # 6a. composite_mode="none" short-circuit (parity with fal path,
         # PR #53 round 11 subagent M2). Skip the resize-and-composite
