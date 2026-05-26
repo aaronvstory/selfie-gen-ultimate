@@ -647,6 +647,23 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     from kling_automation_ui import RECOMMENDED_DEFAULTS_VERSION
     assert RECOMMENDED_DEFAULTS_VERSION == 6
     assert ui.config["automation_recommended_defaults_version"] == 6
+    # Round-3 review fix (PR #54): catch the lockstep miss where
+    # `kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION` was bumped
+    # but `automation.config.AUTOMATION_DEFAULTS` stayed stale. Both
+    # constants must agree — a brand-new user (whose initial config
+    # is seeded from AUTOMATION_DEFAULTS) would otherwise immediately
+    # trip the CLI's "apply recommended defaults?" prompt because the
+    # seeded value would be N-1 of the target. Asserting they match
+    # here locks the synchronization invariant.
+    from automation.config import AUTOMATION_DEFAULTS
+    assert AUTOMATION_DEFAULTS["automation_recommended_defaults_version"] == \
+        RECOMMENDED_DEFAULTS_VERSION, (
+        "automation.config.AUTOMATION_DEFAULTS and "
+        "kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION must stay "
+        "in lockstep — a fresh-install config would otherwise immediately "
+        "trip the 'apply defaults?' prompt because the seeded baseline "
+        "is N-1 of the target."
+    )
     assert ui.config["automation_max_cases_per_run"] == "all"
     assert ui.config["falai_api_key"] == "keep-fal-key"
     assert ui.config["bfl_api_key"] == "keep-bfl-key"

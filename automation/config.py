@@ -146,11 +146,21 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     # metrics embedded in the filename. See automation/rppg.py
     # finalize_rppg_output() — single source of truth.
     "automation_rppg_metrics_in_filename": False,
-    # Bumped to 2 in PR #43 when rPPG defaults flipped to iterative mode.
-    # The CLI questionary editor uses this to detect when a user's saved
-    # config predates the new recommended-defaults baseline and offers
-    # to refresh.
-    "automation_recommended_defaults_version": 2,
+    # The CLI questionary editor (kling_automation_ui.py) uses this to
+    # detect when a user's saved config predates the current
+    # recommended-defaults baseline and offers to refresh. MUST stay in
+    # lockstep with ``kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION``
+    # — the smoke test ``test_apply_recommended_defaults_keys`` asserts
+    # both end up at the same value when defaults are applied.
+    # History:
+    #   v2 (2026-05-19, PR #43): rPPG defaults flipped to iterative
+    #   v3 (2026-05-19): added automation_rppg_metrics_in_filename
+    #   v4 (2026-05-19): minimal-motion default prompt + cfg_scale
+    #   v5 (2026-05-20): rPPG iterative + companion flags split
+    #   v6 (2026-05-27, PR #54): rPPG landmark-stride default 3 -> 1
+    #     (quality-first; v5 users carrying stride=3 from the v2.5
+    #     speedup pass get prompted to refresh)
+    "automation_recommended_defaults_version": 6,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
     "automation_log_backup_count": 5,
