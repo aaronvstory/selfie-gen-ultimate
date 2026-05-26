@@ -185,6 +185,28 @@ def _failures_indicate_torch_cuda_break(failures: list[str]) -> bool:
     return any(f.startswith("torch_cuda_failure:") for f in failures)
 
 
+def _extract_pip_failure_detail(completed: subprocess.CompletedProcess) -> str:
+    """Return the most useful one-line summary of a failed pip subprocess.
+
+    Gemini PR #55 round 5 MED: ``details.splitlines()[-1]`` can easily mask
+    the actual error when pip prints a trailing warning (e.g.
+    ``WARNING: You are using pip version X; ...``). Searches stderr+stdout
+    for the first line starting with ``ERROR:`` (pip's canonical error
+    prefix) and falls back to the last line of stderr (or stdout) only
+    when no explicit error line is found.
+    """
+    stderr = (completed.stderr or "").strip()
+    stdout = (completed.stdout or "").strip()
+    for source in (stderr, stdout):
+        for line in source.splitlines():
+            if line.startswith("ERROR:"):
+                return line
+    fallback = stderr if stderr else stdout
+    if fallback:
+        return fallback.splitlines()[-1]
+    return ""
+
+
 def run_torch_cpu_fallback() -> tuple[bool, str]:
     """Force-reinstall torch from the CPU-only wheel index.
 
@@ -216,11 +238,7 @@ def run_torch_cpu_fallback() -> tuple[bool, str]:
     completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if completed.returncode == 0:
         return True, "torch CPU-only fallback install completed"
-    stderr = (completed.stderr or "").strip()
-    stdout = (completed.stdout or "").strip()
-    details = stderr if stderr else stdout
-    if details:
-        details = details.splitlines()[-1]
+    details = _extract_pip_failure_detail(completed)
     return False, f"torch CPU fallback failed (code {completed.returncode}): {details}"
 
 
@@ -267,11 +285,7 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
         messages.append("repair install completed")
         face_ok = True
     else:
-        stderr = (completed.stderr or "").strip()
-        stdout = (completed.stdout or "").strip()
-        details = stderr if stderr else stdout
-        if details:
-            details = details.splitlines()[-1]
+        details = _extract_pip_failure_detail(completed)
         messages.append(f"repair failed (code {completed.returncode}): {details}")
         face_ok = False
 

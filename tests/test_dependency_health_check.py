@@ -457,6 +457,58 @@ class TorchCudaFallbackTests(unittest.TestCase):
         self.assertIn("CPU-only fallback", message)
         self.assertIn("repair failed", message)
 
+    def test_extract_pip_failure_detail_prefers_ERROR_over_trailing_warning(self):
+        """Gemini PR #55 round 5 MED: pip's output often ends with a warning
+        line (e.g. ``WARNING: You are using pip version X``). Naively
+        ``splitlines()[-1]`` would surface that warning as the failure
+        reason, masking the actual ``ERROR:`` line. ``_extract_pip_failure_
+        detail`` must scan for ``ERROR:`` first.
+        """
+        completed = types.SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Collecting torch\n"
+                "ERROR: Could not find a version that satisfies the requirement torch==999\n"
+                "ERROR: No matching distribution found for torch==999\n"
+                "WARNING: You are using pip version 24.0; you should consider upgrading.\n"
+            ),
+        )
+        detail = dhc._extract_pip_failure_detail(completed)
+        self.assertTrue(
+            detail.startswith("ERROR:"),
+            f"Expected first ERROR: line, got {detail!r}",
+        )
+        self.assertIn("Could not find a version", detail)
+
+    def test_extract_pip_failure_detail_falls_back_to_last_line_when_no_ERROR(self):
+        """When pip output has no ``ERROR:`` prefix (e.g. raw subprocess
+        crash), fall back to the last non-empty line of stderr/stdout."""
+        completed = types.SimpleNamespace(
+            returncode=1,
+            stdout="Some progress chatter\nFinal status: failed for unknown reason",
+            stderr="",
+        )
+        detail = dhc._extract_pip_failure_detail(completed)
+        self.assertEqual(detail, "Final status: failed for unknown reason")
+
+    def test_extract_pip_failure_detail_prefers_stderr_when_both_present(self):
+        """Stderr is checked before stdout for ERROR: lines. If neither has
+        an ERROR: line, the last stderr line is preferred over stdout."""
+        completed = types.SimpleNamespace(
+            returncode=1,
+            stdout="some stdout chatter\nlast stdout line",
+            stderr="ERROR: real pip error",
+        )
+        detail = dhc._extract_pip_failure_detail(completed)
+        self.assertEqual(detail, "ERROR: real pip error")
+
+    def test_extract_pip_failure_detail_empty_when_no_output(self):
+        """No output at all returns empty string (e.g. SIGKILL'd subprocess)."""
+        completed = types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        detail = dhc._extract_pip_failure_detail(completed)
+        self.assertEqual(detail, "")
+
     def test_torch_cpu_fallback_uses_extra_index_url_for_pypi(self):
         """Gemini PR #55 round 4 HIGH: ``--index-url`` alone restricts pip
         to ONLY the PyTorch CPU wheel index, which doesn't host torch's
