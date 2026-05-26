@@ -6,18 +6,19 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Callable, List, Tuple
 
+from path_utils import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS
+
 logger = logging.getLogger(__name__)
 
 
 _VALID_SOURCE_TYPES = {"input", "selfie", "outpaint", "polish", "upscale", "video"}
-_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
-"""Extensions the carousel treats as video. Kept in lockstep with
-``path_utils.VIDEO_EXTENSIONS`` (PR #53 round 10 introduced that
-parallel set for non-GUI ingest sites; round 11 brings ``.m4v``
-into both because the file-picker at
-``kling_gui/main_window.py:3938`` already accepted ``.m4v`` even
-though the carousel ``is_video`` predicate did not, which meant a
-dropped ``.m4v`` rendered as a broken still image)."""
+# ``_VIDEO_EXTENSIONS`` is now an alias of :data:`path_utils.VIDEO_EXTENSIONS`
+# imported above. PR #53 round 11 caught a ``.m4v`` drift between the two
+# sets when they were declared independently; round 13 (subagent M2)
+# collapsed the duplicate into this single import alias so future drift is
+# impossible by construction. The underscore-private name is kept so
+# ``kling_gui.carousel_widget`` can keep its ``from .image_state import
+# _VIDEO_EXTENSIONS as _CAROUSEL_VIDEO_EXTS`` re-export without churn.
 SIMILARITY_PASS_THRESHOLD = 80
 
 

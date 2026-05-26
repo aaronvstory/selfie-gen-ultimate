@@ -312,7 +312,8 @@ class FaceCropTab(tk.Frame):
 
         # Persist the migration immediately so a user who launches and
         # closes without doing anything still has the marker stamped.
-        # The log goes to the GUI log display (now wired by _build_ui).
+        # ``self.log`` was assigned at __init__ above; messages route to
+        # the GUI log display already.
         # Subagent M3 round 1: bare except was masking real persistence
         # failures (disk full, unwritable config path) — if the marker
         # never lands, the migration re-fires every launch. Log the
