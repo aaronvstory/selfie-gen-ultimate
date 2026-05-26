@@ -4635,6 +4635,12 @@ class PhaseAlignedRPPGManipulator:
                             # point. Raising is the loud, correct
                             # signal (vs silently committing a path
                             # that points at nothing).
+                            # CodeRabbit PR #53 round 13: restore the
+                            # narrowed registry value before re-raising
+                            # so a subsequent run in the same process
+                            # (GUI worker) doesn't inherit the dynamic
+                            # bound from this aborted run.
+                            KNOB_REGISTRY['strength']['max'] = original_strength_max
                             raise FileNotFoundError(
                                 f"Best iteration output missing and no "
                                 f"prior snapshot exists: "
@@ -4667,6 +4673,11 @@ class PhaseAlignedRPPGManipulator:
                     else:
                         # Same as the inner else above: no prior
                         # snapshot AND no source file. Hard-fail.
+                        # CodeRabbit PR #53 round 13: restore the
+                        # narrowed registry value before re-raising
+                        # (see twin restore-before-raise at the inner
+                        # FileNotFoundError site ~30 lines above).
+                        KNOB_REGISTRY['strength']['max'] = original_strength_max
                         raise FileNotFoundError(
                             f"Best iteration output missing after copy "
                             f"failure and no prior snapshot exists: "

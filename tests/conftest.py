@@ -17,7 +17,20 @@ real bugs) should propagate so the test suite catches them loudly
 instead of silently leaking state.
 """
 
+import uuid
+
 import pytest
+
+
+# Module-scoped (one value per pytest invocation) so the workspace name
+# is stable across every test in this run, but uuid4-suffixed so it can
+# never collide with a real workspace dir on disk. CodeRabbit PR #53
+# round 13 caught the fixed sentinel "_pytest_isolated" — if anyone
+# ever materialized that workspace locally (manually or via a future
+# launcher option), the autouse fixture's isolation would silently
+# break. Per-test uniqueness adds no extra isolation benefit (each test
+# already has its own monkeypatch fixture instance + temp dirs).
+_PYTEST_WORKSPACE_NAME = f"_pytest_isolated_{uuid.uuid4().hex}"
 
 
 def _clear_instance_id_cache() -> None:
@@ -56,5 +69,9 @@ def _isolate_kling_workspace(monkeypatch):
     a different workspace value override this baseline via their own
     ``monkeypatch.setenv`` / ``monkeypatch.delenv`` — pytest's monkeypatch
     handles the override + unwind correctly.
+
+    The workspace name is uuid4-suffixed at module load (see
+    ``_PYTEST_WORKSPACE_NAME`` above) so it can never collide with a real
+    on-disk workspace, no matter what the user has previously created.
     """
-    monkeypatch.setenv("KLING_WORKSPACE", "_pytest_isolated")
+    monkeypatch.setenv("KLING_WORKSPACE", _PYTEST_WORKSPACE_NAME)
