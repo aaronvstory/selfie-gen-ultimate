@@ -18,6 +18,7 @@ from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 
 from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs
+from app_version import RELEASE_VERSION
 from automation.config import get_outpaint_fal_timeout_seconds
 from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 from tk_dialogs import select_directory, select_open_files
@@ -3277,6 +3278,23 @@ class KlingGUIWindow:
             fg=COLORS["text_light"],
         )
         title.pack(side=tk.LEFT, padx=10, pady=6)
+
+        # Release version chip — user-mandated 2026-05-27 so the user
+        # can tell at a glance which build is running (they ship
+        # personal zips between Windows + macOS machines and "is this
+        # the new one?" used to require config-file inspection).
+        # Reads ``app_version.RELEASE_VERSION`` — single source of
+        # truth (release_prep.py uses the same constant for zip
+        # naming). When a new dist is built the chip updates
+        # automatically; no per-release wire-up.
+        version_chip = tk.Label(
+            header,
+            text=RELEASE_VERSION,
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"],
+            fg=COLORS.get("text_dim", COLORS["text_light"]),
+        )
+        version_chip.pack(side=tk.LEFT, padx=(0, 8), pady=6)
 
         # Session management buttons
         sessions_btn = create_action_button(
