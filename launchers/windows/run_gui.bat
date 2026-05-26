@@ -125,10 +125,17 @@ if exist "%STAMP%" (
                 echo       run %~nx0 from a clean state.
                 echo    2. Force-reinstall the face stack manually ^(mirrors
                 echo       REPAIR_PACKAGES in dependency_health_check.py^):
-                echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^
-                echo         --no-cache-dir tensorflow==2.16.2 ^^
-                echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^
-                echo         tf-keras==2.16.0 retina-face==0.0.17 ^^
+                rem  Inside () blocks cmd parses each line twice. ^^ collapses
+                rem  to ^ during parse-1, then execute-1 sees `echo ... ^` at
+                rem  end-of-line and treats the surviving ^ as line-cont,
+                rem  printing nothing -- the user would see a broken multi-
+                rem  line. ^^^^ collapses to ^^ during parse-1, then echo
+                rem  prints a literal ^ to the screen for copy-paste. (Gemini
+                rem  PR #55 round 2 HIGH.)
+                echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^^^
+                echo         --no-cache-dir tensorflow==2.16.2 ^^^^
+                echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^^^
+                echo         tf-keras==2.16.0 retina-face==0.0.17 ^^^^
                 echo         deepface==0.0.92
                 echo    3. Inspect the diagnostic log at:
                 echo       %STATE_DIR%\last_health.log
@@ -214,10 +221,13 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             echo       run %~nx0 from a clean state.
             echo    2. Force-reinstall the face stack manually ^(mirrors
             echo       REPAIR_PACKAGES in dependency_health_check.py^):
-            echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^
-            echo         --no-cache-dir tensorflow==2.16.2 ^^
-            echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^
-            echo         tf-keras==2.16.0 retina-face==0.0.17 ^^
+            rem  Inside () blocks cmd parses each line twice; needs ^^^^ to
+            rem  emit a literal ^ for the user (see the mirror block above
+            rem  for the full Gemini PR #55 round 2 HIGH explanation).
+            echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^^^
+            echo         --no-cache-dir tensorflow==2.16.2 ^^^^
+            echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^^^
+            echo         tf-keras==2.16.0 retina-face==0.0.17 ^^^^
             echo         deepface==0.0.92
             echo    3. Inspect the diagnostic log at:
             echo       %STATE_DIR%\last_health.log

@@ -260,6 +260,48 @@ def test_macos_recovery_hint_health_stamp_path_matches_run_gui_sh(monkeypatch):
     )
 
 
+def test_windows_recovery_pip_uses_caret4_for_line_continuation_inside_block():
+    """Inside `()` parenthesized blocks, the Windows batch parser runs two
+    passes. ``^^`` collapses to ``^`` during parse-1, then execute-1 sees
+    ``echo foo ^`` and treats the surviving ``^`` as line-continuation,
+    printing NOTHING. To emit a literal ``^`` for the user (so the multi-
+    line `pip install` command they copy-paste is actually a valid multi-
+    line shell command), you need ``^^^^``.
+
+    Gemini PR #55 round 2 HIGH: the previous ``^^`` would cause the user
+    to see a broken pip command with no line-continuation carets, making
+    the manual recovery hint un-copy-pasteable.
+    """
+    src = _read(WIN_BAT)
+    # Find both manual-recovery blocks (cached-stamp path + fresh-install path).
+    # Each ends with `deepface==0.0.92` after a line-continuation chain.
+    # Assert that the pip-install line continuation uses ^^^^ not ^^.
+    pip_line_idx = src.find('-m pip install --force-reinstall ^')
+    assert pip_line_idx > 0, "Couldn't find the pip install manual-recovery line"
+    # Both blocks should use four-caret continuation.
+    assert '-m pip install --force-reinstall ^^^^' in src, (
+        "Inside `()` blocks Windows batch needs ^^^^ to print a literal ^; "
+        "current code uses ^^ which renders as nothing after the parser's "
+        "two passes. Manual recovery hint shipped to the user becomes a "
+        "broken single-line pip command that fails."
+    )
+    # And the trailing wheel-spec lines.
+    assert 'tensorflow==2.16.2 ^^^^' in src
+    assert 'protobuf==4.25.3 ^^^^' in src
+    assert 'retina-face==0.0.17 ^^^^' in src
+    # No stray ^^ (two caret) line-continuations should remain.
+    # (We allow ^^ in escape sequences like `^^(` but those don't end a line.)
+    lines = src.splitlines()
+    for i, line in enumerate(lines, start=1):
+        # Look for `^^` followed by end-of-line (possibly trailing whitespace).
+        stripped = line.rstrip()
+        if stripped.endswith('^^') and not stripped.endswith('^^^^'):
+            raise AssertionError(
+                f"Line {i} ends with ^^ (two carets) — inside `()` blocks "
+                f"this renders as nothing. Use ^^^^ for line-continuation: {line!r}"
+            )
+
+
 def test_launcher_manual_recovery_pip_command_matches_repair_packages():
     """Both launcher manual-recovery blocks must list EVERY pinned package
     from ``dependency_health_check.REPAIR_PACKAGES`` — drift between the
