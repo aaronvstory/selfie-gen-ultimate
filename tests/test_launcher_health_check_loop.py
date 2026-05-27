@@ -462,6 +462,46 @@ def test_macos_launcher_writes_per_launch_diag_snapshot():
     )
 
 
+def test_mediapipe_pin_matches_across_launchers_and_requirements():
+    """Mediapipe is special-cased in BOTH launchers (installed separately
+    via ``--no-deps`` after the rest of requirements.txt syncs). Both
+    launchers hardcode the pin, so a future bump of ``mediapipe==X`` in
+    ``requirements.txt`` will silently leave the launchers installing
+    the OLD version — a real drift hazard that's hard to catch at
+    runtime because both versions import fine (the bug surfaces as
+    "why is feature Y broken on macOS but not Windows?").
+
+    Polish-sweep regression: assert the pinned version matches across
+    all three sources. Future bumps must update all three together OR
+    refactor to read from requirements.txt at install time (deferred).
+    """
+    import re
+
+    req = (REPO_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    req_match = re.search(r"^mediapipe==([\d.]+)$", req, re.MULTILINE)
+    assert req_match, "requirements.txt is missing the `mediapipe==X.Y.Z` pin"
+    req_version = req_match.group(1)
+
+    bat = (REPO_ROOT / "launchers" / "windows" / "run_gui.bat").read_text(encoding="utf-8")
+    bat_match = re.search(r'MEDIAPIPE_SPEC=mediapipe==([\d.]+)', bat)
+    assert bat_match, "BAT is missing the `MEDIAPIPE_SPEC=mediapipe==X.Y.Z` assignment"
+    bat_version = bat_match.group(1)
+
+    sh = (REPO_ROOT / "setup_macos.sh").read_text(encoding="utf-8")
+    sh_match = re.search(r'mediapipe==([\d.]+)', sh)
+    assert sh_match, "setup_macos.sh is missing the `mediapipe==X.Y.Z` pin"
+    sh_version = sh_match.group(1)
+
+    assert req_version == bat_version == sh_version, (
+        f"mediapipe pin drift: requirements.txt={req_version}, "
+        f"launchers/windows/run_gui.bat={bat_version}, "
+        f"setup_macos.sh={sh_version}. Both launchers install mediapipe "
+        f"separately via --no-deps; a mismatched pin silently installs "
+        f"the wrong version. Update all three together or refactor to "
+        f"read the version from requirements.txt at install time."
+    )
+
+
 def test_face_crop_tab_error_log_no_longer_loops_on_relaunch():
     """The Face Crop import-failure log must NOT instruct users to 're-run
     the launcher' alone — that's the friend's infinite loop. Instead it
