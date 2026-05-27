@@ -156,12 +156,40 @@ def check_runtime_dependencies(
         else:
             failures.append(f"torch import failed: {type(exc).__name__}: {exc}")
     else:
+        # CUDA init probe + build-vs-runtime mismatch detection.
+        #
+        # CodeRabbit PR #55 round 8 Major: ``cuda.is_available()`` returns
+        # False in TWO scenarios that look identical at the API surface:
+        #   1. CPU-only torch build (no CUDA support compiled in) — EXPECTED,
+        #      not a failure. ``torch.version.cuda`` is ``None``.
+        #   2. CUDA-built torch wheel BUT runtime DLLs can't load (missing
+        #      cudart64_*.dll, driver too old, AV quarantine) — FAILURE.
+        #      ``torch.version.cuda`` is a string like ``"12.1"`` but
+        #      ``is_available()`` returns False after logging a warning.
+        #
+        # Without disambiguation, scenario 2 silently passes the probe and
+        # the launcher never triggers the CPU fallback. Distinguish via
+        # ``torch.version.cuda``: only flag as ``torch_cuda_failure:`` if
+        # the build advertises CUDA support but the runtime says no.
         try:
             cuda_ns = getattr(torch_module, "cuda", None)
             if cuda_ns is not None and callable(getattr(cuda_ns, "is_available", None)):
-                # Side-effect: loads CUDA runtime DLLs. Returns False on
-                # CPU-only torch or when no GPU is present — both fine.
-                cuda_ns.is_available()
+                # Side effect: loads CUDA runtime DLLs the first time it's
+                # called. Catches the DLL-load-exception class of failure
+                # in the except branch below.
+                cuda_available = cuda_ns.is_available()
+                # Build-vs-runtime mismatch check.
+                version_ns = getattr(torch_module, "version", None)
+                build_cuda_version = (
+                    getattr(version_ns, "cuda", None) if version_ns else None
+                )
+                if build_cuda_version and not cuda_available:
+                    failures.append(
+                        f"torch_cuda_failure:build_runtime_mismatch: "
+                        f"torch built with CUDA {build_cuda_version} but "
+                        f"cuda.is_available() returned False at runtime "
+                        f"(broken DLLs, driver mismatch, or AV quarantine)"
+                    )
         except Exception as exc:
             sig = _torch_cuda_load_failure_signature(exc)
             if sig:

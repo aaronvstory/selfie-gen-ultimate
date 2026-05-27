@@ -277,6 +277,87 @@ class TorchCudaFallbackTests(unittest.TestCase):
         combined = "\n".join(failures)
         self.assertIn("torch_cuda_failure:cuda runtime", combined, combined)
 
+    def test_check_classifies_cuda_build_runtime_mismatch(self):
+        """CodeRabbit PR #55 round 8 Major: a torch wheel built with CUDA
+        support (``torch.version.cuda`` non-None) but whose runtime
+        ``cuda.is_available()`` returns False is the dominant Windows
+        nvidia failure mode — broken cudart DLLs, driver mismatch, AV
+        quarantine. The previous probe missed this entirely because it
+        ignored the return value of ``is_available()`` and only caught
+        EXCEPTIONS.
+
+        The probe must classify this as ``torch_cuda_failure:
+        build_runtime_mismatch:`` so ``run_repair`` triggers the CPU
+        fallback (which is the correct recovery — CPU torch is
+        functionally equivalent for this app's production code).
+        """
+        modules = {
+            "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
+            "tensorflow.compat.v2": types.SimpleNamespace(),
+            "tf_keras": types.SimpleNamespace(__version__="2.16.0"),
+            "retinaface": types.SimpleNamespace(RetinaFace=object()),
+            "cv2": types.SimpleNamespace(),
+            "numpy": types.SimpleNamespace(),
+            # CUDA-built torch wheel (version.cuda is a string like "12.1")
+            # whose runtime can't actually load CUDA libs (is_available=False).
+            "torch": types.SimpleNamespace(
+                cuda=types.SimpleNamespace(is_available=lambda: False),
+                version=types.SimpleNamespace(cuda="12.1"),
+            ),
+        }
+
+        def fake_importer(name: str):
+            if name in modules:
+                return modules[name]
+            raise ModuleNotFoundError(name)
+
+        ok, failures = dhc.check_runtime_dependencies(
+            importer=fake_importer,
+            runtime_probe=lambda: (object(), ""),
+        )
+        self.assertFalse(ok, failures)
+        combined = "\n".join(failures)
+        self.assertIn("torch_cuda_failure:build_runtime_mismatch", combined, combined)
+        self.assertIn("CUDA 12.1", combined, "Build CUDA version must be in message")
+        self.assertTrue(
+            dhc._failures_indicate_torch_cuda_break(failures),
+            "CPU fallback must trigger for build/runtime mismatch",
+        )
+
+    def test_check_does_not_flag_cpu_only_torch_as_cuda_failure(self):
+        """Counterpart sanity check: a CPU-only torch wheel (``torch.version
+        .cuda`` is None) returning ``is_available() == False`` is EXPECTED
+        and must NOT be classified as a CUDA failure. The healthy stub set
+        (``_healthy_module_set`` above) provides exactly this shape and
+        passes the probe — but pin it explicitly to prevent a future edit
+        from regressing the distinction.
+        """
+        modules = {
+            "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
+            "tensorflow.compat.v2": types.SimpleNamespace(),
+            "tf_keras": types.SimpleNamespace(__version__="2.16.0"),
+            "retinaface": types.SimpleNamespace(RetinaFace=object()),
+            "cv2": types.SimpleNamespace(),
+            "numpy": types.SimpleNamespace(),
+            # CPU-only torch: explicit version.cuda=None
+            "torch": types.SimpleNamespace(
+                cuda=types.SimpleNamespace(is_available=lambda: False),
+                version=types.SimpleNamespace(cuda=None),
+            ),
+        }
+
+        def fake_importer(name: str):
+            if name in modules:
+                return modules[name]
+            raise ModuleNotFoundError(name)
+
+        ok, failures = dhc.check_runtime_dependencies(
+            importer=fake_importer,
+            runtime_probe=lambda: (object(), ""),
+        )
+        self.assertTrue(ok, f"CPU-only torch must pass; got failures: {failures}")
+        self.assertEqual(failures, [])
+
     def test_check_tolerates_torch_without_cuda_attribute(self):
         """Some torch builds (CPU-only nightlies on certain platforms) ship
         without a ``torch.cuda`` submodule. The probe must NOT crash on
