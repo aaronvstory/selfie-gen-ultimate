@@ -49,10 +49,23 @@ def test_windows_cached_stamp_path_runs_health_probe():
     # Locate the cached-stamp branch and assert the health probe lives inside it.
     stamp_branch_start = src.find('if exist "%STAMP%" (')
     assert stamp_branch_start > 0, "Windows BAT no longer has an `if exist %STAMP%` cached-stamp branch"
-    # The block ends at the next top-level `goto :launch` after that branch.
-    goto_launch = src.find("goto :launch", stamp_branch_start)
-    assert goto_launch > stamp_branch_start, "Couldn't locate end of stamp branch"
-    stamp_block = src[stamp_branch_start:goto_launch]
+    # The block ends at the next top-level full-sync section. Anchor on the
+    # unique-per-section rem comment rather than `goto :launch` — round-4
+    # subagent (PR #55) LOW-2 caught that `find("goto :launch")` is brittle
+    # to a future BAT refactor that adds an earlier `goto :launch` (e.g.
+    # for an early-exit case), which would silently shrink the extracted
+    # block and let the assertions pass vacuously. The
+    # `rem --- Full dep sync` opener is unique to the section immediately
+    # AFTER the cached-stamp block's `goto :launch` and is structurally
+    # stable across edits. Symmetric with the
+    # `test_windows_launcher_first_run_dep_install_banner_present` fix.
+    stamp_block_end = src.find("rem --- Full dep sync", stamp_branch_start)
+    assert stamp_block_end > stamp_branch_start, (
+        "Couldn't locate end of stamp branch — `rem --- Full dep sync` "
+        "anchor missing. If the BAT comment structure changed, update "
+        "this anchor too."
+    )
+    stamp_block = src[stamp_branch_start:stamp_block_end]
     assert "--mode check" in stamp_block, (
         "Cached-stamp branch must invoke `dependency_health_check.py --mode check` so a "
         "broken-but-stamped install gets re-validated on every launch. Without this, "
@@ -66,8 +79,11 @@ def test_windows_cached_stamp_failure_clears_stamp_before_repair():
     """
     src = _read(WIN_BAT)
     stamp_branch_start = src.find('if exist "%STAMP%" (')
-    goto_launch = src.find("goto :launch", stamp_branch_start)
-    stamp_block = src[stamp_branch_start:goto_launch]
+    # Anchor on the unique full-sync rem-block comment for stability
+    # (round-4 subagent LOW-2, symmetric with the banner test fix).
+    stamp_block_end = src.find("rem --- Full dep sync", stamp_branch_start)
+    assert stamp_block_end > stamp_branch_start
+    stamp_block = src[stamp_branch_start:stamp_block_end]
 
     # The `--mode check` failure handler must `del` the stamp before `--mode repair`.
     check_call = stamp_block.find("--mode check")
