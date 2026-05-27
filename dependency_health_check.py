@@ -178,10 +178,17 @@ def check_runtime_dependencies(
                 # called. Catches the DLL-load-exception class of failure
                 # in the except branch below.
                 cuda_available = cuda_ns.is_available()
-                # Build-vs-runtime mismatch check.
+                # Build-vs-runtime mismatch check. Use `is not None`
+                # (not truthiness) for module check, matching the
+                # `if cuda_ns is not None` style on the prior line —
+                # subagent round 8 MED caught a lazy-import shim that
+                # overrides ``__bool__`` to return False would bypass
+                # the check under the old `if version_ns` truthiness test.
                 version_ns = getattr(torch_module, "version", None)
                 build_cuda_version = (
-                    getattr(version_ns, "cuda", None) if version_ns else None
+                    getattr(version_ns, "cuda", None)
+                    if version_ns is not None
+                    else None
                 )
                 if build_cuda_version and not cuda_available:
                     failures.append(

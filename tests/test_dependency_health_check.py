@@ -609,15 +609,20 @@ class TorchCudaFallbackTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(len(captured_cmds), 1)
         cmd = captured_cmds[0]
-        # `--index-url` -> PyTorch CPU wheel index
-        idx_iu = cmd.index("--index-url")
-        self.assertEqual(cmd[idx_iu + 1], dhc._TORCH_CPU_INDEX_URL)
-        # `--extra-index-url` -> PyPI (so non-torch wheels are findable)
-        idx_eiu = cmd.index("--extra-index-url")
-        self.assertEqual(cmd[idx_eiu + 1], "https://pypi.org/simple")
-        # Final positional arg is `torch` (not a pinned version — let pip
-        # resolve the latest CPU wheel that matches Python + platform).
-        self.assertEqual(cmd[-1], "torch")
+        # Subagent round 8 MED: don't pin position. Check the URL-flag
+        # PAIRS are intact via membership + neighbor lookup so reordering
+        # other args (e.g. prepending a corporate mirror) doesn't break
+        # the test. Both URL flags MUST appear with their values in
+        # the correct neighbor slot.
+        self.assertIn("--index-url", cmd)
+        iu_value = cmd[cmd.index("--index-url") + 1]
+        self.assertEqual(iu_value, dhc._TORCH_CPU_INDEX_URL)
+        self.assertIn("--extra-index-url", cmd)
+        eiu_value = cmd[cmd.index("--extra-index-url") + 1]
+        self.assertEqual(eiu_value, "https://pypi.org/simple")
+        # `torch` must appear as a package arg (membership; not pinned
+        # to position so future `--no-deps` / `--pre` additions are OK).
+        self.assertIn("torch", cmd)
 
 
 if __name__ == "__main__":

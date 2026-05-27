@@ -74,16 +74,25 @@ rem --- Per-launch diagnostic snapshot ---------------------------------------
 rem Writes Python / pip / OS / GPU info to the launch log so users have
 rem something to attach when reporting issues. The user's explicit ask:
 rem "ensure we get proper logging each launch so we can diagnose issues
-rem easier." Each `for /f` is wrapped in `cmd /c` so a missing binary
-rem (nvidia-smi on non-nvidia boxes) doesn't crash the loop with set-
-rem variable side effects.
+rem easier." Defensive: python invocations are gated on the venv
+rem existing, the nvidia-smi block is gated on `where nvidia-smi`
+rem returning 0, and `ver` is always present on Windows.
+rem
+rem Multi-GPU machines: only the FIRST GPU line is captured (the
+rem `if "!DIAG_GPU!"=="no-nvidia-smi"` guard prevents subsequent
+rem matches from clobbering). For the friend-bug scenario, knowing
+rem at-least-one GPU is present is enough to disambiguate
+rem "missing nvidia-smi" vs "CUDA install in flight"; full multi-GPU
+rem enumeration would be a deferred feature if anyone asks.
 set "DIAG_PY=unknown"
 set "DIAG_PIP=unknown"
 set "DIAG_OS=unknown"
 set "DIAG_GPU=no-nvidia-smi"
-for /f "delims=" %%V in ('""%VENV_PYTHON%" -V 2^>^&1"') do set "DIAG_PY=%%V"
-for /f "delims=" %%V in ('""%VENV_PYTHON%" -m pip --version 2^>^&1"') do set "DIAG_PIP=%%V"
-for /f "delims=" %%V in ('ver') do set "DIAG_OS=%%V"
+if exist "%VENV_PYTHON%" (
+    for /f "delims=" %%V in ('""%VENV_PYTHON%" -V 2^>^&1"') do set "DIAG_PY=%%V"
+    for /f "delims=" %%V in ('""%VENV_PYTHON%" -m pip --version 2^>^&1"') do set "DIAG_PIP=%%V"
+)
+for /f "delims=" %%V in ('ver ^| findstr /R "."') do set "DIAG_OS=%%V"
 where nvidia-smi >nul 2>&1
 if !errorlevel! equ 0 (
     for /f "delims=" %%G in ('nvidia-smi -L 2^>^&1') do (
