@@ -60,16 +60,6 @@ _HEADER_BG_COLLAPSED = "#333338"  # noticeably darker than bg_panel (#3C3C41)
 _HEADER_BG_OPEN = "#505055"       # matches COLORS["bg_hover"]
 
 
-def _platform_gui_repair_launcher() -> str:
-    """Return the platform-appropriate GUI repair launcher name."""
-    system = platform.system()
-    if system == "Windows":
-        return "run_gui.bat"
-    if system == "Darwin":
-        return "run_gui.command"
-    return "run_gui.sh"
-
-
 def _platform_face_repair_recovery_hint() -> str:
     """Return a per-platform copy-pasteable recovery hint for the RetinaFace
     import-failure toast.
@@ -314,20 +304,27 @@ class FaceCropTab(tk.Frame):
     # ── UI Construction ─────────────────────────────────────────────
 
     def _build_ui(self):
-        # Dependency warning
+        # Dependency warning. Subagent PR #55 round-2 MED (2026-05-28): the
+        # OLD label said "Auto-repair via run_gui.bat" which is exactly the
+        # message that created the friend's infinite re-run loop — re-running
+        # the launcher with a stale `deps_*.ok` stamp would silently skip
+        # the broken-dep check. Use _platform_face_repair_recovery_hint()
+        # so the static warning carries the same deterministic recovery
+        # path as the toast that fires from _run_crop_internal (delete the
+        # stamp, then run the launcher, OR run dependency_health_check.py
+        # --mode repair directly).
         if not HAS_FACE_DEPS:
-            repair_launcher = _platform_gui_repair_launcher()
+            recovery_hint = _platform_face_repair_recovery_hint()
+            err_detail = FACE_DEPS_ERROR or "opencv-python / numpy import failed"
             warn = tk.Label(
                 self,
-                text=(
-                    f"Face Crop deps missing. Auto-repair via {repair_launcher}, or install manually: "
-                    "pip install opencv-python-headless numpy tensorflow==2.16.2 "
-                    "tensorflow-intel==2.16.2 tf-keras==2.16.0 retina-face==0.0.17"
-                ),
+                text=f"Face Crop deps missing: {err_detail}.  {recovery_hint}",
                 bg=COLORS["bg_panel"],
                 fg=COLORS["warning"],
                 font=(FONT_FAMILY, 10, "bold"),
                 anchor="w",
+                justify="left",
+                wraplength=900,
             )
             warn.pack(fill=tk.X, padx=8, pady=(8, 0))
 

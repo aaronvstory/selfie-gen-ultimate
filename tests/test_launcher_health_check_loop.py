@@ -337,6 +337,67 @@ def test_launcher_manual_recovery_pip_command_matches_repair_packages():
         )
 
 
+def test_face_crop_tab_build_ui_static_warning_uses_recovery_hint():
+    """The Face Crop tab renders a static dependency-missing warning label
+    at the top of the tab when HAS_FACE_DEPS is False. Round-2 subagent
+    MED finding (2026-05-28): the OLD label said "Auto-repair via
+    run_gui.bat", which is exactly the message that created the friend's
+    infinite re-run loop — re-running the launcher with a stale
+    `deps_*.ok` stamp would silently skip the broken-dep check.
+
+    Pin: the static label must reference the new recovery-hint helper,
+    NOT a bare `run_gui.bat`/`run_gui.command`/`run_gui.sh` mention as
+    the primary remediation. The recovery hint includes the
+    stamp-delete step that breaks the loop.
+    """
+    src = (REPO_ROOT / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(
+        encoding="utf-8"
+    )
+
+    # Locate the _build_ui method.
+    build_ui_idx = src.find("    def _build_ui(self):")
+    assert build_ui_idx > 0, "Couldn't find _build_ui method"
+    # Bound the search to just the dependency-warning block at the top
+    # (next ~30 lines of _build_ui, before the source_frame).
+    block_end = src.find("        # ── Source", build_ui_idx)
+    assert block_end > build_ui_idx, "Couldn't bound the dep-warning block"
+    block = src[build_ui_idx:block_end]
+
+    # The dead recovery-launcher function must have been removed entirely
+    # — leaving it as dead code invites a future caller to reintroduce
+    # the broken pattern.
+    assert "_platform_gui_repair_launcher" not in src, (
+        "Dead function `_platform_gui_repair_launcher` should be removed "
+        "after the round-2 migration to `_platform_face_repair_recovery_hint`. "
+        "Otherwise a future caller might wire the broken pattern back in."
+    )
+
+    # The static warning must use the new recovery-hint helper.
+    assert "_platform_face_repair_recovery_hint" in block, (
+        "Face Crop tab's static dependency-missing warning label still uses "
+        "the old recovery wording. Replace with `_platform_face_repair_recovery_hint()` "
+        "so the static label carries the same stamp-delete step as the "
+        "toast in _run_crop_internal. Round-2 subagent MED, PR #55."
+    )
+
+    # And the label TEXT (not just incidental references in comments) must
+    # NOT use the old "Auto-repair via run_gui.*" phrasing that created the
+    # friend's infinite re-run loop. Strip comments before checking so the
+    # block can still discuss the old wording in code comments.
+    code_lines = [
+        ln for ln in block.splitlines()
+        if not ln.lstrip().startswith("#")
+    ]
+    code_only = "\n".join(code_lines)
+    forbidden = "Auto-repair via run_gui"
+    assert forbidden not in code_only, (
+        f"Face Crop tab's static warning still contains {forbidden!r} in "
+        f"executable code (label text or string literal); "
+        f"this is the wording that created the friend's infinite re-run loop. "
+        f"Use the recovery-hint helper instead."
+    )
+
+
 def test_face_crop_tab_recovery_hints_have_no_backticks(monkeypatch):
     """Hint strings must be literal copy-pasteable text.
 
