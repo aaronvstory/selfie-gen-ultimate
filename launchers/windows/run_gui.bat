@@ -70,6 +70,31 @@ if not exist "%VENV_PYTHON%" (
     del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 )
 
+rem --- Per-launch diagnostic snapshot ---------------------------------------
+rem Writes Python / pip / OS / GPU info to the launch log so users have
+rem something to attach when reporting issues. The user's explicit ask:
+rem "ensure we get proper logging each launch so we can diagnose issues
+rem easier." Each `for /f` is wrapped in `cmd /c` so a missing binary
+rem (nvidia-smi on non-nvidia boxes) doesn't crash the loop with set-
+rem variable side effects.
+set "DIAG_PY=unknown"
+set "DIAG_PIP=unknown"
+set "DIAG_OS=unknown"
+set "DIAG_GPU=no-nvidia-smi"
+for /f "delims=" %%V in ('""%VENV_PYTHON%" -V 2^>^&1"') do set "DIAG_PY=%%V"
+for /f "delims=" %%V in ('""%VENV_PYTHON%" -m pip --version 2^>^&1"') do set "DIAG_PIP=%%V"
+for /f "delims=" %%V in ('ver') do set "DIAG_OS=%%V"
+where nvidia-smi >nul 2>&1
+if !errorlevel! equ 0 (
+    for /f "delims=" %%G in ('nvidia-smi -L 2^>^&1') do (
+        if "!DIAG_GPU!"=="no-nvidia-smi" set "DIAG_GPU=%%G"
+    )
+)
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-py %DIAG_PY%
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-pip %DIAG_PIP%
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-os %DIAG_OS%
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-gpu %DIAG_GPU%
+
 rem --- Build stamp key from req file dates+sizes (no subprocess needed) -----
 set "STAMP_KEY="
 for %%F in ("%REQUIREMENTS%" "%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_REQUIREMENTS%" "%OLDCAM_V10_REQUIREMENTS%") do (

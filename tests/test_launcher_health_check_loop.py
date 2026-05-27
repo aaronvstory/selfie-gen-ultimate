@@ -413,6 +413,55 @@ def test_macos_launcher_first_run_dep_install_banner_present():
     )
 
 
+def test_windows_launcher_writes_per_launch_diag_snapshot():
+    """Each launch must record Python / pip / OS / GPU info to
+    ``%LOG_FILE%`` so users have something concrete to attach when
+    reporting issues (user's explicit ask: "proper logging each launch
+    so we can diagnose issues easier"). Tests the static-text shape;
+    runtime correctness verified by manual launch.
+    """
+    src = _read(WIN_BAT)
+    # All four diag lines present
+    assert "diag-py %DIAG_PY%" in src, (
+        "Missing per-launch Python version diag line in Windows BAT"
+    )
+    assert "diag-pip %DIAG_PIP%" in src
+    assert "diag-os %DIAG_OS%" in src
+    assert "diag-gpu %DIAG_GPU%" in src
+    # `nvidia-smi -L` is the canonical GPU detection on Windows nvidia.
+    assert "nvidia-smi -L" in src
+    # Each diag line must use `>>` to APPEND, not `>` to overwrite
+    # (else later launches lose earlier diagnostic context).
+    for marker in ("diag-py", "diag-pip", "diag-os", "diag-gpu"):
+        # Find the echo line for this marker and check the redirect
+        # operator is `>>"%LOG_FILE%"` before the echo (per CLAUDE.md
+        # Windows hard rule 3).
+        idx = src.find(f"echo [%LAUNCH_TS%] {marker}")
+        assert idx > 0, f"Missing echo line for {marker}"
+        line_start = src.rfind("\n", 0, idx) + 1
+        line = src[line_start:idx + 80]
+        assert '>>"%LOG_FILE%"' in line, (
+            f"diag-{marker} echo must use `>>` before echo to append "
+            f"(CLAUDE.md Win rule 3); got: {line!r}"
+        )
+
+
+def test_macos_launcher_writes_per_launch_diag_snapshot():
+    """Symmetric requirement on `run_gui.sh` — diag-py / diag-pip /
+    diag-os lines appended to the diagnostic log. GPU detection skipped
+    on macOS (Apple Silicon / Intel Macs don't ship with nvidia-smi)."""
+    src = _read(MAC_SH)
+    assert "diag-py %s" in src
+    assert "diag-pip %s" in src
+    assert "diag-os %s" in src
+    # uname -a is the canonical macOS OS-version probe
+    assert "uname -a" in src
+    # Appends, not overwrites
+    assert ">> \"${LOCK_DIR}/launch.log\"" in src or ">>\"${LOCK_DIR}/launch.log\"" in src, (
+        "macOS diag-snapshot must append to launch.log (>> redirect)"
+    )
+
+
 def test_face_crop_tab_error_log_no_longer_loops_on_relaunch():
     """The Face Crop import-failure log must NOT instruct users to 're-run
     the launcher' alone — that's the friend's infinite loop. Instead it

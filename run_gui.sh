@@ -71,6 +71,23 @@ fi
 "${ROOT_DIR}/setup_macos.sh"
 export KLING_SKIP_PY_STARTUP_DEP_CHECK=1
 
+# Per-launch diagnostic snapshot — writes Python / pip / OS info to the
+# launch log so users have something to attach when reporting issues.
+# Mirrors the equivalent block in launchers/windows/run_gui.bat. macOS
+# omits GPU because Apple Silicon / Intel Macs don't ship with
+# nvidia-smi; CUDA isn't a concern on this platform.
+if [[ -d "${LOCK_DIR}" && -x "${PYTHON_BIN}" ]]; then
+  DIAG_PY="$("${PYTHON_BIN}" -V 2>&1 || echo unknown)"
+  DIAG_PIP="$("${PYTHON_BIN}" -m pip --version 2>&1 | head -1 || echo unknown)"
+  DIAG_OS="$(uname -a 2>&1 || echo unknown)"
+  DIAG_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+  {
+    printf '[%s] diag-py %s\n' "${DIAG_TS}" "${DIAG_PY}"
+    printf '[%s] diag-pip %s\n' "${DIAG_TS}" "${DIAG_PIP}"
+    printf '[%s] diag-os %s\n' "${DIAG_TS}" "${DIAG_OS}"
+  } >> "${LOCK_DIR}/launch.log" 2>/dev/null || true
+fi
+
 # Runtime dependency health check.
 #
 # Behavior contract (PR fix/windows-tf-health-check-and-error-msg):
