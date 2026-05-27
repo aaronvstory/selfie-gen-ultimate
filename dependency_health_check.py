@@ -407,6 +407,16 @@ def verify_in_fresh_process() -> tuple[bool, list[str]]:
     return False, failures
 
 
+def _is_cuda_only_failure(failures: list[str]) -> bool:
+    """True iff ``failures`` is non-empty AND every entry is a
+    ``torch_cuda_failure:`` (i.e. the GUI-launchable partial-success
+    state — face stack healthy, only CUDA broken).
+    """
+    return bool(failures) and all(
+        f.startswith("torch_cuda_failure:") for f in failures
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate/repair GUI runtime dependencies.")
     parser.add_argument("--mode", choices=("check", "repair"), default="check")
@@ -416,6 +426,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "check":
         if ok:
             print("[dep-health] OK")
+            return 0
+        # Codex PR #55 round-7 P2 (#PRRT_kwDOSQUnmM6FQIkt): when ONLY
+        # `torch_cuda_failure:*` is present, the GUI is still launchable
+        # (face stack healthy, app's prod code doesn't use torch.cuda.*).
+        # The previous form returned 1 here, which made BOTH launchers
+        # re-enter `--mode repair` on EVERY launch — force-reinstalling
+        # the face stack (~50MB pip churn) every time. For users whose
+        # CPU-torch fallback can't reach download.pytorch.org (corporate
+        # firewall, ISP block), this was a per-launch wait with no
+        # forward progress.
+        #
+        # Return 0 with explicit WARN lines so the launcher's health
+        # probe accepts the state without triggering repair. Re-detection
+        # still works: if CUDA gets fixed, the next check returns clean
+        # `[dep-health] OK` + exit 0; if a NEW non-CUDA failure appears,
+        # `_is_cuda_only_failure` returns False and we exit 1 properly.
+        # RetinaFace runtime probe still runs under CUDA-only failure
+        # (round-7 fix), so face-stack breakage IS detected here.
+        if _is_cuda_only_failure(failures):
+            print("[dep-health] WARN: torch CUDA broken; face stack OK; GUI launchable on CPU")
+            for failure in failures:
+                print(f"[dep-health] WARN: {failure}")
             return 0
         print("[dep-health] FAILED")
         for failure in failures:

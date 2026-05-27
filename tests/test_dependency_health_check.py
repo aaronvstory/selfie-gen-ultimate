@@ -727,6 +727,91 @@ class TorchCudaFallbackTests(unittest.TestCase):
         ):
             self.assertEqual(dhc._installed_torch_version(), "2.12.0")
 
+    def test_check_mode_exits_zero_on_cuda_only_failure(self):
+        """Codex PR #55 round-7 P2 (#PRRT_kwDOSQUnmM6FQIkt): when
+        ``check_runtime_dependencies`` returns ONLY ``torch_cuda_failure:*``
+        entries, ``main(['--mode', 'check'])`` must exit 0 with WARN
+        lines — NOT exit 1. The previous form returned 1 here, which
+        made both launchers re-enter ``--mode repair`` on EVERY launch
+        for users whose CPU-torch fallback couldn't reach
+        download.pytorch.org. The wasteful pip-install churn (~50MB+)
+        repeated on every launch with no forward progress.
+
+        Re-detection still works: a CUDA-fix on the next launch returns
+        clean ``[dep-health] OK``; a NEW non-CUDA failure correctly
+        flips the gate back to exit 1.
+        """
+        cuda_only = (False, ["torch_cuda_failure:build_runtime_mismatch: ..."])
+
+        with mock.patch(
+            "dependency_health_check.check_runtime_dependencies",
+            return_value=cuda_only,
+        ):
+            with mock.patch("builtins.print") as mock_print:
+                exit_code = dhc.main(["--mode", "check"])
+
+        self.assertEqual(
+            exit_code, 0,
+            "CUDA-only failure must exit 0 on --mode check (otherwise "
+            "every launch re-triggers wasteful face-stack repair)."
+        )
+        # WARN lines must be printed — the launcher's log captures them
+        # so the persistent broken-CUDA state stays visible to debugging.
+        printed = " ".join(str(c.args[0]) for c in mock_print.call_args_list if c.args)
+        self.assertIn("WARN", printed)
+        self.assertIn("torch_cuda_failure", printed)
+        # And the bare "FAILED" sentinel must NOT print (that would
+        # confuse the launcher's log parsing).
+        self.assertNotIn("[dep-health] FAILED", printed)
+
+    def test_check_mode_still_exits_one_on_non_cuda_failure(self):
+        """Counterpart sanity check: any non-CUDA failure (e.g. broken
+        TF wheel) MUST still exit 1, even if a CUDA failure is also
+        present. The partial-success exit-0 is scoped to CUDA-ONLY.
+        """
+        mixed = (
+            False,
+            [
+                "tensorflow import failed: ModuleNotFoundError",
+                "torch_cuda_failure:cudart: DLL load failed",
+            ],
+        )
+
+        with mock.patch(
+            "dependency_health_check.check_runtime_dependencies",
+            return_value=mixed,
+        ):
+            exit_code = dhc.main(["--mode", "check"])
+
+        self.assertEqual(
+            exit_code, 1,
+            "Mixed failures (CUDA + non-CUDA) must exit 1 — the partial-"
+            "success exit-0 is scoped to CUDA-ONLY-failures."
+        )
+
+    def test_is_cuda_only_failure_helper(self):
+        """Direct unit test of the classification helper."""
+        # Empty list — not cuda-only (no failures at all)
+        self.assertFalse(dhc._is_cuda_only_failure([]))
+        # Single CUDA failure — cuda-only
+        self.assertTrue(dhc._is_cuda_only_failure(
+            ["torch_cuda_failure:cudart: ImportError"]
+        ))
+        # Multiple CUDA failures — cuda-only
+        self.assertTrue(dhc._is_cuda_only_failure([
+            "torch_cuda_failure:build_runtime_mismatch: ...",
+            "torch_cuda_failure:cudart: another DLL load",
+        ]))
+        # Mixed — NOT cuda-only
+        self.assertFalse(dhc._is_cuda_only_failure([
+            "torch_cuda_failure:cudart: foo",
+            "tensorflow import failed: bar",
+        ]))
+        # Non-CUDA only — NOT cuda-only
+        self.assertFalse(dhc._is_cuda_only_failure([
+            "tensorflow import failed: bar",
+        ]))
+
     def test_check_runtime_probe_runs_under_torch_cuda_failure(self):
         """Codex PR #55 round-6 P2 (#PRRT_kwDOSQUnmM6FPwqp): the
         RetinaFace runtime probe must run whenever NON-CUDA failures
