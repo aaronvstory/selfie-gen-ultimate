@@ -620,9 +620,74 @@ class TorchCudaFallbackTests(unittest.TestCase):
         self.assertIn("--extra-index-url", cmd)
         eiu_value = cmd[cmd.index("--extra-index-url") + 1]
         self.assertEqual(eiu_value, "https://pypi.org/simple")
-        # `torch` must appear as a package arg (membership; not pinned
-        # to position so future `--no-deps` / `--pre` additions are OK).
+        # `torch` must appear as a package arg — either the bare name
+        # (if version-probe couldn't read metadata) or `torch==X.Y.Z`
+        # (Gemini PR #55 round-2 MED #3313903515: pin to currently-
+        # installed version to avoid silent upgrade drift). The exact
+        # form depends on whether torch metadata is readable in the
+        # test process; both are valid.
+        torch_pkg_args = [a for a in cmd if a == "torch" or a.startswith("torch==")]
+        self.assertEqual(
+            len(torch_pkg_args),
+            1,
+            f"Expected exactly one `torch` or `torch==X.Y.Z` arg, got {cmd!r}",
+        )
+
+    def test_torch_cpu_fallback_pins_to_installed_version(self):
+        """Gemini PR #55 round-2 MED (#3313903515): pin the CPU fallback
+        reinstall to the currently-installed torch version so the CPU
+        fallback doesn't silently upgrade torch to whatever the wheel
+        index advertises. The version is probed via
+        ``importlib.metadata.version`` (NOT ``import torch``) because
+        the whole point of the fallback is that ``import torch`` may be
+        broken when this code runs.
+        """
+        captured_cmds: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            captured_cmds.append(list(cmd))
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch(
+            "dependency_health_check._installed_torch_version",
+            return_value="2.16.99",
+        ), mock.patch(
+            "dependency_health_check.subprocess.run", side_effect=fake_run
+        ):
+            ok, _ = dhc.run_torch_cpu_fallback()
+
+        self.assertTrue(ok)
+        cmd = captured_cmds[0]
+        self.assertIn("torch==2.16.99", cmd)
+        # And NO bare "torch" — the pinned form replaces it, not adds to.
+        self.assertNotIn("torch", cmd)
+
+    def test_torch_cpu_fallback_falls_back_to_bare_torch_when_probe_fails(self):
+        """If ``_installed_torch_version`` returns None (metadata
+        unreadable — torch's dist-info was deleted, weird half-install,
+        etc), the fallback uses the bare ``torch`` arg. Better an
+        upgraded install than no install.
+        """
+        captured_cmds: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            captured_cmds.append(list(cmd))
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch(
+            "dependency_health_check._installed_torch_version",
+            return_value=None,
+        ), mock.patch(
+            "dependency_health_check.subprocess.run", side_effect=fake_run
+        ):
+            ok, _ = dhc.run_torch_cpu_fallback()
+
+        self.assertTrue(ok)
+        cmd = captured_cmds[0]
         self.assertIn("torch", cmd)
+        # And no torch==... pin (the probe failed; bare is the fallback).
+        pinned = [a for a in cmd if a.startswith("torch==")]
+        self.assertEqual(pinned, [])
 
 
 if __name__ == "__main__":

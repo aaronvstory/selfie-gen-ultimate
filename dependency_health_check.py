@@ -242,6 +242,27 @@ def _extract_pip_failure_detail(completed: subprocess.CompletedProcess) -> str:
     return ""
 
 
+def _installed_torch_version() -> str | None:
+    """Return the currently-installed torch version (string), or None.
+
+    Reads package metadata from disk via ``importlib.metadata`` so it does
+    NOT trigger an actual ``import torch`` — the whole point of the CPU
+    fallback is that the installed torch is broken at import time, so any
+    code path that tries to import it would defeat the version probe.
+
+    Gemini PR #55 round-2 MED (#3313903515): without pinning, the CPU
+    fallback install pulls the LATEST torch from the CPU wheel index,
+    which can drift from the version pinned in ``requirements.txt`` and
+    cause subtle compatibility issues with the rest of the stack. Probe
+    the on-disk metadata and pin the reinstall to that exact version.
+    """
+    try:
+        import importlib.metadata as _md
+        return _md.version("torch")
+    except Exception:
+        return None
+
+
 def run_torch_cpu_fallback() -> tuple[bool, str]:
     """Force-reinstall torch from the CPU-only wheel index.
 
@@ -255,7 +276,15 @@ def run_torch_cpu_fallback() -> tuple[bool, str]:
     torch's runtime deps (``filelock``, ``sympy``, ``networkx``, etc).
     Adding ``--extra-index-url https://pypi.org/simple`` lets pip fall
     back to PyPI for those, so the install actually resolves.
+
+    Gemini PR #55 round-2 MED (#3313903515): pin the reinstall to the
+    currently-installed torch version so the CPU fallback doesn't silently
+    upgrade torch to whatever the wheel index advertises. If the metadata
+    probe fails (e.g. torch's dist-info was deleted), fall back to unpinned
+    ``torch`` — better an upgraded install than no install.
     """
+    torch_ver = _installed_torch_version()
+    torch_spec = f"torch=={torch_ver}" if torch_ver else "torch"
     cmd = [
         sys.executable,
         "-m",
@@ -268,7 +297,7 @@ def run_torch_cpu_fallback() -> tuple[bool, str]:
         _TORCH_CPU_INDEX_URL,
         "--extra-index-url",
         "https://pypi.org/simple",
-        "torch",
+        torch_spec,
     ]
     completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if completed.returncode == 0:

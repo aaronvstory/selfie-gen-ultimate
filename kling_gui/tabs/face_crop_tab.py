@@ -87,8 +87,18 @@ def _platform_face_repair_recovery_hint() -> str:
         # Subagent round 1 CRITICAL: original wording used `rd /S /Q` which
         # errors with "The system cannot find the file specified." when the
         # user copy-pastes it, recreating the same dead-end the PR is fixing.
+        #
+        # Codex PR #55 round 2 P2 (#3313773051): the previous form was
+        # `del /Q .launcher_state\\deps_*.ok && run_gui.bat`. When the
+        # static warning fires AFTER the launcher already cleared the
+        # stamp (or on a manual GUI launch where the stamp never existed),
+        # `del` returns non-zero and `&&` short-circuits — `run_gui.bat`
+        # never runs. Use `&` (unconditional separator) with `2>nul` to
+        # suppress the "Could Not Find" stderr noise. The launcher itself
+        # also clears the stamp at the top of `:setup_lock_acquired` (BAT
+        # line 119 + 145), so a stamp-less delete is the normal case here.
         return (
-            "Manual recovery: del /Q .launcher_state\\deps_*.ok && run_gui.bat "
+            "Manual recovery: del /Q .launcher_state\\deps_*.ok 2>nul & run_gui.bat "
             "(forces a fresh dep sync + health check). If that fails too, "
             "run: venv\\Scripts\\python.exe dependency_health_check.py "
             "--mode repair ... or delete venv\\ and re-launch."

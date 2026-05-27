@@ -138,8 +138,15 @@ set "DIAG_PIP=unknown"
 set "DIAG_OS=unknown"
 set "DIAG_GPU=no-nvidia-smi"
 if exist "%VENV_PYTHON%" (
-    for /f "delims=" %%V in ('""%VENV_PYTHON%" -V 2^>^&1"') do set "DIAG_PY=%%V"
-    for /f "delims=" %%V in ('""%VENV_PYTHON%" -m pip --version 2^>^&1"') do set "DIAG_PIP=%%V"
+    rem Caret-escaped quotes (`^"`) inside `for /f ('...')` are the safer
+    rem idiom for paths containing spaces. The previous form `""%VAR%"`
+    rem (double-double-quote) is a cmd parser trick that works in most
+    rem cases but Gemini PR #55 round-2 MED flagged it as fragile against
+    rem paths with spaces. Switching to `^"` is the standard documented
+    rem form and matches what cmd's own docs recommend for nested quotes
+    rem in for-command-strings.
+    for /f "delims=" %%V in ('^"%VENV_PYTHON%^" -V 2^>^&1') do set "DIAG_PY=%%V"
+    for /f "delims=" %%V in ('^"%VENV_PYTHON%^" -m pip --version 2^>^&1') do set "DIAG_PIP=%%V"
 )
 for /f "delims=" %%V in ('ver ^| findstr /R "."') do set "DIAG_OS=%%V"
 where nvidia-smi >nul 2>&1

@@ -329,15 +329,63 @@ def test_launcher_manual_recovery_pip_command_matches_repair_packages():
     pins protobuf, deepface, and (Windows-only) tensorflow-intel. A user
     who followed the manual recovery would end up with a different state
     than ``--mode repair`` produces.
+
+    Gemini PR #55 round-2 MED (#3313646920, #3313836602): ``REPAIR_PACKAGES``
+    is mutated at module load time based on ``sys.platform`` — on non-
+    Windows runs, ``tensorflow-intel==2.16.2`` is NOT in the list, so a
+    test that derives expected packages purely from the module variable
+    silently skips checking the Windows BAT for ``tensorflow-intel``.
+    Use a DUAL-GUARD approach: derive from the implementation for
+    automatic coverage of future additions, AND hard-pin the expected
+    Windows superset so the BAT is always checked for every Windows
+    package regardless of the test host's platform.
     """
     from dependency_health_check import REPAIR_PACKAGES
 
     bat_src = _read(WIN_BAT)
     sh_src = _read(MAC_SH)
 
+    # Hard-pinned expected supersets — these are the packages each
+    # platform's manual recovery hint MUST mention, independent of the
+    # test host's `sys.platform`. Synced from `dependency_health_check.py`
+    # `REPAIR_PACKAGES` definition + the Windows `tensorflow-intel`
+    # insertion. Updating REPAIR_PACKAGES requires updating these too —
+    # the live-derived loop below catches *additions* automatically; this
+    # hardcoded list catches the platform-conditional case.
+    EXPECTED_WINDOWS_PACKAGES = [
+        "tensorflow==2.16.2",
+        "tensorflow-intel==2.16.2",  # Windows-only, must be on the Win BAT
+        "protobuf==4.25.3",
+        "tf-keras==2.16.0",
+        "retina-face==0.0.17",
+        "deepface==0.0.92",
+    ]
+    EXPECTED_MACOS_PACKAGES = [
+        pkg for pkg in EXPECTED_WINDOWS_PACKAGES if "tensorflow-intel" not in pkg
+    ]
+
+    # First guard: hard-pinned expected lists. These run regardless of the
+    # test host's platform and catch the conditional-import case Gemini
+    # flagged.
+    for pkg in EXPECTED_WINDOWS_PACKAGES:
+        assert pkg in bat_src, (
+            f"Windows BAT manual recovery missing EXPECTED Windows package "
+            f"{pkg!r}. This list is hardcoded ({__file__}) so the check "
+            f"runs regardless of test host platform; update both this list "
+            f"AND `dependency_health_check.REPAIR_PACKAGES` together."
+        )
+    for pkg in EXPECTED_MACOS_PACKAGES:
+        assert pkg in sh_src, (
+            f"run_gui.sh manual recovery missing EXPECTED macOS package "
+            f"{pkg!r}. Same hardcoded-list rule as above."
+        )
+
+    # Second guard: live REPAIR_PACKAGES derivation. Catches any NEW
+    # package added to the list at runtime even before the hardcoded
+    # superset is updated. The two guards together = "no drift in either
+    # direction" — addition catches → live check; removal/conditional
+    # catches → hardcoded check.
     for pkg in REPAIR_PACKAGES:
-        # Manual recovery on Windows mirrors REPAIR_PACKAGES exactly,
-        # including the win32 conditional `tensorflow-intel==2.16.2`.
         assert pkg in bat_src, (
             f"Windows BAT manual recovery missing REPAIR_PACKAGES entry: {pkg!r}. "
             f"Drift between auto-repair and manual hint silently introduces "
@@ -351,6 +399,23 @@ def test_launcher_manual_recovery_pip_command_matches_repair_packages():
         assert pkg in sh_src, (
             f"run_gui.sh manual recovery missing REPAIR_PACKAGES entry: {pkg!r}"
         )
+
+    # Anti-circularity check: if EXPECTED_WINDOWS_PACKAGES diverges from
+    # what REPAIR_PACKAGES would produce on a Windows host (live + the
+    # tensorflow-intel insertion), the dual-guard becomes inconsistent.
+    # Derive the "Windows-equivalent" set from REPAIR_PACKAGES + the
+    # win32 conditional + compare.
+    repair_pkgs_set = set(REPAIR_PACKAGES)
+    if "tensorflow-intel==2.16.2" not in repair_pkgs_set:
+        # We're on a non-Windows test host; add the Windows-only package
+        # so the comparison is platform-agnostic.
+        repair_pkgs_set.add("tensorflow-intel==2.16.2")
+    assert repair_pkgs_set == set(EXPECTED_WINDOWS_PACKAGES), (
+        f"EXPECTED_WINDOWS_PACKAGES in this test has diverged from "
+        f"`dependency_health_check.REPAIR_PACKAGES` (+ Windows insertion). "
+        f"hardcoded={set(EXPECTED_WINDOWS_PACKAGES)}, live+win={repair_pkgs_set}. "
+        f"Update both lists together."
+    )
 
 
 def test_face_crop_tab_build_ui_static_warning_uses_recovery_hint():

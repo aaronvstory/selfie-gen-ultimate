@@ -110,6 +110,27 @@ LAUNCH_DIAG_LOG="${LOCK_DIR}/launch.log"
 LAUNCH_TS="$(date '+%Y-%m-%d %H:%M:%S')"
 HEALTH_OUTPUT_LOG="${LOCK_DIR}/last_health.log"
 
+# Tk availability guard MUST run BEFORE the dependency health probe.
+# Codex PR #55 round-2 P2 (×2): on macOS/Homebrew Python builds without
+# `_tkinter`, `dependency_health_check.py --mode check` reaches
+# `_default_retinaface_runtime_probe()` which imports
+# `kling_gui.tabs.face_crop_tab` → which top-level imports `tkinter` →
+# ImportError. The launcher then runs futile face-stack repair, exits
+# through the generic recovery branch, and the user never sees the
+# actionable `brew install python-tk@X.Y` message that the Tk check
+# below produces. Move the Tk probe ahead of the health block.
+if ! "${PYTHON_BIN}" -c 'import tkinter' >/dev/null 2>&1; then
+  VERSION="$("${PYTHON_BIN}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  printf '[%s] tk-probe FAIL (no _tkinter); exiting before health check\n' "${LAUNCH_TS}" >> "${LAUNCH_DIAG_LOG}" 2>/dev/null || true
+  printf 'GUI launch blocked: this Python environment does not provide Tk support.\n\n' >&2
+  printf 'If you are using Homebrew Python, install the matching Tk package and recreate the virtual environment:\n' >&2
+  printf '  brew install python-tk@%s\n\n' "${VERSION}" >&2
+  printf 'Then rerun ./run_gui.sh.\n' >&2
+  rmdir "${LOCK_PATH}" 2>/dev/null || true
+  trap - EXIT
+  exit 1
+fi
+
 if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
   printf '[%s] health-probe START\n' "${LAUNCH_TS}" >> "${LAUNCH_DIAG_LOG}"
   printf '[%s] Validating runtime dependency health...\n' "${LAUNCH_TS}"
@@ -161,16 +182,11 @@ if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
 fi
 
 # Release the bootstrap lock BEFORE exec'ing the GUI so siblings can launch.
+# Tk availability was already checked above (before the health probe) per
+# Codex PR #55 round-2 P2 — moved up so Tk-less Pythons get the actionable
+# `brew install python-tk@X.Y` message instead of running futile face-stack
+# repair. Don't reintroduce a duplicate Tk check here.
 rmdir "${LOCK_PATH}" 2>/dev/null || true
 trap - EXIT
-
-if ! "${PYTHON_BIN}" -c 'import tkinter' >/dev/null 2>&1; then
-  VERSION="$("${PYTHON_BIN}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-  printf 'GUI launch blocked: this Python environment does not provide Tk support.\n\n' >&2
-  printf 'If you are using Homebrew Python, install the matching Tk package and recreate the virtual environment:\n' >&2
-  printf '  brew install python-tk@%s\n\n' "${VERSION}" >&2
-  printf 'Then rerun ./run_gui.sh.\n' >&2
-  exit 1
-fi
 
 exec "${PYTHON_BIN}" -u "${ROOT_DIR}/gui_launcher.py" "$@"
