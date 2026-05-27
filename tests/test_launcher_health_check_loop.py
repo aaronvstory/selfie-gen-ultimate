@@ -502,6 +502,74 @@ def test_mediapipe_pin_matches_across_launchers_and_requirements():
     )
 
 
+def test_windows_bat_python_version_gate_has_no_unescaped_parens_in_if_block():
+    """The Python version gate at launchers/windows/run_gui.bat lines 67-103
+    lives inside `if not exist "%VENV_PYTHON%" ( ... )`. Inside an if-block,
+    cmd's parser counts every `(` and `)` it sees to determine where the
+    block ends — unquoted parens close the outer block early and the next
+    character ( a `.` from the version-info string or message text) is then
+    parsed at top-level, emitting "`. was unexpected at this time.`" and
+    aborting the launcher before the diag snapshot ever runs.
+
+    This bug was REPRODUCED on Windows 11 25H2 (build 26200) on 2026-05-28
+    during the PR #55 Windows verification hand-off; the buggy form was
+    introduced by commit 8c93641 ("pre-handoff Python version validation")
+    which the macOS box could not test on Windows. The fix caret-escapes
+    every `(`/`)` inside the version-probe args and the user-facing echo
+    text.
+
+    Mirrors tests/test_resemble_score_launcher_resolver.py's
+    test_no_literal_parens_inside_no_python_error_echo, which only covered
+    the resemble-score/ launcher pair — extending the check to the main
+    launcher closes the regression gap that shipped this bug.
+    """
+    import re
+
+    src = _read(WIN_BAT)
+    # Locate the Python version gate block (begins at the first
+    # `python -c "import sys; raise SystemExit(0 if` line).
+    probe_idx = src.find('python -c "import sys; raise SystemExit')
+    assert probe_idx > 0, "Couldn't find Python version probe in BAT"
+
+    # Window of the gate: 30 lines worth around the probe.
+    window_start = src.rfind('\n', 0, probe_idx) + 1
+    # End at next top-level rem section (after the gate).
+    window_end = src.find('\nrem ---', probe_idx)
+    assert window_end > probe_idx, "Couldn't bound version-gate block"
+    block = src[window_start:window_end]
+
+    # 1. Every `(` and `)` inside the python -c "..." args must be `^(` / `^)`.
+    #    The version probe string is "raise SystemExit(0 if (3,9) <= ... )".
+    #    Each of these 5 parens needs ^ in front when inside an if-block.
+    probe_line = next(
+        (ln for ln in block.splitlines() if "raise SystemExit" in ln),
+        "",
+    )
+    assert "^(" in probe_line and "^)" in probe_line, (
+        "Python version probe inside `if not exist` block has unescaped "
+        "parens: cmd's nested-block parser closes the outer block early, "
+        "crashing the launcher with `. was unexpected at this time.` "
+        "Caret-escape every ( and ) in the python -c args. "
+        f"Offending line: {probe_line!r}"
+    )
+
+    # 2. Every echo line inside this if-block that references "mediapipe"
+    #    or "3.13+" must caret-escape its parens too.
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("echo"):
+            continue
+        if "mediapipe wheels" in stripped or "3.13+" in stripped:
+            # Must use ^( and ^) for any parens in the message.
+            # Bare ( or ) without preceding ^ is a parser hazard.
+            bare_paren = re.search(r"(?<!\^)[()]", stripped)
+            assert bare_paren is None, (
+                f"echo line inside `if not exist` block has unescaped paren "
+                f"-> parser crashes the launcher. Caret-escape it. "
+                f"Line: {stripped!r}"
+            )
+
+
 def test_windows_bat_validates_python_version_before_venv_create():
     """Subagent PR #55 pre-handoff HIGH: the Windows BAT must validate the
     system Python version BEFORE `python -m venv` runs. Mediapipe==0.10.35
@@ -515,15 +583,29 @@ def test_windows_bat_validates_python_version_before_venv_create():
     src = _read(WIN_BAT)
     # The Python version check uses the same pattern as
     # similarity/run_gui.bat:63 — sys.version_info tuple comparison.
-    assert "(3,9) <= sys.version_info[:2] < (3,13)" in src or \
-           "(3, 9) <= sys.version_info[:2] < (3, 13)" in src, (
+    # Hand-off verification 2026-05-28: the parens inside the version-probe
+    # string MUST be caret-escaped (`^(`/`^)`) because the probe lives inside
+    # an `if not exist (...)` block and cmd's nested-block parser would
+    # otherwise close the outer block early, crashing the launcher with
+    # `. was unexpected at this time.` Accept either bare or caret-escaped
+    # form here so this test pins the SEMANTIC contract (range gate exists);
+    # the dedicated `test_windows_bat_python_version_gate_has_no_unescaped_parens_in_if_block`
+    # below pins the caret-escape contract.
+    assert (
+        "(3,9) <= sys.version_info[:2] < (3,13)" in src
+        or "(3, 9) <= sys.version_info[:2] < (3, 13)" in src
+        or "^(3,9^) ^<= sys.version_info[:2] ^< ^(3,13^)" in src
+    ), (
         "Windows BAT must run `sys.version_info` range check before venv "
-        "creation. Pattern: `python -c \"import sys; raise SystemExit(0 if "
-        "(3,9) <= sys.version_info[:2] < (3,13) else 2)\"`"
+        "creation. Pattern: `python -c \"import sys; raise SystemExit^(0 if "
+        "^(3,9^) ^<= sys.version_info[:2] ^< ^(3,13^) else 2^)\"`"
     )
     # The check must come BEFORE the venv-creation block (else it runs
-    # too late to prevent a broken venv from being created).
+    # too late to prevent a broken venv from being created). Accept either
+    # bare or caret-escaped form for the position lookup.
     version_check_idx = src.find("(3,9) <= sys.version_info[:2] < (3,13)")
+    if version_check_idx < 0:
+        version_check_idx = src.find("^(3,9^) ^<= sys.version_info[:2] ^< ^(3,13^)")
     venv_create_idx = src.find('python -m venv "%VENV_DIR%"')
     assert version_check_idx > 0 and venv_create_idx > version_check_idx, (
         "Python version check must appear BEFORE the venv-create call. "

@@ -77,15 +77,15 @@ if not exist "%VENV_PYTHON%" (
         pause
         exit /b 1
     )
-    python -c "import sys; raise SystemExit(0 if (3,9) <= sys.version_info[:2] < (3,13) else 2)" >nul 2>&1
+    python -c "import sys; raise SystemExit^(0 if ^(3,9^) ^<= sys.version_info[:2] ^< ^(3,13^) else 2^)" >nul 2>&1
     if !errorlevel! neq 0 (
-        for /f "delims=" %%V in ('python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2^>nul') do set "SYS_PY_VER=%%V"
+        for /f "delims=" %%V in ('python -c "import sys; print^(\".\".join^(map^(str, sys.version_info[:3]^)^)^)" 2^>nul') do set "SYS_PY_VER=%%V"
         echo(
         echo  ============================================================
         echo  ERROR: Unsupported Python version: !SYS_PY_VER!
         echo  ============================================================
-        echo  This app requires Python 3.9-3.12 (mediapipe wheels do not
-        echo  exist for 3.13+). Python !SYS_PY_VER! detected on PATH.
+        echo  This app requires Python 3.9-3.12 ^(mediapipe wheels do not
+        echo  exist for 3.13+^). Python !SYS_PY_VER! detected on PATH.
         echo(
         echo  Recovery options:
         echo    1. Install Python 3.11 or 3.12 from
