@@ -91,7 +91,7 @@ def _platform_face_repair_recovery_hint() -> str:
             "Manual recovery: del /Q .launcher_state\\deps_*.ok && run_gui.bat "
             "(forces a fresh dep sync + health check). If that fails too, "
             "run: venv\\Scripts\\python.exe dependency_health_check.py "
-            "--mode repair  ... or delete venv\\ and re-launch."
+            "--mode repair ... or delete venv\\ and re-launch."
         )
     if system == "Darwin":
         # HEALTH_STAMP path MUST match `run_gui.sh:7` (`HEALTH_STAMP=
@@ -105,12 +105,12 @@ def _platform_face_repair_recovery_hint() -> str:
             "Manual recovery: rm -f .venv-macos/.health.sha256 && "
             "bash run_gui.sh (forces a runtime health probe + repair). "
             "If that fails too, run: .venv-macos/bin/python "
-            "dependency_health_check.py --mode repair  ... or delete "
+            "dependency_health_check.py --mode repair ... or delete "
             ".venv-macos/ and re-launch."
         )
     return (
         "Manual recovery: bash run_gui.sh (re-probes deps). If that fails "
-        "too, run: python dependency_health_check.py --mode repair  ... "
+        "too, run: python dependency_health_check.py --mode repair ... "
         "inside your venv, or recreate the venv from scratch."
     )
 

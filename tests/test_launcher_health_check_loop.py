@@ -428,14 +428,27 @@ def test_windows_launcher_first_run_dep_install_banner_present():
     sets expectations up front so the panic-kill doesn't happen.
     """
     src = _read(WIN_BAT)
-    # Banner must appear AFTER the cached-stamp `goto :launch` and BEFORE
-    # the first pip-install call. Locate both anchors and assert the
-    # banner text falls between them.
-    cached_path_end = src.find("goto :launch")
-    assert cached_path_end > 0
-    first_pip_install = src.find('-m pip install --upgrade pip')
-    assert first_pip_install > cached_path_end
-    between = src[cached_path_end:first_pip_install]
+    # Banner must appear AFTER the cached-stamp block exits and BEFORE
+    # the first pip-install call. Anchor on the comment that opens the
+    # full-sync rem-block (`--- Full dep sync ---`) rather than the first
+    # `goto :launch` occurrence — round-3 subagent (PR #55) L2 caught
+    # that `find("goto :launch")` is brittle: any future BAT refactor
+    # that adds an earlier `goto :launch` (e.g. for an early-exit case)
+    # would shift the anchor and let the banner assertion pass vacuously
+    # if the banner ended up outside the new window. The rem-block
+    # comment is unique to the full-sync section and stable across edits.
+    full_sync_anchor = src.find("rem --- Full dep sync")
+    assert full_sync_anchor > 0, (
+        "Couldn't find the `rem --- Full dep sync` anchor in the BAT — "
+        "the test needs a stable per-section anchor; if the BAT comment "
+        "structure changed, update this anchor too."
+    )
+    first_pip_install = src.find('-m pip install --upgrade pip', full_sync_anchor)
+    assert first_pip_install > full_sync_anchor, (
+        "Couldn't find pip-install after the full-sync anchor — the "
+        "section structure may have changed."
+    )
+    between = src[full_sync_anchor:first_pip_install]
 
     assert "FIRST-RUN DEP INSTALL" in between, (
         "First-run dep-install banner missing from full-sync path. "
