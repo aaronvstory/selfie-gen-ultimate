@@ -502,6 +502,45 @@ def test_mediapipe_pin_matches_across_launchers_and_requirements():
     )
 
 
+def test_windows_bat_validates_python_version_before_venv_create():
+    """Subagent PR #55 pre-handoff HIGH: the Windows BAT must validate the
+    system Python version BEFORE `python -m venv` runs. Mediapipe==0.10.35
+    (pinned in requirements.txt) ships wheels for Python 3.9-3.12 only;
+    on Python 3.13+, venv-creation succeeds but the later mediapipe
+    install fails mid-sync with a less-actionable error.
+
+    macOS setup_macos.sh validates the equivalent range. This regression
+    test pins the parity so the gap can't sneak back in.
+    """
+    src = _read(WIN_BAT)
+    # The Python version check uses the same pattern as
+    # similarity/run_gui.bat:63 — sys.version_info tuple comparison.
+    assert "(3,9) <= sys.version_info[:2] < (3,13)" in src or \
+           "(3, 9) <= sys.version_info[:2] < (3, 13)" in src, (
+        "Windows BAT must run `sys.version_info` range check before venv "
+        "creation. Pattern: `python -c \"import sys; raise SystemExit(0 if "
+        "(3,9) <= sys.version_info[:2] < (3,13) else 2)\"`"
+    )
+    # The check must come BEFORE the venv-creation block (else it runs
+    # too late to prevent a broken venv from being created).
+    version_check_idx = src.find("(3,9) <= sys.version_info[:2] < (3,13)")
+    venv_create_idx = src.find('python -m venv "%VENV_DIR%"')
+    assert version_check_idx > 0 and venv_create_idx > version_check_idx, (
+        "Python version check must appear BEFORE the venv-create call. "
+        "Otherwise a wrong-version venv gets created, then later steps fail "
+        "with confusing errors."
+    )
+    # Failure message must name the supported range
+    assert "3.9-3.12" in src, (
+        "Version-check failure message must name the supported range so "
+        "users know what to install"
+    )
+    # Must point users at python.org for the install
+    assert "python.org" in src, (
+        "Version-check failure message must point users at python.org/downloads"
+    )
+
+
 def test_face_crop_deps_missing_status_surfaces_underlying_error():
     """Polish-sweep (PR #55): the dep-missing status toast must surface
     the actual ``FACE_DEPS_ERROR`` (typically cv2 or numpy ImportError)

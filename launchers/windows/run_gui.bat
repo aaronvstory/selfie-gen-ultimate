@@ -53,6 +53,55 @@ ping -n 3 127.0.0.1 >nul 2>&1
 goto :acquire_setup_lock
 :setup_lock_acquired
 
+rem --- Validate system Python version BEFORE creating a venv ---------------
+rem Mediapipe==0.10.35 (pinned in requirements.txt) has wheels for Python
+rem 3.9-3.12 only; on Python 3.13+ the install fails mid-sync with a less
+rem actionable error than this up-front check. macOS setup_macos.sh
+rem validates the equivalent range -- Windows lacked parity until the
+rem AFK-loop hand-off audit caught this (subagent PR #55 HIGH pre-handoff
+rem finding). Pattern mirrors similarity/run_gui.bat:63 + L147.
+rem
+rem Only validate when we're about to create a venv (venv missing). Once
+rem the venv exists, %VENV_PYTHON% is the canonical interpreter and the
+rem system python is irrelevant.
+if not exist "%VENV_PYTHON%" (
+    where python >nul 2>&1
+    if !errorlevel! neq 0 (
+        echo(
+        echo  ERROR: Python not found on PATH.
+        echo  Install Python 3.11 or 3.12 from https://www.python.org/downloads/
+        echo  Make sure to check "Add Python to PATH" during installation.
+        echo(
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] ERROR: python not on PATH
+        call :release_setup_lock
+        pause
+        exit /b 1
+    )
+    python -c "import sys; raise SystemExit(0 if (3,9) <= sys.version_info[:2] < (3,13) else 2)" >nul 2>&1
+    if !errorlevel! neq 0 (
+        for /f "delims=" %%V in ('python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2^>nul') do set "SYS_PY_VER=%%V"
+        echo(
+        echo  ============================================================
+        echo  ERROR: Unsupported Python version: !SYS_PY_VER!
+        echo  ============================================================
+        echo  This app requires Python 3.9-3.12 (mediapipe wheels do not
+        echo  exist for 3.13+). Python !SYS_PY_VER! detected on PATH.
+        echo(
+        echo  Recovery options:
+        echo    1. Install Python 3.11 or 3.12 from
+        echo       https://www.python.org/downloads/
+        echo       During install: check "Add Python to PATH"
+        echo    2. If you have multiple Pythons installed, ensure the
+        echo       3.11 / 3.12 one is FIRST in PATH.
+        echo  ============================================================
+        echo(
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] ERROR: unsupported Python version !SYS_PY_VER! ^(need 3.9-3.12^)
+        call :release_setup_lock
+        pause
+        exit /b 1
+    )
+)
+
 rem --- Create venv if needed ------------------------------------------------
 if not exist "%VENV_PYTHON%" (
     echo   [%LAUNCH_TS%] Creating virtual environment...
