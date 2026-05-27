@@ -727,6 +727,75 @@ class TorchCudaFallbackTests(unittest.TestCase):
         ):
             self.assertEqual(dhc._installed_torch_version(), "2.12.0")
 
+    def test_check_runtime_probe_runs_under_torch_cuda_failure(self):
+        """Codex PR #55 round-6 P2 (#PRRT_kwDOSQUnmM6FPwqp): the
+        RetinaFace runtime probe must run whenever NON-CUDA failures
+        are clear — including when a `torch_cuda_failure:*` is present.
+        That class of failure is explicitly tolerated by main()'s
+        partial-success exit-0 path (GUI launchable on CPU torch), so
+        it must NOT suppress the runtime probe that catches
+        TensorFlow/Keras/RetinaFace loader breakage.
+
+        Combined-failure scenario: broken CUDA torch + broken RetinaFace
+        loader. The previous gate `if not failures` skipped the
+        RetinaFace probe entirely; main()'s partial-success path then
+        exited 0 ("face stack healthy") without ever validating the
+        face stack actually works. Launcher would then open the GUI
+        into the very Face Crop broken state this PR is meant to fix.
+
+        Fixed by filtering `torch_cuda_failure:*` BEFORE the runtime-
+        probe gate. The RetinaFace probe now runs under CUDA-only
+        failure, and its failures get reported as expected.
+        """
+        modules = {
+            "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
+            "tensorflow.compat.v2": types.SimpleNamespace(),
+            "tf_keras": types.SimpleNamespace(__version__="2.16.0"),
+            "retinaface": types.SimpleNamespace(RetinaFace=object()),
+            "cv2": types.SimpleNamespace(),
+            "numpy": types.SimpleNamespace(),
+            # CUDA-built torch wheel with broken runtime — classified as
+            # torch_cuda_failure:build_runtime_mismatch
+            "torch": types.SimpleNamespace(
+                cuda=types.SimpleNamespace(is_available=lambda: False),
+                version=types.SimpleNamespace(cuda="12.1"),
+            ),
+        }
+
+        def fake_importer(name: str):
+            if name in modules:
+                return modules[name]
+            raise ModuleNotFoundError(name)
+
+        # RetinaFace runtime probe that FAILS (simulating broken loader).
+        # The bug was that this fake would never be CALLED under the old
+        # gating. We track invocation explicitly.
+        probe_called = []
+
+        def failing_probe():
+            probe_called.append(True)
+            return (None, "TF DLL load failure during retinaface init")
+
+        ok, failures = dhc.check_runtime_dependencies(
+            importer=fake_importer,
+            runtime_probe=failing_probe,
+        )
+
+        # The probe MUST have been called even though a CUDA failure
+        # was already in the failures list.
+        self.assertTrue(
+            probe_called,
+            "RetinaFace runtime probe was skipped while torch_cuda_failure was "
+            "present — this is the round-6 P2 regression. The probe must run "
+            "for any non-CUDA failure-free state, including CUDA-only failure."
+        )
+
+        # And both failures must appear in the final list.
+        combined = "\n".join(failures)
+        self.assertFalse(ok, failures)
+        self.assertIn("torch_cuda_failure:", combined)
+        self.assertIn("retinaface runtime loader failed", combined)
+
     def test_torch_cpu_fallback_pins_to_stripped_public_version(self):
         """End-to-end: the cmd that goes to pip in the CUDA-broken scenario
         must contain `torch==2.5.1` (PUBLIC base), NOT `torch==2.5.1+cu121`.

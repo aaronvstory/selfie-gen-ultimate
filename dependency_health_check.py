@@ -204,7 +204,20 @@ def check_runtime_dependencies(
             else:
                 failures.append(f"torch runtime probe failed: {type(exc).__name__}: {exc}")
 
-    if not failures:
+    # Run the RetinaFace runtime probe whenever no NON-CUDA failures
+    # blocked us. Codex PR #55 round-2 P2 (#PRRT_kwDOSQUnmM6FPwqp): the
+    # previous gate `if not failures` skipped the runtime probe whenever
+    # `torch_cuda_failure:*` was present. That class of failure is then
+    # explicitly tolerated by `main()`'s partial-success path (GUI is
+    # launchable on CPU torch), so it must NOT mask the RetinaFace probe.
+    # Otherwise on a combined-failure machine (broken CUDA torch + broken
+    # TensorFlow/Keras/RetinaFace loader at runtime), the launcher would
+    # treat repair as successful and open the GUI into the very Face Crop
+    # broken state this PR is meant to eliminate.
+    non_cuda_failures = [
+        f for f in failures if not f.startswith("torch_cuda_failure:")
+    ]
+    if not non_cuda_failures:
         try:
             retinaface_cls, retinaface_error = runtime_probe()
             if retinaface_cls is None:
