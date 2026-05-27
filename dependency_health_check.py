@@ -243,24 +243,41 @@ def _extract_pip_failure_detail(completed: subprocess.CompletedProcess) -> str:
 
 
 def _installed_torch_version() -> str | None:
-    """Return the currently-installed torch version (string), or None.
+    """Return the currently-installed torch's PUBLIC version (string), or None.
 
     Reads package metadata from disk via ``importlib.metadata`` so it does
     NOT trigger an actual ``import torch`` — the whole point of the CPU
     fallback is that the installed torch is broken at import time, so any
     code path that tries to import it would defeat the version probe.
 
-    Gemini PR #55 round-2 MED (#3313903515): without pinning, the CPU
-    fallback install pulls the LATEST torch from the CPU wheel index,
-    which can drift from the version pinned in ``requirements.txt`` and
-    cause subtle compatibility issues with the rest of the stack. Probe
-    the on-disk metadata and pin the reinstall to that exact version.
+    Strips the PEP 440 local version identifier (anything from ``+`` onwards,
+    e.g. ``+cu121``, ``+cu118``, ``+cpu``). The CPU wheel index at
+    ``download.pytorch.org/whl/cpu`` only hosts public/un-suffixed wheels —
+    pinning to a CUDA-local version like ``torch==2.5.1+cu121`` would fail
+    against that index, defeating the entire CPU-fallback purpose in
+    exactly the Windows nvidia scenario it's meant to repair.
+
+    Gemini PR #55 round-2 MED (#3313903515): pin the reinstall so the CPU
+    fallback doesn't silently upgrade torch to whatever the wheel index
+    advertises.
+
+    Gemini PR #55 round-2 HIGH (#PRRT_kwDOSQUnmM6FPccQ) + Codex P2
+    (#PRRT_kwDOSQUnmM6FPdVZ): on Windows-CUDA installs, the broken torch
+    metadata reports e.g. ``2.5.1+cu121``. Strip the ``+...`` suffix so
+    we pin to the PUBLIC ``2.5.1`` which IS available on the CPU index.
     """
     try:
         import importlib.metadata as _md
-        return _md.version("torch")
+        raw = _md.version("torch")
     except Exception:
         return None
+    if not raw:
+        return None
+    # PEP 440 local version identifier separator. Everything after `+` is
+    # the local segment (build tag, CUDA suffix, etc) and is not present
+    # on the public wheel index. Keep only the public base version.
+    base, _, _local = raw.partition("+")
+    return base or None
 
 
 def run_torch_cpu_fallback() -> tuple[bool, str]:

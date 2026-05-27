@@ -689,6 +689,71 @@ class TorchCudaFallbackTests(unittest.TestCase):
         pinned = [a for a in cmd if a.startswith("torch==")]
         self.assertEqual(pinned, [])
 
+    def test_installed_torch_version_strips_local_version_identifier(self):
+        """Gemini PR #55 round-2 HIGH + Codex P2: on Windows nvidia,
+        the broken CUDA torch reports e.g. ``2.5.1+cu121`` via
+        ``importlib.metadata.version``. If we pin the CPU fallback
+        reinstall to that exact string, pip fails because the CPU wheel
+        index doesn't host ``+cu121`` wheels — defeating the entire
+        CPU-fallback purpose in exactly the scenario it's meant to fix.
+
+        ``_installed_torch_version`` must strip the PEP 440 local
+        version identifier (anything from ``+`` onwards) so we pin to
+        the PUBLIC base version, which IS available on the CPU index.
+        """
+        # Common Windows nvidia case
+        with mock.patch(
+            "dependency_health_check.importlib.metadata.version",
+            return_value="2.5.1+cu121",
+        ):
+            self.assertEqual(dhc._installed_torch_version(), "2.5.1")
+        # Other CUDA suffixes
+        with mock.patch(
+            "dependency_health_check.importlib.metadata.version",
+            return_value="2.1.2+cu118",
+        ):
+            self.assertEqual(dhc._installed_torch_version(), "2.1.2")
+        # +cpu suffix (already CPU build — strip anyway, public version
+        # is what pinned on CPU index)
+        with mock.patch(
+            "dependency_health_check.importlib.metadata.version",
+            return_value="2.5.1+cpu",
+        ):
+            self.assertEqual(dhc._installed_torch_version(), "2.5.1")
+        # Plain public version — unchanged
+        with mock.patch(
+            "dependency_health_check.importlib.metadata.version",
+            return_value="2.12.0",
+        ):
+            self.assertEqual(dhc._installed_torch_version(), "2.12.0")
+
+    def test_torch_cpu_fallback_pins_to_stripped_public_version(self):
+        """End-to-end: the cmd that goes to pip in the CUDA-broken scenario
+        must contain `torch==2.5.1` (PUBLIC base), NOT `torch==2.5.1+cu121`.
+        This verifies the strip-and-pin contract reaches `run_torch_cpu_fallback`,
+        not just `_installed_torch_version` in isolation.
+        """
+        captured_cmds: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            captured_cmds.append(list(cmd))
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with mock.patch(
+            "dependency_health_check.importlib.metadata.version",
+            return_value="2.5.1+cu121",
+        ), mock.patch(
+            "dependency_health_check.subprocess.run", side_effect=fake_run
+        ):
+            ok, _ = dhc.run_torch_cpu_fallback()
+
+        self.assertTrue(ok)
+        cmd = captured_cmds[0]
+        self.assertIn("torch==2.5.1", cmd)
+        # And NO local-version-suffixed form — that would fail against
+        # the CPU wheel index.
+        self.assertNotIn("torch==2.5.1+cu121", cmd)
+
 
 if __name__ == "__main__":
     unittest.main()
