@@ -1263,8 +1263,24 @@ class FaceCropTab(tk.Frame):
             self._status_label.config(text="No source image loaded", fg=COLORS["warning"])
             return
         if not HAS_FACE_DEPS:
+            # Polish-sweep (PR #55): the old toast just said "(see warning)"
+            # but the warning banner can scroll off-screen on small windows
+            # and the underlying import error (FACE_DEPS_ERROR — usually
+            # cv2 or numpy) was never visible in the log. Surface both the
+            # exception detail and the platform-specific recovery hint so
+            # the user can diagnose without hunting through scrollback.
+            err_detail = FACE_DEPS_ERROR or "opencv-python / numpy not available"
             self._status_label.config(
-                text="Face Crop deps missing (see warning)", fg=COLORS["error"]
+                text=f"Face Crop deps missing: {err_detail}",
+                fg=COLORS["error"],
+            )
+            self.log(
+                f"Face Crop: opencv/numpy import failed — {err_detail}",
+                "error",
+            )
+            self.log(
+                f"Face Crop: {_platform_face_repair_recovery_hint()}",
+                "error",
             )
             return
         retinaface_cls, retinaface_error = _load_retinaface()

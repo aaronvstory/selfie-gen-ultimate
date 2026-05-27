@@ -502,6 +502,29 @@ def test_mediapipe_pin_matches_across_launchers_and_requirements():
     )
 
 
+def test_face_crop_deps_missing_status_surfaces_underlying_error():
+    """Polish-sweep (PR #55): the dep-missing status toast must surface
+    the actual ``FACE_DEPS_ERROR`` (typically cv2 or numpy ImportError)
+    + the platform-specific recovery hint, instead of the old
+    "(see warning)" indirection which forced users to hunt through
+    scrollback to find the real failure reason.
+    """
+    src = (REPO_ROOT / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+    # Old wording removed
+    assert '"Face Crop deps missing (see warning)"' not in src, (
+        "Old indirected error wording lingers — should be replaced with "
+        "the specific exception detail in the toast."
+    )
+    # New wording present
+    assert 'Face Crop deps missing: {err_detail}' in src, (
+        "Status label must surface the underlying FACE_DEPS_ERROR detail"
+    )
+    # Recovery hint reuses the platform-specific helper
+    assert '_platform_face_repair_recovery_hint()' in src, (
+        "Dep-missing path must reuse the per-platform recovery hint helper"
+    )
+
+
 def test_face_crop_tab_error_log_no_longer_loops_on_relaunch():
     """The Face Crop import-failure log must NOT instruct users to 're-run
     the launcher' alone — that's the friend's infinite loop. Instead it
