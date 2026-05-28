@@ -474,29 +474,23 @@ def main(argv: list[str] | None = None) -> int:
     # work fine on the now-repaired face stack (and the app doesn't use
     # torch.cuda.* in production).
     #
-    # Always verify in a fresh process. If the fresh probe comes back clean
-    # OR clean-except-for-`torch_cuda_failure:`-prefixed failures, the GUI
-    # is launchable — exit 0 with a warning. The launcher's diagnostic log
-    # captures the combined repair message either way.
+    # Round 8 (`611a9d7`) moved the partial-success classification into
+    # `--mode check` itself (`_is_cuda_only_failure` → exit 0 with WARN).
+    # `verify_in_fresh_process` runs the same `--mode check` subprocess,
+    # so when only `torch_cuda_failure:*` remain, the subprocess now exits
+    # 0 → `verify_in_fresh_process` returns `(True, [])` → the post-verify
+    # `if ok_after: return 0` branch fires.
+    #
+    # Gemini PR #55 round-8 MED (#PRRT_kwDOSQUnmM6FQaDB) correctly
+    # observed: the previous `non_cuda_failures` filter block at this
+    # spot is now unreachable in practice — any path that would have
+    # produced `(False, [<only torch_cuda_failure>])` from
+    # `verify_in_fresh_process` is structurally impossible after the
+    # round-8 exit-code change. Simplified to a single
+    # success-or-fail branch on the verify result.
     ok_after, failures_after = verify_in_fresh_process()
     if ok_after:
         print("[dep-health] Repair verification passed")
-        return 0
-
-    # Partial success — face stack is now healthy but torch CUDA still
-    # broken (probably because download.pytorch.org was blocked/flaky).
-    non_cuda_failures = [
-        f for f in failures_after if not f.startswith("torch_cuda_failure:")
-    ]
-    if not non_cuda_failures:
-        print(
-            "[dep-health] Repair verification: face stack healthy; "
-            "torch CUDA still broken (CPU fallback could not reach "
-            "download.pytorch.org). GUI is launchable — face_crop and "
-            "video paths work fine on CPU."
-        )
-        for failure in failures_after:
-            print(f"[dep-health] WARN: {failure}")
         return 0
 
     print("[dep-health] Repair verification failed:")

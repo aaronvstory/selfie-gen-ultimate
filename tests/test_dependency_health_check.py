@@ -108,7 +108,15 @@ class DependencyHealthCheckTests(unittest.TestCase):
         so the launcher proceeds with GUI launch — face_crop / video paths
         work fine on the now-healthy face stack, and the app doesn't use
         torch.cuda.* in production. The previous shape collapsed any
-        repair failure to exit 1, denying GUI launch unnecessarily."""
+        repair failure to exit 1, denying GUI launch unnecessarily.
+
+        Round 8 update (Gemini #PRRT_kwDOSQUnmM6FQaDB): ``--mode check``
+        now exits 0 on CUDA-only failure (``_is_cuda_only_failure``), so
+        ``verify_in_fresh_process`` returns ``(True, [])`` when running
+        that subprocess in this scenario. Updated the mock to reflect
+        the real subprocess behavior — the previous mock returned
+        ``(False, [...])`` which is no longer reachable in production.
+        """
         # Initial check: torch CUDA failure + tf import failure
         initial = (
             False,
@@ -120,9 +128,11 @@ class DependencyHealthCheckTests(unittest.TestCase):
             False,
             "torch CPU fallback failed (code 1): network error; repair install completed",
         )
-        # Fresh-process verify: only the torch_cuda_failure remains; face
-        # stack is clean.
-        verify_result = (False, ["torch_cuda_failure:cudart: ImportError"])
+        # Fresh-process verify: ``--mode check`` subprocess exits 0 with
+        # WARN lines (CUDA-only failure now tolerated at check time).
+        # ``verify_in_fresh_process`` returns ``(True, [])`` for an
+        # exit-0 subprocess regardless of WARN content.
+        verify_result = (True, [])
 
         with mock.patch(
             "dependency_health_check.check_runtime_dependencies",
