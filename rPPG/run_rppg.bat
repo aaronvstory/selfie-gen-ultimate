@@ -97,17 +97,21 @@ if errorlevel 1 (
   )
   rem forfiles /D -1 only matches locks >=1 DAY old, so a lock left by a
   rem sibling that crashed earlier the SAME day would hang here forever.
-  rem Bound the wait with a retry counter: ~200 iters * ~2s/ping ~= 6-7 min,
-  rem then force-break the lock and proceed; hard-give-up a few iters later
-  rem if the lock dir genuinely cannot be removed.
+  rem Bound the wait with a retry counter, but keep the window LARGER than a
+  rem worst-case full-requirements install so we never force-break a LIVE
+  rem sibling lock mid-pip (codex P2 PR #54 -- mirrors gpu_bootstrap's
+  rem LOCK_STALE_SECONDS > PIP_INSTALL_TIMEOUT rule). The root requirements
+  rem (TensorFlow etc.) can take ~20-30 min on a thin line, so ~900 iters *
+  rem ~2s/ping ~= 30 min before force-break; hard-give-up ~1 min later if the
+  rem lock dir genuinely cannot be removed.
   set /a RPPG_LOCK_TRIES+=1
-  if !RPPG_LOCK_TRIES! geq 210 (
+  if !RPPG_LOCK_TRIES! geq 930 (
     echo   ERROR: rPPG setup lock stuck and could not be cleared.
     >>"%LOG_FILE%" echo [ERROR] rppg_setup.lock stuck; giving up.
     %PAUSE%
     exit /b 1
   )
-  if !RPPG_LOCK_TRIES! geq 200 (
+  if !RPPG_LOCK_TRIES! geq 900 (
     echo   [rppg-setup-lock] lock held too long; force-breaking and proceeding
     >>"%LOG_FILE%" echo [WARN] rppg_setup.lock force-broken after timeout.
     rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
@@ -203,7 +207,7 @@ if !PIP_EXIT! neq 0 (
   exit /b !PIP_EXIT!
 )
 set "RPPG_MEDIAPIPE_SPEC="
-for /f "usebackq tokens=* delims= " %%M in (`findstr /I /R "^[ ]*mediapipe" ^"%REPO_ROOT%\requirements.txt^"`) do (
+for /f "usebackq tokens=* delims= " %%M in (`findstr /I /R /C:^"^[ ]*mediapipe^" ^"%REPO_ROOT%\requirements.txt^"`) do (
   if not defined RPPG_MEDIAPIPE_SPEC set "RPPG_MEDIAPIPE_SPEC=%%M"
 )
 if defined RPPG_MEDIAPIPE_SPEC (
