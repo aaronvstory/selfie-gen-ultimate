@@ -173,17 +173,22 @@ def _personal_build_config(
 
 
 def main() -> int:
-    release_prep.build_sanitized_config = _personal_build_config  # type: ignore[assignment]
-    release_prep._should_skip = _slim_should_skip  # type: ignore[assignment]
-    # gemini MEDIUM (PR #54): mutating these module globals is non-idempotent
-    # — ".replace(...)" / "+ '-personal'" stack up if main() runs twice in one
-    # process (e.g. a test harness importing this module). Guard each rename
-    # with an endswith check and restore the originals in a finally block so
-    # repeated calls are safe and the release_prep module isn't left mutated.
+    # gemini MEDIUM + codex P2 (PR #54): mutating these module globals is
+    # non-idempotent (".replace(...)" / "+ '-personal'" stack up on repeat
+    # calls) AND the function monkeypatches (build_sanitized_config /
+    # _should_skip) leak into any later in-process call to the normal
+    # release_prep.bundle_release — making a subsequent PUBLIC release use the
+    # personal config builder + slim skip rules. Save ALL five originals and
+    # restore them in a finally block; guard each rename with an endswith
+    # check so repeated calls are safe.
+    orig_build_config = release_prep.build_sanitized_config
+    orig_should_skip = release_prep._should_skip
     orig_versioned = release_prep.VERSIONED_ZIP_NAME
     orig_alias = release_prep.LATEST_ALIAS_ZIP_NAME
     orig_basename = release_prep.RELEASE_BASENAME
     try:
+        release_prep.build_sanitized_config = _personal_build_config  # type: ignore[assignment]
+        release_prep._should_skip = _slim_should_skip  # type: ignore[assignment]
         if not orig_versioned.endswith("-personal.zip"):
             release_prep.VERSIONED_ZIP_NAME = orig_versioned.replace(
                 ".zip", "-personal.zip")
@@ -194,6 +199,8 @@ def main() -> int:
             release_prep.RELEASE_BASENAME = orig_basename + "-personal"
         out = list(release_prep.bundle_release(ROOT, ROOT / "dist"))
     finally:
+        release_prep.build_sanitized_config = orig_build_config
+        release_prep._should_skip = orig_should_skip
         release_prep.VERSIONED_ZIP_NAME = orig_versioned
         release_prep.LATEST_ALIAS_ZIP_NAME = orig_alias
         release_prep.RELEASE_BASENAME = orig_basename

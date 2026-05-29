@@ -104,21 +104,30 @@ def test_heartbeat_silences_after_first_line():
     the per-iteration progress is now the user-visible signal and
     additional heartbeats would just be noise.
 
-    Round-2 review fix (Gemini MEDIUM): the original heartbeat_interval
-    was 0.3s with the child emitting at 0.2s. Python interpreter
-    startup on a loaded CI box can take 0.5-1s, so the "early" line
-    could land AFTER the first heartbeat interval and falsely fail
-    the silence assertion. Bump the interval to 3s so the
-    interpreter-startup jitter (well under 1s in practice) can never
-    push the first emit past the heartbeat threshold. The child still
-    sleeps 1.5s after the emit so the streamer has time to detect
-    any spurious heartbeat firing before exit.
+    Round-10 review fix (Gemini MEDIUM): the prior version used a 3.0s
+    heartbeat interval against a child that ran only ~1.5s total, so the
+    heartbeat could NEVER fire regardless of whether the silence logic
+    worked — a vacuous pass. This version uses a SMALL interval (0.3s)
+    and a child that stays silent for 0.5s BEFORE emitting, so heartbeats
+    are guaranteed to fire during the silent startup window. We then
+    assert that every heartbeat fired strictly BEFORE the first line was
+    received — robust to interpreter-startup jitter (extra startup time
+    only adds more pre-line heartbeats, never a post-line one).
     """
     received = []
-    # Child emits a line IMMEDIATELY on launch, then sleeps 1.5s so
-    # the streamer has time to observe (and assert) zero heartbeats.
+    first_line_time = None
+
+    def _on_line(_line):
+        nonlocal first_line_time
+        if first_line_time is None:
+            first_line_time = time.monotonic()
+
+    # Child sleeps 0.5s (silent window → heartbeats fire), emits a line,
+    # then sleeps 1.5s so the streamer has time to observe any spurious
+    # post-line heartbeat.
     code = (
         "import sys, time; "
+        "time.sleep(0.5); "
         "sys.stdout.write('early\\n'); sys.stdout.flush(); "
         "time.sleep(1.5)"
     )
@@ -127,16 +136,16 @@ def test_heartbeat_silences_after_first_line():
         cmd,
         cwd=os.getcwd(),
         timeout_seconds=30,
-        on_heartbeat=lambda elapsed: received.append(elapsed),
-        heartbeat_interval_seconds=3.0,
+        on_line=_on_line,
+        on_heartbeat=lambda elapsed: received.append(time.monotonic()),
+        heartbeat_interval_seconds=0.3,
     )
-    # Heartbeat interval is 3s, child runs ~1.5s total → interval is
-    # never reached, regardless of CI-startup jitter. Receiving ANY
-    # heartbeat indicates the silence logic is broken.
-    assert received == [], (
-        "heartbeat must silence after first line; got "
-        f"{received} despite the line landing before the first interval"
-    )
+    assert first_line_time is not None, "first line was never received"
+    for t in received:
+        assert t < first_line_time, (
+            f"heartbeat fired at {t} AFTER the first line arrived at "
+            f"{first_line_time}; the silence-after-first-line logic is broken"
+        )
 
 
 def test_no_heartbeat_callback_means_no_silent_window_logging():

@@ -118,8 +118,9 @@ def _log(msg: str, *, quiet: bool = False) -> None:
 
 
 def _load_stamp() -> Optional[dict]:
-    if not STAMP_PATH.exists():
-        return None
+    # EAFP (gemini MEDIUM PR #54): skip a pre-flight STAMP_PATH.exists() — on a
+    # restricted/corrupted FS exists() itself can raise OSError and crash the
+    # bootstrap. Just read and catch OSError (FileNotFoundError is a subclass).
     try:
         data = json.loads(STAMP_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
