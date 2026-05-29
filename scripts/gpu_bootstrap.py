@@ -484,6 +484,25 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
                     quiet=quiet_if_cached,
                 )
                 return "gpu_ready"
+        # P3 (codex PR #54): re-check the install-failure cap against the
+        # FRESH in-lock stamp too. The pre-lock cap check (above) can be
+        # passed by two concurrent launchers each holding a stale
+        # attempts=N-1 view; both then serialize on the lock. Without this
+        # second check, the launcher that acquires the lock AFTER a sibling
+        # already wrote the cap-reaching attempts count would still run a
+        # redundant install_cupy and bump attempts past the cap. Honour the
+        # sibling's freshly-written failure count and bail here.
+        if (
+            fresh_stamp
+            and fresh_stamp.get("result") == "install_failed"
+            and fresh_stamp.get("attempts", 0) >= INSTALL_FAILED_MAX_ATTEMPTS
+        ):
+            _log(
+                f"install failed {fresh_stamp['attempts']} times "
+                "(updated by sibling launcher); not retrying. Clear "
+                ".launcher_state/gpu_status.json to retry."
+            )
+            return "install_failed"
         # H1 (subagent HIGH): re-read the stamp from disk INSIDE the lock
         # before computing prior_attempts. Two concurrent launchers can
         # both load the stamp pre-lock with attempts=1, both fall

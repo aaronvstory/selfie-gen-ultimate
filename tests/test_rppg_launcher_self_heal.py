@@ -60,8 +60,12 @@ def test_self_heal_installs_mediapipe_no_deps(bat_source: str):
     )
     # The mediapipe spec is read dynamically FROM requirements.txt (not a
     # hardcoded literal) so the self-heal can't drift when the pin is bumped.
-    assert 'findstr /I /R "^[ ]*mediapipe" "%REPO_ROOT%\\requirements.txt"' in bat_source, (
-        "self-heal must read the mediapipe pin from requirements.txt"
+    # The path is caret-escaped (^") inside the for/f backtick command so a
+    # %REPO_ROOT% containing spaces doesn't break the FOR parser
+    # (gemini MEDIUM PR #54).
+    assert 'findstr /I /R "^[ ]*mediapipe" ^"%REPO_ROOT%\\requirements.txt^"' in bat_source, (
+        "self-heal must read the mediapipe pin from requirements.txt with a "
+        "caret-escaped path (robust against spaces in %REPO_ROOT%)"
     )
     assert '-m pip install --no-deps "!RPPG_MEDIAPIPE_SPEC!"' in bat_source, (
         "self-heal must install the dynamically-read mediapipe pin with "

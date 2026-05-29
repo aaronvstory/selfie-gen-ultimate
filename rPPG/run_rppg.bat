@@ -203,7 +203,7 @@ if !PIP_EXIT! neq 0 (
   exit /b !PIP_EXIT!
 )
 set "RPPG_MEDIAPIPE_SPEC="
-for /f "usebackq tokens=* delims= " %%M in (`findstr /I /R "^[ ]*mediapipe" "%REPO_ROOT%\requirements.txt"`) do (
+for /f "usebackq tokens=* delims= " %%M in (`findstr /I /R "^[ ]*mediapipe" ^"%REPO_ROOT%\requirements.txt^"`) do (
   if not defined RPPG_MEDIAPIPE_SPEC set "RPPG_MEDIAPIPE_SPEC=%%M"
 )
 if defined RPPG_MEDIAPIPE_SPEC (
