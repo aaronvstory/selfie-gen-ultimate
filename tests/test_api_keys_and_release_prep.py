@@ -59,6 +59,16 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
                 "freeimage_api_key": "secret",
                 "output_folder": "C:/private",
                 "automation_root_folder": "C:/private/root",
+                "selfie_output_folder": "C:/private/selfie",
+                # v2.7 audit caught these two "last_*" path fields leaking
+                # subject names + dev machine paths into the shipped zip
+                # (CLAUDE.md Trap 4).
+                "oldcam_last_source_video": (
+                    "C:/Users/dev/Downloads/subject_video.mp4"
+                ),
+                "video_inspector_last_folder": (
+                    "F:/Downloads/organized/SUBJECT-FULL-NAME"
+                ),
                 "selfie_prompt_template": "keep me",
                 "outpaint_prompt": "expand bg",
                 "saved_prompts": {"1": "prompt one"},
@@ -71,6 +81,12 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
         assert sanitized[spec.config_key] == ""
     assert sanitized["output_folder"] == ""
     assert sanitized["automation_root_folder"] == ""
+    assert sanitized["selfie_output_folder"] == ""
+    # New blank-list members added 2026-05-28 (v2.7 audit).
+    assert sanitized["oldcam_last_source_video"] == ""
+    assert sanitized["video_inspector_last_folder"] == ""
+    # And the non-secret prompt/setting content must still come through
+    # untouched (the "ship everything except secrets" contract).
     assert sanitized["selfie_prompt_template"] == "keep me"
     assert sanitized["outpaint_prompt"] == "expand bg"
     assert sanitized["saved_prompts"]["1"] == "prompt one"

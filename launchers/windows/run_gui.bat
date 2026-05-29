@@ -53,6 +53,55 @@ ping -n 3 127.0.0.1 >nul 2>&1
 goto :acquire_setup_lock
 :setup_lock_acquired
 
+rem --- Validate system Python version BEFORE creating a venv ---------------
+rem Mediapipe==0.10.35 (pinned in requirements.txt) has wheels for Python
+rem 3.9-3.12 only; on Python 3.13+ the install fails mid-sync with a less
+rem actionable error than this up-front check. macOS setup_macos.sh
+rem validates the equivalent range -- Windows lacked parity until the
+rem AFK-loop hand-off audit caught this (subagent PR #55 HIGH pre-handoff
+rem finding). Pattern mirrors similarity/run_gui.bat:63 + L147.
+rem
+rem Only validate when we're about to create a venv (venv missing). Once
+rem the venv exists, %VENV_PYTHON% is the canonical interpreter and the
+rem system python is irrelevant.
+if not exist "%VENV_PYTHON%" (
+    where python >nul 2>&1
+    if !errorlevel! neq 0 (
+        echo(
+        echo  ERROR: Python not found on PATH.
+        echo  Install Python 3.11 or 3.12 from https://www.python.org/downloads/
+        echo  Make sure to check "Add Python to PATH" during installation.
+        echo(
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] ERROR: python not on PATH
+        call :release_setup_lock
+        pause
+        exit /b 1
+    )
+    python -c "import sys; raise SystemExit^(0 if ^(3,9^) ^<= sys.version_info[:2] ^< ^(3,13^) else 2^)" >nul 2>&1
+    if !errorlevel! neq 0 (
+        for /f "delims=" %%V in ('python -c "import sys; print^(\".\".join^(map^(str, sys.version_info[:3]^)^)^)" 2^>nul') do set "SYS_PY_VER=%%V"
+        echo(
+        echo  ============================================================
+        echo  ERROR: Unsupported Python version: !SYS_PY_VER!
+        echo  ============================================================
+        echo  This app requires Python 3.9-3.12 ^(mediapipe wheels do not
+        echo  exist for 3.13+^). Python !SYS_PY_VER! detected on PATH.
+        echo(
+        echo  Recovery options:
+        echo    1. Install Python 3.11 or 3.12 from
+        echo       https://www.python.org/downloads/
+        echo       During install: check "Add Python to PATH"
+        echo    2. If you have multiple Pythons installed, ensure the
+        echo       3.11 / 3.12 one is FIRST in PATH.
+        echo  ============================================================
+        echo(
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] ERROR: unsupported Python version !SYS_PY_VER! ^(need 3.9-3.12^)
+        call :release_setup_lock
+        pause
+        exit /b 1
+    )
+)
+
 rem --- Create venv if needed ------------------------------------------------
 if not exist "%VENV_PYTHON%" (
     echo   [%LAUNCH_TS%] Creating virtual environment...
@@ -70,6 +119,47 @@ if not exist "%VENV_PYTHON%" (
     del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 )
 
+rem --- Per-launch diagnostic snapshot ---------------------------------------
+rem Writes Python / pip / OS / GPU info to the launch log so users have
+rem something to attach when reporting issues. The user's explicit ask:
+rem "ensure we get proper logging each launch so we can diagnose issues
+rem easier." Defensive: python invocations are gated on the venv
+rem existing, the nvidia-smi block is gated on `where nvidia-smi`
+rem returning 0, and `ver` is always present on Windows.
+rem
+rem Multi-GPU machines: only the FIRST GPU line is captured (the
+rem `if "!DIAG_GPU!"=="no-nvidia-smi"` guard prevents subsequent
+rem matches from clobbering). For the friend-bug scenario, knowing
+rem at-least-one GPU is present is enough to disambiguate
+rem "missing nvidia-smi" vs "CUDA install in flight"; full multi-GPU
+rem enumeration would be a deferred feature if anyone asks.
+set "DIAG_PY=unknown"
+set "DIAG_PIP=unknown"
+set "DIAG_OS=unknown"
+set "DIAG_GPU=no-nvidia-smi"
+if exist "%VENV_PYTHON%" (
+    rem Caret-escaped quotes (`^"`) inside `for /f ('...')` are the safer
+    rem idiom for paths containing spaces. The previous form `""%VAR%"`
+    rem (double-double-quote) is a cmd parser trick that works in most
+    rem cases but Gemini PR #55 round-2 MED flagged it as fragile against
+    rem paths with spaces. Switching to `^"` is the standard documented
+    rem form and matches what cmd's own docs recommend for nested quotes
+    rem in for-command-strings.
+    for /f "delims=" %%V in ('^"%VENV_PYTHON%^" -V 2^>^&1') do set "DIAG_PY=%%V"
+    for /f "delims=" %%V in ('^"%VENV_PYTHON%^" -m pip --version 2^>^&1') do set "DIAG_PIP=%%V"
+)
+for /f "delims=" %%V in ('ver ^| findstr /R "."') do set "DIAG_OS=%%V"
+where nvidia-smi >nul 2>&1
+if !errorlevel! equ 0 (
+    for /f "delims=" %%G in ('nvidia-smi -L 2^>^&1') do (
+        if "!DIAG_GPU!"=="no-nvidia-smi" set "DIAG_GPU=%%G"
+    )
+)
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-py %DIAG_PY%
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-pip %DIAG_PIP%
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-os %DIAG_OS%
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-gpu %DIAG_GPU%
+
 rem --- Build stamp key from req file dates+sizes (no subprocess needed) -----
 set "STAMP_KEY="
 for %%F in ("%REQUIREMENTS%" "%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_REQUIREMENTS%" "%OLDCAM_V10_REQUIREMENTS%") do (
@@ -80,10 +170,84 @@ set "STAMP_KEY=%STAMP_KEY:/=-%"
 set "STAMP_KEY=%STAMP_KEY::=-%"
 set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,60%.ok"
 
-rem --- Skip dep work if stamp is current -----------------------------------
+rem --- Stamp present? Skip the expensive pip-install sync, but STILL run a
+rem --- runtime health check on every launch and auto-repair if it fails.
+rem ---
+rem --- Background: PR fix/windows-tf-health-check addressed a user report
+rem --- where a friend ran run_gui.bat once, got a successful CUDA install,
+rem --- then saw "RetinaFace/TensorFlow import failed. Run run_gui.bat for
+rem --- automatic dependency repair." in the GUI. Re-running run_gui.bat
+rem --- did nothing because the previous "successful" install wrote
+rem --- deps_*.ok and the launcher skipped EVERY check on the next pass -
+rem --- including the health probe that would have caught the broken
+rem --- TF/retinaface stack. The user was stuck in an infinite "re-run the
+rem --- bat" loop with no recovery path. Now we always probe runtime
+rem --- health (~3-5s) and if it fails, we clear the stamp, run
+rem --- `--mode repair` (which itself does verify_in_fresh_process), and
+rem --- bubble up a CLEAR diagnostic on persistent failure instead of
+rem --- telling users to "re-run run_gui.bat".
 if exist "%STAMP%" (
-    echo   [%LAUNCH_TS%] Dependencies up-to-date ^(cached stamp^). Skipping sync.
-    echo   Tip: delete .launcher_state\deps_*.ok to force a full re-check.
+    if exist "%DEP_HEALTH_SCRIPT%" (
+        echo   [%LAUNCH_TS%] Cached deps stamp present -- running quick health probe...
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe START ^(cached-stamp path^)
+        "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode check >"%STATE_DIR%\last_health.log" 2>&1
+        if !errorlevel! neq 0 (
+            echo(
+            echo   [%LAUNCH_TS%] Runtime health probe FAILED. Recent output:
+            type "%STATE_DIR%\last_health.log"
+            echo(
+            >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe FAIL ^(cached-stamp path^); clearing stamp + running repair
+            echo   [%LAUNCH_TS%] Clearing cached deps stamp + running auto-repair...
+            del "%STATE_DIR%\deps_*.ok" >nul 2>&1
+            "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode repair
+            if !errorlevel! neq 0 (
+                echo(
+                echo  ============================================================
+                echo  ERROR: Automatic dependency repair FAILED.
+                echo  ============================================================
+                echo  The cached install is broken AND the auto-repair did not
+                echo  fix it. Re-running %~nx0 alone will not help -- the stamp
+                echo  has already been cleared, so the next run will retry the
+                echo  full install, but if pip can't resolve the conflict on
+                echo  its own you need to recover manually:
+                echo(
+                echo    1. Delete the venv folder ^(rd /S /Q "%VENV_DIR%"^) and
+                echo       run %~nx0 from a clean state.
+                echo    2. Force-reinstall the face stack manually ^(mirrors
+                echo       REPAIR_PACKAGES in dependency_health_check.py^):
+                rem  Inside () blocks cmd parses each line twice. ^^ collapses
+                rem  to ^ during parse-1, then execute-1 sees `echo ... ^` at
+                rem  end-of-line and treats the surviving ^ as line-cont,
+                rem  printing nothing -- the user would see a broken multi-
+                rem  line. ^^^^ collapses to ^^ during parse-1, then echo
+                rem  prints a literal ^ to the screen for copy-paste. (Gemini
+                rem  PR #55 round 2 HIGH.)
+                echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^^^
+                echo         --no-cache-dir tensorflow==2.16.2 ^^^^
+                echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^^^
+                echo         tf-keras==2.16.0 retina-face==0.0.17 ^^^^
+                echo         deepface==0.0.92
+                echo    3. Inspect the diagnostic log at:
+                echo       %STATE_DIR%\last_health.log
+                echo    4. Inspect the launch log at:
+                echo       %LOG_FILE%
+                echo(
+                >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-repair FAIL ^(cached-stamp path^); exiting
+                call :release_setup_lock
+                pause
+                exit /b 1
+            )
+            echo   [%LAUNCH_TS%] Repair succeeded; re-writing stamp.
+            >>"%STAMP%" echo %LAUNCH_TS% repair
+            >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-repair OK ^(cached-stamp path^); stamp re-written
+        ) else (
+            echo   [%LAUNCH_TS%] Runtime health: OK ^(cached deps^).
+            >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe OK ^(cached-stamp path^)
+        )
+    ) else (
+        echo   [%LAUNCH_TS%] Dependencies up-to-date ^(cached stamp; no health script^).
+    )
+    echo   Tip: delete .launcher_state\deps_*.ok to force a full re-sync.
     echo(
     call :release_setup_lock
     goto :launch
@@ -92,6 +256,23 @@ if exist "%STAMP%" (
 rem --- Full dep sync (requirements changed or first run) -------------------
 echo   [%LAUNCH_TS%] Requirements changed -- syncing dependencies...
 echo(
+rem --- Heavy-install user banner. Explains the 5-15 min wait so users
+rem --- don't kill the process thinking it's frozen. Real-world data
+rem --- point: a friend on Windows nvidia killed run_gui.bat at ~10 min
+rem --- during the CUDA wheel download (~2GB), leaving a half-installed
+rem --- state that then triggered the in-GUI "RetinaFace import failed"
+rem --- toast that this PR was opened to fix. Set expectations up front.
+echo  ============================================================
+echo   FIRST-RUN DEP INSTALL -- expect 5 to 15 minutes
+echo  ============================================================
+echo   - torch wheels: ~2GB on Windows nvidia ^(CUDA-aware build^)
+echo   - tensorflow + mediapipe + opencv: ~1-2GB more
+echo   - subsequent launches skip this entire block ^(cached stamp^)
+echo   - pip will print progress below; if 60+ sec of silence,
+echo     check your network or Ctrl+C and re-run %~nx0.
+echo  ============================================================
+echo(
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] dep-install banner shown ^(full-sync path^)
 "%VENV_PYTHON%" -m pip install --upgrade pip >nul 2>&1
 call :INSTALL_REQUIREMENTS "%REQUIREMENTS%" "base"
 if !errorlevel! neq 0 goto :DEPENDENCY_FAIL
@@ -121,19 +302,53 @@ if exist "%DEP_HEALTH_SCRIPT%" (
     )
 
     echo   [%LAUNCH_TS%] Validating runtime dependency health...
-    "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode check
+    >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe START ^(fresh-install path^)
+    "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode check >"%STATE_DIR%\last_health.log" 2>&1
     if !errorlevel! neq 0 (
         echo(
-        echo   [%LAUNCH_TS%] Health check failed. Attempting auto-repair...
+        echo   [%LAUNCH_TS%] Health check FAILED. Recent output:
+        type "%STATE_DIR%\last_health.log"
+        echo(
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe FAIL ^(fresh-install path^); attempting repair
+        echo   [%LAUNCH_TS%] Attempting auto-repair...
         "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode repair
         if !errorlevel! neq 0 (
             echo(
-            echo  ERROR: Automatic dependency repair failed.
+            echo  ============================================================
+            echo  ERROR: Automatic dependency repair FAILED ^(fresh install^).
+            echo  ============================================================
+            echo  The pip-install sync just completed BUT the runtime health
+            echo  check still failed AND auto-repair could not fix it. This
+            echo  usually means a CUDA/CPU TensorFlow conflict, a partially
+            echo  downloaded wheel from a flaky connection, or an antivirus
+            echo  quarantine on TF DLLs.
             echo(
+            echo  Manual recovery options:
+            echo    1. Delete the venv folder ^(rd /S /Q "%VENV_DIR%"^) and
+            echo       run %~nx0 from a clean state.
+            echo    2. Force-reinstall the face stack manually ^(mirrors
+            echo       REPAIR_PACKAGES in dependency_health_check.py^):
+            rem  Inside () blocks cmd parses each line twice; needs ^^^^ to
+            rem  emit a literal ^ for the user (see the mirror block above
+            rem  for the full Gemini PR #55 round 2 HIGH explanation).
+            echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^^^
+            echo         --no-cache-dir tensorflow==2.16.2 ^^^^
+            echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^^^
+            echo         tf-keras==2.16.0 retina-face==0.0.17 ^^^^
+            echo         deepface==0.0.92
+            echo    3. Inspect the diagnostic log at:
+            echo       %STATE_DIR%\last_health.log
+            echo    4. Inspect the launch log at:
+            echo       %LOG_FILE%
+            echo(
+            >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-repair FAIL ^(fresh-install path^); exiting
             call :release_setup_lock
             pause
             exit /b 1
         )
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-repair OK ^(fresh-install path^)
+    ) else (
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe OK ^(fresh-install path^)
     )
     echo   [%LAUNCH_TS%] Runtime health: OK
 )

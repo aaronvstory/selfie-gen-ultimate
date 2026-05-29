@@ -17,7 +17,21 @@ real bugs) should propagate so the test suite catches them loudly
 instead of silently leaking state.
 """
 
+import uuid
+
 import pytest
+
+
+# Module-scoped (one value per pytest invocation) so the workspace name
+# is stable across every test in this run, but uuid4-suffixed so it can
+# never collide with a real workspace dir on disk. Without this, helpers
+# like ``session_manager._iter_extra_sessions_dirs`` resolve to the
+# developer's real ``~/Library/Application Support/.../workspaces/default/
+# runtime/instances/*/sessions/`` and leak live rolling-autosave files
+# into ``list_sessions`` / ``find_dead_sessions`` / ``prune_dead_sessions``
+# results — flaking 7 tests on dev machines that have real GUI history.
+# CI is clean so the bug only surfaces locally.
+_PYTEST_WORKSPACE_NAME = f"_pytest_isolated_{uuid.uuid4().hex}"
 
 
 def _clear_instance_id_cache() -> None:
@@ -36,3 +50,18 @@ def _reset_instance_id_cache():
     _clear_instance_id_cache()
     yield
     _clear_instance_id_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_kling_workspace(monkeypatch):
+    """Force tests into an unused workspace so ``_iter_extra_sessions_dirs``
+    never resolves to the developer's real per-instance autosave tree.
+
+    Setting an unused workspace name makes ``get_workspace_dir`` resolve to
+    a directory that doesn't exist; ``_iter_extra_sessions_dirs``'s
+    ``os.path.isdir`` guard then returns ``[]``. Tests that explicitly want
+    a different workspace value override this baseline via their own
+    ``monkeypatch.setenv`` / ``monkeypatch.delenv`` — pytest's monkeypatch
+    handles the override + unwind correctly.
+    """
+    monkeypatch.setenv("KLING_WORKSPACE", _PYTEST_WORKSPACE_NAME)
