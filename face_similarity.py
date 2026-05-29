@@ -21,11 +21,20 @@ def _parse_bool(value: Any) -> Optional[bool]:
     """Tolerant boolean parser for config values that may have round-tripped as strings.
 
     Accepts true Python bools, common string forms ("true"/"false", "1"/"0",
-    "yes"/"no", "on"/"off", case-insensitive). Returns None when the value
-    can't be confidently coerced — callers should fall back to defaults.
+    "yes"/"no", "on"/"off", case-insensitive), AND integer 0/1 (subagent M4
+    on PR #53 — a config that programmatically holds the int 1 would
+    otherwise return None and surfaces every launch as "marker absent",
+    re-firing one-time migrations). Returns None when the value can't be
+    confidently coerced — callers should fall back to defaults.
     """
     if isinstance(value, bool):
         return value
+    if isinstance(value, int):
+        # Strict 0/1 only; other ints are ambiguous (e.g. legacy version
+        # codes that happened to be stored under a bool-named key).
+        if value in (0, 1):
+            return bool(value)
+        return None
     if isinstance(value, str):
         normalized = value.strip().lower()
         if normalized in {"true", "1", "yes", "on"}:

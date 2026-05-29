@@ -327,6 +327,16 @@ def build_sanitized_config(
     config["outpaint_double_expand"] = bool(
         template.get("outpaint_double_expand", False)
     )
+    # Pre-stamp the one-time migration markers so a fresh-bundle
+    # launch does not re-fire any migration (it's a no-op anyway, but
+    # this keeps the "first launch is silent" promise).
+    # PR fix/step0-composite-and-rppg-v2.5 (v2) + round 10 (v3).
+    config["outpaint_2x_default_reset_v2"] = bool(
+        template.get("outpaint_2x_default_reset_v2", True)
+    )
+    config["outpaint_2x_default_reset_v3"] = bool(
+        template.get("outpaint_2x_default_reset_v3", True)
+    )
     # v2.3 ship defaults (user request 2026-05-22): loop OFF.
     # Dev kling_config.json typically still carries ``loop_videos: True``
     # from prior sessions; without the override the new template default

@@ -1261,7 +1261,7 @@ class AutoPipelineRunner:
                 # config value AND silently rewrite a legitimate ``0``
                 # to the default 3. (Subagent HIGH on PR #52 round 3.)
                 landmark_stride = self._read_int(
-                    "automation_rppg_landmark_stride", 3, min_value=1,
+                    "automation_rppg_landmark_stride", 1, min_value=1,
                 )
                 injected = run_rppg(
                     video_path=video_out_path,
@@ -1403,9 +1403,11 @@ class AutoPipelineRunner:
             skip_diagnosis = self._read_bool("automation_rppg_skip_diagnosis", True)
             skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
             # _read_int safety wrapper (see Step 6 site above) —
-            # subagent HIGH on PR #52 round 3.
+            # subagent HIGH on PR #52 round 3. Default reverted 3 -> 1
+            # in fix/step0-composite-and-rppg-v2.5 (snapshot-race
+            # regression — see automation/config.py for full reasoning).
             landmark_stride = self._read_int(
-                "automation_rppg_landmark_stride", 3, min_value=1,
+                "automation_rppg_landmark_stride", 1, min_value=1,
             )
 
             # Phase E of polish/v2.3 (2026-05-22): the BASE rPPG pass

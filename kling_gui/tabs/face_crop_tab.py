@@ -292,8 +292,70 @@ class FaceCropTab(tk.Frame):
         # defaulting ON for new users which doubled their API spend
         # silently on first run. Existing users with the key already
         # in their kling_config.json keep their chosen value.
+        #
+        # One-time migration (PR fix/step0-composite-and-rppg-v2.5):
+        # PR #48 fixed the in-code default but pre-existing configs
+        # from before that PR persist outpaint_double_expand=True
+        # forever. The migration below forces the value to False
+        # once per machine if the marker key is absent; after that,
+        # the user's manual choice is sticky. New installs pre-stamp
+        # the marker via default_config_template.json so the migration
+        # is a no-op on fresh bundles.
+        #
+        # _parse_bool is used (not bool(...)) so that string-backed
+        # JSON ("false"/"0"/...) parses correctly — a bare bool()
+        # treats "false" as truthy. See face_similarity._parse_bool
+        # for the helper.
+        #
+        # Subagent M3 round 5: an uncoercible marker value (list/dict/
+        # garbage) returns None from _parse_bool. Treat None as
+        # "marker present, skip migration" — conservative semantics
+        # so we never overwrite a user's explicit (if unusual)
+        # outpaint_double_expand on subsequent launches just because
+        # the marker key has a weird value. The migration is one-time
+        # by design; "weird marker = treat as present" honors that.
+        from face_similarity import _parse_bool as _pb
+        # PR #53 round 10 — v3 reset marker.
+        #
+        # User manual smoke at round 9 (commit 4387153a) showed Run 2x
+        # checkbox STILL appearing checked at launch. Root cause: their
+        # config had outpaint_2x_default_reset_v2=true AND
+        # outpaint_double_expand=true simultaneously — v2 got stamped
+        # at some point without the value resetting (likely a stale
+        # test config or a write race when v2 first introduced).
+        # Because the v2 migration sees the marker present, it skips
+        # the reset, leaving the stale True.
+        #
+        # v3 is a fresh marker so this release/test cycle force-resets
+        # once for everyone, then sticky again. We also keep v2
+        # stamped on the way out so the "we reset Run 2x for you" log
+        # only fires when there's a NEW migration to surface (rather
+        # than confusing users who already saw v2 do its job).
+        # Always stamp v2 at init time so a hypothetical config with
+        # v3 stamped but v2 missing (third-party clear, partial-write
+        # crash, etc.) still has the v2 marker after this method
+        # returns. Subagent L4 round 11 — the prior `setdefault` was
+        # inside the migration branch and only ran when v3 was absent.
+        config.setdefault("outpaint_2x_default_reset_v2", True)
+        _marker_v3_raw = config.get("outpaint_2x_default_reset_v3", False)
+        _marker_v3_parsed = _pb(_marker_v3_raw)
+        _migration_already_done = (
+            _marker_v3_parsed is True
+            or _marker_v3_parsed is None  # uncoercible -> treat as done
+        )
+        if not _migration_already_done:
+            prior = config.get("outpaint_double_expand", False)
+            config["outpaint_double_expand"] = False
+            config["outpaint_2x_default_reset_v3"] = True
+            self._outpaint_2x_migration_fired = True
+            self._outpaint_2x_migration_prior = prior
+        else:
+            self._outpaint_2x_migration_fired = False
+            self._outpaint_2x_migration_prior = None
+
+        _persisted_2x = _pb(config.get("outpaint_double_expand", False))
         self._outpaint_double_expand_var = tk.BooleanVar(
-            value=bool(config.get("outpaint_double_expand", False))
+            value=bool(_persisted_2x) if _persisted_2x is not None else False
         )
 
         # PhotoImage references (prevent GC)
@@ -302,6 +364,53 @@ class FaceCropTab(tk.Frame):
 
         self._build_ui()
         self.image_session.add_on_change(self._on_image_session_change)
+
+        # Persist the migration immediately so a user who launches and
+        # closes without doing anything still has the marker stamped.
+        # ``self.log`` was assigned at __init__ above; messages route to
+        # the GUI log display already.
+        # Subagent M3 round 1: bare except was masking real persistence
+        # failures (disk full, unwritable config path) — if the marker
+        # never lands, the migration re-fires every launch. Log the
+        # exception to stderr so a real failure leaves a trail even if
+        # the in-app log display isn't visible yet.
+        if self._outpaint_2x_migration_fired:
+            try:
+                # Subagent M4 round 5: at __init__ time the other tabs
+                # haven't been constructed yet, so calling the full
+                # get_config_updates() round-trip via _save_config_now()
+                # would write the shared config in its pre-tab-load
+                # state. Persist ONLY the two migration keys via the
+                # config_saver — narrower blast radius, no ordering
+                # invariant locked in.
+                if self._config_saver:
+                    # Migration mutated `config` (shared dict) in
+                    # __init__; just trigger the on-disk save.
+                    self._config_saver()
+            except Exception as exc:
+                import sys as _sys
+                print(
+                    f"[face_crop_tab] WARNING: Run 2x migration save "
+                    f"failed ({type(exc).__name__}: {exc}); marker "
+                    f"may not persist and migration may re-fire next "
+                    f"launch.",
+                    file=_sys.stderr,
+                )
+            try:
+                if _pb(self._outpaint_2x_migration_prior):
+                    self.log(
+                        "One-time reset: Run 2x default → unchecked. "
+                        "Re-toggle in Step 0 if you want 2x expand.",
+                        "info",
+                    )
+            except Exception as exc:
+                import sys as _sys
+                print(
+                    f"[face_crop_tab] WARNING: Run 2x migration log "
+                    f"call failed ({type(exc).__name__}: {exc}); "
+                    f"user won't see the reset notification.",
+                    file=_sys.stderr,
+                )
 
     # ── Config persistence ────────────────────────────────────────
 
@@ -1617,10 +1726,228 @@ class FaceCropTab(tk.Frame):
 
         Scans carousel for the first input-type image with ``_crop`` in its
         filename.  Works across sessions because the crop file persists on disk.
+
+        Trusts the cached ``entry.exists`` flag — fast but may be stale.
+        For the per-pass similarity check use :meth:`_resolve_live_crop_ref`
+        instead, which verifies on-disk presence right now.
         """
         for entry in self.image_session.images:
             if entry.source_type == "input" and "_crop" in entry.filename and entry.exists:
                 return entry.path
+        return None
+
+    def _resolve_live_crop_ref(self) -> Optional[str]:
+        """Resolve the similarity reference path RIGHT NOW (per-pass).
+
+        Resilient version of :meth:`_find_crop_ref_path`. Falls back
+        through:
+
+        1. Session entries whose path actually exists on disk now.
+           Re-queries presence via ``Path(entry.path).is_file()`` —
+           ``ImageEntry.exists`` is a @property that already re-reads
+           disk on every access (see ``kling_gui/image_state.py:93``),
+           so no manual invalidation is needed; subsequent reads
+           automatically reflect current state.
+        2. ``self._last_crop_path`` if set and still on disk — covers
+           "the entry got pruned but the file is still there".
+        3. ``{stem}_crop.*`` glob in the current Step 0 source's
+           ``gen-images/`` — covers "the absolute path drifted but the
+           file is still in gen-images on this folder" (e.g. user
+           moved the source folder after a crop was saved). Stem is
+           ``glob.escape``d so filenames containing ``[``/``]``/``?``
+           are matched literally.
+        4. ``None`` — caller should skip similarity with a debug-level
+           log (NOT warning/error). PR fix/step0-composite-and-rppg-v2.5.
+        """
+        import glob as _glob
+        from pathlib import Path as _P
+
+        def _safe_mtime(p: _P) -> float:
+            """mtime for sort. Falls back to 0.0 if the file vanished
+            between glob() and stat() — a race between the resolver and
+            an external cleanup. Sort still works; the disappeared
+            candidate sinks to the bottom and the next is_file() check
+            filters it out."""
+            try:
+                return p.stat().st_mtime
+            except (OSError, ValueError):
+                return 0.0
+
+        def _log_source(label: str, hit_path: str) -> None:
+            """Debug-log which fallback source produced the live ref.
+            Subagent L4 round 5: helps triage "similarity score looks
+            wrong" reports without re-running the worker. Best-effort —
+            silently no-op if `self.log` isn't wired yet (this method
+            is also reachable from non-GUI contexts in tests).
+            """
+            try:
+                self.log(
+                    f"[SIM] live crop ref source={label} path={hit_path}",
+                    "debug",
+                )
+            except Exception:
+                pass
+
+        # Step 1: walk session entries, verify on-disk. Defensive
+        # exception list per PR #53 round 4: an entry whose path was
+        # set to None by upstream code (or any non-str type) would
+        # raise TypeError on Path() construction; guard against that
+        # AND empty-string path before touching the filesystem.
+        #
+        # Snapshot the list before iterating (PR #53 round 7
+        # Gemini cleanup) so a concurrent GUI-thread mutation of
+        # image_session.images can't skip/duplicate entries
+        # mid-iteration. Same idea as list(dict.items()) when the
+        # dict may be mutated under us.
+        for entry in list(self.image_session.images):
+            if entry.source_type != "input":
+                continue
+            # Guard non-string filename (PR #53 round 7 Gemini).
+            entry_filename = getattr(entry, "filename", None)
+            if not isinstance(entry_filename, str):
+                continue
+            if "_crop" not in entry_filename:
+                continue
+            entry_path = getattr(entry, "path", None)
+            if not entry_path:
+                continue
+            try:
+                exists_now = _P(entry_path).is_file()
+            except (OSError, ValueError, TypeError):
+                exists_now = False
+            if exists_now:
+                _log_source("session_entry", entry_path)
+                return entry_path
+
+        # Step 2: last-saved crop path. Same TypeError guard for the
+        # same reason — _last_crop_path is set from many call sites and
+        # could go non-string in a future refactor.
+        last = getattr(self, "_last_crop_path", None)
+        if last:
+            try:
+                if _P(last).is_file():
+                    _log_source("_last_crop_path", last)
+                    return last
+            except (OSError, ValueError, TypeError):
+                pass
+
+        # Step 3: glob gen-images siblings of the CURRENT Step 0
+        # source (NOT self._get_gen_dir() — that helper is anchored
+        # to image_session.images[0] which can be a different folder
+        # in a multi-source carousel; CodeRabbit major round 3).
+        # CodeRabbit PR #53 round 8: prefer `_original_path` over
+        # `_source_path`. _source_path is the EXIF-corrected temp
+        # copy used by the cropper; _original_path is the actual
+        # user-selected file on disk. The gen-images folder we want
+        # for the crop fallback is anchored to the user's selection,
+        # not to the temp file.
+        active_src = None
+        for _src_attr in ("_original_path", "_source_path"):
+            _src_val = getattr(self, _src_attr, None)
+            if not _src_val:
+                continue
+            try:
+                _p = _P(_src_val)
+                if _p.is_file() or _p.parent.is_dir():
+                    active_src = _src_val
+                    break
+            except (TypeError, ValueError, OSError):
+                continue
+        if active_src is None:
+            try:
+                _sess_active = self.image_session.active_image_path
+            except AttributeError:
+                _sess_active = None
+            if _sess_active:
+                active_src = _sess_active
+        gen_dir = None
+        if active_src:
+            try:
+                gen_dir = _P(get_gen_images_folder(str(active_src)))
+            except (TypeError, ValueError, OSError):
+                gen_dir = None
+        if gen_dir is not None:
+            try:
+                gen_dir_is_dir = gen_dir.is_dir()
+            except (OSError, ValueError, TypeError):
+                gen_dir_is_dir = False
+            if gen_dir_is_dir:
+                active_stem = None
+                try:
+                    active_stem = (
+                        _P(active_src).stem if active_src else None
+                    )
+                except (TypeError, ValueError):
+                    active_stem = None
+                # Subagent H3 round 5: when the active source is a
+                # derived artifact (e.g. "alice-expanded.jpg"), its
+                # exact-stem pattern ("alice-expanded_crop.*") may miss.
+                # Before falling back to ANY *_crop.*, try a prefix-
+                # relaxed match on the first hyphen-split segment
+                # ("alice_crop.*") — handles the common "{name}-
+                # expanded" / "{name}-cropped" derived-artifact case.
+                # If THAT also misses AND there are multiple *_crop.*
+                # siblings, REFUSE to pick (silent wrong-identity
+                # scoring is worse than skipping similarity). Only
+                # fall back to mtime-newest *_crop.* when there's
+                # EXACTLY ONE candidate.
+                #
+                # All patterns use glob.escape so a stem like
+                # "selfie[final]" or "clip (1)" is matched literally,
+                # not as a glob character class. Same trap addressed in
+                # automation/rppg.py::resolve_produced_output for the
+                # rPPG metric-rename glob.
+                stem_candidates = []
+                if active_stem:
+                    stem_candidates.append(active_stem)
+                    # Prefix-relaxed: "alice-expanded" -> "alice".
+                    head = active_stem.split("-", 1)[0]
+                    if head and head != active_stem:
+                        stem_candidates.append(head)
+                # Exact + prefix-relaxed stem patterns (literal-escaped).
+                for stem_idx, stem_cand in enumerate(stem_candidates):
+                    label = (
+                        "glob_stem_exact" if stem_idx == 0
+                        else "glob_stem_prefix"
+                    )
+                    try:
+                        matches = [
+                            c for c in gen_dir.glob(
+                                f"{_glob.escape(stem_cand)}_crop.*"
+                            )
+                            if c.is_file()
+                        ]
+                    except OSError:
+                        matches = []
+                    if matches:
+                        matches.sort(key=_safe_mtime, reverse=True)
+                        for cand in matches:
+                            try:
+                                if cand.is_file():
+                                    _log_source(label, str(cand))
+                                    return str(cand)
+                            except (OSError, ValueError, TypeError):
+                                continue
+                # Last-resort generic pattern. ONLY return a winner
+                # if there is exactly ONE *_crop.* in this folder —
+                # multiple means we'd be guessing which subject's
+                # crop to score against. Skip rather than guess.
+                try:
+                    all_crops = [
+                        c for c in gen_dir.glob("*_crop.*")
+                        if c.is_file()
+                    ]
+                except OSError:
+                    all_crops = []
+                if len(all_crops) == 1:
+                    cand = all_crops[0]
+                    try:
+                        if cand.is_file():
+                            _log_source("glob_solo", str(cand))
+                            return str(cand)
+                    except (OSError, ValueError, TypeError):
+                        pass
+
         return None
 
     def _get_gen_dir(self) -> Optional[Path]:
@@ -2201,21 +2528,49 @@ class FaceCropTab(tk.Frame):
                     current_ops = increment_ops(current_ops, "exp")
 
                     sim = None
-                    if ref_path:
+                    # Re-resolve the crop reference RIGHT BEFORE each
+                    # similarity call (PR fix/step0-composite-and-rppg-v2.5).
+                    # The outer-scope ref_path captured at worker start
+                    # could be stale if the crop file moved or its
+                    # entry.exists flag went out of sync with disk
+                    # state. _resolve_live_crop_ref verifies on-disk and
+                    # falls back through last_crop_path + gen-images
+                    # glob before giving up.
+                    live_ref = self._resolve_live_crop_ref()
+                    if live_ref is None:
+                        # Gemini PR #53 round 5 MED: use the locally-
+                        # scoped tk_safe_log helper instead of an inline
+                        # winfo_toplevel().after — same widget-lifecycle
+                        # safety, less code, matches the rest of this
+                        # worker thread.
+                        tk_safe_log(
+                            f"Sim pass {pass_no}: skipped — no crop "
+                            f"reference on disk (looked in session "
+                            f"entries, _last_crop_path, "
+                            f"gen-images/*_crop.*).",
+                            "debug",
+                        )
+                    else:
                         try:
                             sim_val = compute_face_similarity(
-                                ref_path, result, report_cb=tk_safe_log,
+                                live_ref, result, report_cb=tk_safe_log,
                             )
                             if sim_val is not None:
                                 sim = f"{sim_val}%"
+                        except FileNotFoundError as exc:
+                            # Disk state changed between resolve and
+                            # compute. Downgrade to info — this is a
+                            # race, not a real failure.
+                            tk_safe_log(
+                                f"Sim pass {pass_no}: crop vanished "
+                                f"mid-call ({exc}); skipping silently.",
+                                "info",
+                            )
                         except Exception as exc:
-                            self.winfo_toplevel().after(
-                                0,
-                                lambda e=exc, i=pass_no:
-                                self.log(
-                                    f"Sim pass {i}: {type(e).__name__}: {e!r}",
-                                    "warning",
-                                ),
+                            tk_safe_log(
+                                f"Sim pass {pass_no}: "
+                                f"{type(exc).__name__}: {exc!r}",
+                                "warning",
                             )
 
                     per_pass_results.append((result, sim, dict(current_ops)))
@@ -2377,6 +2732,13 @@ class FaceCropTab(tk.Frame):
             "outpaint_composite_mode": self._outpaint_composite_var.get(),
             "outpaint_provider": self._outpaint_provider_var.get(),
             "outpaint_double_expand": self._outpaint_double_expand_var.get(),
+            # One-time reset markers — persisted as True so subsequent
+            # launches honor the user's sticky choice. v3 was added in
+            # PR #53 round 10 after v2 alone failed to reset some users
+            # whose config carried v2=true AND outpaint_double_expand=
+            # true simultaneously.
+            "outpaint_2x_default_reset_v2": True,
+            "outpaint_2x_default_reset_v3": True,
             "accordion_expanded": self._expanded_sections,
         }
         # Persist Step 0 face-crop expand prompt (Phase G of

@@ -38,7 +38,7 @@ def test_preserve_seamless_exact_center_and_outside_ring_blend(tmp_path: Path):
     raw.save(output_path)
     before = raw.copy()
 
-    gen._composite_onto_result(
+    ok = gen._composite_onto_result(
         str(output_path),
         src,
         margin_left,
@@ -48,6 +48,9 @@ def test_preserve_seamless_exact_center_and_outside_ring_blend(tmp_path: Path):
         "png",
         "preserve_seamless",
     )
+    # PR fix/step0-composite-and-rppg-v2.5: returns bool now (True on
+    # successful composite, False on any bail-out branch).
+    assert ok is True
     after = Image.open(output_path).convert("RGB")
 
     # A) center exactness
@@ -212,7 +215,7 @@ def test_fal_payload_keeps_zoom_out_zero(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(fal_utils, "fal_queue_submit", fake_queue_submit)
     monkeypatch.setattr(fal_utils, "fal_queue_poll", fake_queue_poll)
     monkeypatch.setattr(fal_utils, "fal_download_file", fake_download_file)
-    monkeypatch.setattr(gen, "_composite_onto_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(gen, "_composite_onto_result", lambda *_args, **_kwargs: True)
 
     out = gen.outpaint(
         image_path=str(src_path),
@@ -228,60 +231,108 @@ def test_fal_payload_keeps_zoom_out_zero(monkeypatch, tmp_path: Path):
     assert captured["payload"]["zoom_out_percentage"] == 0
 
 
-def test_fal_uses_uploaded_processed_image_for_composite(monkeypatch, tmp_path: Path):
+def test_fal_uses_composite_source_for_composite(monkeypatch, tmp_path: Path):
+    """PR #53 round 10: REVERTED rounds 5..9. The composite paste source
+    is `composite_source` (the downscaled uploaded image), NOT the
+    full-res original — and the margins are the preflight-adjusted
+    values (`adj_left/right/top/bottom`), NOT the user-requested
+    full-res margins. This is main's known-good provider-coordinate
+    geometry that the round-5..9 experiment broke (paste source +
+    margins must match the coordinate system fal generated for, or
+    the matchTemplate +-15px search window silently misaligns).
+
+    For source <= max upload size, preflight does NOT downscale so
+    adj margins == requested margins AND composite_source size ==
+    source size. To test the geometry contract WHERE IT MATTERS,
+    use a source large enough to trigger preflight scaling — then
+    assert adj margins are SMALLER than requested and composite_source
+    is SMALLER than the source.
+    """
     gen = OutpaintGenerator(api_key="x")
     src_path = tmp_path / "input.png"
-    Image.new("RGB", (320, 240), (1, 2, 3)).save(src_path)
-    _source_img, uploaded_img = _configure_fake_fal(
+    # Source big enough to trigger preflight scale-down at the
+    # fal envelope (1536px / 2.0 MP defaults).
+    Image.new("RGB", (3024, 4032), (1, 2, 3)).save(src_path)
+    _source_img, _uploaded_img = _configure_fake_fal(
         monkeypatch,
-        source_size=(320, 240),
-        uploaded_size=(300, 220),
-        downloaded_size=(460, 340),
+        source_size=(3024, 4032),
+        uploaded_size=(682, 910),  # what preflight downscale produces
+        downloaded_size=(1304, 1532),  # = composite_source + adj margins
     )
 
     captured = {}
 
-    def fake_composite(output_path, orig, margin_left, margin_right, margin_top, margin_bottom, output_format, composite_mode):
+    def fake_composite(
+        output_path, orig, margin_left, margin_right,
+        margin_top, margin_bottom, output_format, composite_mode,
+    ):
         captured["orig_size"] = orig.size
         captured["margins"] = (margin_left, margin_right, margin_top, margin_bottom)
         captured["mode"] = composite_mode
         captured["output_path"] = output_path
+        return True
 
     monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
 
     out = gen.outpaint(
         image_path=str(src_path),
         output_folder=str(tmp_path),
-        expand_left=30,
-        expand_right=30,
-        expand_top=20,
-        expand_bottom=20,
+        expand_left=700,
+        expand_right=700,
+        expand_top=700,
+        expand_bottom=700,
         provider="fal",
         composite_mode="feathered",
         edge_seal_px=0,
     )
 
     assert out is not None
-    assert captured["orig_size"] == uploaded_img.size
+    # composite_source = uploaded_processed_img.size (downscaled by
+    # preflight to fit the 1536px envelope). NOT full-res.
+    assert captured["orig_size"] == _uploaded_img.size
+    # Adjusted margins are STRICTLY SMALLER than the user-requested
+    # 700px on each side — preflight scaled them down proportionally.
+    # We don't pin a specific value because that's preflight math
+    # we'd duplicate fragilely; we just assert the scale-down happened.
+    assert all(0 < m < 700 for m in captured["margins"]), (
+        f"Expected adjusted margins < 700; got {captured['margins']}. "
+        "Composite is no longer in provider-coordinate space."
+    )
+    # And composite_source + adj margins should match the downloaded
+    # canvas (the geometry contract that makes alignment work).
+    cs_w, cs_h = captured["orig_size"]
+    adj_l, adj_r, adj_t, adj_b = captured["margins"]
+    assert cs_w + adj_l + adj_r == 1304
+    assert cs_h + adj_t + adj_b == 1532
     assert captured["mode"] == "feathered"
 
 
 def test_fal_edge_seal_upload_only_uses_unsealed_composite_source(monkeypatch, tmp_path: Path):
+    """Edge seal applies only to the upload copy. The composite source
+    must be the unsealed `processed_img` — round 10 reverted to
+    provider-coordinate compositing, so we assert `processed_img.size`
+    here (NOT the full-res source). For a 320x240 source that doesn't
+    trigger preflight scale-down, processed_img.size == source size.
+    """
     gen = OutpaintGenerator(api_key="x")
     src_path = tmp_path / "input.png"
     Image.new("RGB", (320, 240), (25, 35, 45)).save(src_path)
     _source_img, _uploaded_img = _configure_fake_fal(
         monkeypatch,
         source_size=(320, 240),
-        uploaded_size=(310, 230),
-        downloaded_size=(460, 340),
+        uploaded_size=(320, 240),  # no downscale needed at this size
+        downloaded_size=(380, 280),  # = 320 + 30 + 30 x 240 + 20 + 20
     )
 
     captured = {}
 
-    def fake_composite(output_path, orig, margin_left, margin_right, margin_top, margin_bottom, output_format, composite_mode):
+    def fake_composite(
+        output_path, orig, margin_left, margin_right,
+        margin_top, margin_bottom, output_format, composite_mode,
+    ):
         captured["orig_size"] = orig.size
         captured["sample_pixel"] = orig.getpixel((0, 0))
+        return True
 
     monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
 
@@ -297,25 +348,55 @@ def test_fal_edge_seal_upload_only_uses_unsealed_composite_source(monkeypatch, t
         edge_seal_px=8,
     )
     assert out is not None
-    # Unsealed source path should keep local processed dimensions, not uploaded sealed variant.
+    # processed_img (or uploaded_processed_img) — at this size it's
+    # the same as the source size since no preflight scale-down.
     assert captured["orig_size"] == (320, 240)
+    # Pixel matches the unsealed source: composite was NOT given
+    # the sealed upload copy.
+    assert captured["sample_pixel"] == (25, 35, 45)
 
 
-def test_fal_underflow_guard_skips_composite(monkeypatch, tmp_path: Path):
+def test_fal_underflow_resizes_to_expected_provider_canvas(monkeypatch, tmp_path: Path):
+    """PR #53 round 10 (REVERTED rounds 5..9): the always-composite
+    contract is preserved, but the resize target is the PROVIDER
+    expected canvas (composite_source + adj margins), NOT the full-
+    res target. fal.ai routinely clamps 1-2% smaller than preflight;
+    resizing to the small expected canvas keeps the matchTemplate
+    +-15px alignment window valid. Rounds 5..9 incorrectly resized
+    to a full-res target (3.4x upscale in the user's reproducer) and
+    the composite silently misaligned.
+
+    Underflow scenario: source 640x480 (no preflight scale needed
+    since < 1536px envelope), requested margins 200/200/100/100,
+    expected canvas 1040x680. Fake fal returns 1020x660 (a small
+    underflow). The resize MUST target 1040x680 (the expected
+    canvas), NOT some larger full-res-derived value.
+    """
     gen = OutpaintGenerator(api_key="x")
     src_path = tmp_path / "input.png"
     Image.new("RGB", (640, 480), (90, 60, 40)).save(src_path)
     _source_img, _uploaded_img = _configure_fake_fal(
         monkeypatch,
         source_size=(640, 480),
-        uploaded_size=(640, 480),
-        downloaded_size=(200, 150),
+        uploaded_size=(640, 480),  # no preflight downscale
+        downloaded_size=(1020, 660),  # 1.5-3% underflow vs expected 1040x680
     )
 
-    called = {"composite": 0}
+    captured = {}
 
-    def fake_composite(*_args, **_kwargs):
-        called["composite"] += 1
+    def fake_composite(
+        output_path, orig, margin_left, margin_right,
+        margin_top, margin_bottom, output_format, composite_mode,
+    ):
+        captured["called"] = True
+        captured["orig_size"] = orig.size
+        captured["margins"] = (margin_left, margin_right, margin_top, margin_bottom)
+        # Image on disk must already have been Lanczos-resized to the
+        # PROVIDER expected canvas BEFORE composite is invoked.
+        from PIL import Image as _Img
+        with _Img.open(output_path) as dl:
+            captured["on_disk_size"] = dl.size
+        return True
 
     monkeypatch.setattr(gen, "_composite_onto_result", fake_composite)
 
@@ -331,10 +412,25 @@ def test_fal_underflow_guard_skips_composite(monkeypatch, tmp_path: Path):
         edge_seal_px=0,
     )
     assert out is not None
-    assert called["composite"] == 0
+    assert captured.get("called") is True
+    # composite_source (640x480 — no preflight scale at this size).
+    assert captured["orig_size"] == (640, 480)
+    # Adjusted margins (== requested since no preflight scale).
+    assert captured["margins"] == (200, 200, 100, 100)
+    # On-disk resized to PROVIDER expected canvas (composite_source
+    # + adj margins): 640+200+200 = 1040 x 480+100+100 = 680. NOT a
+    # full-res target — the rounds-5..9 bug was resizing this to a
+    # much larger canvas which broke alignment.
+    assert captured["on_disk_size"] == (1040, 680)
 
 
-def test_fal_dimension_read_failure_skips_composite(monkeypatch, tmp_path: Path):
+def test_fal_dimension_read_failure_rejects_output(monkeypatch, tmp_path: Path):
+    """PR fix/step0-composite-and-rppg-v2.5: a genuinely unreadable
+    downloaded file is now treated as IO failure — return None,
+    delete the unreadable file, set error_detail. Previously the code
+    skipped composite but still returned the broken file path as
+    "success", which corrupted downstream stages.
+    """
     import fal_utils
 
     gen = OutpaintGenerator(api_key="x")
@@ -352,6 +448,7 @@ def test_fal_dimension_read_failure_skips_composite(monkeypatch, tmp_path: Path)
 
     def fake_composite(*_args, **_kwargs):
         called["composite"] += 1
+        return True
 
     def capture_log(message: str, level: str = "info"):
         logs.append((level, message))
@@ -386,9 +483,21 @@ def test_fal_dimension_read_failure_skips_composite(monkeypatch, tmp_path: Path)
         edge_seal_px=0,
     )
 
-    assert out is not None
+    assert out is None
     assert called["composite"] == 0
-    assert any(level == "warning" and "Could not read downloaded output dimensions" in message for level, message in logs)
+    # Error_detail set so callers can surface the failure to the user.
+    detail = gen.get_last_outpaint_error_detail()
+    assert detail and "download_unreadable" in detail
+    # The unreadable file is deleted (not left as a corruption hazard
+    # for downstream consumers that might glob for it).
+    if downloaded["path"]:
+        import os as _os
+        assert not _os.path.exists(downloaded["path"])
+    # Error log surfaces the read failure.
+    assert any(
+        level == "error" and "Could not read downloaded outpaint output" in message
+        for level, message in logs
+    )
 
 
 def test_bfl_pending_timeout_sets_reason_and_logs(monkeypatch, tmp_path: Path):

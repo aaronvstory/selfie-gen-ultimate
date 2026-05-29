@@ -2170,24 +2170,30 @@ class QueueManager:
             # ``--landmark-stride`` help, running MediaPipe only every
             # Nth frame and interpolating between via the ROIStabilizer
             # gives a "3-5x reduction in per-frame detection cost at
-            # negligible quality loss on mostly-still faces." The Kling
-            # output is almost always a slow controlled head turn
-            # (subject performs the prompted move at near-still speed),
-            # so stride 3 is the safe sweet spot — measurable speedup
-            # without touching the pulse-injection correctness path.
-            # User dial-back to 1 (every frame) via
-            # config["rppg_landmark_stride"] = 1 for the rare case of a
-            # fast-motion source. (PR fix/rppg-failure-visibility v2.5
-            # — user-asked speedup pass.)
+            # negligible quality loss on mostly-still faces."
+            #
+            # Default is 1 (every frame) for safety after PR #52's
+            # snapshot race produced unplayable output on a real user
+            # run. The snapshot race itself is now fixed
+            # (rPPG/rppg_injector.py::_snapshot_validates) and a
+            # playability gate (automation/rppg.py::_is_playable_video)
+            # catches future regressions, but stride 1 stays the
+            # default until we have local smoke-test proof that
+            # stride > 1 is safe on real Kling output. Users can opt
+            # into the 3-5x speedup via
+            # config["rppg_landmark_stride"] = 3 (or the automation
+            # alias automation_rppg_landmark_stride). CodeRabbit
+            # round 3 on PR #53 — keep this comment in sync with the
+            # actual default below.
             landmark_stride_raw = _cfg_get(
                 "rppg_landmark_stride",
                 "automation_rppg_landmark_stride",
-                3,
+                1,
             )
             try:
                 landmark_stride = max(1, int(landmark_stride_raw))
             except (TypeError, ValueError):
-                landmark_stride = 3
+                landmark_stride = 1
             run_cmd = [
                 str(launcher),
                 str(input_path),
@@ -2356,7 +2362,14 @@ class QueueManager:
                     resolve_produced_output,
                 )
 
-                produced = resolve_produced_output(output_path)
+                # Thread the queue's logger into the resolver so the
+                # playability gate's quarantine messages (PR #53)
+                # actually surface in the GUI log instead of being
+                # swallowed silently. Subagent H1 round 1.
+                produced = resolve_produced_output(
+                    output_path,
+                    progress_cb=lambda m, lvl="info": self.log(m, lvl),
+                )
                 if produced is not None:
                     # _parse_bool tolerates string-backed JSON
                     # ("false"/"0"/...) — a bare bool() treats the string
