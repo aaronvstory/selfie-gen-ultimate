@@ -185,19 +185,30 @@ rem P1 (codex PR #54): MediaPipe must install with --no-deps (Hard Rule #6).
 rem Installing the full requirements.txt with normal dependency resolution
 rem lets pip pull MediaPipe's own deps and break the TF/protobuf/numpy stack.
 rem Mirror launchers\windows\run_gui.bat :INSTALL_REQUIREMENTS -- filter
-rem mediapipe out, install the rest, then install it pinned with --no-deps.
+rem mediapipe out, install the rest (prefer wheels, fall back to source),
+rem then install the EXACT pinned mediapipe line read FROM requirements.txt
+rem with --no-deps. Reading the pin dynamically (not a hardcoded literal)
+rem keeps this self-heal from drifting when the requirements pin is bumped.
 set "RPPG_REQ_FILTERED=%TEMP%\rppg_req_%RANDOM%_%RANDOM%.txt"
 findstr /V /I /B "mediapipe" "%REPO_ROOT%\requirements.txt" > "%RPPG_REQ_FILTERED%"
-"!PYTHON_BIN!" -m pip install -r "%RPPG_REQ_FILTERED%"
+"!PYTHON_BIN!" -m pip install --only-binary :all: -r "%RPPG_REQ_FILTERED%"
 set "PIP_EXIT=!errorlevel!"
+if !PIP_EXIT! neq 0 (
+  echo   Retrying without binary constraint...
+  "!PYTHON_BIN!" -m pip install -r "%RPPG_REQ_FILTERED%"
+  set "PIP_EXIT=!errorlevel!"
+)
 if !PIP_EXIT! neq 0 (
   del "%RPPG_REQ_FILTERED%" >nul 2>&1
   exit /b !PIP_EXIT!
 )
-findstr /I /R "^[ ]*mediapipe" "%REPO_ROOT%\requirements.txt" >nul
-if !errorlevel! equ 0 (
-  echo   Installing MediaPipe separately with --no-deps...
-  "!PYTHON_BIN!" -m pip install --no-deps "mediapipe==0.10.35"
+set "RPPG_MEDIAPIPE_SPEC="
+for /f "usebackq tokens=* delims= " %%M in (`findstr /I /R "^[ ]*mediapipe" "%REPO_ROOT%\requirements.txt"`) do (
+  if not defined RPPG_MEDIAPIPE_SPEC set "RPPG_MEDIAPIPE_SPEC=%%M"
+)
+if defined RPPG_MEDIAPIPE_SPEC (
+  echo   Installing MediaPipe separately with --no-deps: !RPPG_MEDIAPIPE_SPEC!
+  "!PYTHON_BIN!" -m pip install --no-deps "!RPPG_MEDIAPIPE_SPEC!"
   set "PIP_EXIT=!errorlevel!"
 )
 del "%RPPG_REQ_FILTERED%" >nul 2>&1
