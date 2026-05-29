@@ -37,12 +37,25 @@ if str(DIST_DIR) not in sys.path:
 
 import release_prep  # type: ignore  # noqa: E402
 
-_API_KEY_FIELDS = (
-    "falai_api_key",
-    "freeimage_api_key",
-    "bfl_api_key",
-    "openrouter_api_key",
-)
+# Derive the secret-key blanklist from the single source of truth
+# (api_keys.API_KEY_SPECS) rather than hardcoding it. Code-review MEDIUM
+# (PR #54): a literal tuple is a secret-leak surface — if a 5th API key
+# is ever added to API_KEY_SPECS, the standard release_prep path picks it
+# up automatically (it iterates the spec), but a hardcoded list here would
+# silently ship the new key UNblanked into a zip the docstring calls "safe
+# to share." The hardcoded tuple is kept ONLY as the minimal-checkout
+# fallback (api_keys.py absent), where the share-safety contract still
+# holds because these are the keys that existed when this file was written.
+try:
+    from api_keys import API_KEY_SPECS as _API_KEY_SPECS  # type: ignore
+    _API_KEY_FIELDS = tuple(spec.config_key for spec in _API_KEY_SPECS)
+except ImportError:
+    _API_KEY_FIELDS = (
+        "falai_api_key",
+        "freeimage_api_key",
+        "bfl_api_key",
+        "openrouter_api_key",
+    )
 
 # Test-fixture exclusions added 2026-05-23. release_prep.py keeps these in the
 # bundle by default (and they're useful for the bench harness), but for a

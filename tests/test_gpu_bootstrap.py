@@ -457,3 +457,37 @@ def test_gpu_ready_cache_falls_through_when_probe_fails(monkeypatch):
     result = gpu_bootstrap.bootstrap("python_used")
     assert result == "gpu_installed_now"
     assert install_calls == [("python_used", 12)]
+
+
+def test_probe_cupy_parses_sentinel_line_despite_trailing_noise(monkeypatch):
+    """Code-review MEDIUM (PR #54): probe_cupy must read the CUPYVER=
+    sentinel line, not blindly take the last stdout line. CuPy's first
+    device init (or any import-chain library) can print notices AFTER the
+    version, which the old ``splitlines()[-1]`` would have stamped as the
+    'version'. Simulate a trailing warning and assert the real version
+    is still extracted."""
+    import types
+
+    def _fake_run(*args, **kwargs):
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout="CUPYVER=13.3.0\nUserWarning: cuDNN JIT cache warming...\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(gpu_bootstrap.subprocess, "run", _fake_run)
+    assert gpu_bootstrap.probe_cupy("python_unused") == "13.3.0"
+
+
+def test_probe_cupy_returns_none_when_sentinel_absent(monkeypatch):
+    """If the probe somehow emits no CUPYVER= line (crash before print,
+    truncated output), probe_cupy returns None rather than a junk string,
+    so the caller correctly treats the install as not-verified."""
+    import types
+
+    def _fake_run(*args, **kwargs):
+        return types.SimpleNamespace(
+            returncode=0, stdout="some unexpected chatter\n", stderr="")
+
+    monkeypatch.setattr(gpu_bootstrap.subprocess, "run", _fake_run)
+    assert gpu_bootstrap.probe_cupy("python_unused") is None

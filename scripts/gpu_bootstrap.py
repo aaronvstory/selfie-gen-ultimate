@@ -201,12 +201,18 @@ def probe_cupy(python_exe: str) -> Optional[str]:
     succeeds, not just on import. A broken/mismatched-CUDA CuPy install
     can import cleanly and only blow up on first device access.
     """
+    # Code-review MEDIUM (PR #54): emit a sentinel-prefixed version line and
+    # parse THAT, not the last stdout line. CuPy's first device init can print
+    # JIT-cache / deprecation notices to stdout, and any library in the import
+    # chain may print after us — taking [-1] blindly would stamp a garbage
+    # ``cupy_version`` like "UserWarning: ...". The sentinel makes the parse
+    # robust to trailing noise.
     probe_src = (
         "import sys; import cupy as cp;"
         "x = cp.asarray([1, 2, 3]);"
         "_ = cp.asnumpy(x);"
         "_ = cp.cuda.runtime.getDeviceCount();"
-        "print(cp.__version__)"
+        "print('CUPYVER=' + cp.__version__)"
     )
     try:
         proc = subprocess.run(
@@ -219,8 +225,11 @@ def probe_cupy(python_exe: str) -> Optional[str]:
         return None
     if proc.returncode != 0:
         return None
-    line = (proc.stdout or "").strip().splitlines()[-1:]
-    return line[0] if line else None
+    for line in reversed((proc.stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("CUPYVER="):
+            return line[len("CUPYVER="):] or None
+    return None
 
 
 def install_cupy(python_exe: str, cuda_major: int) -> tuple[bool, str]:
