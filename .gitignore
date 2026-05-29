@@ -109,4 +109,5 @@ oldcam-testing/*_looped.mp4
 # every run — useful locally for debugging but never tracked.
 rPPG/temp_iteration_*.mp4
 rPPG/best_iteration_snapshot.mp4
+rPPG/best_iteration_snapshot_*.mp4
 rPPG/iteration_history/

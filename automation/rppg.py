@@ -43,6 +43,7 @@ import queue as _queue
 import re
 import shlex
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -136,8 +137,299 @@ def is_rppg_artifact(path: Path) -> bool:
     return bool(re.search(r"-rppg(?:$| |-)", stem))
 
 
-def resolve_produced_output(requested: Path) -> Optional[Path]:
-    """Find the file the injector actually produced.
+_FFPROBE_NAL_PATTERNS: Tuple[str, ...] = (
+    "Invalid NAL unit size",
+    "Error splitting the input into NAL units",
+    "missing picture in access unit",
+    "moov atom not found",
+)
+
+# In-memory blacklist of corrupt files we've seen this process. Populated
+# by _quarantine_corrupt() when the on-disk rename fails (Windows file-
+# handle contention is the common case — Defender / Explorer / a still-
+# running injector child holds the file). Without this, subsequent
+# resolve_produced_output() passes re-glob the same file, re-run
+# _is_playable_video on it (potentially a 180s timeout on a torn mp4),
+# and in rppg_per_oldcam_fanout mode this compounds to many-minute stalls.
+# Subagent H1 round 5.
+_corrupt_blacklist: set[str] = set()
+
+
+def _blacklist_key(path: Path) -> str:
+    """Canonical blacklist key for *path*.
+
+    Uses ``os.path.realpath`` + ``os.path.normcase`` so the same on-
+    disk file maps to the same key even when the caller passes
+    different-cased paths (NTFS / APFS default to case-insensitive
+    filesystems) or relative-path variants (`foo/../foo/bar.mp4` vs
+    `foo/bar.mp4`). The ~1ms realpath cost is acceptable for the
+    one-shot blacklist-add and per-candidate blacklist-check.
+    Subagent M4 PR #53 round 9: the prior `Path.absolute()` key
+    treated `C:\\Foo\\Bar.mp4` and `c:\\foo\\BAR.mp4` as different
+    blacklist entries even though they reference the same file.
+    """
+    return os.path.normcase(os.path.realpath(str(path)))
+
+
+def _is_blacklisted(path: Path) -> bool:
+    """True if *path* is in the corrupt blacklist (case-insensitive
+    on Windows/macOS default filesystems, symlink-resolved)."""
+    return _blacklist_key(path) in _corrupt_blacklist
+
+
+def _blacklist(path: Path) -> None:
+    """Add *path* to the corrupt blacklist."""
+    _corrupt_blacklist.add(_blacklist_key(path))
+
+
+def _is_playable_secondary(
+    path: Path, ffprobe_bin: str = "ffprobe",
+) -> Optional[bool]:
+    """Cheap secondary playability check used when the primary
+    (-count_frames) call times out. Parses the container header
+    only — subsecond on healthy files; fast-fails on a torn mp4
+    with a recognizable diagnostic.
+
+    Returns:
+        True   = container probe succeeded, no corruption indicator
+        False  = ffprobe reported a corruption diagnostic
+        None   = couldn't decide (own timeout, ffprobe missing, etc.)
+
+    Subagent H2 round 5 — without this, the fail-open path on
+    -count_frames timeout would ship the very corrupt files the
+    gate is meant to catch (a torn mp4 has good headers + bad
+    deep stream = exactly the input that hangs -count_frames).
+    """
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe_bin, "-v", "error", "-hide_banner",
+                "-show_error", "-show_streams",
+                "-of", "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,  # subsecond on healthy files; cap noise
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    stderr = proc.stderr or ""
+    # Same NAL/splitting/picture patterns as the primary check —
+    # even with -show_error -show_streams, container-level corruption
+    # surfaces on stderr.
+    for pat in _FFPROBE_NAL_PATTERNS:
+        if pat in stderr:
+            return False
+    # Look at the JSON for an "error" object too (show_error puts it
+    # in stdout when the container is unreadable).
+    stdout = (proc.stdout or "").strip()
+    if stdout:
+        try:
+            import json as _json
+            payload = _json.loads(stdout)
+        except (ValueError, TypeError):
+            payload = None
+        if isinstance(payload, dict) and "error" in payload:
+            return False
+    if proc.returncode != 0:
+        return False
+    return True
+
+
+def _is_playable_video(
+    path: Path,
+    ffprobe_bin: str = "ffprobe",
+    progress_cb: ProgressCB = None,
+) -> bool:
+    """True if *path* is a valid, decodable video file.
+
+    Shells out to ``ffprobe -v error -count_frames -select_streams v:0
+    -show_entries stream=nb_read_frames``. Returns False if:
+
+    * ffprobe exits non-zero, OR
+    * stderr matches a known H.264 / container-corruption pattern
+      (see :data:`_FFPROBE_NAL_PATTERNS`), OR
+    * stdout's ``nb_read_frames`` is missing, 0, or unparseable.
+
+    If ``ffprobe`` is not on PATH the gate is skipped (returns True)
+    with a one-time warning on stderr — we'd rather ship POSSIBLY-broken
+    than ship NOTHING just because the validator is unavailable on this
+    machine. ``dependency_checker.py`` enforces ffprobe presence at
+    first launch on both macOS and Windows; neither launcher chain
+    bundles it in the dist zip (subagent M2 round 5 — earlier comment
+    incorrectly claimed it was bundled).
+
+    Timeout semantics (Codex P2 PR #53 round 4): we fail-OPEN on
+    timeout. NAL corruption is detected by ACTIVE stderr error patterns;
+    a timeout means "ffprobe took too long to validate", which is
+    ambiguous (could be a legit long/high-bitrate video, could be a
+    real hang). Quarantining on timeout previously caused a successful
+    injection of a long clip to silently fall back to ``-NORPPG``.
+    Failing open preserves the user's deliverable — if the file IS
+    corrupt they'll notice on play. The base timeout was also bumped
+    60s -> 180s to give 3x more headroom for typical Kling output.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe_bin, "-v", "error",
+                "-count_frames", "-select_streams", "v:0",
+                "-show_entries", "stream=nb_read_frames",
+                "-of", "default=nokey=1:noprint_wrappers=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except FileNotFoundError:
+        if not getattr(_is_playable_video, "_warned_missing", False):
+            warn_msg = (
+                "[rppg] WARNING: ffprobe not on PATH; playability gate "
+                "DISABLED — corrupt rPPG outputs will NOT be quarantined. "
+                "Install ffmpeg (which provides ffprobe) to re-enable the "
+                "gate."
+            )
+            print(warn_msg, file=sys.stderr)
+            # Also surface to the in-app progress_cb so GUI users see it
+            # in the log display (stderr goes to launcher log file only).
+            # Subagent M7 round 1.
+            _report(progress_cb, warn_msg, "warning")
+            _is_playable_video._warned_missing = True  # type: ignore[attr-defined]
+        return True
+    except subprocess.TimeoutExpired:
+        # Subagent H2 round 5: pure fail-open defeats the gate's
+        # primary purpose — a torn snapshot has correct H.264 sync
+        # words at the top but breaks deep in the stream, and that
+        # is EXACTLY when -count_frames hangs (long reads behind
+        # -v error). So before declaring playable on timeout, run a
+        # cheap secondary check that parses the container header
+        # only: ffprobe -v error -i <path> -hide_banner -show_error
+        # -of json. Subsecond on healthy files; fast-fails with a
+        # "Invalid data found when processing input" / corrupt
+        # container error on torn ones. We treat that as REJECTED
+        # (return False) — same as the active NAL pattern match in
+        # the success path. Only if the secondary check ALSO can't
+        # decide (its own timeout, ffprobe missing, no diagnostic
+        # output) do we fall through to the fail-open behavior.
+        secondary = _is_playable_secondary(path, ffprobe_bin)
+        if secondary is False:
+            reject_msg = (
+                f"[rppg] playability gate: primary check timed out on "
+                f"{path.name} (180s) AND secondary container probe "
+                f"rejected it as corrupt. Quarantining."
+            )
+            print(reject_msg, file=sys.stderr)
+            _report(progress_cb, reject_msg, "warning")
+            return False
+        # secondary is True (clean) or None (inconclusive — own
+        # timeout or ffprobe missing). Disambiguate in the log so a
+        # later "the file was actually broken" report doesn't have
+        # to ask which branch fired. PR #53 round 8 (CodeRabbit).
+        secondary_note = (
+            "secondary container probe found no corruption indicator"
+            if secondary is True
+            else "secondary container probe was INCONCLUSIVE "
+                 "(its own timeout or ffprobe missing)"
+        )
+        timeout_msg = (
+            f"[rppg] playability gate timed out validating "
+            f"{path.name} (180s); {secondary_note}, "
+            "accepting as playable. If the final video is actually "
+            "corrupt, re-run with a longer ffprobe timeout or "
+            "inspect manually."
+        )
+        print(timeout_msg, file=sys.stderr)
+        _report(progress_cb, timeout_msg, "warning")
+        return True
+    except OSError:
+        # Real ffprobe invocation failure (binary corrupt, permission
+        # denied). Treat as gate-unavailable, fail-open same as the
+        # FileNotFoundError branch.
+        return True
+    if proc.returncode != 0:
+        return False
+    stderr = proc.stderr or ""
+    for pat in _FFPROBE_NAL_PATTERNS:
+        if pat in stderr:
+            return False
+    stdout = (proc.stdout or "").strip()
+    if not stdout:
+        return False
+    try:
+        nb_frames = int(stdout.splitlines()[0].strip())
+    except (ValueError, IndexError):
+        return False
+    return nb_frames > 0
+
+
+def _quarantine_corrupt(path: Path, progress_cb: ProgressCB = None) -> None:
+    """Rename *path* to ``<name>.corrupt-<ts>-<rand>.mp4.broken`` so
+    future :func:`resolve_produced_output` glob passes don't re-select
+    it AND the user can still post-mortem the file.
+
+    Glob in :func:`resolve_produced_output` matches
+    ``{stem} - *{ext}`` so a ``.corrupt-...`` suffix breaks the
+    extension match and excludes the file from future selection.
+
+    When the rename FAILS (Windows file-handle contention is the
+    common case — Defender / Explorer / a still-running injector
+    child holds the file), we add *path* to an in-memory blacklist
+    (:data:`_corrupt_blacklist`) so :func:`resolve_produced_output`
+    skips it on subsequent passes instead of re-running ffprobe
+    (which can stall 180s per call on a torn mp4). Subagents H1 + L1
+    round 5.
+    """
+    if not path.exists():
+        return
+    # Append a random suffix so two quarantines in the same second
+    # don't silently overwrite each other (L1 — strftime granularity
+    # is one second).
+    import secrets as _secrets
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    rand = _secrets.token_hex(3)
+    quarantine = path.with_name(
+        f"{path.stem}.corrupt-{ts}-{rand}{path.suffix}.broken"
+    )
+    try:
+        # Path.replace is the idiomatic Pathlib equivalent of os.replace
+        # for two Path objects — cleaner than the str() round-trip.
+        # Gemini PR #53 stylistic suggestion.
+        path.replace(quarantine)
+        _report(
+            progress_cb,
+            f"rPPG: quarantined corrupt candidate {path.name} -> "
+            f"{quarantine.name} (ffprobe validation failed)",
+            "warning",
+        )
+    except OSError as exc:
+        # Rename failed (Windows file-handle contention is the common
+        # case — Defender / Explorer / a still-running injector child
+        # holds the file). PR #53 round 6 (reviewer): we WIRED the
+        # in-memory _corrupt_blacklist for exactly this case but the
+        # earlier round forgot to actually CALL _blacklist here, so
+        # the next resolve_produced_output pass would re-pick the
+        # corrupt file and re-run the 180s ffprobe check on it. Now
+        # the file's absolute path is recorded so subsequent resolver
+        # passes skip it before the expensive validation.
+        _blacklist(path)
+        _report(
+            progress_cb,
+            f"rPPG: could not quarantine corrupt candidate {path.name} "
+            f"({type(exc).__name__}: {exc}); added to in-memory "
+            f"blacklist so the resolver skips it on subsequent passes "
+            f"this session. Restart the process to clear the blacklist.",
+            "warning",
+        )
+
+
+def resolve_produced_output(
+    requested: Path,
+    *,
+    progress_cb: ProgressCB = None,
+) -> Optional[Path]:
+    """Find the newest PLAYABLE file the injector actually produced.
 
     Empirically (verified via oldcam-testing/rppg_harness.py against the
     real tool) the injector takes our ``--output`` of ``{stem}-rppg{ext}``
@@ -145,13 +437,34 @@ def resolve_produced_output(requested: Path) -> Optional[Path]:
     -<harmonic>{ext}`` regardless of ``--output`` — the documented
     deterministic-path contract does NOT hold. So accept either the exact
     requested path or the metric-suffixed sibling, whichever is newest.
-    Returns None if nothing matching was produced (graceful-skip caller).
+
+    Each candidate (newest first) is validated via :func:`_is_playable_video`.
+    Corrupt candidates are quarantined (renamed with ``.corrupt-<ts>.broken``)
+    so they are excluded from future selection AND the user can still
+    inspect them. Returns the newest playable candidate, or ``None`` if
+    nothing playable was produced (graceful-skip caller — queue marks
+    ``-NORPPG`` on the kling stem).
+
+    Why a single source of truth: both the automation pipeline AND
+    the GUI queue call into this resolver after the launcher exits;
+    gating playability HERE protects both surfaces. Previously
+    (PR #52) the resolver returned the newest candidate unconditionally
+    — a corrupt rPPG produced by the snapshot race shipped as the final
+    deliverable.
     """
     stem = requested.stem  # e.g. "<clip>-rppg"
     ext = requested.suffix
     parent = requested.parent
     if not parent.is_dir():
-        return requested if requested.exists() else None
+        if requested.exists():
+            # Skip if blacklisted from a prior failed-quarantine pass
+            # in the same process (PR #53 round 6).
+            if _is_blacklisted(requested):
+                return None
+            if _is_playable_video(requested, progress_cb=progress_cb):
+                return requested
+            _quarantine_corrupt(requested, progress_cb)
+        return None
     # The injector's rename is specifically "<stem> - <metrics><ext>" with a
     # space-hyphen-space separator (rPPG/rppg_injector.py add_metric_suffix).
     # Match ONLY that exact form (not a loose "<stem>*<ext>" which would also
@@ -177,7 +490,20 @@ def resolve_produced_output(requested: Path) -> Optional[Path]:
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    return candidates[0] if candidates else None
+    for cand in candidates:
+        # PR #53 round 6 (reviewer): skip blacklisted candidates BEFORE
+        # the expensive _is_playable_video call. The blacklist is
+        # populated when _quarantine_corrupt's rename failed (Windows
+        # handle-contention typically). Without this short-circuit,
+        # in rppg_per_oldcam_fanout mode a locked corrupt file would
+        # eat 180s of ffprobe per resolver invocation, per oldcam
+        # version — multi-minute stalls.
+        if _is_blacklisted(cand):
+            continue
+        if _is_playable_video(cand, progress_cb=progress_cb):
+            return cand
+        _quarantine_corrupt(cand, progress_cb)
+    return None
 
 
 # The 5 metrics the injector embeds, in the exact order
@@ -962,18 +1288,23 @@ def run_rppg(
     kinematic preflight. Per docs/rppg-wiring.md the gate is README-
     marked untested.
 
-    *landmark_stride* (default ``1``): detect facial landmarks on
-    every frame — the injector's own default and the quality-first
-    setting. Per the injector's ``--landmark-stride`` documentation,
-    running MediaPipe face detection only every Nth frame (with the
-    ROIStabilizer carrying the shape between detections) gives a
-    3-5x reduction in per-frame detection cost at "negligible quality
-    loss on mostly-still faces." Set to ``3`` via
-    ``rppg_landmark_stride`` / ``automation_rppg_landmark_stride``
-    config when you want the speedup on slow controlled head moves;
-    we ship 1 as the safe default so a fast-motion clip is never
-    silently degraded (user dial-back from the 2026-05-25 v2.5
-    speedup pass — quality-first reverted).
+    *landmark_stride* (default ``1``): per the injector's own
+    ``--landmark-stride`` documentation, running MediaPipe face
+    detection only every Nth frame (with the ROIStabilizer carrying
+    the shape between detections) gives a 3-5x reduction in per-frame
+    detection cost at "negligible quality loss on mostly-still faces."
+
+    Reverted from 3 to 1 in the fix/step0-composite-and-rppg-v2.5
+    branch after PR #52 shipped 3 as the default and a user reported
+    unplayable output (ffprobe Invalid NAL unit size). The root
+    cause was the iter-best snapshot race (now fixed via tmp-validate
+    -atomic-replace in rPPG/rppg_injector.py + a shared playability
+    gate in :func:`resolve_produced_output`), but until we have local
+    smoke-test proof that stride=3 is safe on real Kling output, the
+    slow-but-correct default is the right ship state. Power users
+    can still opt into the speedup via
+    ``automation_rppg_landmark_stride`` in config or
+    ``rppg_landmark_stride`` in the GUI config.
 
     *keep_metrics* selects the delivered filename: ``True`` keeps the
     injector's ``{stem}-rppg - <metrics>{ext}``; ``False`` (default)
@@ -1046,14 +1377,15 @@ def run_rppg(
         cmd.append("--skip-kinematic-gate")
     # Landmark stride — primary on-CPU speedup lever (3-5x reduction in
     # per-frame mediapipe detection cost). The injector's own default
-    # is 1 (every frame); we default the wrapper to 1 too (quality-
-    # first) and let callers raise it via
-    # ``automation_rppg_landmark_stride`` in the pipeline or
-    # ``rppg_landmark_stride`` in the GUI config when they want the
-    # speedup on near-still source.
+    # is 1; we override to the caller-supplied value (default 1 from
+    # the signature — reverted from 3 in PR fix/step0-composite-and-
+    # rppg-v2.5; users can opt back into 3 via
+    # automation_rppg_landmark_stride in the pipeline +
+    # rppg_landmark_stride in the GUI config).
     try:
         stride = max(1, int(landmark_stride))
     except (TypeError, ValueError):
+        # Invalid input -> fall back to the signature default (safe).
         stride = 1
     if stride > 1:
         cmd.extend(["--landmark-stride", str(stride)])
@@ -1156,9 +1488,14 @@ def run_rppg(
             _report(progress_cb, "  (no stdout/stderr captured)", "warning")
         return None
 
-    produced = resolve_produced_output(output_path)
+    produced = resolve_produced_output(output_path, progress_cb=progress_cb)
     if produced is None:
-        _report(progress_cb, "rPPG ran but output missing; keeping pre-rPPG video.", "warning")
+        _report(
+            progress_cb,
+            "rPPG ran but no playable output found; keeping pre-rPPG video "
+            "(corrupt candidates, if any, have been quarantined with .broken).",
+            "warning",
+        )
         return None
     final = finalize_rppg_output(
         produced, output_path, keep_metrics=keep_metrics, progress_cb=progress_cb

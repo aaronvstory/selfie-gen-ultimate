@@ -2718,6 +2718,12 @@ class KlingGUIWindow:
             splitlist_fn = None
         files = parse_dnd_paths(data, splitlist_fn=splitlist_fn, require_exists=True)
 
+        # PR #53 round 10: classify before ingest so the drop-zone
+        # status banner can tell the user WHY their drop didn't add
+        # anything (was just "No valid images found" generically).
+        from path_utils import is_video_path as _is_video
+        any_video = any(_is_video(p) for p in files)
+
         added = self._add_input_images_to_session(files)
 
         # Show status on floating drop zone
@@ -2725,6 +2731,11 @@ class KlingGUIWindow:
             status = self._drop_zone_status
             if added:
                 status.config(text=f"Added {added} file(s)", fg=COLORS.get("success", "#50C878"))
+            elif any_video:
+                status.config(
+                    text="Videos go in Step 3 — drop images only here",
+                    fg=COLORS.get("warning", "#FFA500"),
+                )
             else:
                 status.config(text="No valid images found", fg=COLORS.get("warning", "#FFA500"))
             self.root.after(2000, lambda s=status: s.config(text="") if s.winfo_exists() else None)
@@ -4263,7 +4274,24 @@ class KlingGUIWindow:
     def _add_input_images_to_session(self, files: List[str]) -> int:
         """Add input images to working session with front-image session rollover prompt."""
         valid_files: List[str] = []
+        # PR #53 round 10: surface a friendly message when the user
+        # drops/selects video files in the image zone (was cryptic
+        # "Skipped carousel add: foo.mp4 (unsupported extension: .mp4)"
+        # before). Detect by extension AND verify the file actually
+        # exists — otherwise a stale/missing .mp4 path gets the
+        # misleading "videos aren't accepted here" instead of the
+        # accurate "file not found" reason (subagent L2 round 11).
+        #
+        # Two-pass to honor the "1 collapsed line for multi-drop"
+        # promise (subagent L1 round 11 caught the prior code emitting
+        # both per-file AND summary): first pass classifies each path,
+        # second pass logs based on the collected counts.
+        from path_utils import is_video_path as _is_video
+        skipped_videos: List[str] = []
         for path in files:
+            if _is_video(path) and os.path.isfile(path):
+                skipped_videos.append(path)
+                continue
             ok, reason = preflight_image_path(path, allowed_exts=VALID_EXTENSIONS)
             if not ok:
                 self._log(
@@ -4277,6 +4305,20 @@ class KlingGUIWindow:
                 )
                 continue
             valid_files.append(path)
+        # Log video skips: per-file if 1, single summary if 2+.
+        if len(skipped_videos) == 1:
+            self._log(
+                f"Videos aren't accepted here — use the Step 3 Video "
+                f"tab for video files. Skipped: "
+                f"{os.path.basename(skipped_videos[0])}",
+                "warning",
+            )
+        elif len(skipped_videos) > 1:
+            self._log(
+                f"{len(skipped_videos)} video file(s) skipped — drop "
+                f"them into the Step 3 Video drop zone instead.",
+                "warning",
+            )
         if not valid_files:
             return 0
 

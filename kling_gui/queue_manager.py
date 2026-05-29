@@ -2166,16 +2166,25 @@ class QueueManager:
                 "automation_rppg_skip_kinematic_gate",
                 True,
             )
-            # Landmark-detection stride. Default 1 (detect every frame)
-            # — the injector's own default and the quality-first choice.
-            # User dial-up to 3 via ``rppg_landmark_stride`` /
-            # ``automation_rppg_landmark_stride`` enables the 3-5x
-            # speedup at the cost of measurable quality loss on
-            # fast-motion source. (User dial-back from the 2026-05-25
-            # v2.5 speedup pass — quality-first reverted because Kling
-            # output occasionally contains a quicker move than the
-            # prompt asks for, and silently degrading those clips is
-            # worse than the 3-5x slowdown on the slow-motion majority.)
+            # Landmark-detection stride: per the injector's own
+            # ``--landmark-stride`` help, running MediaPipe only every
+            # Nth frame and interpolating between via the ROIStabilizer
+            # gives a "3-5x reduction in per-frame detection cost at
+            # negligible quality loss on mostly-still faces."
+            #
+            # Default is 1 (every frame) for safety after PR #52's
+            # snapshot race produced unplayable output on a real user
+            # run. The snapshot race itself is now fixed
+            # (rPPG/rppg_injector.py::_snapshot_validates) and a
+            # playability gate (automation/rppg.py::_is_playable_video)
+            # catches future regressions, but stride 1 stays the
+            # default until we have local smoke-test proof that
+            # stride > 1 is safe on real Kling output. Users can opt
+            # into the 3-5x speedup via
+            # config["rppg_landmark_stride"] = 3 (or the automation
+            # alias automation_rppg_landmark_stride). CodeRabbit
+            # round 3 on PR #53 — keep this comment in sync with the
+            # actual default below.
             landmark_stride_raw = _cfg_get(
                 "rppg_landmark_stride",
                 "automation_rppg_landmark_stride",
@@ -2385,7 +2394,14 @@ class QueueManager:
                     resolve_produced_output,
                 )
 
-                produced = resolve_produced_output(output_path)
+                # Thread the queue's logger into the resolver so the
+                # playability gate's quarantine messages (PR #53)
+                # actually surface in the GUI log instead of being
+                # swallowed silently. Subagent H1 round 1.
+                produced = resolve_produced_output(
+                    output_path,
+                    progress_cb=lambda m, lvl="info": self.log(m, lvl),
+                )
                 if produced is not None:
                     # _parse_bool tolerates string-backed JSON
                     # ("false"/"0"/...) — a bare bool() treats the string

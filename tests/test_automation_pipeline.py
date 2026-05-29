@@ -1949,12 +1949,18 @@ def test_pipeline_rppg_required_failure_marks_case_failed(tmp_path: Path, monkey
     assert step.get("status") == "failed"
 
 
-def test_resolve_produced_output_handles_metric_suffix_rename(tmp_path):
+def test_resolve_produced_output_handles_metric_suffix_rename(tmp_path, monkeypatch):
     """The real injector renames our --output {stem}-rppg{ext} to
     {stem}-rppg - <snr>-<phase>-<temporal>-<motion>-<harmonic>{ext}
     regardless of --output (verified via oldcam-testing/rppg_harness.py
     against the real tool). resolve_produced_output must find the renamed
     file, not insist on the exact requested path."""
+    # PR fix/step0-composite-and-rppg-v2.5 added a ffprobe playability
+    # gate that rejects garbage bytes (which these test fixtures use).
+    # Patch the gate to always-True so this test exercises the glob/
+    # mtime-ranking logic specifically.
+    import automation.rppg as _rppg_mod
+    monkeypatch.setattr(_rppg_mod, "_is_playable_video", lambda _p, **_kw: True)
     from automation.rppg import resolve_produced_output
 
     requested = tmp_path / "clip-rppg.mp4"
@@ -1991,12 +1997,16 @@ def test_resolve_produced_output_handles_metric_suffix_rename(tmp_path):
     assert resolve_produced_output(empty / "x-rppg.mp4") is None
 
 
-def test_resolve_produced_output_ignores_loose_siblings(tmp_path):
+def test_resolve_produced_output_ignores_loose_siblings(tmp_path, monkeypatch):
     """The resolver must match ONLY the injector's exact rename form
     '<stem> - <metrics><ext>' (space-hyphen-space), never a loose
     '<stem>-<anything><ext>' sibling or the input itself. Locks the
     self-review hardening (a greedy '<stem>*<ext>' glob could return the
     un-injected input on a re-run)."""
+    # See test_resolve_produced_output_handles_metric_suffix_rename for
+    # why we bypass the ffprobe gate here.
+    import automation.rppg as _rppg_mod
+    monkeypatch.setattr(_rppg_mod, "_is_playable_video", lambda _p, **_kw: True)
     from automation.rppg import resolve_produced_output
 
     requested = tmp_path / "clip-rppg.mp4"
@@ -2123,7 +2133,7 @@ def test_stream_subprocess_with_timeout_edge_cases(tmp_path):
     assert rc == 0 and len(lines) == 300
 
 
-def test_resolve_produced_output_handles_glob_metacharacters(tmp_path):
+def test_resolve_produced_output_handles_glob_metacharacters(tmp_path, monkeypatch):
     """Regression (refine-loop self-review, PR #39): real Kling/oldcam
     stems can contain glob metacharacters — "selfie[final]", "clip (1)",
     "v[2]-oldcam-...". Unescaped, Path.glob() treats "[..]" as a char
@@ -2131,6 +2141,10 @@ def test_resolve_produced_output_handles_glob_metacharacters(tmp_path):
     on a SUCCESSFUL injection. resolve_produced_output must glob.escape
     the literal stem. (Note: "?" / "*" can't be Windows filenames, so
     "[]" is the realistic offender; the others are escaped defensively.)"""
+    # See test_resolve_produced_output_handles_metric_suffix_rename for
+    # why we bypass the ffprobe gate here.
+    import automation.rppg as _rppg_mod
+    monkeypatch.setattr(_rppg_mod, "_is_playable_video", lambda _p, **_kw: True)
     from automation.rppg import resolve_produced_output
 
     for stem in ("selfie[final]-rppg", "v[2]-oldcam-v24-rppg", "clip (1)-rppg", "a+b{x}-rppg"):

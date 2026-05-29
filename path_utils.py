@@ -542,6 +542,21 @@ def sanitize_filename(name: str, default_stem: str = "untitled") -> str:
     return f"{stem}{ext}"
 
 
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
+"""Extensions the GUI treats as video files. Mirrors the set used by
+``kling_gui.image_state._VIDEO_EXTENSIONS``; the two are intentionally
+kept in sync. PR #53 round 10 exposed this here so non-GUI modules
+(image-ingest preflight, folder scanners, etc.) can disambiguate
+video files from images without importing the GUI package."""
+
+
+def is_video_path(path: str) -> bool:
+    """True if *path*'s extension is in :data:`VIDEO_EXTENSIONS`."""
+    if not path:
+        return False
+    return os.path.splitext(path)[1].lower() in VIDEO_EXTENSIONS
+
+
 def preflight_image_path(path: str, allowed_exts: Optional[Set[str]] = None) -> Tuple[bool, str]:
     """Perform a lightweight image path validation for GUI ingest flows."""
     if not path:

@@ -158,10 +158,18 @@ def _should_skip(path: Path) -> bool:
 
 # Machine-specific / per-install fields blanked in the shipped config
 # (everything else of the user's current state is preserved verbatim).
+#
+# v2.7 dist-build audit (2026-05-28) caught two "last_*" path fields that
+# remembered the dev's most-recent input file/folder. The video-inspector
+# one leaked a subject's full name in the path string — CLAUDE.md Trap 4
+# (PII in working-tree-only files). Adding them here so the shipped zip
+# stays subject-name-free and machine-path-free.
 _DIST_BLANKED_PATH_KEYS = (
     "output_folder",
     "automation_root_folder",
     "selfie_output_folder",
+    "oldcam_last_source_video",
+    "video_inspector_last_folder",
 )
 # window_geometry is intentionally NOT blanked (user 2026-05-19: ship
 # the dev's window sizing too — everything except API keys).
@@ -318,6 +326,16 @@ def build_sanitized_config(
     # composite modes are forced.
     config["outpaint_double_expand"] = bool(
         template.get("outpaint_double_expand", False)
+    )
+    # Pre-stamp the one-time migration markers so a fresh-bundle
+    # launch does not re-fire any migration (it's a no-op anyway, but
+    # this keeps the "first launch is silent" promise).
+    # PR fix/step0-composite-and-rppg-v2.5 (v2) + round 10 (v3).
+    config["outpaint_2x_default_reset_v2"] = bool(
+        template.get("outpaint_2x_default_reset_v2", True)
+    )
+    config["outpaint_2x_default_reset_v3"] = bool(
+        template.get("outpaint_2x_default_reset_v3", True)
     )
     # v2.3 ship defaults (user request 2026-05-22): loop OFF.
     # Dev kling_config.json typically still carries ``loop_videos: True``

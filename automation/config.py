@@ -127,16 +127,24 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_rppg_iterate_from_baseline": True,
     "automation_rppg_skip_diagnosis": True,
     "automation_rppg_skip_kinematic_gate": True,
-    # Landmark-detection stride for the rPPG injector. Default 1
-    # (every frame) — the injector's own default and the quality-first
-    # setting; we reverted the 2026-05-25 v2.5 default-of-3 speedup
-    # pass on 2026-05-27 because Kling output occasionally moves faster
-    # than the prompt asks for and silently degrading those clips is
-    # worse than the slowdown on the slow-majority. Raise to 3 to
-    # restore the 3-5x speedup on confirmed near-still source. (Once
-    # the auto-NVIDIA bootstrap activates CuPy on a CUDA host the
-    # per-frame mediapipe cost matters far less anyway.) The GUI also
-    # accepts the bare ``rppg_landmark_stride`` alias.
+    # Landmark-detection stride for the rPPG injector. Per its own
+    # --landmark-stride documentation, running MediaPipe face landmark
+    # detection only every Nth frame (with the ROIStabilizer carrying
+    # the shape between detections) gives a 3-5x reduction in per-frame
+    # detection cost at "negligible quality loss on mostly-still faces."
+    #
+    # Default reverted from 3 to 1 in fix/step0-composite-and-rppg-v2.5
+    # after PR #52 shipped 3 + a snapshot-race regression that produced
+    # unplayable -rppg.mp4 outputs. The snapshot race itself is now
+    # fixed (rPPG/rppg_injector.py:_snapshot_validates) and the playability
+    # gate (automation/rppg.py::_is_playable_video) catches future
+    # regressions, but until we have local smoke-test proof that
+    # stride>1 is safe on real Kling output the slow-but-correct default
+    # is the right ship state. Power users can set
+    # ``automation_rppg_landmark_stride`` to 3 (or the GUI alias
+    # ``rppg_landmark_stride``) to opt back into the speedup. (Once the
+    # auto-NVIDIA bootstrap activates CuPy on a CUDA host the per-frame
+    # mediapipe cost matters far less anyway.)
     "automation_rppg_landmark_stride": 1,
     "automation_rppg_required": False,
     # When False (default) the injector's metric-suffixed filename

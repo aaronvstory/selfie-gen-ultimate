@@ -67,8 +67,10 @@ def _stub_subprocess(monkeypatch: pytest.MonkeyPatch) -> list:
     )
     # resolve_produced_output expects a real file; stub it so the
     # post-run "did the injector write the file?" check passes.
+    # PR fix/step0-composite-and-rppg-v2.5 added a keyword-only
+    # progress_cb parameter — accept and ignore it here.
     monkeypatch.setattr(
-        rppg_module, "resolve_produced_output", lambda p: p,
+        rppg_module, "resolve_produced_output", lambda p, **_kw: p,
     )
     monkeypatch.setattr(
         rppg_module,
@@ -173,27 +175,25 @@ def test_skip_kinematic_gate_can_be_disabled(
 def test_landmark_stride_default_omits_flag(
     tmp_path, _stub_launcher, _stub_subprocess,
 ):
-    """Default landmark_stride=1 must NOT emit ``--landmark-stride`` in
-    the injector argv: stride 1 IS the injector's own default and
-    emitting the flag adds visual noise without changing behaviour. The
-    2026-05-25 v2.5 speedup pass had defaulted this to 3 (3-5x faster
-    on near-still faces) but quality-first won the user dial-back on
-    2026-05-27 because Kling output occasionally moves faster than the
-    prompt asks for and silently degrading those clips is worse than
-    the slowdown on the slow-majority."""
+    """Default landmark_stride=1 (reverted from 3 in
+    PR fix/step0-composite-and-rppg-v2.5 after PR #52's snapshot-race
+    regression). Stride 1 == injector's own default, so the wrapper
+    must NOT emit ``--landmark-stride 1`` (keeps the cmd visually
+    identical to rPPG/rppg.bat). Users can opt back into stride>1
+    via ``automation_rppg_landmark_stride``.
+    """
     inp = _make_input(tmp_path)
     rppg_module.run_rppg(video_path=inp, repo_root=tmp_path)
     cmd = _stub_subprocess[0]
     assert "--landmark-stride" not in cmd
 
 
-def test_landmark_stride_three_emits_flag(
+def test_landmark_stride_explicit_three_emits_flag(
     tmp_path, _stub_launcher, _stub_subprocess,
 ):
-    """Stride 3 IS the 3-5x speedup setting; when a caller (pipeline
-    config or GUI override) raises stride above 1 the wrapper MUST
-    pass ``--landmark-stride 3`` so the injector knows to take the
-    fast path. Mirrors the canonical rPPG/rppg.bat reference."""
+    """When the caller (config/GUI) explicitly opts into stride=3,
+    the wrapper materialises ``--landmark-stride 3`` so the injector
+    actually applies the speedup."""
     inp = _make_input(tmp_path)
     rppg_module.run_rppg(video_path=inp, repo_root=tmp_path, landmark_stride=3)
     cmd = _stub_subprocess[0]
@@ -202,13 +202,31 @@ def test_landmark_stride_three_emits_flag(
     assert cmd[idx + 1] == "3"
 
 
-def test_landmark_stride_invalid_input_falls_back_to_default(
+def test_landmark_stride_one_omits_flag(
+    tmp_path, _stub_launcher, _stub_subprocess,
+):
+    """Stride 1 == "detect every frame", the injector's own default.
+    The wrapper should NOT emit the flag in this case (keeps the cmd
+    visually identical to the canonical rPPG/rppg.bat reference and
+    makes A/B comparisons against the stride=1 baseline trivial)."""
+    inp = _make_input(tmp_path)
+    rppg_module.run_rppg(video_path=inp, repo_root=tmp_path, landmark_stride=1)
+    cmd = _stub_subprocess[0]
+    assert "--landmark-stride" not in cmd
+
+
+def test_landmark_stride_invalid_input_falls_back_to_signature_default(
     tmp_path, _stub_launcher, _stub_subprocess,
 ):
     """The pipeline reads landmark_stride from a JSON config that may
     contain user typos (None, "", "fast"). run_rppg must coerce-or-
-    default rather than crash the queue worker on a bad value. Default
-    is 1 — the flag is omitted (stride 1 == injector's own default)."""
+    default rather than crash the queue worker on a bad value.
+
+    Under PR fix/step0-composite-and-rppg-v2.5 the safety fallback
+    matches the signature default (1) — previously it was hardcoded
+    to 3 which silently re-enabled the speedup path that caused the
+    user's unplayable output. Stride 1 means the wrapper omits the
+    flag entirely (== injector default)."""
     inp = _make_input(tmp_path)
     rppg_module.run_rppg(video_path=inp, repo_root=tmp_path, landmark_stride="bad")  # type: ignore[arg-type]
     cmd = _stub_subprocess[0]
@@ -245,7 +263,7 @@ def _make_extender_capturing_stub(monkeypatch: pytest.MonkeyPatch) -> dict:
         return (0, ["fake-stdout"])
 
     monkeypatch.setattr(rppg_module, "stream_subprocess_with_timeout", _fake_stream)
-    monkeypatch.setattr(rppg_module, "resolve_produced_output", lambda p: p)
+    monkeypatch.setattr(rppg_module, "resolve_produced_output", lambda p, **_kw: p)
     monkeypatch.setattr(
         rppg_module, "finalize_rppg_output",
         lambda produced, requested, **kw: produced,

@@ -31,6 +31,57 @@ def _read_int_env(primary: str, fallback: str, default: int) -> int:
             logger.warning("Invalid %s=%r; ignoring and trying fallback/default", key, raw)
     return default
 
+
+def _read_single_env_int(key: str, default: int) -> int:
+    """Single-key safe int loader. Mirrors _read_int_env but for keys
+    that don't have a fallback alias. PR #53 round 3 — CodeRabbit
+    flagged module-import-time `int(os.environ.get(...))` calls that
+    crash module load on a malformed env var, disabling outpaint
+    entirely. Falls back to *default* on TypeError/ValueError.
+
+    PR #53 round 8 (CodeRabbit): also rejects non-positive values
+    (``0``, negatives) — these are nonsensical for size/MP caps and
+    would silently disable the pre-flight clamp downstream.
+    """
+    raw = os.environ.get(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %d", key, raw, default)
+        return default
+    if parsed <= 0:
+        logger.warning(
+            "Non-positive %s=%r; using default %d", key, raw, default,
+        )
+        return default
+    return parsed
+
+
+def _read_single_env_float(key: str, default: float) -> float:
+    """Single-key safe float loader. Same rationale as
+    _read_single_env_int — and PR #53 round 8 also rejects NaN /
+    +/-inf / non-positive values so a malformed env can never
+    propagate as a math-poisoning cap downstream.
+    """
+    raw = os.environ.get(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %g", key, raw, default)
+        return default
+    if not math.isfinite(parsed) or parsed <= 0:
+        logger.warning(
+            "Non-finite or non-positive %s=%r; using default %g",
+            key, raw, default,
+        )
+        return default
+    return parsed
+
+
 # BFL polling limits (shared with selfie_generator pattern)
 _BFL_MAX_WAIT_SECONDS = _read_int_env("BFL_MAX_WAIT_SECONDS", "BFL_EXPAND_MAX_WAIT_SECONDS", 30)
 _BFL_POLL_INTERVAL = 5
@@ -38,8 +89,8 @@ _BFL_MAX_CONSECUTIVE_ERRORS = 3
 _BFL_EXPAND_URL = "https://api.bfl.ai/v1/flux-pro-1.0-expand"
 # BFL Expand output limits — BFL recommends ≤2MP for best results (help.bfl.ai).
 # Override via env: BFL_EXPAND_MAX_DIM, BFL_EXPAND_MAX_MP
-_BFL_MAX_CANVAS_DIM = int(os.environ.get("BFL_EXPAND_MAX_DIM", "2048"))
-_BFL_MAX_CANVAS_MP = float(os.environ.get("BFL_EXPAND_MAX_MP", "1.5"))
+_BFL_MAX_CANVAS_DIM = _read_single_env_int("BFL_EXPAND_MAX_DIM", 2048)
+_BFL_MAX_CANVAS_MP = _read_single_env_float("BFL_EXPAND_MAX_MP", 1.5)
 
 
 class OutpaintGenerator:
@@ -48,9 +99,11 @@ class OutpaintGenerator:
     ENDPOINT = "fal-ai/image-apps-v2/outpaint"
 
     # Empirical safe limits — fal.ai clamped 2782x3448 → 1232x1536 in testing.
-    # Override via env: FAL_OUTPAINT_MAX_DIM, FAL_OUTPAINT_MAX_MP
-    _MAX_CANVAS_DIM = int(os.environ.get("FAL_OUTPAINT_MAX_DIM", "1536"))
-    _MAX_CANVAS_MP = float(os.environ.get("FAL_OUTPAINT_MAX_MP", "2.0"))
+    # Override via env: FAL_OUTPAINT_MAX_DIM, FAL_OUTPAINT_MAX_MP. Use the
+    # safe helpers so a malformed env var falls back to the default instead
+    # of crashing module import (CodeRabbit PR #53 round 3).
+    _MAX_CANVAS_DIM = _read_single_env_int("FAL_OUTPAINT_MAX_DIM", 1536)
+    _MAX_CANVAS_MP = _read_single_env_float("FAL_OUTPAINT_MAX_MP", 2.0)
     _PRESERVE_SEAM_BLEND_PX = 24
     _PRESERVE_SEAM_BLEND_STRENGTH = 0.55
 
@@ -501,36 +554,138 @@ class OutpaintGenerator:
             self._report("Download failed", "error")
             return None
 
-        read_failure_reason = ""
+        # Read the downloaded dimensions. A genuinely unreadable file
+        # (PIL raises) is an IO failure, not underflow — reject it.
         try:
             with Image.open(output_path) as downloaded_img:
                 downloaded_w, downloaded_h = downloaded_img.size
         except Exception as exc:
-            self._report(f"Could not read downloaded output dimensions: {exc}", "warning")
-            downloaded_w, downloaded_h = 0, 0
-            read_failure_reason = f"read_failed:{type(exc).__name__}"
-
-        underflow = (downloaded_w < expected_canvas_w) or (downloaded_h < expected_canvas_h)
-        self._report(
-            (
-                "Fal composite downloaded result: "
-                f"actual={downloaded_w}x{downloaded_h} expected={expected_canvas_w}x{expected_canvas_h} "
-                f"underflow={underflow}"
-            ),
-            "debug",
-        )
-        if underflow:
             self._report(
-                "Provider output smaller than preflight expectation; composite disabled to avoid corrupting preserved pixels"
-                + (f" ({read_failure_reason})" if read_failure_reason else ""),
-                "warning",
+                f"Could not read downloaded outpaint output: {exc}", "error"
+            )
+            self._set_last_outpaint_error_detail(
+                f"download_unreadable:{type(exc).__name__}"
+            )
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            return None
+
+        # PR #53 round 9 — Codex P2: `composite_mode="none"` explicitly
+        # asks for the raw provider output. Short-circuit before the
+        # always-composite path so a download + raw return stays cheap.
+        if composite_mode == "none":
+            self._report(
+                "Composite: none — using raw AI output "
+                f"({downloaded_w}x{downloaded_h})",
+                "progress",
             )
             return output_path
 
-        self._composite_onto_result(
-            output_path, composite_source, adj_left, adj_right, adj_top, adj_bottom,
+        # Always-composite contract (PR fix/step0-composite-and-rppg-v2.5):
+        # never silently skip composite on a small underflow — that
+        # shipped a non-composited raw result and broke preserve_seamless
+        # on every pass because fal.ai routinely clamps 1-2% smaller
+        # than preflight. Resize the downloaded fal output to the
+        # provider's EXPECTED canvas (composite_source + adj_* margins
+        # = exactly what fal generated for) so the composite's
+        # matchTemplate alignment can lock cleanly. Then composite with
+        # the downscaled provider source + adjusted margins.
+        #
+        # PR #53 round 10 REVERTED an earlier rounds-5..9 experiment
+        # that paste the FULL-RES original (reopen image_path, compute
+        # final_canvas_w = orig_full.width + EXPAND_*, upscale fal
+        # output to that, paste full-res orig at full-res margins).
+        # That mixed two coordinate systems — fal generated around
+        # (downscaled_image, adjusted_margins) but we pasted around
+        # (full_res_image, full_res_margins). On a 3024x4032 source
+        # with 700px margins it produced a 3.4x upscale of fal output
+        # (1296x1520 -> 4424x5432), and the matchTemplate +-15px
+        # search window cannot recover from a coordinate-system delta
+        # of hundreds of pixels — the composite silently misaligned to
+        # the math-default placement. User manual smoke caught it.
+        # Provider-coordinate compositing is the known-good geometry
+        # main shipped with for months; we restore it here while
+        # keeping the always-composite + bool-return contracts.
+        self._report(
+            (
+                "Fal composite downloaded result: "
+                f"actual={downloaded_w}x{downloaded_h} "
+                f"expected={expected_canvas_w}x{expected_canvas_h}"
+            ),
+            "debug",
+        )
+
+        if (downloaded_w, downloaded_h) != (expected_canvas_w, expected_canvas_h):
+            try:
+                # Intentional EXIF drop on the resize-and-save: the
+                # .convert("RGB") loses any EXIF the provider returned,
+                # and we don't propagate it through. This matches the
+                # composite-side save path (the composite always
+                # rewrites RGB pixels without EXIF). Subagent L5
+                # round 11 — flagged for clarity, not a bug.
+                with Image.open(output_path) as dl:
+                    dl_rgb = dl.convert("RGB")
+                    resized = dl_rgb.resize(
+                        (expected_canvas_w, expected_canvas_h),
+                        Image.Resampling.LANCZOS,
+                    )
+                save_kwargs = (
+                    {"quality": 95}
+                    if output_format.lower() in ("jpg", "jpeg")
+                    else {}
+                )
+                resized.save(output_path, **save_kwargs)
+                self._report(
+                    (
+                        f"Composite: resized fal output "
+                        f"{downloaded_w}x{downloaded_h} -> "
+                        f"{expected_canvas_w}x{expected_canvas_h} (Lanczos) "
+                        "to match provider-coordinate expected canvas"
+                    ),
+                    "info",
+                )
+            except Exception as exc:
+                self._report(
+                    f"Could not resize fal output to expected canvas: {exc}",
+                    "error",
+                )
+                self._set_last_outpaint_error_detail(
+                    f"resize_failed:{type(exc).__name__}"
+                )
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+                return None
+
+        # Composite in provider/upload coordinate system: the same
+        # composite_source + adjusted margins fal was given. This is
+        # main's geometry, restored after the round-5..9 full-res
+        # experiment caused user-reported misalignment.
+        composite_ok = self._composite_onto_result(
+            output_path, composite_source,
+            adj_left, adj_right, adj_top, adj_bottom,
             output_format, composite_mode,
         )
+
+        if not composite_ok and composite_mode in {
+            "preserve_seamless", "hard", "feathered",
+        }:
+            self._report(
+                "Composite FAILED for preserve mode — output rejected. "
+                "The pre-composited fal output has been removed; re-run "
+                "the expand or check upstream image dimensions.",
+                "error",
+            )
+            self._set_last_outpaint_error_detail("composite_failed")
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            return None
+
         return output_path
 
     # ── Shared composite ─────────────────────────────────────────────────
@@ -545,16 +700,30 @@ class OutpaintGenerator:
         margin_bottom: int,
         output_format: str,
         composite_mode: str,
-    ) -> None:
+    ) -> bool:
+        """Composite *orig* over the AI output at *output_path*.
+
+        Returns ``True`` when the composite was applied (preserve contract
+        held) and ``False`` when any bail-out branch was hit
+        (mode="none" placement guard, "Original doesn't fit", or an
+        unexpected exception). Callers MUST treat ``False`` as a failed
+        pass for preserve modes — see the PR fix/step0-composite-and-rppg-v2.5
+        addition in :meth:`outpaint`.
+        """
         if composite_mode == "none":
             self._report("Composite: none — using raw AI output", "progress")
-            return
+            return False
 
         try:
             from PIL import ImageFilter, ImageDraw
 
             self._report(f"Compositing original over AI result (mode={composite_mode})...", "debug")
-            result_img = Image.open(output_path).convert("RGB")
+            # Close the source handle before later result_img.save() writes
+            # back to the same path — Gemini PR #53 round 5 HIGH. On
+            # Windows the open handle from PIL's lazy decoder can cause
+            # PermissionError when the same path is reopened for write.
+            with Image.open(output_path) as _src:
+                result_img = _src.convert("RGB")
             orig_rgb = orig.convert("RGB")
 
             # --- 1. INITIAL MATH ESTIMATE ---
@@ -612,15 +781,26 @@ class OutpaintGenerator:
                     "warning",
                 )
 
-            # Safety guard
+            # Safety guard — if the placement rect doesn't fit inside the
+            # AI result, the composite would crash on .paste(). This is a
+            # FAILURE for preserve modes: returning False signals the
+            # caller to reject the output (we no longer silently ship
+            # raw AI output as "success" — see the PR
+            # fix/step0-composite-and-rppg-v2.5 caller change).
             if (
                 (paste_left < 0)
                 or (paste_top < 0)
                 or (paste_left + orig.width > actual_w)
                 or (paste_top + orig.height > actual_h)
             ):
-                self._report("Original doesn't fit in AI result — using raw output", "warning")
-                return
+                self._report(
+                    "Original doesn't fit in AI result — composite ABORTED "
+                    f"(orig={orig.width}x{orig.height}, "
+                    f"AI canvas={actual_w}x{actual_h}, "
+                    f"placement=({paste_left},{paste_top}))",
+                    "error",
+                )
+                return False
 
             paste_right = paste_left + orig.width
             paste_bottom = paste_top + orig.height
@@ -837,9 +1017,14 @@ class OutpaintGenerator:
             save_kwargs = {"quality": 95} if output_format.lower() in ("jpg", "jpeg") else {}
             result_img.save(output_path, **save_kwargs)
             self._report(f"Saved: {os.path.basename(output_path)}", "success")
+            return True
 
         except Exception as e:
-            self._report(f"Composite step failed ({e}), using AI result as-is", "warning")
+            self._report(
+                f"Composite step failed ({e}); preserve contract NOT held.",
+                "error",
+            )
+            return False
 
     # ── BFL Expand provider ──────────────────────────────────────────────
 
@@ -1151,7 +1336,14 @@ class OutpaintGenerator:
             self._report("BFL download failed", "error")
             return None
 
-        # 6. Post-download dimension check
+        # 6. Post-download dimension check.
+        # Gemini PR #53 round 13: align with the fal-path fail-fast at
+        # line ~559 — silently falling back to expected dimensions on
+        # an unreadable download (a) returns a corrupt file to the
+        # caller in the composite_mode="none" short-circuit and (b)
+        # produces a misleading `bfl_composite_failed` later when the
+        # composite step re-opens the file. An unreadable file is an
+        # IO failure, not a dimension underflow; fail loudly.
         try:
             with Image.open(output_path) as dl_img:
                 actual_w, actual_h = dl_img.size
@@ -1160,19 +1352,97 @@ class OutpaintGenerator:
                 f"(expected {expected_w}x{expected_h})",
                 "debug",
             )
-            if (actual_w, actual_h) != (expected_w, expected_h):
-                self._report(
-                    f"BFL dimension mismatch! Expected {expected_w}x{expected_h}, "
-                    f"got {actual_w}x{actual_h} — composite will adjust paste coords",
-                    "warning",
-                )
         except Exception as exc:
-            self._report(f"Could not verify output dimensions: {exc}", "warning")
+            self._report(
+                f"Could not read downloaded BFL outpaint output: {exc}",
+                "error",
+            )
+            self._set_last_outpaint_error_detail(
+                f"bfl_download_unreadable:{type(exc).__name__}"
+            )
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            return None
 
-        # 7. Composite: paste original sharp pixels over AI center
-        self._composite_onto_result(
+        # 6a. composite_mode="none" short-circuit (parity with fal path,
+        # PR #53 round 11 subagent M2). Skip the resize-and-composite
+        # block entirely — user asked for raw provider output.
+        if composite_mode == "none":
+            self._report(
+                "Composite: none — using raw AI output "
+                f"({actual_w}x{actual_h})",
+                "progress",
+            )
+            return output_path
+
+        # 6b. Resize to expected canvas if BFL underflowed (parity with
+        # fal path, PR #53 round 11 subagent M2). BFL clamps less than
+        # fal in practice but the matchTemplate ±15px alignment window
+        # in _composite_onto_result is still vulnerable to a coordinate-
+        # system mismatch on the rare occasions BFL DOES clamp. Cheap
+        # insurance, identical shape to the fal-side resize at the
+        # always-composite block above.
+        if (actual_w, actual_h) != (expected_w, expected_h):
+            try:
+                with Image.open(output_path) as dl:
+                    dl_rgb = dl.convert("RGB")
+                    resized = dl_rgb.resize(
+                        (expected_w, expected_h),
+                        Image.Resampling.LANCZOS,
+                    )
+                save_kwargs = (
+                    {"quality": 95}
+                    if output_format.lower() in ("jpg", "jpeg")
+                    else {}
+                )
+                resized.save(output_path, **save_kwargs)
+                self._report(
+                    (
+                        f"BFL composite: resized output "
+                        f"{actual_w}x{actual_h} -> {expected_w}x{expected_h} "
+                        "(Lanczos) to match provider-coordinate expected canvas"
+                    ),
+                    "info",
+                )
+            except Exception as exc:
+                self._report(
+                    f"Could not resize BFL output to expected canvas: {exc}",
+                    "error",
+                )
+                self._set_last_outpaint_error_detail(
+                    f"bfl_resize_failed:{type(exc).__name__}"
+                )
+                try:
+                    os.unlink(output_path)
+                except OSError:
+                    pass
+                return None
+
+        # 7. Composite: paste original sharp pixels over AI center.
+        # Same preserve-contract check as the fal.ai path (PR
+        # fix/step0-composite-and-rppg-v2.5): if the composite fails
+        # for any preserve mode, reject the output instead of silently
+        # shipping a non-composited result. Both paths use the same
+        # provider-coordinate composite source (round 10 revert) —
+        # downscaled `processed_img` + preflight-adjusted margins.
+        composite_ok = self._composite_onto_result(
             output_path, processed_img, adj_l, adj_r, adj_t, adj_b,
             output_format, composite_mode,
         )
+        if not composite_ok and composite_mode in {
+            "preserve_seamless", "hard", "feathered",
+        }:
+            self._report(
+                "BFL composite FAILED for preserve mode — output rejected.",
+                "error",
+            )
+            self._set_last_outpaint_error_detail("bfl_composite_failed")
+            try:
+                os.unlink(output_path)
+            except OSError:
+                pass
+            return None
         return output_path
     _ALPHA_MATTE_RGB = (255, 255, 255)

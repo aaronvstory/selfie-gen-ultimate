@@ -103,6 +103,48 @@ def xp_of(arr):
     return np
 
 
+def _snapshot_validates(tmp_snapshot: str, source_iter: str) -> bool:
+    """True if *tmp_snapshot* is a complete copy of *source_iter*.
+
+    Used by the iter-best snapshot adoption flow (search for
+    ``_BEST_SNAPSHOT_NAME``). A bad copy here previously shipped as the
+    final deliverable -- the post-loop final-copy from ``best_path``
+    captured a torn mp4 with broken H.264 NAL units. We reject the
+    snapshot if it differs in bytes from the source OR can't be opened
+    by OpenCV OR reports a different frame count.
+
+    Cheap pre-check (size) catches truncated copies without touching
+    the file decoder; the cv2 reopen is the safety net.
+    """
+    try:
+        if os.path.getsize(tmp_snapshot) != os.path.getsize(source_iter):
+            return False
+    except OSError:
+        return False
+    cap_tmp = cap_src = None
+    try:
+        cap_tmp = cv2.VideoCapture(tmp_snapshot)
+        if not cap_tmp.isOpened():
+            return False
+        cap_src = cv2.VideoCapture(source_iter)
+        if not cap_src.isOpened():
+            return False
+        n_tmp = int(cap_tmp.get(cv2.CAP_PROP_FRAME_COUNT))
+        n_src = int(cap_src.get(cv2.CAP_PROP_FRAME_COUNT))
+        if n_tmp <= 0 or n_tmp != n_src:
+            return False
+        return True
+    except Exception:
+        return False
+    finally:
+        for cap in (cap_tmp, cap_src):
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+
 def to_gpu(arr):
     """Upload a NumPy array to GPU when CuPy is available; pass through otherwise."""
     if GPU_AVAILABLE and arr is not None and not isinstance(arr, _cp.ndarray):
@@ -3591,7 +3633,23 @@ class PhaseAlignedRPPGManipulator:
         # intermediate. Don't make `_BEST_SNAPSHOT_NAME` resolve to the
         # same file as `output_path` without also updating the cleanup
         # guard to handle the absolute/relative comparison properly.
-        _BEST_SNAPSHOT_NAME = "best_iteration_snapshot.mp4"
+        #
+        # Subagent M1b PR #53 round 9: the bare name used to be
+        # "best_iteration_snapshot.mp4" — shared across ALL concurrent
+        # rPPG runs because cwd=rPPG/ is shared by all GUI workspaces
+        # (PR #49 workspace isolation does not extend to subprocess
+        # cwd). Two concurrent runs on different inputs could then
+        # collide: run A's `prior_snapshot_good=True` picks up run B's
+        # snapshot, and the round-5 "keep prior good snapshot" branch
+        # commits the WRONG video as best_path. Now include the
+        # process PID + a per-input hash so each run gets its own
+        # snapshot filename. Users typically run rPPG one at a time
+        # (it's a 5-10 min iterative process) so this is mostly
+        # defense-in-depth, but the cost is one extra string format.
+        _video_id = hash(os.path.abspath(video_path)) & 0xFFFFFF
+        _BEST_SNAPSHOT_NAME = (
+            f"best_iteration_snapshot_{os.getpid()}_{_video_id:06x}.mp4"
+        )
 
         current_path = video_path
         deband_temp = None
@@ -4430,26 +4488,164 @@ class PhaseAlignedRPPGManipulator:
                 'score': float(score),
             }
 
+            # "Would-be-best" — the score IS better than the current
+            # best, but we still have to successfully adopt the
+            # snapshot before we commit the new best_* tuple. See
+            # _adopted_this_iter below.
             _is_new_best = score > best_score
+            # PR #53 round 8 (CodeRabbit): best_score, best_path,
+            # best_iter, best_metrics, best_params are committed
+            # TOGETHER and ONLY when the new snapshot is actually
+            # accepted. Previously best_score advanced before
+            # snapshot adoption succeeded, so a rejected/torn
+            # snapshot would leave best_score pointing at the
+            # rejected iter's score — poisoning the next iter's
+            # `score > best_score` comparison + the plateau-
+            # detection logic that reads best_score. The
+            # `_adopted_this_iter` local tracks whether we
+            # genuinely promoted this iter; the revert high-water
+            # mark gate uses THAT, not the raw `_is_new_best`
+            # (which only said "score would beat the current
+            # best", not "we successfully adopted it").
+            _adopted_this_iter = False
             if _is_new_best:
-                best_score = score
                 # Snapshot the new best iter to a stable name so the
                 # post-loop face-coherence + final copy can find it
                 # even if interim cleanup prunes the numbered
-                # temp_iteration_N.mp4 file before the loop ends. The
-                # snapshot lives in cwd (rPPG/) alongside the temp
-                # files and is cleaned up in the post-loop cleanup
-                # block. Empirically observed (PR fix/rppg-failure-
-                # visibility) that the "best" iter's temp file
-                # vanishes mid-loop on iterative + iterate-from-base
-                # runs; root cause unknown but defensive snapshot is
-                # cheap and immune to it.
+                # temp_iteration_N.mp4 file before the loop ends.
+                #
+                # Use tmp-copy + validate + atomic replace so a torn
+                # copy never overwrites the previous good snapshot.
+                # Root cause: shutil.copy2 on an mp4 that may still
+                # have an open writer (or be partially flushed)
+                # captures a NAL-incomplete file. Previously we
+                # adopted it directly; the post-loop final-copy then
+                # produced a structurally broken -rppg.mp4 (PR #52
+                # regression — ffprobe Invalid NAL unit size errors
+                # on the delivered file). The tmp+validate+os.replace
+                # flow guarantees we only ever adopt a snapshot that
+                # matches the source iter file's frame count and byte
+                # length.
+                tmp_snapshot = _BEST_SNAPSHOT_NAME + ".tmp.mp4"
+                # Has a prior good snapshot been written this run? If yes
+                # and the new copy fails validation, we MUST point
+                # best_path at the prior snapshot (NOT at the unflushed
+                # iter file we just rejected the snapshot of — subagent
+                # H3 round 1). The prior_snapshot_good flag is set after
+                # the first successful adoption and never cleared.
+                prior_snapshot_good = bool(
+                    os.path.exists(_BEST_SNAPSHOT_NAME)
+                )
+
+                def _commit_best(_path, _score=score, _iter=iteration,
+                                 _metrics=m, _params=params):
+                    """Commit all best_* state in one atomic step so
+                    best_score never advances without a matching
+                    best_path / best_iter / best_metrics update.
+
+                    Defaults (``_score=score`` etc.) are bound at def
+                    TIME, not at call time — this captures THIS iter's
+                    values per the snapshot semantics we want (the
+                    closure is rebuilt every iter via the enclosing
+                    `if _is_new_best:` block).
+
+                    Exception safety (subagent M2 PR #53 round 9):
+                    materialise all per-iter copies UPFRONT, then do
+                    the 6 nonlocal assignments together. Previously
+                    the `dict(_metrics)` allocation happened mid-
+                    sequence, so a MemoryError between two assignments
+                    could leave best_score advanced but best_metrics
+                    stale — half-committed state that's exactly what
+                    the round-8 atomicity fix was designed to prevent.
+                    """
+                    nonlocal best_score, best_path, best_iter
+                    nonlocal best_metrics, best_params
+                    nonlocal _adopted_this_iter
+                    _new_metrics = dict(_metrics)  # may raise; do it first
+                    best_score = _score
+                    best_path = _path
+                    best_iter = _iter
+                    best_metrics = _new_metrics
+                    best_params = _params
+                    _adopted_this_iter = True
+
                 try:
                     if os.path.exists(iter_output_path):
-                        shutil.copy2(iter_output_path, _BEST_SNAPSHOT_NAME)
-                        best_path = _BEST_SNAPSHOT_NAME
+                        shutil.copy2(iter_output_path, tmp_snapshot)
+                        if _snapshot_validates(tmp_snapshot, iter_output_path):
+                            os.replace(tmp_snapshot, _BEST_SNAPSHOT_NAME)
+                            _commit_best(_BEST_SNAPSHOT_NAME)
+                        else:
+                            try:
+                                os.unlink(tmp_snapshot)
+                            except OSError:
+                                pass
+                            # Snapshot torn. If a previous good snapshot
+                            # exists on disk, KEEP best_score AND
+                            # best_path/best_iter/best_metrics/best_params
+                            # all unchanged — the previous iteration's
+                            # win stays canonical. Do NOT promote this
+                            # iteration: its output is corrupt by
+                            # definition.
+                            if prior_snapshot_good:
+                                print(c(
+                                    f"  Warning: best-iter {iteration} "
+                                    f"snapshot validation failed (torn "
+                                    f"copy); keeping previous good "
+                                    f"snapshot at iter "
+                                    f"{best_iter}.",
+                                    'Y',
+                                ))
+                            else:
+                                # No prior snapshot — first iter and
+                                # already torn. We have nothing better
+                                # to fall back to; commit the direct
+                                # iter path so SOMETHING is best_path.
+                                # The playability gate at end-of-run
+                                # will reject it if final output is
+                                # corrupt.
+                                _commit_best(iter_output_path)
+                                print(c(
+                                    f"  WARNING: best-iter {iteration} "
+                                    f"snapshot validation failed AND no "
+                                    f"prior snapshot exists; using "
+                                    f"unflushed iter path. Final output "
+                                    f"may be corrupt; playability gate "
+                                    f"will catch it.",
+                                    'R',
+                                ))
                     else:
-                        best_path = iter_output_path
+                        # iter_output_path itself doesn't exist — no
+                        # source for a snapshot. CodeRabbit PR #53
+                        # round 12: NEVER commit a missing path as
+                        # best_path (the downstream finalize+copy
+                        # would crash on a stale reference). Either
+                        # keep the prior good snapshot or hard-fail.
+                        if prior_snapshot_good:
+                            print(c(
+                                f"  Warning: best-iter {iteration} source "
+                                f"file missing on disk; keeping previous "
+                                f"good snapshot at iter {best_iter}.",
+                                'Y',
+                            ))
+                            # _adopted_this_iter stays False.
+                        else:
+                            # No prior snapshot AND no source file —
+                            # there is no recoverable best at this
+                            # point. Raising is the loud, correct
+                            # signal (vs silently committing a path
+                            # that points at nothing).
+                            # CodeRabbit PR #53 round 13: restore the
+                            # narrowed registry value before re-raising
+                            # so a subsequent run in the same process
+                            # (GUI worker) doesn't inherit the dynamic
+                            # bound from this aborted run.
+                            KNOB_REGISTRY['strength']['max'] = original_strength_max
+                            raise FileNotFoundError(
+                                f"Best iteration output missing and no "
+                                f"prior snapshot exists: "
+                                f"{iter_output_path!r} (iter {iteration})"
+                            )
                 except OSError as exc:
                     print(c(
                         f"  Warning: could not snapshot best iter "
@@ -4458,13 +4654,42 @@ class PhaseAlignedRPPGManipulator:
                         f"cleanup).",
                         'Y',
                     ))
-                    best_path = iter_output_path
-                best_iter = iteration
-                best_metrics = dict(m)
-                best_params = params
+                    try:
+                        if os.path.exists(tmp_snapshot):
+                            os.unlink(tmp_snapshot)
+                    except OSError:
+                        pass
+                    if prior_snapshot_good:
+                        # Same logic as above: prefer prior good
+                        # snapshot over an OSError'd new copy.
+                        # _adopted_this_iter stays False.
+                        pass
+                    elif os.path.exists(iter_output_path):
+                        # OSError on copy, but the source iter file
+                        # IS present on disk — adopt the direct path
+                        # (vulnerable to mid-loop cleanup as warned,
+                        # but at least it points at a real file).
+                        _commit_best(iter_output_path)
+                    else:
+                        # Same as the inner else above: no prior
+                        # snapshot AND no source file. Hard-fail.
+                        # CodeRabbit PR #53 round 13: restore the
+                        # narrowed registry value before re-raising
+                        # (see twin restore-before-raise at the inner
+                        # FileNotFoundError site ~30 lines above).
+                        KNOB_REGISTRY['strength']['max'] = original_strength_max
+                        raise FileNotFoundError(
+                            f"Best iteration output missing after copy "
+                            f"failure and no prior snapshot exists: "
+                            f"{iter_output_path!r} (iter {iteration})"
+                        ) from exc
 
             # v5.10d: update revert high-water mark.
-            if phase_emergency_revert is not None and _is_new_best:
+            # PR #53 round 8: use _adopted_this_iter, NOT _is_new_best.
+            # The high-water mark should only update when we actually
+            # ADOPTED the new best — a "would-be-best" iter whose
+            # snapshot validation failed didn't actually contribute.
+            if phase_emergency_revert is not None and _adopted_this_iter:
                 revert_high_water_mark = True
             elif phase_emergency_revert is None:
                 revert_high_water_mark = False
@@ -4645,8 +4870,11 @@ class PhaseAlignedRPPGManipulator:
         cleanup_paths.append(deband_temp)
         # The best-iter snapshot maintained during the loop (paired with the
         # snapshot logic at the _is_new_best site). Already copied to
-        # output_path by the finalize step above; safe to remove.
+        # output_path by the finalize step above; safe to remove. Also clean
+        # up the validate-staging .tmp.mp4 in case the last iter's snapshot
+        # was rejected by _snapshot_validates and the tmp leaked.
         cleanup_paths.append(_BEST_SNAPSHOT_NAME)
+        cleanup_paths.append(_BEST_SNAPSHOT_NAME + ".tmp.mp4")
         for f in cleanup_paths:
             if f and f != output_path and f != video_path and os.path.exists(f):
                 try:

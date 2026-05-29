@@ -1404,8 +1404,9 @@ class AutoPipelineRunner:
             skip_diagnosis = self._read_bool("automation_rppg_skip_diagnosis", True)
             skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
             # _read_int safety wrapper (see Step 6 site above) —
-            # subagent HIGH on PR #52 round 3. Default 1 from
-            # 2026-05-27 v2.6 quality-first revert.
+            # subagent HIGH on PR #52 round 3. Default reverted 3 -> 1
+            # in fix/step0-composite-and-rppg-v2.5 (snapshot-race
+            # regression — see automation/config.py for full reasoning).
             landmark_stride = self._read_int(
                 "automation_rppg_landmark_stride", 1, min_value=1,
             )
