@@ -8,216 +8,19 @@ Kling UI is an AI media generation toolkit using fal.ai and BFL APIs. It provide
 
 ## macOS Portability — MANDATORY (Windows agents read this first)
 
-This repo runs on **both Windows and macOS**. Most contributors edit on Windows, and CI is Windows-leaning. Several macOS-runtime issues recur — agents working on this codebase MUST guard against them on every change that touches shell scripts, launchers, file dialogs, or path handling.
+This repo runs on **both Windows and macOS**. Most contributors edit on
+Windows, and CI is Windows-leaning. Several macOS-runtime issues recur — the
+full set of 11 binding rules (LF line endings, exec bit, `tk_dialogs` usage,
+path-separator asserts, sys.modules mock gotchas, `python3.11` requirement,
+the launcher chain, the portability gate, venv-resolver version-validation,
+`set`-flag parity, and `mac_padding` hit-targets) lives in:
 
-### 1. Line endings — `.sh` and `.command` must be LF
+> **➡️ [`docs/macos-portability.md`](docs/macos-portability.md) — READ BEFORE
+> editing any `.sh`/`.command`, launcher, file dialog, or path-handling code.**
 
-`.gitattributes` pins `*.sh` and `*.command` to `eol=lf`. **Windows editors still write CRLF, and the index can drift out of sync with the attribute.** A CRLF shebang resolves to `#!/usr/bin/env bash\r`, which on macOS makes `env` fail with `env: bash\r: No such file or directory` and exit 127.
-
-When you create or edit any `.sh` / `.command` file:
-
-```bash
-# Verify EOL in working tree + index
-git ls-files --eol <file>          # both columns must show "lf"
-file <file>                        # must NOT mention "CRLF line terminators"
-
-# If wrong:
-tr -d '\r' < <file> > <file>.tmp && mv <file>.tmp <file>
-git add --renormalize <file>
-```
-
-### 2. Executable bit — `.command` and `.sh` must be `100755` in git
-
-`.command` files cannot be double-clicked from Finder unless they have the exec bit. Git stores mode independently of the working-tree perm; a file can be `chmod +x` locally but still committed as `100644`. Both must be `100755`.
-
-```bash
-# Verify
-git ls-files --stage <file>        # leading number must be 100755
-
-# Fix both working tree and index:
-chmod +x <file>
-git update-index --chmod=+x <file>
-```
-
-### 3. File dialogs — never use raw `tkinter.filedialog`
-
-The macOS Tk root has a fragile lifecycle. The repo wraps every dialog in `tk_dialogs.py` (`select_directory`, `select_open_file`, `select_open_files`, `select_save_file`, `select_directory_cli_safe`). These handle ephemeral root creation, withdrawal, and destruction across Win/macOS/Linux.
-
-```python
-# WRONG — raw filedialog can hang the dialog and leak Tk roots on macOS
-from tkinter import filedialog
-path = filedialog.askopenfilename(title="Pick")
-
-# RIGHT — pass parent= when a live Tk window exists, omit for CLI flows
-from tk_dialogs import select_open_file
-path = select_open_file(parent=self.root, title="Pick")          # GUI
-path = select_open_file(title="Pick")                            # CLI (uses ephemeral root + osascript on darwin)
-```
-
-When a GUI has a live secondary window (drop-zone, modal, etc.), prefer that over the main root — see `_best_picker_parent()` in `kling_gui/main_window.py`. macOS pickers stall when their parent is withdrawn mid-dialog.
-
-**Standalone subprojects (e.g., `similarity/`) MUST bootstrap `sys.path` before importing `tk_dialogs`.** `tk_dialogs.py` lives at the repo root. A subproject launched with `cwd=similarity/` has only `similarity/` on `sys.path[0]`; `from tk_dialogs import select_open_file` raises `ModuleNotFoundError` at import time. Fix at the top of the subproject entry point:
-
-```python
-# similarity/main.py (fixed in commit afe0540b)
-import sys
-from pathlib import Path
-
-_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-```
-
-Without this, the standalone Similarity GUI crashes with `Failed to load GUI components. Ensure all dependencies are installed: No module named 'tk_dialogs'` even when the launcher resolves Python correctly. Same trap applies to any future subproject that imports root-level `similarity_engine`, `face_similarity`, `path_utils`, etc.
-
-### 4. Path-separator assertions are platform-bound
-
-`os.path.join("F:\\foo", "bar.bat")` returns `"F:\\foo/bar.bat"` on POSIX (forward slash) but `"F:\\foo\\bar.bat"` on Windows. Tests that assert on the result of any path-join with backslash inputs are intrinsically Windows-only:
-
-```python
-@pytest.mark.skipif(os.name != "nt", reason="asserts win32 backslash joins")
-def test_windows_launcher_uses_comspec_then_fallback(): ...
-```
-
-### 5. Test module-mock gotchas (sys.modules caching)
-
-When a test stubs `sys.modules` to inject fakes for `tkinter`, `deepface`, `cv2`, `mediapipe`, etc., it MUST also evict any submodules the production code re-imports later. `patch.dict(sys.modules, {"mediapipe": fake})` only intercepts `import mediapipe`; it does NOT intercept `from mediapipe.tasks.python import vision` because that goes through `__import__("mediapipe.tasks.python", ...)`.
-
-```python
-for cached in ("mediapipe", "mediapipe.tasks", "mediapipe.tasks.python", "mediapipe.tasks.python.vision"):
-    monkeypatch.delitem(sys.modules, cached, raising=False)
-
-def fake_import(name, *a, **k):
-    if name == "mediapipe":
-        return fake_mp
-    if name.startswith("mediapipe."):
-        raise ImportError(f"mocked: {name} unavailable")
-    return real_import(name, *a, **k)
-```
-
-Same trap for `similarity/src/engine.py`, which is a shim that does `from similarity_engine import FaceEngine`. Tests reloading `src.engine` MUST pop **both** `src.engine` AND `similarity_engine` from `sys.modules`, otherwise the previously-bound (real) `DeepFace` stays in scope.
-
-### 6. macOS Python — use `python3.11`, not `python3.12`+
-
-Homebrew's `python3.12` and `python3.13` ship without `_tkinter`. Tests that import `tkinter` (transitively, anything touching the GUI or `tk_dialogs`) will fail to collect on those interpreters. Use `python3.11`:
-
-```bash
-python3.11 -m venv .venv311
-.venv311/bin/python -m pytest tests/ similarity/tests/ -q   # use python -m pytest, not pytest directly,
-                                                            # so the project root is on sys.path
-```
-
-### 7. The macOS launcher chain (don't break links silently)
-
-```text
-run_gui.command (root)
-  → launchers/run_gui.command         (compatibility wrapper)
-    → launchers/macos/run_gui.command (logs + dep-chmod + invokes run_gui.sh)
-      → run_gui.sh                    (calls setup_macos.sh, then runs gui_launcher.py)
-        → setup_macos.sh              (creates .venv-macos and installs requirements.txt)
-```
-
-If you touch any link in that chain: chain-test it via `bash run_gui.command` once before pushing. Same chain exists for `run_cli.command` and the eight `run_oldcam_v*.command` variants.
-
-### 8. Pre-push macOS portability check
-
-Run before pushing any change that touches `*.sh`, `*.command`, `tk_dialogs.py`, or anything under `launchers/`, `similarity/src/`, or `kling_gui/main_window.py` picker code:
-
-```bash
-bash scripts/check_macos_portability.sh
-```
-
-Exits non-zero on CRLF in shell scripts, or `.command`/`.sh` files committed without the exec bit. Source: `scripts/check_macos_portability.sh`.
-
-**The portability gate does NOT catch:** Python resolver bugs (rule 9), set-flag parity mismatches (rule 10), `/dev/null` in `.bat` files, or `sys.path` import bugs in subprojects. Those are caught only by code review + the static-text test `tests/test_similarity_launcher_resolver.py`.
-
-### 9. Launcher Python resolvers MUST version-validate every venv candidate
-
-`.command` and `.bat` launchers that resolve a Python interpreter via a chain of venv candidates (e.g., `$REPO_ROOT/venv`, `$REPO_ROOT/.venv`, `$REPO_ROOT/.venv311`, `.venv` local fallback) MUST verify the candidate's version is in the supported range *before* returning it. Without this, a stale `.venv` symlinked to an unsupported Python (3.13, 3.14) is accepted by `[ -x ]`, then the post-resolve gate aborts the launcher with a confusing "Unsupported Python version" error — even though supported pythons are installed.
-
-This is the **exact bug PR #21 fixed in commit `afe0540b`** for the standalone Similarity launcher. The same defect existed on Windows and was fixed in the same commit.
-
-**Canonical pattern (macOS):**
-
-```bash
-# Single source of truth for the version expression
-_python_supported() {
-  "$1" -c 'import sys; raise SystemExit(0 if (3, 9) <= sys.version_info[:2] < (3, 13) else 2)' >/dev/null 2>&1
-}
-
-resolve_python() {
-  if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/.venv311/bin/python" ] && _python_supported "$REPO_ROOT/.venv311/bin/python"; then
-    echo "$REPO_ROOT/.venv311/bin/python|shared root .venv311"; return 0
-  fi
-  # ... gate every subsequent candidate with _python_supported ...
-  # Auto-create path also validates `pybin` BEFORE `python -m venv`
-}
-```
-
-**Canonical pattern (Windows):** `:check_py` subroutine at end of `.bat`, called per-candidate (avoids nested-paren delayed-expansion landmines). Reference implementation: `similarity/run_gui.bat:140-151`.
-
-**Rules:**
-- `.venv311/` is the canonical macOS venv name. **It MUST be a tried candidate** ahead of `.venv/` (per rule 6).
-- macOS fallback chain MUST be `python3.11 || python3.12 || python3 || python` (python3.11-first per rule 6).
-- The post-resolve gate stays as defense-in-depth; split its error message to distinguish "your SELFIEGEN_PYTHON override points at unsupported python" from "resolver bug".
-- New launcher resolvers MUST be covered by `tests/test_similarity_launcher_resolver.py` (static-text regex assertions, no subprocess).
-
-### 10. `.command` and `.sh` siblings MUST use identical `set` flags
-
-Sibling launcher files in `launchers/macos/` and the project root MUST share the same `set` flags. The current standard is `set -euo pipefail`. Mismatches (e.g., `.command` with `set -uo pipefail` but `.sh` with `set -euo pipefail`) silently change error handling between launch paths.
-
-CodeRabbit caught this on `launchers/macos/run_gui.command` in PR #21. Initial shebang fix (`e7e2cad4`) only handled half the parity; the full fix landed in `300c88f0`.
-
-The explicit `set +e / set -e` toggle around sub-script invocations is fine — it still scopes errexit OFF for that one call:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail   # ← top-level: full strict mode
-
-# ... setup ...
-
-set +e
-"${ROOT_DIR}/run_gui.sh"   # ← errexit scoped OFF for this one call
-status=$?
-set -e                     # ← restore strict mode
-```
-
-When you add a new sibling pair, set both to `set -euo pipefail` from the start.
-
-### 11. macOS hit-target sizing — route tight `ttk.Button` styles through `mac_padding`
-
-On macOS, raw `tk.Button` was migrated to `ttk.Button` under clam in PR #40 /
-commit `b3bc7398` to fix the HIView tint-reversion bug. That also widened the
-hit area for buttons with comfortable padding `(10, 6)` / `(14, 7)`. But
-several tight styles (SLOT `(6, 3)`, COMPACT `(8, 4)`, SUCCESS/DANGER_COMPACT
-`(7, 4)`, CarouselRef `(8, 4)`) still missed clicks 2-10× before registering.
-
-The fix: every tight ttk button style declares padding via
-`mac_padding((default), (macos))` in `kling_gui/theme.py`. Windows + Linux
-get the original tuple unchanged; macOS gets a bumped tuple. Raw
-`tk.Checkbutton` / `tk.Radiobutton` / `tk.Menubutton` widgets in high-use
-areas spread `**macos_widget_pad()` into their constructor — a no-op on
-non-macOS, a `padx=6 pady=3` bump on macOS.
-
-When you add a new button style or raw tk widget:
-- New `ttk.Button` style with padding tighter than `(10, 6)` → wrap with
-  `mac_padding`. The static test
-  `tests/test_main_window_styles.py::test_no_hardcoded_tight_padding`
-  catches re-introduced `(6, 3)` / `(7, 4)` literals.
-- New raw `tk.Checkbutton` / `tk.Radiobutton` / `tk.Menubutton` in a
-  high-use Step 0 / Step 2 row → spread `**macos_widget_pad()` into the
-  constructor. The helper lives in `kling_gui/theme.py`.
-
-For diagnosing a future "missed clicks on macOS" report:
-```bash
-KLING_DEBUG_CLICKS=1 bash run_gui.command
-```
-then transiently wire `attach_click_diagnostics(self._suspect_btn, "label")`
-in the relevant tab. Logs press/release coords + widget bounds at WARNING
-level. Remove the wiring before commit — the helper is opt-in for a reason.
-
-The `mac_padding` / `macos_widget_pad` / `CLICK_DEBUG` contract is covered
-by `tests/test_theme_mac_padding.py`.
+This is not optional reading: each of those rules has caused a real macOS
+breakage. Open that file whenever your change touches shell scripts, launchers,
+`tk_dialogs.py`, `similarity/src/`, or `kling_gui/main_window.py` picker code.
 
 ## Commands
 
@@ -606,87 +409,24 @@ local memory.
 
 ---
 
-## Hard Rules — Windows Launchers (NON-NEGOTIABLE)
+## Hard Rules — Windows Launchers + GUI Sash Layout (NON-NEGOTIABLE)
 
-These rules exist because violating them has caused repeated launch breakage. Do not skip them.
+Violating these has caused repeated launch breakage and garbled commits. The
+full rule set — `.bat`/`.cmd` CRLF + PowerShell-write requirement, `echo(` vs
+`echo.`, log-append redirect order, the `root → launchers → launchers/windows`
+chain, the dep-skip stamp, MediaPipe `--no-deps`, the autocrlf diff-verify
+trap, and all the GUI sash-layout clamp/restore rules — lives in:
 
-### 1. CRLF line endings for all .bat/.cmd files
+> **➡️ [`docs/windows-launcher-and-sash-rules.md`](docs/windows-launcher-and-sash-rules.md)
+> — READ BEFORE editing any `.bat`/`.cmd`, the launcher chain, or sash-layout
+> code in `kling_gui/layout_utils.py` / `main_window.py`.**
 
-The `Write` and `Edit` tools produce LF-only files. On Windows, LF-only batch files garble every command — errors like `'"tokens=1" is not recognized'`. **Always write `.bat`/`.cmd` files using PowerShell:**
-
-```powershell
-$content = @'
-@echo off
-...batch content here, use `r`n manually...
-'@
-$crlf = $content -replace "`r`n","`n" -replace "`n","`r`n"
-[System.IO.File]::WriteAllText("path\file.bat", $crlf, [System.Text.Encoding]::ASCII)
-```
-
-Verify after writing: `CRLF=True` and `LFonly=False`. Never use `Write` or `Edit` for bat files.
-
-### 2. Use `echo(` not `echo.` for blank lines
-
-`echo.` (dot, no space) causes `'. was unexpected at this time'` in some cmd environments, including when `enabledelayedexpansion` is active. **Always use `echo(` for blank lines.** The `echo(` form is unconditionally safe.
-
-### 3. Log-file append: redirect operator goes before echo
-
-```bat
-rem WRONG — [ ] in unquoted echo can be misinterpreted
-echo [%LAUNCH_TS%] started >> "%LOG_FILE%"
-
-rem CORRECT — >> before echo, no ambiguity
->>"%LOG_FILE%" echo [%LAUNCH_TS%] started
-```
-
-### 4. Launcher chain
-
-```
-root\run_gui.bat  →  launchers\run_gui.bat  →  launchers\windows\run_gui.bat
-```
-The root files are compat wrappers only. All real logic lives in `launchers/windows/`. Do not duplicate logic in the root wrappers.
-
-### 5. Dep-skip stamp (no subprocess for hashing)
-
-Stamp key is built from req file dates+sizes — no `certutil` subprocess needed:
-
-```bat
-for %%F in ("%REQUIREMENTS%" ...) do (
-    if exist "%%~F" set "STAMP_KEY=!STAMP_KEY!%%~tF%%~zF"
-)
-set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,60%.ok"
-```
-
-If stamp exists → `goto :launch` (skip all pip/dep work). Only run dep sync when stamp is missing or stale.
-
-### 6. MediaPipe must be installed with `--no-deps`
-
-```bat
-"%VENV_PYTHON%" -m pip install --no-deps "mediapipe==0.10.35"
-```
-
-Always filter mediapipe out of requirements files before the main pip install, then install it separately. Letting pip resolve mediapipe deps causes conflicts.
-
-### 7. After editing ANY tracked text file, verify the diff is your change ONLY (autocrlf trap)
-
-**This box has an autocrlf-like behavior: many tracked files are `i/lf` in git but the `Write`/`Edit` tools (and the working tree) are CRLF.** Editing such a file with `Edit`/`Write` and committing flips the **entire file** LF→CRLF in the committed blob — a silent regression that ships broken/garbled files and wastes a full cycle reverting. This already happened once (`release_prep.py`, PR #22) and must not recur.
-
-**MANDATORY pre-commit check after every `Edit`/`Write` on a tracked file:**
-
-```bash
-git diff --stat <file>          # insertions/deletions must ≈ your logical change
-git diff <file> | grep -c '^[+-]' # not hundreds-of-lines for a 1-line edit
-```
-
-If `--stat` shows the whole file changed (e.g. "288 insertions, 251 deletions" for a 5-line edit), the line endings flipped. **Before committing**, restore the file's committed eol:
-
-```bash
-git show HEAD:<file> > /tmp/orig && \
-python -c "import sys;p=sys.argv[1];b=open(p,'rb').read();open(p,'wb').write(b.replace(b'\r\n',b'\n'))" <file> && \
-git add <file> && git ls-files --eol <file>   # confirm i/lf restored
-```
-
-Authoritative eol checks (working-tree `\r` scans give false positives here): `git ls-files --eol <file>` (both columns) and `git show HEAD:<file> | tr -cd '\r' | wc -c` (committed blob CR bytes — 0 = LF). **A file's committed eol must match its siblings** (e.g. `distribution/*.py` are all `i/lf` — keep them LF). This rule is general (not launcher-only): it applies to `.py`, `.md`, `.json`, `.txt`, anything tracked.
+Two rules are quoted here because they bite on almost every commit:
+- **Never use `Write`/`Edit` on `.bat`/`.cmd`** — they emit LF and garble batch
+  files. Write via PowerShell `WriteAllText` with explicit `` `r`n ``.
+- **After every `Edit`/`Write` on a tracked file, run `git diff --stat <file>`
+  before committing.** A whole-file change for a small edit = an EOL flip;
+  restore the committed EOL before staging (autocrlf trap, see the doc).
 
 ---
 
@@ -694,88 +434,22 @@ Authoritative eol checks (working-tree `\r` scans give false positives here): `g
 
 The GUI is safe to launch multiple times concurrently. Each process gets an
 isolated runtime directory keyed by `<YYYYMMDD-HHMMSS>-<PID>`, so carousel
-state, video history, and crash logs from one window never bleed into
-another. Generated image / video files were already source-folder-adjacent
-(per `path_utils.get_gen_*_folder`) — they were never the bleed culprit.
+state, video history, and crash logs from one window never bleed into another.
+Named workspaces (`--workspace shoot-a` / `KLING_WORKSPACE=shoot-a`) give
+fully isolated state trees.
 
-### Classification of on-disk state
+**Design rule for new on-disk state (the part that bites):** before adding any
+file the GUI writes at runtime, classify it as **Shared** (cross-instance,
+last-writer-wins — use `path_utils.get_user_data_dir()`) or **Per-instance**
+(use `path_utils.get_runtime_dir()`). Don't introduce new shared writable files
+without documenting them — that's exactly the bug PR #49 fixed.
 
-| State                                              | Scope        | Path |
-|----------------------------------------------------|--------------|------|
-| `kling_config.json` (API keys, prompts, models)    | **Shared**   | `<user_data_root>/kling_config.json` |
-| `ui_config.json` (window geometry, sash positions) | **Shared**   | `<user_data_root>/ui_config.json` |
-| `kling_gui.log` (rotating log)                     | **Shared**   | `<user_data_root>/kling_gui.log` |
-| `crash_log.txt` (init / runtime crash sink)        | Per-instance | `<runtime>/crash_log.txt` |
-| `kling_history.json` (video generation history)    | Per-instance | `<runtime>/kling_history.json` |
-| `<key>_autosave.json` (rolling carousel autosave)  | Per-instance | `<runtime>/sessions/<key>_autosave.json` |
-| Manual session saves                               | **Shared**   | `<user_data_root>/sessions/<name>.json` |
-| Liveness marker (one per running window)           | Per-workspace | `<workspace>/runtime/.markers/<instance>.json` |
+The full state-classification table, workspace-name rules, per-launch env vars,
+and the `.launcher_state/setup.lock` bootstrap-mutex details live in:
 
-`<runtime>` = `<workspace_dir>/runtime/instances/<instance_id>/`.
-`<workspace_dir>` = `<user_data_root>` for the default workspace, or
-`<user_data_root>/workspaces/<name>/` for a named workspace. `<user_data_root>`
-follows the existing platform branch: `~/Library/Application Support/selfie-gen-ultimate/`
-on macOS, `<app_dir>` on Windows (preserves the portable workflow).
-
-**Shared files are last-writer-wins.** Each instance reads them once at
-startup and keeps an in-memory copy — there is no live-sync between
-windows. A save from window A simply overwrites the file; window B keeps
-its in-memory copy until the next launch. This is intentional: API keys,
-prompts, and model selections rarely change mid-session, and the cost of
-per-window config (API-key re-entry, layout reset) outweighs the benefit.
-
-### Launching with a named workspace
-
-```bash
-# macOS — args forward through the full launcher chain (PR #49)
-./run_gui.command --workspace shoot-a
-KLING_WORKSPACE=shoot-a ./run_gui.command
-
-# Windows
-run_gui.bat --workspace shoot-a
-set KLING_WORKSPACE=shoot-a && run_gui.bat
-```
-
-Workspace names must match `^[A-Za-z0-9._-]+$`, be ≤64 chars, must not start
-with `.`, and must not be Windows reserved device names. Invalid names fall
-back to `default` with a stderr warning.
-
-### Env vars set per launch
-
-- `KLING_WORKSPACE` — sanitized workspace name. Always set after bootstrap.
-- `KLING_INSTANCE_ID` — `<YYYYMMDD-HHMMSS>-<PID>`. Auto-generated if absent;
-  inherited by subprocesses so a future helper-process can find its parent.
-
-### Design rule for new on-disk state
-
-When you add any new file the GUI writes at runtime, classify it BEFORE
-choosing a path:
-
-- **Shared** (cross-instance read/write): use `path_utils.get_user_data_dir()`
-  or one of the existing `get_*_path` helpers. Accept last-writer-wins or
-  add explicit locking; document the choice in this section.
-- **Per-instance** (private to one window): use `path_utils.get_runtime_dir()`
-  / `get_runtime_sessions_dir()` / etc. Survives orderly close; cleaned up
-  on next launch via stale-marker sweep.
-
-Don't introduce new shared writable files without an explicit note here.
-The bleed bug PR #49 fixed started exactly this way — `sessions/<key>_autosave.json`
-was a shared file that two windows would overwrite each other on.
-
-### Bootstrap mutex (`.launcher_state/setup.lock`)
-
-The shell and batch launchers acquire a `mkdir`-based atomic lock around
-the dependency-setup phase (`setup_macos.sh` on macOS, the `:INSTALL_REQUIREMENTS`
-block on Windows) so two concurrent first-launches don't race on `pip install`
-and corrupt the shared venv. The lock is **released BEFORE the GUI is
-launched** — multiple GUI windows then run concurrently with no shared lock.
-
-Stale-lock cleanup: macOS uses a 10-minute window (most dep installs finish
-in 2-3 min); Windows uses a more conservative 1-day window (batch arithmetic
-on file mtimes is awkward). If you ever need to force-clear the lock:
-`rm -rf .launcher_state/setup.lock` (macOS) / `rd /S /Q .launcher_state\setup.lock`
-(Windows). Don't extend the lock to cover GUI-process lifetime — that
-defeats the entire concurrent-launches feature.
+> **➡️ [`docs/concurrent-launches-workspaces.md`](docs/concurrent-launches-workspaces.md)
+> — READ BEFORE adding GUI-written runtime files or touching workspace/runtime
+> logic.**
 
 ---
 
@@ -920,102 +594,19 @@ wiring doc's per-action checklist before commit.
 ## macOS ↔ Windows bounce traps (NON-NEGOTIABLE pre-PR check matrix)
 
 The user works on **both macOS (primary dev) and Windows (verification + use)**.
-Bugs that only one OS can trigger have caused multiple cross-OS bounces
-(PR #49 → PR #50 → PR #51). This section catalogs the known traps so
-agents run the pre-PR check matrix BEFORE shipping, not after the user
-pulls on the other box and finds the bug.
+Bugs only one OS can trigger have caused multiple cross-OS bounces
+(PR #49 → #50 → #51 → #55). A 7-trap pre-PR check matrix — dist build bloat
+(gitignored ≠ excluded), launcher arg-forward/EOL/exec-bit asymmetry,
+Windows file-handle contention, path-separator asserts, the `>nul`→`/dev/null`
+linter substitution, OS-junk files (`.DS_Store`/`Thumbs.db`), and the cmd
+nested-block parens crash — lives in:
 
-**Run the matrix before opening any PR.** Pick the 2-3 traps that apply
-to your diff and run the corresponding check on the OS you're on. If a
-check requires the other OS and you can't run it, NOTE THAT explicitly
-in the PR description — don't silently ship and hope.
+> **➡️ [`docs/cross-os-bounce-traps.md`](docs/cross-os-bounce-traps.md) — RUN
+> the applicable traps BEFORE opening any PR. Don't ship-and-bounce.**
 
-### Trap 1: dist build bloat (gitignored ≠ excluded)
-
-`distribution/release_prep.py` sweeps the working tree, not `git ls-files`.
-Gitignored research dirs / fixture files only ship if the contributor
-has them locally — which differs per OS. PR #50 missed `.venv311`
-(532 MB zip). PR #51 missed `oldcam-testing/*.mp4`, `test-material/`,
-`oldcam_reference_bundle/`, `analysis_frames/`, stray `*.zip` siblings,
-AND a PII leak (`docs/analysis/sourav_*_results.json` shipping 78+40
-SSN-format identifiers). The accumulated trash differs per OS — only
-the Windows box had the .mp4 fixtures.
-
-**Check (before any PR touching `release_prep.py`):**
-```bash
-"venv/Scripts/python.exe" distribution/build_release.py   # Win
-.venv311/bin/python distribution/build_release.py         # macOS
-ls -lah dist/SelfieGenUltimate-v*.zip   # must be <15 MB
-```
-Then open the zip and grep contents for PII patterns (`\d{3}-\d{2}-\d{4}`),
-stray `*.zip` entries, and `tests/` leakage. The regression test
-`test_copy_sanitized_tree_excludes_local_only_research_dirs` derives
-expected exclusions from the `LOCAL_ONLY_RESEARCH_DIRS` + `PII_EXCLUDED_FILES`
-constants — when adding a new gitignored research dir or PII-bearing
-file, also add it to the corresponding constant. Anti-circularity
-guard in the test asserts EXPECTED_MINIMUM ↔ constants.
-
-### Trap 2: Launcher arg-forwarding + EOL + exec-bit asymmetry
-
-`.bat` needs CRLF + `%*`; `.command`/`.sh` needs LF + `"$@"` + exec bit
-`100755`. They're mirror constraints, but agents usually edit only one
-half. PR #49 added 5 arg-forward fixes after the chain dropped
-`--workspace` on its way to `gui_launcher.py`.
-
-**Check (before any PR touching launchers):**
-```bash
-bash scripts/check_macos_portability.sh                # exit 0
-grep -E '%\*|"\$@"' run_gui.{bat,command,sh} launchers/{macos,windows}/run_gui.*
-git ls-files --eol run_gui.{bat,command,sh}            # bat=crlf, sh/command=lf
-git ls-files --stage run_gui.{command,sh}              # leading 100755
-```
-
-### Trap 3: Windows-specific process behaviors (file-handle contention)
-
-Windows Defender / Search Indexer / Explorer hold file handles during
-scan. `rd /S /Q` fails with `"process cannot access the file"`. macOS
-has no equivalent → never reproduces there. PR #51 H1 fix added
-3-attempt retry (2s + 4s sleeps) in `launchers/windows/run_gui.bat
-:release_setup_lock` precisely for this.
-
-**Check (any new Windows .bat that does file-overwrite / dir-delete):**
-add defensive retry. Test on Windows by holding a file handle inside
-the target via a separate Python process — see `tests/test_launcher_arg_forwarding.py
-::test_windows_release_setup_lock_retries_on_failure` for the static-text
-regression guard pattern.
-
-### Trap 4: Path-separator + case-sensitivity assertions
-
-`os.path.join("F:\\foo", "bar.bat")` returns `"F:\\foo/bar.bat"` on
-POSIX, `"F:\\foo\\bar.bat"` on Windows. Tests asserting on a literal
-path string need `@pytest.mark.skipif(os.name != "nt", reason="...")`.
-Already documented as macOS Portability rule 4; included here as a
-trap-class reminder.
-
-### Trap 5: Linter rewrites `>nul` → `/dev/null` in `.bat`
-
-A linter in this checkout silently substitutes POSIX `/dev/null` for
-Windows `>nul` in .bat files. Fires AFTER write, BEFORE stage. Three
-defenses (use all):
-- Existing tripwire test `test_windows_bat_has_no_dev_null` catches at
-  pytest time.
-- When writing `.bat` via Python, chain `python write.py && git add file.bat`
-  in ONE Bash command — no window for the linter to fire.
-- After staging, verify: `git show :file.bat | grep -c '/dev/null'` must be 0.
-
-### Trap 6: gitignored file shows up in working tree on one OS only
-
-macOS Finder creates `.DS_Store` on browse. Windows Explorer creates
-`Thumbs.db` / `desktop.ini`. PR #51 round-1 found that `.DS_Store`
-inside an orphan runtime dir would have permanently blocked
-`workspace_markers._safe_rmtree_orphan_runtime` cleanup. Fix: include
-these OS-junk names in any "safe to delete" allow-list.
-
-### Pattern: when you DO catch a one-side-only bug
-
-Add it as a new trap entry with the specific symptom + check. The list
-grows; the bounce frequency drops. The memory file
-`feedback_macos_windows_bounce_traps.md` has the agent-private version.
+If a check requires the other OS and you can't run it, say so explicitly in the
+PR description. The agent-private version is the memory file
+`feedback_macos_windows_bounce_traps.md`.
 
 ---
 

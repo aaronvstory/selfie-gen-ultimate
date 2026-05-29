@@ -60,14 +60,69 @@ _HEADER_BG_COLLAPSED = "#333338"  # noticeably darker than bg_panel (#3C3C41)
 _HEADER_BG_OPEN = "#505055"       # matches COLORS["bg_hover"]
 
 
-def _platform_gui_repair_launcher() -> str:
-    """Return the platform-appropriate GUI repair launcher name."""
+def _platform_face_repair_recovery_hint() -> str:
+    """Return a per-platform copy-pasteable recovery hint for the RetinaFace
+    import-failure toast.
+
+    Background: the previous toast told users to "Run run_gui.bat for
+    automatic dependency repair," which created an infinite re-run loop
+    when the launcher's deps stamp was already present (the cached-stamp
+    path skipped every check). The companion launcher fix forces a runtime
+    health probe on every launch and self-repairs when it fails, so the
+    toast should now only fire if (a) the user opened the GUI manually
+    bypassing the launcher, or (b) auto-repair already ran and still
+    couldn't fix the stack. Either way, just re-running the launcher
+    won't always help — point users at a deterministic manual recovery
+    instead.
+    """
+    # Hints are written to be LITERALLY copy-pasteable into a Windows cmd /
+    # bash / zsh prompt. CodeRabbit round 1 caught backticks around the
+    # `dependency_health_check.py --mode repair` substring — backticks in
+    # bash/zsh execute the wrapped command, so a user copy-pasting the hint
+    # via shell wouldn't get what they expected. No backticks anywhere in
+    # the returned strings.
     system = platform.system()
     if system == "Windows":
-        return "run_gui.bat"
+        # `deps_*.ok` is a file pattern — must use `del` (rd is for dirs only).
+        # Subagent round 1 CRITICAL: original wording used `rd /S /Q` which
+        # errors with "The system cannot find the file specified." when the
+        # user copy-pastes it, recreating the same dead-end the PR is fixing.
+        #
+        # Codex PR #55 round 2 P2 (#3313773051): the previous form was
+        # `del /Q .launcher_state\\deps_*.ok && run_gui.bat`. When the
+        # static warning fires AFTER the launcher already cleared the
+        # stamp (or on a manual GUI launch where the stamp never existed),
+        # `del` returns non-zero and `&&` short-circuits — `run_gui.bat`
+        # never runs. Use `&` (unconditional separator) with `2>nul` to
+        # suppress the "Could Not Find" stderr noise. The launcher itself
+        # also clears the stamp at the top of `:setup_lock_acquired` (BAT
+        # line 119 + 145), so a stamp-less delete is the normal case here.
+        return (
+            "Manual recovery: del /Q .launcher_state\\deps_*.ok 2>nul & run_gui.bat "
+            "(forces a fresh dep sync + health check). If that fails too, "
+            "run: venv\\Scripts\\python.exe dependency_health_check.py "
+            "--mode repair ... or delete venv\\ and re-launch."
+        )
     if system == "Darwin":
-        return "run_gui.command"
-    return "run_gui.sh"
+        # HEALTH_STAMP path MUST match `run_gui.sh:7` (`HEALTH_STAMP=
+        # "${ROOT_DIR}/.venv-macos/.health.sha256"`). Subagent round 1
+        # CRITICAL: original wording pointed at `.launcher_state/health.sha256`
+        # which doesn't exist; `rm -f` silently no-ops and the still-present
+        # `.venv-macos/.health.sha256` keeps short-circuiting on the next
+        # launch — recreating the macOS-side version of the infinite loop
+        # this PR is meant to eliminate.
+        return (
+            "Manual recovery: rm -f .venv-macos/.health.sha256 && "
+            "bash run_gui.sh (forces a runtime health probe + repair). "
+            "If that fails too, run: .venv-macos/bin/python "
+            "dependency_health_check.py --mode repair ... or delete "
+            ".venv-macos/ and re-launch."
+        )
+    return (
+        "Manual recovery: bash run_gui.sh (re-probes deps). If that fails "
+        "too, run: python dependency_health_check.py --mode repair ... "
+        "inside your venv, or recreate the venv from scratch."
+    )
 
 
 def _format_image_info(path: str) -> str:
@@ -368,20 +423,27 @@ class FaceCropTab(tk.Frame):
     # ── UI Construction ─────────────────────────────────────────────
 
     def _build_ui(self):
-        # Dependency warning
+        # Dependency warning. Subagent PR #55 round-2 MED (2026-05-28): the
+        # OLD label said "Auto-repair via run_gui.bat" which is exactly the
+        # message that created the friend's infinite re-run loop — re-running
+        # the launcher with a stale `deps_*.ok` stamp would silently skip
+        # the broken-dep check. Use _platform_face_repair_recovery_hint()
+        # so the static warning carries the same deterministic recovery
+        # path as the toast that fires from _run_crop_internal (delete the
+        # stamp, then run the launcher, OR run dependency_health_check.py
+        # --mode repair directly).
         if not HAS_FACE_DEPS:
-            repair_launcher = _platform_gui_repair_launcher()
+            recovery_hint = _platform_face_repair_recovery_hint()
+            err_detail = FACE_DEPS_ERROR or "opencv-python / numpy import failed"
             warn = tk.Label(
                 self,
-                text=(
-                    f"Face Crop deps missing. Auto-repair via {repair_launcher}, or install manually: "
-                    "pip install opencv-python-headless numpy tensorflow==2.16.2 "
-                    "tensorflow-intel==2.16.2 tf-keras==2.16.0 retina-face==0.0.17"
-                ),
+                text=f"Face Crop deps missing: {err_detail}.  {recovery_hint}",
                 bg=COLORS["bg_panel"],
                 fg=COLORS["warning"],
                 font=(FONT_FAMILY, 10, "bold"),
                 anchor="w",
+                justify="left",
+                wraplength=900,
             )
             warn.pack(fill=tk.X, padx=8, pady=(8, 0))
 
@@ -1317,20 +1379,44 @@ class FaceCropTab(tk.Frame):
             self._status_label.config(text="No source image loaded", fg=COLORS["warning"])
             return
         if not HAS_FACE_DEPS:
+            # Polish-sweep (PR #55): the old toast just said "(see warning)"
+            # but the warning banner can scroll off-screen on small windows
+            # and the underlying import error (FACE_DEPS_ERROR — usually
+            # cv2 or numpy) was never visible in the log. Surface both the
+            # exception detail and the platform-specific recovery hint so
+            # the user can diagnose without hunting through scrollback.
+            err_detail = FACE_DEPS_ERROR or "opencv-python / numpy not available"
             self._status_label.config(
-                text="Face Crop deps missing (see warning)", fg=COLORS["error"]
+                text=f"Face Crop deps missing: {err_detail}",
+                fg=COLORS["error"],
+            )
+            self.log(
+                f"Face Crop: opencv/numpy import failed — {err_detail}",
+                "error",
+            )
+            self.log(
+                f"Face Crop: {_platform_face_repair_recovery_hint()}",
+                "error",
             )
             return
         retinaface_cls, retinaface_error = _load_retinaface()
         if retinaface_cls is None:
-            repair_launcher = _platform_gui_repair_launcher()
+            recovery_hint = _platform_face_repair_recovery_hint()
             self._status_label.config(
                 text=f"RetinaFace unavailable (TensorFlow/Keras backend mismatch or missing deps): {retinaface_error}",
                 fg=COLORS["error"],
             )
+            # The full message has three parts: WHAT failed, the exact
+            # exception detail, and an actionable recovery path. We split
+            # over two log lines so the recovery hint is the LAST thing
+            # in the user's eye line — long-form retinaface tracebacks
+            # would otherwise push the actionable step off the log tail.
             self.log(
-                "Face Crop: RetinaFace/TensorFlow import failed. "
-                f"Run {repair_launcher} for automatic dependency repair.",
+                f"Face Crop: RetinaFace/TensorFlow import failed — {retinaface_error}",
+                "error",
+            )
+            self.log(
+                f"Face Crop: {recovery_hint}",
                 "error",
             )
             return
