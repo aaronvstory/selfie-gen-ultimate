@@ -161,6 +161,20 @@ def test_install_cupy_surfaces_pip_error_lines(monkeypatch):
     assert "No matching distribution" in msg
 
 
+def test_load_stamp_rejects_non_dict_json():
+    """gemini MEDIUM (PR #54): a corrupted/hand-edited stamp that is valid
+    JSON but not a dict (e.g. a list or string) must be treated as 'no
+    stamp' — returning it would crash later .get(...) callers."""
+    for payload in ("[]", '"oops"', "42", "null"):
+        gpu_bootstrap.STAMP_PATH.write_text(payload, encoding="utf-8")
+        assert gpu_bootstrap._load_stamp() is None, (
+            f"non-dict stamp {payload!r} must load as None"
+        )
+    # Sanity: a real dict still round-trips.
+    gpu_bootstrap.STAMP_PATH.write_text('{"result": "no_nvidia"}', encoding="utf-8")
+    assert gpu_bootstrap._load_stamp() == {"result": "no_nvidia"}
+
+
 def test_cached_no_nvidia_short_circuits_within_ttl(monkeypatch):
     """A recent no_nvidia stamp must not re-run detection — the user
     swapping GPUs is rare and the TTL handles it."""

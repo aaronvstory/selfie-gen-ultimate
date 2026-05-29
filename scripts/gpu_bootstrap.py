@@ -121,9 +121,13 @@ def _load_stamp() -> Optional[dict]:
     if not STAMP_PATH.exists():
         return None
     try:
-        return json.loads(STAMP_PATH.read_text(encoding="utf-8"))
+        data = json.loads(STAMP_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    # gemini MEDIUM (PR #54): a corrupted or hand-edited stamp could be valid
+    # JSON but a non-dict (list/str/number). Returning it would crash later
+    # callers that do stamp.get(...). Treat non-dict payloads as "no stamp".
+    return data if isinstance(data, dict) else None
 
 
 def _write_stamp(payload: dict) -> None:
