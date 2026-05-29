@@ -111,6 +111,56 @@ def test_detect_nvidia_returns_none_when_smi_missing_macos(monkeypatch):
         monkeypatch.setattr(gpu_bootstrap.subprocess, "run", original_run)
 
 
+def test_resolve_nvidia_smi_prefers_path(monkeypatch):
+    """When nvidia-smi is on PATH, _resolve_nvidia_smi returns shutil.which's
+    result verbatim and does no Windows-dir guessing."""
+    monkeypatch.setattr(gpu_bootstrap.shutil, "which", lambda name: "/usr/bin/nvidia-smi")
+    assert gpu_bootstrap._resolve_nvidia_smi() == "/usr/bin/nvidia-smi"
+
+
+def test_resolve_nvidia_smi_none_on_posix_without_path(monkeypatch):
+    """POSIX + not-on-PATH → None (no Windows fallback dirs apply)."""
+    monkeypatch.setattr(gpu_bootstrap.shutil, "which", lambda name: None)
+    monkeypatch.setattr(gpu_bootstrap, "_is_windows", lambda: False)
+    assert gpu_bootstrap._resolve_nvidia_smi() is None
+
+
+def test_resolve_nvidia_smi_finds_windows_system32(monkeypatch, tmp_path):
+    """Code-review HIGH (PR #54): on Windows the driver may not put
+    nvidia-smi on PATH. _resolve_nvidia_smi must still find it in the
+    canonical System32 location."""
+    sysroot = tmp_path / "Windows"
+    smi = sysroot / "System32" / "nvidia-smi.exe"
+    smi.parent.mkdir(parents=True)
+    smi.write_text("")
+    monkeypatch.setattr(gpu_bootstrap.shutil, "which", lambda name: None)
+    monkeypatch.setattr(gpu_bootstrap, "_is_windows", lambda: True)
+    monkeypatch.setenv("SystemRoot", str(sysroot))
+    assert gpu_bootstrap._resolve_nvidia_smi() == str(smi)
+
+
+def test_install_cupy_surfaces_pip_error_lines(monkeypatch):
+    """Code-review MEDIUM (PR #54): a failed pip install must report pip's
+    own ERROR: line, not a blind tail that often captures only the generic
+    hint block."""
+    class _Proc:
+        returncode = 1
+        stdout = (
+            "Collecting cupy-cuda12x\n"
+            "ERROR: Could not find a version that satisfies the requirement "
+            "cupy-cuda12x\n"
+            "ERROR: No matching distribution found for cupy-cuda12x\n"
+            "\n[hint] try upgrading pip and rerun the command shown above\n"
+        )
+        stderr = ""
+
+    monkeypatch.setattr(gpu_bootstrap.subprocess, "run", lambda *a, **k: _Proc())
+    ok, msg = gpu_bootstrap.install_cupy("python", 12)
+    assert ok is False
+    assert "Could not find a version" in msg
+    assert "No matching distribution" in msg
+
+
 def test_cached_no_nvidia_short_circuits_within_ttl(monkeypatch):
     """A recent no_nvidia stamp must not re-run detection — the user
     swapping GPUs is rare and the TTL handles it."""

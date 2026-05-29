@@ -62,6 +62,7 @@ import datetime as _dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -157,6 +158,44 @@ def _stamp_age_days(stamp: dict) -> float:
     return (_dt.datetime.now(_dt.timezone.utc) - when).total_seconds() / 86400.0
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _resolve_nvidia_smi() -> Optional[str]:
+    """Locate the ``nvidia-smi`` executable, or None if absent.
+
+    Code-review HIGH (PR #54): a bare ``["nvidia-smi"]`` only works when
+    the binary is on PATH. The NVIDIA Windows driver installer does NOT
+    reliably add it, so on a perfectly good CUDA box the bare invocation
+    FileNotFounds and the whole GPU path silently no-ops. Fall back to the
+    canonical Windows install locations before giving up: the modern driver
+    drops ``nvidia-smi.exe`` in ``System32``; the legacy layout puts it under
+    ``NVIDIA Corporation\\NVSMI``. On POSIX, PATH lookup is authoritative.
+    """
+    found = shutil.which("nvidia-smi")
+    if found:
+        return found
+    if not _is_windows():
+        return None
+    candidates = []
+    sysroot = os.environ.get("SystemRoot") or r"C:\Windows"
+    candidates.append(Path(sysroot) / "System32" / "nvidia-smi.exe")
+    for env in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+        base = os.environ.get(env)
+        if base:
+            candidates.append(
+                Path(base) / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe"
+            )
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return str(cand)
+        except OSError:
+            continue
+    return None
+
+
 def detect_nvidia() -> Optional[dict]:
     """Run ``nvidia-smi`` and return {'driver_version', 'cuda_major'}
     or None when there's no NVIDIA GPU / driver.
@@ -166,12 +205,16 @@ def detect_nvidia() -> Optional[dict]:
     version because the driver→CUDA-runtime table changes per release
     and the header is canonical.
 
-    Robust to: missing executable (Linux/macOS without NVIDIA), non-
-    zero exit, unexpected output. All failures → None.
+    Robust to: missing executable (Linux/macOS without NVIDIA, or a
+    Windows box where nvidia-smi isn't on PATH), non-zero exit,
+    unexpected output. All failures → None.
     """
+    exe = _resolve_nvidia_smi()
+    if exe is None:
+        return None
     try:
         proc = subprocess.run(
-            ["nvidia-smi"],
+            [exe],
             capture_output=True,
             text=True,
             timeout=10,
@@ -259,6 +302,20 @@ def install_cupy(python_exe: str, cuda_major: int) -> tuple[bool, str]:
     except (subprocess.TimeoutExpired, OSError) as exc:
         return (False, f"pip subprocess error: {exc!r}")
     if proc.returncode != 0:
+        # Code-review MEDIUM (PR #54): surface pip's own ``ERROR:`` lines
+        # rather than a blind last-400-chars tail. pip prints the actual
+        # cause (no matching wheel, resolver conflict, hash mismatch) on
+        # ``ERROR:``-prefixed lines, but follows them with a generic hint
+        # block — a raw tail often captures only the hint and drops the
+        # diagnosis. Prefer the ERROR lines; fall back to the tail.
+        combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        err_lines = [
+            ln.strip()
+            for ln in combined.splitlines()
+            if ln.strip().upper().startswith("ERROR:")
+        ]
+        if err_lines:
+            return (False, " | ".join(err_lines)[-400:])
         tail = (proc.stderr or proc.stdout or "")
         return (False, tail[-400:].strip() or f"pip exit {proc.returncode}")
     version = probe_cupy(python_exe)

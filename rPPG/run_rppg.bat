@@ -85,12 +85,31 @@ if errorlevel 1 (
   rem to ~10 min then proceeds (matches the launcher's setup.lock TTL).
   set "RPPG_SETUP_LOCK=%STATE_DIR%\rppg_setup.lock"
   set "RPPG_LOCK_WAITED="
+  set "RPPG_LOCK_TRIES=0"
   :rppg_setup_lock_acquire
   md "!RPPG_SETUP_LOCK!" >nul 2>&1
   if !errorlevel! equ 0 goto :rppg_setup_lock_acquired
   forfiles /P "%STATE_DIR%" /M rppg_setup.lock /D -1 >nul 2>&1
   if !errorlevel! equ 0 (
     echo   [rppg-setup-lock] removing stale lock
+    rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
+    goto :rppg_setup_lock_acquire
+  )
+  rem forfiles /D -1 only matches locks >=1 DAY old, so a lock left by a
+  rem sibling that crashed earlier the SAME day would hang here forever.
+  rem Bound the wait with a retry counter: ~200 iters * ~2s/ping ~= 6-7 min,
+  rem then force-break the lock and proceed; hard-give-up a few iters later
+  rem if the lock dir genuinely cannot be removed.
+  set /a RPPG_LOCK_TRIES+=1
+  if !RPPG_LOCK_TRIES! geq 210 (
+    echo   ERROR: rPPG setup lock stuck and could not be cleared.
+    >>"%LOG_FILE%" echo [ERROR] rppg_setup.lock stuck; giving up.
+    %PAUSE%
+    exit /b 1
+  )
+  if !RPPG_LOCK_TRIES! geq 200 (
+    echo   [rppg-setup-lock] lock held too long; force-breaking and proceeding
+    >>"%LOG_FILE%" echo [WARN] rppg_setup.lock force-broken after timeout.
     rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
     goto :rppg_setup_lock_acquire
   )
@@ -110,8 +129,7 @@ if errorlevel 1 (
     echo   OK: rPPG deps installed by sibling launcher; continuing.
     goto :rppg_post_dep_check
   )
-  "!PYTHON_BIN!" -m pip install -r "%REPO_ROOT%\requirements.txt"
-  set "PIP_EXIT=!errorlevel!"
+  call :rppg_sync_deps
   rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
   if !PIP_EXIT! neq 0 (
     echo   ERROR: pip install -r requirements.txt failed.
@@ -161,3 +179,26 @@ if errorlevel 1 exit /b 1
 set "PYTHON_BIN=%~1"
 set "ENV_KIND=%~2"
 exit /b 0
+
+:rppg_sync_deps
+rem P1 (codex PR #54): MediaPipe must install with --no-deps (Hard Rule #6).
+rem Installing the full requirements.txt with normal dependency resolution
+rem lets pip pull MediaPipe's own deps and break the TF/protobuf/numpy stack.
+rem Mirror launchers\windows\run_gui.bat :INSTALL_REQUIREMENTS -- filter
+rem mediapipe out, install the rest, then install it pinned with --no-deps.
+set "RPPG_REQ_FILTERED=%TEMP%\rppg_req_%RANDOM%_%RANDOM%.txt"
+findstr /V /I /B "mediapipe" "%REPO_ROOT%\requirements.txt" > "%RPPG_REQ_FILTERED%"
+"!PYTHON_BIN!" -m pip install -r "%RPPG_REQ_FILTERED%"
+set "PIP_EXIT=!errorlevel!"
+if !PIP_EXIT! neq 0 (
+  del "%RPPG_REQ_FILTERED%" >nul 2>&1
+  exit /b !PIP_EXIT!
+)
+findstr /I /R "^[ ]*mediapipe" "%REPO_ROOT%\requirements.txt" >nul
+if !errorlevel! equ 0 (
+  echo   Installing MediaPipe separately with --no-deps...
+  "!PYTHON_BIN!" -m pip install --no-deps "mediapipe==0.10.35"
+  set "PIP_EXIT=!errorlevel!"
+)
+del "%RPPG_REQ_FILTERED%" >nul 2>&1
+exit /b !PIP_EXIT!

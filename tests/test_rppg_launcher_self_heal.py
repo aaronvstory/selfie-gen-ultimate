@@ -34,11 +34,33 @@ def bat_source() -> str:
 def test_missing_deps_actually_invokes_pip_install(bat_source: str):
     """The missing-deps branch MUST invoke pip via the resolved
     !PYTHON_BIN! — NOT merely echo a "Sync:" command. Friend-zip
-    regression guard 2026-05-27."""
-    assert '"!PYTHON_BIN!" -m pip install -r "%REPO_ROOT%\\requirements.txt"' in bat_source, (
+    regression guard 2026-05-27.
+
+    Updated PR #54: the self-heal now mirrors the launcher's MediaPipe
+    contract (filter mediapipe out, install the rest, then mediapipe
+    separately with --no-deps), so the pip target is the filtered req
+    file rather than requirements.txt directly. The invariant under test
+    is unchanged: pip is ACTUALLY run via the resolved interpreter."""
+    assert '"!PYTHON_BIN!" -m pip install -r "%RPPG_REQ_FILTERED%"' in bat_source, (
         "self-heal branch must ACTUALLY run pip install via the "
         "resolved !PYTHON_BIN!. The friend-zip bug was that the prior "
         "block only echoed the sync command without running it."
+    )
+
+
+def test_self_heal_installs_mediapipe_no_deps(bat_source: str):
+    """P1 (codex PR #54): MediaPipe MUST install with --no-deps
+    (Hard Rule #6). Installing the full requirements.txt with normal
+    dependency resolution lets pip pull MediaPipe's own deps and break
+    the TF/protobuf/numpy stack. The self-heal must filter mediapipe out
+    of the main install and install it separately, pinned + --no-deps —
+    mirroring launchers/windows/run_gui.bat :INSTALL_REQUIREMENTS."""
+    assert 'findstr /V /I /B "mediapipe"' in bat_source, (
+        "self-heal must filter mediapipe out of the bulk pip install"
+    )
+    assert '-m pip install --no-deps "mediapipe==0.10.35"' in bat_source, (
+        "self-heal must install mediapipe separately with --no-deps "
+        "(Hard Rule #6)"
     )
 
 
@@ -114,6 +136,20 @@ def test_self_heal_concurrency_lock_present(bat_source: str):
         "dedicated mkdir lock"
     )
     assert "rppg_setup.lock" in bat_source
+
+
+def test_self_heal_lock_wait_is_bounded(bat_source: str):
+    """HIGH/P2 (gemini+codex PR #54): the mkdir-lock acquire loop only
+    cleared locks via `forfiles /D -1`, which matches locks >=1 DAY old.
+    A lock left by a sibling that crashed earlier the SAME day would hang
+    the loop forever. The loop MUST carry a retry counter that force-breaks
+    the lock after a bounded wait and ultimately gives up rather than
+    deadlocking the launcher."""
+    assert "RPPG_LOCK_TRIES" in bat_source, (
+        "lock-acquire loop must bound its wait with a retry counter so a "
+        "same-day stale lock cannot deadlock the launcher"
+    )
+    assert "set /a RPPG_LOCK_TRIES+=1" in bat_source
 
 
 def test_self_heal_diagnostic_lists_missing_modules(bat_source: str):
