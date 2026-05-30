@@ -640,12 +640,39 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_rppg_iterate_from_baseline"] is True
     assert ui.config["automation_rppg_skip_diagnosis"] is True
     assert ui.config["automation_rppg_skip_kinematic_gate"] is True
-    # Version bumped from 4 to 5 — drives the "apply recommended
-    # defaults" yellow prompt on the automation menu for users still
-    # at v4 from before the rPPG-iterative migration.
+    # Round-3 subagent CRITICAL on PR #54: the apply-defaults function
+    # MUST write stride=1 so the v5 -> v6 migration actually flips the
+    # knob it was bumped for. Without this assertion the prior version-
+    # bump test passed but the stride stayed at whatever the user had
+    # saved (3 for v5 users from the v2.5 speedup pass).
+    assert ui.config["automation_rppg_landmark_stride"] == 1, (
+        "v6 apply-defaults must reset landmark_stride to 1 — that's "
+        "the entire reason the version bumped from 5 to 6"
+    )
+    # Version bumped 5 -> 6 in PR #54 (2026-05-27) when
+    # automation_rppg_landmark_stride default was reverted 3 -> 1.
+    # Drives the "apply recommended defaults" yellow prompt on the
+    # automation menu for v5 users still carrying stride=3.
     from kling_automation_ui import RECOMMENDED_DEFAULTS_VERSION
-    assert RECOMMENDED_DEFAULTS_VERSION == 5
-    assert ui.config["automation_recommended_defaults_version"] == 5
+    assert RECOMMENDED_DEFAULTS_VERSION == 6
+    assert ui.config["automation_recommended_defaults_version"] == 6
+    # Round-3 review fix (PR #54): catch the lockstep miss where
+    # `kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION` was bumped
+    # but `automation.config.AUTOMATION_DEFAULTS` stayed stale. Both
+    # constants must agree — a brand-new user (whose initial config
+    # is seeded from AUTOMATION_DEFAULTS) would otherwise immediately
+    # trip the CLI's "apply recommended defaults?" prompt because the
+    # seeded value would be N-1 of the target. Asserting they match
+    # here locks the synchronization invariant.
+    from automation.config import AUTOMATION_DEFAULTS
+    assert AUTOMATION_DEFAULTS["automation_recommended_defaults_version"] == \
+        RECOMMENDED_DEFAULTS_VERSION, (
+        "automation.config.AUTOMATION_DEFAULTS and "
+        "kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION must stay "
+        "in lockstep — a fresh-install config would otherwise immediately "
+        "trip the 'apply defaults?' prompt because the seeded baseline "
+        "is N-1 of the target."
+    )
     assert ui.config["automation_max_cases_per_run"] == "all"
     assert ui.config["falai_api_key"] == "keep-fal-key"
     assert ui.config["bfl_api_key"] == "keep-bfl-key"

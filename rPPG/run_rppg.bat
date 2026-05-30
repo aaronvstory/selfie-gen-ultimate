@@ -68,16 +68,107 @@ if errorlevel 1 (
 )
 "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
 if errorlevel 1 (
-  echo   ERROR: repo venv missing cv2/numpy/mediapipe/scipy.
-  echo   Sync: "%REPO_ROOT%\venv\Scripts\pip" install -r "%REPO_ROOT%\requirements.txt"
-  >>"%LOG_FILE%" echo [ERROR] Core imports missing in repo venv.
-  %PAUSE%
-  exit /b 1
+  rem v2.7 friend-zip self-heal (PR #54 / 2026-05-27): the prior block
+  rem only ECHOED the sync command and exited. A user opening a fresh
+  rem personal zip whose venv was built before scipy/mediapipe joined
+  rem requirements.txt then hit the dead-end '... missing cv2/numpy/
+  rem mediapipe/scipy' error and rPPG silently failed every run. Now we
+  rem ACTUALLY run the pip install against the resolved !PYTHON_BIN!
+  rem (NOT a hardcoded %REPO_ROOT%\venv\Scripts\pip, which can resolve
+  rem to a different python on .venv311 / SELFIEGEN_PYTHON hosts) and
+  rem re-run the import check. Honours KLING_NO_PAUSE so the GUI
+  rem subprocess doesn't wedge on a pause.
+  echo   WARN: rPPG deps missing -- syncing repo requirements before retry...
+  >>"%LOG_FILE%" echo [WARN] Core imports missing; running pip install.
+  rem Concurrent rPPG launches (two GUI windows) must not both run pip
+  rem against the shared venv. mkdir-based atomic lock; sibling waits up
+  rem to ~10 min then proceeds (matches the launcher's setup.lock TTL).
+  set "RPPG_SETUP_LOCK=%STATE_DIR%\rppg_setup.lock"
+  set "RPPG_LOCK_WAITED="
+  set "RPPG_LOCK_TRIES=0"
+  :rppg_setup_lock_acquire
+  md "!RPPG_SETUP_LOCK!" >nul 2>&1
+  if !errorlevel! equ 0 goto :rppg_setup_lock_acquired
+  forfiles /P "%STATE_DIR%" /M rppg_setup.lock /D -1 >nul 2>&1
+  if !errorlevel! equ 0 (
+    echo   [rppg-setup-lock] removing stale lock
+    rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
+    rem NO goto here (gemini HIGH PR #54): if rmdir fails (perms/open
+    rem handle) a goto back to :acquire would spin at 100%% CPU forever,
+    rem bypassing the RPPG_LOCK_TRIES counter + ping sleep below. Fall
+    rem through so every spin increments the counter and eventually
+    rem hits the geq-930 graceful give-up.
+  )
+  rem forfiles /D -1 only matches locks >=1 DAY old, so a lock left by a
+  rem sibling that crashed earlier the SAME day would hang here forever.
+  rem Bound the wait with a retry counter, but keep the window LARGER than a
+  rem worst-case full-requirements install so we never force-break a LIVE
+  rem sibling lock mid-pip (codex P2 PR #54 -- mirrors gpu_bootstrap's
+  rem LOCK_STALE_SECONDS > PIP_INSTALL_TIMEOUT rule). The root requirements
+  rem (TensorFlow etc.) can take ~20-30 min on a thin line, so ~900 iters *
+  rem ~2s/ping ~= 30 min before force-break; hard-give-up ~1 min later if the
+  rem lock dir genuinely cannot be removed.
+  set /a RPPG_LOCK_TRIES+=1
+  if !RPPG_LOCK_TRIES! geq 930 (
+    echo   ERROR: rPPG setup lock stuck and could not be cleared.
+    >>"%LOG_FILE%" echo [ERROR] rppg_setup.lock stuck; giving up.
+    %PAUSE%
+    exit /b 1
+  )
+  if !RPPG_LOCK_TRIES! geq 900 (
+    echo   [rppg-setup-lock] lock held too long; force-breaking and proceeding
+    >>"%LOG_FILE%" echo [WARN] rppg_setup.lock force-broken after timeout.
+    rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
+    goto :rppg_setup_lock_acquire
+  )
+  if not defined RPPG_LOCK_WAITED (
+    echo   [rppg-setup-lock] another launcher is syncing rPPG deps; waiting...
+    set "RPPG_LOCK_WAITED=1"
+  )
+  ping -n 3 127.0.0.1 >nul 2>&1
+  goto :rppg_setup_lock_acquire
+  :rppg_setup_lock_acquired
+  rem Re-check imports after acquiring the lock - a sibling may have
+  rem ALREADY installed them while we waited, in which case we can skip
+  rem the pip work entirely.
+  "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
+  if !errorlevel! equ 0 (
+    rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
+    echo   OK: rPPG deps installed by sibling launcher; continuing.
+    goto :rppg_post_dep_check
+  )
+  call :rppg_sync_deps
+  rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
+  if !PIP_EXIT! neq 0 (
+    echo   ERROR: pip install -r requirements.txt failed.
+    >>"%LOG_FILE%" echo [ERROR] pip install -r requirements.txt failed.
+    %PAUSE%
+    exit /b 1
+  )
+  :rppg_post_dep_check
+  rem Re-check imports after the self-heal install. If still missing,
+  rem report exactly WHICH modules failed so the user has an actionable
+  rem error instead of the generic 4-module list.
+  "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
+  if errorlevel 1 (
+    echo   ERROR: rPPG deps still missing after pip sync. Detail:
+    "!PYTHON_BIN!" -c "import importlib.util; mods=['cv2','numpy','mediapipe','scipy']; missing=[m for m in mods if importlib.util.find_spec(m) is None]; print('     Still missing:', ', '.join(missing) if missing else 'none (deeper import failure)')"
+    >>"%LOG_FILE%" echo [ERROR] Self-heal pip install did not satisfy imports.
+    %PAUSE%
+    exit /b 1
+  )
+  echo   OK: rPPG deps installed.
+  >>"%LOG_FILE%" echo [INFO] Self-heal pip install succeeded; continuing.
 )
 if exist "%REPO_ROOT%\face_landmarker.task" set "MEDIAPIPE_FACE_LANDMARKER_MODEL=%REPO_ROOT%\face_landmarker.task"
 rem rppg_injector visualize_analysis() calls plt.show() which BLOCKS on a
 rem GUI window; force headless Agg so it never waits for a window close.
 set "MPLBACKEND=Agg"
+rem v2.7 fix: flush every `print` from the injector child immediately so the
+rem GUI sees natural progress cadence instead of a multi-minute silent gap
+rem while MediaPipe loads + baseline ROIs extract. The wrapper streamer ALSO
+rem sets this in its subprocess env (belt + suspenders).
+set "PYTHONUNBUFFERED=1"
 
 echo   Launching rppg_injector.py %*
 >>"%LOG_FILE%" echo [INFO] Launching rppg_injector.py %*
@@ -96,3 +187,37 @@ if errorlevel 1 exit /b 1
 set "PYTHON_BIN=%~1"
 set "ENV_KIND=%~2"
 exit /b 0
+
+:rppg_sync_deps
+rem P1 (codex PR #54): MediaPipe must install with --no-deps (Hard Rule #6).
+rem Installing the full requirements.txt with normal dependency resolution
+rem lets pip pull MediaPipe's own deps and break the TF/protobuf/numpy stack.
+rem Mirror launchers\windows\run_gui.bat :INSTALL_REQUIREMENTS -- filter
+rem mediapipe out, install the rest (prefer wheels, fall back to source),
+rem then install the EXACT pinned mediapipe line read FROM requirements.txt
+rem with --no-deps. Reading the pin dynamically (not a hardcoded literal)
+rem keeps this self-heal from drifting when the requirements pin is bumped.
+set "RPPG_REQ_FILTERED=%TEMP%\rppg_req_%RANDOM%_%RANDOM%.txt"
+findstr /V /I /B "mediapipe" "%REPO_ROOT%\requirements.txt" > "%RPPG_REQ_FILTERED%"
+"!PYTHON_BIN!" -m pip install --only-binary :all: -r "%RPPG_REQ_FILTERED%"
+set "PIP_EXIT=!errorlevel!"
+if !PIP_EXIT! neq 0 (
+  echo   Retrying without binary constraint...
+  "!PYTHON_BIN!" -m pip install -r "%RPPG_REQ_FILTERED%"
+  set "PIP_EXIT=!errorlevel!"
+)
+if !PIP_EXIT! neq 0 (
+  del "%RPPG_REQ_FILTERED%" >nul 2>&1
+  exit /b !PIP_EXIT!
+)
+set "RPPG_MEDIAPIPE_SPEC="
+for /f "usebackq tokens=* delims= " %%M in (`findstr /I /R /C:^"^[ ]*mediapipe^" ^"%REPO_ROOT%\requirements.txt^"`) do (
+  if not defined RPPG_MEDIAPIPE_SPEC set "RPPG_MEDIAPIPE_SPEC=%%M"
+)
+if defined RPPG_MEDIAPIPE_SPEC (
+  echo   Installing MediaPipe separately with --no-deps: !RPPG_MEDIAPIPE_SPEC!
+  "!PYTHON_BIN!" -m pip install --no-deps "!RPPG_MEDIAPIPE_SPEC!"
+  set "PIP_EXIT=!errorlevel!"
+)
+del "%RPPG_REQ_FILTERED%" >nul 2>&1
+exit /b !PIP_EXIT!

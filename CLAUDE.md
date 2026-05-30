@@ -622,6 +622,26 @@ GUI). The SSD repo has `_user_state/` (gitignored locally + in
 `.git/info/exclude` on the SSD repo) carrying `venv-macos.tar`, an
 `app_support/` snapshot, and the install scripts.
 
+**Before EVERY dist build (personal or release), bump `app_version.py`
+first.** The version chip rendered in the GUI top-bar header (right of
+the "Ultimate-Selfie-Gen" title) reads `app_version.RELEASE_VERSION`,
+which is the same constant `distribution/release_prep.py` uses for zip
+naming. A stale `app_version.py` ships a `v2.7` zip that the GUI still
+labels `v2.6` — silent version drift that costs the user an "is this
+the new one?" cycle on every cross-machine pull.
+
+Concretely:
+
+* Edit `app_version.py` → bump `RELEASE_VERSION` to the new version
+  string.
+* THEN run `distribution/build_release_personal.py` (or
+  `build_release.py` for a sanitized public build).
+* Verify the GUI chip shows the new version on first launch of the
+  new zip — `python -c "from app_version import RELEASE_VERSION; print(RELEASE_VERSION)"`
+  is the quickest sanity check.
+
+User mandate 2026-05-27 during the v2.7 build.
+
 **On every merge to main, if the SSD is mounted, also refresh it.**
 
 1. `python distribution/build_release.py` → `dist/SelfieGenUltimate-{vX.Y}.zip` + alias.

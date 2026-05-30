@@ -363,6 +363,15 @@ rem --- PR #49: release bootstrap mutex BEFORE launching the GUI -------
 call :release_setup_lock
 
 :launch
+rem --- Auto-detect NVIDIA + bootstrap CuPy. Runs on BOTH the cached and
+rem --- full-sync paths (each falls through / jumps here). Idempotent +
+rem --- cached via .launcher_state\gpu_status.json. Never blocks launch
+rem --- on failure (script always exits 0). Opt-out:
+rem ---     set KLING_SKIP_GPU_BOOTSTRAP=1
+if exist "%ROOT_DIR%\scripts\gpu_bootstrap.py" (
+    "%VENV_PYTHON%" "%ROOT_DIR%\scripts\gpu_bootstrap.py" --quiet-if-cached
+)
+
 echo   [%LAUNCH_TS%] Launching GUI...
 echo   Venv: %VENV_PYTHON%
 echo(

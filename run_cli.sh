@@ -27,4 +27,10 @@ if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
   fi
 fi
 
+# Auto-detect NVIDIA + bootstrap CuPy (same as run_gui.sh — see that
+# launcher for the full design rationale + opt-out env var).
+if [[ -f "${ROOT_DIR}/scripts/gpu_bootstrap.py" ]]; then
+  "${PYTHON_BIN}" "${ROOT_DIR}/scripts/gpu_bootstrap.py" --quiet-if-cached || true
+fi
+
 exec "${PYTHON_BIN}" -u "${ROOT_DIR}/kling_automation_ui.py"

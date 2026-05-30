@@ -273,3 +273,29 @@ def test_windows_setup_lock_released_on_every_path_to_launch():
             ":DEPENDENCY_FAIL block exits without releasing setup.lock — "
             "round-2 H-1 regression."
         )
+
+
+def test_windows_gpu_bootstrap_runs_on_cached_launch_path():
+    """The GPU-bootstrap invocation MUST sit AFTER the ``:launch`` label in
+    both Windows bats so it runs on BOTH paths.
+
+    Regression (PR #54 code-review CRITICAL): the bootstrap block originally
+    lived on the full-sync path only — between ``call :release_setup_lock``
+    and the ``:launch`` label. The cached repeat-launch path does
+    ``goto :launch`` (the overwhelmingly common case once the deps stamp
+    exists), jumping PAST the bootstrap. So the headline auto-CuPy feature
+    never ran on normal Windows launches — exactly the platform that has the
+    NVIDIA GPUs it targets. Placing the call after ``:launch`` guarantees the
+    cached ``goto :launch`` reaches it too.
+    """
+    for path in ("launchers/windows/run_gui.bat",
+                 "launchers/windows/run_cli.bat"):
+        src = _read_text(path)
+        launch_idx = src.find("\n:launch")
+        assert launch_idx > 0, f"{path}: missing :launch label"
+        boot_idx = src.find("scripts\\gpu_bootstrap.py", launch_idx)
+        assert boot_idx > launch_idx, (
+            f"{path}: gpu_bootstrap.py invocation is not after the :launch "
+            "label — the cached `goto :launch` path skips it and the GPU "
+            "feature is a no-op on normal Windows repeat launches."
+        )

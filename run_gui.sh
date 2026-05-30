@@ -131,6 +131,17 @@ if ! "${PYTHON_BIN}" -c 'import tkinter' >/dev/null 2>&1; then
   exit 1
 fi
 
+# Auto-detect NVIDIA + bootstrap CuPy. On Darwin nvidia-smi is absent
+# so the script short-circuits to "no_nvidia" instantly and stamps it
+# (CuPy has no Metal backend — Apple Silicon stays CPU). On a CUDA
+# Linux host it installs cupy-cuda12x[ctk] / cupy-cuda13x[ctk] once.
+# Idempotent + cached via .launcher_state/gpu_status.json. Never
+# blocks launch on failure (script always exits 0). User opt-out:
+#     export KLING_SKIP_GPU_BOOTSTRAP=1
+if [[ -f "${ROOT_DIR}/scripts/gpu_bootstrap.py" ]]; then
+  "${PYTHON_BIN}" "${ROOT_DIR}/scripts/gpu_bootstrap.py" --quiet-if-cached || true
+fi
+
 if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
   printf '[%s] health-probe START\n' "${LAUNCH_TS}" >> "${LAUNCH_DIAG_LOG}"
   printf '[%s] Validating runtime dependency health...\n' "${LAUNCH_TS}"
