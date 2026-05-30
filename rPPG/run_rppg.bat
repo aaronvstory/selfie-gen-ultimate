@@ -93,7 +93,11 @@ if errorlevel 1 (
   if !errorlevel! equ 0 (
     echo   [rppg-setup-lock] removing stale lock
     rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
-    goto :rppg_setup_lock_acquire
+    rem NO goto here (gemini HIGH PR #54): if rmdir fails (perms/open
+    rem handle) a goto back to :acquire would spin at 100%% CPU forever,
+    rem bypassing the RPPG_LOCK_TRIES counter + ping sleep below. Fall
+    rem through so every spin increments the counter and eventually
+    rem hits the geq-930 graceful give-up.
   )
   rem forfiles /D -1 only matches locks >=1 DAY old, so a lock left by a
   rem sibling that crashed earlier the SAME day would hang here forever.

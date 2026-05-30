@@ -171,10 +171,15 @@ def test_progress_predicate_classifies_banner_vs_injector_lines():
     # heartbeat should keep firing through it).
     assert not pred("Extracting facial ROIs")
     assert not pred("I0000 12.34 5678 gl_context.cc:357] init")
+    # GPU backend line is printed at IMPORT time, before the silent
+    # MediaPipe/ROI warm-up — so it must NOT silence the heartbeat
+    # (codex P2 PR #54 round 14). It's still surfaced via on_line; it
+    # just doesn't count as "progress has started".
+    assert not pred("GPU backend: CuPy 12.3 on 1 device(s)")
+    assert not pred("GPU backend: CuPy unavailable")
     # Genuine progress lines — ARE progress (heartbeat silences here).
     assert pred("Iteration 1/10")
     assert pred("Processing frame 30/120")
-    assert pred("GPU backend: CuPy 12.3 on 1 device(s)")
     assert pred("\x1b[1;97m  Iteration 2/10 \x1b[0m"), (
         "ANSI-wrapped, indented Iteration line must still count as progress"
     )
@@ -227,6 +232,51 @@ def test_heartbeat_survives_launcher_banner_lines():
         assert t < iter_line_time, (
             f"heartbeat at {t} fired AFTER the Iteration line at "
             f"{iter_line_time}; predicate-based silence is broken"
+        )
+
+
+def test_heartbeat_survives_gpu_backend_line():
+    """Codex P2 (PR #54 round 14): the injector prints ``GPU backend: ...``
+    at IMPORT time — before the multi-minute MediaPipe/baseline-ROI warm-up.
+    Round-14 round-1 keyed heartbeat-silence off a regex set that INCLUDED
+    the GPU line, so it silenced the heartbeat immediately and reopened the
+    exact silent gap the heartbeat covers. The GPU line must be surfaced but
+    must NOT silence the heartbeat — only a real Iteration/frame/score line
+    should."""
+    received = []
+    iter_line_time = None
+
+    def _on_line(line):
+        nonlocal iter_line_time
+        if iter_line_time is None and line.strip().startswith("Iteration"):
+            iter_line_time = time.monotonic()
+
+    code = (
+        "import sys, time; "
+        "sys.stdout.write('GPU backend: CuPy unavailable\\n'); sys.stdout.flush(); "
+        "time.sleep(1.5); "
+        "sys.stdout.write('Iteration 1/10\\n'); sys.stdout.flush(); "
+        "time.sleep(0.3)"
+    )
+    cmd = [sys.executable, "-c", code]
+    rc, _lines = rppg_module.stream_subprocess_with_timeout(
+        cmd,
+        cwd=os.getcwd(),
+        timeout_seconds=30,
+        on_line=_on_line,
+        on_heartbeat=lambda elapsed: received.append(time.monotonic()),
+        heartbeat_interval_seconds=0.3,
+        heartbeat_silence_predicate=rppg_module.is_rppg_progress_line,
+    )
+    assert rc == 0
+    assert iter_line_time is not None, "the Iteration line was never received"
+    assert len(received) > 0, (
+        "heartbeat never fired during the silent gap AFTER the GPU backend "
+        "line — the GPU banner silenced it prematurely (codex P2 round 14)"
+    )
+    for t in received:
+        assert t < iter_line_time, (
+            f"heartbeat at {t} fired AFTER the Iteration line at {iter_line_time}"
         )
 
 

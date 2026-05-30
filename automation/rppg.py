@@ -755,15 +755,22 @@ def is_rppg_progress_line(line: str) -> bool:
     uses (single source of truth — no parallel launcher-banner list to
     drift across .bat/.sh) means the heartbeat stays alive through the
     banners AND the silent MediaPipe/baseline-ROI warm-up, and only
-    stops once the injector emits its first iteration/frame/GPU/score
-    line — exactly when the per-iter progress takes over as the
-    user-visible signal. Matched on the ANSI-stripped, whitespace-
-    stripped form so leading-indent + colour codes don't break it."""
+    stops once the injector emits its first iteration/frame/score line
+    — exactly when the per-iter progress takes over as the user-visible
+    signal. Matched on the ANSI-stripped, whitespace-stripped form so
+    leading-indent + colour codes don't break it.
+
+    NOTE (codex P2, PR #54 round 14): ``GPU backend: ...``
+    (``_RPPG_GPU_RE``) is DELIBERATELY excluded. The injector prints it
+    at import time — BEFORE the multi-minute MediaPipe/baseline-ROI
+    warm-up — so treating it as progress would silence the heartbeat
+    immediately and reopen the exact silent gap the heartbeat covers.
+    The GPU line is still surfaced to the user via ``on_line``; it just
+    doesn't count as "progress has started" for heartbeat purposes."""
     s = _ANSI_RE.sub("", line).strip()
     return bool(
         _RPPG_ITER_RE.match(s)
         or _RPPG_FRAME_RE.match(s)
-        or _RPPG_GPU_RE.match(s)
         or _RPPG_SCORE_RE.match(s)
         or _RPPG_DONE_RE.match(s)
         or _RPPG_ITER_DONE_RE.match(s)
