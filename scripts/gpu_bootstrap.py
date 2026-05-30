@@ -142,7 +142,26 @@ def _write_stamp(payload: dict) -> None:
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         payload.setdefault("checked_at", _now_iso())
-        STAMP_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        # Atomic write (gemini MEDIUM PR #54): on non-NVIDIA hosts the
+        # stamp is written OUTSIDE the mkdir-lock, so two launchers can
+        # write concurrently. A bare write_text() can interleave and
+        # leave a half-written / corrupt JSON that the next _load_stamp()
+        # rejects (or worse, mis-parses). Write to a PID-unique temp in
+        # the SAME dir (so os.replace is a same-filesystem atomic rename,
+        # not a cross-device copy) then os.replace onto the final path —
+        # last-writer-wins with no torn reads. A fixed ".tmp" name would
+        # just move the race onto the temp file, hence the PID suffix.
+        tmp_path = STAMP_PATH.with_suffix(f".tmp.{os.getpid()}")
+        try:
+            tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(tmp_path, STAMP_PATH)
+        finally:
+            # If os.replace succeeded the temp is already gone; this only
+            # cleans up a temp orphaned by a write/replace failure.
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
     except OSError as exc:
         # The next launch will re-detect + re-attempt; no stamp = no
         # cache, which is the correct degraded behaviour.

@@ -461,6 +461,36 @@ def test_write_stamp_swallows_oserror(monkeypatch):
     gpu_bootstrap._write_stamp({"result": "no_nvidia"})
 
 
+def test_write_stamp_is_atomic_and_leaves_no_temp(_isolated_stamp_dir):
+    """Gemini MEDIUM (PR #54 round 14b): the stamp write must be atomic
+    (temp + os.replace) so concurrent launchers on a non-NVIDIA host —
+    which write the stamp OUTSIDE the lock — can't leave a torn/corrupt
+    JSON. After a successful write the final path holds valid JSON AND no
+    ``.tmp.*`` orphan is left in the state dir."""
+    gpu_bootstrap._write_stamp({"result": "cuda_ready", "attempts": 1})
+    payload = json.loads(gpu_bootstrap.STAMP_PATH.read_text(encoding="utf-8"))
+    assert payload["result"] == "cuda_ready"
+    leftovers = list(gpu_bootstrap.STATE_DIR.glob("gpu_status.tmp.*"))
+    assert leftovers == [], (
+        f"atomic write must not leave a temp orphan; found {leftovers}"
+    )
+
+
+def test_write_stamp_replace_failure_cleans_temp(monkeypatch, _isolated_stamp_dir):
+    """If os.replace fails (e.g. the dir goes read-only between the temp
+    write and the rename), _write_stamp must NOT raise AND must not leave
+    the PID-temp behind for the next launch to trip over."""
+    def _boom(src, dst):
+        raise PermissionError("simulated replace failure")
+    monkeypatch.setattr(gpu_bootstrap.os, "replace", _boom)
+    # Must not raise.
+    gpu_bootstrap._write_stamp({"result": "no_nvidia"})
+    leftovers = list(gpu_bootstrap.STATE_DIR.glob("gpu_status.tmp.*"))
+    assert leftovers == [], (
+        f"a failed replace must still clean its temp; found {leftovers}"
+    )
+
+
 def test_acquire_lock_returns_false_on_state_dir_oserror(monkeypatch):
     """Gemini medium (PR #54 round 1): _acquire_lock degrades to
     "False" (which the caller treats as "fall back to CPU this
