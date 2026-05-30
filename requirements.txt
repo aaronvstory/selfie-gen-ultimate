@@ -8,7 +8,17 @@ rich>=13.0,<14
 # Replaces the 44-prompt linear walker with sectioned navigation. Graceful
 # fallback to plain input() if questionary import fails or stdin is non-TTY.
 questionary>=2.0,<3
-opencv-python-headless>=4.8.1.78
+# ALL three opencv variants capped <4.12: opencv 4.12+ declares numpy>=2
+# (Python 3.9+), which conflicts with the numpy<2 pin below (required by
+# tensorflow 2.16.2). Without these caps a fresh install resolves opencv 4.13
+# -> numpy>=2 vs numpy<2 -> pip ResolutionImpossible (or a fragile backtrack).
+# opencv-python is pulled transitively by deepface, opencv-contrib-python by
+# mediapipe (matplotlib drawing_utils); pin both explicitly so the resolution
+# is deterministic, not backtrack-dependent. Mirrors the opencv-contrib-python
+# <4.12 cap already in setup_macos.sh (same root cause).
+opencv-python-headless>=4.8.1.78,<4.12
+opencv-python>=4.5.5.64,<4.12
+opencv-contrib-python<4.12
 mediapipe==0.10.35
 deepface==0.0.92
 # TensorFlow MUST be pinned explicitly. deepface==0.0.92 only declares a loose

@@ -407,7 +407,7 @@ endlocal & exit /b 1
 :DEPENDENCY_FAIL
 echo(
 echo  ERROR: Oldcam dependency install failed.
-echo  MediaPipe is required for Oldcam v9/v10.
+echo  MediaPipe is required for Oldcam v7-v10.
 echo  Close running Python/GUI processes and retry.
 echo  If it still fails, recreate the venv or run dep repair/bootstrap manually.
 echo(
