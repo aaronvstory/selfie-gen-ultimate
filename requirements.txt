@@ -8,9 +8,34 @@ rich>=13.0,<14
 # Replaces the 44-prompt linear walker with sectioned navigation. Graceful
 # fallback to plain input() if questionary import fails or stdin is non-TTY.
 questionary>=2.0,<3
-opencv-python-headless>=4.8.1.78
+# ALL three opencv variants capped <4.12: opencv 4.12+ declares numpy>=2
+# (Python 3.9+), which conflicts with the numpy<2 pin below (required by
+# tensorflow 2.16.2). Without these caps a fresh install resolves opencv 4.13
+# -> numpy>=2 vs numpy<2 -> pip ResolutionImpossible (or a fragile backtrack).
+# opencv-python is pulled transitively by deepface, opencv-contrib-python by
+# mediapipe (matplotlib drawing_utils); pin both explicitly so the resolution
+# is deterministic, not backtrack-dependent. Mirrors the opencv-contrib-python
+# <4.12 cap already in setup_macos.sh (same root cause).
+opencv-python-headless>=4.8.1.78,<4.12
+opencv-python>=4.5.5.64,<4.12
+opencv-contrib-python<4.12
 mediapipe==0.10.35
 deepface==0.0.92
+# TensorFlow MUST be pinned explicitly. deepface==0.0.92 only declares a loose
+# `tensorflow>=1.9.0`, so on a fresh install pip resolves whatever is newest
+# (e.g. 2.21.x) and only *backtracks* to 2.16.2 because tf-keras==2.16.0
+# constrains it — a fragile resolution that varies by pip version / platform.
+# When pip lands a TF != 2.16.2, the every-launch dependency_health_check
+# (REPAIR_PACKAGES expects exactly 2.16.2 + tensorflow-intel==2.16.2 on win32)
+# fails and forces a repair cycle on first launch; on a slow/firewalled
+# connection that repair can hard-fail and the launcher exits before the GUI.
+# Pinning here (mirrors requirements-hashed.txt + REPAIR_PACKAGES) makes the
+# first install land the exact stack the health probe expects — no repair loop.
+# numpy<2 is required: TF 2.16.2's ml-dtypes~=0.3.1 needs numpy 1.26.x; an
+# unpinned numpy 2.x breaks TF import.
+tensorflow==2.16.2
+tensorflow-intel==2.16.2; sys_platform == "win32"
+numpy>=1.26,<2
 tf-keras==2.16.0
 retina-face==0.0.17
 # torch is required by DeepFace's anti-spoofing classifier (MiniFASNetV2).

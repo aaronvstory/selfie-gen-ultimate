@@ -288,7 +288,7 @@ echo(
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] dep-install banner shown ^(full-sync path^)
 "%VENV_PYTHON%" -m pip install --upgrade pip >nul 2>&1
 call :INSTALL_REQUIREMENTS "%REQUIREMENTS%" "base"
-if !errorlevel! neq 0 goto :DEPENDENCY_FAIL
+if !errorlevel! neq 0 goto :BASE_DEP_FAIL
 
 for %%R in ("%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_REQUIREMENTS%" "%OLDCAM_V10_REQUIREMENTS%") do if exist "%%~R" (
     echo(
@@ -405,10 +405,22 @@ pause >nul
 endlocal
 exit /b %EXIT_CODE%
 
+:BASE_DEP_FAIL
+echo(
+echo  ERROR: Base dependency install failed.
+echo  This is usually a network problem (a wheel download was interrupted)
+echo  or a disk-space / antivirus lock. Check your internet connection,
+echo  close any running Python/GUI processes, and re-run %~nx0.
+echo  If it still fails, delete the venv folder and run %~nx0 from scratch.
+echo(
+call :release_setup_lock
+pause
+endlocal & exit /b 1
+
 :DEPENDENCY_FAIL
 echo(
-echo  ERROR: Dependency bootstrap failed.
-echo  MediaPipe is required for Oldcam v9/v10.
+echo  ERROR: Oldcam dependency install failed.
+echo  MediaPipe is required for Oldcam v7-v10.
 echo  Close running Python/GUI processes and retry.
 echo  If it still fails, recreate the venv or run dep repair/bootstrap manually.
 echo(
