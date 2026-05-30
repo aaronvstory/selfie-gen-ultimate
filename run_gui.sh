@@ -6,6 +6,19 @@ PYTHON_BIN="${ROOT_DIR}/.venv-macos/bin/python"
 REQUIREMENTS_STAMP="${ROOT_DIR}/.venv-macos/.requirements.sha256"
 HEALTH_STAMP="${ROOT_DIR}/.venv-macos/.health.sha256"
 
+# Release version banner. Parsed from app_version.py text (no Python needed,
+# so it prints even on a fresh Mac before the venv exists). Single source of
+# truth: app_version.RELEASE_VERSION — the same constant the GUI chip, the
+# Windows launcher banner, and the release-zip name all read. `|| true`
+# keeps a parse miss from tripping `set -e`.
+APP_VER="$(sed -n 's/^RELEASE_VERSION[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' \
+  "${ROOT_DIR}/app_version.py" 2>/dev/null | head -1 || true)"
+[[ -n "${APP_VER:-}" ]] || APP_VER="unknown"
+printf '\n'
+printf '  ============================================================\n'
+printf '   Ultimate-Selfie-Gen  %s  --  GUI Launcher\n' "${APP_VER}"
+printf '  ============================================================\n\n'
+
 # ---------------------------------------------------------------------------
 # PR #49: bootstrap mutex. Two concurrent launches must not run setup_macos.sh
 # (venv create + pip install) at the same time — they corrupt the shared venv.
