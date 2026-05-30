@@ -22,13 +22,26 @@ rem --- Timestamp banner -----------------------------------------------------
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
 set "WMIC_DT=%WMIC_DT: =%"
 set "LAUNCH_TS=%WMIC_DT:~0,4%-%WMIC_DT:~4,2%-%WMIC_DT:~6,2% %WMIC_DT:~8,2%:%WMIC_DT:~10,2%:%WMIC_DT:~12,2%"
+rem --- Release version (parsed from app_version.py text; no Python needed,
+rem --- so it prints even on a truly fresh system before the venv exists).
+rem --- Single source of truth: app_version.RELEASE_VERSION -- same constant
+rem --- the GUI chip and the release-zip name read, so this auto-tracks builds.
+rem --- Parse the line "RELEASE_VERSION = "vX.Y"": take the value after =,
+rem --- then strip spaces and quotes. Using delims== (not the fragile
+rem --- delims=^" which cmd mis-parses inside a quoted options string).
+set "APP_VER="
+for /f "tokens=2 delims==" %%V in ('findstr /b /c:^"RELEASE_VERSION^" ^"%ROOT_DIR%\app_version.py^" 2^>nul') do set "APP_VER=%%V"
+set "APP_VER=%APP_VER: =%"
+set "APP_VER=%APP_VER:"=%"
+if not defined APP_VER set "APP_VER=unknown"
 echo(
 echo  ============================================================
-echo   Ultimate-Selfie-Gen  --  CLI Launcher
+echo   Ultimate-Selfie-Gen  %APP_VER%  --  CLI Launcher
 echo  ============================================================
-echo   [%LAUNCH_TS%] Launch started
+echo   [%LAUNCH_TS%] Launch started  ^(version %APP_VER%^)
 echo   Root: %ROOT_DIR%
 echo(
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] app version %APP_VER%
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] CLI launch started
 
 rem --- Create venv if needed ------------------------------------------------
