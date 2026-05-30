@@ -95,6 +95,7 @@ from automation.pipeline import AutoPipelineRunner
 from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies
 from selfie_generator import SelfieGenerator
 from tk_dialogs import select_directory, select_directory_cli_safe, select_open_file
+from app_version import RELEASE_VERSION
 
 # v2 (2026-05-19): added automation_rppg_* recommended defaults (all OFF —
 # rPPG is the untested forward direction, opt-in only).
@@ -677,8 +678,10 @@ class KlingAutomationUI:
         print("\033[38;5;27m" + "═" * 79 + "\033[0m")
         print()
 
-        # ASCII art title
-        title_art = "SELFIE GEN ULTIMATE"
+        # ASCII art title + release version (single source of truth:
+        # app_version.RELEASE_VERSION, same constant the GUI chip and the
+        # release-zip name read, so the CLI banner auto-tracks every build).
+        title_art = f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"
         padding = (79 - len(title_art)) // 2
         print(f"\033[1;97m{' ' * padding}{title_art}\033[0m")
         subtitle = "Front DL -> Selfie -> Similarity -> Video -> Oldcam"
@@ -704,7 +707,8 @@ class KlingAutomationUI:
     def display_configuration_menu(self):
         """Display top-level Selfie Gen Ultimate menu."""
         self.print_magenta("═" * 79)
-        self.print_magenta("                         SELFIE GEN ULTIMATE")
+        _menu_title = f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"
+        self.print_magenta(f"{' ' * ((79 - len(_menu_title)) // 2)}{_menu_title}")
         self.print_magenta("═" * 79)
         print()
         root_value = self.automation_root_folder or "(not set)"
