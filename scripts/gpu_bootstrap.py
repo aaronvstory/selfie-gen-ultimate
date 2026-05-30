@@ -222,6 +222,7 @@ def detect_nvidia() -> Optional[dict]:
             [exe],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -267,6 +268,7 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             [python_exe, "-c", probe_src],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=30,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -302,6 +304,7 @@ def install_cupy(python_exe: str, cuda_major: int) -> tuple[bool, str]:
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True,
+            errors="replace",
             timeout=PIP_INSTALL_TIMEOUT_SECONDS,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
