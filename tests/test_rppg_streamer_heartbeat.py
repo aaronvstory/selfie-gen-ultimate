@@ -104,15 +104,19 @@ def test_heartbeat_silences_after_first_line():
     the per-iteration progress is now the user-visible signal and
     additional heartbeats would just be noise.
 
-    Round-10 review fix (Gemini MEDIUM): the prior version used a 3.0s
-    heartbeat interval against a child that ran only ~1.5s total, so the
-    heartbeat could NEVER fire regardless of whether the silence logic
-    worked — a vacuous pass. This version uses a SMALL interval (0.3s)
-    and a child that stays silent for 0.5s BEFORE emitting, so heartbeats
-    are guaranteed to fire during the silent startup window. We then
-    assert that every heartbeat fired strictly BEFORE the first line was
-    received — robust to interpreter-startup jitter (extra startup time
-    only adds more pre-line heartbeats, never a post-line one).
+    Round-13 review fix (Gemini MEDIUM 3327562370): the prior version was
+    STILL vacuous. The streamer blocks on ``line_q.get(timeout=min(remaining,
+    1.0))`` = 1.0s; the child slept only 0.5s before emitting, so the line
+    landed at 0.5s and the queue ``get`` returned it WITHOUT ever raising
+    ``_queue.Empty`` — the heartbeat branch was never reached, ``received``
+    stayed empty, and the ``for t in received`` loop never executed (a
+    no-op pass). Fix: the child now stays silent for 1.5s (> the 1.0s queue
+    timeout) BEFORE its first line, so the queue ``get`` times out at least
+    once and at least one heartbeat fires during the silent window. We then
+    assert ``received`` is non-empty (the heartbeat actually ran) AND that
+    every heartbeat fired strictly BEFORE the first line — robust to
+    interpreter-startup jitter (extra startup time only adds more pre-line
+    heartbeats, never a post-line one).
     """
     received = []
     first_line_time = None
@@ -122,12 +126,13 @@ def test_heartbeat_silences_after_first_line():
         if first_line_time is None:
             first_line_time = time.monotonic()
 
-    # Child sleeps 0.5s (silent window → heartbeats fire), emits a line,
-    # then sleeps 1.5s so the streamer has time to observe any spurious
-    # post-line heartbeat.
+    # Child sleeps 1.5s (> the streamer's 1.0s queue-get timeout, so the
+    # heartbeat branch is guaranteed to run during the silent window),
+    # emits a line, then sleeps 1.5s so the streamer has time to observe
+    # any spurious post-line heartbeat.
     code = (
         "import sys, time; "
-        "time.sleep(0.5); "
+        "time.sleep(1.5); "
         "sys.stdout.write('early\\n'); sys.stdout.flush(); "
         "time.sleep(1.5)"
     )
@@ -141,10 +146,87 @@ def test_heartbeat_silences_after_first_line():
         heartbeat_interval_seconds=0.3,
     )
     assert first_line_time is not None, "first line was never received"
+    assert len(received) > 0, (
+        "heartbeat never fired during the 1.5s silent window — the test "
+        "would vacuously pass without this guard (gemini MEDIUM PR #54)"
+    )
     for t in received:
         assert t < first_line_time, (
             f"heartbeat fired at {t} AFTER the first line arrived at "
             f"{first_line_time}; the silence-after-first-line logic is broken"
+        )
+
+
+def test_progress_predicate_classifies_banner_vs_injector_lines():
+    """Unit test for ``is_rppg_progress_line`` (codex P2 PR #54): launcher
+    banner lines must NOT be treated as progress; real injector lines must
+    be — even with leading indent or ANSI colour codes."""
+    pred = rppg_module.is_rppg_progress_line
+    # Launcher banners (2-space indent) — NOT progress.
+    assert not pred("  Launching rppg_injector.py")
+    assert not pred("  Python: C:\\repo\\venv\\Scripts\\python.exe")
+    assert not pred("  OK: rPPG deps installed.")
+    assert not pred("  Installing MediaPipe separately...")
+    # Warm-up noise the injector itself prints — also NOT progress (the
+    # heartbeat should keep firing through it).
+    assert not pred("Extracting facial ROIs")
+    assert not pred("I0000 12.34 5678 gl_context.cc:357] init")
+    # Genuine progress lines — ARE progress (heartbeat silences here).
+    assert pred("Iteration 1/10")
+    assert pred("Processing frame 30/120")
+    assert pred("GPU backend: CuPy 12.3 on 1 device(s)")
+    assert pred("\x1b[1;97m  Iteration 2/10 \x1b[0m"), (
+        "ANSI-wrapped, indented Iteration line must still count as progress"
+    )
+
+
+def test_heartbeat_survives_launcher_banner_lines():
+    """Codex P2 (PR #54): when rPPG launches via run_rppg.bat/.sh the
+    wrapper emits banner lines ("  Launching rppg_injector.py") BEFORE the
+    injector's multi-minute silent warm-up. With the default silence-on-
+    any-line behaviour those banners killed the heartbeat before the gap
+    it exists to cover even began. Passing ``is_rppg_progress_line`` as the
+    silence predicate must keep the heartbeat alive across banner lines and
+    fire it during the silent gap, only silencing once a real "Iteration
+    N/M" line lands."""
+    received = []
+    iter_line_time = None
+
+    def _on_line(line):
+        nonlocal iter_line_time
+        if iter_line_time is None and line.strip().startswith("Iteration"):
+            iter_line_time = time.monotonic()
+
+    # Banner line first (must NOT silence the heartbeat), then a 1.5s silent
+    # gap (> the 1.0s queue-get timeout, so a heartbeat is guaranteed to
+    # fire), then a real Iteration line (which DOES silence it).
+    code = (
+        "import sys, time; "
+        "sys.stdout.write('  Launching rppg_injector.py\\n'); sys.stdout.flush(); "
+        "time.sleep(1.5); "
+        "sys.stdout.write('Iteration 1/10\\n'); sys.stdout.flush(); "
+        "time.sleep(0.3)"
+    )
+    cmd = [sys.executable, "-c", code]
+    rc, _lines = rppg_module.stream_subprocess_with_timeout(
+        cmd,
+        cwd=os.getcwd(),
+        timeout_seconds=30,
+        on_line=_on_line,
+        on_heartbeat=lambda elapsed: received.append(time.monotonic()),
+        heartbeat_interval_seconds=0.3,
+        heartbeat_silence_predicate=rppg_module.is_rppg_progress_line,
+    )
+    assert rc == 0
+    assert iter_line_time is not None, "the Iteration line was never received"
+    assert len(received) > 0, (
+        "heartbeat never fired during the silent gap AFTER the launcher "
+        "banner — the banner silenced it prematurely (codex P2 regression)"
+    )
+    for t in received:
+        assert t < iter_line_time, (
+            f"heartbeat at {t} fired AFTER the Iteration line at "
+            f"{iter_line_time}; predicate-based silence is broken"
         )
 
 

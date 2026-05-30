@@ -2334,7 +2334,10 @@ class QueueManager:
                 # documented graceful-skip guarantee. The helper owns the
                 # wall clock on the main thread so a silent hang is still
                 # killed + skipped on schedule.
-                from automation.rppg import stream_subprocess_with_timeout
+                from automation.rppg import (
+                    is_rppg_progress_line,
+                    stream_subprocess_with_timeout,
+                )
 
                 # Heartbeat callback — v2.7 fix for the "8-min silent
                 # gap" UX bug. The rPPG injector takes ~7-8 min on CPU
@@ -2362,6 +2365,7 @@ class QueueManager:
                     on_line=_on_rppg_line,
                     deadline_extender=tracker_extender,
                     on_heartbeat=_on_rppg_heartbeat,
+                    heartbeat_silence_predicate=is_rppg_progress_line,
                 )
             except subprocess.TimeoutExpired:
                 minutes = max(1, int(_TIMEOUT // 60))

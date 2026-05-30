@@ -51,6 +51,7 @@ def _stub_subprocess(monkeypatch: pytest.MonkeyPatch) -> list:
     def _fake_stream(
         cmd, *, cwd, timeout_seconds, on_line, deadline_extender=None,
         on_heartbeat=None, heartbeat_interval_seconds=60.0,
+        heartbeat_silence_predicate=None,
     ):
         # Swallow the v2.7 heartbeat kwargs added by the streamer; the
         # cmd-shape tests only care about argv content, not progress
@@ -58,6 +59,7 @@ def _stub_subprocess(monkeypatch: pytest.MonkeyPatch) -> list:
         del (
             cwd, timeout_seconds, on_line, deadline_extender,
             on_heartbeat, heartbeat_interval_seconds,
+            heartbeat_silence_predicate,
         )
         captured.append(list(cmd))
         return (0, ["fake-stdout"])
@@ -255,8 +257,12 @@ def _make_extender_capturing_stub(monkeypatch: pytest.MonkeyPatch) -> dict:
     def _fake_stream(
         cmd, *, cwd, timeout_seconds, on_line, deadline_extender=None,
         on_heartbeat=None, heartbeat_interval_seconds=60.0,
+        heartbeat_silence_predicate=None,
     ):
-        del cwd, on_line, on_heartbeat, heartbeat_interval_seconds
+        del (
+            cwd, on_line, on_heartbeat, heartbeat_interval_seconds,
+            heartbeat_silence_predicate,
+        )
         captured["cmd"] = list(cmd)
         captured["timeout"] = timeout_seconds
         captured["extender"] = deadline_extender

@@ -2830,10 +2830,12 @@ def test_run_rppg_absolutizes_relative_input(tmp_path, monkeypatch):
     def _fake_stream(
         cmd, *, cwd, timeout_seconds, on_line=None, deadline_extender=None,
         on_heartbeat=None, heartbeat_interval_seconds=60.0,
+        heartbeat_silence_predicate=None,
     ):
         del (
             cwd, timeout_seconds, on_line, deadline_extender,
             on_heartbeat, heartbeat_interval_seconds,
+            heartbeat_silence_predicate,
         )
         seen["cmd"] = list(cmd)
         return 1, []  # non-zero -> graceful skip; we only inspect cmd
