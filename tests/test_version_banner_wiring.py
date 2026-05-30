@@ -39,34 +39,53 @@ def test_cli_imports_release_version():
 
 
 def test_cli_header_renders_release_version():
-    """display_header() must interpolate RELEASE_VERSION into the ASCII title."""
+    """display_header() must interpolate RELEASE_VERSION into the ASCII title.
+
+    Anchored on the distinct ``title_art =`` assignment (NOT the shared
+    ``SELFIE GEN ULTIMATE  {RELEASE_VERSION}`` substring) so this test can't
+    pass on the strength of display_configuration_menu()'s identical f-string
+    — code-reviewer MEDIUM, PR #56.
+    """
     src = _read_text("kling_automation_ui.py")
-    assert 'f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"' in src, (
+    assert 'title_art = f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"' in src, (
         "CLI display_header() dropped the version from the ASCII title."
     )
 
 
 def test_cli_config_menu_renders_release_version():
-    """display_configuration_menu() must interpolate RELEASE_VERSION into its header."""
+    """display_configuration_menu() must interpolate RELEASE_VERSION into its header.
+
+    Anchored on the distinct ``_menu_title =`` assignment so a regression in
+    THIS function alone is caught independently of display_header().
+    """
     src = _read_text("kling_automation_ui.py")
-    assert "SELFIE GEN ULTIMATE  {RELEASE_VERSION}" in src, (
+    assert '_menu_title = f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"' in src, (
         "CLI config menu header dropped the version."
     )
 
 
 def test_cli_does_not_hardcode_version():
-    """The CLI must not embed the literal current version (would drift on rebuild)."""
+    """The CLI must not embed the literal current version (would drift on rebuild).
+
+    Checks both quote styles — a single-quoted hardcode is just as wrong as a
+    double-quoted one (code-reviewer LOW, PR #56).
+    """
     src = _read_text("kling_automation_ui.py")
-    literal = f'"SELFIE GEN ULTIMATE  {app_version.RELEASE_VERSION}"'
-    assert literal not in src, (
-        "CLI hardcodes the literal version string; it must read RELEASE_VERSION."
-    )
+    v = app_version.RELEASE_VERSION
+    for literal in (f'"SELFIE GEN ULTIMATE  {v}"', f"'SELFIE GEN ULTIMATE  {v}'"):
+        assert literal not in src, (
+            "CLI hardcodes the literal version string; it must read RELEASE_VERSION."
+        )
 
 
 def test_windows_gui_bat_parses_and_prints_version():
-    """launchers/windows/run_gui.bat must parse app_version.py and print APP_VER."""
+    """launchers/windows/run_gui.bat must parse app_version.py and print APP_VER.
+
+    The findstr arguments use caret-escaped quotes (``^"``) so the command is
+    robust against spaces in ROOT_DIR (Gemini HIGH, PR #56) — assert that form.
+    """
     src = _read_text("launchers/windows/run_gui.bat")
-    assert 'findstr /b /c:"RELEASE_VERSION"' in src, (
+    assert 'findstr /b /c:^"RELEASE_VERSION^"' in src, (
         "run_gui.bat dropped the app_version.py parse for the banner."
     )
     assert "Ultimate-Selfie-Gen  %APP_VER%" in src, (
@@ -75,9 +94,12 @@ def test_windows_gui_bat_parses_and_prints_version():
 
 
 def test_windows_cli_bat_parses_and_prints_version():
-    """launchers/windows/run_cli.bat must parse app_version.py and print APP_VER."""
+    """launchers/windows/run_cli.bat must parse app_version.py and print APP_VER.
+
+    Caret-escaped findstr quotes (``^"``) for space-safe ROOT_DIR (Gemini HIGH).
+    """
     src = _read_text("launchers/windows/run_cli.bat")
-    assert 'findstr /b /c:"RELEASE_VERSION"' in src, (
+    assert 'findstr /b /c:^"RELEASE_VERSION^"' in src, (
         "run_cli.bat dropped the app_version.py parse for the banner."
     )
     assert "Ultimate-Selfie-Gen  %APP_VER%" in src, (

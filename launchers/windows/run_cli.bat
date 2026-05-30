@@ -30,7 +30,7 @@ rem --- Parse the line "RELEASE_VERSION = "vX.Y"": take the value after =,
 rem --- then strip spaces and quotes. Using delims== (not the fragile
 rem --- delims=^" which cmd mis-parses inside a quoted options string).
 set "APP_VER="
-for /f "tokens=2 delims==" %%V in ('findstr /b /c:"RELEASE_VERSION" "%ROOT_DIR%\app_version.py" 2^>nul') do set "APP_VER=%%V"
+for /f "tokens=2 delims==" %%V in ('findstr /b /c:^"RELEASE_VERSION^" ^"%ROOT_DIR%\app_version.py^" 2^>nul') do set "APP_VER=%%V"
 set "APP_VER=%APP_VER: =%"
 set "APP_VER=%APP_VER:"=%"
 if not defined APP_VER set "APP_VER=unknown"
