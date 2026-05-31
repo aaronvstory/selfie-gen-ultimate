@@ -66,7 +66,7 @@ if not exist "%VENV_PYTHON%" (
     rem  the resolver actually ran (venv was missing). Unconditional
     rem  deletion would nuke the stamp every launch + defeat the cache
     rem  (gemini/codex CRITICAL, bot round 2).
-    if not "%STATE_DIR%"=="" del "%STATE_DIR%\deps_*.ok" >/dev/null 2>&1
+    if not "%STATE_DIR%"=="" del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 )
 rem --- Build stamp key from req file dates+sizes ---------------------------
 set "STAMP_KEY="
