@@ -448,7 +448,7 @@ class DropZone(tk.Frame):
         for folder in folders:
             if self.on_folder_dropped:
                 self.status_label.config(
-                    text=f"Processing folder...", fg=COLORS["text_light"]
+                    text="Processing folder...", fg=COLORS["text_light"]
                 )
                 self.on_folder_dropped(folder)
 
