@@ -111,3 +111,9 @@ rPPG/temp_iteration_*.mp4
 rPPG/best_iteration_snapshot.mp4
 rPPG/best_iteration_snapshot_*.mp4
 rPPG/iteration_history/
+
+# Local analysis/decision artifacts (not part of the shipped app). Swept
+# into a commit once by an accidental `git add -A`; ignore so it can't recur.
+OLDCAM_DECISION_BRIEF.md
+OLDCAM_GUIDE.md
+docs/analysis/

@@ -380,6 +380,13 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
         "pip",
         "install",
         "--upgrade",
+        # only-if-needed stops pip from EAGERLY upgrading already-satisfied
+        # transitive deps past their pins — combined with numpy>=1.26,<2 being
+        # an explicit top-level entry in REPAIR_PACKAGES, this prevents a
+        # --force-reinstall of deepface/retina-face from dragging numpy back to
+        # 2.x (which breaks TF 2.16.2's import). Code-review MEDIUM, PR #61.
+        "--upgrade-strategy",
+        "only-if-needed",
         "--force-reinstall",
         "--no-cache-dir",
         *REPAIR_PACKAGES,

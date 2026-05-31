@@ -1416,8 +1416,16 @@ class ConfigPanel(tk.Frame):
                         [c.config(bg=_bg) for c in _all],
                     ))
                     w.dnd_bind("<<Drop>>", self._mini_dz_on_drop)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # tkdnd can fail to load at runtime even though the import
+                    # succeeded (_HAS_DND True). Log so a broken-DnD install is
+                    # diagnosable instead of silently dead (the main file
+                    # pickers still work). Mirrors main_window's logged
+                    # degradation rather than a bare `pass`.
+                    sys.stderr.write(
+                        "[selfie-gen] config-panel drag-and-drop unavailable "
+                        f"({type(exc).__name__}: {exc})\n"
+                    )
 
     def _mini_dz_on_drop(self, event):
         """Handle DnD drop event on the mini drop zone."""
