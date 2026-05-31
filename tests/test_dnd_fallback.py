@@ -26,14 +26,12 @@ def _read(p: Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
-def _create_dnd_root_source() -> str:
-    """Extract the create_dnd_root function body via ast (robust vs regex)."""
-    src = _read(DROP_ZONE)
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
+def _create_dnd_root_node() -> "ast.FunctionDef | None":
+    """Return the ast node for create_dnd_root (structural, not string-based)."""
+    for node in ast.walk(ast.parse(_read(DROP_ZONE))):
         if isinstance(node, ast.FunctionDef) and node.name == "create_dnd_root":
-            return ast.get_source_segment(src, node) or ""
-    return ""
+            return node
+    return None
 
 
 import contextlib
@@ -61,6 +59,9 @@ def _fresh_drop_zone():
     spec = importlib.util.spec_from_file_location(
         "_test_fresh_drop_zone", str(src_path)
     )
+    assert spec is not None and spec.loader is not None, (
+        f"could not build import spec for {src_path}"
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     try:
@@ -69,21 +70,30 @@ def _fresh_drop_zone():
         _sys.modules.pop("_test_fresh_drop_zone", None)
 
 
-def test_create_dnd_root_wraps_tkinterdnd_in_try_except():
-    """create_dnd_root must guard TkinterDnD.Tk() so a tkdnd LOAD failure
-    (TclError/RuntimeError, NOT ImportError) degrades to plain tk.Tk()."""
-    body = _create_dnd_root_source()
-    assert body, "create_dnd_root not found"
-    assert "try:" in body and "TkinterDnD.Tk()" in body, (
-        "create_dnd_root must call TkinterDnD.Tk() inside a try block"
-    )
-    # The except must NOT be limited to ImportError — the runtime failure is a
-    # TclError. Accept a broad Exception or an explicit TclError/RuntimeError.
-    assert re.search(r"except\s+Exception", body) or re.search(
-        r"except\s*\(?[^\n]*(TclError|RuntimeError)", body
-    ), "create_dnd_root's except must cover TclError/RuntimeError, not just ImportError"
-    assert "return tk.Tk()" in body, (
-        "create_dnd_root must fall back to a plain tk.Tk() root"
+def test_create_dnd_root_has_try_except_structure():
+    """Lightweight STRUCTURAL guard (gemini @72: don't assert exact source
+    strings — fragile). Confirm create_dnd_root contains a try/except whose
+    handler is NOT limited to ImportError, so the tkdnd runtime failure
+    (TclError/RuntimeError) is caught. The behavioral tests below prove the
+    actual fallback; this just stops a future edit from silently removing the
+    guard."""
+    node = _create_dnd_root_node()
+    assert node is not None, "create_dnd_root not found"
+    tries = [n for n in ast.walk(node) if isinstance(n, ast.Try)]
+    assert tries, "create_dnd_root must contain a try/except"
+
+    def _names(handler):
+        t = handler.type
+        if t is None:
+            return {"<bare>"}
+        parts = t.elts if isinstance(t, ast.Tuple) else [t]
+        return {p.id for p in parts if isinstance(p, ast.Name)}
+
+    handler_names = {nm for tr in tries for h in tr.handlers for nm in _names(h)}
+    # An ImportError-only handler would NOT catch the runtime TclError.
+    assert handler_names - {"ImportError"}, (
+        "create_dnd_root's except must catch more than ImportError "
+        f"(saw {handler_names}) — tkdnd fails at runtime as TclError/RuntimeError"
     )
 
 
