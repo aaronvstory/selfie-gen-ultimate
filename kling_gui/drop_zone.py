@@ -79,20 +79,6 @@ def _safe_stderr(msg: str) -> None:
         pass
 
 
-def _safe_stderr(msg: str) -> None:
-    """Write to stderr, tolerating ``sys.stderr is None``.
-
-    Under ``pythonw.exe`` (the windowed launcher used so the GUI has no console)
-    ``sys.stderr`` is None — a bare ``sys.stderr.write`` then raises
-    AttributeError and would CRASH the app on the exact tkdnd-failure path this
-    fallback exists to survive (gemini HIGH). Swallow any write failure."""
-    try:
-        if sys.stderr is not None:
-            sys.stderr.write(msg)
-    except Exception:
-        pass
-
-
 def create_dnd_root() -> tk.Tk:
     """Create a TkinterDnD root window if available, otherwise regular Tk.
 
