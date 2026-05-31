@@ -114,12 +114,62 @@ def _diag_summary(diag: Dict[str, Any]) -> str:
     )
 
 
+def _frozen_similarity_via_subprocess(
+    source_path: str,
+    target_path: str,
+    report_cb: Optional[Callable[[str, str], None]] = None,
+) -> Optional[Dict[str, Any]]:
+    """In the bundled .exe ONLY, run similarity in the side venv (the bundle
+    excludes the ML stack). Returns the result dict, or None to let the caller
+    fall through to the normal in-process path (e.g. when not frozen, or the
+    bridge is unavailable). Source installs + the automation pipeline never
+    enter this path — is_frozen() is False there."""
+    try:
+        import path_utils
+        if not path_utils.is_frozen():
+            return None
+        import ml_subprocess_bridge as bridge
+    except Exception:
+        return None
+
+    def _log_msg(msg: str) -> None:
+        _log(report_cb, msg, "info")
+
+    details = bridge.run_similarity_json(source_path, target_path, log=_log)
+    if details is None:
+        return {
+            "score": 0,
+            "pass": False,
+            "error": "similarity backend unavailable (ML environment not ready)",
+            "match": False,
+            "diagnostics": {
+                "mode": "unavailable-frozen",
+                "ref_path": source_path,
+                "target_path": target_path,
+            },
+        }
+    # Normalize the score to the same 0-100 int contract as the in-process path.
+    try:
+        details["score"] = max(0, min(100, int(round(float(details.get("score", 0))))))
+    except Exception:
+        details["score"] = 0
+    details.setdefault("pass", bool(details["score"] >= SIMILARITY_PASS_THRESHOLD))
+    details.setdefault("match", bool(details.get("match", False)))
+    details.pop("ok", None)
+    return details
+
+
 def compute_face_similarity_details(
     source_path: str,
     target_path: str,
     report_cb: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
     """Return detailed similarity result for gating and diagnostics."""
+    # Bundled-exe path: the ML stack lives in a side venv, run as a subprocess.
+    # Returns None (falls through to in-process) when not frozen.
+    _frozen = _frozen_similarity_via_subprocess(source_path, target_path, report_cb)
+    if _frozen is not None:
+        return _frozen
     engine = _get_engine(report_cb=report_cb)
     if engine is None:
         return {
