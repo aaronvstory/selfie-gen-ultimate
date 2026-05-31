@@ -15,14 +15,18 @@ from kling_gui.ml_backend_env import ensure_ml_backend_env
 ImportFn = Callable[[str], object]
 RuntimeProbeFn = Callable[[], tuple[object | None, str]]
 
-REPAIR_PACKAGES = [
-    # numpy FIRST + pinned <2: TF 2.16.2 (ml-dtypes~=0.3.1) is built against
-    # numpy 1.26.x and breaks at import with "numpy.core._multiarray_umath
-    # failed to import" under numpy 2.x. The comment used to claim "tensorflow
-    # first so its numpy constraint is resolved" but numpy wasn't in this list
-    # at all, so a --force-reinstall of deepface/retina-face could pull numpy
-    # 2.x and silently break TF — exactly the failure a user hit on v2.9.
-    # Pin it explicitly and install it first so the repair can't regress numpy.
+# numpy FIRST + hard-pinned 1.26.4: TF 2.16.2 (ml-dtypes~=0.3.1) is built
+# against numpy 1.26.x and breaks at import with "numpy.core._multiarray_umath
+# failed to import" under numpy 2.x. Without numpy here, a --force-reinstall of
+# deepface/retina-face could pull numpy 2.x and silently break TF — the failure
+# a user hit on v2.9. Pin it explicitly + first so the repair can't regress it.
+#
+# Built once via a comprehension (gemini MED @37): the previous
+# ``REPAIR_PACKAGES.insert(...)`` at import mutated the module-level list, which
+# is NOT idempotent — a module reload (or a second import in a test harness)
+# would insert tensorflow-intel twice. Splice tensorflow-intel in declaratively
+# right after tensorflow on win32 so re-import always yields the same list.
+_BASE_REPAIR_PACKAGES = [
     "numpy==1.26.4",
     "tensorflow==2.16.2",
     "protobuf==4.25.3",
@@ -30,11 +34,15 @@ REPAIR_PACKAGES = [
     "retina-face==0.0.17",
     "deepface==0.0.92",
 ]
-
 if sys.platform == "win32":
-    # Keep tensorflow-intel adjacent to tensorflow (index 2 now that numpy
-    # occupies index 0).
-    REPAIR_PACKAGES.insert(2, "tensorflow-intel==2.16.2")
+    _i = _BASE_REPAIR_PACKAGES.index("tensorflow==2.16.2") + 1
+    REPAIR_PACKAGES = (
+        _BASE_REPAIR_PACKAGES[:_i]
+        + ["tensorflow-intel==2.16.2"]
+        + _BASE_REPAIR_PACKAGES[_i:]
+    )
+else:
+    REPAIR_PACKAGES = list(_BASE_REPAIR_PACKAGES)
 
 
 # CUDA-aware torch wheels can fail to load on machines with missing /
@@ -374,19 +382,19 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
         # independently repairable. The combined success/failure status
         # is computed from BOTH outcomes at the end of the method.
 
+    # numpy==1.26.4 is pinned as an explicit top-level entry in REPAIR_PACKAGES,
+    # so pip's resolver holds numpy at exactly 1.26.4 even though deepface /
+    # retina-face declare an open numpy requirement — that exact pin is the real
+    # protection against numpy 2.x breaking TF 2.16.2's import. (Every entry is
+    # a ==pin, so --upgrade is a no-op and --upgrade-strategy only-if-needed
+    # would be inert alongside --force-reinstall; both are deliberately omitted.
+    # Code-review H1, PR #61.) --force-reinstall ensures a clean reinstall over a
+    # half-broken stack; --no-cache-dir avoids a corrupted wheel cache.
     cmd = [
         sys.executable,
         "-m",
         "pip",
         "install",
-        "--upgrade",
-        # only-if-needed stops pip from EAGERLY upgrading already-satisfied
-        # transitive deps past their pins — combined with numpy>=1.26,<2 being
-        # an explicit top-level entry in REPAIR_PACKAGES, this prevents a
-        # --force-reinstall of deepface/retina-face from dragging numpy back to
-        # 2.x (which breaks TF 2.16.2's import). Code-review MEDIUM, PR #61.
-        "--upgrade-strategy",
-        "only-if-needed",
         "--force-reinstall",
         "--no-cache-dir",
         *REPAIR_PACKAGES,
