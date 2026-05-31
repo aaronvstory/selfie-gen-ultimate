@@ -61,9 +61,11 @@ def build_seed_config() -> None:
         )
 
     cfg = brp._personal_build_config(TEMPLATE, LIVE_CONFIG if LIVE_CONFIG.exists() else None)
-    SEED_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
-    # Verify the share-safety contract before we bake it into an exe.
+    # Verify the share-safety contract BEFORE writing the file to disk
+    # (coderabbit @76): writing first then aborting would leave a
+    # secret-bearing seed config in distribution/ — the exact artifact the
+    # bundle consumes next.
     blanked_keys = ("falai_api_key", "freeimage_api_key", "bfl_api_key", "openrouter_api_key")
     for k in blanked_keys:
         if cfg.get(k, "") not in ("", None):
@@ -74,6 +76,7 @@ def build_seed_config() -> None:
     for k in blanked_paths:
         if cfg.get(k, "") not in ("", None):
             raise SystemExit(f"ABORT: seed config did not blank path key {k!r}.")
+    SEED_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     print(f"  Seed config written: {SEED_PATH}  ({len(cfg)} keys, API keys + paths blanked)")
 
 
