@@ -14,6 +14,7 @@ tests pin that contract.
 
 Static + light-monkeypatch only — no real Tk window needed.
 """
+import ast
 import re
 from pathlib import Path
 
@@ -27,13 +28,30 @@ def _read(p: Path) -> str:
 
 def _create_dnd_root_source() -> str:
     """Extract the create_dnd_root function body via ast (robust vs regex)."""
-    import ast
-
-    tree = ast.parse(_read(DROP_ZONE))
+    src = _read(DROP_ZONE)
+    tree = ast.parse(src)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "create_dnd_root":
-            return ast.get_source_segment(_read(DROP_ZONE), node) or ""
+            return ast.get_source_segment(src, node) or ""
     return ""
+
+
+def _fresh_drop_zone():
+    """Return the REAL kling_gui.drop_zone module, force-reloaded from disk.
+
+    Other GUI tests in the suite stub ``tkinterdnd2`` / ``kling_gui.drop_zone``
+    in ``sys.modules`` (so they can import the GUI headlessly). A plain
+    ``import kling_gui.drop_zone`` here would then hand back that stub — whose
+    ``create_dnd_root`` lacks our try/except — and the behavioral test fails
+    only in full-suite order. Reload from source so we always exercise the real
+    code regardless of suite ordering.
+    """
+    import importlib
+    import sys as _sys
+
+    _sys.modules.pop("kling_gui.drop_zone", None)
+    import kling_gui.drop_zone as dz  # noqa: E402
+    return importlib.reload(dz)
 
 
 def test_create_dnd_root_wraps_tkinterdnd_in_try_except():
@@ -49,23 +67,21 @@ def test_create_dnd_root_wraps_tkinterdnd_in_try_except():
     assert re.search(r"except\s+Exception", body) or re.search(
         r"except\s*\(?[^\n]*(TclError|RuntimeError)", body
     ), "create_dnd_root's except must cover TclError/RuntimeError, not just ImportError"
-    # Must still return a plain root after the failure.
     assert "return tk.Tk()" in body, (
         "create_dnd_root must fall back to a plain tk.Tk() root"
     )
 
 
-def test_create_dnd_root_returns_plain_tk_on_tkdnd_failure(monkeypatch):
+def test_create_dnd_root_returns_plain_tk_on_tkdnd_failure():
     """Simulate TkinterDnD.Tk() raising (tkdnd load failure) and assert
     create_dnd_root returns a plain root instead of propagating the crash."""
     import tkinter
-    import kling_gui.drop_zone as dz
 
+    dz = _fresh_drop_zone()
     original_has_dnd = dz.HAS_DND
     original_tkinterdnd = getattr(dz, "TkinterDnD", None)
     original_tk_tk = tkinter.Tk
     try:
-        # Force the DnD-available path, then make the native init blow up.
         dz.HAS_DND = True
 
         class _FakeTkinterDnD:
@@ -75,14 +91,10 @@ def test_create_dnd_root_returns_plain_tk_on_tkdnd_failure(monkeypatch):
 
         dz.TkinterDnD = _FakeTkinterDnD
         sentinel = object()
-        # create_dnd_root falls back to `tk.Tk()` where dz.tk is the tkinter
-        # module — patch the class on the module so the fallback returns sentinel
-        # without building a real window.
         tkinter.Tk = lambda: sentinel
 
         result = dz.create_dnd_root()
         assert result is sentinel, "must fall back to plain tk.Tk() on tkdnd failure"
-        # And it must have flipped HAS_DND off so downstream register sites skip DnD.
         assert dz.HAS_DND is False, (
             "create_dnd_root must set HAS_DND=False after a tkdnd load failure so "
             "drop_target_register sites no-op"
@@ -92,16 +104,13 @@ def test_create_dnd_root_returns_plain_tk_on_tkdnd_failure(monkeypatch):
         if original_tkinterdnd is not None:
             dz.TkinterDnD = original_tkinterdnd
         elif hasattr(dz, "TkinterDnD"):
-            # tkinterdnd2 absent originally — remove the fake we injected so it
-            # can't leak into later suite tests (code-review M4).
             del dz.TkinterDnD
         tkinter.Tk = original_tk_tk
 
 
 def test_create_dnd_root_uses_tkinterdnd_when_available():
     """Happy path: when HAS_DND and TkinterDnD.Tk() works, use it."""
-    import kling_gui.drop_zone as dz
-
+    dz = _fresh_drop_zone()
     original_has_dnd = dz.HAS_DND
     original_tkinterdnd = getattr(dz, "TkinterDnD", None)
     try:
@@ -120,6 +129,4 @@ def test_create_dnd_root_uses_tkinterdnd_when_available():
         if original_tkinterdnd is not None:
             dz.TkinterDnD = original_tkinterdnd
         elif hasattr(dz, "TkinterDnD"):
-            # tkinterdnd2 absent originally — remove the fake we injected so it
-            # can't leak into later suite tests (code-review M4).
             del dz.TkinterDnD
