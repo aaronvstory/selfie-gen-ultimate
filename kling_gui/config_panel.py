@@ -70,6 +70,17 @@ COMBOBOX_DROPDOWN_HEIGHT = 25  # Number of items visible in dropdown (default ~1
 logger = logging.getLogger(__name__)
 
 
+def _safe_stderr(msg: str) -> None:
+    """Write to stderr, tolerating ``sys.stderr is None`` (pythonw.exe windowed
+    builds have no console → stderr is None; a bare write would AttributeError
+    and crash the GUI). gemini HIGH."""
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(msg)
+    except Exception:
+        pass
+
+
 class HoverTooltip:
     """Dark-themed floating tooltip shown when hovering a widget.
 
