@@ -46,6 +46,55 @@ root\run_gui.bat  →  launchers\run_gui.bat  →  launchers\windows\run_gui.bat
 ```
 The root files are compat wrappers only. All real logic lives in `launchers/windows/`. Do not duplicate logic in the root wrappers.
 
+### 4b. Shared Python resolver + auto-install (`scripts/win_resolve_python.bat`)
+
+**All Python detection for the main Windows launchers lives in ONE shared
+file — do not re-add inline `where python` detection to a launcher.**
+`launchers/windows/run_gui.bat` and `run_cli.bat` each `call
+"%ROOT_DIR%\scripts\win_resolve_python.bat"` when the venv is missing. The
+resolver runs in the caller's environment (it is `call`ed, not run with its
+own `setlocal`) and returns `VENV_PYTHON` + `RESOLVE_RC` (0 = ok).
+
+Why this exists: a non-technical user installed Python 3.12 but did not tick
+"Add Python to PATH", so the old `where python` gate failed even though a
+supported Python was present. The resolver fixes that and adds silent
+auto-install.
+
+Resolution order (every candidate version-gated to 3.9–3.12 via the flat-goto
+`:pyres_check`, mirroring `oldcam-v24/oldcam_launcher.bat`):
+
+1. existing venvs (`%VENV_PYTHON%`, `.venv311`, `.venv`) + `SELFIEGEN_PYTHON`
+   / `SELFIEGEN_VENV_DIR` overrides
+2. **`py` launcher** — `py -3.11`, `-3.12`, `-3.10`, `-3.9`. This is the key
+   fix: `py.exe` ships with every python.org installer and selects by version
+   from the registry, so it finds an interpreter **without** "Add to PATH".
+3. `python` on PATH (last; may be an unsupported 3.13+)
+4. common install dirs (`%LocalAppData%\Programs\Python\Python31{1,2}`,
+   `%ProgramFiles%\Python31{1,2}`, `C:\Python31{1,2}`)
+5. **auto-install Python 3.12** — `winget install Python.Python.3.12` first,
+   then a python.org silent installer download
+   (`/quiet PrependPath=1 Include_launcher=1`) as fallback.
+
+Hard rules for this file:
+
+- **Target 3.12, never "latest".** `mediapipe==0.10.35` has wheels for
+  3.9–3.12 only; auto-installing 3.13+ would fail the version gate.
+- **Post-install re-detection must use the `py` launcher / an absolute path,
+  NOT a fresh `where python`** — the installer's PATH edit does not reach the
+  already-running shell.
+- **Flat-goto `:pyres_check` only** (no `if (...) else (...)`), and every
+  paren-bearing `echo` must `^(`/`^)`-escape, or cmd's nested-block parser
+  crashes with `was unexpected at this time`. `echo(` (no space) is the safe
+  blank-line idiom and is exempt.
+- Static guards live in `tests/test_win_python_resolver.py`; the relocated
+  gate assertions are in `tests/test_launcher_health_check_loop.py`.
+
+**macOS note:** `setup_macos.sh::pick_python` already resolves any installed
+3.11/3.12 across Homebrew + system paths, so macOS does NOT need this resolver.
+No macOS auto-INSTALL was added — Homebrew installs are interactive/slow and
+the SSD bundle ships a prebuilt venv. macOS is not regressed; it simply has a
+different (already-working) resolution path.
+
 ### 5. Dep-skip stamp (no subprocess for hashing)
 
 Stamp key is built from req file dates+sizes — no `certutil` subprocess needed:
