@@ -16,6 +16,14 @@ ImportFn = Callable[[str], object]
 RuntimeProbeFn = Callable[[], tuple[object | None, str]]
 
 REPAIR_PACKAGES = [
+    # numpy FIRST + pinned <2: TF 2.16.2 (ml-dtypes~=0.3.1) is built against
+    # numpy 1.26.x and breaks at import with "numpy.core._multiarray_umath
+    # failed to import" under numpy 2.x. The comment used to claim "tensorflow
+    # first so its numpy constraint is resolved" but numpy wasn't in this list
+    # at all, so a --force-reinstall of deepface/retina-face could pull numpy
+    # 2.x and silently break TF — exactly the failure a user hit on v2.9.
+    # Pin it explicitly and install it first so the repair can't regress numpy.
+    "numpy>=1.26,<2",
     "tensorflow==2.16.2",
     "protobuf==4.25.3",
     "tf-keras==2.16.0",
@@ -24,7 +32,9 @@ REPAIR_PACKAGES = [
 ]
 
 if sys.platform == "win32":
-    REPAIR_PACKAGES.insert(1, "tensorflow-intel==2.16.2")
+    # Keep tensorflow-intel adjacent to tensorflow (index 2 now that numpy
+    # occupies index 0).
+    REPAIR_PACKAGES.insert(2, "tensorflow-intel==2.16.2")
 
 
 # CUDA-aware torch wheels can fail to load on machines with missing /

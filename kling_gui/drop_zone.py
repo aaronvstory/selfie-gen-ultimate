@@ -69,11 +69,32 @@ def create_dnd_root() -> tk.Tk:
     """Create a TkinterDnD root window if available, otherwise regular Tk.
 
     This is a module-level function for easy import by main_window.py.
+
+    HAS_DND being True (the `import tkinterdnd2` succeeded) does NOT guarantee
+    the native tkdnd library LOADS. ``TkinterDnD.Tk()`` runs Tcl
+    ``package require tkdnd``, which raises ``tkinter.TclError: Unable to load
+    tkdnd library`` (wrapped as RuntimeError) when the bundled tkdnd binary
+    doesn't match the user's Tcl/Tk build — common on a fresh python.org 3.12.
+    That is NOT an ImportError, so the import-time guard above can't catch it,
+    and without this try/except the whole GUI crashed on startup with
+    "Unable to load tkdnd library" (reported on a fresh v2.9 install).
+
+    Drag-and-drop is OPTIONAL: degrade to a plain ``tk.Tk()`` and flip the
+    module-level HAS_DND off so every drop_target_register site (here,
+    main_window, config_panel) skips DnD — the file pickers still work.
     """
+    global HAS_DND
     if HAS_DND:
-        return TkinterDnD.Tk()
-    else:
-        return tk.Tk()
+        try:
+            return TkinterDnD.Tk()
+        except Exception as exc:  # tkinter.TclError / RuntimeError from tkdnd
+            HAS_DND = False
+            sys.stderr.write(
+                "[selfie-gen] drag-and-drop unavailable "
+                f"(tkdnd failed to load: {type(exc).__name__}: {exc}); "
+                "use the file pickers instead.\n"
+            )
+    return tk.Tk()
 
 
 # Color palette
