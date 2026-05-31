@@ -7,6 +7,18 @@ from typing import Optional, Callable, Dict, Any
 
 _LOGGER = logging.getLogger(__name__)
 
+# Computed ONCE at import: are we the bundled .exe? Used to decide whether
+# similarity runs in-process (source / automation pipeline) or via the
+# side-venv subprocess (frozen). Computed here — not per-call, and not by
+# importing path_utils inside the hot compute_* function — so source mode's
+# hot path has no import activity that could interact with tests that mock
+# sys.modules mid-suite. Source installs always get _IS_FROZEN_BUILD == False.
+try:
+    import path_utils as _pu
+    _IS_FROZEN_BUILD = bool(_pu.is_frozen())
+except Exception:
+    _IS_FROZEN_BUILD = False
+
 SIMILARITY_PASS_THRESHOLD = 80
 # Raw ArcFace cosine-distance threshold (per similarity/CLAUDE.md). Distances
 # at or below this map to >= 80% via the polynomial curve in similarity_engine.

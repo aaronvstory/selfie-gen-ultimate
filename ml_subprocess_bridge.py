@@ -263,6 +263,67 @@ def ensure_ml_stack(log: Callable[[str], None] = print) -> bool:
     return ok
 
 
+def _run_json(args: Sequence[str], log: Callable[[str], None]) -> Optional[dict]:
+    """Ensure the ML stack, run the JSON runner in the side venv, parse the
+    single JSON line it prints. Returns the parsed dict, or None if the stack
+    isn't available / the subprocess produced no parseable JSON.
+
+    The JSON runner writes exactly one JSON line to stdout (progress -> stderr),
+    so we parse the LAST non-empty stdout line defensively.
+    """
+    import json as _json
+
+    if not ensure_ml_stack(log=log):
+        log("ML environment is not available; cannot run this feature.")
+        return None
+    try:
+        cp = run_in_ml_venv(
+            ["-m", "tools.ml_json_runner", *args],
+            cwd=path_utils.get_resource_dir(),
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
+        log(f"ML subprocess failed to start: {exc}")
+        return None
+    out = (cp.stdout or "").strip()
+    if not out:
+        log(f"ML subprocess produced no output (exit {cp.returncode}). "
+            f"stderr tail: {(cp.stderr or '')[-200:]}")
+        return None
+    last = out.splitlines()[-1]
+    try:
+        return _json.loads(last)
+    except ValueError:
+        log(f"ML subprocess output was not JSON: {last[:200]!r}")
+        return None
+
+
+def run_crop_json(
+    input_path: str,
+    output_path: str,
+    multiplier: float = 1.5,
+    log: Callable[[str], None] = print,
+) -> Optional[dict]:
+    """Frozen-mode headless face crop via the side venv."""
+    return _run_json(
+        ["crop", "--input", input_path, "--output", output_path,
+         "--multiplier", str(multiplier)],
+        log,
+    )
+
+
+def run_similarity_json(
+    ref_path: str,
+    target_path: str,
+    log: Callable[[str], None] = print,
+) -> Optional[dict]:
+    """Frozen-mode headless face similarity via the side venv. Returns the same
+    dict shape as face_similarity.compute_face_similarity_details, or None."""
+    return _run_json(
+        ["similarity", "--ref", ref_path, "--target", target_path],
+        log,
+    )
+
+
 def run_in_ml_venv(
     args: Sequence[str],
     *,
