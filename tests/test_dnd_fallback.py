@@ -10,12 +10,12 @@ it and the whole GUI died.
 
 ``drop_zone.create_dnd_root`` now wraps ``TkinterDnD.Tk()`` in try/except and
 falls back to a plain ``tk.Tk()`` (drag-and-drop disabled, app survives). These
-tests pin that contract.
-
-Static + light-monkeypatch only — no real Tk window needed.
+tests pin that contract: one lightweight STRUCTURAL guard (the try/except still
+exists and isn't ImportError-only) plus behavioral tests that prove the actual
+fallback.
 """
 import ast
-import re
+import contextlib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -26,15 +26,12 @@ def _read(p: Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
-def _create_dnd_root_node() -> "ast.FunctionDef | None":
-    """Return the ast node for create_dnd_root (structural, not string-based)."""
+def _create_dnd_root_node():
+    """Return the ast.FunctionDef node for create_dnd_root, or None."""
     for node in ast.walk(ast.parse(_read(DROP_ZONE))):
         if isinstance(node, ast.FunctionDef) and node.name == "create_dnd_root":
             return node
     return None
-
-
-import contextlib
 
 
 @contextlib.contextmanager
@@ -55,12 +52,11 @@ def _fresh_drop_zone():
     import importlib.util
     import sys as _sys
 
-    src_path = DROP_ZONE
     spec = importlib.util.spec_from_file_location(
-        "_test_fresh_drop_zone", str(src_path)
+        "_test_fresh_drop_zone", str(DROP_ZONE)
     )
     assert spec is not None and spec.loader is not None, (
-        f"could not build import spec for {src_path}"
+        f"could not build import spec for {DROP_ZONE}"
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
