@@ -7,6 +7,18 @@ from typing import Optional, Callable, Dict, Any
 
 _LOGGER = logging.getLogger(__name__)
 
+# Computed ONCE at import: are we the bundled .exe? Used to decide whether
+# similarity runs in-process (source / automation pipeline) or via the
+# side-venv subprocess (frozen). Computed here — not per-call, and not by
+# importing path_utils inside the hot compute_* function — so source mode's
+# hot path has no import activity that could interact with tests that mock
+# sys.modules mid-suite. Source installs always get _IS_FROZEN_BUILD == False.
+try:
+    import path_utils as _pu
+    _IS_FROZEN_BUILD = bool(_pu.is_frozen())
+except Exception:
+    _IS_FROZEN_BUILD = False
+
 SIMILARITY_PASS_THRESHOLD = 80
 # Raw ArcFace cosine-distance threshold (per similarity/CLAUDE.md). Distances
 # at or below this map to >= 80% via the polynomial curve in similarity_engine.
@@ -114,12 +126,65 @@ def _diag_summary(diag: Dict[str, Any]) -> str:
     )
 
 
+def _frozen_similarity_via_subprocess(
+    source_path: str,
+    target_path: str,
+    report_cb: Optional[Callable[[str, str], None]] = None,
+) -> Optional[Dict[str, Any]]:
+    """In the bundled .exe ONLY, run similarity in the side venv (the bundle
+    excludes the ML stack). Returns the result dict, or None to let the caller
+    fall through to the normal in-process path (e.g. when not frozen, or the
+    bridge is unavailable). Source installs + the automation pipeline never
+    enter this path — is_frozen() is False there."""
+    if not _IS_FROZEN_BUILD:
+        return None
+    try:
+        import ml_subprocess_bridge as bridge
+    except Exception:
+        return None
+
+    def _log_msg(msg: str) -> None:
+        # Module-level _log(report_cb, msg, level) — adapt to the bridge's
+        # single-arg log(msg) callback signature.
+        _log(report_cb, msg, "info")
+
+    details = bridge.run_similarity_json(source_path, target_path, log=_log_msg)
+    if details is None:
+        return {
+            "score": 0,
+            "pass": False,
+            "error": "similarity backend unavailable (ML environment not ready)",
+            "match": False,
+            "diagnostics": {
+                "mode": "unavailable-frozen",
+                "ref_path": source_path,
+                "target_path": target_path,
+            },
+        }
+    # Normalize the score to the same 0-100 int contract as the in-process path.
+    try:
+        details["score"] = max(0, min(100, int(round(float(details.get("score", 0))))))
+    except Exception:
+        details["score"] = 0
+    details.setdefault("pass", bool(details["score"] >= SIMILARITY_PASS_THRESHOLD))
+    details.setdefault("match", bool(details.get("match", False)))
+    details.pop("ok", None)
+    return details
+
+
 def compute_face_similarity_details(
     source_path: str,
     target_path: str,
     report_cb: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
     """Return detailed similarity result for gating and diagnostics."""
+    # Bundled-exe path: the ML stack lives in a side venv, run as a subprocess.
+    # Gated on the module-level _IS_FROZEN_BUILD flag (computed once at import)
+    # so source installs + the automation pipeline never even call the helper.
+    if _IS_FROZEN_BUILD:
+        _frozen = _frozen_similarity_via_subprocess(source_path, target_path, report_cb)
+        if _frozen is not None:
+            return _frozen
     engine = _get_engine(report_cb=report_cb)
     if engine is None:
         return {
