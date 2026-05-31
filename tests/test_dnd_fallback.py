@@ -91,6 +91,10 @@ def test_create_dnd_root_returns_plain_tk_on_tkdnd_failure(monkeypatch):
         dz.HAS_DND = original_has_dnd
         if original_tkinterdnd is not None:
             dz.TkinterDnD = original_tkinterdnd
+        elif hasattr(dz, "TkinterDnD"):
+            # tkinterdnd2 absent originally — remove the fake we injected so it
+            # can't leak into later suite tests (code-review M4).
+            del dz.TkinterDnD
         tkinter.Tk = original_tk_tk
 
 
@@ -115,3 +119,7 @@ def test_create_dnd_root_uses_tkinterdnd_when_available():
         dz.HAS_DND = original_has_dnd
         if original_tkinterdnd is not None:
             dz.TkinterDnD = original_tkinterdnd
+        elif hasattr(dz, "TkinterDnD"):
+            # tkinterdnd2 absent originally — remove the fake we injected so it
+            # can't leak into later suite tests (code-review M4).
+            del dz.TkinterDnD

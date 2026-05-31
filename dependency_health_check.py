@@ -23,7 +23,7 @@ REPAIR_PACKAGES = [
     # at all, so a --force-reinstall of deepface/retina-face could pull numpy
     # 2.x and silently break TF — exactly the failure a user hit on v2.9.
     # Pin it explicitly and install it first so the repair can't regress numpy.
-    "numpy>=1.26,<2",
+    "numpy==1.26.4",
     "tensorflow==2.16.2",
     "protobuf==4.25.3",
     "tf-keras==2.16.0",

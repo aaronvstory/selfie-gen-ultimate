@@ -2686,8 +2686,12 @@ class KlingGUIWindow:
             w.bind("<Leave>", _on_leave)
             w.config(cursor="hand2")
 
-        # Try to bind DnD if available
-        if HAS_DND and DND_FILES:
+        # Try to bind DnD if available. Read the LIVE flag — create_dnd_root()
+        # may flip drop_zone.HAS_DND off at runtime when tkdnd fails to load;
+        # the by-value HAS_DND imported here would be stale (the try/except
+        # below is a backstop, but gating on _dnd_live() avoids the doomed
+        # register attempt entirely).
+        if _dnd_live() and DND_FILES:
             try:
                 for w in [drop_frame, icon_label, main_label, sub_label, content]:
                     w.drop_target_register(DND_FILES)
