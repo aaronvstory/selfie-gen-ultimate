@@ -36,22 +36,37 @@ def _create_dnd_root_source() -> str:
     return ""
 
 
+import contextlib
+
+
+@contextlib.contextmanager
 def _fresh_drop_zone():
-    """Return the REAL kling_gui.drop_zone module, force-reloaded from disk.
+    """Yield a FRESH copy of kling_gui.drop_zone loaded from source under a
+    PRIVATE throwaway module name, leaving the shared
+    ``sys.modules["kling_gui.drop_zone"]`` entry completely untouched.
 
     Other GUI tests in the suite stub ``tkinterdnd2`` / ``kling_gui.drop_zone``
     in ``sys.modules`` (so they can import the GUI headlessly). A plain
-    ``import kling_gui.drop_zone`` here would then hand back that stub — whose
-    ``create_dnd_root`` lacks our try/except — and the behavioral test fails
-    only in full-suite order. Reload from source so we always exercise the real
-    code regardless of suite ordering.
+    ``import kling_gui.drop_zone`` here could hand back such a stub — whose
+    ``create_dnd_root`` lacks our try/except. Loading the real file under a
+    private name (not reloading the shared module) means we always exercise the
+    real code AND never perturb the shared sys.modules entry, so later tests
+    like test_gui_smoke's ``import_module('kling_gui.drop_zone')`` are unaffected
+    (gemini @72: a global reload leaked a torn-down module to later imports).
     """
-    import importlib
+    import importlib.util
     import sys as _sys
 
-    _sys.modules.pop("kling_gui.drop_zone", None)
-    import kling_gui.drop_zone as dz  # noqa: E402
-    return importlib.reload(dz)
+    src_path = DROP_ZONE
+    spec = importlib.util.spec_from_file_location(
+        "_test_fresh_drop_zone", str(src_path)
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    try:
+        yield mod
+    finally:
+        _sys.modules.pop("_test_fresh_drop_zone", None)
 
 
 def test_create_dnd_root_wraps_tkinterdnd_in_try_except():
@@ -77,43 +92,33 @@ def test_create_dnd_root_returns_plain_tk_on_tkdnd_failure():
     create_dnd_root returns a plain root instead of propagating the crash."""
     import tkinter
 
-    dz = _fresh_drop_zone()
-    original_has_dnd = dz.HAS_DND
-    original_tkinterdnd = getattr(dz, "TkinterDnD", None)
     original_tk_tk = tkinter.Tk
-    try:
-        dz.HAS_DND = True
+    with _fresh_drop_zone() as dz:
+        try:
+            dz.HAS_DND = True
 
-        class _FakeTkinterDnD:
-            @staticmethod
-            def Tk():
-                raise RuntimeError("Unable to load tkdnd library.")
+            class _FakeTkinterDnD:
+                @staticmethod
+                def Tk():
+                    raise RuntimeError("Unable to load tkdnd library.")
 
-        dz.TkinterDnD = _FakeTkinterDnD
-        sentinel = object()
-        tkinter.Tk = lambda: sentinel
+            dz.TkinterDnD = _FakeTkinterDnD
+            sentinel = object()
+            tkinter.Tk = lambda: sentinel
 
-        result = dz.create_dnd_root()
-        assert result is sentinel, "must fall back to plain tk.Tk() on tkdnd failure"
-        assert dz.HAS_DND is False, (
-            "create_dnd_root must set HAS_DND=False after a tkdnd load failure so "
-            "drop_target_register sites no-op"
-        )
-    finally:
-        dz.HAS_DND = original_has_dnd
-        if original_tkinterdnd is not None:
-            dz.TkinterDnD = original_tkinterdnd
-        elif hasattr(dz, "TkinterDnD"):
-            del dz.TkinterDnD
-        tkinter.Tk = original_tk_tk
+            result = dz.create_dnd_root()
+            assert result is sentinel, "must fall back to plain tk.Tk() on tkdnd failure"
+            assert dz.HAS_DND is False, (
+                "create_dnd_root must set HAS_DND=False after a tkdnd load failure "
+                "so drop_target_register sites no-op"
+            )
+        finally:
+            tkinter.Tk = original_tk_tk
 
 
 def test_create_dnd_root_uses_tkinterdnd_when_available():
     """Happy path: when HAS_DND and TkinterDnD.Tk() works, use it."""
-    dz = _fresh_drop_zone()
-    original_has_dnd = dz.HAS_DND
-    original_tkinterdnd = getattr(dz, "TkinterDnD", None)
-    try:
+    with _fresh_drop_zone() as dz:
         dz.HAS_DND = True
         sentinel = object()
 
@@ -124,9 +129,3 @@ def test_create_dnd_root_uses_tkinterdnd_when_available():
 
         dz.TkinterDnD = _OkTkinterDnD
         assert dz.create_dnd_root() is sentinel
-    finally:
-        dz.HAS_DND = original_has_dnd
-        if original_tkinterdnd is not None:
-            dz.TkinterDnD = original_tkinterdnd
-        elif hasattr(dz, "TkinterDnD"):
-            del dz.TkinterDnD
