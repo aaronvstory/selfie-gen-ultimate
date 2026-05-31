@@ -94,6 +94,17 @@ PII_EXCLUDED_FILES: Set[str] = {
     "sourav_kinematic_results.json",
 }
 
+# PR #61 follow-up (release-hardening before the friend-facing v2.10 zip):
+# local-only analysis artifacts that were added to .gitignore but NOT to the
+# release sweep. Same bug class as the PR #51 research-dir leak — release_prep
+# walks the working tree, so .gitignore alone doesn't shield them. These two
+# top-level briefs (~130 KB of internal A/B decision notes) were shipping in
+# every personal zip. Named separately so the test can derive the expected set.
+LOCAL_ANALYSIS_FILES: Set[str] = {
+    "OLDCAM_DECISION_BRIEF.md",
+    "OLDCAM_GUIDE.md",
+}
+
 EXCLUDED_FILES: Set[str] = {
     "kling_config.json",
     "kling_config-blink-test.json.BAK",
@@ -102,7 +113,19 @@ EXCLUDED_FILES: Set[str] = {
     "kling_history.json",
     "crash_log.txt",
     "ui_config.json",
-} | PII_EXCLUDED_FILES
+} | PII_EXCLUDED_FILES | LOCAL_ANALYSIS_FILES
+
+# Path-relative directory prefixes pruned from the release sweep. Unlike
+# EXCLUDED_DIRS (which matches a bare dir NAME anywhere in the tree), these are
+# anchored to a specific location so we don't over-prune a same-named dir
+# elsewhere. Mirrors the .gitignore entries added in the PR #61 round:
+#   - docs/analysis/  : committed + gitignored A/B study scripts, frames, JSON
+#   - rPPG/iteration_history/ : per-run rPPG iteration JSON/TSV byproducts
+# Stored as POSIX tuples so the match is OS-independent.
+LOCAL_ANALYSIS_DIR_PREFIXES: tuple = (
+    ("docs", "analysis"),
+    ("rPPG", "iteration_history"),
+)
 RELEASE_BASENAME = "SelfieGenUltimate"
 VERSIONED_ZIP_NAME = f"SelfieGenUltimate-{RELEASE_VERSION}.zip"
 LATEST_ALIAS_ZIP_NAME = "SelfieGenUltimate.zip"
@@ -152,6 +175,23 @@ def _should_skip(path: Path) -> bool:
     # from two adjacent ifs per Gemini round-1 review.
     if len(path.parts) >= 2 and path.parts[0] == "oldcam-testing":
         if path.suffix.lower() == ".mp4" or path.parts[1] == "reports":
+            return True
+    # PR #61 follow-up: prune local-only analysis dirs anchored to a specific
+    # location (docs/analysis/, rPPG/iteration_history/). Anchored prefix match
+    # — not a bare dir-name match — so a future unrelated analysis/ elsewhere is
+    # unaffected. Mirrors the .gitignore entries added the same round.
+    for prefix in LOCAL_ANALYSIS_DIR_PREFIXES:
+        if path.parts[: len(prefix)] == prefix:
+            return True
+    # PR #61 follow-up: rPPG injector iteration byproducts. The injector writes
+    # temp_iteration_N.mp4 + best_iteration_snapshot[_N].mp4 into rPPG/ during a
+    # run (see rppg-wiring.md "Injector contract gotcha #2"). All gitignored but
+    # shipping. Scope to rPPG/ so a same-named file elsewhere is unaffected.
+    if len(path.parts) >= 2 and path.parts[0] == "rPPG":
+        name = path.name
+        if name.startswith("temp_iteration_") and path.suffix.lower() == ".mp4":
+            return True
+        if name.startswith("best_iteration_snapshot") and path.suffix.lower() == ".mp4":
             return True
     return False
 

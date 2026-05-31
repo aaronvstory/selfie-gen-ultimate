@@ -403,17 +403,84 @@ def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
     assert not (dst / "rPPG" / "rppg_injector-v8.zip").exists(), (
         "rPPG/*.zip artifact leaked"
     )
-    # PR #51 round-1: PII files pruned, surrounding harmless files preserved
-    assert not (dst / "docs" / "analysis" / "sourav_facetrack_results.json").exists(), (
-        "PII LEAK: sourav_facetrack_results.json shipped with SSN-format identifiers"
-    )
-    assert not (dst / "docs" / "analysis" / "sourav_kinematic_results.json").exists(), (
-        "PII LEAK: sourav_kinematic_results.json shipped with SSN-format identifiers"
-    )
-    assert (dst / "docs" / "analysis" / "harmless_keeper.py").exists(), (
-        "PII filter over-matched and pruned a harmless sibling file"
+    # PR #51 round-1: PII files pruned. PR #61 release-hardening: docs/analysis/
+    # is now pruned WHOLESALE (it is a local-only research dir, gitignored as
+    # `docs/analysis/`), so the whole dir — including the formerly-kept
+    # harmless_keeper.py — must NOT ship. The dedicated leak-guard test
+    # test_copy_sanitized_tree_excludes_local_analysis_artifacts below proves
+    # the anchored-prefix prune doesn't over-reach into real docs/ files.
+    assert not (dst / "docs" / "analysis").exists(), (
+        "docs/analysis/ (local-only research dir, contains the PII JSONs) "
+        "leaked into release bundle"
     )
     assert (dst / "kept.py").exists()
+
+
+def test_copy_sanitized_tree_excludes_local_analysis_artifacts(tmp_path: Path):
+    """Regression guard for the PR #61 release-hardening pass: local-only
+    analysis artifacts were added to .gitignore but NOT to the release sweep,
+    so they leaked into the friend-facing personal zip. Same bug class as the
+    PR #51 research-dir leak — ``copy_sanitized_tree`` walks the WORKING TREE,
+    not git ls-files, so .gitignore alone doesn't shield them.
+
+    Classes guarded (all gitignored, all confirmed present + SHIP-ing before
+    the fix):
+      - Top-level briefs: OLDCAM_DECISION_BRIEF.md, OLDCAM_GUIDE.md (~130 KB
+        of internal A/B decision notes).
+      - docs/analysis/ : committed-but-gitignored A/B study scripts/frames/JSON.
+      - rPPG/iteration_history/ : per-run rPPG iteration byproducts.
+      - rPPG/temp_iteration_N.mp4 + rPPG/best_iteration_snapshot[_N].mp4 :
+        injector iteration scratch files (rppg-wiring.md gotcha #2).
+    """
+    from distribution.release_prep import (
+        EXCLUDED_FILES,
+        LOCAL_ANALYSIS_DIR_PREFIXES,
+        LOCAL_ANALYSIS_FILES,
+    )
+
+    # Anti-drift: the named briefs must be merged into EXCLUDED_FILES so the
+    # file-name match in _should_skip fires (mirrors the PII/LOCAL_ONLY pattern).
+    assert LOCAL_ANALYSIS_FILES <= EXCLUDED_FILES, (
+        f"regression: LOCAL_ANALYSIS_FILES not merged into EXCLUDED_FILES — "
+        f"missing {sorted(LOCAL_ANALYSIS_FILES - EXCLUDED_FILES)}"
+    )
+    assert ("docs", "analysis") in LOCAL_ANALYSIS_DIR_PREFIXES
+    assert ("rPPG", "iteration_history") in LOCAL_ANALYSIS_DIR_PREFIXES
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    layout = {
+        "OLDCAM_DECISION_BRIEF.md": "brief",          # SKIP
+        "OLDCAM_GUIDE.md": "guide",                   # SKIP
+        "docs/analysis/study.py": "s",                # SKIP (dir prefix)
+        "docs/analysis/frames/f.png": "p",            # SKIP (nested)
+        "docs/macos-portability.md": "real doc",      # KEEP (real docs file)
+        "rPPG/iteration_history/run.json": "j",       # SKIP (dir prefix)
+        "rPPG/temp_iteration_3.mp4": "v",             # SKIP (scratch mp4)
+        "rPPG/best_iteration_snapshot.mp4": "v",      # SKIP (scratch mp4)
+        "rPPG/best_iteration_snapshot_2.mp4": "v",    # SKIP (numbered scratch)
+        "rPPG/rppg_injector.py": "code",              # KEEP (real injector code)
+        "kept.py": "ok",                              # KEEP
+    }
+    for rel, content in layout.items():
+        p = src / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+
+    copy_sanitized_tree(src, dst)
+
+    # Pruned: every gitignored analysis artifact class.
+    assert not (dst / "OLDCAM_DECISION_BRIEF.md").exists()
+    assert not (dst / "OLDCAM_GUIDE.md").exists()
+    assert not (dst / "docs" / "analysis").exists()
+    assert not (dst / "rPPG" / "iteration_history").exists()
+    assert not (dst / "rPPG" / "temp_iteration_3.mp4").exists()
+    assert not (dst / "rPPG" / "best_iteration_snapshot.mp4").exists()
+    assert not (dst / "rPPG" / "best_iteration_snapshot_2.mp4").exists()
+    # Kept: real code + real docs (the anchored prefix must NOT over-prune).
+    assert (dst / "kept.py").exists()
+    assert (dst / "docs" / "macos-portability.md").exists()
+    assert (dst / "rPPG" / "rppg_injector.py").exists()
 
 
 def test_standalone_windows_launchers_use_stable_python_probes():

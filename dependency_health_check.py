@@ -21,11 +21,11 @@ RuntimeProbeFn = Callable[[], tuple[object | None, str]]
 # deepface/retina-face could pull numpy 2.x and silently break TF — the failure
 # a user hit on v2.9. Pin it explicitly + first so the repair can't regress it.
 #
-# Built once via a comprehension (gemini MED @37): the previous
+# Built once via a pure helper (gemini MED @37): the previous
 # ``REPAIR_PACKAGES.insert(...)`` at import mutated the module-level list, which
 # is NOT idempotent — a module reload (or a second import in a test harness)
-# would insert tensorflow-intel twice. Splice tensorflow-intel in declaratively
-# right after tensorflow on win32 so re-import always yields the same list.
+# would insert tensorflow-intel twice. The helper below splices it in
+# declaratively so re-import always yields the same list.
 _BASE_REPAIR_PACKAGES = [
     "numpy==1.26.4",
     "tensorflow==2.16.2",
@@ -34,13 +34,28 @@ _BASE_REPAIR_PACKAGES = [
     "retina-face==0.0.17",
     "deepface==0.0.92",
 ]
+
+
+def _with_win_tensorflow_intel(base: "list[str]") -> "list[str]":
+    """On win32, splice ``tensorflow-intel`` in right after the ``tensorflow``
+    pin, deriving its version from that pin so the two never drift.
+
+    gemini MED: hardcoding ``index("tensorflow==2.16.2")`` AND a literal
+    ``"tensorflow-intel==2.16.2"`` meant a future TF bump had to be made in two
+    places or the splice would either raise ValueError (index miss) or pin a
+    stale intel version. Locate the ``tensorflow==`` entry by prefix and reuse
+    its exact version string. If no ``tensorflow==`` pin exists, return a copy
+    unchanged rather than raising. Pure function — re-import always yields the
+    same list (the idempotency the @37 finding asked for)."""
+    for i, pkg in enumerate(base):
+        if pkg.startswith("tensorflow=="):
+            version = pkg.split("==", 1)[1]
+            return base[: i + 1] + [f"tensorflow-intel=={version}"] + base[i + 1 :]
+    return list(base)
+
+
 if sys.platform == "win32":
-    _i = _BASE_REPAIR_PACKAGES.index("tensorflow==2.16.2") + 1
-    REPAIR_PACKAGES = (
-        _BASE_REPAIR_PACKAGES[:_i]
-        + ["tensorflow-intel==2.16.2"]
-        + _BASE_REPAIR_PACKAGES[_i:]
-    )
+    REPAIR_PACKAGES = _with_win_tensorflow_intel(_BASE_REPAIR_PACKAGES)
 else:
     REPAIR_PACKAGES = list(_BASE_REPAIR_PACKAGES)
 
