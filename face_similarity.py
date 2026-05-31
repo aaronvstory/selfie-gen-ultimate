@@ -124,18 +124,19 @@ def _frozen_similarity_via_subprocess(
     fall through to the normal in-process path (e.g. when not frozen, or the
     bridge is unavailable). Source installs + the automation pipeline never
     enter this path — is_frozen() is False there."""
+    if not _IS_FROZEN_BUILD:
+        return None
     try:
-        import path_utils
-        if not path_utils.is_frozen():
-            return None
         import ml_subprocess_bridge as bridge
     except Exception:
         return None
 
     def _log_msg(msg: str) -> None:
+        # Module-level _log(report_cb, msg, level) — adapt to the bridge's
+        # single-arg log(msg) callback signature.
         _log(report_cb, msg, "info")
 
-    details = bridge.run_similarity_json(source_path, target_path, log=_log)
+    details = bridge.run_similarity_json(source_path, target_path, log=_log_msg)
     if details is None:
         return {
             "score": 0,
@@ -166,10 +167,12 @@ def compute_face_similarity_details(
 ) -> Dict[str, Any]:
     """Return detailed similarity result for gating and diagnostics."""
     # Bundled-exe path: the ML stack lives in a side venv, run as a subprocess.
-    # Returns None (falls through to in-process) when not frozen.
-    _frozen = _frozen_similarity_via_subprocess(source_path, target_path, report_cb)
-    if _frozen is not None:
-        return _frozen
+    # Gated on the module-level _IS_FROZEN_BUILD flag (computed once at import)
+    # so source installs + the automation pipeline never even call the helper.
+    if _IS_FROZEN_BUILD:
+        _frozen = _frozen_similarity_via_subprocess(source_path, target_path, report_cb)
+        if _frozen is not None:
+            return _frozen
     engine = _get_engine(report_cb=report_cb)
     if engine is None:
         return {
