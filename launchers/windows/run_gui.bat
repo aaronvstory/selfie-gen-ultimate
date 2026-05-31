@@ -86,13 +86,14 @@ if not exist "%VENV_PYTHON%" (
         pause
         exit /b 1
     )
+    rem  Resolver may have adopted/created a different venv than the
+    rem  caller's %VENV_PYTHON% guess. Clear the dep stamp INSIDE this
+    rem  block so the sync re-runs against the resolved venv -- only when
+    rem  the resolver actually ran (venv was missing). Unconditional
+    rem  deletion would nuke the stamp every launch + defeat the cache
+    rem  (gemini/codex CRITICAL, bot round 2).
+    if not "%STATE_DIR%"=="" del "%STATE_DIR%\deps_*.ok" >/dev/null 2>&1
 )
-rem  Resolver may have adopted/created a DIFFERENT venv than the
-rem  caller's original %VENV_PYTHON% guess (existing-venv fallback or
-rem  SELFIEGEN_* override). Clear the dep stamp so the sync re-runs
-rem  against the venv we actually resolved (code-review C2).
-del "%STATE_DIR%\deps_*.ok" >nul 2>&1
-
 rem --- Per-launch diagnostic snapshot ---------------------------------------
 rem Writes Python / pip / OS / GPU info to the launch log so users have
 rem something to attach when reporting issues. The user's explicit ask:

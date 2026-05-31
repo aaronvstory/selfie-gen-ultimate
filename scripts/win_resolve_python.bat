@@ -10,19 +10,20 @@ rem    RESOLVED_PYTHON  -> the interpreter used to create/locate the venv
 rem    RESOLVE_RC       -> 0 on success, 1 on failure
 rem
 rem  Caller contract (set BEFORE calling):
-rem    REPO_ROOT   -> repo root (the dir that holds venv\)
-rem    VENV_DIR    -> %REPO_ROOT%\venv
+rem    ROOT_DIR    -> repo root (the dir that holds venv\). REPO_ROOT is
+rem                   accepted too and aliased from ROOT_DIR if unset.
+rem    VENV_DIR    -> %ROOT_DIR%\venv
 rem    VENV_PYTHON -> %VENV_DIR%\Scripts\python.exe (re-set here on success)
-rem    STATE_DIR   -> %REPO_ROOT%\.launcher_state (for the log)
+rem    STATE_DIR   -> %ROOT_DIR%\.launcher_state (for the log)
 rem    LOG_FILE    -> launch log path
 rem    LAUNCH_TS   -> timestamp string for log lines
 rem
-rem  Resolution order (each candidate version-gated to 3.9-3.12 via
-rem  :pyres_check, which mirrors oldcam-v24/oldcam_launcher.bat:147):
+rem  Resolution order (each candidate version-gated to 3.9-3.12 via the
+rem  flat-goto :pyres_check, mirroring oldcam-v24/oldcam_launcher.bat):
 rem    1. existing venv (%VENV_PYTHON%, .venv311, .venv)
-rem    2. SELFIEGEN_PYTHON / SELFIEGEN_VENV_DIR overrides
+rem    2. SELFIEGEN_PYTHON / SELFIEGEN_VENV_DIR overrides (STRICT-gated)
 rem    3. py launcher: py -3.11, -3.12, -3.10, -3.9 (works WITHOUT PATH
-rem       -- this is the fix for the 'installed but not on PATH' case)
+rem       -- the fix for the 'installed but not on PATH' case)
 rem    4. python on PATH (last; may be 3.13+)
 rem    5. common install dirs (LocalAppData / Program Files / C:\PythonXY)
 rem    6. auto-install Python 3.12 (winget -> python.org silent installer),
@@ -33,8 +34,8 @@ rem  target 3.12 (not 'latest') or the next run fails the version gate.
 rem
 rem  cmd-parser safety: every version probe + every paren-bearing echo lives
 rem  in a FLAT subroutine (no if/else paren-blocks), so the (3,9)/(3,13)
-rem  literals can never close an enclosing block early. See the resemble-score
-rem  regression guards in tests/test_resemble_score_launcher_resolver.py.
+rem  literals can never close an enclosing block early. echo( (no space) is
+rem  the safe blank-line idiom. See tests/test_win_python_resolver.py.
 rem ============================================================
 
 set "RESOLVE_RC=1"
@@ -47,9 +48,11 @@ rem  fallback probes below actually run. Honour a pre-set REPO_ROOT too.
 if not defined REPO_ROOT if defined ROOT_DIR set "REPO_ROOT=%ROOT_DIR%"
 
 rem --- 1/2. Existing venvs + env overrides (version-gated) ---------------
+rem  Use `if defined` for env vars (an unquoted %VAR% with parens/&/| inside
+rem  an if-condition can crash the parser; `if defined` is expansion-safe).
 if exist "%VENV_PYTHON%" call :pyres_check "%VENV_PYTHON%" "existing venv" strict
-if "!PYRES_BIN!"=="" if not "%SELFIEGEN_PYTHON%"=="" call :pyres_try_override
-if "!PYRES_BIN!"=="" if not "%SELFIEGEN_VENV_DIR%"=="" call :pyres_check "%SELFIEGEN_VENV_DIR%\Scripts\python.exe" "SELFIEGEN_VENV_DIR override" permissive
+if "!PYRES_BIN!"=="" if defined SELFIEGEN_PYTHON call :pyres_try_override
+if "!PYRES_BIN!"=="" if defined SELFIEGEN_VENV_DIR call :pyres_check "%SELFIEGEN_VENV_DIR%\Scripts\python.exe" "SELFIEGEN_VENV_DIR override" strict
 if "!PYRES_BIN!"=="" if defined REPO_ROOT call :pyres_check "%REPO_ROOT%\venv\Scripts\python.exe" "shared root venv" strict
 if "!PYRES_BIN!"=="" if defined REPO_ROOT call :pyres_check "%REPO_ROOT%\.venv311\Scripts\python.exe" "shared root .venv311" strict
 if "!PYRES_BIN!"=="" if defined REPO_ROOT call :pyres_check "%REPO_ROOT%\.venv\Scripts\python.exe" "shared root .venv" strict
@@ -119,12 +122,17 @@ set "RESOLVE_RC=0"
 goto :eof
 
 rem ============================================================
-rem :pyres_try_override  -- accept SELFIEGEN_PYTHON if it runs (permissive)
+rem :pyres_try_override  -- accept SELFIEGEN_PYTHON only if it runs AND is
+rem   in the supported 3.9-3.12 range (strict gate -- an unsupported override
+rem   like 3.13 must fall through to the other candidates, not be adopted).
+rem   Strips surrounding quotes the user may have wrapped the value in.
 rem ============================================================
 :pyres_try_override
-"%SELFIEGEN_PYTHON%" -V >nul 2>&1
+set "PYRES_OV=%SELFIEGEN_PYTHON:"=%"
+if "!PYRES_OV!"=="" goto :eof
+"!PYRES_OV!" -c "import sys; raise SystemExit(0 if (3,9) <= sys.version_info[:2] < (3,13) else 2)" >nul 2>&1
 if errorlevel 1 goto :eof
-set "PYRES_BIN=%SELFIEGEN_PYTHON%"
+set "PYRES_BIN=!PYRES_OV!"
 set "PYRES_KIND=SELFIEGEN_PYTHON override"
 goto :eof
 
@@ -155,6 +163,7 @@ goto :eof
 
 rem ============================================================
 rem :pyres_try_dir <full-path-to-python.exe>  -- common install dir probe
+rem   Stores a BARE path (no embedded quotes); the create step quotes it.
 rem ============================================================
 :pyres_try_dir
 if not exist "%~1" goto :eof
@@ -174,14 +183,15 @@ echo   [%LAUNCH_TS%] Creating virtual environment with: !RESOLVED_PYTHON!
 rem  RESOLVED_PYTHON is either a bare command ("py -3.12" / "python") or a
 rem  full python.exe path. Quote the path form (may contain spaces); leave
 rem  the multi-token "py -3.x" form unquoted (quoting it would break it).
-echo !RESOLVED_PYTHON! | findstr /C:"\" >nul
-if errorlevel 1 (
-    !RESOLVED_PYTHON! -m venv "%VENV_DIR%"
-) else (
+rem  Detect a path by testing for a backslash via batch substring removal
+rem  (findstr /C:"\" errors with 'escape sequence expected' -- do NOT use it).
+if not "!RESOLVED_PYTHON!"=="!RESOLVED_PYTHON:\=!" (
     "!RESOLVED_PYTHON!" -m venv "%VENV_DIR%"
+) else (
+    !RESOLVED_PYTHON! -m venv "%VENV_DIR%"
 )
 if errorlevel 1 goto :pyres_create_fail
-del "%STATE_DIR%\deps_*.ok" >nul 2>&1
+if not "%STATE_DIR%"=="" del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 call :pyres_check "%VENV_DIR%\Scripts\python.exe" "created venv" strict
 if "!PYRES_BIN!"=="" goto :pyres_create_badver
 set "VENV_PYTHON=!PYRES_BIN!"
@@ -208,8 +218,11 @@ goto :eof
 rem ============================================================
 rem :pyres_install_python  -- silent auto-install of Python 3.12
 rem   Tries winget first, then a python.org silent installer download.
-rem   PATH edits from the installer do NOT reach this running shell, so
-rem   the re-probe goes through the py launcher / absolute paths only.
+rem   The installers are run with `start /wait` so the batch BLOCKS until
+rem   they finish (a bare invocation returns immediately and the re-probe
+rem   would run before any files exist; the del would also hit a locked
+rem   file). PATH edits from the installer do NOT reach this running shell,
+rem   so the re-probe goes through the py launcher / absolute paths only.
 rem ============================================================
 :pyres_install_python
 echo(
@@ -223,23 +236,23 @@ where winget >nul 2>&1
 if errorlevel 1 goto :pyres_install_pyorg
 echo   [%LAUNCH_TS%] Installing via winget ^(Python.Python.3.12^)...
 winget install -e --id Python.Python.3.12 --scope user --accept-source-agreements --accept-package-agreements --disable-interactivity --override "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1"
-rem winget exit 0 = installed; re-probe regardless via the py launcher.
+echo   [%LAUNCH_TS%] winget step finished; re-detecting...
 call :pyres_try_py 3.12
 if not "!RESOLVED_PYTHON!"=="" goto :pyres_install_ok
 call :pyres_try_py 3.11
 if not "!RESOLVED_PYTHON!"=="" goto :pyres_install_ok
 call :pyres_try_dir "%LocalAppData%\Programs\Python\Python312\python.exe"
 if not "!RESOLVED_PYTHON!"=="" goto :pyres_install_ok
+
 :pyres_install_pyorg
 echo   [%LAUNCH_TS%] Downloading the official Python 3.12 installer from python.org...
->>"%LOG_FILE%" echo [%LAUNCH_TS%] resolver: winget unavailable/failed; trying python.org installer
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] resolver: trying python.org silent installer
 set "PYRES_DL=%TEMP%\python-3.12.10-amd64.exe"
 set "PYRES_URL=https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; try { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -Uri $env:PYRES_URL -OutFile $env:PYRES_DL } catch { exit 1 }"
 if errorlevel 1 goto :pyres_install_dl_fail
 echo   [%LAUNCH_TS%] Running the Python 3.12 installer silently...
-"%PYRES_DL%" /quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1 Include_test=0
-rem Installer returns before files settle on some machines; re-probe a few ways.
+start /wait "" "%PYRES_DL%" /quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1 Include_test=0
 call :pyres_try_py 3.12
 if "!RESOLVED_PYTHON!"=="" call :pyres_try_dir "%LocalAppData%\Programs\Python\Python312\python.exe"
 del "%PYRES_DL%" >nul 2>&1
@@ -262,6 +275,9 @@ rem :pyres_check "<path>" "<kind>" [permissive^|strict]
 rem   Flat goto flow (NO if/else paren-blocks) so the version-probe
 rem   string's (3,9)/(3,13) parens cannot prematurely close a block.
 rem   On success sets PYRES_BIN + PYRES_KIND.
+rem   Invoked via `call`, so `exit /b` here returns from the subroutine
+rem   to the caller (it does NOT terminate the resolver) -- this is the
+rem   same idiom oldcam-v24/similarity/resemble-score launchers use.
 rem ============================================================
 :pyres_check
 if "%~1"=="" exit /b 1

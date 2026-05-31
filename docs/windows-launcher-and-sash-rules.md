@@ -91,7 +91,7 @@ Hard rules for this file:
 
 **macOS note:** `setup_macos.sh::pick_python` already resolves any installed
 3.11/3.12 across Homebrew + system paths, so macOS does NOT need this resolver.
-No macOS auto-INSTALL was added — Homebrew installs are interactive/slow and
+No macOS auto-install was added — Homebrew installs are interactive/slow and
 the SSD bundle ships a prebuilt venv. macOS is not regressed; it simply has a
 different (already-working) resolution path.
 
