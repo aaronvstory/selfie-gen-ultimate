@@ -111,3 +111,11 @@ rPPG/temp_iteration_*.mp4
 rPPG/best_iteration_snapshot.mp4
 rPPG/best_iteration_snapshot_*.mp4
 rPPG/iteration_history/
+
+# the user's LIVE config by build_bundled_exe.py (prompts/slots baked, keys
+# blanked) and baked into the exe. It carries the user's prompts — never commit.
+
+# Bundled-exe build artifact: personal_seed_config.json is regenerated from
+# the user's LIVE config by build_bundled_exe.py (prompts/slots baked, keys
+# blanked) and baked into the exe. It carries the user's prompts — never commit.
+distribution/personal_seed_config.json

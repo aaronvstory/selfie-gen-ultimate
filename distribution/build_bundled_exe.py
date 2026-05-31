@@ -39,9 +39,14 @@ LIVE_CONFIG = ROOT / "kling_config.json"
 TEMPLATE = ROOT / "default_config_template.json"
 
 # Bundle-size sanity bounds (MB). Lower bound catches an empty/broken build;
-# upper bound catches the ML stack leaking past the spec's `excludes`.
+# upper bound catches the ML stack leaking past the spec's `excludes`. The
+# light bundle (tkinter + PIL + selenium + webdriver_manager + rich + requests)
+# can legitimately reach ~400-500MB (selenium pulls a lot), so warn at 600 and
+# only hard-abort at 900 — a multi-GB bundle unambiguously means torch/TF
+# leaked in (code-review M2).
 SIZE_MIN_MB = 60
-SIZE_MAX_MB = 600
+SIZE_WARN_MB = 600
+SIZE_MAX_MB = 900
 
 
 def build_seed_config() -> None:
@@ -63,7 +68,13 @@ def build_seed_config() -> None:
     for k in blanked_keys:
         if cfg.get(k, "") not in ("", None):
             raise SystemExit(f"ABORT: seed config did not blank {k!r} — refusing to bundle a key.")
-    print(f"  Seed config written: {SEED_PATH}  ({len(cfg)} keys, API keys blanked)")
+    # Machine-specific paths must be blanked too (code-review H1) so a shared
+    # exe never carries the dev box's output folders.
+    blanked_paths = ("output_folder", "automation_root_folder", "selfie_output_folder")
+    for k in blanked_paths:
+        if cfg.get(k, "") not in ("", None):
+            raise SystemExit(f"ABORT: seed config did not blank path key {k!r}.")
+    print(f"  Seed config written: {SEED_PATH}  ({len(cfg)} keys, API keys + paths blanked)")
 
 
 def run_pyinstaller() -> None:
@@ -87,10 +98,14 @@ def check_bundle_size() -> None:
         raise SystemExit(f"ABORT: bundle is only {mb:.0f}MB (< {SIZE_MIN_MB}) — likely broken.")
     if mb > SIZE_MAX_MB:
         raise SystemExit(
-            f"ABORT: bundle is {mb:.0f}MB (> {SIZE_MAX_MB}). The ML stack probably "
-            "leaked past `excludes` in kling_gui_bundled.spec — torch/TF/mediapipe/"
-            "deepface must NOT be in the bundle (they install to the first-run side venv)."
+            f"ABORT: bundle is {mb:.0f}MB (> {SIZE_MAX_MB}). The ML stack almost "
+            "certainly leaked past `excludes` in kling_gui_bundled.spec — torch/TF/"
+            "mediapipe/deepface must NOT be in the bundle (they install to the "
+            "first-run side venv)."
         )
+    if mb > SIZE_WARN_MB:
+        print(f"  WARNING: bundle is {mb:.0f}MB (> {SIZE_WARN_MB}). Larger than the "
+              "~150-500MB target — check that no ML packages slipped in.")
 
 
 def main() -> int:

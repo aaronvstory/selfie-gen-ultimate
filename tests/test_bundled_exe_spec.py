@@ -87,6 +87,15 @@ def test_builder_blanks_api_keys_in_seed():
     )
 
 
+def test_builder_blanks_machine_paths_in_seed():
+    src = _read(BUILDER)
+    for k in ("output_folder", "automation_root_folder", "selfie_output_folder"):
+        assert k in src, f"builder must verify {k} (machine path) is blanked"
+    assert "did not blank path key" in src, (
+        "builder must abort if a machine path survives into the seed config"
+    )
+
+
 def test_builder_has_bundle_size_guard():
     src = _read(BUILDER)
     assert "SIZE_MAX_MB" in src and "leaked past" in src.lower().replace("`", ""), (
@@ -102,6 +111,11 @@ def test_bridge_imports_cleanly_without_ml():
     inside the frozen exe which has no torch/TF)."""
     import importlib
     import sys as _sys
+    # The bridge does `import path_utils` at module load — ensure the repo root
+    # is importable so this test exercises import-safety, not a missing-path_utils
+    # error (code-review L3).
+    if str(REPO_ROOT) not in _sys.path:
+        _sys.path.insert(0, str(REPO_ROOT))
     # Import by file to avoid polluting; it should not import torch/TF/cv2.
     spec_mod = importlib.util.spec_from_file_location("ml_subprocess_bridge", BRIDGE)
     mod = importlib.util.module_from_spec(spec_mod)
@@ -137,9 +151,11 @@ def test_launcher_seeds_config_only_when_frozen_and_absent():
     )
     assert "is_frozen()" in src, "seed must be gated on is_frozen()"
     assert "personal_seed_config.json" in src, "seed must read the bundled seed file"
-    # Must NOT overwrite an existing config.
-    assert "if os.path.exists(target)" in src and "return" in src, (
-        "seed must no-op when a config already exists (never clobber keys)"
+    # Must NOT overwrite an existing config — the exists() guard must be
+    # immediately followed by a return (not just "a return somewhere").
+    assert re.search(r"if os\.path\.exists\(target\):\s*\n\s*return", src), (
+        "seed must `return` right after `if os.path.exists(target):` so it "
+        "never clobbers an existing config"
     )
     # And it must actually be called from main().
     assert re.search(r"def main\(\):.*_seed_config_if_frozen_first_run\(\)", src, re.DOTALL), (

@@ -218,6 +218,44 @@ def show_critical_error(title, message):
         sys.stderr.write(f"CRITICAL ERROR: {title}\n{message}\n")
 
 
+def _seed_config_if_frozen_first_run():
+    """In the bundled .exe, seed the personal config on FIRST run only.
+
+    The bundle ships ``personal_seed_config.json`` (all prompts/slots/model
+    defaults; API keys + machine paths blanked) inside _MEIPASS. On first
+    launch, if the user has no ``kling_config.json`` yet, copy the seed into
+    place so the friend opens the app with the right prompts/slots already set
+    and just fills in their API keys once. If a config already exists we leave
+    it untouched — never clobber the user's keys/prompts.
+
+    No-op when running from source (not frozen): the dev install already has
+    its own kling_config.json next to the code.
+
+    Best-effort: any failure is swallowed so it can never block the GUI launch
+    (the app then falls back to default_config_template.json defaults).
+    """
+    if not PATH_UTILS_AVAILABLE:
+        return
+    try:
+        from path_utils import is_frozen, get_config_path, get_resource_dir
+    except Exception:
+        return
+    try:
+        if not is_frozen():
+            return
+        target = get_config_path("kling_config.json")
+        if os.path.exists(target):
+            return  # existing install — never overwrite keys/prompts
+        seed = os.path.join(get_resource_dir(), "personal_seed_config.json")
+        if not os.path.exists(seed):
+            return  # dev frozen build w/o a personal seed — template fallback
+        import shutil
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(seed, target)
+    except Exception:
+        pass
+
+
 def main():
     """Launch the Tkinter GUI directly."""
     # PR #49: resolve workspace + instance identity FIRST so per-instance
@@ -225,6 +263,10 @@ def main():
     # Failures here are non-fatal — we fall back to the legacy shared paths
     # so a workspace bug can't block the GUI from launching at all.
     _resolve_workspace_and_instance()
+
+    # Bundled-exe first-run: seed the personal config (prompts/slots, keys
+    # blank) into the user data dir if none exists yet. No-op from source.
+    _seed_config_if_frozen_first_run()
 
     # Apply TensorFlow/Keras compatibility env before any dependency checks/imports.
     ensure_ml_backend_env()

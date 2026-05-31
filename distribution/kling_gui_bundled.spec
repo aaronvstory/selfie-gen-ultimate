@@ -171,7 +171,7 @@ for fname in ('default_config_template.json', 'models.json'):
 # all prompts/slots/defaults, API keys + machine paths blanked). Seeded to
 # %LocalAppData% on first run only. Optional so the spec still builds without
 # it (a dev build without a personal seed just falls back to the template).
-seed_cfg = ROOT_DIR / 'distribution' / 'personal_seed_config.json'
+seed_cfg = SPEC_DIR / 'personal_seed_config.json'   # SPEC_DIR == distribution/
 if seed_cfg.exists():
     datas.append((str(seed_cfg), '.'))
 
@@ -185,14 +185,17 @@ for fname in ('requirements.txt', 'dependency_health_check.py'):
     if p.exists():
         datas.append((str(p), '.'))
 
-# Oldcam scripts (v7/v8 ship as data, like the developer spec)
-for oldcam_dir_name in ('oldcam-v7', 'oldcam-v8'):
-    oldcam_dir = ROOT_DIR / oldcam_dir_name
-    if oldcam_dir.exists():
-        for f in oldcam_dir.rglob('*'):
-            if f.is_file() and '__pycache__' not in f.parts:
-                target = Path(oldcam_dir_name) / f.relative_to(oldcam_dir).parent
-                datas.append((str(f), str(target)))
+# Oldcam scripts: bundle ALL oldcam-v* dirs so queue_manager's runtime
+# _discover_oldcam_versions() finds them in _MEIPASS. The current default is
+# v24 (Crush Laundromat) — hardcoding v7/v8 (as the older developer spec did)
+# would ship a bundle whose default oldcam version is missing (code-review H4).
+for oldcam_dir in sorted(ROOT_DIR.glob('oldcam-v*')):
+    if not oldcam_dir.is_dir():
+        continue
+    for f in oldcam_dir.rglob('*'):
+        if f.is_file() and '__pycache__' not in f.parts:
+            target = Path(oldcam_dir.name) / f.relative_to(oldcam_dir).parent
+            datas.append((str(f), str(target)))
 
 # Standalone similarity app bundle (its OWN launchers create the side venv +
 # install its ML deps; we ship the source so the subprocess bridge can run it).

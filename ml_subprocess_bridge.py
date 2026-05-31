@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
@@ -62,8 +61,12 @@ def ml_venv_python() -> Path:
 def ml_stack_ready() -> bool:
     """True if the side venv exists AND can import the ML probe modules.
 
-    Cheap-ish: spawns the side-venv python once to import the probe set. If the
-    venv is absent we short-circuit without spawning.
+    Spawns the side-venv python once to import the probe set (up to 120s). If
+    the venv is absent we short-circuit without spawning.
+
+    THREADING: this can block for up to 120s on a cold/slow disk. NEVER call it
+    on the Tkinter main thread — run it in a worker thread (the GUI tabs already
+    do their ML work off the main thread) or it will freeze the UI.
     """
     py = ml_venv_python()
     if not py.exists():
@@ -84,6 +87,23 @@ def ml_stack_ready() -> bool:
 def _bundled(*parts: str) -> Path:
     """Path to a file bundled into the exe (_MEIPASS at runtime)."""
     return Path(path_utils.get_resource_dir()).joinpath(*parts)
+
+
+def _write_filtered_requirements(req: Path, exclude_prefix: str) -> Path:
+    """Write a temp requirements file dropping lines starting with
+    ``exclude_prefix`` (case-insensitive). Used to install everything EXCEPT
+    mediapipe first, so mediapipe can go in separately with --no-deps."""
+    import tempfile
+
+    out_lines = []
+    for line in req.read_text(encoding="utf-8").splitlines():
+        if line.strip().lower().startswith(exclude_prefix.lower()):
+            continue
+        out_lines.append(line)
+    fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="ml_req_")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(out_lines) + "\n")
+    return Path(tmp)
 
 
 def _resolve_base_python(log: Callable[[str], None]) -> Optional[str]:
@@ -138,9 +158,19 @@ def _resolve_base_python(log: Callable[[str], None]) -> Optional[str]:
             env.setdefault("LOG_FILE", os.path.join(tmp_root, "resolver.log"))
             env.setdefault("LAUNCH_TS", "ml-bridge")
             os.makedirs(env["STATE_DIR"], exist_ok=True)
+            # Non-zero exit is deliberately tolerated: the resolver may fail to
+            # create its throwaway repo venv yet still have auto-installed
+            # Python (winget/python.org), which is all we want here. We re-probe
+            # the py launcher below to decide success.
             subprocess.run(["cmd", "/c", str(resolver)], env=env, timeout=900)
         except (OSError, subprocess.SubprocessError) as exc:
             log(f"Auto-install step failed: {exc}")
+        finally:
+            # The resolver creates a throwaway venv at tmp_root/venv that we
+            # never use (we build our own ml-venv). Remove it so it doesn't
+            # linger on disk (code-review H2).
+            import shutil
+            shutil.rmtree(tmp_root, ignore_errors=True)
     for ver in ("3.12", "3.11"):
         if _ok(["py", f"-{ver}"]):
             log(f"Python {ver} now available via the py launcher.")
@@ -187,11 +217,35 @@ def ensure_ml_stack(log: Callable[[str], None] = print) -> bool:
     try:
         subprocess.run([str(py), "-m", "pip", "install", "--upgrade", "pip"],
                        timeout=300)
-        # mediapipe must go in with --no-deps (mirrors the launcher contract).
-        # The simplest robust path: install everything from requirements.txt,
-        # which already pins mediapipe; we let pip resolve, then verify.
-        rc = subprocess.run([str(py), "-m", "pip", "install", "-r", str(req)],
-                            timeout=3600).returncode
+        # mediapipe MUST be installed with --no-deps, exactly like the launchers
+        # (docs/windows-launcher-and-sash-rules.md rule 6). Letting pip resolve
+        # mediapipe's deps conflicts with the pinned TensorFlow protobuf range
+        # and breaks the install (code-review H3). So: (1) install everything
+        # EXCEPT mediapipe from a filtered requirements file, then (2) install
+        # mediapipe pinned with --no-deps.
+        filtered = _write_filtered_requirements(req, exclude_prefix="mediapipe")
+        try:
+            rc = subprocess.run(
+                [str(py), "-m", "pip", "install", "--only-binary", ":all:",
+                 "-r", str(filtered)],
+                timeout=3600,
+            ).returncode
+            if rc != 0:
+                log("Binary-only install failed; retrying without that constraint.")
+                rc = subprocess.run(
+                    [str(py), "-m", "pip", "install", "-r", str(filtered)],
+                    timeout=3600,
+                ).returncode
+        finally:
+            try:
+                os.remove(filtered)
+            except OSError:
+                pass
+        # mediapipe separately, --no-deps, pinned to match the launchers.
+        subprocess.run(
+            [str(py), "-m", "pip", "install", "--no-deps", "mediapipe==0.10.35"],
+            timeout=1800,
+        )
         if rc != 0:
             log("pip install reported errors — retrying core face stack pinned.")
             subprocess.run(
