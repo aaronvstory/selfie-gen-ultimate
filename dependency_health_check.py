@@ -48,8 +48,15 @@ def _with_win_tensorflow_intel(base: "list[str]") -> "list[str]":
     unchanged rather than raising. Pure function — re-import always yields the
     same list (the idempotency the @37 finding asked for)."""
     for i, pkg in enumerate(base):
-        if pkg.startswith("tensorflow=="):
-            version = pkg.split("==", 1)[1]
+        # Tolerant match (gemini MED): a requirement may carry surrounding
+        # whitespace or differing case ("  TensorFlow==2.16.2"). Normalize
+        # before the prefix test, but splice the ORIGINAL entry's version so
+        # the spliced intel pin matches whatever the tensorflow line declares.
+        normalized = pkg.strip().lower()
+        if normalized.startswith("tensorflow==") and not normalized.startswith(
+            "tensorflow-intel=="
+        ):
+            version = pkg.strip().split("==", 1)[1].strip()
             return base[: i + 1] + [f"tensorflow-intel=={version}"] + base[i + 1 :]
     return list(base)
 
