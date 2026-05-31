@@ -25,18 +25,24 @@ def _read(p: Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
+def _create_dnd_root_source() -> str:
+    """Extract the create_dnd_root function body via ast (robust vs regex)."""
+    import ast
+
+    tree = ast.parse(_read(DROP_ZONE))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "create_dnd_root":
+            return ast.get_source_segment(_read(DROP_ZONE), node) or ""
+    return ""
+
+
 def test_create_dnd_root_wraps_tkinterdnd_in_try_except():
     """create_dnd_root must guard TkinterDnD.Tk() so a tkdnd LOAD failure
     (TclError/RuntimeError, NOT ImportError) degrades to plain tk.Tk()."""
-    src = _read(DROP_ZONE)
-    m = re.search(r"def create_dnd_root\(.*?\n(?=\S|\Z)", src, re.DOTALL)
-    assert m, "create_dnd_root not found"
-    body = m.group(0)
+    body = _create_dnd_root_source()
+    assert body, "create_dnd_root not found"
     assert "try:" in body and "TkinterDnD.Tk()" in body, (
         "create_dnd_root must call TkinterDnD.Tk() inside a try block"
-    )
-    assert "except" in body, (
-        "create_dnd_root must catch the tkdnd load failure (TclError/RuntimeError)"
     )
     # The except must NOT be limited to ImportError — the runtime failure is a
     # TclError. Accept a broad Exception or an explicit TclError/RuntimeError.

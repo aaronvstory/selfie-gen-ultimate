@@ -45,7 +45,16 @@ from path_utils import (
 )
 from . import workspace_markers
 
+from . import drop_zone as _drop_zone
 from .drop_zone import DropZone, create_dnd_root, HAS_DND, DND_FILES, parse_dnd_paths
+
+
+def _dnd_live() -> bool:
+    """Live drag-and-drop availability. create_dnd_root() may flip
+    drop_zone.HAS_DND to False at runtime when the native tkdnd library fails
+    to load; the module-level `HAS_DND` imported above is a stale by-value copy,
+    so status chips / button fallbacks must read the live module attribute."""
+    return bool(getattr(_drop_zone, "HAS_DND", HAS_DND))
 from .log_display import LogDisplay
 from .config_panel import ConfigPanel
 from .queue_manager import QueueManager, QueueItem
@@ -3535,8 +3544,9 @@ class KlingGUIWindow:
         # Use side=tk.BOTTOM to ensure buttons appear even with expandable main_frame
         control_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 10))
 
-        # Left side: Add file button (fallback if DnD unavailable)
-        if not HAS_DND:
+        # Left side: Add file button (fallback if DnD unavailable). Read the
+        # LIVE flag — tkdnd can fail to load at runtime, flipping it off.
+        if not _dnd_live():
             add_btn = create_action_button(
                 control_frame,
                 text="📁 Add...",
@@ -3558,8 +3568,9 @@ class KlingGUIWindow:
         for config_key, label, prompt_text in keys_config:
             self._create_api_badge(control_frame, config_key, label, prompt_text)
 
-        dnd_status = "✓ Drag-Drop Enabled" if HAS_DND else "⚠ Drag-Drop Unavailable"
-        dnd_color = COLORS["success"] if HAS_DND else COLORS["warning"]
+        _dnd_on = _dnd_live()
+        dnd_status = "✓ Drag-Drop Enabled" if _dnd_on else "⚠ Drag-Drop Unavailable"
+        dnd_color = COLORS["success"] if _dnd_on else COLORS["warning"]
         tk.Label(
             control_frame, text=dnd_status,
             font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=dnd_color,

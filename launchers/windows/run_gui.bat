@@ -198,7 +198,7 @@ if exist "%STAMP%" (
                 rem  prints a literal ^ to the screen for copy-paste. (Gemini
                 rem  PR #55 round 2 HIGH.)
                 echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^^^
-                echo         --no-cache-dir tensorflow==2.16.2 ^^^^
+                echo         --no-cache-dir numpy>=1.26,<2 tensorflow==2.16.2 ^^^^
                 echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^^^
                 echo         tf-keras==2.16.0 retina-face==0.0.17 ^^^^
                 echo         deepface==0.0.92
@@ -307,7 +307,7 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             rem  emit a literal ^ for the user (see the mirror block above
             rem  for the full Gemini PR #55 round 2 HIGH explanation).
             echo       "%VENV_PYTHON%" -m pip install --force-reinstall ^^^^
-            echo         --no-cache-dir tensorflow==2.16.2 ^^^^
+            echo         --no-cache-dir numpy>=1.26,<2 tensorflow==2.16.2 ^^^^
             echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^^^
             echo         tf-keras==2.16.0 retina-face==0.0.17 ^^^^
             echo         deepface==0.0.92

@@ -1,0 +1,746 @@
+{
+  "rules": "1 attempt = 1 persona folder, tagged by highest oldcam-vN; PASS={DASHERS,BANNED,FAILED BGR,DUPES}, FAIL={FAILED,FAILED PERSONA}; Sourav Vai=real-selfie",
+  "by_population": {
+    "gen": {
+      "v13": {
+        "PASS": 1,
+        "FAIL": 5
+      },
+      "v24": {
+        "PASS": 0,
+        "FAIL": 5
+      },
+      "v14": {
+        "PASS": 0,
+        "FAIL": 1
+      },
+      "v15": {
+        "PASS": 1,
+        "FAIL": 0
+      },
+      "v8": {
+        "PASS": 2,
+        "FAIL": 0
+      }
+    }
+  },
+  "no_oldcam": {
+    "('gen',)": {
+      "PASS": 16,
+      "FAIL": 30
+    },
+    "('real',)": {
+      "PASS": 21,
+      "FAIL": 19
+    }
+  },
+  "detail": [
+    {
+      "folder": "FAILED - ABIGAIL_MARIE-FISHER-09211994",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v13"
+    },
+    {
+      "folder": "FAILED - ANDRES-BRUGAL-03301957",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v24"
+    },
+    {
+      "folder": "FAILED - ANGIE-GALARZA-03141999",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v14"
+    },
+    {
+      "folder": "FAILED - BRESLEY_JAMES-SMITH-12011993",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v13"
+    },
+    {
+      "folder": "FAILED - CHRIS-CHANDLER-05201977",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v24"
+    },
+    {
+      "folder": "FAILED - DALE-Unknown-02262002",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v13"
+    },
+    {
+      "folder": "FAILED - DENA-CHALDECOTT-11121973",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v13"
+    },
+    {
+      "folder": "FAILED - DYLAN_MICHAEL-PHILLIPS-01151993",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v13"
+    },
+    {
+      "folder": "FAILED - GABRIELLE-GRYKO-06041995",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v24"
+    },
+    {
+      "folder": "FAILED - GISELLE_MARIE-HALE-05191979",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v24"
+    },
+    {
+      "folder": "FAILED - MARGARET_MARY-MONTEMAYOR-06141977",
+      "corpus": "FAILED",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": "v24"
+    },
+    {
+      "folder": "DASHER - BRITTANY_NICLEY-JONES-07311990",
+      "corpus": "DASHERS",
+      "label": "PASS",
+      "pop": "gen",
+      "version": "v15"
+    },
+    {
+      "folder": "DASHER - LAURA_MARIE-GREEN-12151977",
+      "corpus": "DASHERS",
+      "label": "PASS",
+      "pop": "gen",
+      "version": "v13"
+    },
+    {
+      "folder": "DASHER - Mark Martin (116305)_front",
+      "corpus": "DASHERS",
+      "label": "PASS",
+      "pop": "gen",
+      "version": "v8"
+    },
+    {
+      "folder": "DASHER - Martha Sanders (204480)_front",
+      "corpus": "DASHERS",
+      "label": "PASS",
+      "pop": "gen",
+      "version": "v8"
+    },
+    {
+      "folder": "DASHER 100_Jonathan Szabo (381519)_front",
+      "corpus": "DASHERS",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "DASHER 4-27_Marjorie Florimbio (231821)_front",
+      "corpus": "DASHERS",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "DASHER_87_Cheryl Devlin (266021)_front",
+      "corpus": "DASHERS",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "BANNED  86 -  Michelle Peters (276968)_front",
+      "corpus": "BANNED",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "BANNED 87 - Sharon Lovett Solomon (416887)_front",
+      "corpus": "BANNED",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "BANNED 88 - Thomas Beary (368332)_front",
+      "corpus": "BANNED",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "DASHER - Emily Kramer (397077)_front",
+      "corpus": "BANNED",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "DASHER 100_Julie Haymond (392125)_front",
+      "corpus": "BANNED",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "DASHER 84 - APPLIED pending BGR - - submitted checkr -  Sandra Humerickhouse (284790)_front",
+      "corpus": "BANNED",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "DASHER 99 - PENDING BGR - submitted checkr  - Patricia Santini (323562)_front",
+      "corpus": "BANNED",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "DASHER_Jon Gray (383115)_front",
+      "corpus": "BANNED",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED BGR - 100 - Melissa Rumsey (359721)_front",
+      "corpus": "FAILED BGR",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED BGR -Jennifer Mannina (415057)_front",
+      "corpus": "FAILED BGR",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED BGR 80 - Schuyler Clark (417425)_front",
+      "corpus": "FAILED BGR",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED  PERSONA - James Middendorf III (28327)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED  PERSONA - Katherine Rhoads (398569)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED  PERSONA 80 - Christopher Koerber (55327)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED - Emily Clifford (362312)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED - Erin Reyes (378202)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED - Leanne Langlands (356380)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED - Leigh Ann Wheaton (288655)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED - Maris Black (373005)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED 97 - Rachel Saum (212206)_front&back",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA - 100 - Shaun Saltman (318882)_front&back",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA - Daniel Slade (372335)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA - Jon Parker-Jones (414985)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA - Lauren Porembski (408607)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA - Marilyn Kreider (306658)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 81 - Deneen Berry (201636)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 81 - Morgan Philley (378422)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 82 - James Lewis (364167)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 83 - Charles Garrison (395761)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 84 - Rebecca Fruh (301241)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 84 - Sarah Zayhowski (231539)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 85 - James Hurley (105271)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 86 - Tessa Jennings (385842)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 87 - Randall Clair (393031)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 87 - Robert Koby (365024)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 87 - Sean Ficht (247073)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA 88 - Michael Rooney (287302)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED persona 90 - Richard Brown (403987)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA- El Helix (408945)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA- Michael Bricker (108580)_front 83 83",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "FAILLED PERSONA - Maria Hernandez (395775)_front",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "DUPE - Dameon Denzmore (366694)_front",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "DUPE - Rose Blackwell (352357)_front",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "gen",
+      "version": null
+    },
+    {
+      "folder": "DUPE  - 108-62-9880",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE  - 313-74-7861",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 022-46-4180 SANDRA CAROLE TECK - applied - dupe",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 043-88-6827 - applying - dupe",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 070-54-3498",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 078-68-2731",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 196-64-6021 - passed persona - DUPE",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 202-58-8087 - BFL",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 209-52-6103",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 210-60-1367 - BFL",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 224-67-0198 - applying",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 236-31-1460",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 244-53-4857",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 268-88-8157",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 325-66-8042 - IDENTIFICATION CARD",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 326-88-7387",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 333-88-1881",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 392-74-5548 - applying - dupe",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - 400-49-3792",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE - EXPANDED - 141-68-0746",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "DUPE ID - 315-13-5781",
+      "corpus": "DUPES",
+      "label": "PASS",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED -  persona - 230-08-1067",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - 09bd534ec79b8f25347fe3b59b2e3c3e-applied-failed-persona",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - 158-76-9708 - APPLIED - FAILED persona",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - 252-31-8530",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - 295-06-1174",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - 331-56-4001",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - 344-64-1364 - applying - failed",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - 363-02-5398 - applied failed persona",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - 364-94-5801 applied - failed persona",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - 369-82-0204 - persona - failed",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - 4f4b515b0b81316e88a50c1205606882-applied-failed",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - persona - 212-29-4083",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - persona - 224-33-3687",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - persona - 240-75-8257",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - persona - 246-29-3655",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - persona - 296-92-5274",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED - persona - 302-80-0733",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED persona - 124-94-7742 - bad selfie, unexpired",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    },
+    {
+      "folder": "FAILED PERSONA - 257-95-4390",
+      "corpus": "FAILED PERSONA",
+      "label": "FAIL",
+      "pop": "real",
+      "version": null
+    }
+  ]
+}
