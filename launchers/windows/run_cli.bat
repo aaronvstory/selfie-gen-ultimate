@@ -44,21 +44,30 @@ echo(
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] app version %APP_VER%
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] CLI launch started
 
-rem --- Create venv if needed ------------------------------------------------
+rem --- Resolve a Python interpreter + ensure the venv exists ----------------
+rem  Shared resolver: existing venvs, py launcher (py -3.11/-3.12 -- works
+rem  WITHOUT 'Add to PATH'), PATH python, common install dirs, then silent
+rem  auto-install of Python 3.12 (winget -> python.org). Sets VENV_PYTHON +
+rem  RESOLVE_RC in this environment.
 if not exist "%VENV_PYTHON%" (
-    echo   [%LAUNCH_TS%] Creating virtual environment...
-    python -m venv "%VENV_DIR%"
-    if !errorlevel! neq 0 (
+    call "%ROOT_DIR%\scripts\win_resolve_python.bat"
+    if not "!RESOLVE_RC!"=="0" (
         echo(
-        echo  ERROR: Failed to create venv.
+        echo  ERROR: Could not resolve or install a supported Python ^(3.9-3.12^).
+        echo  See the messages above and %LOG_FILE% for details.
+        echo(
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] ERROR: python resolver failed ^(RESOLVE_RC=!RESOLVE_RC!^)
         pause
         exit /b 1
     )
-    echo   Virtual environment created.
-    echo(
-    del "%STATE_DIR%\deps_*.ok" >nul 2>&1
+    rem  Resolver may have adopted/created a different venv than the
+    rem  caller's %VENV_PYTHON% guess. Clear the dep stamp INSIDE this
+    rem  block so the sync re-runs against the resolved venv -- only when
+    rem  the resolver actually ran (venv was missing). Unconditional
+    rem  deletion would nuke the stamp every launch + defeat the cache
+    rem  (gemini/codex CRITICAL, bot round 2).
+    if not "%STATE_DIR%"=="" del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 )
-
 rem --- Build stamp key from req file dates+sizes ---------------------------
 set "STAMP_KEY="
 for %%F in ("%REQUIREMENTS%" "%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_REQUIREMENTS%" "%OLDCAM_V10_REQUIREMENTS%") do (

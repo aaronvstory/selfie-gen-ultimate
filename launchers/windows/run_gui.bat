@@ -66,72 +66,34 @@ ping -n 3 127.0.0.1 >nul 2>&1
 goto :acquire_setup_lock
 :setup_lock_acquired
 
-rem --- Validate system Python version BEFORE creating a venv ---------------
-rem Mediapipe==0.10.35 (pinned in requirements.txt) has wheels for Python
-rem 3.9-3.12 only; on Python 3.13+ the install fails mid-sync with a less
-rem actionable error than this up-front check. macOS setup_macos.sh
-rem validates the equivalent range -- Windows lacked parity until the
-rem AFK-loop hand-off audit caught this (subagent PR #55 HIGH pre-handoff
-rem finding). Pattern mirrors similarity/run_gui.bat:63 + L147.
-rem
-rem Only validate when we're about to create a venv (venv missing). Once
-rem the venv exists, %VENV_PYTHON% is the canonical interpreter and the
-rem system python is irrelevant.
+rem --- Resolve a Python interpreter + ensure the venv exists ----------------
+rem  All detection (existing venvs, py launcher, PATH, common install dirs)
+rem  AND silent auto-install of Python 3.12 (winget -> python.org) lives in
+rem  the shared resolver so every Windows launcher behaves identically. The
+rem  py launcher (py -3.11/-3.12) is the key fix: it finds an interpreter the
+rem  user installed but never added to PATH -- the failure that motivated
+rem  this. The resolver is CALLED (not run with its own setlocal) so it sets
+rem  VENV_PYTHON + RESOLVE_RC in THIS environment.
 if not exist "%VENV_PYTHON%" (
-    where python >nul 2>&1
-    if !errorlevel! neq 0 (
+    call "%ROOT_DIR%\scripts\win_resolve_python.bat"
+    if not "!RESOLVE_RC!"=="0" (
         echo(
-        echo  ERROR: Python not found on PATH.
-        echo  Install Python 3.11 or 3.12 from https://www.python.org/downloads/
-        echo  Make sure to check "Add Python to PATH" during installation.
+        echo  ERROR: Could not resolve or install a supported Python ^(3.9-3.12^).
+        echo  See the messages above and %LOG_FILE% for details.
         echo(
-        >>"%LOG_FILE%" echo [%LAUNCH_TS%] ERROR: python not on PATH
+        >>"%LOG_FILE%" echo [%LAUNCH_TS%] ERROR: python resolver failed ^(RESOLVE_RC=!RESOLVE_RC!^)
         call :release_setup_lock
         pause
         exit /b 1
     )
-    python -c "import sys; raise SystemExit^(0 if ^(3,9^) ^<= sys.version_info[:2] ^< ^(3,13^) else 2^)" >nul 2>&1
-    if !errorlevel! neq 0 (
-        for /f "delims=" %%V in ('python -c "import sys; print^(\".\".join^(map^(str, sys.version_info[:3]^)^)^)" 2^>nul') do set "SYS_PY_VER=%%V"
-        echo(
-        echo  ============================================================
-        echo  ERROR: Unsupported Python version: !SYS_PY_VER!
-        echo  ============================================================
-        echo  This app requires Python 3.9-3.12 ^(mediapipe wheels do not
-        echo  exist for 3.13+^). Python !SYS_PY_VER! detected on PATH.
-        echo(
-        echo  Recovery options:
-        echo    1. Install Python 3.11 or 3.12 from
-        echo       https://www.python.org/downloads/
-        echo       During install: check "Add Python to PATH"
-        echo    2. If you have multiple Pythons installed, ensure the
-        echo       3.11 / 3.12 one is FIRST in PATH.
-        echo  ============================================================
-        echo(
-        >>"%LOG_FILE%" echo [%LAUNCH_TS%] ERROR: unsupported Python version !SYS_PY_VER! ^(need 3.9-3.12^)
-        call :release_setup_lock
-        pause
-        exit /b 1
-    )
+    rem  Resolver may have adopted/created a different venv than the
+    rem  caller's %VENV_PYTHON% guess. Clear the dep stamp INSIDE this
+    rem  block so the sync re-runs against the resolved venv -- only when
+    rem  the resolver actually ran (venv was missing). Unconditional
+    rem  deletion would nuke the stamp every launch + defeat the cache
+    rem  (gemini/codex CRITICAL, bot round 2).
+    if not "%STATE_DIR%"=="" del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 )
-
-rem --- Create venv if needed ------------------------------------------------
-if not exist "%VENV_PYTHON%" (
-    echo   [%LAUNCH_TS%] Creating virtual environment...
-    python -m venv "%VENV_DIR%"
-    if !errorlevel! neq 0 (
-        echo(
-        echo  ERROR: Failed to create venv. Is Python installed and on PATH?
-        echo(
-        call :release_setup_lock
-        pause
-        exit /b 1
-    )
-    echo   Virtual environment created.
-    echo(
-    del "%STATE_DIR%\deps_*.ok" >nul 2>&1
-)
-
 rem --- Per-launch diagnostic snapshot ---------------------------------------
 rem Writes Python / pip / OS / GPU info to the launch log so users have
 rem something to attach when reporting issues. The user's explicit ask:
