@@ -61,6 +61,11 @@ if not exist "%VENV_PYTHON%" (
         exit /b 1
     )
 )
+rem  Resolver may have adopted/created a DIFFERENT venv than the
+rem  caller's original %VENV_PYTHON% guess (existing-venv fallback or
+rem  SELFIEGEN_* override). Clear the dep stamp so the sync re-runs
+rem  against the venv we actually resolved (code-review C2).
+del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 
 rem --- Build stamp key from req file dates+sizes ---------------------------
 set "STAMP_KEY="

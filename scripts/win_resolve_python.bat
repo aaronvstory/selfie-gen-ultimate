@@ -42,6 +42,10 @@ set "RESOLVED_PYTHON="
 set "PYRES_BIN="
 set "PYRES_KIND="
 
+rem  Callers set ROOT_DIR (not REPO_ROOT). Alias it so the existing-venv
+rem  fallback probes below actually run. Honour a pre-set REPO_ROOT too.
+if not defined REPO_ROOT if defined ROOT_DIR set "REPO_ROOT=%ROOT_DIR%"
+
 rem --- 1/2. Existing venvs + env overrides (version-gated) ---------------
 if exist "%VENV_PYTHON%" call :pyres_check "%VENV_PYTHON%" "existing venv" strict
 if "!PYRES_BIN!"=="" if not "%SELFIEGEN_PYTHON%"=="" call :pyres_try_override
@@ -156,7 +160,7 @@ rem ============================================================
 if not exist "%~1" goto :eof
 "%~1" -c "import sys; raise SystemExit(0 if (3,9) <= sys.version_info[:2] < (3,13) else 2)" >nul 2>&1
 if errorlevel 1 goto :eof
-set "RESOLVED_PYTHON="%~1""
+set "RESOLVED_PYTHON=%~1"
 echo   [%LAUNCH_TS%] Found Python in: %~1
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] resolver: install-dir python %~1
 goto :eof
@@ -167,7 +171,15 @@ rem ============================================================
 :pyres_create_venv
 echo   [%LAUNCH_TS%] Creating virtual environment with: !RESOLVED_PYTHON!
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] resolver: creating venv via !RESOLVED_PYTHON!
-!RESOLVED_PYTHON! -m venv "%VENV_DIR%"
+rem  RESOLVED_PYTHON is either a bare command ("py -3.12" / "python") or a
+rem  full python.exe path. Quote the path form (may contain spaces); leave
+rem  the multi-token "py -3.x" form unquoted (quoting it would break it).
+echo !RESOLVED_PYTHON! | findstr /C:"\" >nul
+if errorlevel 1 (
+    !RESOLVED_PYTHON! -m venv "%VENV_DIR%"
+) else (
+    "!RESOLVED_PYTHON!" -m venv "%VENV_DIR%"
+)
 if errorlevel 1 goto :pyres_create_fail
 del "%STATE_DIR%\deps_*.ok" >nul 2>&1
 call :pyres_check "%VENV_DIR%\Scripts\python.exe" "created venv" strict
@@ -210,7 +222,7 @@ echo(
 where winget >nul 2>&1
 if errorlevel 1 goto :pyres_install_pyorg
 echo   [%LAUNCH_TS%] Installing via winget ^(Python.Python.3.12^)...
-winget install -e --id Python.Python.3.12 --scope user --accept-source-agreements --accept-package-agreements --disable-interactivity --override "/quiet PrependPath=1 Include_launcher=1"
+winget install -e --id Python.Python.3.12 --scope user --accept-source-agreements --accept-package-agreements --disable-interactivity --override "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1"
 rem winget exit 0 = installed; re-probe regardless via the py launcher.
 call :pyres_try_py 3.12
 if not "!RESOLVED_PYTHON!"=="" goto :pyres_install_ok
