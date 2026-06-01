@@ -18,6 +18,31 @@ SYNC_ITEMS = [
     "dependency_checker.py",
     "hooks/hook-tkinterdnd2.py",
     "kling_gui",
+    # First-party root modules the kling_gui/ package imports transitively.
+    # Without these the distribution/ tree is NOT standalone-importable — its
+    # script-mode launcher (run_gui_direct.bat does `cd distribution & python
+    # gui_launcher.py`, adding only distribution/ to sys.path) raised
+    # ModuleNotFoundError on every one of them (PR #64). The frozen .exe still
+    # worked because the PyInstaller spec bundles the whole repo, but the
+    # dev-facing direct launcher was broken. Full transitive set below — keep it
+    # in sync when kling_gui/ grows a new root-module import.
+    "api_keys.py",
+    "app_version.py",
+    "automation",
+    "crop_polisher.py",
+    "crop_upscaler.py",
+    "face_crop_service.py",
+    "face_similarity.py",
+    "fal_utils.py",
+    "kling_generator_falai.py",
+    "model_metadata.py",
+    "outpaint_generator.py",
+    "outpaint_geometry.py",
+    "selfie_generator.py",
+    "selfie_prompt_composer.py",
+    "similarity_engine.py",
+    "startup_key_onboarding.py",
+    "vision_analyzer.py",
 ]
 
 
