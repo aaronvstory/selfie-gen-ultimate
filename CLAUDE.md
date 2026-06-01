@@ -213,32 +213,49 @@ user explicitly says "skip review" or "just push".
 
 ### RUN THIS LOOP AUTONOMOUSLY — do NOT ask permission at each step (2026-06-01)
 
-Reinforced user directive: "commit everything always into pr... your
-workflow automatically should always be work on branch -> into PR -> poll
-review bots and run codereviewer subagent automatically as u wait for bots
--> fix -> prep for merge, etc. i need u to be doing this autonomously."
+Reinforced user directives (2026-06-01): "commit everything always into
+pr... your workflow automatically should always be work on branch -> into
+PR -> poll review bots and run codereviewer subagent automatically as u wait
+for bots -> fix -> prep for merge, etc. i need u to be doing this
+autonomously." And: "u do PR then trigger bots as soon as they are triggered
+u run code-reviewer subagent in the meantime, then u address all findings and
+then u prep to merge (u dont merge till i tell u to) and u autonomously do
+this for as many rounds as possible to be reasonably clean unless i say
+otherwise.. and u never wait asking me whether u should commit.. and u shall
+not be lazy."
 
-The loop below is the **unconditional default** — execute it end-to-end
-WITHOUT pausing to ask "should I open a PR?", "should I trigger bots?",
-"should I run the subagent?", or "want me to fix these?". Just do it:
+See the `feedback_autonomous_pr_review_loop` memory for the agent-private
+version. The loop below is the **unconditional default** — execute it
+end-to-end WITHOUT pausing to ask "should I open a PR?", "should I trigger
+bots?", "should I run the subagent?", "should I commit?", or "want me to fix
+these?". Just do it:
 
 1. Work reaches a runnable state → branch (if on `main`) → commit → push.
+   Never wait to ask whether to commit.
 2. **Immediately + automatically**: open/refresh the PR, trigger the bots,
-   AND spawn the code-reviewer subagent on the full branch diff — all in
-   the same turn, no permission ask.
+   AND (in the meantime, while bots run) spawn the code-reviewer subagent on
+   the full branch diff — all in the same turn, no permission ask. Run the
+   subagent on EVERY PR, including docs-only ones (it catches contradictions
+   and ambiguity, not just code bugs).
 3. Address subagent findings, then bot findings, per the triage rubric —
    **fix everything reasonable, don't defer** (see
    `feedback_dont_defer_fix_everything`). Commit + push each fix batch,
    which re-triggers bots.
-4. Loop until bots are clean, then prep for merge.
+4. Loop for **as many rounds as possible to be reasonably clean** — keep
+   re-triggering bots + re-running the subagent after each fix batch until
+   no real findings remain (or the user says otherwise), then prep for merge.
 
-The ONLY thing that still requires explicit user approval is the **final
-merge itself** (and outward-facing/irreversible actions). Everything up to
-"PR is green and merge-ready" runs autonomously. Asking permission for the
-intermediate steps is the lazy/slow pattern the user has now corrected
-twice — opening the PR, engaging reviewers, and applying fixes are NOT
-decisions to surface; they're the job. When a turn ends with work pushed,
-the PR/bots/subagent should already be in flight, not waiting on a question.
+The ONLY things that still require an explicit user check are: the **final
+merge itself**, **outward-facing/irreversible actions**, and **genuine
+branch-choice ambiguity** (per Step 1 below — "If unsure which branch to use,
+ask"). Everything else up to "PR is green and merge-ready" runs autonomously.
+Asking permission for the intermediate steps is the lazy/slow pattern the
+user has corrected repeatedly — opening the PR, committing, engaging
+reviewers, running the subagent, and applying fixes are NOT decisions to
+surface; they're the job. When a turn ends with work pushed, the
+PR/bots/subagent should already be in flight, not waiting on a question.
+(The "Skip conditions" list at the end of this section still applies —
+autonomy is the default, not a removal of those exits.)
 
 ### 1. Never work on `main`
 
