@@ -59,21 +59,29 @@ def test_self_heal_installs_mediapipe_no_deps(bat_source: str):
     assert 'findstr /V /I /B "mediapipe"' in bat_source, (
         "self-heal must filter mediapipe out of the bulk pip install"
     )
-    # The mediapipe spec is read dynamically FROM requirements.txt (not a
-    # hardcoded literal) so the self-heal can't drift when the pin is bumped.
-    # The regex pattern uses /C: (gemini HIGH PR #54): without it, findstr
-    # splits "^[ ]*mediapipe" on the embedded space into two bad patterns and
-    # errors out. Both the pattern and the path are caret-escaped (^") inside
-    # the for/f backtick command so a %REPO_ROOT% containing spaces doesn't
-    # break the FOR parser.
-    assert 'findstr /I /R /C:^"^[ ]*mediapipe^" ^"%REPO_ROOT%\\requirements.txt^"' in bat_source, (
-        "self-heal must read the mediapipe pin from requirements.txt with a "
-        "/C: regex (space-safe) and caret-escaped path"
+    # v2.13: the mediapipe spec is read dynamically FROM requirements.txt via the
+    # scripts/read_requirement_spec.py PARSER, NOT findstr. The old
+    # `findstr /I /R /C:"^[ ]*mediapipe"` had its anchor carets mangled inside
+    # the for/f backtick context and matched a COMMENT line ("# mediapipe ..."),
+    # which pip then choked on (InvalidMarker), failing rPPG. The parser skips
+    # comment lines and only returns the real `mediapipe==` requirement.
+    assert "read_requirement_spec.py" in bat_source, (
+        "self-heal must read the mediapipe spec via scripts/read_requirement_spec.py"
     )
-    # v2.11: --no-deps mediapipe install now carries -c constraints.txt too.
+    # The parser is invoked for the SPEC; a comment-matching findstr must NOT be
+    # used for spec extraction anymore.
+    assert 'findstr /I /R /C:^"^[ ]*mediapipe^"' not in bat_source, (
+        "self-heal must NOT use the comment-matching findstr regex for the "
+        "mediapipe SPEC (it matched a comment line — v2.13 bug). Use the parser."
+    )
+    # v2.11: --no-deps mediapipe install carries -c constraints.txt too.
     assert '-m pip install --no-deps -c "%REPO_ROOT%\\constraints.txt" "!RPPG_MEDIAPIPE_SPEC!"' in bat_source, (
-        "self-heal must install the dynamically-read mediapipe pin with "
-        "--no-deps (Hard Rule #6)"
+        "self-heal must install the parsed mediapipe pin with --no-deps "
+        "(Hard Rule #6)"
+    )
+    # And there must be a hard fallback so RPPG_MEDIAPIPE_SPEC is never empty.
+    assert 'if not defined RPPG_MEDIAPIPE_SPEC set "RPPG_MEDIAPIPE_SPEC=mediapipe==0.10.35"' in bat_source, (
+        "self-heal must fall back to mediapipe==0.10.35 if the parser returns nothing"
     )
 
 

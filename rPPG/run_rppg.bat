@@ -210,10 +210,17 @@ if !PIP_EXIT! neq 0 (
   del "%RPPG_REQ_FILTERED%" >nul 2>&1
   exit /b !PIP_EXIT!
 )
+rem v2.13: extract the mediapipe spec via a real parser that skips COMMENT
+rem lines. The old `findstr /R "^[ ]*mediapipe"` had its anchor carets
+rem mangled inside this for /f backtick context, so it matched the FIRST
+rem "mediapipe" line in requirements.txt -- a COMMENT -- and pip choked on
+rem the embedded ";" (InvalidMarker), failing rPPG. The helper returns the
+rem real `mediapipe==` line (or the fallback) and nothing else.
 set "RPPG_MEDIAPIPE_SPEC="
-for /f "usebackq tokens=* delims= " %%M in (`findstr /I /R /C:^"^[ ]*mediapipe^" ^"%REPO_ROOT%\requirements.txt^"`) do (
+for /f "usebackq delims=" %%M in (`^"!PYTHON_BIN!^" ^"%REPO_ROOT%\scripts\read_requirement_spec.py^" mediapipe ^"%REPO_ROOT%\requirements.txt^" mediapipe==0.10.35`) do (
   if not defined RPPG_MEDIAPIPE_SPEC set "RPPG_MEDIAPIPE_SPEC=%%M"
 )
+if not defined RPPG_MEDIAPIPE_SPEC set "RPPG_MEDIAPIPE_SPEC=mediapipe==0.10.35"
 if defined RPPG_MEDIAPIPE_SPEC (
   echo   Installing MediaPipe separately with --no-deps: !RPPG_MEDIAPIPE_SPEC!
   "!PYTHON_BIN!" -m pip install --no-deps -c "%REPO_ROOT%\constraints.txt" "!RPPG_MEDIAPIPE_SPEC!"

@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-02 (v2.13) — fix rPPG MediaPipe requirement parser
+
+A friend's v2.12 run completed the full pipeline (Face Crop → selfie → Kling
+video) but **rPPG failed**. Root cause: `rPPG/run_rppg.bat` extracted the
+MediaPipe spec from `requirements.txt` with `findstr /R "^[ ]*mediapipe"`.
+Inside the batch `for /f` backtick context the anchor carets got mangled, so
+the pattern matched the FIRST line containing "mediapipe" — a **comment**
+(`# mediapipe (matplotlib drawing_utils); pin both ...`, added by the v2.11
+opencv-cap comment block). pip then tried to install that comment, hit the `;`
+as an environment marker (`InvalidMarker`), and rPPG self-heal crashed —
+saving the video with a `-NORPPG` marker.
+
+### Fixed
+
+- **rPPG MediaPipe spec parsing** — replaced the fragile `findstr` extraction
+  with a real parser, `scripts/read_requirement_spec.py`, that skips comment
+  lines and returns only the actual `mediapipe==` requirement (with a hard
+  fallback to `mediapipe==0.10.35`). The rPPG launcher now installs the correct
+  spec, so rPPG runs instead of silently degrading to `-NORPPG`.
+
+### Notes
+
+- Surgical, rPPG-only release. Face Crop, numpy constraints, the in-app
+  repair/restart flow, video generation, and the macOS launchers are
+  unchanged (the macOS `run_rppg.sh` had no dynamic extraction and was never
+  affected; the GUI/CLI launchers hardcode the MediaPipe spec and were safe).
+
 ## 2026-06-02 (v2.12) — one-click restart after repair + review hardening
 
 Follow-up to v2.11. A friend testing v2.11 hit the case where the in-app
