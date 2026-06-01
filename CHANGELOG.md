@@ -2,6 +2,39 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-02 (v2.12) — one-click restart after repair + review hardening
+
+Follow-up to v2.11. A friend testing v2.11 hit the case where the in-app
+repair **succeeded** (numpy downgraded on disk) but the running process still
+had the broken numpy/TF loaded in memory, so detection kept failing — and the
+"close and relaunch" message + terminal recovery hint read as "still broken"
+to a non-technical user. v2.12 closes that last UX gap.
+
+### Added
+
+- **One-click "Restart now" after a successful repair.** When the repair fixes
+  the libraries on disk, the app now shows a small "Repair complete ✓" dialog
+  with a Restart button that **re-spawns the app for the user** (new
+  `relaunch_app()` helper) — no manual close/reopen, no terminal. The scary
+  manual-recovery hint is suppressed on the success path (the repair worked;
+  only a restart remains).
+
+### Changed
+
+- **Repair modal hardened** (external review): worker thread now communicates
+  via a `queue.Queue` drained by a **main-thread poller** (no worker-thread Tk
+  calls, no `exc`-closure bug) — the likely cause of a hung repair that
+  "didn't help."
+- **numpy version check reads disk metadata**, not by importing numpy (which
+  is unsafe in the broken numpy-2 state).
+- **macOS dep stamp now includes `constraints.txt`** — a constraints change
+  forces a `.venv-macos` re-sync.
+- **Windows launchers** use a guarded `!CC!` constraints flag (only `-c` when
+  the file exists; single-quoted, space-safe).
+- **macOS launchers** use the `set -u`-safe array expansion
+  `"${CONSTRAINTS_ARG[@]+...}"` (the plain form aborts on empty arrays under
+  Bash 3.2, macOS's default).
+
 ## 2026-06-02 (v2.11) — numpy-2 fresh-install fix + zero-terminal repair
 
 Fixes the recurring fresh-install break where the Face Crop tab failed with

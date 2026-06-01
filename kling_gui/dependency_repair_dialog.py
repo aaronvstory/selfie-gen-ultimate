@@ -268,3 +268,45 @@ def _reset_retinaface_cache() -> None:
         face_crop_tab._RETINAFACE_ERROR = ""
     except Exception:
         pass
+
+
+def relaunch_app(log: Optional[Callable[[str, str], None]] = None) -> bool:
+    """Re-spawn this app in a FRESH process and exit the current one.
+
+    After a successful repair the running interpreter still holds the broken
+    numpy/TF in sys.modules, so detection keeps failing until a fresh process
+    loads the repaired wheels. Non-technical users won't reliably close +
+    relaunch by hand (v2.12: the friend got stuck here), so we do it for them:
+    spawn a detached copy via the same launcher/entry point, then terminate.
+
+    Returns False (and logs) if the relaunch can't be set up — caller then
+    falls back to asking the user to relaunch manually.
+    """
+    import os
+    import subprocess
+    import sys
+
+    try:
+        # Prefer re-running the original launcher script (run_gui.bat /
+        # run_gui.command / gui_launcher.py) so the venv + env are re-resolved
+        # exactly as the first launch. sys.argv[0] is the entry script; on a
+        # frozen build sys.frozen is set and sys.executable IS the app.
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable] + sys.argv[1:]
+        else:
+            cmd = [sys.executable] + sys.argv
+        _safe_log(log, "Face Crop: restarting the app to load the repaired libraries…", "info")
+        creationflags = 0
+        if os.name == "nt":
+            # DETACHED_PROCESS so the new app isn't killed when this one exits.
+            creationflags = 0x00000008  # DETACHED_PROCESS
+        subprocess.Popen(
+            cmd,
+            cwd=os.getcwd(),
+            creationflags=creationflags,
+            close_fds=True,
+        )
+        return True
+    except Exception as exc:
+        _safe_log(log, f"Face Crop: could not auto-restart ({type(exc).__name__}: {exc})", "error")
+        return False
