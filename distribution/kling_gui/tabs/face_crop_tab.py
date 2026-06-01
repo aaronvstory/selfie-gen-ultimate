@@ -1357,6 +1357,29 @@ class FaceCropTab(tk.Frame):
 
     # ── Detection ───────────────────────────────────────────────────
 
+    def _attempt_in_app_repair(self) -> bool:
+        """Run the zero-terminal dependency repair modal; return success.
+
+        Guards against re-entrancy (a second click while a repair is already
+        running) and degrades to False — caller then shows the manual hint —
+        if the repair dialog can't be imported or the Tk parent is gone.
+        """
+        if getattr(self, "_repairing", False):
+            return False
+        self._repairing = True
+        try:
+            from ..dependency_repair_dialog import run_face_stack_repair
+
+            return bool(run_face_stack_repair(self, log=self.log))
+        except Exception as exc:
+            self.log(
+                f"Face Crop: in-app repair could not start ({type(exc).__name__}: {exc})",
+                "error",
+            )
+            return False
+        finally:
+            self._repairing = False
+
     def _detect_face(self):
         if self._busy:
             return
@@ -1379,47 +1402,68 @@ class FaceCropTab(tk.Frame):
             self._status_label.config(text="No source image loaded", fg=COLORS["warning"])
             return
         if not HAS_FACE_DEPS:
-            # Polish-sweep (PR #55): the old toast just said "(see warning)"
-            # but the warning banner can scroll off-screen on small windows
-            # and the underlying import error (FACE_DEPS_ERROR — usually
-            # cv2 or numpy) was never visible in the log. Surface both the
-            # exception detail and the platform-specific recovery hint so
-            # the user can diagnose without hunting through scrollback.
+            # opencv/numpy failed to import at MODULE load — most often numpy
+            # 2.x breaking the compiled stack. The repair runs in a subprocess,
+            # but cv2/numpy are already cached (broken) in THIS interpreter, so
+            # an in-process retry can't pick up the fixed wheels. Offer the
+            # zero-terminal repair, then ask the user to relaunch (the launcher
+            # now stamp-gates on health, so the relaunch lands clean).
             err_detail = FACE_DEPS_ERROR or "opencv-python / numpy not available"
             self._status_label.config(
-                text=f"Face Crop deps missing: {err_detail}",
+                text=f"Face Crop deps need a one-time fix: {err_detail}",
                 fg=COLORS["error"],
             )
             self.log(
                 f"Face Crop: opencv/numpy import failed — {err_detail}",
                 "error",
             )
-            self.log(
-                f"Face Crop: {_platform_face_repair_recovery_hint()}",
-                "error",
-            )
+            if self._attempt_in_app_repair():
+                self._status_label.config(
+                    text="Dependencies repaired — please close and relaunch the app to finish.",
+                    fg=COLORS["success"],
+                )
+                self.log(
+                    "Face Crop: repaired. Close and relaunch the app, then try Detect Face again.",
+                    "success",
+                )
+            else:
+                self.log(
+                    f"Face Crop: {_platform_face_repair_recovery_hint()}",
+                    "error",
+                )
             return
         retinaface_cls, retinaface_error = _load_retinaface()
         if retinaface_cls is None:
-            recovery_hint = _platform_face_repair_recovery_hint()
+            # The lazy RetinaFace/TF import failed — usually a numpy/TF backend
+            # mismatch. Try the in-app repair (no terminal), then retry the
+            # import IN-PROCESS: _load_retinaface re-imports on each call until
+            # it succeeds, and retinaface/TF were never imported at module load,
+            # so the fixed wheels are picked up without a relaunch.
             self._status_label.config(
-                text=f"RetinaFace unavailable (TensorFlow/Keras backend mismatch or missing deps): {retinaface_error}",
-                fg=COLORS["error"],
+                text="Image libraries need a one-time fix — repairing now…",
+                fg=COLORS["progress"],
             )
-            # The full message has three parts: WHAT failed, the exact
-            # exception detail, and an actionable recovery path. We split
-            # over two log lines so the recovery hint is the LAST thing
-            # in the user's eye line — long-form retinaface tracebacks
-            # would otherwise push the actionable step off the log tail.
             self.log(
                 f"Face Crop: RetinaFace/TensorFlow import failed — {retinaface_error}",
                 "error",
             )
-            self.log(
-                f"Face Crop: {recovery_hint}",
-                "error",
-            )
-            return
+            if self._attempt_in_app_repair():
+                retinaface_cls, retinaface_error = _load_retinaface()
+            if retinaface_cls is None:
+                recovery_hint = _platform_face_repair_recovery_hint()
+                self._status_label.config(
+                    text=f"RetinaFace still unavailable after repair: {retinaface_error}",
+                    fg=COLORS["error"],
+                )
+                # Manual hint is the LAST-RESORT floor only after auto-repair
+                # could not fix it — kept last so it stays in the user's eye
+                # line below the long-form retinaface traceback.
+                self.log(
+                    f"Face Crop: {recovery_hint}",
+                    "error",
+                )
+                return
+            self.log("Face Crop: dependencies repaired — continuing detection.", "success")
 
         self._busy = True
         self._detect_btn.config(state=tk.DISABLED, text="Detecting...")

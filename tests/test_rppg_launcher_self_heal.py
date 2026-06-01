@@ -41,7 +41,8 @@ def test_missing_deps_actually_invokes_pip_install(bat_source: str):
     separately with --no-deps), so the pip target is the filtered req
     file rather than requirements.txt directly. The invariant under test
     is unchanged: pip is ACTUALLY run via the resolved interpreter."""
-    assert '"!PYTHON_BIN!" -m pip install -r "%RPPG_REQ_FILTERED%"' in bat_source, (
+    # v2.11: pip install now carries -c constraints.txt (numpy-2 guard).
+    assert '"!PYTHON_BIN!" -m pip install -c "%REPO_ROOT%\\constraints.txt" -r "%RPPG_REQ_FILTERED%"' in bat_source, (
         "self-heal branch must ACTUALLY run pip install via the "
         "resolved !PYTHON_BIN!. The friend-zip bug was that the prior "
         "block only echoed the sync command without running it."
@@ -69,7 +70,8 @@ def test_self_heal_installs_mediapipe_no_deps(bat_source: str):
         "self-heal must read the mediapipe pin from requirements.txt with a "
         "/C: regex (space-safe) and caret-escaped path"
     )
-    assert '-m pip install --no-deps "!RPPG_MEDIAPIPE_SPEC!"' in bat_source, (
+    # v2.11: --no-deps mediapipe install now carries -c constraints.txt too.
+    assert '-m pip install --no-deps -c "%REPO_ROOT%\\constraints.txt" "!RPPG_MEDIAPIPE_SPEC!"' in bat_source, (
         "self-heal must install the dynamically-read mediapipe pin with "
         "--no-deps (Hard Rule #6)"
     )

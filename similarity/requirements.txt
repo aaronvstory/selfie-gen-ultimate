@@ -3,6 +3,13 @@ tensorflow==2.16.2; sys_platform != "win32"
 tensorflow-intel==2.16.2; sys_platform == "win32"
 tf-keras==2.16.0
 retina-face==0.0.17
+# numpy<2 is required: TF 2.16.2 (ml-dtypes~=0.3.1) is built against numpy
+# 1.26.x and fails at import with "numpy.core._multiarray_umath failed to
+# import" under numpy 2.x. deepface==0.0.92 declares only an open numpy bound,
+# so without this cap a fresh `pip install -r requirements.txt` in the
+# standalone similarity tool can pull numpy 2.x and break its TF — the same
+# class of bug the root app's v2.11 fix addresses.
+numpy>=1.26,<2
 # Required by DeepFace anti-spoofing (MiniFASNetV2). Without it FAS fails ALL comparisons.
 torch>=2.2,<3
 customtkinter==5.2.2

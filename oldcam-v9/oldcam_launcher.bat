@@ -81,7 +81,7 @@ if "%NEED_PIP%"=="0" (
   echo   [%LAUNCH_TS%] Syncing Oldcam V9 dependencies...
   set "REQ_FILTERED=%STATE_DIR%\oldcam_v9_req_filtered.txt"
   findstr /V /I /B "mediapipe" "%SCRIPT_DIR%requirements.txt" > "%REQ_FILTERED%"
-  "%PYTHON_CMD%" -m pip install -r "%REQ_FILTERED%" >nul 2>&1
+  "%PYTHON_CMD%" -m pip install -c "%REPO_ROOT%\constraints.txt" -r "%REQ_FILTERED%" >nul 2>&1
   if errorlevel 1 (
     for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
     echo   [%LAUNCH_TS%] ERROR: Failed to install Oldcam V9 dependencies.
@@ -89,7 +89,7 @@ if "%NEED_PIP%"=="0" (
     set "HAD_ERRORS=1"
     goto DONE
   )
-  "%PYTHON_CMD%" -m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%" >nul 2>&1
+  "%PYTHON_CMD%" -m pip install --force-reinstall --no-deps -c "%REPO_ROOT%\constraints.txt" "%MEDIAPIPE_SPEC%" >nul 2>&1
   if errorlevel 1 (
     for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
     echo   [%LAUNCH_TS%] ERROR: Failed to install MediaPipe for Oldcam V9.

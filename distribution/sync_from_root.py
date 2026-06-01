@@ -16,6 +16,16 @@ SYNC_ITEMS = [
     "tk_dialogs.py",
     "model_schema_manager.py",
     "dependency_checker.py",
+    # dependency_health_check.py: kling_gui/dependency_repair_dialog.py imports it
+    # (`from dependency_health_check import run_repair, verify_in_fresh_process`)
+    # for the in-app face-stack repair (v2.11). The distribution copy must carry it
+    # or `cwd=distribution python -c "import kling_gui.dependency_repair_dialog"`
+    # raises ModuleNotFoundError. dependency_checker.py also delegates to it.
+    "dependency_health_check.py",
+    # constraints.txt: the project-wide numpy<2 / opencv<4.12 cap file passed via
+    # `-c` to every pip install + read by dependency_health_check._constraints_path
+    # during in-app repair. Must ship so the repair can hold numpy <2 (v2.11).
+    "constraints.txt",
     "hooks/hook-tkinterdnd2.py",
     "kling_gui",
     # First-party root modules the kling_gui/ package imports transitively.

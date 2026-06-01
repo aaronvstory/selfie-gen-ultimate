@@ -45,7 +45,7 @@ if "%NEED_PIP%"=="0" (
 ) else (
   echo   [%LAUNCH_TS%] Syncing dependencies...
   "%VENV_PYTHON%" -m pip install --upgrade pip >nul 2>&1
-  "%VENV_PYTHON%" -m pip install -r "%ROOT_DIR%requirements.txt" >nul 2>&1
+  "%VENV_PYTHON%" -m pip install -c "%ROOT_DIR%constraints.txt" -r "%ROOT_DIR%requirements.txt" >nul 2>&1
   if errorlevel 1 (
     echo   [%LAUNCH_TS%] ERROR: Dependency install failed.
     pause

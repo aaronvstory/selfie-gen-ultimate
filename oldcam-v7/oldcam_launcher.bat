@@ -71,7 +71,7 @@ if "%NEED_PIP%"=="0" (
   echo(
 ) else (
   echo   [%LAUNCH_TS%] Syncing Oldcam V7 dependencies...
-  "%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul
+  "%PYTHON_CMD%" -m pip install -c "%REPO_ROOT%\constraints.txt" -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul
   if errorlevel 1 (
     echo   [%LAUNCH_TS%] ERROR: Failed to install dependencies.
     set "HAD_ERRORS=1"

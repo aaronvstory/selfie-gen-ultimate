@@ -92,7 +92,13 @@ NEED_PIP=1
 if [ -f "$STAMP_FILE" ] && "$PYTHON_BIN" -c 'import cv2, numpy; from PIL import Image' >/dev/null 2>&1; then NEED_PIP=0; fi
 if [ "$NEED_PIP" -eq 1 ]; then
   echo "[INFO] Synchronizing dependencies from requirements.txt..."
-  if ! "$PYTHON_BIN" -m pip install -r requirements.txt; then
+  # v2.11 numpy-2 guard: thread the root constraints file into pip so a
+# transitive deepface->numpy resolve cannot upgrade numpy past 1.x.
+CONSTRAINTS_ARG=""
+if [ -n "${REPO_ROOT}" ] && [ -f "${REPO_ROOT}/constraints.txt" ]; then
+  CONSTRAINTS_ARG="-c ${REPO_ROOT}/constraints.txt"
+fi
+if ! "$PYTHON_BIN" -m pip install ${CONSTRAINTS_ARG} -r requirements.txt; then
     echo "[ERROR] Failed to synchronize dependencies from requirements.txt."
     [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
     exit 1

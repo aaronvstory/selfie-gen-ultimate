@@ -1,4 +1,4 @@
 numpy>=1.24,<2
-opencv-python-headless>=4.8.1.78
+opencv-python-headless>=4.8.1.78,<4.12
 mediapipe==0.10.35
 

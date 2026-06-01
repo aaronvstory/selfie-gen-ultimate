@@ -83,7 +83,7 @@ if "%NEED_PIP%"=="0" (
   echo(
 ) else (
   echo   [%LAUNCH_TS%] Syncing Oldcam V15 dependencies...
-  "%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>&1
+  "%PYTHON_CMD%" -m pip install -c "%REPO_ROOT%\constraints.txt" -r "%SCRIPT_DIR%requirements.txt" >nul 2>&1
   if errorlevel 1 (
     echo   [%LAUNCH_TS%] ERROR: Failed to install Oldcam V15 dependencies.
     echo   Close running Python/GUI processes and retry.

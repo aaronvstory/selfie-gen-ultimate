@@ -713,6 +713,55 @@ list before shipping.
 
 ---
 
+## numpy<2 / constraints.txt invariant (NON-NEGOTIABLE — v2.11)
+
+A fresh v2.10 Windows install broke Face Crop with `ImportError:
+numpy.core.umath failed to import` — numpy 2.x reached the venv and broke
+TensorFlow 2.16.2 (ml-dtypes~=0.3.1 needs numpy 1.26.x). The numpy<2 /
+opencv<4.12 caps lived ONLY in `requirements.txt`, so they governed one
+`pip install -r` call but NOT the bootstrap, the `--no-deps` mediapipe step,
+or the repair's `--force-reinstall`. `deepface==0.0.92` declares only
+`numpy>=1.14.0` (open upper bound) and numpy 2.x ships wheels, so any
+unconstrained resolve was free to upgrade.
+
+**The fix — and the rules to keep it fixed:**
+
+- **`constraints.txt` at repo root is the single source of truth** for the
+  numpy<2 + opencv<4.12 + TF caps. It is passed via `-c constraints.txt` to
+  **every** `pip install` the project issues. When you add/bump a pinned dep
+  whose transitive deps could pull numpy, update `constraints.txt` to match
+  `requirements.txt` — keep them in lockstep.
+- **Every launcher's project-dep `pip install` MUST carry `-c constraints.txt`**
+  (Windows `.bat` + macOS `.command`/`.sh`). This includes the oldcam v7–v24
+  launchers, the similarity standalone launchers, rPPG self-heal,
+  `setup_macos.sh`, `dependency_checker.install_pip_package`, and
+  `dependency_health_check.run_repair`. The guard tests live in
+  `tests/test_launcher_health_check_loop.py` (parametrized over both Windows
+  launchers) + `tests/test_fresh_install_numpy_pin.py`.
+- **Sub-project `requirements.txt` files must self-cap** numpy<2 + opencv<4.12
+  too (defense-in-depth that travels with the file): `oldcam-v*/requirements.txt`,
+  `similarity/requirements.txt`. The `-c` in launchers is the belt; these caps
+  are the suspenders.
+- **The launcher "healthy" stamp is gated on the health probe passing.** Never
+  write `deps_*.ok` (Windows) / `.health.sha256` (macOS) unconditionally — a
+  venv that failed the probe must NOT be cached as healthy.
+- **Runtime safety net:** if the face stack import fails in the GUI, it
+  auto-repairs in-process via `kling_gui/dependency_repair_dialog.py` and
+  retries — NO terminal command shown to the user (they're non-technical).
+  `dependency_health_check.assert_numpy_pinned()` makes the probe fail on
+  numpy ≥ 2 directly.
+- **Pre-ship gate:** dry-run + import-probe is INSUFFICIENT for the dep stack.
+  Before shipping any zip, run the real fresh-venv test
+  (`RUN_FRESH_INSTALL_TEST=1 pytest tests/test_fresh_install_numpy_pin.py` on
+  Windows) OR extract the zip to a clean dir and launch end-to-end clicking
+  Face Crop. Record which verification you ran in the PR description.
+
+When adding any NEW launcher or NEW `pip install` site, thread `-c
+constraints.txt` through it and add it to the launcher guard test, or the
+numpy-2 hole reopens.
+
+---
+
 ## Supply Chain Audit
 
 Two project-level scanners run on every commit that touches a dep manifest,

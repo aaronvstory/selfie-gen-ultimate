@@ -565,6 +565,9 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
     (repo / "run_cli.command").write_text("#!/usr/bin/env bash\necho cli\n", encoding="utf-8")
     (repo / "setup_macos.sh").write_text("#!/usr/bin/env bash\necho setup\n", encoding="utf-8")
     (repo / "face_landmarker.task").write_bytes(b"task-model")
+    # v2.11: the project-wide pip constraints file must be packaged (launchers
+    # pass it via -c; in-app repair reads it). Assert release_prep includes it.
+    (repo / "constraints.txt").write_text("numpy>=1.26,<2\n", encoding="utf-8")
     (repo / "launchers").mkdir()
     (repo / "launchers" / "windows").mkdir()
     (repo / "launchers" / "macos").mkdir()
@@ -629,6 +632,13 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_oldcam_v8.command") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_oldcam_v7.command") for name in names)
         assert any(name.endswith("selfie-gen-ultimate/face_landmarker.task") for name in names)
+        # v2.11 numpy-2 guard: the project-wide pip constraints file MUST ship —
+        # the launchers pass it via `-c` and dependency_health_check reads it
+        # during in-app repair. Without it in the zip, a fresh install can pull
+        # numpy 2.x and break Face Crop (the v2.10 bug this release fixes).
+        assert any(name.endswith("selfie-gen-ultimate/constraints.txt") for name in names), (
+            "constraints.txt missing from release zip — numpy<2 cap would not ship"
+        )
         similarity_gui_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_gui.bat"))
         similarity_gui = zf.read(similarity_gui_name).decode("utf-8")
         assert "set PYTHON_BIN=py -3.12" in similarity_gui

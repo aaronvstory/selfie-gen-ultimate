@@ -2,6 +2,53 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-02 (v2.11) — numpy-2 fresh-install fix + zero-terminal repair
+
+Fixes the recurring fresh-install break where the Face Crop tab failed with
+`ImportError: numpy.core.umath failed to import` — numpy 2.x sneaking into the
+venv and breaking TensorFlow 2.16.2. The numpy<2 / opencv<4.12 caps previously
+lived only in `requirements.txt`, so they governed one `pip install` but not the
+bootstrap, the `--no-deps` mediapipe step, or the repair. This release closes
+that hole project-wide, on **both Windows and macOS**, across **every launcher**.
+
+### Added
+
+- **`constraints.txt`** — a project-wide pip constraints file (numpy<2,
+  opencv<4.12 all variants, tensorflow/tf-keras pins) passed via `-c` to every
+  `pip install` the project issues. Unlike `requirements.txt`, a constraints
+  file governs transitive resolves too, so `deepface`'s open numpy bound can no
+  longer drag in numpy 2.x. Ships in the release zip.
+- **In-app dependency repair (zero terminal)** — when the Face Crop import
+  fails, the GUI now shows a progress modal, runs the deterministic repair
+  in-process, and retries automatically. Non-technical users never see a
+  terminal command. New module `kling_gui/dependency_repair_dialog.py`.
+- **`assert_numpy_pinned()`** in `dependency_health_check.py` — the runtime
+  health probe now fails on numpy ≥ 2 directly (numpy can import yet still be
+  2.x, breaking TF later), forcing the launcher to repair before caching.
+- **`tests/test_fresh_install_numpy_pin.py`** — fast asserts plus an opt-in
+  (`RUN_FRESH_INSTALL_TEST=1`) real throwaway-venv install that proves numpy
+  resolves <2 and RetinaFace instantiates. The test class that would have
+  caught this before shipping.
+
+### Changed
+
+- **Every launcher threads `-c constraints.txt`** (Windows + macOS): main
+  GUI/CLI, `setup_macos.sh`, all oldcam v7–v24 launchers (`.bat` + `.command`),
+  the similarity standalone launchers, the rPPG self-heal, and
+  `dependency_checker`'s bootstrap install + `dependency_health_check`'s repair.
+- **Launcher stamp gating** — the Windows `deps_*.ok` "healthy" stamp is now
+  written only when the health probe confirms OK (was unconditional), so a venv
+  that re-broke after repair is no longer cached as healthy.
+- **Sub-project requirements caps tightened** — `oldcam-v7/v8` gained
+  `numpy<2` + `opencv<4.12`; `oldcam-v9`–`v24` gained `opencv<4.12`;
+  `similarity/requirements.txt` gained `numpy<2`. Verified by dry-run that
+  numpy resolves to 1.26.4 for every requirements file.
+
+### Fixed
+
+- Fresh-install Face Crop crash (`numpy.core.umath failed to import`) on both
+  Windows and macOS — root-caused to unconstrained transitive numpy resolves.
+
 ## 2026-05-21 (v2.2) — Video Inspector + Tk button-styling sweep
 
 A/B video comparison + per-step "main next-action" emphasis + a full

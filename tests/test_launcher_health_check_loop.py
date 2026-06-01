@@ -790,3 +790,119 @@ def test_face_crop_tab_error_log_no_longer_loops_on_relaunch():
         "for actionable manual steps instead."
     )
     assert "_platform_face_repair_recovery_hint" in src
+
+
+# ────────────────────────────────────────────────────────────────────
+# v2.11: numpy-2.x re-entry guard — constraints file threaded through every
+# pip install + stamp written only when the health probe confirms OK.
+# Background: a fresh v2.10 Windows install pulled numpy 2.x (deepface's open
+# `numpy>=1.14.0` upper bound + numpy 2.x win wheels), breaking TF 2.16.2 at
+# Face Crop import. The numpy<2 cap lived ONLY in requirements.txt, so it
+# governed one pip call but not the bootstrap, the --no-deps mediapipe install,
+# or the repair. These tests pin the fix: -c constraints.txt on EVERY pip call.
+# ────────────────────────────────────────────────────────────────────
+
+CONSTRAINTS_FILE = REPO_ROOT / "constraints.txt"
+
+
+def test_constraints_file_caps_numpy_and_opencv():
+    """constraints.txt must cap numpy <2 and all opencv variants <4.12."""
+    assert CONSTRAINTS_FILE.is_file(), "constraints.txt missing at repo root"
+    txt = CONSTRAINTS_FILE.read_text(encoding="utf-8")
+    assert "numpy>=1.26,<2" in txt or "numpy<2" in txt, (
+        "constraints.txt must cap numpy <2 (TF 2.16.2 breaks under numpy 2.x)"
+    )
+    for variant in ("opencv-python", "opencv-python-headless", "opencv-contrib-python"):
+        assert f"{variant}<4.12" in txt, (
+            f"constraints.txt must cap {variant} <4.12 (4.12+ declares numpy>=2)"
+        )
+
+
+@pytest.mark.parametrize(
+    "bat_rel",
+    ["launchers/windows/run_gui.bat", "launchers/windows/run_cli.bat"],
+)
+def test_windows_launchers_pass_constraints_to_every_pip_install(bat_rel):
+    """Every `pip install` in BOTH Windows launchers must carry -c
+    constraints.txt so a transitive resolve (deepface→numpy) can't upgrade
+    numpy past 1.x. Both have their own :INSTALL_REQUIREMENTS copy."""
+    src = (REPO_ROOT / bat_rel).read_text(encoding="utf-8")
+    assert r'CONSTRAINTS_FILE=%ROOT_DIR%\constraints.txt' in src, (
+        f"{bat_rel} must define CONSTRAINTS_FILE pointing at constraints.txt"
+    )
+
+    # Every pip-install line that installs project deps (excludes `--upgrade pip`
+    # self-update and the manual-recovery ECHO lines which are literal text).
+    install_lines = [
+        ln.strip()
+        for ln in src.splitlines()
+        if "-m pip install" in ln
+        and "--upgrade pip" not in ln
+        and not ln.lstrip().lower().startswith("echo")
+    ]
+    assert install_lines, f"No real pip-install lines found in {bat_rel}"
+    for ln in install_lines:
+        assert '-c "%CONSTRAINTS_FILE%"' in ln, (
+            f"{bat_rel}: pip install line missing -c constraints.txt: {ln!r}"
+        )
+
+
+def test_windows_launcher_gates_stamp_on_health_ok():
+    """The deps_*.ok stamp must be written ONLY when health is confirmed OK.
+
+    The v2.10 bug: the stamp was written unconditionally after the health
+    block, so a venv where numpy 2.x was re-pulled (probe FAILED but repair
+    re-verify subprocess passed, then a later resolve re-broke it) got cached
+    as healthy. Now an explicit HEALTH_OK flag guards the write.
+    """
+    src = _read(WIN_BAT)
+    assert 'set "HEALTH_OK="' in src, "Launcher must initialise a HEALTH_OK flag"
+    assert 'set "HEALTH_OK=1"' in src, "Launcher must set HEALTH_OK on a clean probe/repair"
+    assert "if defined HEALTH_OK (" in src, (
+        "Stamp write must be guarded by `if defined HEALTH_OK`"
+    )
+    # The stamp write must sit inside the HEALTH_OK guard, before the else.
+    guard_idx = src.find("if defined HEALTH_OK (")
+    stamp_write_idx = src.find('>>"%STAMP%" echo %LAUNCH_TS%', guard_idx)
+    else_idx = src.find(") else (", guard_idx)
+    assert guard_idx > 0 and stamp_write_idx > guard_idx, (
+        "Stamp write must appear after the `if defined HEALTH_OK` guard"
+    )
+    assert else_idx > stamp_write_idx, (
+        "Stamp write must be INSIDE the HEALTH_OK guard (before its else branch)"
+    )
+
+
+def test_setup_macos_passes_constraints_to_every_pip_install():
+    """The macOS bootstrap must mirror the -c constraints.txt threading."""
+    setup_sh = REPO_ROOT / "setup_macos.sh"
+    src = setup_sh.read_text(encoding="utf-8")
+    assert 'CONSTRAINTS_FILE="${ROOT_DIR}/constraints.txt"' in src, (
+        "setup_macos.sh must define CONSTRAINTS_FILE"
+    )
+    install_lines = [
+        ln.strip()
+        for ln in src.splitlines()
+        if "-m pip install" in ln and "--upgrade pip" not in ln
+    ]
+    assert install_lines, "No real pip-install lines found in setup_macos.sh"
+    for ln in install_lines:
+        assert '-c "${CONSTRAINTS_FILE}"' in ln, (
+            f"setup_macos.sh pip install missing -c constraints.txt: {ln!r}"
+        )
+
+
+def test_face_crop_tab_auto_invokes_in_app_repair():
+    """The Face Crop import-failure path must auto-invoke the in-app repair
+    (no terminal) instead of only printing a manual command."""
+    src = (REPO_ROOT / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+    assert "_attempt_in_app_repair" in src, (
+        "Face Crop must call _attempt_in_app_repair() on dependency failure"
+    )
+    repair_mod = REPO_ROOT / "kling_gui" / "dependency_repair_dialog.py"
+    assert repair_mod.is_file(), "kling_gui/dependency_repair_dialog.py must exist"
+    rsrc = repair_mod.read_text(encoding="utf-8")
+    assert "def run_face_stack_repair" in rsrc
+    assert "run_repair" in rsrc and "verify_in_fresh_process" in rsrc, (
+        "Repair dialog must call run_repair + verify_in_fresh_process"
+    )

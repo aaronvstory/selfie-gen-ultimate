@@ -24,10 +24,11 @@ def test_oldcam_local_launchers_keep_version_specific_targets():
     assert 'set "HAD_ERRORS="' in v7
     assert 'set "HAD_ERRORS="' in v8
     assert '"%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>nul' in v7
-    assert '"%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul' in v7
+    # v2.11: pip install now carries -c constraints.txt (numpy-2 guard).
+    assert '"%PYTHON_CMD%" -m pip install -c "%REPO_ROOT%\\constraints.txt" -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul' in v7
     assert 'call "%PYTHON_CMD%" "%SCRIPT_DIR%oldcam.py" "%~1" %EXTRA_ARGS%' in v7
     assert '"%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>nul' in v8
-    assert '"%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul' in v8
+    assert '"%PYTHON_CMD%" -m pip install -c "%REPO_ROOT%\\constraints.txt" -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul' in v8
     assert 'call "%PYTHON_CMD%" "%SCRIPT_DIR%oldcam.py" "%~1" %EXTRA_ARGS%' in v8
     assert 'set "PY_ID=%PY_ID:/=_%"' in v7
     assert 'set "PY_ID=%PY_ID: =_%"' in v7
@@ -35,8 +36,9 @@ def test_oldcam_local_launchers_keep_version_specific_targets():
     assert 'set "PY_ID=%PY_ID: =_%"' in v8
     assert 'findstr /V /I /B "mediapipe"' in v9
     assert 'findstr /V /I /B "mediapipe"' in v10
-    assert '-m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%"' in v9
-    assert '-m pip install --force-reinstall --no-deps "%MEDIAPIPE_SPEC%"' in v10
+    # v2.11: --no-deps mediapipe install now carries -c constraints.txt too.
+    assert '-m pip install --force-reinstall --no-deps -c "%REPO_ROOT%\\constraints.txt" "%MEDIAPIPE_SPEC%"' in v9
+    assert '-m pip install --force-reinstall --no-deps -c "%REPO_ROOT%\\constraints.txt" "%MEDIAPIPE_SPEC%"' in v10
     assert 'set "MP_VALIDATE_CMD=' in v9
     assert 'set "MP_VALIDATE_CMD=' in v10
     assert "Tasks FaceLandmarker API unavailable" in v9
@@ -74,7 +76,8 @@ def test_oldcam_macos_v9_v10_install_mediapipe_separately():
     v10 = (REPO_ROOT / "oldcam-v10" / "macOS" / "oldcam.command").read_text(encoding="utf-8")
     for text in (v9, v10):
         assert "grep -E -vi '^[[:space:]]*mediapipe($|[[:space:]]|==|>=|<=|~=|!=)'" in text
-        assert '-m pip install --force-reinstall --no-deps "mediapipe==0.10.35"' in text
+        # v2.11: --no-deps mediapipe install now carries ${CONSTRAINTS_ARG}.
+        assert '-m pip install --force-reinstall --no-deps ${CONSTRAINTS_ARG} "mediapipe==0.10.35"' in text
         assert "MP_VALIDATE_CMD=" in text
         assert "Tasks FaceLandmarker API unavailable" in text
     assert '[ -d "$cur/oldcam-v9" ]' in v9

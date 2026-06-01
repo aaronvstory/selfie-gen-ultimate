@@ -199,11 +199,11 @@ rem with --no-deps. Reading the pin dynamically (not a hardcoded literal)
 rem keeps this self-heal from drifting when the requirements pin is bumped.
 set "RPPG_REQ_FILTERED=%TEMP%\rppg_req_%RANDOM%_%RANDOM%.txt"
 findstr /V /I /B "mediapipe" "%REPO_ROOT%\requirements.txt" > "%RPPG_REQ_FILTERED%"
-"!PYTHON_BIN!" -m pip install --only-binary :all: -r "%RPPG_REQ_FILTERED%"
+"!PYTHON_BIN!" -m pip install --only-binary :all: -c "%REPO_ROOT%\constraints.txt" -r "%RPPG_REQ_FILTERED%"
 set "PIP_EXIT=!errorlevel!"
 if !PIP_EXIT! neq 0 (
   echo   Retrying without binary constraint...
-  "!PYTHON_BIN!" -m pip install -r "%RPPG_REQ_FILTERED%"
+  "!PYTHON_BIN!" -m pip install -c "%REPO_ROOT%\constraints.txt" -r "%RPPG_REQ_FILTERED%"
   set "PIP_EXIT=!errorlevel!"
 )
 if !PIP_EXIT! neq 0 (
@@ -216,7 +216,7 @@ for /f "usebackq tokens=* delims= " %%M in (`findstr /I /R /C:^"^[ ]*mediapipe^"
 )
 if defined RPPG_MEDIAPIPE_SPEC (
   echo   Installing MediaPipe separately with --no-deps: !RPPG_MEDIAPIPE_SPEC!
-  "!PYTHON_BIN!" -m pip install --no-deps "!RPPG_MEDIAPIPE_SPEC!"
+  "!PYTHON_BIN!" -m pip install --no-deps -c "%REPO_ROOT%\constraints.txt" "!RPPG_MEDIAPIPE_SPEC!"
   set "PIP_EXIT=!errorlevel!"
 )
 del "%RPPG_REQ_FILTERED%" >nul 2>&1
