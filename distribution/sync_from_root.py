@@ -29,9 +29,18 @@ def main() -> int:
         dst = dist_dir / item
         if not src.exists():
             continue
+        # Clear any existing dst EAFP-style (gemini MED): pre-flight dst.exists()
+        # checks miss the file-vs-dir-mismatch / symlink / restricted-fs cases
+        # and can themselves raise. Try rmtree (dir), fall back to unlink (file
+        # or symlink); ignore if there's nothing to remove.
+        try:
+            shutil.rmtree(dst)
+        except OSError:
+            try:
+                dst.unlink()
+            except OSError:
+                pass
         if src.is_dir():
-            if dst.exists():
-                shutil.rmtree(dst)
             shutil.copytree(src, dst)
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
