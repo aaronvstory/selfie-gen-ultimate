@@ -409,9 +409,12 @@ class DependencyChecker:
         try:
             from path_utils import get_app_dir, is_frozen
             if callable(is_frozen) and is_frozen() and callable(get_app_dir):
-                cand = os.path.join(get_app_dir(), "constraints.txt")
-                if os.path.isfile(cand):
-                    return cand
+                app_dir = get_app_dir()
+                # Guard None (gemini MED, PR #65): os.path.join(None,...) raises.
+                if app_dir:
+                    cand = os.path.join(app_dir, "constraints.txt")
+                    if os.path.isfile(cand):
+                        return cand
         except Exception:
             pass
         cand = os.path.join(os.path.dirname(os.path.abspath(__file__)), "constraints.txt")

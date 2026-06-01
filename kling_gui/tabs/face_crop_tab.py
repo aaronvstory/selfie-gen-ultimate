@@ -435,8 +435,10 @@ class FaceCropTab(tk.Frame):
         if not HAS_FACE_DEPS:
             recovery_hint = _platform_face_repair_recovery_hint()
             err_detail = FACE_DEPS_ERROR or "opencv-python / numpy import failed"
+            warn_frame = tk.Frame(self, bg=COLORS["bg_panel"])
+            warn_frame.pack(fill=tk.X, padx=8, pady=(8, 0))
             warn = tk.Label(
-                self,
+                warn_frame,
                 text=f"Face Crop deps missing: {err_detail}.  {recovery_hint}",
                 bg=COLORS["bg_panel"],
                 fg=COLORS["warning"],
@@ -445,7 +447,19 @@ class FaceCropTab(tk.Frame):
                 justify="left",
                 wraplength=900,
             )
-            warn.pack(fill=tk.X, padx=8, pady=(8, 0))
+            warn.pack(fill=tk.X)
+            # Reachability fix (Codex P2, PR #65): with HAS_FACE_DEPS False the
+            # Detect button is created DISABLED, so the user could never click
+            # through to the zero-terminal repair in exactly the numpy/opencv
+            # failure it exists for. Surface a one-click "Repair now" button
+            # right here in the warning so the repair is always reachable.
+            self._dep_repair_btn = ttk.Button(
+                warn_frame,
+                text="Repair dependencies now",
+                style=TTK_BTN_WORKFLOW,
+                command=self._repair_deps_from_warning,
+            )
+            self._dep_repair_btn.pack(anchor="w", pady=(6, 2))
 
         # ── Source & Detection ──────────────────────────────────────
         source_frame = tk.LabelFrame(
@@ -1356,6 +1370,44 @@ class FaceCropTab(tk.Frame):
         self._load_source(active_path, silent=True)
 
     # ── Detection ───────────────────────────────────────────────────
+
+    def _repair_deps_from_warning(self) -> None:
+        """Handler for the "Repair dependencies now" button shown when cv2/numpy
+        failed to import at module load (HAS_FACE_DEPS False).
+
+        cv2/numpy are already cached (broken) in THIS interpreter, so an
+        in-process retry can't pick up the repaired wheels — after a successful
+        repair we ask the user to relaunch (the launcher now stamp-gates on
+        health, so the relaunch lands clean). Codex P2 reachability fix, PR #65.
+        """
+        btn = getattr(self, "_dep_repair_btn", None)
+        if btn is not None:
+            try:
+                btn.config(state=tk.DISABLED, text="Repairing…")
+            except Exception:
+                pass
+        ok = self._attempt_in_app_repair()
+        if ok:
+            self._status_label.config(
+                text="Dependencies repaired — please close and relaunch the app to finish.",
+                fg=COLORS["success"],
+            )
+            self.log(
+                "Face Crop: repaired. Close and relaunch the app, then try Detect Face again.",
+                "success",
+            )
+            if btn is not None:
+                try:
+                    btn.config(text="Repaired — relaunch the app")
+                except Exception:
+                    pass
+        else:
+            self.log(f"Face Crop: {_platform_face_repair_recovery_hint()}", "error")
+            if btn is not None:
+                try:
+                    btn.config(state=tk.NORMAL, text="Repair dependencies now")
+                except Exception:
+                    pass
 
     def _attempt_in_app_repair(self) -> bool:
         """Run the zero-terminal dependency repair modal; return success.

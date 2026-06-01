@@ -134,24 +134,47 @@ def run_face_stack_repair(
 
     result = {"ok": False, "done": False}
 
+    # ── Thread-safety (gemini HIGH, PR #65) ──────────────────────────────
+    # `log` updates the GUI LogDisplay text widget and `status_var.set` touches
+    # a Tk var — BOTH are unsafe to call from the worker thread. Every
+    # UI-touching call from `_worker` is marshalled onto the Tk main loop via
+    # `_post`, which wraps `top.after` in try/except so a destroyed window
+    # (parent closed mid-repair) can't raise out of the worker. And the worker's
+    # `finally` calls `_unblock()` DIRECTLY (not via after) as a guaranteed
+    # last resort — if `top.after` is dead, the main thread's fallback spin-loop
+    # still sees `result["done"]` flip and exits rather than hanging forever.
+    def _post(fn) -> None:
+        try:
+            top.after(0, fn)
+        except Exception:
+            pass
+
     def _worker() -> None:
         ok = False
         try:
             repaired, message = run_repair(failures=failures)
-            _safe_log(log, f"Face Crop: repair step — {message}", "info" if repaired else "error")
-            top.after(0, lambda: status_var.set("Verifying the fix…"))
+            _post(lambda: _safe_log(log, f"Face Crop: repair step — {message}", "info" if repaired else "error"))
+            _post(lambda: status_var.set("Verifying the fix…"))
             verified, vfailures = verify_in_fresh_process()
             ok = bool(repaired and verified)
             if not verified and vfailures:
-                _safe_log(log, "Face Crop: verification still reports: " + "; ".join(vfailures), "error")
+                _post(lambda: _safe_log(log, "Face Crop: verification still reports: " + "; ".join(vfailures), "error"))
         except Exception as exc:  # pragma: no cover - defensive
-            _safe_log(log, f"Face Crop: repair crashed ({type(exc).__name__}: {exc})", "error")
+            _post(lambda: _safe_log(log, f"Face Crop: repair crashed ({type(exc).__name__}: {exc})", "error"))
             ok = False
         finally:
             result["ok"] = ok
-            top.after(0, _finish)
+            # Try to run _finish on the main thread; if scheduling fails (window
+            # already gone), flip `done` directly so wait_window/the spin-loop
+            # fallback unblocks and the GUI never hangs.
+            try:
+                top.after(0, _finish)
+            except Exception:
+                result["done"] = True
 
     def _finish() -> None:
+        # Runs on the Tk main thread. Set `done` FIRST so even if a later
+        # widget call raises, the caller is already unblocked.
         result["done"] = True
         try:
             bar.stop()
@@ -181,12 +204,17 @@ def run_face_stack_repair(
     try:
         parent.wait_window(top)
     except Exception:
-        # If wait_window can't run, spin until the worker flags done.
+        # If wait_window can't run, pump the event loop until the worker flags
+        # done. `time.sleep(0.05)` per iteration caps this at ~20 Hz instead of
+        # busy-spinning a CPU core (gemini MEDIUM, PR #65).
+        import time
+
         while not result["done"]:
             try:
                 parent.update()
             except Exception:
                 break
+            time.sleep(0.05)
 
     return bool(result["ok"])
 

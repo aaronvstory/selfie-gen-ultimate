@@ -135,6 +135,21 @@ def test_constraints_and_requirements_numpy_caps_agree():
     assert "numpy>=1.26,<2" in reqs
 
 
+def test_face_crop_repair_button_reachable_when_deps_missing():
+    """When cv2/numpy fail to import at module load (HAS_FACE_DEPS False) the
+    Detect button is created DISABLED, so the zero-terminal repair would be
+    unreachable. A dedicated 'Repair dependencies now' button must be created
+    in the HAS_FACE_DEPS-False warning block and wired to a repair handler
+    (Codex P2 reachability fix, PR #65)."""
+    src = (REPO_ROOT / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+    # The button + its command must exist inside the `if not HAS_FACE_DEPS:`
+    # construction block (the warning UI), routing to the repair handler.
+    assert "_dep_repair_btn" in src, "missing the always-reachable Repair button"
+    assert "Repair dependencies now" in src
+    assert "def _repair_deps_from_warning" in src, "missing the repair-button handler"
+    assert "_attempt_in_app_repair" in src
+
+
 def test_macos_launchers_use_space_safe_constraints_array():
     """macOS .command launchers must build CONSTRAINTS_ARG as a bash ARRAY and
     expand it with "${CONSTRAINTS_ARG[@]}" — a scalar string word-splits when

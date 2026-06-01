@@ -76,15 +76,20 @@ def _constraints_path() -> "str | None":
     the caller degrades to the (still-pinned) REPAIR_PACKAGES list rather
     than crashing on a partial tree.
     """
+    import os
+
     candidates: list = []
     try:
         from path_utils import get_app_dir, is_frozen  # local import: optional
 
         if callable(is_frozen) and is_frozen() and callable(get_app_dir):
-            candidates.append(__import__("os").path.join(get_app_dir(), "constraints.txt"))
+            app_dir = get_app_dir()
+            # get_app_dir() can return None on a partial/odd layout — guard so
+            # os.path.join(None, ...) can't raise TypeError (gemini MED, PR #65).
+            if app_dir:
+                candidates.append(os.path.join(app_dir, "constraints.txt"))
     except Exception:
         pass
-    import os
 
     candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "constraints.txt"))
     for cand in candidates:
@@ -106,16 +111,17 @@ def assert_numpy_pinned(
     so we additionally assert the resolved version directly. Parameterized
     on ``version_reader`` for testability (monkeypatch to simulate 2.x).
     """
-    if version_reader is None:
-        import importlib.metadata as _md
+    import importlib.metadata as _md
 
+    if version_reader is None:
         version_reader = _md.version
     try:
         raw = version_reader("numpy")
-    except Exception as exc:  # numpy not installed at all → import probe covers it
-        return None if "PackageNotFound" in type(exc).__name__ else (
-            f"numpy version lookup failed: {type(exc).__name__}: {exc}"
-        )
+    except _md.PackageNotFoundError:
+        # numpy not installed at all → the cv2/numpy import probe covers it.
+        return None
+    except Exception as exc:
+        return f"numpy version lookup failed: {type(exc).__name__}: {exc}"
     try:
         major = int(str(raw).split(".", 1)[0])
     except Exception:
