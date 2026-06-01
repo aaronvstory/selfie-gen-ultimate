@@ -47,7 +47,8 @@ def check_ffmpeg_available() -> Tuple[bool, str]:
     """
     try:
         result = subprocess.run(
-            ["ffmpeg", "-version"], capture_output=True, text=True, timeout=10
+            ["ffmpeg", "-version"], capture_output=True, text=True,
+            errors="replace", timeout=10
         )
         if result.returncode == 0:
             # Extract version from first line
@@ -192,6 +193,7 @@ def create_looped_video(
             cmd,
             capture_output=True,
             text=True,
+            errors="replace",  # ffmpeg writes stderr diagnostics in OS locale encoding
             timeout=300,  # 5 minute timeout
         )
 
@@ -245,7 +247,7 @@ def get_video_duration(video_path: str) -> Optional[float]:
             video_path,
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=30)
 
         if result.returncode == 0 and result.stdout.strip():
             return float(result.stdout.strip())

@@ -2,9 +2,14 @@
 Log Display Widget - Scrolling text log with color-coded messages.
 """
 
+import sys
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
+
+# Local mono font (matches FONT_MONO in theme.py; this widget has its own
+# isolated palette duplicate so it gets its own font constant too).
+FONT_MONO = "Menlo" if sys.platform == "darwin" else "Consolas"
 
 
 # Color palette matching LoopVideo dark theme
@@ -25,6 +30,14 @@ COLORS = {
     "resize": "#DDA0DD",      # Plum for resize operations
     "download": "#98FB98",    # Pale green for downloads
     "api": "#DA70D6",         # Orchid for API calls
+    # Stage-completion milestone lines (✅ RPPG DONE, ✅ OLDCAM v13 DONE,
+    # ✅ ALL POSTPROCESS DONE) — bright cyan + bold so they stand out
+    # against the routine info/success/warning chatter.
+    "milestone": "#00FFFF",
+    # ❌ RPPG FAILED-style high-priority error banners — vivid red
+    # rendered bold so the user sees the failure even with the log
+    # autoscrolled to the bottom mid-run.
+    "error_bold": "#FF3030",
 }
 
 
@@ -42,25 +55,28 @@ class LogDisplay(tk.Frame):
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"]
         )
-        header.pack(fill=tk.X, padx=5, pady=(5, 2))
+        header.pack(fill=tk.X, padx=5, pady=(4, 1))
 
         # Create text widget with scrollbar
         self.text_frame = tk.Frame(self, bg=COLORS["bg_main"])
-        self.text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=4)
 
         self.scrollbar = ttk.Scrollbar(self.text_frame)
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # Font sizing: user feedback PR fix/rppg-failure-visibility —
+        # the original 9pt was "very hard to read." 11pt sits in the
+        # comfortable Tk mono range without forcing a layout overhaul.
         self.text = tk.Text(
             self.text_frame,
             wrap=tk.WORD,
             bg=COLORS["bg_main"],
             fg=COLORS["text_light"],
-            font=("Consolas", 9),
+            font=(FONT_MONO, 11),
             state=tk.DISABLED,
             yscrollcommand=self.scrollbar.set,
-            padx=5,
-            pady=5,
+            padx=4,
+            pady=4,
             borderwidth=0,
             highlightthickness=0
         )
@@ -81,6 +97,21 @@ class LogDisplay(tk.Frame):
         self.text.tag_configure("resize", foreground=COLORS["resize"])
         self.text.tag_configure("download", foreground=COLORS["download"])
         self.text.tag_configure("api", foreground=COLORS["api"])
+        # Stage-completion milestones — bold + slightly larger so the
+        # ✅ RPPG DONE / ✅ OLDCAM v13 DONE / ✅ ALL POSTPROCESS DONE
+        # lines stand out in a crowded log.
+        self.text.tag_configure(
+            "milestone",
+            foreground=COLORS["milestone"],
+            font=(FONT_MONO, 12, "bold"),
+        )
+        # ❌ RPPG FAILED-style banners — bold red so the user can spot a
+        # silent-failure path even when the log autoscrolled past it.
+        self.text.tag_configure(
+            "error_bold",
+            foreground=COLORS["error_bold"],
+            font=(FONT_MONO, 11, "bold"),
+        )
 
     def log(self, message: str, level: str = "info"):
         """

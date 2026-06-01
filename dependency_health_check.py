@@ -369,7 +369,14 @@ def run_torch_cpu_fallback() -> tuple[bool, str]:
         "https://pypi.org/simple",
         torch_spec,
     ]
-    completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # errors="replace": pip can emit non-UTF-8 bytes (a dependency's package
+    # metadata, a localized OS error) on stdout/stderr; with text=True a bare
+    # decode would raise UnicodeDecodeError and abort the health repair instead
+    # of surfacing the pip failure detail. Replace undecodable bytes so the
+    # repair flow stays robust.
+    completed = subprocess.run(
+        cmd, capture_output=True, text=True, errors="replace", check=False
+    )
     if completed.returncode == 0:
         return True, "torch CPU-only fallback install completed"
     details = _extract_pip_failure_detail(completed)
@@ -421,7 +428,11 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
         "--no-cache-dir",
         *REPAIR_PACKAGES,
     ]
-    completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # errors="replace": see run_torch_cpu_fallback — keep the repair robust
+    # against non-UTF-8 pip output rather than crashing on decode.
+    completed = subprocess.run(
+        cmd, capture_output=True, text=True, errors="replace", check=False
+    )
     if completed.returncode == 0:
         messages.append("repair install completed")
         face_ok = True
@@ -436,7 +447,9 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
 def verify_in_fresh_process() -> tuple[bool, list[str]]:
     """Run check mode in a new interpreter to avoid stale import cache after repair."""
     cmd = [sys.executable, __file__, "--mode", "check"]
-    completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    completed = subprocess.run(
+        cmd, capture_output=True, text=True, errors="replace", check=False
+    )
     if completed.returncode == 0:
         return True, []
 

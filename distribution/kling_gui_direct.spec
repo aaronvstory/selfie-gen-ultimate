@@ -1,50 +1,83 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec file for Kling UI - Direct GUI Launcher
-Build with: pyinstaller kling_gui_direct.spec
-Creates a standalone executable that launches the Tkinter GUI directly (no CLI menu)
+Build with: pyinstaller kling_gui_direct.spec --noconfirm
 
-SECURITY & RELIABILITY IMPROVEMENTS:
-- Uses collect_submodules for Selenium to avoid missing imports
-- UPX disabled to prevent AV false positives
-- No redundant external .py file bundling (security risk)
-- All code bundled internally via PyInstaller
+Produces: dist/KlingUI/KlingUI.exe  (one-folder mode for reliability)
 """
 
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs
 
 block_cipher = None
 
-# Get the distribution directory
-dist_dir = Path(SPECPATH)
+SPEC_DIR = Path(SPECPATH)
+ICON_PATH = str(SPEC_DIR / 'kling_ui.ico')
+ICON_PNG_PATH = str(SPEC_DIR / 'kling_ui.png')  # macOS/Linux iconphoto source
 
-# Data files to include (NON-CODE files only)
-# NOTE: Python modules are bundled via Analysis, not as data files
-datas = [
-    # NOTE: kling_gui package is auto-discovered by Analysis
-    # NOTE: .py files are NOT bundled as data - they're compiled into the exe
-    # Only include non-code resources here if needed
-]
-
-# Hidden imports that PyInstaller might miss
+# -----------------------------------------------------------------------
+# Hidden imports
+# -----------------------------------------------------------------------
 hiddenimports = [
-    # Path utilities
+    # App-local modules
     'path_utils',
-    
-    # Tkinter and GUI
+    'model_metadata',
+    'model_schema_manager',
+    'kling_generator_falai',
+    'balance_tracker',
+    'selenium_balance_checker',
+    'dependency_checker',
+
+    # Kling GUI package (explicit) — see also collect_submodules('kling_gui')
+    # below, which sweeps any lazy-imported modules added later. The
+    # explicit list is kept so the build still works if collect_submodules
+    # is somehow skipped, and so a missing module is obvious in tracebacks.
+    'kling_gui',
+    'kling_gui.main_window',
+    'kling_gui.config_panel',
+    'kling_gui.drop_zone',
+    'kling_gui.log_display',
+    'kling_gui.queue_manager',
+    'kling_gui.video_looper',
+    'kling_gui.theme',
+    'kling_gui.model_manager_dialog',
+    'kling_gui.session_manager',
+    'kling_gui.session_controller',
+    'kling_gui.image_state',
+    'kling_gui.carousel_widget',
+    'kling_gui.compare_panel',
+    'kling_gui.layout_utils',
+    'kling_gui.ml_backend_env',
+    'kling_gui.tag_utils',
+    'kling_gui.video_discovery',
+    'kling_gui.video_inspector',
+    'kling_gui.video_metadata',
+    'kling_gui.tabs',
+    'kling_gui.tabs.face_crop_tab',
+    'kling_gui.tabs.prep_tab',
+    'kling_gui.tabs.selfie_tab',
+    'kling_gui.tabs.outpaint_tab',
+    'kling_gui.tabs.expand_tab',
+    'kling_gui.tabs.video_tab',
+
+    # Tkinter
     'tkinter',
     'tkinter.ttk',
     'tkinter.filedialog',
     'tkinter.messagebox',
+    'tkinter.simpledialog',
     'tkinterdnd2',
-    
-    # Image processing
+    'tkinterdnd2.TkinterDnD',
+
+    # PIL / Pillow
     'PIL',
     'PIL.Image',
-    
-    # Rich console (for generator)
+    'PIL.ImageTk',
+    'PIL.ImageDraw',
+    'PIL.ImageFont',
+
+    # Rich
     'rich',
     'rich.console',
     'rich.progress',
@@ -53,76 +86,159 @@ hiddenimports = [
     'rich.table',
     'rich.live',
     'rich.spinner',
-    
+    'rich.markup',
+
+    # Requests
+    'requests',
+    'requests.adapters',
+    'requests.auth',
+    'requests.packages',
+    'fal_client',
+    'urllib3',
+    'urllib3.util',
+    'certifi',
+
     # Standard library
     'json',
     'logging',
+    'logging.handlers',
     'threading',
     'concurrent.futures',
     'urllib.request',
     'urllib.parse',
     'base64',
     'hashlib',
-    
-    # Requests
-    'requests',
-    
-    # Kling GUI modules (explicit)
-    'kling_gui',
-    'kling_gui.main_window',
-    'kling_gui.config_panel',
-    'kling_gui.drop_zone',
-    'kling_gui.log_display',
-    'kling_gui.queue_manager',
-    'kling_gui.video_looper',
-    
-    # Generator and checkers
-    'kling_generator_falai',
-    'balance_tracker',
-    'selenium_balance_checker',
-    'dependency_checker',
+    'webbrowser',
+    'copy',
 ]
 
-# Selenium: Use collect_submodules to get ALL selenium modules
-# This prevents runtime import failures for selenium.webdriver.* submodules
-selenium_imports = collect_submodules('selenium')
-hiddenimports.extend(selenium_imports)
+# kling_gui submodules — belt-and-suspenders for any lazy/dynamic imports
+# added in the future (e.g., video_inspector lazy-loading config_panel for
+# HoverTooltip). Static Analysis from gui_launcher.py SHOULD catch all of
+# these, but explicit collection prevents a hard-to-diagnose ImportError
+# in the frozen build if someone refactors to a lazy import path.
+try:
+    hiddenimports += collect_submodules('kling_gui')
+except Exception:
+    pass
 
-# WebDriver Manager: Collect all submodules
-webdriver_manager_imports = collect_submodules('webdriver_manager')
-hiddenimports.extend(webdriver_manager_imports)
+# Selenium submodules (all of them - avoids runtime import failures)
+hiddenimports += collect_submodules('selenium')
+hiddenimports += collect_submodules('webdriver_manager')
 
+# Similarity engine ML stack — DeepFace + ArcFace + Facenet512 + anti-spoofing.
+# These pull in tensorflow + tf-keras + retinaface + torch (FAS classifier).
+# PyInstaller can't statically trace DeepFace's lazy model loading, so collect_submodules
+# is required to ensure the frozen build can run face similarity at runtime.
+hiddenimports += [
+    'similarity_engine',
+    'face_similarity',
+    'deepface',
+    'tf_keras',
+    'retinaface',
+    'torch',
+]
+try:
+    hiddenimports += collect_submodules('deepface')
+except Exception:
+    pass
+try:
+    hiddenimports += collect_submodules('retinaface')
+except Exception:
+    pass
+# torch submodules can be heavy; collect only what FAS needs.
+hiddenimports += [
+    'torch.nn',
+    'torch.nn.functional',
+    'torch.utils',
+    'torch.utils.data',
+]
+
+# -----------------------------------------------------------------------
+# Data files (non-Python resources)
+# -----------------------------------------------------------------------
+
+# tkinterdnd2 platform libraries (DLLs + TCL scripts)
+datas = collect_data_files('tkinterdnd2')
+
+# certifi CA bundle
+datas += collect_data_files('certifi')
+
+# App icon (bundled so _set_app_icon can find it in _MEIPASS).
+# Both .ico and .png are shipped — Windows uses .ico via iconbitmap,
+# macOS/Linux use .png via iconphoto (Tk on Aqua silently ignores .ico).
+if Path(ICON_PATH).exists():
+    datas.append((ICON_PATH, '.'))
+if Path(ICON_PNG_PATH).exists():
+    datas.append((ICON_PNG_PATH, '.'))
+
+# Default config template (prompts, model defaults - no API key)
+template_path = str(SPEC_DIR / 'default_config_template.json')
+if Path(template_path).exists():
+    datas.append((template_path, '.'))
+
+# models.json (model list — editable by user, bundled as default)
+models_json_path = str(SPEC_DIR / 'models.json')
+if Path(models_json_path).exists():
+    datas.append((models_json_path, '.'))
+
+# Oldcam scripts and launchers
+for oldcam_dir_name in ('oldcam-v7', 'oldcam-v8'):
+    oldcam_dir = SPEC_DIR / oldcam_dir_name
+    if oldcam_dir.exists():
+        for oldcam_file in oldcam_dir.rglob('*'):
+            if oldcam_file.is_file() and '__pycache__' not in oldcam_file.parts:
+                target_dir = Path(oldcam_dir_name) / oldcam_file.relative_to(oldcam_dir).parent
+                datas.append((str(oldcam_file), str(target_dir)))
+
+# Standalone similarity app bundle (lean copy; skip cache/dev artifacts)
+similarity_dir = SPEC_DIR / 'similarity'
+if similarity_dir.exists():
+    similarity_skip_dirs = {'.git', '.venv', '__pycache__', '.pytest_cache', '.serena'}
+    similarity_skip_files = {'config.json', 'manifest.json'}
+    similarity_skip_paths = {
+        Path('src') / 'models',
+    }
+    for similarity_file in similarity_dir.rglob('*'):
+        if not similarity_file.is_file():
+            continue
+        relative_path = similarity_file.relative_to(similarity_dir)
+        if similarity_skip_dirs.intersection(relative_path.parts):
+            continue
+        if any(skip_path in relative_path.parents for skip_path in similarity_skip_paths):
+            continue
+        if similarity_file.name in similarity_skip_files:
+            continue
+        if similarity_file.name == '.DS_Store':
+            continue
+        if similarity_file.suffix.lower() == '.zip':
+            continue
+        target_dir = Path('similarity') / relative_path.parent
+        datas.append((str(similarity_file), str(target_dir)))
+
+# -----------------------------------------------------------------------
+# Analysis
+# -----------------------------------------------------------------------
 a = Analysis(
-    [str(dist_dir / 'gui_launcher.py')],  # Direct GUI entry point
-    pathex=[str(dist_dir)],
+    [str(SPEC_DIR / 'gui_launcher.py')],
+    pathex=[str(SPEC_DIR)],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=[str(dist_dir / 'hooks')],
+    hookspath=[str(SPEC_DIR / 'hooks')],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # Cut down bloat - these are never used at runtime
+        'matplotlib', 'numpy', 'pandas', 'scipy',
+        'IPython', 'notebook', 'jupyter',
+        'PyQt5', 'PyQt6', 'wx',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
 )
-
-# Try to add tkinterdnd2 DLLs and TCL files
-try:
-    import tkinterdnd2
-    tkdnd_path = Path(tkinterdnd2.__file__).parent
-
-    # Find and add tkdnd DLLs
-    for dll_file in tkdnd_path.glob('**/*.dll'):
-        rel_path = dll_file.relative_to(tkdnd_path).parent
-        a.datas.append((str(dll_file), str(Path('tkinterdnd2') / rel_path), 'DATA'))
-
-    for tcl_file in tkdnd_path.glob('**/*.tcl'):
-        rel_path = tcl_file.relative_to(tkdnd_path).parent
-        a.datas.append((str(tcl_file), str(Path('tkinterdnd2') / rel_path), 'DATA'))
-except ImportError:
-    print("Warning: tkinterdnd2 not found, drag-drop may not work in built exe")
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
@@ -131,18 +247,18 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='KlingGUI_Direct',  # Distinct name from CLI version
+    name='KlingUI',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,  # DISABLED: UPX causes AV false positives and can break runtime
-    console=False,  # No console window for GUI-only version
+    upx=False,       # UPX disabled: reduces AV false positives
+    console=False,   # No console window
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # Add icon path here if you have one: icon='icon.ico'
+    icon=ICON_PATH if Path(ICON_PATH).exists() else None,
 )
 
 coll = COLLECT(
@@ -151,7 +267,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=False,  # DISABLED: Consistent with EXE setting
+    upx=False,
     upx_exclude=[],
-    name='KlingGUI_Direct',
+    name='KlingUI',
 )
