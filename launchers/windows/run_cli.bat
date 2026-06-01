@@ -13,6 +13,7 @@ set "OLDCAM_V10_REQUIREMENTS=%ROOT_DIR%\oldcam-v10\requirements.txt"
 set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
 set "DEP_CHECKER=%ROOT_DIR%\dependency_checker.py"
 set "DEP_HEALTH_SCRIPT=%ROOT_DIR%\dependency_health_check.py"
+set "CONSTRAINTS_FILE=%ROOT_DIR%\constraints.txt"
 set "STATE_DIR=%ROOT_DIR%\.launcher_state"
 set "LOG_FILE=%STATE_DIR%\launch.log"
 
@@ -172,11 +173,17 @@ set "REQ_KIND=%~2"
 set "REQ_FILTERED=%TEMP%\selfiegen_req_%RANDOM%_%RANDOM%.txt"
 if not exist "%REQ_FILE%" exit /b 0
 findstr /V /I /B "mediapipe" "%REQ_FILE%" > "%REQ_FILTERED%"
+rem Guard the constraints flag on file existence (GPT review, PR #65):
+rem if constraints.txt is somehow absent, degrade to an unconstrained
+rem install instead of pip erroring on a missing -c file. Single inner
+rem quotes (NOT doubled) so a path with spaces stays one argument.
+set "CC="
+if exist "%CONSTRAINTS_FILE%" set "CC=-c "%CONSTRAINTS_FILE%""
 echo   Syncing %REQ_KIND% deps from %~nx1...
-"%VENV_PYTHON%" -m pip install --only-binary :all: -r "%REQ_FILTERED%"
+"%VENV_PYTHON%" -m pip install --only-binary :all: !CC! -r "%REQ_FILTERED%"
 if !errorlevel! neq 0 (
     echo   Retrying without binary constraint...
-    "%VENV_PYTHON%" -m pip install -r "%REQ_FILTERED%"
+    "%VENV_PYTHON%" -m pip install !CC! -r "%REQ_FILTERED%"
     if !errorlevel! neq 0 (
         del "%REQ_FILTERED%" >nul 2>&1
         exit /b 1
@@ -185,7 +192,7 @@ if !errorlevel! neq 0 (
 findstr /I /R "^[ ]*mediapipe" "%REQ_FILE%" >nul
 if !errorlevel! equ 0 (
     echo   Installing MediaPipe separately with --no-deps...
-    "%VENV_PYTHON%" -m pip install --no-deps "%MEDIAPIPE_SPEC%"
+    "%VENV_PYTHON%" -m pip install --no-deps !CC! "%MEDIAPIPE_SPEC%"
     if !errorlevel! neq 0 (
         del "%REQ_FILTERED%" >nul 2>&1
         exit /b 1

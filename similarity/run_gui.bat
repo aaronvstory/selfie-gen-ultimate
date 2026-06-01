@@ -7,6 +7,10 @@ set "KERAS_BACKEND=tensorflow"
 
 set "REPO_ROOT="
 if exist "..\requirements.txt" if exist "..\kling_automation_ui.py" for %%I in ("..") do set "REPO_ROOT=%%~fI"
+rem v2.11 numpy-2 guard: thread the root constraints file into pip so a
+rem transitive deepface->numpy resolve cannot upgrade numpy past 1.x.
+set "CONSTRAINTS_ARG="
+if defined REPO_ROOT if exist "%REPO_ROOT%\constraints.txt" set "CONSTRAINTS_ARG=-c "%REPO_ROOT%\constraints.txt""
 if defined REPO_ROOT (
   set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 ) else (
@@ -104,7 +108,7 @@ if "!NEED_PIP!"=="0" (
 ) else (
   echo   [%LAUNCH_TS%] Synchronizing dependencies from requirements.txt...
   >>"%LOG_FILE%" echo [INFO] Installing requirements.txt
-  "!PYTHON_BIN!" -m pip install -r requirements.txt >>"%LOG_FILE%" 2>&1
+  "!PYTHON_BIN!" -m pip install !CONSTRAINTS_ARG! -r requirements.txt >>"%LOG_FILE%" 2>&1
   if errorlevel 1 (
     echo   [%LAUNCH_TS%] ERROR: Failed to synchronize dependencies.
     >>"%LOG_FILE%" echo [ERROR] Failed to install requirements.txt

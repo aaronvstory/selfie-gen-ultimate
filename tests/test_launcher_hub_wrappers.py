@@ -107,5 +107,8 @@ def test_windows_root_launchers_install_mediapipe_with_no_deps():
     cli = _read("launchers/windows/run_cli.bat")
     for text in (gui, cli):
         assert 'findstr /V /I /B "mediapipe"' in text
-        assert '-m pip install --no-deps "%MEDIAPIPE_SPEC%"' in text
+        # mediapipe install carries the guarded constraints flag (v2.11 numpy-2
+        # guard) so even the --no-deps step can't let a later resolve upgrade
+        # numpy >=2. !CC! is set to -c "%CONSTRAINTS_FILE%" when the file exists.
+        assert '-m pip install --no-deps !CC! "%MEDIAPIPE_SPEC%"' in text
         assert "ERROR: Dependency bootstrap failed." in text

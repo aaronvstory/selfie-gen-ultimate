@@ -13,6 +13,7 @@ set "OLDCAM_V10_REQUIREMENTS=%ROOT_DIR%\oldcam-v10\requirements.txt"
 set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
 set "DEP_CHECKER=%ROOT_DIR%\dependency_checker.py"
 set "DEP_HEALTH_SCRIPT=%ROOT_DIR%\dependency_health_check.py"
+set "CONSTRAINTS_FILE=%ROOT_DIR%\constraints.txt"
 set "STATE_DIR=%ROOT_DIR%\.launcher_state"
 set "LOG_FILE=%STATE_DIR%\launch.log"
 
@@ -262,6 +263,7 @@ echo(
 echo   [%LAUNCH_TS%] Dependency sync complete.
 echo(
 
+set "HEALTH_OK="
 if exist "%DEP_HEALTH_SCRIPT%" (
     if exist "%DEP_CHECKER%" (
         echo   [%LAUNCH_TS%] Running dependency bootstrap...
@@ -322,16 +324,32 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             exit /b 1
         )
         >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-repair OK ^(fresh-install path^)
+        set "HEALTH_OK=1"
     ) else (
         >>"%LOG_FILE%" echo [%LAUNCH_TS%] health-probe OK ^(fresh-install path^)
+        set "HEALTH_OK=1"
     )
     echo   [%LAUNCH_TS%] Runtime health: OK
+) else (
+    rem No health script present (older/partial tree): preserve legacy
+    rem behaviour of caching the stamp -- nothing to verify against.
+    set "HEALTH_OK=1"
 )
 
-rem --- Write stamp so next launch skips the above --------------------------
-del "%STATE_DIR%\deps_*.ok" >nul 2>&1
->>"%STAMP%" echo %LAUNCH_TS%
-echo   [%LAUNCH_TS%] Stamp written. Next launch will skip dep sync.
+rem --- Write stamp so next launch skips the above. Guarded on HEALTH_OK
+rem --- so a venv that failed the health probe (e.g. numpy 2.x re-pulled,
+rem --- breaking TF) is NOT cached as healthy -- the next launch re-syncs
+rem --- + repairs instead of trusting a broken stamp (the v2.10 fresh-
+rem --- install Face Crop bug). HEALTH_OK is set only on a clean probe,
+rem --- a successful repair, or when no health script exists to verify.
+if defined HEALTH_OK (
+    del "%STATE_DIR%\deps_*.ok" >nul 2>&1
+    >>"%STAMP%" echo %LAUNCH_TS%
+    echo   [%LAUNCH_TS%] Stamp written. Next launch will skip dep sync.
+) else (
+    >>"%LOG_FILE%" echo [%LAUNCH_TS%] stamp NOT written ^(health not OK^); next launch re-syncs
+    echo   [%LAUNCH_TS%] Health not confirmed -- stamp NOT written; next launch will re-sync.
+)
 echo(
 
 rem --- PR #49: release bootstrap mutex BEFORE launching the GUI -------
@@ -425,11 +443,17 @@ set "REQ_KIND=%~2"
 set "REQ_FILTERED=%TEMP%\selfiegen_req_%RANDOM%_%RANDOM%.txt"
 if not exist "%REQ_FILE%" exit /b 0
 findstr /V /I /B "mediapipe" "%REQ_FILE%" > "%REQ_FILTERED%"
+rem Guard the constraints flag on file existence (GPT review, PR #65):
+rem if constraints.txt is somehow absent, degrade to an unconstrained
+rem install instead of pip erroring on a missing -c file. Single inner
+rem quotes (NOT doubled) so a path with spaces stays one argument.
+set "CC="
+if exist "%CONSTRAINTS_FILE%" set "CC=-c "%CONSTRAINTS_FILE%""
 echo   Syncing %REQ_KIND% deps from %~nx1...
-"%VENV_PYTHON%" -m pip install --only-binary :all: -r "%REQ_FILTERED%"
+"%VENV_PYTHON%" -m pip install --only-binary :all: !CC! -r "%REQ_FILTERED%"
 if !errorlevel! neq 0 (
     echo   Retrying without binary constraint...
-    "%VENV_PYTHON%" -m pip install -r "%REQ_FILTERED%"
+    "%VENV_PYTHON%" -m pip install !CC! -r "%REQ_FILTERED%"
     if !errorlevel! neq 0 (
         del "%REQ_FILTERED%" >nul 2>&1
         exit /b 1
@@ -438,7 +462,7 @@ if !errorlevel! neq 0 (
 findstr /I /R "^[ ]*mediapipe" "%REQ_FILE%" >nul
 if !errorlevel! equ 0 (
     echo   Installing MediaPipe separately with --no-deps...
-    "%VENV_PYTHON%" -m pip install --no-deps "%MEDIAPIPE_SPEC%"
+    "%VENV_PYTHON%" -m pip install --no-deps !CC! "%MEDIAPIPE_SPEC%"
     if !errorlevel! neq 0 (
         del "%REQ_FILTERED%" >nul 2>&1
         exit /b 1

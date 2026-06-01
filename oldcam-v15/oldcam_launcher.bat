@@ -6,6 +6,11 @@ pushd "%SCRIPT_DIR%" >nul
 
 set "REPO_ROOT=%SCRIPT_DIR%.."
 for %%I in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fI"
+rem Guarded constraints flag (code-review, PR #65): -c only when the file
+rem exists, so a missing constraints.txt degrades to an unconstrained
+rem install instead of pip erroring. Single inner quotes = space-safe.
+set "CC="
+if exist "%REPO_ROOT%\constraints.txt" set "CC=-c "%REPO_ROOT%\constraints.txt""
 set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 if not exist "%STATE_DIR%\" mkdir "%STATE_DIR%"
 set "HAD_ERRORS="
@@ -83,7 +88,7 @@ if "%NEED_PIP%"=="0" (
   echo(
 ) else (
   echo   [%LAUNCH_TS%] Syncing Oldcam V15 dependencies...
-  "%PYTHON_CMD%" -m pip install -r "%SCRIPT_DIR%requirements.txt" >nul 2>&1
+  "%PYTHON_CMD%" -m pip install !CC! -r "%SCRIPT_DIR%requirements.txt" >nul 2>&1
   if errorlevel 1 (
     echo   [%LAUNCH_TS%] ERROR: Failed to install Oldcam V15 dependencies.
     echo   Close running Python/GUI processes and retry.

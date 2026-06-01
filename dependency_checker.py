@@ -403,12 +403,43 @@ class DependencyChecker:
         """Get list of missing or runtime-broken pip packages."""
         return [dep for dep in self.python_deps if not dep.installed or dep.runtime_issue]
 
+    def _constraints_path(self):
+        """Resolve repo-root constraints.txt (frozen-aware); None if absent."""
+        import os
+        try:
+            from path_utils import get_app_dir, is_frozen
+            if callable(is_frozen) and is_frozen() and callable(get_app_dir):
+                app_dir = get_app_dir()
+                # Guard None (gemini MED, PR #65): os.path.join(None,...) raises.
+                if app_dir:
+                    cand = os.path.join(app_dir, "constraints.txt")
+                    if os.path.isfile(cand):
+                        return cand
+        except (ImportError, AttributeError, TypeError, OSError):
+            # Narrow except (GPT review, PR #65): only expected path_utils
+            # failures; don't hide unexpected errors. __file__ fallback runs next.
+            pass
+        cand = os.path.join(os.path.dirname(os.path.abspath(__file__)), "constraints.txt")
+        return cand if os.path.isfile(cand) else None
+
     def install_pip_package(self, dep: Dependency) -> bool:
         """Install a single pip package."""
         try:
             print(f"  {self.CYAN}Installing {dep.name}...{self.RESET}")
+            # -c constraints.txt: the bootstrap (run with --enforce-all) may
+            # install optional face-stack deps (deepface / retina-face) whose
+            # OPEN numpy upper bound would otherwise let pip pull numpy 2.x and
+            # break TF 2.16.2 — the v2.10 fresh-install Face Crop bug. Threading
+            # the project constraints through every bootstrap install keeps
+            # numpy <2 no matter which dep triggers the resolve. Degrades to an
+            # unconstrained install only if the file can't be located.
+            cmd = [sys.executable, "-m", "pip", "install"]
+            constraints = self._constraints_path()
+            if constraints:
+                cmd += ["-c", constraints]
+            cmd.append(dep.pip_name)
             result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", dep.pip_name],
+                cmd,
                 capture_output=True,
                 text=True,
                 errors="replace",

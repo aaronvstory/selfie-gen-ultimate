@@ -1,0 +1,26 @@
+# Pip CONSTRAINTS file — passed via `-c constraints.txt` to EVERY pip install
+# the project issues (launchers, the dependency_checker bootstrap, and
+# dependency_health_check's repair). Unlike requirements.txt, a constraints
+# file governs *all* resolves in the invocation — including TRANSITIVE ones —
+# without itself adding packages.
+#
+# WHY THIS FILE EXISTS (v2.11): on a fresh Windows install a friend hit
+#   ImportError: numpy.core.umath failed to import
+# when clicking Face Crop. Root cause: the numpy<2 / opencv<4.12 caps lived
+# ONLY in requirements.txt, so they governed the single `pip install -r
+# requirements.txt` call — but NOT the bootstrap step, the `--no-deps`
+# mediapipe install, or the repair's `--force-reinstall`. deepface==0.0.92
+# declares only `numpy>=1.14.0` (open upper bound) and numpy 2.4.x ships
+# win cp312 wheels, so any unconstrained resolve was free to upgrade numpy
+# to 2.x — which breaks TensorFlow 2.16.2 (ml-dtypes~=0.3.1 needs numpy
+# 1.26.x). Threading these caps through `-c` on every pip call makes numpy
+# 2.x un-selectable no matter which resolve runs.
+#
+# Keep these caps in lockstep with requirements.txt's pin block and with
+# REPAIR_PACKAGES in dependency_health_check.py.
+numpy>=1.26,<2
+opencv-python<4.12
+opencv-python-headless<4.12
+opencv-contrib-python<4.12
+tensorflow==2.16.2
+tf-keras==2.16.0

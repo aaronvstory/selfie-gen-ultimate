@@ -435,8 +435,10 @@ class FaceCropTab(tk.Frame):
         if not HAS_FACE_DEPS:
             recovery_hint = _platform_face_repair_recovery_hint()
             err_detail = FACE_DEPS_ERROR or "opencv-python / numpy import failed"
+            warn_frame = tk.Frame(self, bg=COLORS["bg_panel"])
+            warn_frame.pack(fill=tk.X, padx=8, pady=(8, 0))
             warn = tk.Label(
-                self,
+                warn_frame,
                 text=f"Face Crop deps missing: {err_detail}.  {recovery_hint}",
                 bg=COLORS["bg_panel"],
                 fg=COLORS["warning"],
@@ -445,7 +447,19 @@ class FaceCropTab(tk.Frame):
                 justify="left",
                 wraplength=900,
             )
-            warn.pack(fill=tk.X, padx=8, pady=(8, 0))
+            warn.pack(fill=tk.X)
+            # Reachability fix (Codex P2, PR #65): with HAS_FACE_DEPS False the
+            # Detect button is created DISABLED, so the user could never click
+            # through to the zero-terminal repair in exactly the numpy/opencv
+            # failure it exists for. Surface a one-click "Repair now" button
+            # right here in the warning so the repair is always reachable.
+            self._dep_repair_btn = ttk.Button(
+                warn_frame,
+                text="Repair dependencies now",
+                style=TTK_BTN_WORKFLOW,
+                command=self._repair_deps_from_warning,
+            )
+            self._dep_repair_btn.pack(anchor="w", pady=(6, 2))
 
         # ── Source & Detection ──────────────────────────────────────
         source_frame = tk.LabelFrame(
@@ -1357,6 +1371,160 @@ class FaceCropTab(tk.Frame):
 
     # ── Detection ───────────────────────────────────────────────────
 
+    def _offer_restart_after_repair(self) -> None:
+        """After a SUCCESSFUL repair, offer a one-click restart.
+
+        v2.12: the friend got stuck here — the repair fixed numpy on disk but
+        the running process still had the broken numpy in memory, so detection
+        kept failing. Telling a frustrated non-technical user to "close and
+        relaunch" (and showing a terminal command) read as "still broken". So
+        we now pop a small modal with a single "Restart now" button that
+        re-spawns the app for them. We deliberately do NOT show the manual
+        terminal hint on the success path — the repair worked; the only thing
+        left is a restart, which the button does.
+        """
+        try:
+            top = tk.Toplevel(self.winfo_toplevel())
+        except Exception:
+            # No usable parent — just tell them and stop (no scary hint).
+            self.log(
+                "Face Crop: dependencies repaired. Please close and reopen the app to finish.",
+                "success",
+            )
+            return
+        top.title("Repair complete")
+        top.resizable(False, False)
+        try:
+            top.transient(self.winfo_toplevel())
+            top.grab_set()
+        except Exception:
+            pass
+        frame = tk.Frame(top, bg=COLORS["bg_panel"], padx=24, pady=20)
+        frame.pack(fill="both", expand=True)
+        tk.Label(
+            frame,
+            text="Image libraries repaired ✓",
+            bg=COLORS["bg_panel"],
+            fg=COLORS["success"],
+            font=(FONT_FAMILY, 12, "bold"),
+            anchor="w",
+            justify="left",
+        ).pack(fill="x")
+        tk.Label(
+            frame,
+            text=(
+                "The fix is done. The app needs to restart once to load the\n"
+                "repaired libraries — click Restart now and it'll reopen itself."
+            ),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 10),
+            anchor="w",
+            justify="left",
+        ).pack(fill="x", pady=(8, 14))
+
+        btn_row = tk.Frame(frame, bg=COLORS["bg_panel"])
+        btn_row.pack(fill="x")
+
+        def _do_restart() -> None:
+            try:
+                from ..dependency_repair_dialog import relaunch_app
+            except Exception:
+                relaunch_app = None
+            spawned = bool(relaunch_app and relaunch_app(self.log))
+            try:
+                top.destroy()
+            except Exception:
+                pass
+            if spawned:
+                # Quit this process so the fresh one takes over.
+                try:
+                    self.winfo_toplevel().destroy()
+                except Exception:
+                    pass
+                try:
+                    import os
+                    os._exit(0)
+                except Exception:
+                    pass
+            else:
+                self.log(
+                    "Face Crop: please close this window and reopen the app to finish.",
+                    "success",
+                )
+
+        ttk.Button(
+            btn_row,
+            text="Restart now",
+            style=TTK_BTN_WORKFLOW,
+            command=_do_restart,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            btn_row,
+            text="Later",
+            style=TTK_BTN_SECONDARY,
+            command=lambda: top.destroy(),
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+    def _repair_deps_from_warning(self) -> None:
+        """Handler for the "Repair dependencies now" button shown when cv2/numpy
+        failed to import at module load (HAS_FACE_DEPS False).
+
+        cv2/numpy are already cached (broken) in THIS interpreter, so an
+        in-process retry can't pick up the repaired wheels — after a successful
+        repair we ask the user to relaunch (the launcher now stamp-gates on
+        health, so the relaunch lands clean). Codex P2 reachability fix, PR #65.
+        """
+        btn = getattr(self, "_dep_repair_btn", None)
+        if btn is not None:
+            try:
+                btn.config(state=tk.DISABLED, text="Repairing…")
+            except Exception:
+                pass
+        ok = self._attempt_in_app_repair()
+        if ok:
+            self._status_label.config(
+                text="Dependencies repaired ✓ — restart to finish.",
+                fg=COLORS["success"],
+            )
+            if btn is not None:
+                try:
+                    btn.config(text="Repaired ✓")
+                except Exception:
+                    pass
+            # Offer a one-click restart instead of a scary terminal hint.
+            self._offer_restart_after_repair()
+        else:
+            self.log(f"Face Crop: {_platform_face_repair_recovery_hint()}", "error")
+            if btn is not None:
+                try:
+                    btn.config(state=tk.NORMAL, text="Repair dependencies now")
+                except Exception:
+                    pass
+
+    def _attempt_in_app_repair(self) -> bool:
+        """Run the zero-terminal dependency repair modal; return success.
+
+        Guards against re-entrancy (a second click while a repair is already
+        running) and degrades to False — caller then shows the manual hint —
+        if the repair dialog can't be imported or the Tk parent is gone.
+        """
+        if getattr(self, "_repairing", False):
+            return False
+        self._repairing = True
+        try:
+            from ..dependency_repair_dialog import run_face_stack_repair
+
+            return bool(run_face_stack_repair(self, log=self.log))
+        except Exception as exc:
+            self.log(
+                f"Face Crop: in-app repair could not start ({type(exc).__name__}: {exc})",
+                "error",
+            )
+            return False
+        finally:
+            self._repairing = False
+
     def _detect_face(self):
         if self._busy:
             return
@@ -1379,47 +1547,81 @@ class FaceCropTab(tk.Frame):
             self._status_label.config(text="No source image loaded", fg=COLORS["warning"])
             return
         if not HAS_FACE_DEPS:
-            # Polish-sweep (PR #55): the old toast just said "(see warning)"
-            # but the warning banner can scroll off-screen on small windows
-            # and the underlying import error (FACE_DEPS_ERROR — usually
-            # cv2 or numpy) was never visible in the log. Surface both the
-            # exception detail and the platform-specific recovery hint so
-            # the user can diagnose without hunting through scrollback.
+            # opencv/numpy failed to import at MODULE load — most often numpy
+            # 2.x breaking the compiled stack. The repair runs in a subprocess,
+            # but cv2/numpy are already cached (broken) in THIS interpreter, so
+            # an in-process retry can't pick up the fixed wheels. Offer the
+            # zero-terminal repair, then ask the user to relaunch (the launcher
+            # now stamp-gates on health, so the relaunch lands clean).
             err_detail = FACE_DEPS_ERROR or "opencv-python / numpy not available"
             self._status_label.config(
-                text=f"Face Crop deps missing: {err_detail}",
+                text=f"Face Crop deps need a one-time fix: {err_detail}",
                 fg=COLORS["error"],
             )
             self.log(
                 f"Face Crop: opencv/numpy import failed — {err_detail}",
                 "error",
             )
-            self.log(
-                f"Face Crop: {_platform_face_repair_recovery_hint()}",
-                "error",
-            )
+            if self._attempt_in_app_repair():
+                self._status_label.config(
+                    text="Dependencies repaired ✓ — restart to finish.",
+                    fg=COLORS["success"],
+                )
+                self._offer_restart_after_repair()
+            else:
+                self.log(
+                    f"Face Crop: {_platform_face_repair_recovery_hint()}",
+                    "error",
+                )
             return
         retinaface_cls, retinaface_error = _load_retinaface()
         if retinaface_cls is None:
-            recovery_hint = _platform_face_repair_recovery_hint()
+            # The lazy RetinaFace/TF import failed — usually a numpy/TF backend
+            # mismatch. Try the in-app repair (no terminal), then retry the
+            # import IN-PROCESS. This OFTEN works because retinaface/TF were
+            # never imported at module load, so the first (failed) import is
+            # the first time they enter sys.modules. BUT it is NOT guaranteed:
+            # if `import tensorflow` itself succeeded at the Python level on the
+            # first attempt and only its numpy-backed C-extension was broken,
+            # sys.modules retains the stale TF object and the in-process retry
+            # reuses it. That case degrades cleanly to the relaunch/manual hint
+            # below — never a crash (code-review M2, PR #65).
             self._status_label.config(
-                text=f"RetinaFace unavailable (TensorFlow/Keras backend mismatch or missing deps): {retinaface_error}",
-                fg=COLORS["error"],
+                text="Image libraries need a one-time fix — repairing now…",
+                fg=COLORS["progress"],
             )
-            # The full message has three parts: WHAT failed, the exact
-            # exception detail, and an actionable recovery path. We split
-            # over two log lines so the recovery hint is the LAST thing
-            # in the user's eye line — long-form retinaface tracebacks
-            # would otherwise push the actionable step off the log tail.
             self.log(
                 f"Face Crop: RetinaFace/TensorFlow import failed — {retinaface_error}",
                 "error",
             )
-            self.log(
-                f"Face Crop: {recovery_hint}",
-                "error",
-            )
-            return
+            repair_ran = self._attempt_in_app_repair()
+            if repair_ran:
+                retinaface_cls, retinaface_error = _load_retinaface()
+            if retinaface_cls is None:
+                if repair_ran:
+                    # Repair SUCCEEDED on disk but the in-process retry was
+                    # defeated by a stale TF/numpy in sys.modules (the friend's
+                    # exact case). This is NOT a failure — a fresh process loads
+                    # the repaired wheels cleanly. Offer a one-click restart
+                    # instead of a scary "close and relaunch" + terminal hint.
+                    self._status_label.config(
+                        text="Dependencies repaired ✓ — restart to finish.",
+                        fg=COLORS["success"],
+                    )
+                    self._offer_restart_after_repair()
+                    return
+                # Repair could NOT run / fully fix it — manual hint is the
+                # last-resort floor here.
+                self._status_label.config(
+                    text=f"RetinaFace unavailable: {retinaface_error}",
+                    fg=COLORS["error"],
+                )
+                self.log(
+                    f"Face Crop: {_platform_face_repair_recovery_hint()}",
+                    "error",
+                )
+                return
+            self.log("Face Crop: dependencies repaired — continuing detection.", "success")
 
         self._busy = True
         self._detect_btn.config(state=tk.DISABLED, text="Detecting...")

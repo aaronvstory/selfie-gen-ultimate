@@ -2,6 +2,113 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-02 (v2.13) — fix rPPG MediaPipe requirement parser
+
+A friend's v2.12 run completed the full pipeline (Face Crop → selfie → Kling
+video) but **rPPG failed**. Root cause: `rPPG/run_rppg.bat` extracted the
+MediaPipe spec from `requirements.txt` with `findstr /R "^[ ]*mediapipe"`.
+Inside the batch `for /f` backtick context the anchor carets got mangled, so
+the pattern matched the FIRST line containing "mediapipe" — a **comment**
+(`# mediapipe (matplotlib drawing_utils); pin both ...`, added by the v2.11
+opencv-cap comment block). pip then tried to install that comment, hit the `;`
+as an environment marker (`InvalidMarker`), and rPPG self-heal crashed —
+saving the video with a `-NORPPG` marker.
+
+### Fixed
+
+- **rPPG MediaPipe spec parsing** — replaced the fragile `findstr` extraction
+  with a real parser, `scripts/read_requirement_spec.py`, that skips comment
+  lines and returns only the actual `mediapipe==` requirement (with a hard
+  fallback to `mediapipe==0.10.35`). The rPPG launcher now installs the correct
+  spec, so rPPG runs instead of silently degrading to `-NORPPG`.
+
+### Notes
+
+- Surgical, rPPG-only release. Face Crop, numpy constraints, the in-app
+  repair/restart flow, video generation, and the macOS launchers are
+  unchanged (the macOS `run_rppg.sh` had no dynamic extraction and was never
+  affected; the GUI/CLI launchers hardcode the MediaPipe spec and were safe).
+
+## 2026-06-02 (v2.12) — one-click restart after repair + review hardening
+
+Follow-up to v2.11. A friend testing v2.11 hit the case where the in-app
+repair **succeeded** (numpy downgraded on disk) but the running process still
+had the broken numpy/TF loaded in memory, so detection kept failing — and the
+"close and relaunch" message + terminal recovery hint read as "still broken"
+to a non-technical user. v2.12 closes that last UX gap.
+
+### Added
+
+- **One-click "Restart now" after a successful repair.** When the repair fixes
+  the libraries on disk, the app now shows a small "Repair complete ✓" dialog
+  with a Restart button that **re-spawns the app for the user** (new
+  `relaunch_app()` helper) — no manual close/reopen, no terminal. The scary
+  manual-recovery hint is suppressed on the success path (the repair worked;
+  only a restart remains).
+
+### Changed
+
+- **Repair modal hardened** (external review): worker thread now communicates
+  via a `queue.Queue` drained by a **main-thread poller** (no worker-thread Tk
+  calls, no `exc`-closure bug) — the likely cause of a hung repair that
+  "didn't help."
+- **numpy version check reads disk metadata**, not by importing numpy (which
+  is unsafe in the broken numpy-2 state).
+- **macOS dep stamp now includes `constraints.txt`** — a constraints change
+  forces a `.venv-macos` re-sync.
+- **Windows launchers** use a guarded `!CC!` constraints flag (only `-c` when
+  the file exists; single-quoted, space-safe).
+- **macOS launchers** use the `set -u`-safe array expansion
+  `"${CONSTRAINTS_ARG[@]+...}"` (the plain form aborts on empty arrays under
+  Bash 3.2, macOS's default).
+
+## 2026-06-02 (v2.11) — numpy-2 fresh-install fix + zero-terminal repair
+
+Fixes the recurring fresh-install break where the Face Crop tab failed with
+`ImportError: numpy.core.umath failed to import` — numpy 2.x sneaking into the
+venv and breaking TensorFlow 2.16.2. The numpy<2 / opencv<4.12 caps previously
+lived only in `requirements.txt`, so they governed one `pip install` but not the
+bootstrap, the `--no-deps` mediapipe step, or the repair. This release closes
+that hole project-wide, on **both Windows and macOS**, across **every launcher**.
+
+### Added
+
+- **`constraints.txt`** — a project-wide pip constraints file (numpy<2,
+  opencv<4.12 all variants, tensorflow/tf-keras pins) passed via `-c` to every
+  `pip install` the project issues. Unlike `requirements.txt`, a constraints
+  file governs transitive resolves too, so `deepface`'s open numpy bound can no
+  longer drag in numpy 2.x. Ships in the release zip.
+- **In-app dependency repair (zero terminal)** — when the Face Crop import
+  fails, the GUI now shows a progress modal, runs the deterministic repair
+  in-process, and retries automatically. Non-technical users never see a
+  terminal command. New module `kling_gui/dependency_repair_dialog.py`.
+- **`assert_numpy_pinned()`** in `dependency_health_check.py` — the runtime
+  health probe now fails on numpy ≥ 2 directly (numpy can import yet still be
+  2.x, breaking TF later), forcing the launcher to repair before caching.
+- **`tests/test_fresh_install_numpy_pin.py`** — fast asserts plus an opt-in
+  (`RUN_FRESH_INSTALL_TEST=1`) real throwaway-venv install that proves numpy
+  resolves <2 and RetinaFace instantiates. The test class that would have
+  caught this before shipping.
+
+### Changed
+
+- **Every launcher threads `-c constraints.txt`** (Windows + macOS): main
+  GUI/CLI, `setup_macos.sh`, all oldcam v7–v24 launchers (`.bat` + `.command`),
+  the similarity standalone launchers, the rPPG self-heal, and
+  `dependency_checker`'s bootstrap install + `dependency_health_check`'s repair.
+- **Launcher stamp gating** — the Windows `deps_*.ok` "healthy" stamp is now
+  written only when the health probe confirms OK (was unconditional), so a venv
+  that re-broke after repair is no longer cached as healthy.
+- **Sub-project requirements caps tightened** — `oldcam-v7/v8` gained
+  `numpy<2` + `opencv<4.12`; `oldcam-v9`–`v24` gained `opencv<4.12`;
+  `similarity/requirements.txt` gained `numpy<2`. Verified by dry-run that
+  numpy resolves to 1.26.4 for every requirements file.
+
+### Fixed
+
+- Fresh-install Face Crop crash (`numpy.core.umath failed to import`) on both
+  Windows and macOS — root-caused to unconstrained transitive numpy resolves.
+
 ## 2026-05-21 (v2.2) — Video Inspector + Tk button-styling sweep
 
 A/B video comparison + per-step "main next-action" emphasis + a full
