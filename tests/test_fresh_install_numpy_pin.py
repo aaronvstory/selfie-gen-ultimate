@@ -168,11 +168,28 @@ def test_macos_launchers_use_space_safe_constraints_array():
         # No scalar/word-splitting expansion of the constraints arg.
         assert "pip install ${CONSTRAINTS_ARG}" not in src, (
             f"{path}: uses scalar ${{CONSTRAINTS_ARG}} (word-splits on spaces); "
-            'use the array form "${CONSTRAINTS_ARG[@]}"'
+            'use the array form'
         )
         if 'CONSTRAINTS_ARG=(-c "${REPO_ROOT}/constraints.txt")' in src:
-            assert '"${CONSTRAINTS_ARG[@]}"' in src, (
-                f"{path}: must expand the constraints array as \"${{CONSTRAINTS_ARG[@]}}\""
+            # set -u-safe expansion REQUIRED: under `set -u` on macOS's default
+            # Bash 3.2, plain "${arr[@]}" on an EMPTY array raises 'unbound
+            # variable' and aborts the launcher on the graceful-degradation path
+            # (REPO_ROOT empty / constraints.txt missing). The
+            # "${arr[@]+"${arr[@]}"}" form yields nothing instead of crashing
+            # (code-review MEDIUM, PR #65 round 4).
+            assert '"${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}"' in src, (
+                f"{path}: must use the set -u-safe expansion "
+                '"${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" so an empty array '
+                "doesn't abort the launcher under set -u on Bash 3.2 (macOS)"
+            )
+            # And must NOT use the bare form that crashes on empty under set -u.
+            # (Bare form appears only as a substring of the safe form, so count
+            # occurrences: the safe form contains it twice; a bare standalone
+            # use would push the count higher — guard via the unsafe install line.)
+            assert 'pip install "${CONSTRAINTS_ARG[@]}" ' not in src and \
+                   'pip install --force-reinstall --no-deps "${CONSTRAINTS_ARG[@]}" ' not in src, (
+                f"{path}: bare \"${{CONSTRAINTS_ARG[@]}}\" on an install line crashes on "
+                "empty array under set -u (Bash 3.2); use the +-guarded form"
             )
 
 

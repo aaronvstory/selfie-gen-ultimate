@@ -97,12 +97,12 @@ if [ "$NEED_PIP" -eq 1 ]; then
   # Bash ARRAY (not a scalar string): a scalar `-c ${REPO_ROOT}/constraints.txt`
   # word-splits when REPO_ROOT contains a space (e.g. /Users/John Smith/...),
   # breaking pip for the non-technical Mac users this targets. The array +
-  # "${CONSTRAINTS_ARG[@]}" expansion below keeps the path as one argument.
+  # "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" expansion below keeps the path as one argument.
   CONSTRAINTS_ARG=()
   if [ -n "${REPO_ROOT}" ] && [ -f "${REPO_ROOT}/constraints.txt" ]; then
     CONSTRAINTS_ARG=(-c "${REPO_ROOT}/constraints.txt")
   fi
-if ! "$PYTHON_BIN" -m pip install "${CONSTRAINTS_ARG[@]}" -r requirements.txt; then
+if ! "$PYTHON_BIN" -m pip install "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" -r requirements.txt; then
     echo "[ERROR] Failed to synchronize dependencies from requirements.txt."
     [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
     exit 1

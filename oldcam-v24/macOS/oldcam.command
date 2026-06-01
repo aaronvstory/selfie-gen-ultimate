@@ -20,7 +20,7 @@ REPO_ROOT="$(find_repo_root 2>/dev/null || true)"
 # Bash ARRAY (not a scalar string): a scalar `-c ${REPO_ROOT}/constraints.txt`
 # word-splits when REPO_ROOT contains a space (e.g. /Users/John Smith/...),
 # breaking pip for the non-technical Mac users this targets. The array +
-# "${CONSTRAINTS_ARG[@]}" expansion below keeps the path as one argument.
+# "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" expansion below keeps the path as one argument.
 CONSTRAINTS_ARG=()
 if [ -n "${REPO_ROOT}" ] && [ -f "${REPO_ROOT}/constraints.txt" ]; then
   CONSTRAINTS_ARG=(-c "${REPO_ROOT}/constraints.txt")
@@ -97,7 +97,7 @@ REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk '{pri
 PY_ID="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"
 STAMP="$STATE_DIR/oldcam_v24_${REQ_HASH}_${PY_ID}.ok"
 if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy" >/dev/null 2>&1; then
-  "$PYTHON_CMD" -m pip install "${CONSTRAINTS_ARG[@]}" -r "$SCRIPT_DIR/requirements.txt" || {
+  "$PYTHON_CMD" -m pip install "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" -r "$SCRIPT_DIR/requirements.txt" || {
     echo "Failed to install Oldcam v24 dependencies."
     echo "Close running Python processes and retry. If still failing, recreate venv."
     exit 1
