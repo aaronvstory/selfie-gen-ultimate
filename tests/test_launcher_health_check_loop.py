@@ -881,11 +881,17 @@ def test_windows_launcher_gates_stamp_on_health_ok():
 
 
 def test_setup_macos_passes_constraints_to_every_pip_install():
-    """The macOS bootstrap must mirror the -c constraints.txt threading."""
+    """The macOS bootstrap must mirror the constraints threading via the
+    set -u-safe CONSTRAINTS_ARG array (gemini MED, PR #65) — an existence-guarded
+    array, expanded as "${CONSTRAINTS_ARG[@]+...}" so a missing constraints.txt
+    degrades gracefully instead of erroring/aborting under set -u."""
     setup_sh = REPO_ROOT / "setup_macos.sh"
     src = setup_sh.read_text(encoding="utf-8")
     assert 'CONSTRAINTS_FILE="${ROOT_DIR}/constraints.txt"' in src, (
         "setup_macos.sh must define CONSTRAINTS_FILE"
+    )
+    assert "CONSTRAINTS_ARG=()" in src and 'CONSTRAINTS_ARG=(-c "${CONSTRAINTS_FILE}")' in src, (
+        "setup_macos.sh must build a guarded CONSTRAINTS_ARG array"
     )
     install_lines = [
         ln.strip()
@@ -894,8 +900,9 @@ def test_setup_macos_passes_constraints_to_every_pip_install():
     ]
     assert install_lines, "No real pip-install lines found in setup_macos.sh"
     for ln in install_lines:
-        assert '-c "${CONSTRAINTS_FILE}"' in ln, (
-            f"setup_macos.sh pip install missing -c constraints.txt: {ln!r}"
+        assert '"${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}"' in ln, (
+            f"setup_macos.sh pip install missing the set -u-safe constraints "
+            f"array expansion: {ln!r}"
         )
 
 

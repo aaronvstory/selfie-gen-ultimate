@@ -9,6 +9,15 @@ REQUIREMENTS_FILE="${ROOT_DIR}/requirements.txt"
 # numpy past 1.x — the cross-OS mirror of the Windows fix for the v2.10
 # fresh-install "numpy.core.umath failed to import" Face Crop break.
 CONSTRAINTS_FILE="${ROOT_DIR}/constraints.txt"
+# Bash ARRAY for the -c flag (gemini MED, PR #65): only add `-c <file>` when the
+# file actually exists, so a missing constraints.txt degrades to an
+# unconstrained install instead of pip erroring. Expanded as
+# "${CONSTRAINTS_ARG[@]+...}" at each call site — the +-guard avoids the
+# "unbound variable" abort on an EMPTY array under `set -u` (Bash 3.2, macOS).
+CONSTRAINTS_ARG=()
+if [ -f "${CONSTRAINTS_FILE}" ]; then
+  CONSTRAINTS_ARG=(-c "${CONSTRAINTS_FILE}")
+fi
 REQUIREMENTS_STAMP="${VENV_DIR}/.requirements.sha256"
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 VERBOSE_STARTUP="${KLING_VERBOSE_STARTUP:-0}"
@@ -206,8 +215,8 @@ if [[ "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
   export OLDCAM_FACE_LANDMARKER_TASK="${TASK_MODEL_PATH}"
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --upgrade pip
   grep -E -vi '^[[:space:]]*mediapipe($|[[:space:]]|==|>=|<=|~=|!=)' "${REQUIREMENTS_FILE}" > "${FILTERED_REQUIREMENTS_FILE}" || true
-  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check -c "${CONSTRAINTS_FILE}" -r "${FILTERED_REQUIREMENTS_FILE}"
-  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --force-reinstall --no-deps -c "${CONSTRAINTS_FILE}" "mediapipe==0.10.35"
+  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" -r "${FILTERED_REQUIREMENTS_FILE}"
+  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check --force-reinstall --no-deps "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" "mediapipe==0.10.35"
   # mediapipe was installed with --no-deps to keep pip from upgrading deepface's
   # numpy/opencv-python pins. But mediapipe.tasks.python.vision still imports
   # matplotlib (drawing_utils) at module-load time and uses opencv-contrib-python
@@ -216,7 +225,7 @@ if [[ "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
   # transitive dep chain (matplotlib → contourpy → numpy) cannot upgrade numpy
   # and break tensorflow. opencv-contrib-python pinned <4.12 because newer
   # builds declare numpy>=2 and pip will refuse to install otherwise.
-  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check -c "${CONSTRAINTS_FILE}" \
+  "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" \
     "matplotlib" "opencv-contrib-python<4.12" "sounddevice" "numpy>=1.26,<2.0"
   if ! "${VENV_DIR}/bin/python" -c "${MP_VALIDATE_CMD}" >/dev/null 2>&1; then
     printf 'MediaPipe installed but Tasks FaceLandmarker API unavailable. Oldcam v9/v10 cannot run.\n' >&2

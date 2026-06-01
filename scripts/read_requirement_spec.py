@@ -27,12 +27,18 @@ import sys
 
 def find_spec(pkgname: str, path: str, fallback: str) -> str:
     """Return the first matching requirement line, else ``fallback``."""
-    # Package name boundary: name followed by a version/marker/extra delimiter
-    # or end-of-string. Case-insensitive (pip normalizes names case-insensitively).
-    pattern = re.compile(
-        r"^" + re.escape(pkgname) + r"(\s|==|>=|<=|!=|~=|<|>|;|\[|$)",
-        re.IGNORECASE,
-    )
+    # PEP 503 name normalization: pip treats names case-insensitively and
+    # collapses runs of -, _, . to a single - (so "Media_Pipe" == "mediapipe").
+    # Normalize BOTH the query and each candidate's name before comparing
+    # (gemini MED, PR #65). For "mediapipe" (no separators) this is a no-op,
+    # but it makes the helper correct for any package.
+    def _norm(name: str) -> str:
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+    want = _norm(pkgname)
+    # Capture the leading package-name token: letters/digits/-_. up to the
+    # first version/marker/extra delimiter or whitespace.
+    name_re = re.compile(r"^([A-Za-z0-9._-]+)")
     try:
         with open(path, encoding="utf-8") as fh:
             for raw in fh:
@@ -44,7 +50,8 @@ def find_spec(pkgname: str, path: str, fallback: str) -> str:
                 line = line.split(" #", 1)[0].strip()
                 if not line:
                     continue
-                if pattern.match(line):
+                m = name_re.match(line)
+                if m and _norm(m.group(1)) == want:
                     return line
     except OSError as exc:  # file missing / unreadable → fall back
         print(f"[read_requirement_spec] {type(exc).__name__}: {exc}", file=sys.stderr)

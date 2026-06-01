@@ -300,9 +300,17 @@ def relaunch_app(log: Optional[Callable[[str, str], None]] = None) -> bool:
         if os.name == "nt":
             # DETACHED_PROCESS so the new app isn't killed when this one exits.
             creationflags = 0x00000008  # DETACHED_PROCESS
+        # Anchor cwd to the entry script's directory, NOT os.getcwd() (gemini
+        # MED, PR #65): the running app may have os.chdir'd during use, which
+        # would relaunch the new process in the wrong directory. The entry
+        # script (sys.argv[0]) lives at the app root.
+        entry = sys.argv[0] if sys.argv and sys.argv[0] else None
+        launch_cwd = os.path.dirname(os.path.abspath(entry)) if entry else None
+        if not launch_cwd or not os.path.isdir(launch_cwd):
+            launch_cwd = None  # let subprocess inherit a sane default
         subprocess.Popen(
             cmd,
-            cwd=os.getcwd(),
+            cwd=launch_cwd,
             creationflags=creationflags,
             close_fds=True,
         )
