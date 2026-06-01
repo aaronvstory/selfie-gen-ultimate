@@ -98,6 +98,7 @@ def run_oldcam_version(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            errors="replace",  # oldcam stdout may carry non-UTF-8 bytes
             bufsize=1,
         )
         assert process.stdout is not None

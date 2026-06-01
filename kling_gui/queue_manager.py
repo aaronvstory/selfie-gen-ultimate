@@ -1667,6 +1667,7 @@ class QueueManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                errors="replace",  # oldcam launcher stdout may carry non-UTF-8 bytes
                 bufsize=1,
             )
             assert process.stdout is not None

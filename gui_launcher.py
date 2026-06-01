@@ -12,6 +12,23 @@ import os
 import traceback
 from pathlib import Path
 
+
+def _safe_stderr(msg: str) -> None:
+    """Write to stderr, tolerating ``sys.stderr is None``.
+
+    The frozen GUI build is PyInstaller ``console=False`` (kling_gui_direct.spec),
+    so ``sys.stderr`` is None at runtime — a bare ``sys.stderr.write`` then raises
+    AttributeError and aborts launch before the GUI appears (the same pythonw /
+    no-console crash class fixed in kling_gui/drop_zone.py for PR #61). Route every
+    launcher diagnostic through this guard so a frozen build degrades to silent
+    instead of crashing. The source-zip launcher runs with a real console where
+    this is a plain write."""
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(msg)
+    except Exception:
+        pass
+
 try:
     from kling_gui.ml_backend_env import ensure_ml_backend_env
 except Exception:
@@ -105,7 +122,7 @@ def _resolve_workspace_and_instance():
         parser.add_argument("-h", "--help", action="store_true")
         args, _unknown = parser.parse_known_args()
         if args.help:
-            sys.stderr.write(
+            _safe_stderr(
                 "gui_launcher.py — Ultimate Selfie-Gen GUI bootstrap\n\n"
                 "  --workspace NAME              Run in named workspace dir\n"
                 "                                (default: 'default'; or env KLING_WORKSPACE).\n"
@@ -119,7 +136,7 @@ def _resolve_workspace_and_instance():
         try:
             workspace = _pu_set_workspace(ws_input)
         except ValueError as exc:
-            sys.stderr.write(
+            _safe_stderr(
                 f"[selfie-gen] invalid workspace name {ws_input!r}: {exc}; "
                 f"falling back to {_PU_WORKSPACE_DEFAULT!r}\n"
             )
@@ -129,7 +146,7 @@ def _resolve_workspace_and_instance():
         if args.allow_shared_workspace:
             os.environ["KLING_ALLOW_SHARED_WORKSPACE"] = "1"
         runtime_dir = _pu_ensure_runtime_dirs(workspace, instance_id)
-        sys.stderr.write(
+        _safe_stderr(
             f"[selfie-gen] workspace={workspace} instance={instance_id} "
             f"runtime={runtime_dir}\n"
         )
@@ -138,7 +155,7 @@ def _resolve_workspace_and_instance():
         # argparse calling sys.exit (e.g. -h handler above) — let it propagate.
         raise
     except Exception as exc:
-        sys.stderr.write(f"[selfie-gen] workspace bootstrap failed: {exc}\n")
+        _safe_stderr(f"[selfie-gen] workspace bootstrap failed: {exc}\n")
         return None, None, None
 
 
@@ -186,7 +203,7 @@ def _run_dependency_bootstrap() -> bool:
 
         return bool(run_dependency_check(auto_mode=True, install_external_tools=True))
     except Exception as exc:
-        sys.stderr.write(f"Warning: dependency bootstrap failed: {exc}\n")
+        _safe_stderr(f"Warning: dependency bootstrap failed: {exc}\n")
         return False
 
 
@@ -203,7 +220,7 @@ def _load_gui_window():
 def show_critical_error(title, message):
     """Fallback error reporting using tkinter, with silent fail if tkinter missing."""
     if CLI_ERROR_MODE:
-        sys.stderr.write(f"{title}: {message}\n")
+        _safe_stderr(f"{title}: {message}\n")
         return
     try:
         import tkinter as tk
@@ -215,7 +232,7 @@ def show_critical_error(title, message):
     except Exception:
         # If tkinter is also broken, we have no choice but to print (if console exists)
         # In GUI-only mode (console=False), this might not be seen unless redirected.
-        sys.stderr.write(f"CRITICAL ERROR: {title}\n{message}\n")
+        _safe_stderr(f"CRITICAL ERROR: {title}\n{message}\n")
 
 
 def main():
@@ -266,7 +283,7 @@ def main():
         except Exception:
             pass
         if CLI_ERROR_MODE:
-            sys.stderr.write(f"Import Error: {error_msg}\n")
+            _safe_stderr(f"Import Error: {error_msg}\n")
         else:
             show_critical_error("Import Error", error_msg)
         sys.exit(1)
@@ -296,7 +313,7 @@ def main():
             f"Crash log saved to:\n{crash_log}"
         )
         if CLI_ERROR_MODE:
-            sys.stderr.write(f"Kling UI Error: {runtime_msg}\n")
+            _safe_stderr(f"Kling UI Error: {runtime_msg}\n")
         else:
             show_critical_error("Kling UI Error", runtime_msg)
         sys.exit(1)

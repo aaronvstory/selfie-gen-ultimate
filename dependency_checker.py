@@ -262,6 +262,7 @@ class DependencyChecker:
                 [tool.command] + tool.args,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=10
             )
             if result.returncode == 0:
@@ -410,6 +411,7 @@ class DependencyChecker:
                 [sys.executable, "-m", "pip", "install", dep.pip_name],
                 capture_output=True,
                 text=True,
+                errors="replace",
                 timeout=120
             )
             if result.returncode == 0:
@@ -516,7 +518,7 @@ class DependencyChecker:
             attempted_cmds.append(" ".join(cmd))
             try:
                 print(f"  {self.CYAN}Installing {tool.name} via {' '.join(cmd)}...{self.RESET}")
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+                result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=900)
                 if result.returncode == 0:
                     print(f"  {self.GREEN}✓ {tool.name} installed successfully{self.RESET}")
                     return True

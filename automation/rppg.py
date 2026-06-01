@@ -210,6 +210,7 @@ def _is_playable_secondary(
             ],
             capture_output=True,
             text=True,
+            errors="replace",  # ffprobe output may carry non-UTF-8 bytes
             timeout=10,  # subsecond on healthy files; cap noise
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -281,6 +282,7 @@ def _is_playable_video(
             ],
             capture_output=True,
             text=True,
+            errors="replace",  # ffprobe output may carry non-UTF-8 bytes
             timeout=180,
         )
     except FileNotFoundError:
@@ -1165,6 +1167,7 @@ def stream_subprocess_with_timeout(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        errors="replace",  # injector stdout may carry non-UTF-8 bytes
         bufsize=1,
         env=env,
     )
