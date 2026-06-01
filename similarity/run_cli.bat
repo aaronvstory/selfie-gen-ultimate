@@ -10,7 +10,7 @@ if exist "..\requirements.txt" if exist "..\kling_automation_ui.py" for %%I in (
 rem v2.11 numpy-2 guard: thread the root constraints file into pip so a
 rem transitive deepface->numpy resolve cannot upgrade numpy past 1.x.
 set "CONSTRAINTS_ARG="
-if defined REPO_ROOT if exist "%REPO_ROOT%\constraints.txt" set "CONSTRAINTS_ARG=-c ""%REPO_ROOT%\constraints.txt"""
+if defined REPO_ROOT if exist "%REPO_ROOT%\constraints.txt" set "CONSTRAINTS_ARG=-c "%REPO_ROOT%\constraints.txt""
 if defined REPO_ROOT (
   set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 ) else (
