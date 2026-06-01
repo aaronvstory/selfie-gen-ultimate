@@ -83,7 +83,18 @@ def test_create_dnd_root_has_try_except_structure():
         if t is None:
             return {"<bare>"}
         parts = t.elts if isinstance(t, ast.Tuple) else [t]
-        return {p.id for p in parts if isinstance(p, ast.Name)}
+        names = set()
+        for p in parts:
+            if isinstance(p, ast.Name):
+                # bare name: `except RuntimeError`
+                names.add(p.id)
+            elif isinstance(p, ast.Attribute):
+                # dotted name: `except tkinter.TclError` — use the final
+                # attribute (gemini MED: the old ast.Name-only walker silently
+                # dropped these, so a handler narrowed to `except tkinter.TclError`
+                # would make handler_names empty and the assert below misfire).
+                names.add(p.attr)
+        return names
 
     handler_names = {nm for tr in tries for h in tr.handlers for nm in _names(h)}
     # An ImportError-only handler would NOT catch the runtime TclError.
