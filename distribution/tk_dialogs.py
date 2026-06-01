@@ -164,6 +164,11 @@ def select_directory_cli_safe(*, title: str = "Select Folder") -> Optional[str]:
             ],
             capture_output=True,
             text=True,
+            # errors="replace": osascript output is decoded as text; a stray
+            # non-UTF-8 byte (e.g. a path with an odd encoding) would otherwise
+            # raise UnicodeDecodeError inside subprocess.run and crash the
+            # picker. Replace undecodable bytes instead of failing (gemini MED).
+            errors="replace",
             timeout=120,
             check=False,
         )
