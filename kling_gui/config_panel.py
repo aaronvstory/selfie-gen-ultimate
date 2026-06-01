@@ -29,6 +29,26 @@ if os.getenv("SELFIEGEN_MAC_DISABLE_DND", "0") == "1":
     _HAS_DND = False
 
 
+def _dnd_live() -> bool:
+    """Live drag-and-drop availability.
+
+    ``_HAS_DND`` above is True whenever ``import tkinterdnd2`` succeeded — but
+    the native tkdnd library can still fail to LOAD at runtime, in which case
+    ``drop_zone.create_dnd_root()`` catches the failure and flips the SHARED
+    ``drop_zone.HAS_DND`` to False. This module's own ``_HAS_DND`` is a separate
+    by-value flag that never sees that runtime flip, so a gate on bare
+    ``_HAS_DND`` would still attempt ``drop_target_register`` against a root with
+    no tkdnd loaded. Read the live shared flag (falling back to our import-time
+    value if drop_zone isn't importable) — mirrors main_window._dnd_live()."""
+    if not _HAS_DND:
+        return False
+    try:
+        from . import drop_zone as _dz
+        return bool(getattr(_dz, "HAS_DND", _HAS_DND))
+    except Exception:
+        return _HAS_DND
+
+
 # Color palette
 COLORS = {
     "bg_main": "#2D2D30",
@@ -68,6 +88,17 @@ COMBOBOX_DROPDOWN_HEIGHT = 25  # Number of items visible in dropdown (default ~1
 
 # Module logger
 logger = logging.getLogger(__name__)
+
+
+def _safe_stderr(msg: str) -> None:
+    """Write to stderr, tolerating ``sys.stderr is None`` (pythonw.exe windowed
+    builds have no console → stderr is None; a bare write would AttributeError
+    and crash the GUI). gemini HIGH."""
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(msg)
+    except Exception:
+        pass
 
 
 class HoverTooltip:
@@ -1404,8 +1435,12 @@ class ConfigPanel(tk.Frame):
             w.bind("<Enter>", _on_enter)
             w.bind("<Leave>", _on_leave)
 
-        # DnD registration
-        if _HAS_DND and _DND_FILES:
+        # DnD registration. Gate on the LIVE shared flag (_dnd_live), not the
+        # stale local _HAS_DND, so a runtime tkdnd load failure that flipped
+        # drop_zone.HAS_DND off also skips this register loop entirely instead
+        # of relying on the per-widget except below to catch the doomed attempt
+        # (subagent H1).
+        if _dnd_live() and _DND_FILES:
             for w in (inner, center, lbl_icon, lbl_main, lbl_sub):
                 try:
                     w.drop_target_register(_DND_FILES)
@@ -1416,8 +1451,18 @@ class ConfigPanel(tk.Frame):
                         [c.config(bg=_bg) for c in _all],
                     ))
                     w.dnd_bind("<<Drop>>", self._mini_dz_on_drop)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # tkdnd can fail to load at runtime even though the import
+                    # succeeded (_HAS_DND True). Log ONCE and stop (gemini MED:
+                    # the per-widget loop would otherwise print 5 identical
+                    # lines). The main file pickers still work. _safe_stderr
+                    # tolerates sys.stderr is None under pythonw.exe (gemini
+                    # HIGH).
+                    _safe_stderr(
+                        "[selfie-gen] config-panel drag-and-drop unavailable "
+                        f"({type(exc).__name__}: {exc})\n"
+                    )
+                    break
 
     def _mini_dz_on_drop(self, event):
         """Handle DnD drop event on the mini drop zone."""

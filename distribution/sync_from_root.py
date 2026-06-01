@@ -8,6 +8,12 @@ SYNC_ITEMS = [
     "gui_launcher.py",
     "kling_gui_direct.spec",
     "path_utils.py",
+    # tk_dialogs.py: kling_gui/{drop_zone,config_panel}.py import it
+    # (`from tk_dialogs import ...`). The distribution copy must carry it or
+    # `cwd=distribution python -c "import kling_gui.drop_zone"` raises
+    # ModuleNotFoundError (Codex P1, PR #61). Keep it in SYNC_ITEMS so a future
+    # sync_from_root run doesn't drop it again.
+    "tk_dialogs.py",
     "model_schema_manager.py",
     "dependency_checker.py",
     "hooks/hook-tkinterdnd2.py",

@@ -354,6 +354,7 @@ def test_launcher_manual_recovery_pip_command_matches_repair_packages():
     # the live-derived loop below catches *additions* automatically; this
     # hardcoded list catches the platform-conditional case.
     EXPECTED_WINDOWS_PACKAGES = [
+        "numpy==1.26.4",  # pinned first so a --force-reinstall can't pull numpy 2.x
         "tensorflow==2.16.2",
         "tensorflow-intel==2.16.2",  # Windows-only, must be on the Win BAT
         "protobuf==4.25.3",
