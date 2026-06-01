@@ -235,8 +235,12 @@ these?". Just do it:
 2. **Immediately + automatically**: open/refresh the PR, trigger the bots,
    AND (in the meantime, while bots run) spawn the code-reviewer subagent on
    the full branch diff — all in the same turn, no permission ask. Run the
-   subagent on EVERY PR, including docs-only ones (it catches contradictions
-   and ambiguity, not just code bugs).
+   subagent on EVERY PR with reviewable content, including SUBSTANTIVE
+   docs-only ones (workflow/contract/instruction changes like this very
+   section — it catches contradictions and ambiguity, not just code bugs).
+   Pure typo / whitespace / single-word docs fixes have nothing cross-cutting
+   to review and fall under the "Skip conditions" list at the end of this
+   section — don't spin up a subagent for those.
 3. Address subagent findings, then bot findings, per the triage rubric —
    **fix everything reasonable, don't defer** (see
    `feedback_dont_defer_fix_everything`). Commit + push each fix batch,
