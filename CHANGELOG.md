@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-02 (v2.14, IN PROGRESS) — Windows SSD bootstrap + cross-platform polish
+
+WIP branch — NOT yet released. Cross-platform plug-and-play SSD support +
+broad polish on top of the locked v2.13.
+
+### Added
+
+- **`START.bat`** — the Windows one-click bootstrap, cross-platform sibling of
+  the macOS `START.command`. Seeds config from a bundled `_user_state/app_support`
+  snapshot (without clobbering a live config), optionally extracts a pre-built
+  `_user_state/venv-windows.tar` to skip the slow first install, then hands off
+  to the canonical `run_gui.bat`. Lets the SSD launch the app on a virgin
+  Windows machine. Static-guard tests in `tests/test_start_bat_bootstrap.py`.
+
 ## 2026-06-02 (v2.13) — fix rPPG MediaPipe requirement parser
 
 A friend's v2.12 run completed the full pipeline (Face Crop → selfie → Kling
