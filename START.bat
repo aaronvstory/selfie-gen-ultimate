@@ -19,9 +19,17 @@ set "APP_SUPPORT=%USER_STATE%\app_support"
 set "GUI_LAUNCHER=%SCRIPT_DIR%\launchers\windows\run_gui.bat"
 set "ROOT_LAUNCHER=%SCRIPT_DIR%\run_gui.bat"
 
+rem Timestamp banner ? wmic is removed on modern Win11, so fall back to
+rem PowerShell (always present on Win10/11), then to locale date/time
+rem (gemini MED, PR #66). Keeps launch logs readable on every Windows.
+set "TS="
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WDT=%%B"
-set "WDT=%WDT: =%"
-set "TS=%WDT:~0,4%-%WDT:~4,2%-%WDT:~6,2% %WDT:~8,2%:%WDT:~10,2%:%WDT:~12,2%"
+if defined WDT (
+  set "WDT=!WDT: =!"
+  set "TS=!WDT:~0,4!-!WDT:~4,2!-!WDT:~6,2! !WDT:~8,2!:!WDT:~10,2!:!WDT:~12,2!"
+)
+if not defined TS for /f "usebackq delims=" %%T in (powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'" 2^>nul) do set "TS=%%T"
+if not defined TS set "TS=%DATE% %TIME%"
 echo(
 echo  ============================================================
 echo   selfie-gen-ultimate  --  Windows one-click launcher

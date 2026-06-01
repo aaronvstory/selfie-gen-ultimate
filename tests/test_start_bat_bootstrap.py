@@ -67,3 +67,16 @@ def test_start_bat_optional_prebuilt_venv():
     assert "venv-windows.tar" in src, (
         "START.bat should support the optional pre-built venv-windows.tar fast path"
     )
+
+
+def test_user_facing_launchers_have_wmic_timestamp_fallback():
+    """wmic is removed on modern Windows 11, so the wmic-based timestamp banner
+    yields blank launch-log timestamps there. The user-facing launchers
+    (START.bat + run_gui.bat + run_cli.bat) must fall back to PowerShell's
+    Get-Date when wmic produced nothing (gemini MED, PR #66)."""
+    for rel in ("START.bat", "launchers/windows/run_gui.bat", "launchers/windows/run_cli.bat"):
+        src = (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+        assert "wmic os get LocalDateTime" in src, f"{rel}: lost the wmic fast path"
+        assert "Get-Date -Format" in src, (
+            f"{rel}: missing the PowerShell timestamp fallback for wmic-less Win11"
+        )
