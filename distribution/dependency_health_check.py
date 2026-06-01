@@ -79,16 +79,21 @@ def _constraints_path() -> "str | None":
     import os
 
     candidates: list = []
+    # Narrow except (GPT review, PR #65): only swallow the EXPECTED failures —
+    # path_utils absent (ImportError) or get_app_dir misbehaving
+    # (AttributeError/TypeError/OSError) — so a genuinely unexpected error isn't
+    # silently hidden, dropping the -c safety. The __file__ fallback below still
+    # runs regardless.
     try:
         from path_utils import get_app_dir, is_frozen  # local import: optional
 
         if callable(is_frozen) and is_frozen() and callable(get_app_dir):
             app_dir = get_app_dir()
             # get_app_dir() can return None on a partial/odd layout — guard so
-            # os.path.join(None, ...) can't raise TypeError (gemini MED, PR #65).
+            # os.path.join(None, ...) can't raise TypeError.
             if app_dir:
                 candidates.append(os.path.join(app_dir, "constraints.txt"))
-    except Exception:
+    except (ImportError, AttributeError, TypeError, OSError):
         pass
 
     candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "constraints.txt"))
@@ -244,22 +249,14 @@ def check_runtime_dependencies(
     # Catching it here forces the launcher to repair the venv instead of
     # caching it as healthy — the v2.10 fresh-install Face Crop bug.
     #
-    # Derive the version through the injected ``importer`` (reading the
-    # numpy module's __version__) rather than the real importlib.metadata,
-    # so a fully-mocked healthy import set in the unit tests is honored and
-    # the assert doesn't spuriously fail on a CI box whose own interpreter
-    # happens to have numpy 2.x installed (code-review M1, PR #65). Falls
-    # back to importlib.metadata only when the importer can't provide a
-    # version string.
-    def _numpy_version_via_importer(_name: str) -> str:
-        version = getattr(importer("numpy"), "__version__", None)
-        if version:
-            return str(version)
-        import importlib.metadata as _md
-
-        return _md.version("numpy")
-
-    numpy_failure = assert_numpy_pinned(version_reader=_numpy_version_via_importer)
+    # Read the version from DISK METADATA (importlib.metadata.version), NOT by
+    # importing numpy: in exactly this broken numpy-2-vs-TF state, importing
+    # numpy can itself be unsafe/crash, and we must not make the health probe
+    # depend on the very import it's checking (GPT review, PR #65). Metadata is
+    # read straight from the installed dist-info on disk. The injected
+    # ``version_reader`` parameter on assert_numpy_pinned keeps it unit-testable
+    # without touching the real environment.
+    numpy_failure = assert_numpy_pinned()
     if numpy_failure:
         failures.append(numpy_failure)
 

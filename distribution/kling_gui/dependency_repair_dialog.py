@@ -134,53 +134,43 @@ def run_face_stack_repair(
 
     result = {"ok": False, "done": False}
 
-    # ── Thread-safety (gemini HIGH, PR #65) ──────────────────────────────
-    # `log` updates the GUI LogDisplay text widget and `status_var.set` touches
-    # a Tk var — BOTH are unsafe to call from the worker thread. Every
-    # UI-touching call from `_worker` is marshalled onto the Tk main loop via
-    # `_post`, which wraps `top.after` in try/except so a destroyed window
-    # (parent closed mid-repair) can't raise out of the worker. And the worker's
-    # `finally` calls `_unblock()` DIRECTLY (not via after) as a guaranteed
-    # last resort — if `top.after` is dead, the main thread's fallback spin-loop
-    # still sees `result["done"]` flip and exits rather than hanging forever.
-    def _post(fn) -> None:
-        try:
-            top.after(0, fn)
-        except Exception:
-            pass
+    # ── Thread-safety: queue + main-thread poller (GPT review, PR #65) ───
+    # The worker thread does ONLY blocking work (run_repair, verify) and
+    # communicates back by putting plain string/bool events on a Queue. It
+    # NEVER touches Tk — no `top.after`, no widget access (calling top.after
+    # from a worker thread is itself unsafe on some Tk builds). A poller that
+    # runs ON THE MAIN THREAD (scheduled via top.after BEFORE the worker
+    # starts) drains the queue and does all UI mutation. Exception messages
+    # are formatted to strings INSIDE the worker before enqueueing, so we
+    # never close over an `exc` variable (Python clears it after the except
+    # block, which would lose the real error in a deferred callback).
+    import queue as _queue
+
+    events: "_queue.Queue" = _queue.Queue()
 
     def _worker() -> None:
-        ok = False
         try:
             repaired, message = run_repair(failures=failures)
-            _post(lambda: _safe_log(log, f"Face Crop: repair step — {message}", "info" if repaired else "error"))
-            _post(lambda: status_var.set("Verifying the fix…"))
+            events.put(("log", f"Face Crop: repair step — {message}", "info" if repaired else "error"))
+            events.put(("status", "Verifying the fix…"))
             verified, vfailures = verify_in_fresh_process()
-            ok = bool(repaired and verified)
             if not verified and vfailures:
-                _post(lambda: _safe_log(log, "Face Crop: verification still reports: " + "; ".join(vfailures), "error"))
+                events.put(("log", "Face Crop: verification still reports: " + "; ".join(vfailures), "error"))
+            events.put(("done", bool(repaired and verified)))
         except Exception as exc:  # pragma: no cover - defensive
-            _post(lambda: _safe_log(log, f"Face Crop: repair crashed ({type(exc).__name__}: {exc})", "error"))
-            ok = False
-        finally:
-            result["ok"] = ok
-            # Try to run _finish on the main thread; if scheduling fails (window
-            # already gone), flip `done` directly so wait_window/the spin-loop
-            # fallback unblocks and the GUI never hangs.
-            try:
-                top.after(0, _finish)
-            except Exception:
-                result["done"] = True
+            events.put(("log", f"Face Crop: repair crashed ({type(exc).__name__}: {exc})", "error"))
+            events.put(("done", False))
 
-    def _finish() -> None:
+    def _finish(ok: bool) -> None:
         # Runs on the Tk main thread. Set `done` FIRST so even if a later
         # widget call raises, the caller is already unblocked.
+        result["ok"] = ok
         result["done"] = True
         try:
             bar.stop()
         except Exception:
             pass
-        if result["ok"]:
+        if ok:
             _reset_retinaface_cache()
             _safe_log(log, "Face Crop: dependencies repaired successfully — retrying…", "success")
         else:
@@ -194,6 +184,41 @@ def run_face_stack_repair(
         except Exception:
             pass
 
+    def _poll() -> None:
+        # Main-thread queue drain. Reschedules itself every 100ms until the
+        # worker emits a ("done", ok) event, then finishes once.
+        drained_done = None
+        try:
+            while True:
+                evt = events.get_nowait()
+                kind = evt[0]
+                if kind == "log":
+                    _safe_log(log, evt[1], evt[2])
+                elif kind == "status":
+                    try:
+                        status_var.set(evt[1])
+                    except Exception:
+                        pass
+                elif kind == "done":
+                    drained_done = evt[1]
+        except _queue.Empty:
+            pass
+        if drained_done is not None:
+            _finish(bool(drained_done))
+            return
+        if not result["done"]:
+            try:
+                top.after(100, _poll)
+            except Exception:
+                # Window gone before done — unblock the caller.
+                result["done"] = True
+
+    # Start the main-thread poller BEFORE the worker so every Tk call happens
+    # on the main thread; the worker only ever touches the queue.
+    try:
+        top.after(0, _poll)
+    except Exception:
+        pass
     threading.Thread(target=_worker, daemon=True).start()
 
     # Modal: grab focus + block the caller until _finish destroys the window.
@@ -204,9 +229,9 @@ def run_face_stack_repair(
     try:
         parent.wait_window(top)
     except Exception:
-        # If wait_window can't run, pump the event loop until the worker flags
-        # done. `time.sleep(0.05)` per iteration caps this at ~20 Hz instead of
-        # busy-spinning a CPU core (gemini MEDIUM, PR #65).
+        # If wait_window can't run, pump the event loop until done. 50ms sleep
+        # caps this at ~20 Hz instead of busy-spinning a core. The poller above
+        # still drains the queue + calls _finish on these update() ticks.
         import time
 
         while not result["done"]:

@@ -415,7 +415,9 @@ class DependencyChecker:
                     cand = os.path.join(app_dir, "constraints.txt")
                     if os.path.isfile(cand):
                         return cand
-        except Exception:
+        except (ImportError, AttributeError, TypeError, OSError):
+            # Narrow except (GPT review, PR #65): only expected path_utils
+            # failures; don't hide unexpected errors. __file__ fallback runs next.
             pass
         cand = os.path.join(os.path.dirname(os.path.abspath(__file__)), "constraints.txt")
         return cand if os.path.isfile(cand) else None

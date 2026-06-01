@@ -76,10 +76,10 @@ def test_oldcam_macos_v9_v10_install_mediapipe_separately():
     v10 = (REPO_ROOT / "oldcam-v10" / "macOS" / "oldcam.command").read_text(encoding="utf-8")
     for text in (v9, v10):
         assert "grep -E -vi '^[[:space:]]*mediapipe($|[[:space:]]|==|>=|<=|~=|!=)'" in text
-        # v2.11: --no-deps mediapipe install carries the constraints bash ARRAY
-        # ("${CONSTRAINTS_ARG[@]}") — array form is space-safe vs a scalar that
-        # word-splits on a REPO_ROOT containing spaces (code-review H1, PR #65).
-        assert '-m pip install --force-reinstall --no-deps "${CONSTRAINTS_ARG[@]}" "mediapipe==0.10.35"' in text
+        # v2.11: --no-deps mediapipe carries the set -u-safe constraints array
+        # expansion — array form is space-safe AND the "[@]+" guard avoids the
+        # Bash 3.2 empty-array 'unbound variable' abort under set -u (PR #65).
+        assert '-m pip install --force-reinstall --no-deps "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" "mediapipe==0.10.35"' in text
         assert 'CONSTRAINTS_ARG=()' in text
         assert "MP_VALIDATE_CMD=" in text
         assert "Tasks FaceLandmarker API unavailable" in text

@@ -823,12 +823,19 @@ def test_constraints_file_caps_numpy_and_opencv():
     ["launchers/windows/run_gui.bat", "launchers/windows/run_cli.bat"],
 )
 def test_windows_launchers_pass_constraints_to_every_pip_install(bat_rel):
-    """Every `pip install` in BOTH Windows launchers must carry -c
-    constraints.txt so a transitive resolve (deepface→numpy) can't upgrade
-    numpy past 1.x. Both have their own :INSTALL_REQUIREMENTS copy."""
+    """Every project-dep `pip install` in BOTH Windows launchers must carry the
+    constraints flag so a transitive resolve (deepface→numpy) can't upgrade
+    numpy past 1.x. The flag is the guarded `!CC!` variable, set once per
+    :INSTALL_REQUIREMENTS to `-c "%CONSTRAINTS_FILE%"` only when the file exists
+    (GPT review, PR #65 — graceful when constraints.txt is absent)."""
     src = (REPO_ROOT / bat_rel).read_text(encoding="utf-8")
     assert r'CONSTRAINTS_FILE=%ROOT_DIR%\constraints.txt' in src, (
         f"{bat_rel} must define CONSTRAINTS_FILE pointing at constraints.txt"
+    )
+    # The guard: CC is set to the (single-quoted, space-safe) -c flag only if
+    # the constraints file exists.
+    assert 'if exist "%CONSTRAINTS_FILE%" set "CC=-c "%CONSTRAINTS_FILE%""' in src, (
+        f"{bat_rel} must define the guarded CC constraints flag"
     )
 
     # Every pip-install line that installs project deps (excludes `--upgrade pip`
@@ -842,8 +849,8 @@ def test_windows_launchers_pass_constraints_to_every_pip_install(bat_rel):
     ]
     assert install_lines, f"No real pip-install lines found in {bat_rel}"
     for ln in install_lines:
-        assert '-c "%CONSTRAINTS_FILE%"' in ln, (
-            f"{bat_rel}: pip install line missing -c constraints.txt: {ln!r}"
+        assert "!CC!" in ln or '-c "%CONSTRAINTS_FILE%"' in ln, (
+            f"{bat_rel}: pip install line missing the constraints flag: {ln!r}"
         )
 
 

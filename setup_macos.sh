@@ -30,12 +30,24 @@ python_base_prefix() {
 
 requirements_hash() {
   local python_bin="$1"
-  "${python_bin}" - "${REQUIREMENTS_FILE}" <<'PY'
+  # Hash BOTH requirements.txt AND constraints.txt (GPT review, PR #65): the
+  # numpy<2 caps are enforced via `-c constraints.txt`, so a constraints change
+  # must invalidate the .venv-macos stamp and force a dependency re-sync /
+  # health check — otherwise an existing venv with a matching requirements
+  # stamp would skip the sync even though the constraints changed. A missing
+  # constraints.txt simply contributes nothing (graceful).
+  "${python_bin}" - "${REQUIREMENTS_FILE}" "${CONSTRAINTS_FILE}" <<'PY'
 import hashlib
 import pathlib
 import sys
 
-print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+h = hashlib.sha256()
+for arg in sys.argv[1:]:
+    p = pathlib.Path(arg)
+    if p.is_file():
+        h.update(p.read_bytes())
+    h.update(b"\0")  # delimiter so file boundaries are unambiguous
+print(h.hexdigest())
 PY
 }
 

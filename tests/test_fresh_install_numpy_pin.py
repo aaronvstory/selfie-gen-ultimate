@@ -60,11 +60,17 @@ def test_assert_numpy_pinned_handles_unparseable():
     assert msg is not None and "unparseable" in msg
 
 
-def test_check_runtime_dependencies_surfaces_numpy2():
+def test_check_runtime_dependencies_surfaces_numpy2(monkeypatch):
     """A numpy-2 environment must make check_runtime_dependencies fail even
     when every import otherwise succeeds (the failure mode where numpy imports
-    fine but TF's C-extension breaks later)."""
+    fine but TF's C-extension breaks later).
+
+    The numpy version is read from DISK METADATA (importlib.metadata), not by
+    importing numpy (GPT review, PR #65 — importing numpy is unsafe in this
+    broken state). We monkeypatch importlib.metadata.version to simulate 2.4.2
+    without needing numpy 2.x actually installed in the test venv."""
     import types
+    import importlib.metadata as md
 
     healthy = {
         "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
@@ -85,10 +91,13 @@ def test_check_runtime_dependencies_surfaces_numpy2():
             return healthy[name]
         raise ModuleNotFoundError(name)
 
-    # No monkeypatch needed: check_runtime_dependencies derives the numpy
-    # version through the injected importer (code-review M1, PR #65), so the
-    # mocked numpy.__version__="2.4.2" is honored directly — the test proves
-    # the real wiring instead of stubbing assert_numpy_pinned.
+    _real_version = md.version
+
+    def fake_version(name: str) -> str:
+        return "2.4.2" if name == "numpy" else _real_version(name)
+
+    monkeypatch.setattr(md, "version", fake_version)
+
     ok, failures = dhc.check_runtime_dependencies(
         importer=fake_importer,
         runtime_probe=lambda: (object(), ""),
@@ -133,6 +142,35 @@ def test_constraints_and_requirements_numpy_caps_agree():
     reqs = REQUIREMENTS_FILE.read_text(encoding="utf-8")
     assert "numpy>=1.26,<2" in cons
     assert "numpy>=1.26,<2" in reqs
+
+
+def test_macos_stamp_hash_includes_constraints():
+    """setup_macos.sh's requirements_hash() must incorporate constraints.txt so
+    a constraints change invalidates the .venv-macos stamp and forces a re-sync
+    (GPT review, PR #65). Verify both: (a) the source passes CONSTRAINTS_FILE to
+    the hasher, and (b) the hashing algorithm actually produces a different
+    digest when constraints.txt content changes."""
+    import hashlib
+
+    src = (REPO_ROOT / "setup_macos.sh").read_text(encoding="utf-8")
+    assert 'CONSTRAINTS_FILE="${ROOT_DIR}/constraints.txt"' in src
+    assert '"${REQUIREMENTS_FILE}" "${CONSTRAINTS_FILE}"' in src, (
+        "requirements_hash must pass BOTH files to the hasher"
+    )
+
+    # Reproduce the hashing algorithm (read_bytes per file + \0 delimiter) and
+    # confirm two different constraints contents yield different digests.
+    def _hash(req: bytes, cons: bytes) -> str:
+        h = hashlib.sha256()
+        for blob in (req, cons):
+            h.update(blob)
+            h.update(b"\0")
+        return h.hexdigest()
+
+    req = b"numpy>=1.26,<2\n"
+    a = _hash(req, b"numpy>=1.26,<2\n")
+    b = _hash(req, b"numpy>=1.26,<2\nopencv-python<4.12\n")
+    assert a != b, "constraints.txt change must alter the macOS stamp hash"
 
 
 def test_face_crop_repair_button_reachable_when_deps_missing():
