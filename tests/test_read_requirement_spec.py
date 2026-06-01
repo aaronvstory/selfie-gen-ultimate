@@ -12,7 +12,12 @@ comment lines and return only the real requirement.
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "read_requirement_spec.py"
@@ -104,3 +109,49 @@ def test_main_prints_only_spec(tmp_path, capsys):
     assert rc == 0
     assert out.strip() == "mediapipe==0.10.35"
     assert out.count("\n") == 1, "must print exactly one line to stdout"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows for/f capture test")
+def test_run_rppg_bat_for_f_actually_captures_spec(tmp_path):
+    """RUNTIME guard (code-review HIGH, PR #65): execute the EXACT for/f line
+    from run_rppg.bat in real cmd and assert it CAPTURES the parser output —
+    not the fallback. A bare caret-quoted first token errors out and captures
+    nothing; the `cmd /c "..."` wrapper fixes it. This catches a silent no-op
+    that a text-scan static guard would miss."""
+    # Stage a requirements.txt with the exact comment-then-pin shape.
+    repo = tmp_path
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "read_requirement_spec.py").write_text(
+        SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (repo / "requirements.txt").write_text(
+        "# mediapipe (matplotlib drawing_utils); pin both explicitly\n"
+        "mediapipe==0.10.35\n",
+        encoding="utf-8",
+    )
+    result_file = repo / "result.txt"
+    # Reproduce the run_rppg.bat block verbatim (the for/f + fallback).
+    bat = (
+        "@echo off\r\n"
+        "setlocal enabledelayedexpansion\r\n"
+        f'set "PYTHON_BIN={sys.executable}"\r\n'
+        f'set "REPO_ROOT={repo}"\r\n'
+        'set "RPPG_MEDIAPIPE_SPEC="\r\n'
+        'for /f "usebackq delims=" %%M in (`cmd /c ^"^"!PYTHON_BIN!^" '
+        '^"%REPO_ROOT%\\scripts\\read_requirement_spec.py^" mediapipe '
+        '^"%REPO_ROOT%\\requirements.txt^" mediapipe==0.10.35^"`) do (\r\n'
+        "  if not defined RPPG_MEDIAPIPE_SPEC set \"RPPG_MEDIAPIPE_SPEC=%%M\"\r\n"
+        ")\r\n"
+        'if not defined RPPG_MEDIAPIPE_SPEC set "RPPG_MEDIAPIPE_SPEC=FALLBACK_SENTINEL"\r\n'
+        f'> "{result_file}" echo !RPPG_MEDIAPIPE_SPEC!\r\n'
+        "endlocal\r\n"
+    )
+    bat_file = repo / "probe.bat"
+    bat_file.write_bytes(bat.encode("ascii"))
+    subprocess.run([os.environ.get("COMSPEC", "cmd.exe"), "/c", str(bat_file)],
+                   capture_output=True, check=False)
+    captured = result_file.read_text(encoding="utf-8", errors="replace").strip()
+    assert captured == "mediapipe==0.10.35", (
+        f"for/f must CAPTURE the parser output, not fall back. Got: {captured!r}. "
+        "If 'FALLBACK_SENTINEL', the cmd /c wrapper is missing/broken."
+    )

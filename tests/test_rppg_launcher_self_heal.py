@@ -74,6 +74,21 @@ def test_self_heal_installs_mediapipe_no_deps(bat_source: str):
         "self-heal must NOT use the comment-matching findstr regex for the "
         "mediapipe SPEC (it matched a comment line — v2.13 bug). Use the parser."
     )
+    # CRITICAL (code-review HIGH, PR #65): the for/f inner command MUST be
+    # wrapped in `cmd /c "..."`. A bare caret-quoted first token (^"...^") makes
+    # for/f's tokenizer error out and capture NOTHING, so the dynamic read
+    # silently no-ops and only the fallback fires (pin would drift on a bump).
+    # Verified live: the cmd /c wrapper captures `mediapipe==0.10.35`; the bare
+    # form captures nothing. Pin the wrapper so the no-op can't regress.
+    assert "for /f" in bat_source and "read_requirement_spec.py" in bat_source
+    parser_line = next(
+        ln for ln in bat_source.splitlines()
+        if "for /f" in ln and "read_requirement_spec.py" in ln
+    )
+    assert "cmd /c" in parser_line, (
+        "the for/f parser invocation must wrap the inner command in `cmd /c \"...\"` "
+        f"or it captures nothing and the dynamic read no-ops. Got: {parser_line!r}"
+    )
     # v2.11: --no-deps mediapipe install carries -c constraints.txt too.
     assert '-m pip install --no-deps -c "%REPO_ROOT%\\constraints.txt" "!RPPG_MEDIAPIPE_SPEC!"' in bat_source, (
         "self-heal must install the parsed mediapipe pin with --no-deps "

@@ -215,9 +215,13 @@ rem lines. The old `findstr /R "^[ ]*mediapipe"` had its anchor carets
 rem mangled inside this for /f backtick context, so it matched the FIRST
 rem "mediapipe" line in requirements.txt -- a COMMENT -- and pip choked on
 rem the embedded ";" (InvalidMarker), failing rPPG. The helper returns the
-rem real `mediapipe==` line (or the fallback) and nothing else.
+rem real `mediapipe==` line (or the fallback) and nothing else. The inner
+rem command is wrapped in `cmd /c "..."` because a bare caret-quoted first
+rem token (^"...^") makes for /f's tokenizer error out + capture nothing
+rem (code-review HIGH, PR #65) -- the cmd /c wrapper captures correctly,
+rem verified live with spaced + non-spaced REPO_ROOT.
 set "RPPG_MEDIAPIPE_SPEC="
-for /f "usebackq delims=" %%M in (`^"!PYTHON_BIN!^" ^"%REPO_ROOT%\scripts\read_requirement_spec.py^" mediapipe ^"%REPO_ROOT%\requirements.txt^" mediapipe==0.10.35`) do (
+for /f "usebackq delims=" %%M in (`cmd /c ^"^"!PYTHON_BIN!^" ^"%REPO_ROOT%\scripts\read_requirement_spec.py^" mediapipe ^"%REPO_ROOT%\requirements.txt^" mediapipe==0.10.35^"`) do (
   if not defined RPPG_MEDIAPIPE_SPEC set "RPPG_MEDIAPIPE_SPEC=%%M"
 )
 if not defined RPPG_MEDIAPIPE_SPEC set "RPPG_MEDIAPIPE_SPEC=mediapipe==0.10.35"
