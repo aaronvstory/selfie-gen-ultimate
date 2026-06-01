@@ -60,7 +60,7 @@ def test_assert_numpy_pinned_handles_unparseable():
     assert msg is not None and "unparseable" in msg
 
 
-def test_check_runtime_dependencies_surfaces_numpy2(monkeypatch):
+def test_check_runtime_dependencies_surfaces_numpy2():
     """A numpy-2 environment must make check_runtime_dependencies fail even
     when every import otherwise succeeds (the failure mode where numpy imports
     fine but TF's C-extension breaks later)."""
@@ -85,13 +85,10 @@ def test_check_runtime_dependencies_surfaces_numpy2(monkeypatch):
             return healthy[name]
         raise ModuleNotFoundError(name)
 
-    # Force assert_numpy_pinned to see numpy 2.x regardless of the test venv.
-    monkeypatch.setattr(
-        dhc,
-        "assert_numpy_pinned",
-        lambda *a, **k: "numpy too new: 2.4.2 (need <2)",
-    )
-
+    # No monkeypatch needed: check_runtime_dependencies derives the numpy
+    # version through the injected importer (code-review M1, PR #65), so the
+    # mocked numpy.__version__="2.4.2" is honored directly — the test proves
+    # the real wiring instead of stubbing assert_numpy_pinned.
     ok, failures = dhc.check_runtime_dependencies(
         importer=fake_importer,
         runtime_probe=lambda: (object(), ""),
@@ -136,6 +133,32 @@ def test_constraints_and_requirements_numpy_caps_agree():
     reqs = REQUIREMENTS_FILE.read_text(encoding="utf-8")
     assert "numpy>=1.26,<2" in cons
     assert "numpy>=1.26,<2" in reqs
+
+
+def test_macos_launchers_use_space_safe_constraints_array():
+    """macOS .command launchers must build CONSTRAINTS_ARG as a bash ARRAY and
+    expand it with "${CONSTRAINTS_ARG[@]}" — a scalar string word-splits when
+    REPO_ROOT contains a space (e.g. /Users/John Smith/...), breaking pip for
+    the non-technical Mac users this targets (code-review H1, PR #65)."""
+    import glob
+
+    mac_launchers = glob.glob(str(REPO_ROOT / "oldcam-v*" / "macOS" / "oldcam.command")) + [
+        str(REPO_ROOT / "similarity" / "run_gui.command"),
+        str(REPO_ROOT / "similarity" / "run_cli.command"),
+    ]
+    assert mac_launchers, "no macOS launchers found"
+    for path in mac_launchers:
+        src = open(path, encoding="utf-8").read()
+        assert "CONSTRAINTS_ARG=()" in src, f"{path}: must declare CONSTRAINTS_ARG as a bash array"
+        # No scalar/word-splitting expansion of the constraints arg.
+        assert "pip install ${CONSTRAINTS_ARG}" not in src, (
+            f"{path}: uses scalar ${{CONSTRAINTS_ARG}} (word-splits on spaces); "
+            'use the array form "${CONSTRAINTS_ARG[@]}"'
+        )
+        if 'CONSTRAINTS_ARG=(-c "${REPO_ROOT}/constraints.txt")' in src:
+            assert '"${CONSTRAINTS_ARG[@]}"' in src, (
+                f"{path}: must expand the constraints array as \"${{CONSTRAINTS_ARG[@]}}\""
+            )
 
 
 # ── Opt-in slow layer: real throwaway-venv install ───────────────────

@@ -1436,9 +1436,14 @@ class FaceCropTab(tk.Frame):
         if retinaface_cls is None:
             # The lazy RetinaFace/TF import failed — usually a numpy/TF backend
             # mismatch. Try the in-app repair (no terminal), then retry the
-            # import IN-PROCESS: _load_retinaface re-imports on each call until
-            # it succeeds, and retinaface/TF were never imported at module load,
-            # so the fixed wheels are picked up without a relaunch.
+            # import IN-PROCESS. This OFTEN works because retinaface/TF were
+            # never imported at module load, so the first (failed) import is
+            # the first time they enter sys.modules. BUT it is NOT guaranteed:
+            # if `import tensorflow` itself succeeded at the Python level on the
+            # first attempt and only its numpy-backed C-extension was broken,
+            # sys.modules retains the stale TF object and the in-process retry
+            # reuses it. That case degrades cleanly to the relaunch/manual hint
+            # below — never a crash (code-review M2, PR #65).
             self._status_label.config(
                 text="Image libraries need a one-time fix — repairing now…",
                 fg=COLORS["progress"],
@@ -1458,6 +1463,14 @@ class FaceCropTab(tk.Frame):
                 # Manual hint is the LAST-RESORT floor only after auto-repair
                 # could not fix it — kept last so it stays in the user's eye
                 # line below the long-form retinaface traceback.
+                # Append a relaunch nudge: if the retry was defeated by a
+                # stale TF in sys.modules (see comment above), a fresh process
+                # picks up the repaired wheels cleanly.
+                self.log(
+                    "Face Crop: repaired but the running app still has the old "
+                    "libraries loaded — close and relaunch, then try again.",
+                    "error",
+                )
                 self.log(
                     f"Face Crop: {recovery_hint}",
                     "error",

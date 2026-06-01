@@ -120,12 +120,16 @@ if [ "$NEED_PIP" -eq 0 ]; then
 else
   echo "      Dependencies stale or missing. Installing..."
   # v2.11 numpy-2 guard: thread the root constraints file into pip so a
-# transitive deepface->numpy resolve cannot upgrade numpy past 1.x.
-CONSTRAINTS_ARG=""
-if [ -n "${REPO_ROOT}" ] && [ -f "${REPO_ROOT}/constraints.txt" ]; then
-  CONSTRAINTS_ARG="-c ${REPO_ROOT}/constraints.txt"
-fi
-if ! "$PYTHON_BIN" -m pip install ${CONSTRAINTS_ARG} -r requirements.txt; then
+  # transitive deepface->numpy resolve cannot upgrade numpy past 1.x.
+  # Bash ARRAY (not a scalar string): a scalar `-c ${REPO_ROOT}/constraints.txt`
+  # word-splits when REPO_ROOT contains a space (e.g. /Users/John Smith/...),
+  # breaking pip for the non-technical Mac users this targets. The array +
+  # "${CONSTRAINTS_ARG[@]}" expansion below keeps the path as one argument.
+  CONSTRAINTS_ARG=()
+  if [ -n "${REPO_ROOT}" ] && [ -f "${REPO_ROOT}/constraints.txt" ]; then
+    CONSTRAINTS_ARG=(-c "${REPO_ROOT}/constraints.txt")
+  fi
+if ! "$PYTHON_BIN" -m pip install "${CONSTRAINTS_ARG[@]}" -r requirements.txt; then
     echo "[ERROR] Failed to synchronize dependencies from requirements.txt."
     [ -z "${SIMILARITY_LAUNCHED_BY_MAIN:-}" ] && read -r -p "Press Enter to exit..."
     exit 1

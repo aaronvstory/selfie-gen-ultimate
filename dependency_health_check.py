@@ -237,7 +237,23 @@ def check_runtime_dependencies(
     # breaks TF 2.16.2's C-extension on a later call, not at numpy import).
     # Catching it here forces the launcher to repair the venv instead of
     # caching it as healthy — the v2.10 fresh-install Face Crop bug.
-    numpy_failure = assert_numpy_pinned()
+    #
+    # Derive the version through the injected ``importer`` (reading the
+    # numpy module's __version__) rather than the real importlib.metadata,
+    # so a fully-mocked healthy import set in the unit tests is honored and
+    # the assert doesn't spuriously fail on a CI box whose own interpreter
+    # happens to have numpy 2.x installed (code-review M1, PR #65). Falls
+    # back to importlib.metadata only when the importer can't provide a
+    # version string.
+    def _numpy_version_via_importer(_name: str) -> str:
+        version = getattr(importer("numpy"), "__version__", None)
+        if version:
+            return str(version)
+        import importlib.metadata as _md
+
+        return _md.version("numpy")
+
+    numpy_failure = assert_numpy_pinned(version_reader=_numpy_version_via_importer)
     if numpy_failure:
         failures.append(numpy_failure)
 
