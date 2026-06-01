@@ -593,7 +593,7 @@ def check_git_remotes(root: Path) -> list[Finding]:
     try:
         result = subprocess.run(
             ["git", "-C", str(root), "remote", "-v"],
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True, text=True, errors="replace", timeout=10, check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return findings
@@ -725,7 +725,11 @@ def check_spoofed_commits(root: Path) -> list[Finding]:
         result = subprocess.run(
             ["git", "-C", str(root), "log",
              "--format=%H|%ae|%s", "--all", "-n", "200"],
-            capture_output=True, text=True, timeout=15, check=False,
+            # errors="replace": author emails / commit subjects (%ae|%s) can carry
+            # non-UTF-8 bytes — exactly what the spoofed-author check inspects; a
+            # decode crash here would defeat the scan. (Local divergence from the
+            # vendored upstream is one kwarg; documented here.)
+            capture_output=True, text=True, errors="replace", timeout=15, check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return findings

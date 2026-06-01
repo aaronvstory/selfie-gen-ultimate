@@ -150,6 +150,7 @@ def _git(*args: str, cwd: Path | None = None) -> Tuple[int, str, str]:
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
+            errors="replace",  # git output (author names, subjects) may be non-UTF-8
             timeout=30,
         )
         return proc.returncode, proc.stdout, proc.stderr
@@ -164,6 +165,7 @@ def _gh(*args: str) -> Tuple[int, str, str]:
             ["gh", *args],
             capture_output=True,
             text=True,
+            errors="replace",  # gh output may carry non-UTF-8 bytes
             timeout=30,
         )
         return proc.returncode, proc.stdout, proc.stderr
