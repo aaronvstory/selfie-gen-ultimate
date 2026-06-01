@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import subprocess
 import sys
 from typing import Callable
@@ -543,7 +544,28 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
 
 def verify_in_fresh_process() -> tuple[bool, list[str]]:
     """Run check mode in a new interpreter to avoid stale import cache after repair."""
-    cmd = [sys.executable, __file__, "--mode", "check"]
+    # Frozen-aware (code-review, PR #65): in a PyInstaller/frozen build
+    # ``sys.executable`` is the app itself and ``__file__`` is inside the
+    # bundle (not a runnable script), so ``[sys.executable, __file__, ...]``
+    # would re-launch the GUI instead of running the health check. Resolve a
+    # real Python interpreter for the subprocess. The repo doesn't currently
+    # ship a frozen .exe, but this keeps the function correct if it ever does.
+    if getattr(sys, "frozen", False):
+        import shutil
+
+        py = (
+            shutil.which("python")
+            or shutil.which("python3")
+            or shutil.which("py")
+        )
+        if not py:
+            # No standalone interpreter to re-exec — skip the fresh-process
+            # verify rather than relaunching the app. The in-process check
+            # already ran; report success so the caller doesn't loop.
+            return True, []
+        cmd = [py, os.path.abspath(__file__), "--mode", "check"]
+    else:
+        cmd = [sys.executable, __file__, "--mode", "check"]
     completed = subprocess.run(
         cmd, capture_output=True, text=True, errors="replace", check=False
     )

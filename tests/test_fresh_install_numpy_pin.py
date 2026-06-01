@@ -201,7 +201,7 @@ def test_macos_launchers_use_space_safe_constraints_array():
     ]
     assert mac_launchers, "no macOS launchers found"
     for path in mac_launchers:
-        src = open(path, encoding="utf-8").read()
+        src = Path(path).read_text(encoding="utf-8")
         assert "CONSTRAINTS_ARG=()" in src, f"{path}: must declare CONSTRAINTS_ARG as a bash array"
         # No scalar/word-splitting expansion of the constraints arg.
         assert "pip install ${CONSTRAINTS_ARG}" not in src, (

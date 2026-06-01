@@ -24,11 +24,14 @@ def test_oldcam_local_launchers_keep_version_specific_targets():
     assert 'set "HAD_ERRORS="' in v7
     assert 'set "HAD_ERRORS="' in v8
     assert '"%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>nul' in v7
-    # v2.11: pip install now carries -c constraints.txt (numpy-2 guard).
-    assert '"%PYTHON_CMD%" -m pip install -c "%REPO_ROOT%\\constraints.txt" -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul' in v7
+    # v2.13: pip install carries the GUARDED !CC! constraints flag (numpy-2
+    # guard, code-review PR #65) — `-c "%REPO_ROOT%\constraints.txt"` only when
+    # the file exists, single-inner-quote (space-safe), else unconstrained.
+    assert 'if exist "%REPO_ROOT%\\constraints.txt" set "CC=-c "%REPO_ROOT%\\constraints.txt""' in v7
+    assert '"%PYTHON_CMD%" -m pip install !CC! -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul' in v7
     assert 'call "%PYTHON_CMD%" "%SCRIPT_DIR%oldcam.py" "%~1" %EXTRA_ARGS%' in v7
     assert '"%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>nul' in v8
-    assert '"%PYTHON_CMD%" -m pip install -c "%REPO_ROOT%\\constraints.txt" -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul' in v8
+    assert '"%PYTHON_CMD%" -m pip install !CC! -r "%SCRIPT_DIR%requirements.txt" >nul 2>nul' in v8
     assert 'call "%PYTHON_CMD%" "%SCRIPT_DIR%oldcam.py" "%~1" %EXTRA_ARGS%' in v8
     assert 'set "PY_ID=%PY_ID:/=_%"' in v7
     assert 'set "PY_ID=%PY_ID: =_%"' in v7
@@ -36,9 +39,9 @@ def test_oldcam_local_launchers_keep_version_specific_targets():
     assert 'set "PY_ID=%PY_ID: =_%"' in v8
     assert 'findstr /V /I /B "mediapipe"' in v9
     assert 'findstr /V /I /B "mediapipe"' in v10
-    # v2.11: --no-deps mediapipe install now carries -c constraints.txt too.
-    assert '-m pip install --force-reinstall --no-deps -c "%REPO_ROOT%\\constraints.txt" "%MEDIAPIPE_SPEC%"' in v9
-    assert '-m pip install --force-reinstall --no-deps -c "%REPO_ROOT%\\constraints.txt" "%MEDIAPIPE_SPEC%"' in v10
+    # v2.13: --no-deps mediapipe install carries the guarded !CC! flag too.
+    assert '-m pip install --force-reinstall --no-deps !CC! "%MEDIAPIPE_SPEC%"' in v9
+    assert '-m pip install --force-reinstall --no-deps !CC! "%MEDIAPIPE_SPEC%"' in v10
     assert 'set "MP_VALIDATE_CMD=' in v9
     assert 'set "MP_VALIDATE_CMD=' in v10
     assert "Tasks FaceLandmarker API unavailable" in v9

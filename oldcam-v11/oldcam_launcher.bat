@@ -6,6 +6,11 @@ pushd "%SCRIPT_DIR%" >nul
 
 set "REPO_ROOT=%SCRIPT_DIR%.."
 for %%I in ("%REPO_ROOT%") do set "REPO_ROOT=%%~fI"
+rem Guarded constraints flag (code-review, PR #65): -c only when the file
+rem exists, so a missing constraints.txt degrades to an unconstrained
+rem install instead of pip erroring. Single inner quotes = space-safe.
+set "CC="
+if exist "%REPO_ROOT%\constraints.txt" set "CC=-c "%REPO_ROOT%\constraints.txt""
 set "STATE_DIR=%REPO_ROOT%\.launcher_state"
 if not exist "%STATE_DIR%\" mkdir "%STATE_DIR%"
 set "HAD_ERRORS="
@@ -81,7 +86,7 @@ if "%NEED_PIP%"=="0" (
   echo   [%LAUNCH_TS%] Syncing Oldcam V11 dependencies...
   set "REQ_FILTERED=%STATE_DIR%\oldcam_v11_req_filtered.txt"
   findstr /V /I /B "mediapipe" "%SCRIPT_DIR%requirements.txt" > "%REQ_FILTERED%"
-  "%PYTHON_CMD%" -m pip install -c "%REPO_ROOT%\constraints.txt" -r "%REQ_FILTERED%" >nul 2>&1
+  "%PYTHON_CMD%" -m pip install !CC! -r "%REQ_FILTERED%" >nul 2>&1
   if errorlevel 1 (
     for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
     echo   [%LAUNCH_TS%] ERROR: Failed to install Oldcam V11 dependencies.
@@ -89,7 +94,7 @@ if "%NEED_PIP%"=="0" (
     set "HAD_ERRORS=1"
     goto DONE
   )
-  "%PYTHON_CMD%" -m pip install --force-reinstall --no-deps -c "%REPO_ROOT%\constraints.txt" "%MEDIAPIPE_SPEC%" >nul 2>&1
+  "%PYTHON_CMD%" -m pip install --force-reinstall --no-deps !CC! "%MEDIAPIPE_SPEC%" >nul 2>&1
   if errorlevel 1 (
     for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
     echo   [%LAUNCH_TS%] ERROR: Failed to install MediaPipe for Oldcam V11.
