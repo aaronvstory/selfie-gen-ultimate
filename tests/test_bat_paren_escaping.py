@@ -102,10 +102,16 @@ def _structural_delta(line: str):
             delta += 1
         return delta
     # trailing structural open (control-flow head or bare `(`), but NOT the
-    # `echo(` blank-line idiom (echo immediately followed by the paren).
+    # `echo(` blank-line idiom. The idiom appears both bare (`echo(`) and after a
+    # redirect (`>>"%LOG_FILE%" echo(`), so a line-start check misses the redirect
+    # form and inflates the tracked depth. Look at the text AFTER the last `echo`
+    # token -- if it's just `(`, the paren belongs to the echo, not a block opener
+    # (code-review MEDIUM, PR #70).
     low = stripped.lower()
     if stripped.endswith("(") and not stripped.endswith("^("):
-        if not (low.startswith("echo(") or low.startswith("echo (")):
+        pos = low.rfind("echo")
+        after_echo = low[pos + 4:].strip() if pos != -1 else None
+        if after_echo != "(":  # not the echo-blank-line idiom
             delta += 1
     return delta
 
@@ -171,6 +177,24 @@ def test_no_unescaped_paren_inside_cmd_block(bat: Path):
         f"Escape them as ^( / ^). Offending lines:\n"
         + "\n".join(f"  L{ln}: {txt}" for ln, txt in offenders)
     )
+
+
+def test_structural_delta_treats_redirect_echo_blank_as_zero():
+    """`>>file echo(` is the redirect form of the echo-blank-line idiom; it must
+    NOT count as a block opener (would inflate tracked depth -> spurious false
+    positives downstream). Code-review MEDIUM, PR #70."""
+    assert _structural_delta('>>"%LOG_FILE%" echo(') == 0
+    assert _structural_delta("echo(") == 0
+    assert _structural_delta("echo (") == 0
+    # genuine openers still count
+    assert _structural_delta("if exist x (") == 1
+    assert _structural_delta('for %%I in ("..") do (') == 1
+    # genuine closer
+    assert _structural_delta(")") == -1
+    # `) else (` nets zero
+    assert _structural_delta(") else (") == 0
+    # escaped trailing paren is not an opener
+    assert _structural_delta("echo done ^(") == 0
 
 
 def test_run_rppg_bat_gpu_log_line_is_escaped():
