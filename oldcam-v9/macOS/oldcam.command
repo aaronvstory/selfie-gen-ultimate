@@ -60,6 +60,15 @@ if [ -z "$TASK_MODEL_PATH" ]; then
   exit 1
 fi
 export OLDCAM_FACE_LANDMARKER_TASK="$TASK_MODEL_PATH"
+# v2.17: canonical shared-venv preflight (full-set health check + repair)
+# BEFORE our own minimal install, so a partial shared venv is repaired
+# canonically rather than launching oldcam into a weird ImportError.
+# Best-effort; the helper never fails the launcher.
+if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/preflight_shared_venv.sh" ]; then
+  . "$REPO_ROOT/scripts/preflight_shared_venv.sh"
+  selfiegen_preflight_shared_venv "$PYTHON_CMD" "$REPO_ROOT"
+fi
+
 REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk '{print $1}')"
 [ -n "$REQ_HASH" ] || REQ_HASH="missing"
 PY_ID="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"

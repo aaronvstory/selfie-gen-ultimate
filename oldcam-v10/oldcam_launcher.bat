@@ -66,6 +66,12 @@ if not defined TASK_MODEL_PATH (
 set "OLDCAM_FACE_LANDMARKER_TASK=%TASK_MODEL_PATH%"
 echo   [%LAUNCH_TS%] Task model: %OLDCAM_FACE_LANDMARKER_TASK%
 
+rem --- v2.17: canonical shared-venv preflight (full-set health check +
+rem --- repair) BEFORE our own minimal install, so a partial shared venv
+rem --- is repaired canonically rather than launching oldcam into a weird
+rem --- ImportError. Best-effort (the helper never fails the caller).
+if exist "%REPO_ROOT%\scripts\win_preflight_shared_venv.bat" call "%REPO_ROOT%\scripts\win_preflight_shared_venv.bat" "%PYTHON_CMD%" "%REPO_ROOT%"
+
 rem --- Dep stamp: req date+size, no subprocess
 set "STAMP_KEY="
 for %%F in ("%SCRIPT_DIR%requirements.txt") do set "STAMP_KEY=%%~tF%%~zF"

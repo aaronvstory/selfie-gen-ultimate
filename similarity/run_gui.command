@@ -105,6 +105,14 @@ echo "[2/5] Selecting Python environment..."
 echo "      Using $ENV_KIND"
 echo "      $PYTHON_BIN"
 
+# v2.17: canonical shared-venv preflight (full-set health check + repair)
+# BEFORE our own minimal install. Best-effort; never fails the launcher.
+# Only runs when a shared REPO_ROOT was detected (standalone clones skip).
+if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/preflight_shared_venv.sh" ]; then
+  . "$REPO_ROOT/scripts/preflight_shared_venv.sh"
+  selfiegen_preflight_shared_venv "$PYTHON_BIN" "$REPO_ROOT"
+fi
+
 REQ_HASH="$(shasum -a 256 requirements.txt 2>/dev/null | awk '{print $1}')"
 [ -n "$REQ_HASH" ] || REQ_HASH="missing"
 PY_ID="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"

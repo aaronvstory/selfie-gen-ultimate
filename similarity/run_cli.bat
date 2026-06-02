@@ -87,6 +87,13 @@ if errorlevel 1 (
 )
 
 rem --- Dep stamp: req date+size
+rem --- v2.17: canonical shared-venv preflight (full-set health check +
+rem --- repair) BEFORE our own minimal install, so a partial shared venv
+rem --- is repaired canonically rather than launching into a weird
+rem --- ImportError. Best-effort (the helper never fails the caller). Only
+rem --- runs when a shared REPO_ROOT was detected (standalone clones skip).
+if defined REPO_ROOT if exist "%REPO_ROOT%\scripts\win_preflight_shared_venv.bat" call "%REPO_ROOT%\scripts\win_preflight_shared_venv.bat" "%PYTHON_BIN%" "%REPO_ROOT%"
+
 set "STAMP_KEY="
 for %%F in ("requirements.txt") do set "STAMP_KEY=%%~tF%%~zF"
 set "STAMP_KEY=%STAMP_KEY: =_%"

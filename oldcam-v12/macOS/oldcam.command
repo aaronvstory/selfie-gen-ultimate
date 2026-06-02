@@ -41,6 +41,15 @@ resolve_py(){
 PYTHON_CMD="$(resolve_py)"
 [ -n "$PYTHON_CMD" ] || { echo "No python"; exit 1; }
 # V12 is hardware-only — no MediaPipe / face_landmarker.task required.
+# v2.17: canonical shared-venv preflight (full-set health check + repair)
+# BEFORE our own minimal install, so a partial shared venv is repaired
+# canonically rather than launching oldcam into a weird ImportError.
+# Best-effort; the helper never fails the launcher.
+if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/preflight_shared_venv.sh" ]; then
+  . "$REPO_ROOT/scripts/preflight_shared_venv.sh"
+  selfiegen_preflight_shared_venv "$PYTHON_CMD" "$REPO_ROOT"
+fi
+
 REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk '{print $1}')"
 [ -n "$REQ_HASH" ] || REQ_HASH="missing"
 PY_ID="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"
