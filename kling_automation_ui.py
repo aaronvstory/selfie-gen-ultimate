@@ -2974,14 +2974,14 @@ class KlingAutomationUI:
             # accepted-and-ignored, which could mislead a future caller).
             self.print_red("[batch] auto_approve=False is not supported in headless mode.")
             return 1
-        if max_cases_override is not None:
-            self.config["automation_max_cases_per_run"] = str(max_cases_override)
-        if reprocess_override is not None:
-            self.config["automation_reprocess_mode"] = str(reprocess_override)
-            # AutoPipelineRunner._effective_reprocess_mode() forces "skip" unless
-            # automation_allow_reprocess is True, so an explicit --reprocess on the
-            # CLI is silently ignored without this (code-review Gemini HIGH, PR #69).
-            self.config["automation_allow_reprocess"] = True
+        # NOTE: --reprocess / --limit overrides are applied AFTER the manifest is
+        # loaded, NOT here. AutomationManifest fingerprints every automation_*
+        # key and REJECTS a changed fingerprint on load -- so flipping
+        # automation_allow_reprocess / automation_reprocess_mode before
+        # create_or_load turns an existing-manifest run into a load FAILURE
+        # (exit 1) instead of reprocessing (code-review Codex P1, PR #69). These
+        # are run policy, not manifest identity, so they go on the config only
+        # once the manifest is loaded.
 
         root = (root or "").strip()
         if not root:
@@ -2994,8 +2994,21 @@ class KlingAutomationUI:
         if not root_path.exists():
             self.print_red(f"[batch] Automation root does not exist: {root}")
             return 1
+        if not root_path.is_dir():
+            # A file path passes exists() but is not a valid root; reject it as
+            # the documented invalid-root preflight rather than letting it fall
+            # into discover_case_folders and misreport as "no case folders"
+            # (code-review CodeRabbit Major, PR #69).
+            self.print_red(f"[batch] Automation root is not a directory: {root}")
+            return 1
 
-        records = discover_case_folders(root_path, self.config.get("automation_front_names", []))
+        # EAFP: directly attempt discovery and catch OSError (restricted FS /
+        # permission errors) rather than pre-flighting (code-review Gemini, PR #69).
+        try:
+            records = discover_case_folders(root_path, self.config.get("automation_front_names", []))
+        except OSError as exc:
+            self.print_red(f"[batch] Failed to scan automation root: {exc}")
+            return 1
         if not records:
             self.print_yellow(f"[batch] No case folders found under {root}.")
             return 1
@@ -3009,6 +3022,16 @@ class KlingAutomationUI:
         except Exception as exc:
             self.print_red(f"[batch] Failed to load manifest: {exc}")
             return 1
+
+        # Apply CLI overrides NOW (post-manifest): these are run policy, not part
+        # of the manifest fingerprint, so they must not influence create_or_load.
+        if max_cases_override is not None:
+            self.config["automation_max_cases_per_run"] = str(max_cases_override)
+        if reprocess_override is not None:
+            self.config["automation_reprocess_mode"] = str(reprocess_override)
+            # _effective_reprocess_mode() forces "skip" unless allow_reprocess is
+            # True, so an explicit --reprocess is inert without this flag.
+            self.config["automation_allow_reprocess"] = True
 
         try:
             _rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)

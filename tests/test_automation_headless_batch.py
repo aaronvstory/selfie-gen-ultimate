@@ -73,17 +73,81 @@ def test_main_accepts_batch_flag(monkeypatch):
     assert captured["kwargs"].get("max_cases_override") == "10"
 
 
-def test_reprocess_override_enables_allow_reprocess(tmp_path, monkeypatch):
-    """--reprocess must also flip automation_allow_reprocess=True, else
-    AutoPipelineRunner._effective_reprocess_mode() forces 'skip' and the
-    override is silently ignored (code-review Gemini HIGH, PR #69)."""
+def test_reprocess_override_not_in_manifest_snapshot_but_applied_after(tmp_path, monkeypatch):
+    """--reprocess must (a) NOT be in the config_snapshot passed to the manifest
+    (else AutomationManifest rejects the changed automation_* fingerprint and the
+    run dies as a load failure -- code-review Codex P1), yet (b) end up applied to
+    self.config (with automation_allow_reprocess=True) so the runner honours it
+    (code-review Gemini HIGH). I.e. overrides are run policy applied POST-load."""
     monkeypatch.setattr("builtins.input", _forbid_input)
-    # Stop after the override is applied — discovery short-circuits to return 1.
-    monkeypatch.setattr(kling_automation_ui, "discover_case_folders", lambda *a, **k: [])
+
+    class _Rec:
+        relative_key = "case-a"
+
+    monkeypatch.setattr(kling_automation_ui, "discover_case_folders", lambda *a, **k: [_Rec()])
+
+    captured_snapshot = {}
+
+    class _Manifest:
+        manifest_path = tmp_path / "manifest.json"
+        data = {"cases": {}}
+
+        @classmethod
+        def create_or_load(cls, *, manifest_path, root_dir, config_snapshot):
+            captured_snapshot.update(config_snapshot)
+            return cls()
+
+    monkeypatch.setattr(kling_automation_ui, "AutomationManifest", _Manifest)
+
+    class _Runner:
+        last_case_results = {}
+
+        def __init__(self, **kwargs):
+            pass
+
+        def validate_configuration(self):
+            # Abort right after the snapshot is captured + overrides applied, so
+            # we don't need to mock the whole dashboard run.
+            return ["stop-here-after-overrides"]
+
+    monkeypatch.setattr(kling_automation_ui, "AutoPipelineRunner", _Runner)
+
     ui = _bare_ui(tmp_path)
-    ui.run_automation_headless(str(tmp_path), auto_approve=True, reprocess_override="overwrite")
+    monkeypatch.setattr(
+        ui,
+        "_collect_case_snapshot",
+        lambda records, manifest: ([], {"will_run": 1, "discovered": 1, "pending": 1,
+                                         "completed_total": 0, "skipped_complete": 0,
+                                         "manual_review": 0, "failed": 0}, [_Rec()]),
+        raising=False,
+    )
+    monkeypatch.setattr(ui, "_automation_manifest_path", lambda: tmp_path / "manifest.json", raising=False)
+
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True, reprocess_override="overwrite")
+    assert rc == 1  # preflight stop
+    # (a) the manifest snapshot must NOT carry the override (fingerprint stable):
+    assert captured_snapshot.get("automation_reprocess_mode") != "overwrite"
+    assert captured_snapshot.get("automation_allow_reprocess") is not True
+    # (b) but the live config DID get the override (runner will honour it):
     assert ui.config["automation_reprocess_mode"] == "overwrite"
     assert ui.config["automation_allow_reprocess"] is True
+
+
+def test_headless_rejects_file_as_root(tmp_path, monkeypatch):
+    """A file path passes exists() but is not a valid root -> exit 1 invalid-root,
+    not a fall-through into discovery (code-review CodeRabbit Major, PR #69)."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    f = tmp_path / "a_file.txt"
+    f.write_text("not a dir")
+    called = {"discover": False}
+    monkeypatch.setattr(
+        kling_automation_ui, "discover_case_folders",
+        lambda *a, **k: called.__setitem__("discover", True) or [],
+    )
+    ui = _bare_ui(tmp_path)
+    rc = ui.run_automation_headless(str(f), auto_approve=True)
+    assert rc == 1
+    assert called["discover"] is False  # never reached discovery
 
 
 def test_main_batch_rejects_invalid_limit(monkeypatch):
