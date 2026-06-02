@@ -180,6 +180,86 @@ def test_headless_invalid_limit_returns_1(tmp_path, monkeypatch):
     assert rc == 1
 
 
+def test_main_batch_rejects_invalid_reprocess_with_exit_1(monkeypatch):
+    """--reprocess is validated in-runner -> exit 1 on a bad value, NOT argparse
+    exit 2 (which would collide with the exit-2 contract) -- code-review Codex P2
+    + Gemini, PR #69 (mirrors --limit)."""
+    monkeypatch.setenv("KLING_SKIP_PY_STARTUP_DEP_CHECK", "1")
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    monkeypatch.setattr(KlingAutomationUI, "_run_startup_key_onboarding", lambda self: None, raising=False)
+    monkeypatch.setattr(
+        kling_automation_ui, "discover_case_folders",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("validated reprocess too late")),
+    )
+    with pytest.raises(SystemExit) as exc:
+        kling_automation_ui.main(["--batch", "/r", "--reprocess", "overwite"])  # typo
+    assert exc.value.code == 1
+
+
+def test_headless_invalid_reprocess_returns_1(tmp_path, monkeypatch):
+    """Direct call: a bogus reprocess_override returns 1 before discovery (not a
+    silent fallback to 'skip') -- code-review Gemini H2, PR #69."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    monkeypatch.setattr(
+        kling_automation_ui, "discover_case_folders",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("validated reprocess too late")),
+    )
+    ui = _bare_ui(tmp_path)
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True, reprocess_override="bogus")
+    assert rc == 1
+
+
+def test_headless_non_tty_runner_exception_returns_1(tmp_path, monkeypatch):
+    """If runner.run() raises on the non-TTY path, the batch exits 1
+    (could-not-run), NOT 2 (code-review M1, PR #69)."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    monkeypatch.setattr(kling_automation_ui.sys.stdout, "isatty", lambda: False, raising=False)
+
+    class _Rec:
+        relative_key = "case-a"
+
+    monkeypatch.setattr(kling_automation_ui, "discover_case_folders", lambda *a, **k: [_Rec()])
+
+    class _Manifest:
+        manifest_path = tmp_path / "manifest.json"
+        data = {"cases": {}}
+
+        @classmethod
+        def create_or_load(cls, **kwargs):
+            return cls()
+
+    monkeypatch.setattr(kling_automation_ui, "AutomationManifest", _Manifest)
+
+    class _Runner:
+        last_case_results = {}
+
+        def __init__(self, **kwargs):
+            pass
+
+        def validate_configuration(self):
+            return []
+
+        def run(self, cases):
+            raise RuntimeError("pipeline boom")
+
+    monkeypatch.setattr(kling_automation_ui, "AutoPipelineRunner", _Runner)
+
+    ui = _bare_ui(tmp_path)
+    monkeypatch.setattr(
+        ui, "_collect_case_snapshot",
+        lambda records, manifest: ([], {"will_run": 1, "discovered": 1, "pending": 1,
+                                         "completed_total": 0, "skipped_complete": 0,
+                                         "manual_review": 0, "failed": 0}, [_Rec()]),
+        raising=False,
+    )
+    monkeypatch.setattr(ui, "_get_selected_selfie_prompt", lambda: (3, "prompt", "slot"), raising=False)
+    monkeypatch.setattr(ui, "_automation_status_lines", lambda: [], raising=False)
+    monkeypatch.setattr(ui, "_automation_manifest_path", lambda: tmp_path / "manifest.json", raising=False)
+
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True)
+    assert rc == 1
+
+
 def test_headless_non_tty_messages_have_no_ansi(tmp_path, monkeypatch, capsys):
     """Headless (non-TTY) status messages must be plain -- no \\033[ ANSI escapes
     polluting cron/Task Scheduler logs (code-review Codex P2, PR #69)."""

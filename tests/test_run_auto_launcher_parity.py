@@ -174,7 +174,11 @@ def test_windows_cli_chain_pauses_are_guarded():
     KLING_NONINTERACTIVE so a headless --batch run never blocks on a keypress."""
     import re
 
-    for rel in ("run_cli.bat", "launchers/windows/run_cli.bat"):
+    # Include the intermediate wrapper launchers/run_cli.bat -- it's in the
+    # --batch chain (run_auto.bat -> THIS -> launchers/windows/run_cli.bat), so a
+    # future `pause` creeping in there would hang a headless run too
+    # (code-review M2, PR #69).
+    for rel in ("run_cli.bat", "launchers/run_cli.bat", "launchers/windows/run_cli.bat"):
         src = _read_text(rel)
         for m in re.finditer(r"(?m)^([ \t]*)(.*\bpause\b.*)$", src):
             line = m.group(2).strip()

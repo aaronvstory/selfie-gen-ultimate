@@ -3003,6 +3003,16 @@ class KlingAutomationUI:
                 _err(f"[batch] Invalid --limit '{max_cases_override}'; use 1, 5, 10, or all.")
                 return 1
             max_cases_override = norm_limit
+        # Validate --reprocess HERE too (same reasoning as --limit: argparse
+        # choices= would exit 2, colliding with the contract; and a direct Python
+        # caller could pass a bogus value that _effective_reprocess_mode() then
+        # silently swallows back to "skip" -- code-review Codex P2 + Gemini, PR #69).
+        if reprocess_override is not None:
+            norm_reprocess = str(reprocess_override).strip().lower()
+            if norm_reprocess not in {"skip", "overwrite", "increment"}:
+                _err(f"[batch] Invalid --reprocess '{reprocess_override}'; use skip, overwrite, or increment.")
+                return 1
+            reprocess_override = norm_reprocess
         # NOTE: --reprocess / --limit overrides are applied AFTER the manifest is
         # loaded, NOT here. AutomationManifest fingerprints every automation_*
         # key and REJECTS a changed fingerprint on load -- so flipping
@@ -3057,11 +3067,8 @@ class KlingAutomationUI:
         if max_cases_override is not None:
             self.config["automation_max_cases_per_run"] = str(max_cases_override)
         if reprocess_override is not None:
-            # Normalize case/whitespace so a direct caller passing "Overwrite" /
-            # " increment " behaves identically to the runner's later lowercasing
-            # (code-review CodeRabbit, PR #69) -- else the skip-guard branch below
-            # would compare a raw mixed-case string and silently no-op.
-            mode = str(reprocess_override).strip().lower()
+            # Already normalized + validated above (skip|overwrite|increment).
+            mode = reprocess_override
             self.config["automation_reprocess_mode"] = mode
             # _effective_reprocess_mode() forces "skip" unless allow_reprocess is
             # True, so an explicit --reprocess is inert without this flag.
@@ -3955,8 +3962,12 @@ def main(argv=None):
             "--reprocess",
             metavar="MODE",
             default=None,
-            choices=["skip", "overwrite", "increment"],
-            help="Headless --batch only: reprocess mode override.",
+            # No argparse choices= (would exit 2 on a bad value, colliding with
+            # the "exit 2 = ran-but-needs-attention" contract). Validated inside
+            # run_automation_headless -> exit 1 on a bad value (code-review Codex
+            # P2 + Gemini, PR #69; matches --limit).
+            help="Headless --batch only: reprocess mode (skip|overwrite|increment). "
+            "An invalid value exits 1.",
         )
         parser.add_argument(
             "--yes",
