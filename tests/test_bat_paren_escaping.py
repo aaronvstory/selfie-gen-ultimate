@@ -116,17 +116,21 @@ def _structural_delta(line: str):
     return delta
 
 
-@pytest.mark.parametrize("bat", BAT_FILES, ids=lambda p: str(p.relative_to(REPO_ROOT)))
-def test_no_unescaped_paren_inside_cmd_block(bat: Path):
-    """Walk the .bat tracking `(...)` block depth; flag an `echo` line executed
-    inside a block (depth>0 at line start) that adds an unescaped paren which
-    cmd would mis-parse as a block delimiter."""
-    raw = bat.read_text(encoding="utf-8", errors="replace")
+def scan_for_offenders(text: str):
+    """Core detector (shared by the parametrized fleet test + unit tests so they
+    can never drift). Returns a list of (lineno, line) for echo lines that carry
+    an unescaped paren while INSIDE a cmd `(...)` block -> the crash pattern."""
     depth = 0
     offenders = []
-    for lineno, raw_line in enumerate(raw.splitlines(), start=1):
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
         if not line:
+            continue
+        # `rem` / `::` comment lines are NOT executed by cmd -- skip them entirely
+        # so a comment that ends in `(`, or one mentioning `echo (...)`, neither
+        # shifts block depth nor false-positives (code-review Gemini MEDIUM, PR#70).
+        low0 = line.lower()
+        if low0.startswith("rem ") or low0 == "rem" or low0.startswith("rem\t") or line.startswith("::"):
             continue
         # cmd enters a label (`:foo`) as a GOTO target at block depth 0 -- linear
         # paren counting across label boundaries is wrong (control flow jumps),
@@ -141,16 +145,10 @@ def test_no_unescaped_paren_inside_cmd_block(bat: Path):
 
         # The dangerous case: we are INSIDE a block (depth>0) and this line is an
         # `echo`/log line whose ARGUMENT text carries an unescaped paren that
-        # cmd will mis-read as a block delimiter. We only flag a NET-unbalanced
-        # paren in the argument (a lone `)` or lone `(` in the echo text), since
-        # a fully-balanced `(...)` inside echo args is the same risk but the
-        # canonical crash is the unbalanced one. To stay zero-false-positive we
-        # require: depth>0, it's an echo/redirect-echo line, it is NOT itself a
-        # structural opener/closer line, and its arg text has an unescaped paren.
+        # cmd will mis-read as a block delimiter. We require: depth>0, it's an
+        # echo/redirect-echo line, it is NOT itself a structural opener/closer
+        # line, and its arg text has an unescaped paren.
         lowered = line.lower()
-        # `echo(` and `echo.` are the blank-line idioms -- the `(`/`.` is part of
-        # the echo token, NOT a block paren. Strip the echo command word and look
-        # ONLY at the argument text for stray parens.
         is_echo_cmd = lowered.startswith("echo ") or " echo " in (" " + lowered)
         is_structural = delta != 0 or line.rstrip().startswith(")")
         if depth > 0 and is_echo_cmd and not is_structural:
@@ -170,7 +168,16 @@ def test_no_unescaped_paren_inside_cmd_block(bat: Path):
         depth += delta
         if depth < 0:
             depth = 0  # forgiving: a stray close just resets to top level
+    return offenders
 
+
+@pytest.mark.parametrize("bat", BAT_FILES, ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_no_unescaped_paren_inside_cmd_block(bat: Path):
+    """Walk the .bat tracking `(...)` block depth; flag an `echo` line executed
+    inside a block (depth>0 at line start) that adds an unescaped paren which
+    cmd would mis-parse as a block delimiter."""
+    raw = bat.read_text(encoding="utf-8", errors="replace")
+    offenders = scan_for_offenders(raw)
     assert not offenders, (
         f"{bat.relative_to(REPO_ROOT)}: unescaped paren(s) inside a cmd (...) "
         f"block -- cmd will crash with '<word> was unexpected at this time.' "
@@ -195,6 +202,47 @@ def test_structural_delta_treats_redirect_echo_blank_as_zero():
     assert _structural_delta(") else (") == 0
     # escaped trailing paren is not an opener
     assert _structural_delta("echo done ^(") == 0
+
+
+def test_rem_comment_with_parens_in_block_is_not_flagged():
+    """A `rem` comment is a cmd no-op: it must NOT shift block depth nor be
+    flagged even with parens / the word echo (code-review Gemini MEDIUM, PR#70)."""
+    text = (
+        "@echo off\r\n"
+        "if exist y (\r\n"
+        "  rem we echo (CuPy) here as a note (harmless)\r\n"
+        "  echo   safe line\r\n"
+        ")\r\n"
+    )
+    assert scan_for_offenders(text) == []
+
+
+def test_scanner_catches_the_real_crash_pattern():
+    """Positive control: an unescaped paren on an echo line INSIDE a block IS
+    flagged (the exact rPPG crash shape). Proves the scanner isn't vacuous."""
+    text = (
+        "@echo off\r\n"
+        "if exist gpu_bootstrap.py (\r\n"
+        '  >>"%LOG_FILE%" echo [INFO] ran gpu_bootstrap (CuPy) before injector\r\n'
+        ")\r\n"
+    )
+    offenders = scan_for_offenders(text)
+    assert len(offenders) == 1 and offenders[0][0] == 3, offenders
+    # ...and the escaped form is clean:
+    text_ok = text.replace("(CuPy)", "^(CuPy^)")
+    assert scan_for_offenders(text_ok) == []
+
+
+def test_scanner_ignores_top_level_echo_parens():
+    """Negative control: balanced parens in an echo at TOP level (depth 0, e.g.
+    after a label) are safe and must NOT be flagged."""
+    text = (
+        "@echo off\r\n"
+        "goto END\r\n"
+        ":END\r\n"
+        "echo  done (next to the exe)\r\n"
+    )
+    assert scan_for_offenders(text) == []
 
 
 def test_run_rppg_bat_gpu_log_line_is_escaped():
