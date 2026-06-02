@@ -121,6 +121,31 @@ def test_rppg_diag_default_module_set_is_the_rppg_core():
     assert CORE_MODULES == ["cv2", "numpy", "mediapipe", "scipy", "absl"]
 
 
+def test_rppg_diag_absl_is_optional_not_fatal():
+    """absl is GUARDED in rppg_injector.py, so a missing absl must NOT fail the
+    gate (exit code) — it's reported but rPPG still runs (Codex P2, PR #67).
+    Essential deps stay fatal."""
+    from scripts.rppg_import_diag import (
+        ESSENTIAL_MODULES,
+        OPTIONAL_MODULES,
+        diagnose,
+    )
+
+    assert OPTIONAL_MODULES == ["absl"]
+    assert ESSENTIAL_MODULES == ["cv2", "numpy", "mediapipe", "scipy"]
+    # A present essential (json stands in) + a missing OPTIONAL must exit 0.
+    import scripts.rppg_import_diag as diag_mod
+
+    saved = diag_mod.OPTIONAL_MODULES
+    try:
+        diag_mod.OPTIONAL_MODULES = ["a_missing_optional_xyz"]
+        assert diagnose(["json", "a_missing_optional_xyz"]) == 0
+    finally:
+        diag_mod.OPTIONAL_MODULES = saved
+    # A missing ESSENTIAL must exit 1.
+    assert diagnose(["an_essential_missing_xyz", "json"]) == 1
+
+
 # --------------------------------------------------------------------------- #
 # queue_manager._is_rppg_setup_diag
 # --------------------------------------------------------------------------- #

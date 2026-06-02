@@ -146,9 +146,10 @@ def test_self_heal_re_runs_import_check_after_pip(bat_source: str):
     `call :rppg_diag_tee` (which runs scripts/rppg_import_diag.py and
     branches on RPPG_DIAG_EXIT) so the failing module is named and logged.
     Assert BOTH layers exist."""
-    # The pre-pip gate + the post-lock-wait fast-path use the inline check.
+    # The pre-pip gate + the post-lock-wait fast-path use the inline check
+    # (essential-only since v2.16 — absl dropped, it's optional at runtime).
     inline_count = bat_source.count(
-        '"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy, absl"'
+        '"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy"'
     )
     assert inline_count >= 2, (
         f"expected >=2 occurrences of the inline import check (the pre-pip "
@@ -240,26 +241,41 @@ def test_no_dev_null_in_bat(bat_source: str):
     )
 
 
-def test_self_heal_import_check_includes_absl(bat_source: str):
-    """v2.15: rppg_injector.py does an `import absl.logging`, but mediapipe is
-    installed --no-deps (skipping its absl-py~=2.3) so absl can be absent on a
-    fresh venv. The self-heal import-check must include `absl` so a missing
-    absl is detected + triggers the re-install, instead of passing and letting
-    the injector crash → -NORPPG (the friend's 'rPPG fails, everything else
-    works' bug)."""
-    assert "import cv2, numpy, mediapipe, scipy, absl" in bat_source, (
-        "run_rppg.bat self-heal import-check must include absl"
+def test_self_heal_inline_gate_is_essential_only(bat_source: str):
+    """v2.16 correction (Codex P2, PR #67): absl is a GUARDED import in
+    rppg_injector.py — a missing absl only means noisier logs, never a crash.
+    So the inline self-heal gate must check ONLY the essential runtime deps
+    (cv2/numpy/mediapipe/scipy) and must NOT include absl: a working install
+    that merely lacks absl should run rPPG (noisier), not get force-skipped to
+    -NORPPG. (absl is still pinned + installed everywhere — see
+    test_absl_pinned_in_requirements_and_constraints; this governs RUNTIME
+    tolerance, not install policy.)"""
+    assert "import cv2, numpy, mediapipe, scipy" in bat_source, (
+        "the inline gate must check the essential runtime deps"
     )
-    # The old check (without absl) must be gone.
-    assert '"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" ' not in bat_source, (
-        "the absl-less import-check must be replaced everywhere"
+    # absl must NOT be in the fatal inline gate anymore.
+    assert "import cv2, numpy, mediapipe, scipy, absl" not in bat_source, (
+        "absl must be removed from the fatal inline gate — it's optional at "
+        "runtime (guarded import); the granular diag reports it as optional/warning"
+    )
+    # The granular diag (rppg_import_diag.py) is what reports absl, and it
+    # classifies absl as optional (exit 0 when only absl is missing).
+    from pathlib import Path
+
+    diag = (
+        Path(__file__).resolve().parent.parent / "scripts" / "rppg_import_diag.py"
+    ).read_text(encoding="utf-8")
+    assert 'OPTIONAL_MODULES = ["absl"]' in diag, (
+        "rppg_import_diag.py must classify absl as OPTIONAL so a missing absl "
+        "does not fail the gate (exit code) and force -NORPPG"
     )
 
 
 def test_absl_pinned_in_requirements_and_constraints():
-    """absl-py must be an explicit top-level pin (not just transitive) in both
-    requirements.txt and constraints.txt so a fresh venv always installs it
-    (v2.15)."""
+    """absl-py must STILL be an explicit top-level pin (not just transitive) in
+    both requirements.txt and constraints.txt so every launcher installs it
+    (v2.15). Runtime tolerance (absl optional at the rPPG gate) is a SEPARATE
+    concern from install policy (absl always installed)."""
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent

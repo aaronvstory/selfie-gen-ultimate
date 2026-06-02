@@ -66,7 +66,7 @@ if errorlevel 1 (
   %PAUSE%
   exit /b 1
 )
-"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy, absl" >nul 2>&1
+"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
 if errorlevel 1 (
   rem v2.7 friend-zip self-heal (PR #54 / 2026-05-27): the prior block
   rem only ECHOED the sync command and exited. A user opening a fresh
@@ -131,7 +131,7 @@ if errorlevel 1 (
   rem Re-check imports after acquiring the lock - a sibling may have
   rem ALREADY installed them while we waited, in which case we can skip
   rem the pip work entirely.
-  "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy, absl" >nul 2>&1
+  "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
   if !errorlevel! equ 0 (
     rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
     echo   OK: rPPG deps installed by sibling launcher; continuing.

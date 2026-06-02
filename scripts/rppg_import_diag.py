@@ -46,9 +46,24 @@ import importlib
 import importlib.util
 import sys
 
-# The rPPG injector's hard import set. Keep in lockstep with the import-check
-# line in rPPG/run_rppg.bat and the modules rppg_injector.py imports at top.
-CORE_MODULES = ["cv2", "numpy", "mediapipe", "scipy", "absl"]
+# The rPPG injector's import set, split by whether a missing module is FATAL.
+#
+# ESSENTIAL: rppg_injector.py genuinely cannot run without these — a missing or
+#   broken one MUST fail the gate (exit 1) so the launcher aborts instead of
+#   crashing the injector mid-run.
+# OPTIONAL: imported by the injector but GUARDED (try/except). absl is only used
+#   to quiet TF/mediapipe log spam — rppg_injector.py wraps `import absl.logging`
+#   in try/except (v2.15), so a missing absl just means noisier logs, never a
+#   crash. It must NOT fail the gate: an offline / failed-repair install that has
+#   the essential deps but lacks only absl should still RUN rPPG (noisier) rather
+#   than be force-skipped to -NORPPG (Codex P2, PR #67). absl-py is still pinned
+#   in requirements.txt/constraints.txt and installed by every launcher — this
+#   only governs runtime tolerance, NOT install policy.
+ESSENTIAL_MODULES = ["cv2", "numpy", "mediapipe", "scipy"]
+OPTIONAL_MODULES = ["absl"]
+
+# Back-compat alias: the full set the diagnostic reports on (essential first).
+CORE_MODULES = ESSENTIAL_MODULES + OPTIONAL_MODULES
 
 
 def _module_version(mod: object) -> str:
@@ -61,25 +76,40 @@ def _module_version(mod: object) -> str:
 
 
 def diagnose(modules: list[str]) -> int:
-    """Import each module, print a per-module verdict, return failure count."""
-    failed: list[str] = []
+    """Import each module, print a per-module verdict, return the count of
+    ESSENTIAL failures (the exit-code gate).
+
+    Optional modules (``OPTIONAL_MODULES``, e.g. absl) are still imported and
+    reported, but a missing/broken optional module does NOT count toward the
+    return value — the injector guards those imports, so the launcher must not
+    abort rPPG over them (Codex P2, PR #67)."""
+    essential_failed: list[str] = []
+    optional_failed: list[str] = []
+
+    def _record(name: str) -> None:
+        if name in OPTIONAL_MODULES:
+            optional_failed.append(name)
+        else:
+            essential_failed.append(name)
+
     for name in modules:
+        tag = "optional" if name in OPTIONAL_MODULES else "required"
         # find_spec distinguishes "not installed" from "installed but import
         # raises" — the two failure modes the old launcher conflated.
         try:
             spec = importlib.util.find_spec(name)
         except (ImportError, ValueError) as exc:
             # A parent package that itself fails to import surfaces here.
-            print(f"[rppg-diag] BROKEN  {name:<12} {type(exc).__name__}: {exc}")
-            failed.append(name)
+            print(f"[rppg-diag] BROKEN  {name:<12} ({tag}) {type(exc).__name__}: {exc}")
+            _record(name)
             continue
 
         if spec is None:
             print(
-                f"[rppg-diag] MISSING {name:<12} "
+                f"[rppg-diag] MISSING {name:<12} ({tag}) "
                 "not installed (pip did not land it in this venv)"
             )
-            failed.append(name)
+            _record(name)
             continue
 
         try:
@@ -87,8 +117,8 @@ def diagnose(modules: list[str]) -> int:
         except Exception as exc:  # noqa: BLE001 — any import-time error is a finding
             # Installed but import raises: the numpy-2.x-ABI class lives here
             # ("numpy.core.umath failed to import"). Report the real exception.
-            print(f"[rppg-diag] BROKEN  {name:<12} {type(exc).__name__}: {exc}")
-            failed.append(name)
+            print(f"[rppg-diag] BROKEN  {name:<12} ({tag}) {type(exc).__name__}: {exc}")
+            _record(name)
             continue
 
         print(f"[rppg-diag] OK      {name:<12} ({_module_version(mod)})")
@@ -113,14 +143,23 @@ def diagnose(modules: list[str]) -> int:
     except Exception as exc:  # noqa: BLE001 — numpy itself broken; already flagged above
         print(f"[rppg-diag] numpy-version: unavailable ({type(exc).__name__}: {exc})")
 
-    if failed:
+    if optional_failed:
+        # Reported but non-fatal: rPPG proceeds with noisier logs.
         print(
-            f"[rppg-diag] RESULT: {len(failed)} module(s) not importable: "
-            + ", ".join(failed)
+            "[rppg-diag] NOTE: optional module(s) unavailable (rPPG still runs, "
+            "logs noisier): " + ", ".join(optional_failed)
+        )
+
+    if essential_failed:
+        print(
+            f"[rppg-diag] RESULT: {len(essential_failed)} required module(s) not "
+            "importable: " + ", ".join(essential_failed)
         )
     else:
-        print("[rppg-diag] RESULT: all core modules import OK")
-    return 1 if failed else 0
+        print("[rppg-diag] RESULT: all required modules import OK")
+    # Exit code gates ONLY on essential failures — a missing optional module
+    # (absl) must not abort rPPG, since the injector guards that import.
+    return 1 if essential_failed else 0
 
 
 def main(argv: list[str]) -> int:
