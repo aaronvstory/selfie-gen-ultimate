@@ -25,6 +25,7 @@ rem Timestamp banner ? wmic is removed on modern Win11, so fall back to
 rem PowerShell (always present on Win10/11), then to locale date/time
 rem (gemini MED, PR #66). Keeps launch logs readable on every Windows.
 set "TS="
+set "WDT="
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WDT=%%B"
 if defined WDT (
   set "WDT=!WDT: =!"
