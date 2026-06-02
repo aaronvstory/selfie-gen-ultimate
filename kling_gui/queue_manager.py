@@ -1141,6 +1141,27 @@ class QueueManager:
             self.update_queue_display()
             self.log(f"🎬 Processing: {item.filename}", "info")
 
+            # v2.17: the QueueManager is now created even without a fal.ai key
+            # (so local rPPG/Oldcam/Loop re-runs work). But Kling GENERATION
+            # needs the generator — if a key-less user drops a file to GENERATE,
+            # self.generator is None and the unconditional update_prompt_slot()
+            # below would AttributeError inside this worker thread, failing the
+            # item with a confusing error. Guard here with a clear, actionable
+            # message instead (code-review C1, 2026-06-03).
+            if self.generator is None:
+                item.status = "failed"
+                item.error_message = "No fal.ai API key — add one to generate videos"
+                self.log(
+                    "Video generation needs a fal.ai API key. Add it in the app, "
+                    "then re-add this file. (rPPG / Oldcam / Loop re-runs work "
+                    "without a key.)",
+                    "error",
+                )
+                self.update_queue_display()
+                if self.on_processing_complete:
+                    self.on_processing_complete(item)
+                continue
+
             try:
                 # Capture timestamp at start of processing (for consistent filenames)
                 generation_timestamp = datetime.now()

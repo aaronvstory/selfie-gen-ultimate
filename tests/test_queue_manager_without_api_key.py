@@ -100,3 +100,48 @@ def test_generator_construction_failure_still_creates_queue_manager(monkeypatch)
     mw.KlingGUIWindow._init_generator(stub)
     assert stub.queue_manager is not None
     assert stub.generator is None
+
+
+def test_process_queue_with_none_generator_fails_item_gracefully():
+    """C1 regression (code-review 2026-06-03): the QueueManager is now created
+    with generator=None for key-less users. If such a user drops a file to
+    GENERATE, the _process_queue worker must NOT crash on
+    `self.generator.update_prompt_slot()` — it must fail the item with a clear
+    "add a key" message and keep the worker alive."""
+    import sys
+
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    from kling_gui.queue_manager import QueueManager, QueueItem
+
+    logs = []
+    completed = []
+    qm = QueueManager(
+        generator=None,
+        config_getter=lambda: {"current_prompt_slot": 1, "current_model": "x"},
+        log_callback=lambda m, lvl="info": logs.append((lvl, m)),
+        queue_update_callback=lambda: None,
+        processing_complete_callback=lambda item: completed.append(item),
+    )
+    # Seed one pending item directly + drive ONE worker pass (no thread/network).
+    item = QueueItem(path="C:/fake/clip.mp4")
+    item.status = "pending"
+    qm.items = [item]
+    qm._stop_flag = False
+
+    # Run the worker but stop it after the first item so it doesn't loop.
+    orig = qm._get_next_pending
+    calls = {"n": 0}
+
+    def _one(*a, **k):
+        calls["n"] += 1
+        return orig(*a, **k) if calls["n"] == 1 else None
+
+    qm._get_next_pending = _one
+    qm._process_queue()  # must NOT raise
+
+    assert item.status == "failed"
+    assert item.error_message and "key" in item.error_message.lower()
+    assert completed and completed[0] is item
+    joined = " ".join(m for _lvl, m in logs).lower()
+    assert "api key" in joined

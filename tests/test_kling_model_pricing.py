@@ -77,9 +77,13 @@ def test_tooltip_uses_pricing_fallback_when_live_missing():
 
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
+    # Only skip on a genuine IMPORT failure (e.g. no Tk in the env). A broad
+    # `except Exception` here would mask a real logic regression in the tooltip
+    # builder as a "skip" (code-review M1) — so catch ImportError only; any
+    # other error from the call below propagates as a real test failure.
     try:
         from kling_gui import config_panel as cp
-    except Exception:
+    except ImportError:
         pytest.skip("config_panel import unavailable (no Tk)")
 
     # Drive the pure tooltip logic via a tiny stub holding one model.

@@ -1832,7 +1832,11 @@ class ConfigPanel(tk.Frame):
             else:
                 price_str = f"${price:.3f}/{unit}" if unit else f"${price:.3f}"
             if is_fallback:
-                price_str += "\n(verified reference, audio off; live API quote unavailable)"
+                # The fallback fires when the live API gave no usable price
+                # (absent OR an explicit $0 — observed with stale fal.ai
+                # metadata), so word it to cover both rather than claiming the
+                # API was "unavailable" when it may have just returned $0.
+                price_str += "\n(verified reference, audio off; no usable live API quote)"
             sections.append(f"\u2500\u2500 Pricing \u2500\u2500\n{price_str}")
 
         # User notes (from models.json user_notes field)
