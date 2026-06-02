@@ -224,6 +224,53 @@ place) and go straight to the GUI.
 Detailed first-run instructions for the SSD recipient live in
 `/Volumes/st7Private/code/selfie-gen-ultimate/_user_state/README.txt`.
 
+## Virgin-Windows first-launch flow (v2.14)
+
+The SSD is now **cross-platform**. On Windows the SSD mounts as a drive letter
+(e.g. `D:\`), and the recipient double-clicks **`START.bat`** at the project
+root — the Windows sibling of `START.command`. That script (tracked in the repo
+so every source checkout + bundle carries it):
+
+1. **Resolves SCRIPT_DIR safely** — including the drive-root case
+   (`D:\START.bat`): it strips the trailing backslash only when the path
+   doesn't end in `:\`, so a drive-root launch stays absolute.
+2. **Seeds config ONCE** from `_user_state\app_support\` (kling_config.json +
+   ui_config/history/pricing_cache/model_cache), gated on a one-time
+   `_user_state\.seeded` marker — NOT on the live config's absence (a shipped
+   bundle already contains a sanitized default, which would otherwise block the
+   richer snapshot). Any pre-existing config is backed up to
+   `kling_config.pre-seed.bak` before the snapshot overwrites it, so no
+   user edits are ever lost. Subsequent runs see the marker and skip seeding.
+3. **Optionally extracts `_user_state\venv-windows.tar`** (the Windows analog of
+   `venv-macos.tar`) to skip the slow first install. Whatever venv then exists —
+   freshly extracted OR a stale one from another machine — is **validated**
+   (`python -c "import sys"`); if the interpreter can't run (a tarball carries
+   the original base-Python path in `pyvenv.cfg`), the venv is deleted so the
+   launcher rebuilds it cleanly. If no tarball is bundled, the first launch
+   builds the venv from scratch (~5–15 min, fully constrained per v2.13).
+4. **Hands off to `launchers\windows\run_gui.bat`** (which resolves/installs
+   Python via `scripts\win_resolve_python.bat`, builds/repairs the venv with the
+   numpy<2 constraints, runs the health check, and launches the GUI).
+
+The timestamp banner in `START.bat` (and every launcher) falls back from `wmic`
+(removed on modern Win11) to PowerShell `Get-Date` to locale time, so launch
+logs always carry a real timestamp.
+
+**To make Windows first-launch fast (optional):** build a `venv-windows.tar`
+the same way the mac side builds `venv-macos.tar`, but from a Windows `venv`:
+
+```bat
+rem on the Windows source box, with a working venv\ at the repo root:
+tar -cf "D:\code\selfie-gen-ultimate\_user_state\venv-windows.tar" --exclude __pycache__ venv
+```
+
+Without it, `START.bat` still works — it just builds the venv on first run.
+
+Static-guard tests for `START.bat` live in
+`tests/test_start_bat_bootstrap.py` (CRLF, no `/dev/null`, drive-root guard,
+marker-gated seed, pre-marker backup, venv validation, PowerShell-backquoted
+timestamp fallback, run_gui handoff).
+
 ## Same pattern, sibling project
 
 `/Volumes/st7Private/code/RTMPv6/` follows the same pattern: root-level
