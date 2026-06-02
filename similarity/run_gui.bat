@@ -55,8 +55,8 @@ if "!PYTHON_BIN!"=="" (
   )
 )
 if "!PYTHON_BIN!"=="" (
-  echo   [%LAUNCH_TS%] ERROR: No supported Python (3.9-3.12) found. Install python3.11 (https://www.python.org/downloads/release/python-3119/) and retry.
-  >>"%LOG_FILE%" echo [ERROR] No supported Python (3.9-3.12) found.
+  echo   [%LAUNCH_TS%] ERROR: No supported Python ^(3.9-3.12^) found. Install python3.11 ^(https://www.python.org/downloads/release/python-3119/^) and retry.
+  >>"%LOG_FILE%" echo [ERROR] No supported Python ^(3.9-3.12^) found.
   if not defined SIMILARITY_LAUNCHED_BY_MAIN pause
   exit /b 1
 )
@@ -72,7 +72,7 @@ if errorlevel 1 (
   ) else if not "%SELFIEGEN_VENV_DIR%"=="" (
     echo   [%LAUNCH_TS%] ERROR: SELFIEGEN_VENV_DIR points at Python !PY_ACTUAL!, but Similarity requires 3.9-3.12. Unset it or point at python3.11.
   ) else (
-    echo   [%LAUNCH_TS%] ERROR: Resolved Python is !PY_ACTUAL!, outside supported range 3.9-3.12 (resolver bug; please file an issue).
+    echo   [%LAUNCH_TS%] ERROR: Resolved Python is !PY_ACTUAL!, outside supported range 3.9-3.12 ^(resolver bug; please file an issue^).
   )
   >>"%LOG_FILE%" echo [ERROR] Unsupported Python version: !PY_ACTUAL!
   if not defined SIMILARITY_LAUNCHED_BY_MAIN pause

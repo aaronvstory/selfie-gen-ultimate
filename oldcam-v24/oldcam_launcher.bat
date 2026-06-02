@@ -46,7 +46,7 @@ if "!PYTHON_BIN!"=="" (
   call :check_py "%REPO_ROOT%\venv\Scripts\python.exe" "created shared root venv" strict
 )
 if "!PYTHON_BIN!"=="" (
-  echo   [%LAUNCH_TS%] ERROR: No supported Python (3.9-3.12) found. Install python3.11 (https://www.python.org/downloads/release/python-3119/) and retry.
+  echo   [%LAUNCH_TS%] ERROR: No supported Python ^(3.9-3.12^) found. Install python3.11 ^(https://www.python.org/downloads/release/python-3119/^) and retry.
   set "HAD_ERRORS=1"
   goto DONE
 )
@@ -62,7 +62,7 @@ if errorlevel 1 (
   ) else if not "%SELFIEGEN_VENV_DIR%"=="" (
     echo   [%LAUNCH_TS%] ERROR: SELFIEGEN_VENV_DIR points at Python !PY_ACTUAL!, but Oldcam v24 requires 3.9-3.12. Unset it or point at python3.11.
   ) else (
-    echo   [%LAUNCH_TS%] ERROR: Resolved Python is !PY_ACTUAL!, outside supported range 3.9-3.12 (resolver bug; please file an issue).
+    echo   [%LAUNCH_TS%] ERROR: Resolved Python is !PY_ACTUAL!, outside supported range 3.9-3.12 ^(resolver bug; please file an issue^).
   )
   set "HAD_ERRORS=1"
   goto DONE
