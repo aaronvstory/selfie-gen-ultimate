@@ -585,3 +585,113 @@ def test_probe_cupy_returns_none_when_sentinel_absent(monkeypatch):
 
     monkeypatch.setattr(gpu_bootstrap.subprocess, "run", _fake_run)
     assert gpu_bootstrap.probe_cupy("python_unused") is None
+
+
+# ---------------------------------------------------------------------------
+# v2.17: torch hardware selection (resolve_torch_mode is pure -> easy to test)
+# ---------------------------------------------------------------------------
+def test_resolve_torch_mode_macos_never_cuda():
+    """macOS must NEVER select CUDA, even if a (bogus) nvidia dict is passed —
+    resolve_torch_mode hard-returns mac_default before looking at nvidia."""
+    d = gpu_bootstrap.resolve_torch_mode(
+        platform_is_darwin=True,
+        nvidia={"cuda_major": 12, "driver_version": "555"},
+    )
+    assert d["mode"] == "mac_default"
+    assert d["index_url"] is None
+
+
+def test_resolve_torch_mode_nvidia_12_selects_cuda():
+    d = gpu_bootstrap.resolve_torch_mode(
+        platform_is_darwin=False,
+        nvidia={"cuda_major": 12, "driver_version": "555"},
+    )
+    assert d["mode"] == "cuda"
+    assert d["index_url"] == gpu_bootstrap._TORCH_CUDA_INDEX[12]
+    assert d["extra_index_url"] == gpu_bootstrap._PYPI_INDEX_URL
+
+
+def test_resolve_torch_mode_nvidia_13_selects_cuda():
+    d = gpu_bootstrap.resolve_torch_mode(
+        platform_is_darwin=False,
+        nvidia={"cuda_major": 13, "driver_version": "580"},
+    )
+    assert d["mode"] == "cuda"
+    assert d["index_url"] == gpu_bootstrap._TORCH_CUDA_INDEX[13]
+
+
+def test_resolve_torch_mode_unsupported_cuda_major_falls_back_to_cpu():
+    """An NVIDIA box with a CUDA major we don't ship a torch index for (e.g.
+    11.x or a future 14.x) must fall back to CPU torch, not crash."""
+    d = gpu_bootstrap.resolve_torch_mode(
+        platform_is_darwin=False,
+        nvidia={"cuda_major": 11, "driver_version": "470"},
+    )
+    assert d["mode"] == "cpu"
+    assert d["index_url"] == gpu_bootstrap._TORCH_CPU_INDEX_URL
+
+
+def test_resolve_torch_mode_no_nvidia_selects_cpu():
+    d = gpu_bootstrap.resolve_torch_mode(platform_is_darwin=False, nvidia=None)
+    assert d["mode"] == "cpu"
+    assert d["index_url"] == gpu_bootstrap._TORCH_CPU_INDEX_URL
+
+
+def test_torch_cuda_index_keys_match_cupy_keys():
+    """Drift guard (review feedback 2026-06-02): torch + CuPy must agree on
+    which CUDA majors are GPU-supported. If one map gains/loses a major
+    without the other, GPU detection becomes inconsistent."""
+    assert set(gpu_bootstrap._TORCH_CUDA_INDEX) == set(gpu_bootstrap._CUDA_TO_CUPY)
+
+
+def test_torch_cuda_index_urls_are_well_formed_pytorch_tags():
+    """Drift guard: each value must be a real pytorch.org/whl/cuNNN index URL,
+    NOT a tag inferred arithmetically from the CUDA major. A typo / bad tag
+    fails CI here instead of silently producing a 404 install at runtime."""
+    import re
+
+    pat = re.compile(r"^https://download\.pytorch\.org/whl/cu\d{3}$")
+    for major, url in gpu_bootstrap._TORCH_CUDA_INDEX.items():
+        assert pat.match(url), f"CUDA {major} -> {url!r} is not a whl/cuNNN URL"
+
+
+def test_compute_stamp_token_deterministic_and_mode_sensitive(monkeypatch, tmp_path):
+    """The stamp token must be deterministic for a fixed env and must change
+    when the resolved torch mode changes (so adding/removing a GPU invalidates
+    the dep stamp)."""
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("numpy>=1.26,<2\n", encoding="utf-8")
+
+    # Force a no-cache path so it uses detect_nvidia, then monkeypatch that.
+    monkeypatch.setattr(gpu_bootstrap, "_load_stamp", lambda: None)
+    monkeypatch.setattr(gpu_bootstrap, "detect_nvidia", lambda: None)
+    t1 = gpu_bootstrap.compute_stamp_token(str(constraints))
+    t2 = gpu_bootstrap.compute_stamp_token(str(constraints))
+    assert t1 == t2  # deterministic
+
+    monkeypatch.setattr(
+        gpu_bootstrap, "detect_nvidia",
+        lambda: {"cuda_major": 12, "driver_version": "555"},
+    )
+    t3 = gpu_bootstrap.compute_stamp_token(str(constraints))
+    assert t3 != t1  # GPU appeared -> token changes -> stamp invalidates
+    assert gpu_bootstrap.INSTALLER_VERSION in t1
+
+
+def test_compute_stamp_token_prefers_cached_gpu_status(monkeypatch, tmp_path):
+    """On the hot path the token reads cuda_major from the cached gpu_status
+    stamp (cheap) instead of running nvidia-smi every launch."""
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("x\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        gpu_bootstrap, "_load_stamp",
+        lambda: {"result": "gpu_ready", "cuda_major": 13},
+    )
+
+    def _boom():
+        raise AssertionError("detect_nvidia must NOT run when stamp is cached")
+
+    monkeypatch.setattr(gpu_bootstrap, "detect_nvidia", _boom)
+    token = gpu_bootstrap.compute_stamp_token(str(constraints))
+    assert "cuda" in token and "13" in token

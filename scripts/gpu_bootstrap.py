@@ -470,18 +470,26 @@ def resolve_torch_mode(
     }
 
 
-def _probe_torch_cuda(python_exe: str) -> tuple[bool, bool]:
+def _probe_torch_cuda(python_exe: str) -> tuple[bool, bool, "str | None"]:
     """Probe the installed torch in the target venv.
 
-    Returns ``(import_ok, cuda_available)``. ``cuda_available`` is the result
-    of ``torch.cuda.is_available()`` (the canonical eager CUDA-runtime init —
-    it lazily loads the CUDA DLLs, surfacing a broken cudart). Both False on
-    any subprocess failure. Mirrors the probe rationale already documented in
+    Returns ``(import_ok, cuda_available, build_cuda_version)``:
+      * ``import_ok``      — ``import torch`` succeeded.
+      * ``cuda_available`` — ``torch.cuda.is_available()`` (canonical eager
+        CUDA-runtime init; lazily loads the CUDA DLLs, surfacing a broken
+        cudart). False on CPU-only builds and on broken-CUDA builds alike.
+      * ``build_cuda_version`` — ``torch.version.cuda`` (e.g. ``"12.1"`` for a
+        CUDA build, ``None`` for a CPU build). Lets the caller tell "already
+        the right build, skip the reinstall" from "wrong build, reinstall".
+
+    All three are conservative on any subprocess failure: ``(False, False,
+    None)``. Mirrors the probe rationale in
     dependency_health_check.check_runtime_dependencies.
     """
     probe_src = (
         "import torch;"
         "print('TORCHCUDA=' + str(bool(torch.cuda.is_available())));"
+        "print('TORCHBUILD=' + str(getattr(torch.version, 'cuda', None)));"
         "print('TORCHOK=1')"
     )
     try:
@@ -493,13 +501,19 @@ def _probe_torch_cuda(python_exe: str) -> tuple[bool, bool]:
             timeout=60,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return (False, False)
+        return (False, False, None)
     if proc.returncode != 0:
-        return (False, False)
+        return (False, False, None)
     out = proc.stdout or ""
     import_ok = "TORCHOK=1" in out
     cuda_available = "TORCHCUDA=True" in out
-    return (import_ok, cuda_available)
+    build_cuda_version = None
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("TORCHBUILD="):
+            val = line[len("TORCHBUILD="):]
+            build_cuda_version = None if val in ("None", "") else val
+    return (import_ok, cuda_available, build_cuda_version)
 
 
 def _log_macos_mps(python_exe: str) -> None:
@@ -534,29 +548,23 @@ def select_torch_install(
 ) -> tuple[bool, str]:
     """Install the hardware-appropriate torch wheel for this machine.
 
-    ``torch_spec`` is the requested version spec (e.g. ``"torch==2.5.1"`` or
-    ``"torch>=2.2,<3"``); on ``cuda``/``cpu`` modes we force-reinstall torch
-    from the resolved index pinned to that spec. Returns ``(ok, message)`` —
-    same shape as ``install_cupy`` / ``run_repair``.
+    Fully AUTOMATIC — no prompts, no user choice. Detection drives everything:
+    NVIDIA found -> CUDA torch; macOS -> default (MPS/CPU); else -> CPU torch.
 
-    Flow:
-      1. ``resolve_torch_mode`` from detect_nvidia + platform.
-      2. ``mac_default``: no-op when torch already imports (the plain
-         ``-r requirements.txt`` install already landed the right wheel);
-         only reinstall if torch can't import.
-      3. ``cuda`` / ``cpu``: force-reinstall from the index with the PyPI
-         extra-index (so torch's runtime deps resolve) and ``-c constraints``
-         (so a transitive resolve can't pull numpy 2.x back in). constraints
-         does NOT cap torch, so the index URL stays in control of the variant.
-      4. Probe ``torch.cuda.is_available()``. If we asked for CUDA but the
-         runtime says no (broken DLLs / driver mismatch / AV quarantine),
-         fall back to the CPU index via dependency_health_check's already
-         bot-reviewed ``run_torch_cpu_fallback`` when available, else inline.
+    IDEMPOTENT (user mandate 2026-06-02 "no torch selection unless absolutely
+    needed"): probes the ALREADY-INSTALLED torch first and skips the reinstall
+    when its build already matches the resolved mode. The plain
+    ``-r requirements.txt`` install lands the default PyPI wheel, which IS the
+    right build on a CPU box and on macOS — so on those machines this is a
+    cheap no-op probe, NOT a redundant multi-GB re-download. A reinstall fires
+    only when the installed build is wrong for the hardware (CPU wheel on an
+    NVIDIA box -> install CUDA; or torch missing/broken).
 
-    Always best-effort: a failure returns ``(False, msg)`` and the launcher
-    proceeds (torch is only used by DeepFace's anti-spoofing classifier; CUDA
-    only affects speed, not correctness — verified: production never calls
-    ``torch.cuda.*``).
+    Returns ``(ok, message)`` — same shape as ``install_cupy`` / ``run_repair``.
+    Always best-effort: torch is only used by DeepFace's anti-spoofing
+    classifier and CUDA only affects speed, not correctness (production never
+    calls ``torch.cuda.*``), so a failure returns ``(False, msg)`` and the
+    launcher proceeds.
     """
     nvidia = detect_nvidia()
     decision = resolve_torch_mode(
@@ -565,15 +573,14 @@ def select_torch_install(
     mode = decision["mode"]
     _log(f"torch: {decision['reason']}")
 
+    import_ok, cuda_available, build_cuda = _probe_torch_cuda(python_exe)
+
     if mode == "mac_default":
-        import_ok, _ = _probe_torch_cuda(python_exe)
         if import_ok:
             _log_macos_mps(python_exe)
             return (True, "torch already present (macOS default wheel)")
         # torch missing/broken — let pip install the default wheel.
-        cmd = [
-            python_exe, "-m", "pip", "install", "--no-input", torch_spec,
-        ]
+        cmd = [python_exe, "-m", "pip", "install", "--no-input", torch_spec]
         if constraints_path:
             cmd[4:4] = ["-c", constraints_path]
         ok, msg = _run_torch_pip(cmd, "macOS default")
@@ -581,7 +588,50 @@ def select_torch_install(
             _log_macos_mps(python_exe)
         return (ok, msg)
 
-    # cuda / cpu: force-reinstall from the resolved index.
+    if mode == "cpu":
+        # The default PyPI wheel IS a CPU build (build_cuda is None). If torch
+        # already imports as a CPU build, we're done — no reinstall needed.
+        if import_ok and build_cuda is None:
+            return (True, "torch already CPU build (no reinstall needed)")
+        # Wrong build (a CUDA wheel on a now-CPU box) or torch missing/broken.
+        return _install_torch_from_index(
+            python_exe, torch_spec, decision, constraints_path
+        )
+
+    # mode == "cuda"
+    if import_ok and cuda_available and build_cuda is not None:
+        # Already a working CUDA build — nothing to do.
+        return (True, f"torch already CUDA build {build_cuda} (no reinstall needed)")
+    # CPU wheel on an NVIDIA box, or a broken CUDA build -> install CUDA torch.
+    ok, msg = _install_torch_from_index(
+        python_exe, torch_spec, decision, constraints_path
+    )
+    if not ok:
+        return (ok, msg)
+    # Verify CUDA actually works; fall back to CPU torch if the runtime is
+    # broken (missing DLLs / driver mismatch / AV quarantine).
+    import_ok, cuda_available, _ = _probe_torch_cuda(python_exe)
+    if not import_ok:
+        return (False, "CUDA torch installed but import failed at probe")
+    if not cuda_available:
+        _log(
+            "CUDA torch installed but torch.cuda.is_available() is False "
+            "(broken DLLs / driver mismatch); falling back to CPU torch"
+        )
+        return _fallback_cpu_torch(python_exe, torch_spec, constraints_path)
+    return (True, "torch cuda install completed")
+
+
+def _install_torch_from_index(
+    python_exe: str, torch_spec: str, decision: dict, constraints_path: Optional[str]
+) -> tuple[bool, str]:
+    """Force-reinstall torch from the resolved cuda/cpu wheel index.
+
+    --extra-index-url pypi so torch's runtime deps (filelock/sympy/networkx/
+    jinja2/fsspec) resolve; -c constraints so a transitive resolve can't pull
+    numpy 2.x back in (constraints does NOT cap torch, so the index URL stays
+    in control of the variant).
+    """
     cmd = [
         python_exe, "-m", "pip", "install",
         "--upgrade", "--force-reinstall", "--no-cache-dir", "--no-input",
@@ -591,22 +641,7 @@ def select_torch_install(
     if constraints_path:
         cmd += ["-c", constraints_path]
     cmd.append(torch_spec)
-    ok, msg = _run_torch_pip(cmd, mode)
-    if not ok:
-        return (ok, msg)
-
-    # Verify CUDA actually works when we asked for it.
-    if mode == "cuda":
-        import_ok, cuda_available = _probe_torch_cuda(python_exe)
-        if not import_ok:
-            return (False, "CUDA torch installed but import failed at probe")
-        if not cuda_available:
-            _log(
-                "CUDA torch installed but torch.cuda.is_available() is False "
-                "(broken DLLs / driver mismatch); falling back to CPU torch"
-            )
-            return _fallback_cpu_torch(python_exe, torch_spec, constraints_path)
-    return (True, f"torch {mode} install completed")
+    return _run_torch_pip(cmd, decision["mode"])
 
 
 def _run_torch_pip(cmd: list, label: str) -> tuple[bool, str]:
