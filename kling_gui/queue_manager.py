@@ -2597,6 +2597,12 @@ class QueueManager:
         tees it there) and in the GUI's own rotating file log (the live diag
         lines are logged at ``debug``). Every branch is wrapped so a logging
         failure can never turn a graceful rPPG skip into a crash.
+
+        macOS note: ``run_rppg.sh`` has no dependency self-heal/import-probe, so
+        it emits no ``[rppg-diag]`` lines — ``modules`` is empty by design on
+        macOS and only the ``📄`` log pointer shows (the rppg.log path is still
+        correct + current). Per-module naming parity on macOS is the v2.17
+        unified-deps work (see docs/v2.17-unified-gpu-deps-handoff.md).
         """
         modules = ""
         try:
