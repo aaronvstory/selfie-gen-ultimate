@@ -709,8 +709,12 @@ def _install_torch_from_index(
       1. Install torch ALONE from the wheel index with ``--no-deps`` and NO
          extra-index, so ONLY that index is consulted and its torch wheel
          (cu121/cu128/cpu) is the one that lands.
-      2. Install torch's runtime deps (filelock/sympy/networkx/jinja2/fsspec
-         + typing-extensions) from PyPI in a separate, deps-only pass.
+      2. Run pip again for the SAME torch_spec WITH the PyPI extra-index but
+         WITHOUT --force-reinstall/--no-deps: torch is already satisfied by
+         step 1, so pip leaves the CUDA wheel in place and only resolves +
+         installs torch's MISSING dependencies from PyPI. This pulls torch's
+         OWN declared deps (no hardcoded list to drift — code-review 2026-06-03)
+         while the wheel index can't beat the already-installed CUDA build.
 
     -c constraints on both passes so a transitive resolve can't pull numpy 2.x.
     """
@@ -729,19 +733,23 @@ def _install_torch_from_index(
     if not ok:
         return (ok, msg)
 
-    # Step 2: torch's runtime deps from PyPI (the wheel index doesn't host them).
-    # No --no-deps here so these pull their own (light) deps; -c keeps numpy<2.
+    # Step 2: resolve torch's OWN deps from PyPI. torch is already installed
+    # (step 1), so without --force-reinstall pip keeps the CUDA wheel and just
+    # fills in the missing deps it declares — no hardcoded dep list. The wheel
+    # index is listed first so any torch-namespaced runtime libs still prefer
+    # it; PyPI (extra-index) supplies filelock/sympy/networkx/etc.
     step2 = [
         python_exe, "-m", "pip", "install",
         "--no-cache-dir", "--no-input",
-        "--index-url", decision["extra_index_url"],
+        "--index-url", decision["index_url"],
+        "--extra-index-url", decision["extra_index_url"],
         *constraint,
-        "filelock", "sympy", "networkx", "jinja2", "fsspec", "typing-extensions",
+        torch_spec,
     ]
     ok2, msg2 = _run_torch_pip(step2, f"{decision['mode']} (runtime deps)")
     if not ok2:
-        # torch itself landed; deps failed. Surface it but the torch wheel is
-        # in place — the caller's probe will reveal if it's actually importable.
+        # torch wheel is in place; deps resolve failed. Surface it — the
+        # caller's probe reveals whether torch is actually importable.
         return (False, f"torch wheel ok but runtime-deps install failed: {msg2}")
     return (True, f"torch {decision['mode']} install completed")
 

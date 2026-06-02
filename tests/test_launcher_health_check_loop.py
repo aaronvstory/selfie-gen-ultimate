@@ -345,6 +345,10 @@ def test_launcher_manual_recovery_pip_command_matches_repair_packages():
 
     bat_src = _read(WIN_BAT)
     sh_src = _read(MAC_SH)
+    # v2.17: the .bat manual-recovery echo escapes > / < as ^> / ^< (cmd treats
+    # them as redirection otherwise — the bug Gemini caught). Strip the carets
+    # before the membership check so "scipy>=1.11,<2" matches "scipy^>=1.11,^<2".
+    bat_src = bat_src.replace("^>", ">").replace("^<", "<")
 
     # Hard-pinned expected supersets — these are the packages each
     # platform's manual recovery hint MUST mention, independent of the

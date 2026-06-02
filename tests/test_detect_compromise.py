@@ -731,6 +731,61 @@ class BatFilesNoDevNullTests(unittest.TestCase):
             "Offending lines:\n" + "\n".join(offenders),
         )
 
+    def test_no_echo_line_has_unescaped_version_redirect(self):
+        """v2.17 (Gemini caught a real bug I missed 2026-06-03): an ``echo``
+        line printing a pip spec like ``scipy>=1.11,<2`` has UNESCAPED ``>`` /
+        ``<``, which cmd.exe treats as REDIRECTION — ``echo scipy>=1.11`` writes
+        "scipy" to a file named ``=1.11`` instead of printing it, breaking the
+        manual-recovery hint AND littering a stray file. In an echo line the
+        ``>`` / ``<`` MUST be caret-escaped (``^>`` / ``^<``).
+
+        Scan every .bat/.cmd ``echo`` line for a ``>`` or ``<`` that is NOT
+        preceded by a caret and is NOT a deliberate redirect (``>nul``,
+        ``>>"%LOG%"``, ``2>&1``). Heuristic: flag a ``>``/``<`` that has a
+        non-space, non-caret char immediately before it (i.e. it's glued to a
+        token like ``scipy>=`` or ``,<2``) — a real redirect has a space before
+        the operator (``echo foo >nul``).
+        """
+        import re
+
+        offenders: list[str] = []
+        # A ">" or "<" glued to the previous char (not space, not caret) inside
+        # an echo line == an unescaped version specifier redirect.
+        glued = re.compile(r'(?<![\s^])[<>]')
+        for ext in ("*.bat", "*.cmd"):
+            for p in _REPO_ROOT.rglob(ext):
+                if "rPPG" in p.parts:
+                    pass  # rPPG .bat IS ours — still check it
+                if any(part in {".venv", ".venv311", "venv", "node_modules", "site-packages", ".recovery", ".git"} for part in p.parts):
+                    continue
+                try:
+                    text = p.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for i, ln in enumerate(text.splitlines()):
+                    stripped = ln.lstrip()
+                    if not stripped.lower().startswith("echo "):
+                        continue
+                    # Strip the leading "echo " then look for glued < / > that
+                    # isn't caret-escaped. Remove already-escaped ^>/^< AND any
+                    # deliberate redirect tails (a SPACE-separated `>nul`,
+                    # `>>"%LOG%"`, `2>&1`) before testing, so only a token-glued
+                    # operator (scipy>=, ,<2) trips the check.
+                    body = stripped[5:].replace("^>", "").replace("^<", "")
+                    # Drop trailing/space-led redirects: anything from a
+                    # whitespace-preceded > or < to end-of-line is a real redirect.
+                    body = re.sub(r'\s+\d*[<>]{1,2}.*$', '', body)
+                    if glued.search(body):
+                        rel = p.relative_to(_REPO_ROOT).as_posix()
+                        offenders.append(f"  {rel}:{i+1}: {ln.rstrip()}")
+        self.assertFalse(
+            offenders,
+            "Unescaped > / < glued to a token inside an `echo` line: cmd.exe "
+            "treats these as redirection (e.g. `echo scipy>=1.11` writes to a "
+            "file `=1.11`). Caret-escape them as ^> / ^<.\n\n"
+            "Offending lines:\n" + "\n".join(offenders),
+        )
+
 
 class SafeInstallBatCallSemanticsTests(unittest.TestCase):
     """Codex P1 on 49702c0 (2026-05-22): scripts/safe_install.bat

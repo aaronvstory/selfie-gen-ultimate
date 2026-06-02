@@ -193,7 +193,11 @@ if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
       printf '         --no-cache-dir numpy==1.26.4 tensorflow==2.16.2 \\\n' >&2
       printf '         protobuf==4.25.3 tf-keras==2.16.0 \\\n' >&2
       printf '         retina-face==0.0.17 deepface==0.0.92 \\\n' >&2
-      printf '         scipy>=1.11,<2 absl-py>=2.3,<3\n\n' >&2
+      # Quote the specs in the PRINTED command: scipy>=1.11,<2 / absl-py>=2.3,<3
+      # contain > and < which bash treats as redirection if the user copy-pastes
+      # them unquoted (code-review HIGH 2026-06-03). Single-quote them so the
+      # pasted command runs literally.
+      printf "         'scipy>=1.11,<2' 'absl-py>=2.3,<3'\n\n" >&2
       printf '  3. Inspect the diagnostic log:\n' >&2
       printf '       %s\n\n' "${HEALTH_OUTPUT_LOG}" >&2
       printf '  4. Inspect the launch log:\n' >&2

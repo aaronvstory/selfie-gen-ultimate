@@ -119,10 +119,15 @@ def test_no_other_nodeps_mediapipe_site_is_unguarded():
     # are not ours. Match venv/.venv/.venv311/.venv-macos etc. (code-review:
     # the prior "/venv/" check missed the common .venv* names).
     def _in_venv(path: str) -> bool:
+        # Match a path SEGMENT that is a virtualenv dir. Only the canonical
+        # names + the .venv* family — NOT a bare "venv-*" prefix, which could
+        # be the repo root itself if cloned into e.g. "venv-kling" (Gemini
+        # 2026-06-03). A real venv dir is "venv" or ".venv"/".venv311"/etc.
         norm = path.replace("\\", "/")
-        return any(seg in ("venv", ".venv", ".venv311", ".venv-macos")
-                   or seg.startswith((".venv", "venv-"))
-                   for seg in norm.split("/"))
+        return any(
+            seg == "venv" or seg == ".venv" or seg.startswith(".venv")
+            for seg in norm.split("/")
+        )
 
     for pat in patterns:
         for f in glob.glob(str(REPO_ROOT / pat), recursive=True):

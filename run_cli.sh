@@ -59,7 +59,9 @@ if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
       echo "  2. Or force-reinstall the face stack (mirrors REPAIR_PACKAGES):" >&2
       echo "       \"${PYTHON_BIN}\" -m pip install --force-reinstall --no-cache-dir \\" >&2
       echo "         numpy==1.26.4 tensorflow==2.16.2 protobuf==4.25.3 tf-keras==2.16.0 \\" >&2
-      echo "         retina-face==0.0.17 deepface==0.0.92 scipy>=1.11,<2 absl-py>=2.3,<3" >&2
+      # Single-quote scipy/absl specs: > and < are bash redirection if the user
+      # copy-pastes the printed command unquoted (code-review HIGH 2026-06-03).
+      echo "         retina-face==0.0.17 deepface==0.0.92 'scipy>=1.11,<2' 'absl-py>=2.3,<3'" >&2
       exit 1
     fi
   fi

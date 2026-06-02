@@ -70,37 +70,76 @@ def test_user_notes_carry_verified_prices():
     assert "$0.84 per 10s" in un["fal-ai/kling-video/v3/standard/image-to-video"]
 
 
-def test_tooltip_uses_pricing_fallback_when_live_missing():
-    """End-to-end through the tooltip builder: with no live pricing_info, the
-    fallback price is rendered + tagged as a verified reference."""
+def _import_config_panel():
     import sys
 
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
-    # Only skip on a genuine IMPORT failure (e.g. no Tk in the env). A broad
-    # `except Exception` here would mask a real logic regression in the tooltip
-    # builder as a "skip" (code-review M1) — so catch ImportError only; any
-    # other error from the call below propagates as a real test failure.
+    # Skip only on a genuine import/Tk-display failure (catch ImportError +
+    # tkinter.TclError for headless CI — code-review). A broad `except
+    # Exception` would mask a real tooltip-logic regression as a "skip".
     try:
+        import tkinter as _tk
         from kling_gui import config_panel as cp
     except ImportError:
         pytest.skip("config_panel import unavailable (no Tk)")
+        return None
+    except _tk.TclError:  # type: ignore[name-defined]
+        pytest.skip("no Tk display (headless CI)")
+        return None
+    return cp
 
-    # Drive the pure tooltip logic via a tiny stub holding one model.
+
+def _stub_with(model):
     class _Stub:
-        models = [{
-            "endpoint": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
-            "name": "Kling 2.5 Turbo Pro",
-            "pricing_fallback": {"unit": "second", "unit_price": 0.07},
-            "user_notes": "x",
-        }]
+        models = [model]
 
         class _Combo:
             @staticmethod
             def current():
                 return 0
         model_combo = _Combo()
+    return _Stub()
 
-    notes = cp.ConfigPanel._get_current_model_notes(_Stub())
+
+def test_tooltip_uses_pricing_fallback_when_live_missing():
+    """With no live pricing_info, the verified fallback price is rendered +
+    tagged as a verified reference."""
+    cp = _import_config_panel()
+    notes = cp.ConfigPanel._get_current_model_notes(_stub_with({
+        "endpoint": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+        "name": "Kling 2.5 Turbo Pro",
+        "pricing_fallback": {"unit": "second", "unit_price": 0.07},
+        "user_notes": "x",
+    }))
     assert "$0.70/10s" in notes or "$0.70" in notes
     assert "verified reference" in notes.lower()
+
+
+def test_tooltip_prefers_fallback_over_stale_live_price():
+    """Codex P2: when a model has a verified pricing_fallback, the tooltip must
+    use IT even if a (stale/wrong) nonzero live pricing_info is present."""
+    cp = _import_config_panel()
+    notes = cp.ConfigPanel._get_current_model_notes(_stub_with({
+        "endpoint": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+        "name": "Kling 2.5 Turbo Pro",
+        "pricing_info": {"unit": "second", "unit_price": 0.99},   # stale/wrong live quote
+        "pricing_fallback": {"unit": "second", "unit_price": 0.07},
+        "user_notes": "x",
+    }))
+    assert "$0.70" in notes, "must prefer the verified $0.07/s fallback"
+    assert "$0.99" not in notes and "$9.90" not in notes, "must NOT use the stale live price"
+
+
+def test_tooltip_survives_non_dict_pricing_fields():
+    """Gemini/Codex: pricing_info / pricing_fallback that aren't dicts (list,
+    str, null from a bad API response or hand-edited JSON) must not crash the
+    tooltip — they're coerced to {}."""
+    cp = _import_config_panel()
+    for bad in ([], "oops", None, 42):
+        notes = cp.ConfigPanel._get_current_model_notes(_stub_with({
+            "endpoint": "x", "name": "X",
+            "pricing_info": bad, "pricing_fallback": bad,
+            "user_notes": "x",
+        }))
+        assert isinstance(notes, str)  # no crash
