@@ -119,16 +119,82 @@ def test_run_cli_sh_forwards_args_to_automation_ui():
 # Exec bit on the macOS double-click entry.                                   #
 # --------------------------------------------------------------------------- #
 def test_run_auto_command_is_executable_in_git():
-    """run_auto.command must be mode 100755 in the index so macOS users can
-    double-click it straight out of a fresh clone / extracted zip."""
+    """run_auto.command must be mode 100755 in the index so macOS users can run
+    it straight out of a fresh clone / extracted zip.
+
+    Resilient to environments without git / outside a repo (EAFP per Sourcery +
+    Gemini MEDIUM, PR #69): prefer the git index mode, fall back to the on-disk
+    exec bit on POSIX, and skip cleanly if neither is available."""
+    import os
     import subprocess
 
-    out = subprocess.run(
-        ["git", "ls-files", "--stage", "run_auto.command"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert out, "run_auto.command is not tracked by git"
-    mode = out.split()[0]
-    assert mode == "100755", f"run_auto.command must be exec (100755), got {mode}"
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--stage", "run_auto.command"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        out = ""
+
+    if out:
+        mode = out.split()[0]
+        assert mode == "100755", f"run_auto.command must be exec (100755), got {mode}"
+        return
+
+    # No git / not tracked here: on POSIX, check the on-disk exec bit instead.
+    target = REPO_ROOT / "run_auto.command"
+    if os.name == "posix" and target.exists():
+        assert os.stat(target).st_mode & 0o111, "run_auto.command is not executable on disk"
+
+
+# --------------------------------------------------------------------------- #
+# Headless launchers must NOT pause/read on failure (cron/Task Scheduler hang).#
+# --------------------------------------------------------------------------- #
+def test_run_auto_bat_sets_noninteractive():
+    src = _read_text("run_auto.bat")
+    assert 'set "KLING_NONINTERACTIVE=1"' in src, (
+        "run_auto.bat must set KLING_NONINTERACTIVE=1 so the delegated launcher "
+        "chain skips its `pause` on failure (else an unattended batch hangs)."
+    )
+
+
+def test_run_auto_command_sets_noninteractive():
+    src = _read_text("run_auto.command")
+    assert "export KLING_NONINTERACTIVE=1" in src, (
+        "run_auto.command must export KLING_NONINTERACTIVE=1 so the chain skips "
+        "its `read -r -p` on failure (else an unattended launchd/cron job hangs)."
+    )
+
+
+def test_windows_cli_chain_pauses_are_guarded():
+    """Every `pause` in the Windows CLI launcher chain must be guarded by
+    KLING_NONINTERACTIVE so a headless --batch run never blocks on a keypress."""
+    import re
+
+    for rel in ("run_cli.bat", "launchers/windows/run_cli.bat"):
+        src = _read_text(rel)
+        for m in re.finditer(r"(?m)^([ \t]*)(.*\bpause\b.*)$", src):
+            line = m.group(2).strip()
+            # Allowed: the guarded form, or a comment mentioning pause.
+            if line.startswith("rem") or line.startswith("::"):
+                continue
+            assert "if not defined KLING_NONINTERACTIVE pause" in line or "pause" not in re.sub(
+                r"if not defined KLING_NONINTERACTIVE pause", "", line
+            ), f"{rel}: unguarded `pause` -> headless batch would hang: {line!r}"
+
+
+def test_macos_cli_chain_reads_are_guarded():
+    """Every interactive `read -r -p` in the macOS CLI launcher chain must be
+    guarded by KLING_NONINTERACTIVE."""
+    for rel in ("run_cli.command", "launchers/macos/run_cli.command", "run_auto.command"):
+        src = _read_text(rel)
+        for raw in src.splitlines():
+            line = raw.strip()
+            if line.startswith("#"):
+                continue
+            if "read -r -p" in line:
+                assert "KLING_NONINTERACTIVE" in line, (
+                    f"{rel}: unguarded `read -r -p` -> headless batch would hang: {line!r}"
+                )

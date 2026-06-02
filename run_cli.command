@@ -6,7 +6,7 @@ TARGET="${ROOT_DIR}/launchers/run_cli.command"
 
 if [[ ! -f "${TARGET}" ]]; then
   printf 'Missing launcher: %s\n' "${TARGET}" >&2
-  read -r -p "Press Enter to close..."
+  [[ -n "${KLING_NONINTERACTIVE:-}" ]] || read -r -p "Press Enter to close..."
   exit 1
 fi
 

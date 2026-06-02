@@ -7,7 +7,7 @@ if not exist "%TARGET%" (
     echo.
     echo ERROR: Missing launcher: %TARGET%
     echo.
-    pause
+    if not defined KLING_NONINTERACTIVE pause
     exit /b 1
 )
 

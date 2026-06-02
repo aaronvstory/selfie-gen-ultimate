@@ -27,6 +27,10 @@ if not exist "%TARGET%" (
     exit /b 1
 )
 
+rem Headless: tell the canonical launcher chain to NOT pause on failure
+rem (cron / Task Scheduler would hang on a pause). The chain guards every
+rem pause behind: if not defined KLING_NONINTERACTIVE pause.
+set "KLING_NONINTERACTIVE=1"
 rem Inject --batch and forward every user arg (root folder, --limit, etc).
 call "%TARGET%" --batch %*
 set "EXIT_CODE=%ERRORLEVEL%"

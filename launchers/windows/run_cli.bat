@@ -58,7 +58,7 @@ if not exist "%VENV_PYTHON%" (
         echo  See the messages above and %LOG_FILE% for details.
         echo(
         >>"%LOG_FILE%" echo [%LAUNCH_TS%] ERROR: python resolver failed ^(RESOLVE_RC=!RESOLVE_RC!^)
-        pause
+        if not defined KLING_NONINTERACTIVE pause
         exit /b 1
     )
     rem  Resolver may have adopted/created a different venv than the
@@ -116,7 +116,7 @@ if exist "%STAMP%" (
                 echo  ERROR: Automatic dependency repair FAILED ^(cached-stamp path^).
                 echo  See %STATE_DIR%\last_health.log + %LOG_FILE%. Stamp already
                 echo  cleared, so re-running %~nx0 retries a full sync.
-                pause
+                if not defined KLING_NONINTERACTIVE pause
                 exit /b 1
             )
             echo   [%LAUNCH_TS%] Repair succeeded; re-writing stamp.
@@ -163,7 +163,7 @@ if exist "%DEP_CHECKER%" (
     if !errorlevel! neq 0 (
         echo(
         echo  ERROR: Dependency bootstrap failed.
-        pause
+        if not defined KLING_NONINTERACTIVE pause
         exit /b 1
     )
 )
@@ -180,7 +180,7 @@ if exist "%DEP_HEALTH_SCRIPT%" (
         if !errorlevel! neq 0 (
             echo(
             echo  ERROR: Automatic dependency repair failed.
-            pause
+            if not defined KLING_NONINTERACTIVE pause
             exit /b 1
         )
         set "HEALTH_OK=1"
@@ -222,7 +222,7 @@ set "EXIT_CODE=!errorlevel!"
 if !EXIT_CODE! neq 0 (
     echo(
     echo   [%LAUNCH_TS%] CLI failed with exit code !EXIT_CODE!.
-    pause
+    if not defined KLING_NONINTERACTIVE pause
 )
 
 endlocal & exit /b %EXIT_CODE%
@@ -233,7 +233,7 @@ echo  ERROR: Dependency bootstrap failed.
 echo  MediaPipe is required for Oldcam v9/v10.
 echo  Close running Python/GUI processes and retry.
 echo  If it still fails, recreate the venv or run dep repair/bootstrap manually.
-pause
+if not defined KLING_NONINTERACTIVE pause
 endlocal & exit /b 1
 
 :INSTALL_REQUIREMENTS
