@@ -20,6 +20,7 @@ from model_metadata import (
     get_model_by_endpoint,
 )
 from path_utils import sanitize_stem
+from log_utils import format_exception_detail
 
 # Setup logging
 logging.basicConfig(
@@ -775,6 +776,16 @@ class FalAIKlingGenerator:
                     if submit_attempt < max_submit_retries - 1:
                         time.sleep(10)
                         continue
+                    # Record + surface the real reason so the queue's failure
+                    # line names it instead of a bare "Generation failed"
+                    # (v2.16 logging overhaul). Without _set_last_error,
+                    # _get_generation_error_message has nothing to report.
+                    error_msg = (
+                        "Request to fal.ai timed out after "
+                        f"{max_submit_retries} attempts (network/slow connection)."
+                    )
+                    self._set_last_error(error_msg)
+                    self._report_progress(f"❌ {error_msg}", "error")
                     logger.error("✗ Failed to submit request after timeouts")
                     return None
 
@@ -785,6 +796,12 @@ class FalAIKlingGenerator:
                     if submit_attempt < max_submit_retries - 1:
                         time.sleep(10)
                         continue
+                    error_msg = (
+                        f"Could not reach fal.ai after {max_submit_retries} "
+                        f"attempts — {format_exception_detail(e)}"
+                    )
+                    self._set_last_error(error_msg)
+                    self._report_progress(f"❌ {error_msg}", "error")
                     logger.error("✗ Failed to submit request due to connection errors")
                     return None
 
@@ -793,6 +810,12 @@ class FalAIKlingGenerator:
                     if submit_attempt < max_submit_retries - 1:
                         time.sleep(5)
                         continue
+                    error_msg = (
+                        f"Unexpected error submitting to fal.ai — "
+                        f"{format_exception_detail(e)}"
+                    )
+                    self._set_last_error(error_msg)
+                    self._report_progress(f"❌ {error_msg}", "error")
                     return None
 
             if not request_id:

@@ -2339,11 +2339,15 @@ class QueueManager:
                 # user always sees WHICH dependency broke and WHY (v2.16).
                 stripped = text.strip()
                 if _is_rppg_setup_diag(stripped):
+                    # Case-insensitive throughout: the diag helper emits
+                    # uppercase MISSING/BROKEN, but the launcher's own status
+                    # lines (and any future variant) may differ in case
+                    # (gemini MEDIUM, PR #67).
                     low = stripped.lower()
                     if (
-                        "MISSING" in stripped
-                        or "BROKEN" in stripped
-                        or stripped.startswith(("ERROR", "[ERROR]"))
+                        "missing" in low
+                        or "broken" in low
+                        or low.startswith(("error", "[error]"))
                     ):
                         level = "error"
                     elif (

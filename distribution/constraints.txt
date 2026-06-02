@@ -24,3 +24,11 @@ opencv-python-headless<4.12
 opencv-contrib-python<4.12
 tensorflow==2.16.2
 tf-keras==2.16.0
+# absl-py: rPPG's injector imports absl.logging to quiet TF/mediapipe log
+# spam. That import is now GUARDED (try/except, v2.15), so a missing absl no
+# longer crashes the injector — but mediapipe installs --no-deps (skipping its
+# absl-py~=2.3) and the TF-side absl can fail to land on a fresh venv, leaving
+# logs noisy. We require absl-py everywhere (it's a real dependency, not
+# optional), so pin it here too — any -c-constrained resolve keeps absl present
+# and logs quiet. (v2.15 — friend's "rPPG fails, everything else works" bug.)
+absl-py>=2.3,<3
