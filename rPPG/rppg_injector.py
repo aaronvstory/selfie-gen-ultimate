@@ -46,8 +46,18 @@ warnings.filterwarnings('ignore')
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
-import absl.logging
-absl.logging.set_verbosity(absl.logging.ERROR)
+# absl is only used to quiet TensorFlow/mediapipe C++ log spam — it is NOT
+# essential to the actual rPPG injection. Guard the import so a venv missing
+# absl (mediapipe is installed --no-deps, which skips its absl-py~=2.3, and the
+# TF-side absl can fail to land on a fresh install) degrades to "noisier logs"
+# instead of crashing the entire rPPG step with an unguarded ImportError — the
+# friend's v2.15 "rPPG fails, everything else works" bug. absl-py is also now
+# pinned in requirements.txt so this fallback should rarely fire.
+try:
+    import absl.logging
+    absl.logging.set_verbosity(absl.logging.ERROR)
+except Exception:  # noqa: BLE001 — absl absent/broken must never break rPPG
+    pass
 
 # ---------------------------------------------------------------------------
 # v6 optional modules — spectrum scorer (analyzer side), pulse library

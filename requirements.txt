@@ -38,6 +38,16 @@ tensorflow-intel==2.16.2; sys_platform == "win32"
 numpy>=1.26,<2
 tf-keras==2.16.0
 retina-face==0.0.17
+# absl-py MUST be pinned explicitly even though tensorflow + mediapipe both
+# declare it. The rPPG launcher installs mediapipe with `--no-deps` (to stop it
+# pulling numpy 2.x), which SKIPS mediapipe's `absl-py~=2.3`. And on a fresh
+# install the TF-side absl can resolve as "already satisfied" against a global
+# Python or simply not land in the venv — leaving absl absent. rPPG's
+# rppg_injector.py does an UNGUARDED `import absl.logging` at module top, so a
+# missing absl crashes the whole rPPG step (the friend's v2.13 "rPPG fails,
+# everything else works" bug). Pin it so a fresh venv always gets it. The
+# ~=2.3 range matches what mediapipe 0.10.35 + TF 2.16.2 expect.
+absl-py~=2.1
 # torch is required by DeepFace's anti-spoofing classifier (MiniFASNetV2).
 # Without it the engine fails ALL similarity comparisons when anti_spoofing=True.
 # Pinned to a CPU-only-compatible version range; user can swap for the CUDA build manually.

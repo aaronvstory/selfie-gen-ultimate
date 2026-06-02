@@ -141,9 +141,10 @@ def test_self_heal_re_runs_import_check_after_pip(bat_source: str):
     failed but the others worked) would still launch the injector
     which would crash on the missing module."""
     # Two consecutive import-check lines are the proxy for "checked,
-    # tried to fix, re-checked." Count them.
+    # tried to fix, re-checked." Count them. (v2.15: the check now also
+    # includes absl — see test_self_heal_import_check_includes_absl.)
     count = bat_source.count(
-        '"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy"'
+        '"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy, absl"'
     )
     assert count >= 2, (
         f"expected >=2 occurrences of the import check (one before "
@@ -210,3 +211,48 @@ def test_no_dev_null_in_bat(bat_source: str):
         "`/dev/null` — a checkout-local linter silently rewrites the "
         "former to the latter and breaks every redirection in the file"
     )
+
+
+def test_self_heal_import_check_includes_absl(bat_source: str):
+    """v2.15: rppg_injector.py does an `import absl.logging`, but mediapipe is
+    installed --no-deps (skipping its absl-py~=2.3) so absl can be absent on a
+    fresh venv. The self-heal import-check must include `absl` so a missing
+    absl is detected + triggers the re-install, instead of passing and letting
+    the injector crash → -NORPPG (the friend's 'rPPG fails, everything else
+    works' bug)."""
+    assert "import cv2, numpy, mediapipe, scipy, absl" in bat_source, (
+        "run_rppg.bat self-heal import-check must include absl"
+    )
+    # The old check (without absl) must be gone.
+    assert '"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" ' not in bat_source, (
+        "the absl-less import-check must be replaced everywhere"
+    )
+
+
+def test_absl_pinned_in_requirements_and_constraints():
+    """absl-py must be an explicit top-level pin (not just transitive) in both
+    requirements.txt and constraints.txt so a fresh venv always installs it
+    (v2.15)."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    reqs = (root / "requirements.txt").read_text(encoding="utf-8")
+    cons = (root / "constraints.txt").read_text(encoding="utf-8")
+    assert "absl-py~=2.1" in reqs, "requirements.txt must pin absl-py explicitly"
+    assert "absl-py>=2.1,<3" in cons, "constraints.txt must pin absl-py"
+
+
+def test_rppg_injector_absl_import_is_guarded():
+    """rppg_injector.py's absl import must be wrapped in try/except so a missing
+    absl degrades to noisier logs instead of crashing the whole rPPG step
+    (belt-and-suspenders for the v2.15 absl fix)."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "rPPG" / "rppg_injector.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    # The import + set_verbosity must sit inside a try block.
+    assert "try:\n    import absl.logging" in src, (
+        "rppg_injector.py must guard `import absl.logging` in a try/except"
+    )
+    assert "except Exception:" in src

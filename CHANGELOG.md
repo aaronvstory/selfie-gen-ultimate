@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-02 (v2.15) — fix rPPG missing absl-py on fresh install
+
+A friend's v2.13 install ran the WHOLE pipeline (Face Crop → selfie → Kling →
+oldcam) but **rPPG still failed** (saved `-NORPPG`). v2.13 fixed the rPPG
+launcher's mediapipe-spec PARSER; this is a different, second rPPG failure mode.
+
+Root cause (confirmed by reproduction): `rPPG/rppg_injector.py` does an
+**unguarded `import absl.logging`** at module top. `absl-py` was pinned nowhere
+in the project — it only arrived transitively. mediapipe declares `absl-py~=2.3`
+but the rPPG launcher installs mediapipe with `--no-deps` (correct, to block
+numpy 2.x), which **skips absl**; and on a fresh venv the TF-side absl can
+resolve as "already satisfied" against a global Python or simply not land. So
+absl ends up absent → `import absl.logging` crashes → the rPPG step exits 1 and
+the video is marked `-NORPPG`. Everything else works because oldcam (v24) and
+the other steps don't import absl. Verified live: rPPG succeeds with absl
+present, and `import absl.logging` hard-crashes when absl is blocked.
+
+### Fixed
+
+- **Pinned `absl-py`** explicitly in `requirements.txt` (`~=2.1`) and
+  `constraints.txt` (`>=2.1,<3`) so a fresh venv always installs it as a direct
+  requirement (pip can't skip a top-level pin the way it skipped the transitive).
+- **Guarded `import absl.logging`** in `rppg_injector.py` — absl is only used to
+  quiet TF/mediapipe log spam, never essential to injection, so a missing absl
+  now degrades to noisier logs instead of crashing the whole rPPG step.
+- **Added `absl` to the rPPG launcher self-heal import-check** (`run_rppg.bat`:
+  `import cv2, numpy, mediapipe, scipy` → `+ absl`) so a missing absl is
+  detected and triggers the dependency re-install instead of silently passing.
+
+### Notes
+
+- Surgical, rPPG-only. The numpy<2 constraints, Face Crop repair, video/oldcam
+  paths, and macOS launchers are unchanged.
+
 ## 2026-06-02 (v2.13) — fix rPPG MediaPipe requirement parser
 
 A friend's v2.12 run completed the full pipeline (Face Crop → selfie → Kling
