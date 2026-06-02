@@ -645,9 +645,23 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
         )
         mp_runtime_ok = False
 
-    return (
-        cuda_ok and face_ok and mediapipe_ok and mp_runtime_ok
-    ), "; ".join(messages)
+    # Overall success gates on cuda_ok AND face_ok only. The mediapipe steps
+    # (--no-deps wheel + matplotlib/contrib/sounddevice runtime deps) record
+    # their outcome in the message but DON'T gate the return (code-review
+    # HIGH-2): a transient mediapipe/sounddevice install hiccup must not flip
+    # run_repair to False and block launch on a machine whose face stack is
+    # otherwise healthy — matching how cuda_ok defaults True ("not needed").
+    # The AUTHORITATIVE launch gate is main()'s verify_in_fresh_process(), a
+    # fresh `--mode check` that independently re-probes the deep mediapipe
+    # Tasks API (FaceLandmarker) — so a genuinely broken mediapipe still fails
+    # that re-verify and blocks launch; a transient install blip that left a
+    # working stack does not. Surface a clear message either way.
+    if not (mediapipe_ok and mp_runtime_ok):
+        messages.append(
+            "note: a mediapipe step reported a non-fatal issue; the fresh "
+            "health re-check is the authoritative gate"
+        )
+    return (cuda_ok and face_ok), "; ".join(messages)
 
 
 def verify_in_fresh_process() -> tuple[bool, list[str]]:

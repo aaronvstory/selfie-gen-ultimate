@@ -118,11 +118,25 @@ def _register_cuda_dll_dirs():
         return
     import glob as _glob
     import site as _site
-    roots = []
-    for sp in (_site.getsitepackages() if hasattr(_site, "getsitepackages") else []):
-        roots.append(os.path.join(sp, "nvidia"))
-    # Also cover the venv layout where getsitepackages may not resolve.
-    roots.append(os.path.join(os.path.dirname(os.__file__), "site-packages", "nvidia"))
+    import sys as _sys
+    sp_dirs = []
+    if hasattr(_site, "getsitepackages"):
+        try:
+            sp_dirs.extend(_site.getsitepackages())
+        except Exception:  # noqa: BLE001 — some embeds raise; fall through
+            pass
+    if hasattr(_site, "getusersitepackages"):
+        try:
+            sp_dirs.append(_site.getusersitepackages())
+        except Exception:  # noqa: BLE001
+            pass
+    # Fallback for a virtualenv on Python < 3.11 where getsitepackages() is
+    # absent: derive from sys.prefix (code-review MEDIUM-4 — the old
+    # os.path.dirname(os.__file__) pointed at the stdlib Lib/ dir, NOT
+    # Lib/site-packages, so the NVIDIA DLL dirs were never registered there and
+    # CuPy's kernel compile failed). Windows venv layout = <prefix>/Lib/site-packages.
+    sp_dirs.append(os.path.join(_sys.prefix, "Lib", "site-packages"))
+    roots = [os.path.join(sp, "nvidia") for sp in sp_dirs if sp]
     seen = set()
     for root in roots:
         if not os.path.isdir(root):

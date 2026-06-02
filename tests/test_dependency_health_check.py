@@ -931,3 +931,22 @@ class TorchCudaFallbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_run_repair_succeeds_when_face_stack_ok_despite_mediapipe_step_failure():
+    """Code-review HIGH-2: a transient mediapipe/sounddevice install failure must
+    NOT flip run_repair to False and block launch when the face stack itself
+    repaired fine. Only cuda_ok + face_ok gate the return; the mediapipe steps
+    contribute a message. (The authoritative launch gate is main()'s fresh
+    verify_in_fresh_process, which independently re-probes FaceLandmarker.)"""
+    def fake_run(cmd, *a, **k):
+        kind = _classify_repair_call(cmd)
+        # face stack succeeds; the mediapipe --no-deps + runtime-deps steps fail.
+        rc = 1 if kind in ("mediapipe", "mediapipe_runtime") else 0
+        return types.SimpleNamespace(returncode=rc, stdout="", stderr="x")
+
+    with mock.patch("dependency_health_check.subprocess.run", side_effect=fake_run):
+        ok, message = dhc.run_repair(failures=["tensorflow import failed: foo"])
+
+    assert ok is True, "face stack OK must yield run_repair True despite mediapipe hiccup"
+    assert "non-fatal" in message or "authoritative" in message
