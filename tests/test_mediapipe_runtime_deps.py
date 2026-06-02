@@ -115,9 +115,18 @@ def test_no_other_nodeps_mediapipe_site_is_unguarded():
     nodeps_re = re.compile(r"--no-deps", re.I)
     covered = {str((REPO_ROOT / s).resolve()) for s in _MEDIAPIPE_NODEPS_SITES}
     offenders = []
+    # Skip any virtualenv dir — bundled launcher scripts inside site-packages
+    # are not ours. Match venv/.venv/.venv311/.venv-macos etc. (code-review:
+    # the prior "/venv/" check missed the common .venv* names).
+    def _in_venv(path: str) -> bool:
+        norm = path.replace("\\", "/")
+        return any(seg in ("venv", ".venv", ".venv311", ".venv-macos")
+                   or seg.startswith((".venv", "venv-"))
+                   for seg in norm.split("/"))
+
     for pat in patterns:
         for f in glob.glob(str(REPO_ROOT / pat), recursive=True):
-            if ".launcher_state" in f or "/venv/" in f.replace("\\", "/"):
+            if ".launcher_state" in f or _in_venv(f):
                 continue
             try:
                 txt = Path(f).read_text(encoding="utf-8", errors="replace")

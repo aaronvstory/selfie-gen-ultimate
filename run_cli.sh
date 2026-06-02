@@ -44,7 +44,23 @@ if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
     if "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode repair; then
       cp "${REQUIREMENTS_STAMP}" "${HEALTH_STAMP}" 2>/dev/null || true
     else
-      echo "Auto-repair failed; HEALTH_STAMP left cleared so next launch re-probes." >&2
+      # ABORT the CLI launch on repair failure, matching run_gui.sh (code-review
+      # Codex P2): proceeding would drop the user into the CLI menu where any
+      # face feature (crop / similarity / automation) then fails confusingly.
+      # HEALTH_STAMP stays cleared so the next launch re-probes + re-repairs.
+      echo "" >&2
+      echo "============================================================" >&2
+      echo "ERROR: Automatic dependency repair FAILED." >&2
+      echo "============================================================" >&2
+      echo "The runtime health probe failed AND auto-repair did not fix it." >&2
+      echo "Recover manually, then re-run:" >&2
+      echo "  1. Delete the venv + re-bootstrap:" >&2
+      echo "       rm -rf \"${ROOT_DIR}/.venv-macos\" && bash \"${ROOT_DIR}/run_cli.sh\"" >&2
+      echo "  2. Or force-reinstall the face stack (mirrors REPAIR_PACKAGES):" >&2
+      echo "       \"${PYTHON_BIN}\" -m pip install --force-reinstall --no-cache-dir \\" >&2
+      echo "         numpy==1.26.4 tensorflow==2.16.2 protobuf==4.25.3 tf-keras==2.16.0 \\" >&2
+      echo "         retina-face==0.0.17 deepface==0.0.92 scipy>=1.11,<2 absl-py>=2.3,<3" >&2
+      exit 1
     fi
   fi
 fi
