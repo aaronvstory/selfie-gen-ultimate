@@ -23,21 +23,21 @@ printf '  ============================================================\n\n'
 "${ROOT_DIR}/setup_macos.sh"
 export KLING_SKIP_PY_STARTUP_DEP_CHECK=1
 
-# Only run dep_health_check when requirements changed since last health check
+# Run the runtime health probe on EVERY launch (v2.17). The previous
+# "skip when REQUIREMENTS_STAMP == HEALTH_STAMP" short-circuit meant that
+# once the two stamps matched, a venv that broke LATER (numpy 2.x re-pulled
+# by an unrelated pip run, an OS update breaking a wheel) was never
+# re-detected — the macOS twin of the run_cli.bat unconditional-stamp bug.
+# The probe is ~3-5s; matching run_gui.sh which already probes every launch.
+# Clear HEALTH_STAMP before repair so a failed repair can't leave a stale
+# "healthy" marker.
 if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
-  _run_health=1
-  if [[ -f "${REQUIREMENTS_STAMP}" && -f "${HEALTH_STAMP}" ]]; then
-    if [[ "$(<"${REQUIREMENTS_STAMP}")" == "$(<"${HEALTH_STAMP}")" ]]; then
-      _run_health=0
-    fi
-  fi
-  if [[ "${_run_health}" -eq 1 ]]; then
-    "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode check || {
-      echo "Runtime dependency health check failed. Attempting auto-repair..." >&2
-      "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode repair
-    }
-    cp "${REQUIREMENTS_STAMP}" "${HEALTH_STAMP}" 2>/dev/null || true
-  fi
+  "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode check || {
+    echo "Runtime dependency health check failed. Attempting auto-repair..." >&2
+    rm -f "${HEALTH_STAMP}" 2>/dev/null || true
+    "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode repair
+  }
+  cp "${REQUIREMENTS_STAMP}" "${HEALTH_STAMP}" 2>/dev/null || true
 fi
 
 # Auto-detect NVIDIA + bootstrap CuPy (same as run_gui.sh — see that

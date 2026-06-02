@@ -79,9 +79,40 @@ set "STAMP_KEY=%STAMP_KEY:/=-%"
 set "STAMP_KEY=%STAMP_KEY::=-%"
 set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,60%.ok"
 
-rem --- Skip dep work if stamp is current -----------------------------------
+rem --- Cached stamp present: still run a quick runtime health probe so a
+rem --- venv that broke AFTER the stamp was written (numpy 2.x re-pulled,
+rem --- AV-quarantined TF DLL, partial wheel) is re-detected + repaired
+rem --- instead of trusted forever. Mirrors run_gui.bat cached-stamp path
+rem --- (v2.17: run_cli.bat previously skipped ALL checks on the cached
+rem --- path -- the same infinite-re-run bug the GUI launcher already fixed).
 if exist "%STAMP%" (
-    echo   [%LAUNCH_TS%] Dependencies up-to-date ^(cached stamp^). Skipping sync.
+    if exist "%DEP_HEALTH_SCRIPT%" (
+        echo   [%LAUNCH_TS%] Cached deps stamp present -- running quick health probe...
+        "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode check >"%STATE_DIR%\last_health.log" 2>&1
+        if !errorlevel! neq 0 (
+            echo(
+            echo   [%LAUNCH_TS%] Runtime health probe FAILED. Recent output:
+            type "%STATE_DIR%\last_health.log"
+            echo(
+            echo   [%LAUNCH_TS%] Clearing cached deps stamp + running auto-repair...
+            del "%STATE_DIR%\deps_*.ok" >nul 2>&1
+            "%VENV_PYTHON%" "%DEP_HEALTH_SCRIPT%" --mode repair
+            if !errorlevel! neq 0 (
+                echo(
+                echo  ERROR: Automatic dependency repair FAILED ^(cached-stamp path^).
+                echo  See %STATE_DIR%\last_health.log + %LOG_FILE%. Stamp already
+                echo  cleared, so re-running %~nx0 retries a full sync.
+                pause
+                exit /b 1
+            )
+            echo   [%LAUNCH_TS%] Repair succeeded; re-writing stamp.
+            >>"%STAMP%" echo %LAUNCH_TS% repair
+        ) else (
+            echo   [%LAUNCH_TS%] Runtime health: OK ^(cached deps^).
+        )
+    ) else (
+        echo   [%LAUNCH_TS%] Dependencies up-to-date ^(cached stamp; no health script^).
+    )
     echo   Tip: delete .launcher_state\deps_*.ok to force a full re-check.
     echo(
     goto :launch
@@ -112,6 +143,7 @@ if exist "%DEP_CHECKER%" (
     )
 )
 
+set "HEALTH_OK="
 if exist "%DEP_HEALTH_SCRIPT%" (
     echo(
     echo   [%LAUNCH_TS%] Validating runtime dependency health...
@@ -126,14 +158,26 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             pause
             exit /b 1
         )
+        set "HEALTH_OK=1"
+    ) else (
+        set "HEALTH_OK=1"
     )
     echo   [%LAUNCH_TS%] Runtime health: OK
+) else (
+    rem No health script (older/partial tree): nothing to verify, cache as before.
+    set "HEALTH_OK=1"
 )
 
-rem --- Write stamp ---------------------------------------------------------
-del "%STATE_DIR%\deps_*.ok" >nul 2>&1
->>"%STAMP%" echo %LAUNCH_TS%
-echo   [%LAUNCH_TS%] Stamp written. Next launch will skip dep sync.
+rem --- Write stamp -- GUARDED on HEALTH_OK so a venv that failed the health
+rem --- probe is NOT cached as healthy (v2.17: run_cli.bat previously wrote
+rem --- the stamp UNCONDITIONALLY, caching broken venvs). Mirrors run_gui.bat.
+if defined HEALTH_OK (
+    del "%STATE_DIR%\deps_*.ok" >nul 2>&1
+    >>"%STAMP%" echo %LAUNCH_TS%
+    echo   [%LAUNCH_TS%] Stamp written. Next launch will skip dep sync.
+) else (
+    echo   [%LAUNCH_TS%] Health not confirmed -- stamp NOT written; next launch will re-sync.
+)
 echo(
 
 :launch

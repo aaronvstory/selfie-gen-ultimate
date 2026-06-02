@@ -32,10 +32,24 @@ echo       Found: %PYVER%
 :: -------- Step 2: Install / Upgrade Dependencies --------
 echo.
 echo [2/6] Installing dependencies...
+set "CONSTRAINTS_FILE=%SCRIPT_DIR%constraints.txt"
+set "CC="
+if exist "%CONSTRAINTS_FILE%" set "CC=-c "%CONSTRAINTS_FILE%""
+set "MEDIAPIPE_SPEC=mediapipe==0.10.35"
 python -m pip install --quiet --upgrade pyinstaller
-python -m pip install --quiet --upgrade -r requirements.txt
+rem -c constraints.txt: hold numpy<2 / opencv<4.12 even though requirements
+rem pulls mediapipe (whose deps would otherwise float numpy to 2.x and break
+rem TF 2.16.2 in the frozen build). v2.17: this install previously had no -c.
+python -m pip install --quiet --upgrade !CC! -r requirements.txt
 if %errorlevel% neq 0 (
     echo ERROR: pip install failed. See messages above.
+    goto :fail
+)
+rem Re-pin mediapipe --no-deps so the exact wheel lands without its deps
+rem re-resolving numpy (matches the launcher mediapipe --no-deps contract).
+python -m pip install --quiet --force-reinstall --no-deps !CC! %MEDIAPIPE_SPEC%
+if %errorlevel% neq 0 (
+    echo ERROR: mediapipe --no-deps install failed. See messages above.
     goto :fail
 )
 echo       Done.
