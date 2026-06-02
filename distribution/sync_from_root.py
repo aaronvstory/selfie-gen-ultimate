@@ -52,6 +52,19 @@ SYNC_ITEMS = [
     "fal_utils.py",
     "kling_generator_falai.py",
     "model_metadata.py",
+    # models.json: model_metadata.py loads it from "next to this file", so the
+    # distribution copy needs it too or a cwd=distribution run falls back to the
+    # hardcoded list (losing the pricing_fallback + capability user_notes). It
+    # already ships in the release zip (release_prep walks the working tree);
+    # this keeps the distribution/ direct-run tree in parity.
+    "models.json",
+    # scripts/: kling_gui/main_window._start_gpu_bootstrap_async imports
+    # gpu_bootstrap from REPO_ROOT/scripts at runtime. Without this, a
+    # cwd=distribution direct launch (run_gui_direct.bat) silently skips GPU
+    # setup (ModuleNotFoundError swallowed). Sync the whole scripts/ dir so the
+    # distribution tree can self-bootstrap GPU like the root tree (code-review
+    # MEDIUM 2026-06-03). win_resolve_python.bat etc. ride along harmlessly.
+    "scripts",
     "outpaint_generator.py",
     "outpaint_geometry.py",
     "selfie_generator.py",

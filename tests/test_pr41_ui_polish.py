@@ -199,18 +199,19 @@ class DistForcesCompositeModesTests(unittest.TestCase):
             "direction 2026-05-22 final).",
         )
 
-    def test_shipped_template_slot3_is_active_with_title(self):
+    def test_shipped_template_default_slot_and_titles(self):
         import json as _j
         d=_j.loads((_ROOT/'default_config_template.json').read_text(encoding='utf-8'))
-        self.assertEqual(d['current_prompt_slot'],3)
-        # Title updated 2026-05-22 (polish/v2.3) — slot 3 is now the
-        # "enhanced for Kling 2.5 Pro" prompt with the angle reduced
-        # from 40° to 30° per user direction. Locks both the title and
-        # the 30° angle so future rewrites can't silently revert.
-        self.assertEqual(
-            d['prompt_titles']['3'],
-            'enhanced for Kling 2.5 Pro',
-        )
+        # v2.17 (user direction 2026-06-03): the default selected slot is now 5,
+        # the "head turn 35 degrees v3" bidirectional liveness rotation prompt.
+        self.assertEqual(d['current_prompt_slot'], 5)
+        self.assertEqual(d['prompt_titles']['5'], 'head turn 35 degrees v3')
+        self.assertIn('35-degree', d['saved_prompts']['5'])
+        self.assertIn('bidirectional liveness head rotation', d['saved_prompts']['5'])
+        self.assertTrue(d['negative_prompts']['5'])
+        # slot 3 content preserved (still selectable, just no longer the default):
+        # the "enhanced for Kling 2.5 Pro" 30° prompt (locked 2026-05-22).
+        self.assertEqual(d['prompt_titles']['3'], 'enhanced for Kling 2.5 Pro')
         self.assertIn('three-quarter view', d['saved_prompts']['3'])
         self.assertIn('30 degrees', d['saved_prompts']['3'])
         self.assertNotIn('40 degrees', d['saved_prompts']['3'])

@@ -27,6 +27,11 @@ class Dependency:
     installed: bool = False
     version: Optional[str] = None
     runtime_issue: Optional[str] = None
+    # v2.17: install this package with --no-deps. Used for mediapipe, whose
+    # declared deps would pull numpy 2.x and re-break TF 2.16.2 (the v2.10/v2.13
+    # fresh-install bug). The numpy<2 / opencv caps from the other entries +
+    # constraints.txt already satisfy mediapipe's runtime needs.
+    no_deps: bool = False
 
 
 # Define all dependencies
@@ -114,6 +119,53 @@ PYTHON_DEPENDENCIES = [
         pip_name="questionary>=2.0,<3",
         required=True,
         description="Interactive sectioned menus for the kling_automation_ui.py settings editor; required so launchers fail-fast if missing."
+    ),
+    # v2.17: added so the COMPLETE runtime set is bootstrap-installable +
+    # probeable here, not just via the launcher -r requirements.txt + rPPG
+    # self-heal. numpy is pinned <2 to match constraints.txt. mediapipe uses
+    # no_deps (see the Dependency.no_deps note) so it can't pull numpy 2.x.
+    Dependency(
+        name="NumPy",
+        import_name="numpy",
+        pip_name="numpy>=1.26,<2",
+        required=False,
+        description="Core array backend; pinned <2 so TF 2.16.2 / OpenCV stay importable."
+    ),
+    Dependency(
+        name="SciPy",
+        import_name="scipy",
+        pip_name="scipy>=1.11,<2",
+        required=False,
+        description="Signal/ndimage math used by the rPPG pulse-injection path."
+    ),
+    Dependency(
+        name="absl-py",
+        import_name="absl",
+        pip_name="absl-py>=2.3,<3",
+        required=False,
+        description="Logging shim mediapipe imports; pinned everywhere, optional at the rPPG runtime gate."
+    ),
+    Dependency(
+        name="fal-client",
+        import_name="fal_client",
+        pip_name="fal-client>=0.7,<1",
+        required=False,
+        description="fal.ai queue client used by every fal.ai generator (video/selfie/outpaint)."
+    ),
+    Dependency(
+        name="Rich",
+        import_name="rich",
+        pip_name="rich>=13.0,<14",
+        required=False,
+        description="CLI UI rendering for kling_automation_ui.py."
+    ),
+    Dependency(
+        name="MediaPipe",
+        import_name="mediapipe",
+        pip_name="mediapipe==0.10.35",
+        required=False,
+        no_deps=True,
+        description="Face landmark Tasks API (Face Crop / oldcam). Installed --no-deps to keep numpy <2."
     ),
 ]
 
@@ -437,6 +489,11 @@ class DependencyChecker:
             constraints = self._constraints_path()
             if constraints:
                 cmd += ["-c", constraints]
+            # v2.17: mediapipe must install --no-deps so pip can't pull its
+            # transitive numpy 2.x and re-break TF 2.16.2. constraints.txt is
+            # still threaded above as belt-and-suspenders.
+            if dep.no_deps:
+                cmd.append("--no-deps")
             cmd.append(dep.pip_name)
             result = subprocess.run(
                 cmd,

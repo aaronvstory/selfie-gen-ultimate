@@ -34,7 +34,21 @@ _BASE_REPAIR_PACKAGES = [
     "tf-keras==2.16.0",
     "retina-face==0.0.17",
     "deepface==0.0.92",
+    # v2.17: scipy + absl-py are part of the COMPLETE runtime set (rPPG +
+    # mediapipe deps) and were previously only repaired via rPPG self-heal.
+    # Both declare clean numpy-compatible deps and do NOT pull numpy 2.x, so
+    # they're safe as plain ==-style pins here (UNLIKE mediapipe, which must
+    # stay --no-deps — see run_repair's dedicated mediapipe step).
+    "scipy>=1.11,<2",
+    "absl-py>=2.3,<3",
 ]
+
+# v2.17: mediapipe is repaired via a DEDICATED --no-deps step (see run_repair),
+# never as a plain REPAIR_PACKAGES entry. A bare `mediapipe==0.10.35` would let
+# pip resolve its transitive deps and pull numpy 2.x back in, re-breaking TF
+# 2.16.2 (the exact v2.10/v2.13 fresh-install bug). Pinned here so the launcher
+# echo blocks + the run_repair step share one source of truth.
+_MEDIAPIPE_SPEC = "mediapipe==0.10.35"
 
 
 def _with_win_tensorflow_intel(base: "list[str]") -> "list[str]":
@@ -239,11 +253,28 @@ def check_runtime_dependencies(
     except Exception as exc:
         failures.append(f"retinaface import failed: {type(exc).__name__}: {exc}")
 
-    for module_name in ("cv2", "numpy"):
+    for module_name in ("cv2", "numpy", "scipy", "absl"):
         try:
             importer(module_name)
         except Exception as exc:
             failures.append(f"{module_name} import failed: {type(exc).__name__}: {exc}")
+
+    # v2.17: mediapipe is part of the COMPLETE runtime set (Face Crop / oldcam
+    # landmark path). A bare `import mediapipe` PASSES even when the Tasks API
+    # is missing/broken, so probe the deeper Tasks-API symbol the app actually
+    # uses (FaceLandmarker) — mirrors setup_macos.sh's MP_VALIDATE_CMD. This is
+    # the structural hole that let a partial venv (no mediapipe/scipy/absl) get
+    # cached as "healthy": only rPPG's own self-heal caught it before.
+    try:
+        importer("mediapipe")
+        vision_mod = importer("mediapipe.tasks.python.vision")
+        if not hasattr(vision_mod, "FaceLandmarker"):
+            failures.append(
+                "mediapipe Tasks API incomplete: "
+                "mediapipe.tasks.python.vision.FaceLandmarker missing"
+            )
+    except Exception as exc:
+        failures.append(f"mediapipe import failed: {type(exc).__name__}: {exc}")
 
     # Direct version assert: numpy can import fine yet still be 2.x (which
     # breaks TF 2.16.2's C-extension on a later call, not at numpy import).
@@ -492,6 +523,12 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
     """
     messages: list[str] = []
     cuda_ok = True  # Treated as "no fallback needed" when no CUDA failure.
+    # Initialize the mediapipe outcome flags up front (code-review H1): they're
+    # currently always assigned before the return, but a future early-return /
+    # `if face_ok:` guard around the mediapipe steps would otherwise raise
+    # NameError. Default False = "not done" so a skipped step never reads as OK.
+    mediapipe_ok = False
+    mp_runtime_ok = False
 
     if failures and _failures_indicate_torch_cuda_break(failures):
         cuda_ok, cuda_msg = run_torch_cpu_fallback()
@@ -539,6 +576,91 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
         messages.append(f"repair failed (code {completed.returncode}): {details}")
         face_ok = False
 
+    # v2.17: mediapipe repair as a SEPARATE --no-deps step. mediapipe must NOT
+    # go through the REPAIR_PACKAGES force-reinstall (which re-resolves deps)
+    # because its declared deps would pull numpy 2.x and re-break TF 2.16.2.
+    # --no-deps installs the mediapipe wheel alone; the numpy<2 / opencv caps
+    # already satisfied by the face-stack install above remain intact. -c
+    # constraints is still threaded as belt-and-suspenders.
+    mp_cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--force-reinstall",
+        "--no-cache-dir",
+        "--no-deps",
+        *constraint_args,
+        _MEDIAPIPE_SPEC,
+    ]
+    mp_completed = subprocess.run(
+        mp_cmd, capture_output=True, text=True, errors="replace", check=False
+    )
+    if mp_completed.returncode == 0:
+        messages.append("mediapipe --no-deps repair completed")
+        mediapipe_ok = True
+    else:
+        mp_details = _extract_pip_failure_detail(mp_completed)
+        messages.append(
+            f"mediapipe repair failed (code {mp_completed.returncode}): {mp_details}"
+        )
+        mediapipe_ok = False
+
+    # v2.17 CRITICAL FIX (the recurring Windows rPPG-failure root cause):
+    # mediapipe is installed --no-deps, so its RUNTIME deps are never pulled.
+    # But `mediapipe.tasks.python.vision` (the FaceLandmarker the rPPG injector
+    # and oldcam use) imports matplotlib (via drawing_utils) AT MODULE LOAD,
+    # and uses opencv-contrib-python + sounddevice at runtime. A bare
+    # `import mediapipe` PASSES, so every prior Windows install gate thought
+    # mediapipe was fine -- then `from mediapipe.tasks.python import vision`
+    # crashed with "No module named 'matplotlib'" and rPPG fell back to
+    # -NORPPG on EVERY run. setup_macos.sh always installed these three;
+    # the Windows launchers + this repair NEVER did. Install them now, pinned
+    # numpy<2 so matplotlib->contourpy->numpy can't upgrade numpy and break TF.
+    mp_runtime_pkgs = [
+        "matplotlib",
+        "opencv-contrib-python<4.12",
+        "sounddevice",
+        "numpy>=1.26,<2",
+    ]
+    mp_rt_cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--no-cache-dir",
+        *constraint_args,
+        *mp_runtime_pkgs,
+    ]
+    mp_rt_completed = subprocess.run(
+        mp_rt_cmd, capture_output=True, text=True, errors="replace", check=False
+    )
+    if mp_rt_completed.returncode == 0:
+        messages.append("mediapipe runtime deps (matplotlib/contrib/sounddevice) installed")
+        mp_runtime_ok = True
+    else:
+        mp_rt_details = _extract_pip_failure_detail(mp_rt_completed)
+        messages.append(
+            f"mediapipe runtime deps failed (code {mp_rt_completed.returncode}): {mp_rt_details}"
+        )
+        mp_runtime_ok = False
+
+    # Overall success gates on cuda_ok AND face_ok only. The mediapipe steps
+    # (--no-deps wheel + matplotlib/contrib/sounddevice runtime deps) record
+    # their outcome in the message but DON'T gate the return (code-review
+    # HIGH-2): a transient mediapipe/sounddevice install hiccup must not flip
+    # run_repair to False and block launch on a machine whose face stack is
+    # otherwise healthy — matching how cuda_ok defaults True ("not needed").
+    # The AUTHORITATIVE launch gate is main()'s verify_in_fresh_process(), a
+    # fresh `--mode check` that independently re-probes the deep mediapipe
+    # Tasks API (FaceLandmarker) — so a genuinely broken mediapipe still fails
+    # that re-verify and blocks launch; a transient install blip that left a
+    # working stack does not. Surface a clear message either way.
+    if not (mediapipe_ok and mp_runtime_ok):
+        messages.append(
+            "note: a mediapipe step reported a non-fatal issue; the fresh "
+            "health re-check is the authoritative gate"
+        )
     return (cuda_ok and face_ok), "; ".join(messages)
 
 

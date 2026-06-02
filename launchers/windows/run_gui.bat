@@ -144,7 +144,21 @@ for %%F in ("%REQUIREMENTS%" "%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS
 set "STAMP_KEY=%STAMP_KEY: =_%"
 set "STAMP_KEY=%STAMP_KEY:/=-%"
 set "STAMP_KEY=%STAMP_KEY::=-%"
-set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,60%.ok"
+rem --- v2.17: fold in the installer/GPU-mode/constraints token so the dep
+rem --- stamp invalidates when the installer logic bumps, the user adds/
+rem --- removes a GPU, or constraints.txt changes. The for/f wraps the
+rem --- quoted python path in `cmd /c "..."` (a bare caret-quoted first
+rem --- token captures NOTHING and the fold-in silently no-ops).
+set "GPU_STAMP_TOKEN="
+if exist "%ROOT_DIR%\scripts\gpu_bootstrap.py" (
+    for /f "usebackq delims=" %%T in (`cmd /c ""%VENV_PYTHON%" "%ROOT_DIR%\scripts\gpu_bootstrap.py" --print-stamp-token"`) do set "GPU_STAMP_TOKEN=%%T"
+)
+set "STAMP_KEY=%STAMP_KEY%!GPU_STAMP_TOKEN!"
+set "STAMP_KEY=%STAMP_KEY: =_%"
+set "STAMP_KEY=%STAMP_KEY:/=-%"
+set "STAMP_KEY=%STAMP_KEY::=-%"
+set "STAMP_KEY=%STAMP_KEY:.=-%"
+set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,72%.ok"
 
 rem --- Stamp present? Skip the expensive pip-install sync, but STILL run a
 rem --- runtime health check on every launch and auto-repair if it fails.
@@ -202,7 +216,8 @@ if exist "%STAMP%" (
                 echo         --no-cache-dir numpy==1.26.4 tensorflow==2.16.2 ^^^^
                 echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^^^
                 echo         tf-keras==2.16.0 retina-face==0.0.17 ^^^^
-                echo         deepface==0.0.92
+                echo         deepface==0.0.92 ^^^^
+                echo         scipy^>=1.11,^<2 absl-py^>=2.3,^<3
                 echo    3. Inspect the diagnostic log at:
                 echo       %STATE_DIR%\last_health.log
                 echo    4. Inspect the launch log at:
@@ -259,6 +274,17 @@ for %%R in ("%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_RE
     if !errorlevel! neq 0 goto :DEPENDENCY_FAIL
 )
 
+rem --- v2.17: select the hardware-appropriate torch wheel. The -r install
+rem --- above landed the default CPU/PyPI torch wheel; this detects NVIDIA
+rem --- and reinstalls the CUDA build when present (macOS path never runs
+rem --- this .bat; on Windows no-NVIDIA it is a no-op CPU reinstall). It
+rem --- probes torch.cuda.is_available() and falls back to CPU torch if a
+rem --- CUDA build is runtime-broken. Best-effort: always exits 0, never
+rem --- blocks launch (torch only affects similarity anti-spoofing speed).
+if exist "%ROOT_DIR%\scripts\gpu_bootstrap.py" (
+    "%VENV_PYTHON%" "%ROOT_DIR%\scripts\gpu_bootstrap.py" --select-torch "torch>=2.2,<3" --constraints "%CONSTRAINTS_FILE%"
+)
+
 echo(
 echo   [%LAUNCH_TS%] Dependency sync complete.
 echo(
@@ -312,7 +338,8 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             echo         --no-cache-dir numpy==1.26.4 tensorflow==2.16.2 ^^^^
             echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^^^
             echo         tf-keras==2.16.0 retina-face==0.0.17 ^^^^
-            echo         deepface==0.0.92
+            echo         deepface==0.0.92 ^^^^
+            echo         scipy^>=1.11,^<2 absl-py^>=2.3,^<3
             echo    3. Inspect the diagnostic log at:
             echo       %STATE_DIR%\last_health.log
             echo    4. Inspect the launch log at:
@@ -463,6 +490,21 @@ findstr /I /R "^[ ]*mediapipe" "%REQ_FILE%" >nul
 if !errorlevel! equ 0 (
     echo   Installing MediaPipe separately with --no-deps...
     "%VENV_PYTHON%" -m pip install --no-deps !CC! "%MEDIAPIPE_SPEC%"
+    if !errorlevel! neq 0 (
+        del "%REQ_FILTERED%" >nul 2>&1
+        exit /b 1
+    )
+    rem v2.17 CRITICAL: mediapipe was just installed --no-deps, so its
+    rem RUNTIME deps are NOT present. mediapipe.tasks.python.vision (the
+    rem FaceLandmarker rPPG + oldcam use) imports matplotlib at load time +
+    rem uses opencv-contrib-python / sounddevice. A bare "import mediapipe"
+    rem passes, so the old gate thought it was fine -- then the real import
+    rem crashed with "No module named matplotlib" and rPPG fell back to
+    rem -NORPPG on EVERY run. setup_macos.sh always installed these three;
+    rem the Windows launcher never did (the recurring rPPG bug). numpy<2
+    rem pinned so matplotlib->contourpy->numpy cannot upgrade numpy + break TF.
+    echo   Installing MediaPipe runtime deps ^(matplotlib/opencv-contrib/sounddevice^)...
+    "%VENV_PYTHON%" -m pip install !CC! matplotlib "opencv-contrib-python<4.12" sounddevice "numpy>=1.26,<2"
     if !errorlevel! neq 0 (
         del "%REQ_FILTERED%" >nul 2>&1
         exit /b 1

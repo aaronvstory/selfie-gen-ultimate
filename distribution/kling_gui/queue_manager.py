@@ -1141,6 +1141,27 @@ class QueueManager:
             self.update_queue_display()
             self.log(f"🎬 Processing: {item.filename}", "info")
 
+            # v2.17: the QueueManager is now created even without a fal.ai key
+            # (so local rPPG/Oldcam/Loop re-runs work). But Kling GENERATION
+            # needs the generator — if a key-less user drops a file to GENERATE,
+            # self.generator is None and the unconditional update_prompt_slot()
+            # below would AttributeError inside this worker thread, failing the
+            # item with a confusing error. Guard here with a clear, actionable
+            # message instead (code-review C1, 2026-06-03).
+            if self.generator is None:
+                item.status = "failed"
+                item.error_message = "No fal.ai API key — add one to generate videos"
+                self.log(
+                    "Video generation needs a fal.ai API key. Add it in the app, "
+                    "then re-add this file. (rPPG / Oldcam / Loop re-runs work "
+                    "without a key.)",
+                    "error",
+                )
+                self.update_queue_display()
+                if self.on_processing_complete:
+                    self.on_processing_complete(item)
+                continue
+
             try:
                 # Capture timestamp at start of processing (for consistent filenames)
                 generation_timestamp = datetime.now()
@@ -2211,7 +2232,7 @@ class QueueManager:
                 return None
 
             output_path = self._build_rppg_output_path(input_path)
-            self.log("🩺 Applying rPPG injection...", "info")
+            self.log("[rPPG] Applying rPPG injection...", "info")
             # Iterative-mode flags. Defaults match rPPG/rppg.bat (the
             # friend's canonical launcher): --iterative is MANDATORY
             # for production because the initial single-shot rarely
@@ -2415,7 +2436,7 @@ class QueueManager:
                     if not getattr(self, "_rppg_dep_note_shown", False):
                         self._rppg_dep_note_shown = True
                         self.log(
-                            "🩺 Checking / preparing rPPG dependencies… "
+                            "[rPPG] Checking / preparing rPPG dependencies… "
                             "(details in the log file)",
                             "info",
                         )
@@ -2613,7 +2634,7 @@ class QueueManager:
 
         if modules:
             self.log(
-                f"   📦 rPPG dependency problem: {modules}. "
+                f"   [deps] rPPG dependency problem: {modules}. "
                 "The app will keep working; only the rPPG step is skipped.",
                 "warning",
             )
@@ -2624,7 +2645,7 @@ class QueueManager:
             repo_root = Path(launcher).resolve().parent.parent
             log_path = repo_root / ".launcher_state" / "rppg.log"
             if log_path.is_file():
-                self.log(f"   📄 Full details in: {log_path}", "warning")
+                self.log(f"   [log] Full details in: {log_path}", "warning")
         except Exception:  # noqa: BLE001 — best-effort; never break the skip
             pass
 

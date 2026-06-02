@@ -66,6 +66,12 @@ if not defined TASK_MODEL_PATH (
 set "OLDCAM_FACE_LANDMARKER_TASK=%TASK_MODEL_PATH%"
 echo   [%LAUNCH_TS%] Task model: %OLDCAM_FACE_LANDMARKER_TASK%
 
+rem --- v2.17: canonical shared-venv preflight (full-set health check +
+rem --- repair) BEFORE our own minimal install, so a partial shared venv
+rem --- is repaired canonically rather than launching oldcam into a weird
+rem --- ImportError. Best-effort (the helper never fails the caller).
+if exist "%REPO_ROOT%\scripts\win_preflight_shared_venv.bat" call "%REPO_ROOT%\scripts\win_preflight_shared_venv.bat" "%PYTHON_CMD%" "%REPO_ROOT%"
+
 rem --- Dep stamp: req date+size, no subprocess
 set "STAMP_KEY="
 for %%F in ("%SCRIPT_DIR%requirements.txt") do set "STAMP_KEY=%%~tF%%~zF"
@@ -76,7 +82,12 @@ set "STAMP=%STATE_DIR%\oldcam_v11_%STAMP_KEY:~0,60%.ok"
 
 set "NEED_PIP=1"
 if exist "%STAMP%" (
-  "%PYTHON_CMD%" -c "import cv2, numpy, mediapipe" >nul 2>&1
+  rem v2.17 (Codex P2): deep-validate the mediapipe Tasks API (FaceLandmarker)
+  rem on the cached-stamp path too -- a bare `import ...mediapipe` passes even
+  rem when matplotlib (a mediapipe.tasks runtime dep) is missing, so a stale
+  rem stamp would skip the sync and Oldcam would then crash on FaceLandmarker.
+  "%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>&1
+  if not errorlevel 1 "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%" >nul 2>&1
   if not errorlevel 1 set "NEED_PIP=0"
 )
 if "%NEED_PIP%"=="0" (
@@ -101,6 +112,15 @@ if "%NEED_PIP%"=="0" (
     echo   Close running Python/GUI processes and retry.
     set "HAD_ERRORS=1"
     goto DONE
+  )
+  rem v2.17: mediapipe was just installed --no-deps; install its RUNTIME
+  rem deps (matplotlib at module load + opencv-contrib/sounddevice) or the
+  rem MP_VALIDATE_CMD below crashes with "No module named matplotlib"
+  rem (the recurring rPPG/oldcam bug). numpy<2 pinned so it cannot upgrade.
+  "%PYTHON_CMD%" -m pip install !CC! matplotlib "opencv-contrib-python<4.12" sounddevice "numpy>=1.26,<2"
+  if !errorlevel! neq 0 (
+    echo   [%LAUNCH_TS%] WARNING: MediaPipe runtime deps (matplotlib/opencv-contrib/sounddevice) install failed.
+    echo   The FaceLandmarker check below will report the precise missing module.
   )
   for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
   "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%" >nul 2>&1

@@ -91,10 +91,92 @@ except ImportError:
 # smooth_roi_boundaries) run on GPU; when not, everything stays on NumPy+OpenCV
 # with byte-for-byte the same behaviour as before. The xp_of/to_gpu/to_cpu
 # helpers let those methods accept either backend's arrays without branching.
+
+# Module-level list that RETAINS the os.add_dll_directory() handles for the
+# whole process lifetime. CRITICAL (code-review 2026-06-03): on Windows the
+# DLL search-path entry only stays active while the returned handle is alive —
+# if it's GC'd, Python calls RemoveDllDirectory and nvrtc can no longer be
+# found. Discarding the handle made the GPU fix flaky (it only worked because
+# GC hadn't run yet). Keep them here so the entries persist until exit.
+_CUDA_DLL_DIR_HANDLES = []
+
+
+def _register_cuda_dll_dirs():
+    """Add the pip-installed NVIDIA CUDA component dirs (nvrtc, cudart, cublas,
+    ...) to the Windows DLL search path BEFORE importing cupy.
+
+    CuPy's CUDA-component wheels (cupy-cudaNNx[ctk]) drop their DLLs under
+    site-packages/nvidia/<...>/bin. On Python 3.8+ Windows, a bare PATH entry
+    is IGNORED for an extension module's dependent DLLs — only
+    os.add_dll_directory() works. Without this, cupy imports but the first GPU
+    kernel compile fails with "Could not find nvrtc64_*.dll" /
+    "nvrtc-builtins64_*.dll", so CuPy reports unavailable and rPPG silently
+    falls back to CPU even on a perfectly good GPU box (verified 2026-06-03 on
+    an RTX 4090). No-op off-Windows / when the dirs don't exist.
+    """
+    if not hasattr(os, "add_dll_directory"):
+        return
+    import glob as _glob
+    import site as _site
+    import sys as _sys
+    sp_dirs = []
+    if hasattr(_site, "getsitepackages"):
+        try:
+            sp_dirs.extend(_site.getsitepackages())
+        except Exception:  # noqa: BLE001 — some embeds raise; fall through
+            pass
+    if hasattr(_site, "getusersitepackages"):
+        try:
+            sp_dirs.append(_site.getusersitepackages())
+        except Exception:  # noqa: BLE001
+            pass
+    # Fallback for a virtualenv on Python < 3.11 where getsitepackages() is
+    # absent: derive from sys.prefix (code-review MEDIUM-4 — the old
+    # os.path.dirname(os.__file__) pointed at the stdlib Lib/ dir, NOT
+    # Lib/site-packages, so the NVIDIA DLL dirs were never registered there and
+    # CuPy's kernel compile failed). Windows venv layout = <prefix>/Lib/site-packages.
+    sp_dirs.append(os.path.join(_sys.prefix, "Lib", "site-packages"))
+    roots = [os.path.join(sp, "nvidia") for sp in sp_dirs if sp]
+    seen = set()
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        # Any bin dir under nvidia/* (e.g. nvidia/cu13/bin/x86_64, nvidia/*/bin).
+        for binglob in ("*/bin/x86_64", "*/bin", "*/lib/x64"):
+            for d in _glob.glob(os.path.join(root, binglob)):
+                d = os.path.abspath(d)
+                if d in seen or not os.path.isdir(d):
+                    continue
+                seen.add(d)
+                try:
+                    # RETAIN the handle (module-level list) — the DLL dir entry
+                    # is removed when this object is GC'd, so a discarded handle
+                    # makes the nvrtc fix flaky (code-review CRITICAL).
+                    _CUDA_DLL_DIR_HANDLES.append(os.add_dll_directory(d))
+                except OSError:
+                    pass
+                # add_dll_directory lets cupy load nvrtc64_*.dll, but nvrtc
+                # ITSELF then loads nvrtc-builtins64_*.dll via the plain PATH
+                # env (it's a C lib, not a Python ext), so the dir must ALSO be
+                # on os.environ['PATH'] or the first kernel compile throws
+                # CompileException "failed to open nvrtc-builtins64_*.dll".
+                if d not in os.environ.get("PATH", "").split(os.pathsep):
+                    os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+
+
+_register_cuda_dll_dirs()
 try:
+    if os.environ.get("RPPG_FORCE_CPU") == "1":
+        # Escape hatch: force the CPU path even when a working GPU is present
+        # (benchmarking, or a workaround if a specific CuPy/driver combo
+        # misbehaves). Raise so the normal CPU-fallback branch below runs.
+        raise RuntimeError("RPPG_FORCE_CPU=1")
     import cupy as _cp
     from cupyx.scipy.ndimage import gaussian_filter as _cp_gaussian_filter
     _cp.zeros(1, dtype=_cp.float32)  # probe: raises if no CUDA device
+    # Force a real kernel COMPILE so a missing nvrtc surfaces HERE (at import),
+    # not deep in the first frame op — a bare zeros() doesn't compile a kernel.
+    _cp_gaussian_filter(_cp.zeros((4, 4), dtype=_cp.float32), 1.0)
     GPU_AVAILABLE = True
     print(f"GPU backend: CuPy {_cp.__version__} on "
           f"{_cp.cuda.runtime.getDeviceCount()} device(s)")

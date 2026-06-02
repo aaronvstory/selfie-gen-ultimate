@@ -86,8 +86,13 @@ INSTALL_FAILED_MAX_ATTEMPTS = 3
 # lock and kick off a parallel pip install into the same venv. Margin
 # of 300s gives plenty of headroom for pip's own warm-down +
 # clock-skew between processes.
-PIP_INSTALL_TIMEOUT_SECONDS = 900   # 15 min: covers the +500 MB CuPy
-                                    # wheel + CUDA component fetches.
+# 2400s (40 min): the cupy-cudaNNx[ctk] variant pulls the full CUDA Toolkit
+# component wheels — for CUDA 13 that's ~2-3GB, NOT the "~500MB" an earlier
+# comment claimed. A real RTX 4090 box hit the old 900s cap mid-download and
+# stamped install_failed, so CuPy never landed and rPPG silently stayed on CPU
+# (verified 2026-06-03). 40 min covers 2-3GB on a slow connection; the
+# heartbeat keeps the console alive so it never looks frozen.
+PIP_INSTALL_TIMEOUT_SECONDS = 2400
 LOCK_STALE_SECONDS = PIP_INSTALL_TIMEOUT_SECONDS + 300
 
 # Map CUDA major → PyPI package name. Per CuPy 14+ install docs the
@@ -97,10 +102,58 @@ LOCK_STALE_SECONDS = PIP_INSTALL_TIMEOUT_SECONDS + 300
 # log CPU fallback instead. Append [ctk] to pull CUDA component
 # wheels (matches the official "Installing CuPy with CUDA from PyPI"
 # path that doesn't require a system CUDA Toolkit).
+# PIN to the CuPy 13.x line (`>=13.6,<14`): CuPy 14.x is compiled against
+# numpy>=2.0 and FAILS to import under our numpy<2 face-stack pin
+# (ImportError: numpy.core.multiarray failed to import). CuPy 13.6.0 is the
+# last numpy-1.x-compatible release + ships the [ctk] CUDA component wheels.
+# Verified 2026-06-03: CuPy 13.6.0 + numpy 1.26.4 + TF 2.16.2 import together
+# and the GPU kernel compiles on an RTX 4090. (See project_cupy_numpy2_conflict.)
 _CUDA_TO_CUPY = {
-    12: "cupy-cuda12x[ctk]",
-    13: "cupy-cuda13x[ctk]",
+    12: "cupy-cuda12x[ctk]>=13.6,<14",
+    13: "cupy-cuda13x[ctk]>=13.6,<14",
 }
+
+
+# ---------------------------------------------------------------------------
+# v2.17 torch-selection constants (see select_torch_install / resolve_torch_mode)
+# ---------------------------------------------------------------------------
+# Bumping INSTALLER_VERSION invalidates every launcher dep stamp (the launchers
+# fold --print-stamp-token into their stamp keys), forcing a fresh resync after
+# an installer-logic change even when requirements.txt/constraints.txt are
+# untouched. Bump this whenever the install BEHAVIOUR changes, not the dep set.
+INSTALLER_VERSION = "2.17.0"
+
+# Map a detected CUDA major -> a PyTorch-SUPPORTED wheel index URL.
+#
+# IMPORTANT (review feedback 2026-06-02): do NOT infer a wheel tag from the
+# CUDA major arithmetically (e.g. "12.6 -> cu126"). The wheel TAG must be one
+# PyTorch actually publishes on download.pytorch.org/whl/<tag>. The nvidia-smi
+# header reports the driver's MAX supported CUDA runtime (e.g. "CUDA Version:
+# 12.6"), and the CUDA runtime is backward-compatible, so a PyTorch-published
+# cu121 wheel runs fine on any 12.x driver. We therefore pick, per CUDA major,
+# ONE conservative tag that PyTorch documents as a stable compute-platform
+# option and that ships wheels for torch>=2.2 (our requirements pin):
+#   * 12.x driver -> cu121  (broadest 12.x compatibility; published since 2.2)
+#   * 13.x driver -> cu128  (the 13.x-era index PyTorch publishes)
+# The values are VERIFIED-CURRENT PyTorch index URLs, not computed. If PyTorch
+# drops/renames a tag, the safe outcome is a failed CUDA install -> automatic
+# CPU fallback (select_torch_install probes torch.cuda.is_available() and falls
+# back), never a broken launch. test_gpu_bootstrap asserts the tag SHAPE
+# (whl/cuNNN) + parity with _CUDA_TO_CUPY so a typo'd/drifted tag fails CI.
+_TORCH_CUDA_INDEX = {
+    12: "https://download.pytorch.org/whl/cu121",
+    13: "https://download.pytorch.org/whl/cu128",
+}
+
+# CPU-only wheel index. Mirrors dependency_health_check._TORCH_CPU_INDEX_URL --
+# kept as a local constant so gpu_bootstrap.py stays importable on a partial
+# tree where dependency_health_check isn't on the path.
+_TORCH_CPU_INDEX_URL = "https://download.pytorch.org/whl/cpu"
+
+# PyPI fallback so the PyTorch index (which doesn't host torch's runtime deps:
+# filelock, sympy, networkx, jinja2, fsspec) can still resolve them. Same fix
+# as dependency_health_check.run_torch_cpu_fallback.
+_PYPI_INDEX_URL = "https://pypi.org/simple"
 
 
 def _now_iso() -> str:
@@ -115,6 +168,75 @@ def _log(msg: str, *, quiet: bool = False) -> None:
     if quiet:
         return
     print(f"  GPU: {msg}", flush=True)
+
+
+class _PipResult:
+    """Minimal stand-in for subprocess.CompletedProcess (returncode/stdout/
+    stderr) so callers that read those three attrs work unchanged.
+
+    NOTE (code-review M1): _run_pip_with_heartbeat merges stderr INTO stdout
+    (stderr=subprocess.STDOUT), so on results it produces ``stderr`` is ALWAYS
+    "" and all output lives in ``stdout``. This is intentional (we want one
+    combined stream for the ERROR:-line extractor). A caller must NOT rely on
+    ``stderr`` being populated separately — read ``stdout`` for all output."""
+
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr  # always "" from _run_pip_with_heartbeat (merged)
+
+
+def _run_pip_with_heartbeat(
+    cmd: list, *, timeout: int, label: str = "install"
+) -> _PipResult:
+    """Run a long pip command, printing an elapsed-time heartbeat every ~20s so
+    the launcher console never looks frozen during a multi-GB GPU-wheel
+    download (the user-reported "10 min of silence" on the CuPy/torch CUDA
+    install). Captures output like subprocess.run(capture_output=True) and
+    returns a _PipResult. Falls back gracefully on timeout/OS error.
+
+    The heartbeat reads from a wall clock derived from time.monotonic() ticks
+    (NOT Date.now/new Date — those are unavailable here); we only ever measure
+    *elapsed* time, never absolute time, so this is resume/replay safe.
+    """
+    import threading
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+    except OSError as exc:
+        return _PipResult(1, "", f"pip subprocess error: {exc!r}")
+
+    start = time.monotonic()
+    stop = threading.Event()
+
+    def _beat() -> None:
+        # Print every 20s; first beat at 20s so quick installs stay quiet.
+        while not stop.wait(20):
+            elapsed = int(time.monotonic() - start)
+            _log(f"...{label} still running ({elapsed//60}m {elapsed%60}s elapsed)")
+
+    beater = threading.Thread(target=_beat, daemon=True)
+    beater.start()
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            out, _ = proc.communicate(timeout=10)
+        except Exception:
+            out = ""
+        rc = 1
+        out = (out or "") + f"\nERROR: {label} exceeded {timeout}s timeout"
+    finally:
+        stop.set()
+    return _PipResult(rc, out or "", "")
 
 
 def _load_stamp() -> Optional[dict]:
@@ -320,14 +442,13 @@ def install_cupy(python_exe: str, cuda_major: int) -> tuple[bool, str]:
         "--no-input",
         pkg,
     ]
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            errors="replace",
-            timeout=PIP_INSTALL_TIMEOUT_SECONDS,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return (False, f"pip subprocess error: {exc!r}")
+    # Heartbeat-wrapped: the CuPy [ctk] wheels are ~1-2GB; a plain blocking
+    # subprocess.run prints nothing until done, which looked frozen to users
+    # (reported "10 min of silence"). _run_pip_with_heartbeat prints an
+    # elapsed-time line every 20s.
+    proc = _run_pip_with_heartbeat(
+        cmd, timeout=PIP_INSTALL_TIMEOUT_SECONDS, label="CuPy install"
+    )
     if proc.returncode != 0:
         # Code-review MEDIUM (PR #54): surface pip's own ``ERROR:`` lines
         # rather than a blind last-400-chars tail. pip prints the actual
@@ -349,6 +470,413 @@ def install_cupy(python_exe: str, cuda_major: int) -> tuple[bool, str]:
     if version is None:
         return (False, "installed but probe failed (cupy import or GPU op crashed)")
     return (True, version)
+
+
+# ---------------------------------------------------------------------------
+# v2.17 torch hardware selection
+# ---------------------------------------------------------------------------
+def resolve_torch_mode(
+    *, platform_is_darwin: bool, nvidia: Optional[dict]
+) -> dict:
+    """Decide which torch wheel variant to install. PURE: no I/O, no subprocess.
+
+    Returns a dict::
+
+        {
+            "mode": "mac_default" | "cuda" | "cpu",
+            "index_url": str | None,        # None for mac_default
+            "extra_index_url": str | None,  # PyPI fallback for cuda/cpu
+            "cuda_major": int | None,
+            "reason": str,
+        }
+
+    Rules (user mandate 2026-06-02 — confidence: mac-never-CUDA 10/10,
+    Windows NVIDIA-vs-CPU 9/10):
+
+      * **macOS** -> ``mac_default``. Hard-returns BEFORE looking at ``nvidia``
+        so a Mac can NEVER select a CUDA wheel (no CUDA on Apple Silicon /
+        Metal; the default PyPI wheel is the MPS/CPU build). This is the
+        highest-confidence rule and must stay first.
+      * **NVIDIA present + CUDA major has a wheel index** -> ``cuda``.
+      * **else** (no NVIDIA, broken nvidia-smi, or an unsupported CUDA major
+        like 10/11/14+) -> ``cpu``.
+
+    Being pure makes the whole decision table unit-testable without a GPU
+    (mirrors the existing detect_nvidia-monkeypatch style in
+    tests/test_gpu_bootstrap.py).
+    """
+    if platform_is_darwin:
+        return {
+            "mode": "mac_default",
+            "index_url": None,
+            "extra_index_url": None,
+            "cuda_major": None,
+            "reason": "macOS: default PyPI wheel (MPS/CPU); never CUDA",
+        }
+
+    if nvidia is not None:
+        cuda_major = nvidia.get("cuda_major")
+        index_url = _TORCH_CUDA_INDEX.get(cuda_major)
+        if index_url is not None:
+            return {
+                "mode": "cuda",
+                "index_url": index_url,
+                "extra_index_url": _PYPI_INDEX_URL,
+                "cuda_major": cuda_major,
+                "reason": (
+                    f"NVIDIA driver {nvidia.get('driver_version')} / "
+                    f"CUDA {cuda_major}.x -> {index_url}"
+                ),
+            }
+        # NVIDIA present but CUDA major unsupported by our wheel map.
+        return {
+            "mode": "cpu",
+            "index_url": _TORCH_CPU_INDEX_URL,
+            "extra_index_url": _PYPI_INDEX_URL,
+            "cuda_major": cuda_major,
+            "reason": (
+                f"NVIDIA present but CUDA {cuda_major}.x has no torch wheel "
+                "index in our map (need 12.x or 13.x); CPU torch"
+            ),
+        }
+
+    return {
+        "mode": "cpu",
+        "index_url": _TORCH_CPU_INDEX_URL,
+        "extra_index_url": _PYPI_INDEX_URL,
+        "cuda_major": None,
+        "reason": "no NVIDIA detected; CPU torch",
+    }
+
+
+def _probe_torch_cuda(python_exe: str) -> tuple[bool, bool, "str | None"]:
+    """Probe the installed torch in the target venv.
+
+    Returns ``(import_ok, cuda_available, build_cuda_version)``:
+      * ``import_ok``      — ``import torch`` succeeded.
+      * ``cuda_available`` — ``torch.cuda.is_available()`` (canonical eager
+        CUDA-runtime init; lazily loads the CUDA DLLs, surfacing a broken
+        cudart). False on CPU-only builds and on broken-CUDA builds alike.
+      * ``build_cuda_version`` — ``torch.version.cuda`` (e.g. ``"12.1"`` for a
+        CUDA build, ``None`` for a CPU build). Lets the caller tell "already
+        the right build, skip the reinstall" from "wrong build, reinstall".
+
+    All three are conservative on any subprocess failure: ``(False, False,
+    None)``. Mirrors the probe rationale in
+    dependency_health_check.check_runtime_dependencies.
+    """
+    probe_src = (
+        "import torch;"
+        "print('TORCHCUDA=' + str(bool(torch.cuda.is_available())));"
+        "print('TORCHBUILD=' + str(getattr(torch.version, 'cuda', None)));"
+        "print('TORCHOK=1')"
+    )
+    try:
+        proc = subprocess.run(
+            [python_exe, "-c", probe_src],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return (False, False, None)
+    if proc.returncode != 0:
+        return (False, False, None)
+    out = proc.stdout or ""
+    import_ok = "TORCHOK=1" in out
+    cuda_available = "TORCHCUDA=True" in out
+    build_cuda_version = None
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("TORCHBUILD="):
+            val = line[len("TORCHBUILD="):]
+            build_cuda_version = None if val in ("None", "") else val
+    return (import_ok, cuda_available, build_cuda_version)
+
+
+def _log_macos_mps(python_exe: str) -> None:
+    """Log whether Apple Metal (MPS) acceleration is available, separately from
+    install success. MPS-unavailable is NOT a failure — it just means torch
+    runs on CPU on this Mac. Best-effort: any probe error is swallowed.
+    """
+    probe_src = (
+        "import torch;"
+        "b = getattr(torch.backends, 'mps', None);"
+        "print('MPS=' + str(bool(b and b.is_available())))"
+    )
+    try:
+        proc = subprocess.run(
+            [python_exe, "-c", probe_src],
+            capture_output=True, text=True, errors="replace", timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return
+    out = proc.stdout or ""
+    if "MPS=True" in out:
+        _log("torch: Apple MPS acceleration available")
+    elif "MPS=False" in out:
+        _log("torch: MPS unavailable -- CPU torch (not a failure)")
+
+
+def select_torch_install(
+    python_exe: str,
+    torch_spec: str,
+    *,
+    constraints_path: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Install the hardware-appropriate torch wheel for this machine.
+
+    Fully AUTOMATIC — no prompts, no user choice. Detection drives everything:
+    NVIDIA found -> CUDA torch; macOS -> default (MPS/CPU); else -> CPU torch.
+
+    IDEMPOTENT (user mandate 2026-06-02 "no torch selection unless absolutely
+    needed"): probes the ALREADY-INSTALLED torch first and skips the reinstall
+    when its build already matches the resolved mode. The plain
+    ``-r requirements.txt`` install lands the default PyPI wheel, which IS the
+    right build on a CPU box and on macOS — so on those machines this is a
+    cheap no-op probe, NOT a redundant multi-GB re-download. A reinstall fires
+    only when the installed build is wrong for the hardware (CPU wheel on an
+    NVIDIA box -> install CUDA; or torch missing/broken).
+
+    Returns ``(ok, message)`` — same shape as ``install_cupy`` / ``run_repair``.
+    Always best-effort: torch is only used by DeepFace's anti-spoofing
+    classifier and CUDA only affects speed, not correctness (production never
+    calls ``torch.cuda.*``), so a failure returns ``(False, msg)`` and the
+    launcher proceeds.
+    """
+    nvidia = detect_nvidia()
+    decision = resolve_torch_mode(
+        platform_is_darwin=(sys.platform == "darwin"), nvidia=nvidia
+    )
+    mode = decision["mode"]
+    _log(f"torch: {decision['reason']}")
+
+    import_ok, cuda_available, build_cuda = _probe_torch_cuda(python_exe)
+
+    if mode == "mac_default":
+        if import_ok:
+            _log_macos_mps(python_exe)
+            return (True, "torch already present (macOS default wheel)")
+        # torch missing/broken — let pip install the default wheel.
+        # Build the command append-style (constraints before the spec),
+        # consistent with _install_torch_from_index — code-review C2 flagged
+        # the prior cmd[4:4] splice as fragile (silently wrong if the literal
+        # is ever reordered).
+        cmd = [python_exe, "-m", "pip", "install", "--no-input"]
+        if constraints_path:
+            cmd += ["-c", constraints_path]
+        cmd.append(torch_spec)
+        ok, msg = _run_torch_pip(cmd, "macOS default")
+        if ok:
+            _log_macos_mps(python_exe)
+        return (ok, msg)
+
+    if mode == "cpu":
+        # The default PyPI wheel IS a CPU build (build_cuda is None). If torch
+        # already imports as a CPU build, we're done — no reinstall needed.
+        if import_ok and build_cuda is None:
+            return (True, "torch already CPU build (no reinstall needed)")
+        # Wrong build (a CUDA wheel on a now-CPU box) or torch missing/broken.
+        return _install_torch_from_index(
+            python_exe, torch_spec, decision, constraints_path
+        )
+
+    # mode == "cuda"
+    if import_ok and cuda_available and build_cuda is not None:
+        # Already a working CUDA build — nothing to do.
+        return (True, f"torch already CUDA build {build_cuda} (no reinstall needed)")
+    # CPU wheel on an NVIDIA box, or a broken CUDA build -> install CUDA torch.
+    ok, msg = _install_torch_from_index(
+        python_exe, torch_spec, decision, constraints_path
+    )
+    if not ok:
+        return (ok, msg)
+    # Verify CUDA actually works; fall back to CPU torch if the runtime is
+    # broken (missing DLLs / driver mismatch / AV quarantine).
+    import_ok, cuda_available, _ = _probe_torch_cuda(python_exe)
+    if not import_ok:
+        return (False, "CUDA torch installed but import failed at probe")
+    if not cuda_available:
+        _log(
+            "CUDA torch installed but torch.cuda.is_available() is False "
+            "(broken DLLs / driver mismatch); falling back to CPU torch"
+        )
+        return _fallback_cpu_torch(python_exe, torch_spec, constraints_path)
+    return (True, "torch cuda install completed")
+
+
+def _install_torch_from_index(
+    python_exe: str, torch_spec: str, decision: dict, constraints_path: Optional[str]
+) -> tuple[bool, str]:
+    """Force-reinstall torch from the resolved cuda/cpu wheel index.
+
+    TWO-STEP to guarantee the chosen index wins (code-review Codex P2): a single
+    ``pip install --index-url <cuda> --extra-index-url pypi torch>=2.2,<3`` lets
+    pip consider BOTH indexes and pick the best *version* — so a newer plain
+    PyPI torch can BEAT the cu121 wheel, silently installing CPU torch on an
+    NVIDIA box and defeating GPU selection. Instead:
+
+      1. Install torch ALONE from the wheel index with ``--no-deps`` and NO
+         extra-index, so ONLY that index is consulted and its torch wheel
+         (cu121/cu128/cpu) is the one that lands.
+      2. Run pip again for the SAME torch_spec WITH the PyPI extra-index but
+         WITHOUT --force-reinstall/--no-deps: torch is already satisfied by
+         step 1, so pip leaves the CUDA wheel in place and only resolves +
+         installs torch's MISSING dependencies from PyPI. This pulls torch's
+         OWN declared deps (no hardcoded list to drift — code-review 2026-06-03)
+         while the wheel index can't beat the already-installed CUDA build.
+
+    -c constraints on both passes so a transitive resolve can't pull numpy 2.x.
+    """
+    constraint = ["-c", constraints_path] if constraints_path else []
+
+    # Step 1: torch ONLY, from the resolved index, no competing PyPI index.
+    step1 = [
+        python_exe, "-m", "pip", "install",
+        "--upgrade", "--force-reinstall", "--no-cache-dir", "--no-input",
+        "--no-deps",
+        "--index-url", decision["index_url"],
+        *constraint,
+        torch_spec,
+    ]
+    ok, msg = _run_torch_pip(step1, f"{decision['mode']} (wheel)")
+    if not ok:
+        return (ok, msg)
+
+    # Step 2: resolve torch's OWN deps from PyPI. torch is already installed
+    # (step 1), so without --force-reinstall pip keeps the CUDA wheel and just
+    # fills in the missing deps it declares — no hardcoded dep list. The wheel
+    # index is listed first so any torch-namespaced runtime libs still prefer
+    # it; PyPI (extra-index) supplies filelock/sympy/networkx/etc.
+    step2 = [
+        python_exe, "-m", "pip", "install",
+        "--no-cache-dir", "--no-input",
+        "--index-url", decision["index_url"],
+        "--extra-index-url", decision["extra_index_url"],
+        *constraint,
+        torch_spec,
+    ]
+    ok2, msg2 = _run_torch_pip(step2, f"{decision['mode']} (runtime deps)")
+    if not ok2:
+        # torch wheel is in place; deps resolve failed. Surface it — the
+        # caller's probe reveals whether torch is actually importable.
+        return (False, f"torch wheel ok but runtime-deps install failed: {msg2}")
+    return (True, f"torch {decision['mode']} install completed")
+
+
+def _run_torch_pip(cmd: list, label: str) -> tuple[bool, str]:
+    """Run a torch pip install command; surface ERROR: lines on failure.
+
+    Same ERROR-line-preferring failure-detail extraction as ``install_cupy``.
+    """
+    # Heartbeat-wrapped: CUDA torch wheels are ~2GB; print elapsed every 20s
+    # so a long download never looks frozen (the user-reported silence).
+    proc = _run_pip_with_heartbeat(
+        cmd, timeout=PIP_INSTALL_TIMEOUT_SECONDS, label=f"torch {label} install"
+    )
+    if proc.returncode != 0:
+        combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        err_lines = [
+            ln.strip()
+            for ln in combined.splitlines()
+            if ln.strip().upper().startswith("ERROR:")
+        ]
+        if err_lines:
+            return (False, " | ".join(err_lines)[-400:])
+        tail = (proc.stderr or proc.stdout or "")
+        return (False, tail[-400:].strip() or f"pip exit {proc.returncode}")
+    return (True, f"torch {label} install completed")
+
+
+def _fallback_cpu_torch(
+    python_exe: str, torch_spec: str, constraints_path: Optional[str]
+) -> tuple[bool, str]:
+    """Reinstall torch from the CPU index after a broken-CUDA probe.
+
+    Prefers dependency_health_check.run_torch_cpu_fallback (bot-reviewed,
+    pins to the installed public version), but that helper installs into the
+    CURRENT interpreter via ``sys.executable``. When the launcher invokes
+    gpu_bootstrap with the venv python as ``python_exe`` (the normal case)
+    those coincide; if they differ we install directly so the CPU torch lands
+    in the right venv.
+    """
+    if python_exe == sys.executable:
+        try:
+            from dependency_health_check import run_torch_cpu_fallback
+            return run_torch_cpu_fallback()
+        except Exception:
+            pass  # fall through to the inline install
+    cmd = [
+        python_exe, "-m", "pip", "install",
+        "--upgrade", "--force-reinstall", "--no-cache-dir", "--no-input",
+        "--index-url", _TORCH_CPU_INDEX_URL,
+        "--extra-index-url", _PYPI_INDEX_URL,
+    ]
+    if constraints_path:
+        cmd += ["-c", constraints_path]
+    cmd.append(torch_spec)
+    return _run_torch_pip(cmd, "cpu-fallback")
+
+
+def compute_stamp_token(constraints_path: Optional[str] = None) -> str:
+    """Return a deterministic token for the launchers to fold into their dep
+    stamp keys, so a GPU-mode change or installer bump invalidates the stamp.
+
+    Combines: INSTALLER_VERSION, platform tag, resolved torch mode, cuda_major,
+    and a short sha of constraints.txt (if locatable).
+
+    GPU mode is read from the CACHED ``gpu_status.json`` stamp (written by the
+    CuPy bootstrap) when present, so this stays a cheap file read on the hot
+    per-launch path — it does NOT run nvidia-smi every launch. Only when no
+    cache exists yet (first launch) do we fall back to a live detect_nvidia()
+    (bounded to a 10s timeout). When a user later installs/removes a GPU, the
+    CuPy bootstrap refreshes gpu_status.json, which flips this token, which
+    invalidates the dep stamp, which re-runs the full sync + select-torch.
+
+    KNOWN one-launch lag (code-review H3, accepted): on the FIRST launch after
+    a user PHYSICALLY removes the GPU, this reads the stale cached cuda_major
+    (still 12/13) before the CuPy bootstrap refreshes the stamp, so the token
+    — and thus the dep stamp — does NOT change that launch, and select-torch
+    isn't re-run to downgrade CUDA torch -> CPU torch. This degrades silently
+    (CUDA init just fails and torch uses CPU; production never calls
+    torch.cuda.*), and the NEXT launch (stamp refreshed) corrects it. We accept
+    the one-launch lag rather than pay an nvidia-smi probe on every cached
+    launch. GPU-ADD is fine immediately: no cache claims a GPU, so the first
+    branch's `cuda_major` stays None until the bootstrap installs + stamps.
+    """
+    import hashlib
+
+    cuda_major = None
+    stamp = _load_stamp()
+    if stamp is not None and "cuda_major" in stamp:
+        # Cached: trust the GPU bootstrap's recorded view (cheap).
+        cuda_major = stamp.get("cuda_major")
+    else:
+        # First launch / no cache: one live probe.
+        nvidia = detect_nvidia()
+        cuda_major = nvidia.get("cuda_major") if nvidia else None
+
+    decision = resolve_torch_mode(
+        platform_is_darwin=(sys.platform == "darwin"),
+        nvidia=({"cuda_major": cuda_major, "driver_version": None}
+                if cuda_major is not None else None),
+    )
+
+    constraints_sha = "none"
+    path = constraints_path or (REPO_ROOT / "constraints.txt")
+    try:
+        data = Path(path).read_bytes()
+        constraints_sha = hashlib.sha256(data).hexdigest()[:12]
+    except OSError:
+        pass
+    return "-".join([
+        INSTALLER_VERSION,
+        sys.platform,
+        str(decision["mode"]),
+        str(decision["cuda_major"]),
+        constraints_sha,
+    ])
 
 
 def _acquire_lock(quiet: bool = False) -> bool:
@@ -547,7 +1075,9 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
             f"NVIDIA driver {info['driver_version']} / CUDA "
             f"{info['cuda_major']}.x detected -- installing "
             f"{_CUDA_TO_CUPY[info['cuda_major']]} "
-            "(one-time, may take ~30-120s)..."
+            "(one-time GPU setup, downloads ~1-2GB of CUDA wheels; typically "
+            "2-10 min, longer on a slow connection). A heartbeat line prints "
+            "every 20s so you know it's not frozen..."
         )
         ok, msg = install_cupy(python_exe, info["cuda_major"])
         if ok:
@@ -585,9 +1115,9 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Detect NVIDIA GPU + auto-install matching CuPy. Idempotent + "
-            "cached. Called from the Windows + macOS launchers right before "
-            "the GUI is launched."
+            "Detect NVIDIA GPU + auto-install matching CuPy, and select the "
+            "hardware-appropriate torch wheel. Idempotent + cached. Called "
+            "from the Windows + macOS launchers right before the GUI launches."
         ),
     )
     parser.add_argument(
@@ -602,7 +1132,50 @@ def main(argv: Optional[list] = None) -> int:
              "install, failure) always print. Recommended for launcher "
              "wiring so repeat launches stay clean.",
     )
+    parser.add_argument(
+        "--print-stamp-token", action="store_true",
+        help="Print ONLY a deterministic token (INSTALLER_VERSION + platform "
+             "+ resolved torch mode + cuda_major + constraints sha) and exit. "
+             "Launchers fold this into their dep stamp key so a GPU-mode "
+             "change or installer bump invalidates the stamp. No pip work.",
+    )
+    parser.add_argument(
+        "--select-torch", metavar="TORCH_SPEC", default=None,
+        help="Install the hardware-appropriate torch wheel for TORCH_SPEC "
+             "(e.g. 'torch>=2.2,<3') and exit. NVIDIA->CUDA index, else CPU "
+             "index, macOS->default. Always exits 0 (best-effort).",
+    )
+    parser.add_argument(
+        "--constraints", default=None,
+        help="Path to constraints.txt, threaded into the torch pip install "
+             "and the stamp-token sha. Defaults to repo-root constraints.txt "
+             "when present.",
+    )
     args = parser.parse_args(argv)
+
+    constraints = args.constraints
+    if constraints is None:
+        default_c = REPO_ROOT / "constraints.txt"
+        if default_c.is_file():
+            constraints = str(default_c)
+
+    # --print-stamp-token: pure, no install. Print the token to stdout (the
+    # ONLY stdout line) so the launcher can capture it directly.
+    if args.print_stamp_token:
+        print(compute_stamp_token(constraints))
+        return 0
+
+    # --select-torch: hardware-appropriate torch install, then exit 0.
+    if args.select_torch is not None:
+        _result_ok, msg = select_torch_install(
+            args.python_exe, args.select_torch, constraints_path=constraints
+        )
+        del _result_ok  # best-effort: status logged, never blocks the launcher
+        _log(f"torch select: {msg}")
+        # Best-effort like the CuPy path — never block the launcher on a
+        # torch install hiccup (CPU torch already landed via -r requirements).
+        return 0
+
     bootstrap(args.python_exe, quiet_if_cached=args.quiet_if_cached)
     # H2 (subagent HIGH): always exit 0. GPU bootstrap is best-effort —
     # any failure (no NVIDIA, install crashed, lock timed out, etc.)

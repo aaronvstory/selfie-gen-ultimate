@@ -1805,21 +1805,42 @@ class ConfigPanel(tk.Frame):
         if api_desc:
             sections.append(f"\u2500\u2500 Provider Info \u2500\u2500\n{api_desc}")
 
-        # Pricing (from API)
-        pricing = model.get("pricing_info", {})
-        if pricing:
-            unit = pricing.get("unit", "")
-            price = pricing.get("unit_price", 0)
-            if price:
-                if unit == "second":
-                    price_str = f"${price:.3f}/second (${price * 5:.2f}/5s, ${price * 10:.2f}/10s)"
-                elif unit == "video":
-                    price_str = f"${price:.2f}/video (flat rate)"
-                elif unit == "image":
-                    price_str = f"${price:.2f}/image"
-                else:
-                    price_str = f"${price:.3f}/{unit}" if unit else f"${price:.3f}"
-                sections.append(f"\u2500\u2500 Pricing \u2500\u2500\n{price_str}")
+        # Pricing. Two sources: the LIVE fal.ai quote (``pricing_info``,
+        # populated by the API enrichment) and the VERIFIED static value in
+        # models.json (``pricing_fallback``). The live fal.ai quote has been
+        # observed returning wrong/stale numbers for the Kling models, so when
+        # a model defines a ``pricing_fallback`` we treat THAT as authoritative
+        # and prefer it over any nonzero live price (Codex P2 2026-06-03) —
+        # otherwise the tooltip shows a stale live number even though we have a
+        # verified one. Only models WITHOUT a fallback use the live quote.
+        # Both lookups coerce to {} if the JSON value isn't a dict (a list /
+        # str / null would otherwise crash .get() — Gemini/Codex 2026-06-03).
+        def _as_dict(v):
+            return v if isinstance(v, dict) else {}
+
+        live = _as_dict(model.get("pricing_info"))
+        fb = _as_dict(model.get("pricing_fallback"))
+        is_fallback = False
+        if fb.get("unit_price"):
+            # Verified value wins over the unreliable live quote.
+            unit = fb.get("unit", "second")
+            price = fb.get("unit_price", 0)
+            is_fallback = True
+        else:
+            unit = live.get("unit", "")
+            price = live.get("unit_price", 0)
+        if price:
+            if unit == "second":
+                price_str = f"${price:.3f}/second (${price * 5:.2f}/5s, ${price * 10:.2f}/10s)"
+            elif unit == "video":
+                price_str = f"${price:.2f}/video (flat rate)"
+            elif unit == "image":
+                price_str = f"${price:.2f}/image"
+            else:
+                price_str = f"${price:.3f}/{unit}" if unit else f"${price:.3f}"
+            if is_fallback:
+                price_str += "\n(verified reference price, audio off)"
+            sections.append(f"\u2500\u2500 Pricing \u2500\u2500\n{price_str}")
 
         # User notes (from models.json user_notes field)
         user_notes = model.get("user_notes", "")

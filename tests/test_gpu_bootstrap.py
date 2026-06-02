@@ -154,7 +154,13 @@ def test_install_cupy_surfaces_pip_error_lines(monkeypatch):
         )
         stderr = ""
 
-    monkeypatch.setattr(gpu_bootstrap.subprocess, "run", lambda *a, **k: _Proc())
+    # v2.17: install_cupy now runs through _run_pip_with_heartbeat (Popen-based,
+    # for the elapsed-time heartbeat on multi-GB CUDA-wheel downloads), so mock
+    # THAT rather than subprocess.run. It returns a _PipResult with the same
+    # returncode/stdout/stderr attrs the failure-detail extractor reads.
+    monkeypatch.setattr(
+        gpu_bootstrap, "_run_pip_with_heartbeat", lambda *a, **k: _Proc()
+    )
     ok, msg = gpu_bootstrap.install_cupy("python", 12)
     assert ok is False
     assert "Could not find a version" in msg
@@ -271,7 +277,12 @@ def test_successful_install_writes_gpu_ready_stamp(monkeypatch):
     payload = json.loads(gpu_bootstrap.STAMP_PATH.read_text())
     assert payload["result"] == "gpu_ready"
     assert payload["cupy_version"] == "13.3.0"
-    assert payload["cupy_package"] == "cupy-cuda12x[ctk]"
+    # v2.17: pinned to the CuPy 13.x line (14.x needs numpy>=2, conflicts with
+    # our numpy<2 face stack). Assert the package family + the pin, not a bare
+    # exact string, so the version cap is locked too.
+    assert payload["cupy_package"] == gpu_bootstrap._CUDA_TO_CUPY[12]
+    assert payload["cupy_package"].startswith("cupy-cuda12x[ctk]")
+    assert ">=13.6,<14" in payload["cupy_package"]
     assert payload["attempts"] == 0
 
 
@@ -585,3 +596,159 @@ def test_probe_cupy_returns_none_when_sentinel_absent(monkeypatch):
 
     monkeypatch.setattr(gpu_bootstrap.subprocess, "run", _fake_run)
     assert gpu_bootstrap.probe_cupy("python_unused") is None
+
+
+# ---------------------------------------------------------------------------
+# v2.17: torch hardware selection (resolve_torch_mode is pure -> easy to test)
+# ---------------------------------------------------------------------------
+def test_resolve_torch_mode_macos_never_cuda():
+    """macOS must NEVER select CUDA, even if a (bogus) nvidia dict is passed —
+    resolve_torch_mode hard-returns mac_default before looking at nvidia."""
+    d = gpu_bootstrap.resolve_torch_mode(
+        platform_is_darwin=True,
+        nvidia={"cuda_major": 12, "driver_version": "555"},
+    )
+    assert d["mode"] == "mac_default"
+    assert d["index_url"] is None
+
+
+def test_resolve_torch_mode_nvidia_12_selects_cuda():
+    d = gpu_bootstrap.resolve_torch_mode(
+        platform_is_darwin=False,
+        nvidia={"cuda_major": 12, "driver_version": "555"},
+    )
+    assert d["mode"] == "cuda"
+    assert d["index_url"] == gpu_bootstrap._TORCH_CUDA_INDEX[12]
+    assert d["extra_index_url"] == gpu_bootstrap._PYPI_INDEX_URL
+
+
+def test_resolve_torch_mode_nvidia_13_selects_cuda():
+    d = gpu_bootstrap.resolve_torch_mode(
+        platform_is_darwin=False,
+        nvidia={"cuda_major": 13, "driver_version": "580"},
+    )
+    assert d["mode"] == "cuda"
+    assert d["index_url"] == gpu_bootstrap._TORCH_CUDA_INDEX[13]
+
+
+def test_resolve_torch_mode_unsupported_cuda_major_falls_back_to_cpu():
+    """An NVIDIA box with a CUDA major we don't ship a torch index for (e.g.
+    11.x or a future 14.x) must fall back to CPU torch, not crash."""
+    d = gpu_bootstrap.resolve_torch_mode(
+        platform_is_darwin=False,
+        nvidia={"cuda_major": 11, "driver_version": "470"},
+    )
+    assert d["mode"] == "cpu"
+    assert d["index_url"] == gpu_bootstrap._TORCH_CPU_INDEX_URL
+
+
+def test_resolve_torch_mode_no_nvidia_selects_cpu():
+    d = gpu_bootstrap.resolve_torch_mode(platform_is_darwin=False, nvidia=None)
+    assert d["mode"] == "cpu"
+    assert d["index_url"] == gpu_bootstrap._TORCH_CPU_INDEX_URL
+
+
+def test_torch_cuda_index_keys_match_cupy_keys():
+    """Drift guard (review feedback 2026-06-02): torch + CuPy must agree on
+    which CUDA majors are GPU-supported. If one map gains/loses a major
+    without the other, GPU detection becomes inconsistent."""
+    assert set(gpu_bootstrap._TORCH_CUDA_INDEX) == set(gpu_bootstrap._CUDA_TO_CUPY)
+
+
+def test_torch_cuda_index_urls_are_well_formed_pytorch_tags():
+    """Drift guard: each value must be a real pytorch.org/whl/cuNNN index URL,
+    NOT a tag inferred arithmetically from the CUDA major. A typo / bad tag
+    fails CI here instead of silently producing a 404 install at runtime."""
+    import re
+
+    pat = re.compile(r"^https://download\.pytorch\.org/whl/cu\d{3}$")
+    for major, url in gpu_bootstrap._TORCH_CUDA_INDEX.items():
+        assert pat.match(url), f"CUDA {major} -> {url!r} is not a whl/cuNNN URL"
+
+
+def test_compute_stamp_token_deterministic_and_mode_sensitive(monkeypatch, tmp_path):
+    """The stamp token must be deterministic for a fixed env and must change
+    when the resolved torch mode changes (so adding/removing a GPU invalidates
+    the dep stamp)."""
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("numpy>=1.26,<2\n", encoding="utf-8")
+
+    # Force a no-cache path so it uses detect_nvidia, then monkeypatch that.
+    monkeypatch.setattr(gpu_bootstrap, "_load_stamp", lambda: None)
+    monkeypatch.setattr(gpu_bootstrap, "detect_nvidia", lambda: None)
+    t1 = gpu_bootstrap.compute_stamp_token(str(constraints))
+    t2 = gpu_bootstrap.compute_stamp_token(str(constraints))
+    assert t1 == t2  # deterministic
+
+    monkeypatch.setattr(
+        gpu_bootstrap, "detect_nvidia",
+        lambda: {"cuda_major": 12, "driver_version": "555"},
+    )
+    t3 = gpu_bootstrap.compute_stamp_token(str(constraints))
+    assert t3 != t1  # GPU appeared -> token changes -> stamp invalidates
+    assert gpu_bootstrap.INSTALLER_VERSION in t1
+
+
+def test_compute_stamp_token_prefers_cached_gpu_status(monkeypatch, tmp_path):
+    """On the hot path the token reads cuda_major from the cached gpu_status
+    stamp (cheap) instead of running nvidia-smi every launch."""
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("x\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        gpu_bootstrap, "_load_stamp",
+        lambda: {"result": "gpu_ready", "cuda_major": 13},
+    )
+
+    def _boom():
+        raise AssertionError("detect_nvidia must NOT run when stamp is cached")
+
+    monkeypatch.setattr(gpu_bootstrap, "detect_nvidia", _boom)
+    token = gpu_bootstrap.compute_stamp_token(str(constraints))
+    assert "cuda" in token and "13" in token
+
+
+def test_run_pip_with_heartbeat_returns_pipresult_and_no_early_beat(capsys):
+    """v2.17: a FAST command must complete cleanly via the heartbeat wrapper
+    and NOT print a heartbeat line (first beat is at 20s). Returns a
+    _PipResult with the captured stdout."""
+    import sys as _sys
+
+    r = gpu_bootstrap._run_pip_with_heartbeat(
+        [_sys.executable, "-c", "print('hello-heartbeat')"],
+        timeout=30,
+        label="unit",
+    )
+    assert r.returncode == 0
+    assert "hello-heartbeat" in r.stdout
+    out = capsys.readouterr().out
+    assert "still running" not in out, "fast command must not emit a heartbeat"
+
+
+def test_run_pip_with_heartbeat_handles_bad_command():
+    """A non-existent executable must return a _PipResult(returncode!=0), not
+    raise — the launcher must never crash on a pip subprocess error."""
+    r = gpu_bootstrap._run_pip_with_heartbeat(
+        ["this_executable_does_not_exist_xyz"], timeout=10, label="bad"
+    )
+    assert r.returncode != 0
+
+
+def test_cupy_pinned_to_numpy1_compatible_line():
+    """v2.17 (verified 2026-06-03): CuPy 14.x requires numpy>=2.0 and FAILS to
+    import under our numpy<2 face-stack pin. Both CuPy specs MUST pin the 13.x
+    line (>=13.6,<14) — the last numpy-1.x-compatible release. If this drifts to
+    14.x, rPPG GPU silently breaks (cupy import fails -> CPU fallback)."""
+    for major in (12, 13):
+        spec = gpu_bootstrap._CUDA_TO_CUPY[major]
+        assert "<14" in spec, f"CUDA {major}: CuPy must be pinned <14 (numpy<2): {spec!r}"
+        assert ">=13.6" in spec, f"CUDA {major}: expected >=13.6 floor: {spec!r}"
+        assert "[ctk]" in spec, f"CUDA {major}: [ctk] extra needed for CUDA wheels: {spec!r}"
+
+
+def test_pip_install_timeout_covers_large_ctk_download():
+    """The cupy[ctk] CUDA-component download is ~2-3GB; the old 900s cap timed
+    out on a real box -> install_failed -> CPU. Timeout must be generous, and
+    LOCK_STALE must still exceed it (so a live install isn't force-broken)."""
+    assert gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS >= 1800, "too short for 2-3GB [ctk]"
+    assert gpu_bootstrap.LOCK_STALE_SECONDS > gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS

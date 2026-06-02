@@ -60,6 +60,15 @@ if [ -z "$TASK_MODEL_PATH" ]; then
   exit 1
 fi
 export OLDCAM_FACE_LANDMARKER_TASK="$TASK_MODEL_PATH"
+# v2.17: canonical shared-venv preflight (full-set health check + repair)
+# BEFORE our own minimal install, so a partial shared venv is repaired
+# canonically rather than launching oldcam into a weird ImportError.
+# Best-effort; the helper never fails the launcher.
+if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/preflight_shared_venv.sh" ]; then
+  . "$REPO_ROOT/scripts/preflight_shared_venv.sh"
+  selfiegen_preflight_shared_venv "$PYTHON_CMD" "$REPO_ROOT"
+fi
+
 REQ_HASH="$(shasum -a 256 "$SCRIPT_DIR/requirements.txt" 2>/dev/null | awk '{print $1}')"
 [ -n "$REQ_HASH" ] || REQ_HASH="missing"
 PY_ID="$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo unknown)"
@@ -80,6 +89,11 @@ if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy" >/dev/null 2>&1 |
     echo "Close running Python processes and retry. If still failing, recreate venv."
     exit 1
   }
+  # v2.17: mediapipe --no-deps leaves matplotlib (imported by
+  # mediapipe.tasks at load) + opencv-contrib/sounddevice absent, so
+  # MP_VALIDATE_CMD below would crash. Install them (numpy<2 pinned).
+  "$PYTHON_CMD" -m pip install "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" \
+    matplotlib "opencv-contrib-python<4.12" sounddevice "numpy>=1.26,<2" || true
   if ! "$PYTHON_CMD" -c "$MP_VALIDATE_CMD" >/dev/null 2>&1; then
     echo "MediaPipe installed but Tasks FaceLandmarker API unavailable. Oldcam v11 cannot run."
     echo "Close Python/GUI processes, delete/rebuild venv, and retry."

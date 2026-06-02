@@ -146,14 +146,19 @@ def test_self_heal_re_runs_import_check_after_pip(bat_source: str):
     `call :rppg_diag_tee` (which runs scripts/rppg_import_diag.py and
     branches on RPPG_DIAG_EXIT) so the failing module is named and logged.
     Assert BOTH layers exist."""
-    # The pre-pip gate + the post-lock-wait fast-path use the inline check
-    # (essential-only since v2.16 — absl dropped, it's optional at runtime).
+    # v2.17: the inline gate now probes the DEEP Tasks-API symbol the rPPG
+    # injector actually loads (from mediapipe.tasks.python import vision;
+    # FaceLandmarker). A bare `import mediapipe` PASSED even when matplotlib
+    # (imported by mediapipe.tasks at module load) was missing — the recurring
+    # Windows rPPG-failure root cause. The deep probe FAILS on missing
+    # matplotlib, triggering the self-heal that now installs it.
     inline_count = bat_source.count(
-        '"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy"'
+        '"!PYTHON_BIN!" -c "import cv2, numpy, scipy; from mediapipe.tasks.python '
+        'import vision; assert vision.FaceLandmarker"'
     )
     assert inline_count >= 2, (
-        f"expected >=2 occurrences of the inline import check (the pre-pip "
-        f"gate + the post-lock-wait fast-path), found {inline_count}"
+        f"expected >=2 occurrences of the deep Tasks-API import gate (the "
+        f"pre-pip gate + the post-lock-wait fast-path), found {inline_count}"
     )
     # The post-self-heal re-verify is the granular diagnostic, branched on.
     assert "call :rppg_diag_tee" in bat_source, (
@@ -250,13 +255,16 @@ def test_self_heal_inline_gate_is_essential_only(bat_source: str):
     -NORPPG. (absl is still pinned + installed everywhere — see
     test_absl_pinned_in_requirements_and_constraints; this governs RUNTIME
     tolerance, not install policy.)"""
-    assert "import cv2, numpy, mediapipe, scipy" in bat_source, (
-        "the inline gate must check the essential runtime deps"
-    )
-    # absl must NOT be in the fatal inline gate anymore.
-    assert "import cv2, numpy, mediapipe, scipy, absl" not in bat_source, (
-        "absl must be removed from the fatal inline gate — it's optional at "
-        "runtime (guarded import); the granular diag reports it as optional/warning"
+    # v2.17: essential deps probed via the DEEP Tasks-API import (FaceLandmarker)
+    # so a --no-deps mediapipe missing its matplotlib runtime dep is caught.
+    assert (
+        "import cv2, numpy, scipy; from mediapipe.tasks.python import vision; "
+        "assert vision.FaceLandmarker" in bat_source
+    ), "the inline gate must deep-probe the mediapipe Tasks API (FaceLandmarker)"
+    # absl must NOT be in the fatal inline gate — optional at runtime (guarded).
+    assert "assert vision.FaceLandmarker; import absl" not in bat_source, (
+        "absl must stay out of the fatal inline gate — it's optional at runtime "
+        "(guarded import); the granular diag reports it as optional/warning"
     )
     # The granular diag (rppg_import_diag.py) is what reports absl, and it
     # classifies absl as optional (exit 0 when only absl is missing).

@@ -1195,7 +1195,10 @@ class KlingGUIWindow:
             "log_max_mb": 5,
             "log_backups": 3,
             "duplicate_detection": True,
-            "current_prompt_slot": 4,
+            # Keep in sync with default_config_template.json current_prompt_slot
+            # (v2.17 = slot 5 "head turn 35 degrees v3"). code-review: this
+            # in-code fallback was stale at 4 (CodeRabbit 2026-06-03).
+            "current_prompt_slot": 5,
             "saved_prompts": {str(i): "" for i in range(1, 11)},
             "negative_prompts": {str(i): "" for i in range(1, 11)},
             "model_capabilities": {},
@@ -1322,9 +1325,9 @@ class KlingGUIWindow:
             selfie_slot = 3
         default_config["selfie_current_prompt_slot"] = min(10, max(1, selfie_slot))
         try:
-            kling_slot = int(default_config.get("current_prompt_slot", 4))
+            kling_slot = int(default_config.get("current_prompt_slot", 5))
         except Exception:
-            kling_slot = 4
+            kling_slot = 5
         default_config["current_prompt_slot"] = min(10, max(1, kling_slot))
         default_config["outpaint_fal_timeout_seconds"] = get_outpaint_fal_timeout_seconds(default_config)
 
@@ -1551,6 +1554,13 @@ class KlingGUIWindow:
     def _save_history(self):
         """Persist processed video history."""
         try:
+            # Ensure the per-instance runtime dir exists before writing — a
+            # fresh launch may not have materialized
+            # runtime/instances/<id>/ yet when the first history save fires
+            # (e.g. right after an Oldcam-only rerun), which produced the
+            # benign "Could not save history: [Errno 2] No such file or
+            # directory: ...kling_history.json" warning.
+            os.makedirs(os.path.dirname(self.history_path) or ".", exist_ok=True)
             with open(self.history_path, "w", encoding="utf-8") as f:
                 json.dump(self.history[-500:], f, indent=2)
         except Exception as e:
@@ -3626,28 +3636,52 @@ class KlingGUIWindow:
                     pass
 
     def _init_generator(self):
-        """Initialize the video generator and queue manager."""
+        """Initialize the video generator and queue manager.
+
+        The QueueManager is created ALWAYS (even without a fal.ai key), because
+        LOCAL-ONLY post-processes — rPPG re-run, Oldcam re-run, Loop — operate
+        on an EXISTING video and never touch the Kling generator. Gating the
+        whole queue manager behind ``falai_api_key`` (the prior behaviour) left
+        ``self.queue_manager = None`` for key-less users, so every re-run /
+        queue action failed with "Queue manager not initialized" and they
+        couldn't even test rPPG. Only the live ``generator`` (used by actual
+        Kling generation) requires the key; that part degrades to None + a
+        targeted warning, while the queue manager stays usable for reruns.
+        """
         if not HAS_GENERATOR:
             self._log(
                 "Generator not available - check kling_generator_falai.py", "error"
             )
             return
 
+        # Build the Kling generator only when a key is present. A missing key
+        # is NOT fatal — local reruns don't need it.
         api_key = self.config.get("falai_api_key", "")
-        if not api_key:
-            self._log("No API key configured - set it in the main app first", "warning")
-            return
-
-        try:
-            self.generator = FalAIKlingGenerator(
-                api_key=api_key,
-                verbose=self.config.get("verbose_logging", True),
-                model_endpoint=self.config.get("current_model"),
-                model_display_name=self.config.get("model_display_name"),
-                prompt_slot=self.config.get("current_prompt_slot", 1),
-                freeimage_key=self.config.get("freeimage_api_key", ""),
+        if api_key:
+            try:
+                self.generator = FalAIKlingGenerator(
+                    api_key=api_key,
+                    verbose=self.config.get("verbose_logging", True),
+                    model_endpoint=self.config.get("current_model"),
+                    model_display_name=self.config.get("model_display_name"),
+                    prompt_slot=self.config.get("current_prompt_slot", 1),
+                    freeimage_key=self.config.get("freeimage_api_key", ""),
+                )
+            except Exception as e:
+                self.generator = None
+                self._log(f"Failed to initialize generator: {e}", "error")
+        else:
+            self.generator = None
+            self._log(
+                "No fal.ai API key yet - video generation disabled until you add "
+                "one, but rPPG / Oldcam / Loop re-runs still work.",
+                "warning",
             )
 
+        # ALWAYS create the queue manager (tolerates generator=None; the
+        # generator is only dereferenced during Kling generation, which the
+        # missing-key guard blocks separately).
+        try:
             self.queue_manager = QueueManager(
                 generator=self.generator,
                 config_getter=lambda: self.config,
@@ -3655,11 +3689,76 @@ class KlingGUIWindow:
                 queue_update_callback=self._update_queue_display_thread_safe,
                 processing_complete_callback=self._on_item_complete,
             )
-
-            self._log("Generator initialized successfully", "success")
-
+            if self.generator is not None:
+                self._log("Generator initialized successfully", "success")
+            else:
+                self._log("Queue ready (local re-runs enabled; add a key for generation).", "info")
         except Exception as e:
-            self._log(f"Failed to initialize generator: {e}", "error")
+            self._log(f"Failed to initialize queue manager: {e}", "error")
+
+        # v2.17: trigger the GPU (CuPy) bootstrap IN-APP, in the background, so
+        # GPU acceleration for rPPG is automatic REGARDLESS of how the app was
+        # launched. Previously CuPy install lived ONLY in run_gui.bat at the
+        # post-dep-sync :launch step — so (a) a direct `python gui_launcher.py`
+        # launch skipped it, and (b) on a fresh install the user could start
+        # rPPG before the long first-run dep sync reached that step, leaving
+        # CuPy uninstalled and rPPG silently on CPU. Running it here (daemon
+        # thread, never blocks the GUI) makes "NVIDIA -> GPU" truly automatic.
+        self._start_gpu_bootstrap_async()
+
+    def _start_gpu_bootstrap_async(self):
+        """Run the CuPy GPU bootstrap in a daemon thread (best-effort).
+
+        rPPG is the only CuPy consumer; on an NVIDIA box this installs the
+        matching CuPy wheel once (cached via .launcher_state/gpu_status.json),
+        else logs CPU mode. Never blocks the GUI and never raises into the UI.
+        Opt-out: KLING_SKIP_GPU_BOOTSTRAP=1.
+        """
+        import os as _os
+        if _os.environ.get("KLING_SKIP_GPU_BOOTSTRAP") == "1":
+            return
+
+        def _worker():
+            try:
+                import sys as _sys
+                from pathlib import Path as _Path
+                scripts_dir = _Path(__file__).resolve().parent.parent / "scripts"
+                if str(scripts_dir) not in _sys.path:
+                    _sys.path.insert(0, str(scripts_dir))
+                import gpu_bootstrap  # noqa: WPS433 (local import: optional component)
+
+                result = gpu_bootstrap.bootstrap(_sys.executable, quiet_if_cached=True)
+                if result in ("gpu_installed_now",):
+                    self._log_thread_safe(
+                        "GPU: CuPy installed — rPPG will use GPU acceleration.",
+                        "success",
+                    )
+                elif result == "gpu_ready":
+                    self._log_thread_safe(
+                        "GPU: CuPy ready — rPPG uses GPU acceleration.", "info"
+                    )
+                elif result in ("no_nvidia", "cached_no_nvidia"):
+                    self._log_thread_safe(
+                        "GPU: no NVIDIA GPU detected — rPPG runs on CPU.", "info"
+                    )
+                # install_failed / lock_timeout / skipped: stay quiet here; the
+                # gpu_bootstrap script already logged the detail to its stamp.
+            except Exception as exc:  # noqa: BLE001 — GPU setup is best-effort
+                # Don't crash the GUI, but DO leave a trace so a broken auto-
+                # bootstrap (e.g. gpu_bootstrap.py missing on a partial tree)
+                # is diagnosable instead of an invisible silent-CPU
+                # (code-review: don't swallow bootstrap failures silently).
+                try:
+                    self._log_thread_safe(
+                        f"GPU: auto-setup skipped ({type(exc).__name__}); "
+                        "rPPG runs on CPU. Launch via run_gui.bat for GPU setup.",
+                        "warning",
+                    )
+                except Exception:  # noqa: BLE001 — logging must never raise here
+                    pass
+
+        import threading as _threading
+        _threading.Thread(target=_worker, daemon=True).start()
 
     def _prompt_startup_provider_keys_on_first_run(self):
         """First-launch key onboarding (Fal.ai + BFL), never exits app."""
