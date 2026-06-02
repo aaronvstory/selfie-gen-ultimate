@@ -39,14 +39,19 @@ def test_start_bat_crlf_line_endings():
 
 
 def test_start_bat_seeds_config_without_clobbering():
-    """First-run config seed must be guarded on the live config NOT existing,
-    so re-launches never overwrite a user's real config."""
+    """First-run config seed must be gated on a one-time `.seeded` marker (NOT
+    on the live config's absence — a bundle already ships a sanitized default,
+    codex P2), and must write the marker so re-launches never re-seed over the
+    user's edits."""
     src = _read()
-    assert 'if not exist "%SCRIPT_DIR%\\kling_config.json"' in src, (
-        "START.bat must only seed config when no live kling_config.json exists"
+    assert 'if not exist "%SEED_MARKER%"' in src, (
+        "START.bat must gate the seed on the one-time .seeded marker"
     )
     assert "%APP_SUPPORT%\\kling_config.json" in src, (
         "START.bat must seed from the bundled _user_state\\app_support snapshot"
+    )
+    assert '"%SEED_MARKER%" echo seeded' in src, (
+        "START.bat must write the .seeded marker after a successful seed"
     )
 
 
@@ -83,7 +88,7 @@ def test_user_facing_launchers_have_wmic_timestamp_fallback():
 
 
 def test_start_bat_drive_root_guard():
-    """START.bat must NOT strip the trailing backslash when run from a drive
+    r"""START.bat must NOT strip the trailing backslash when run from a drive
     root (D:\ -> D: is drive-relative and breaks path joins) — gemini HIGH."""
     src = _read()
     assert '":\\"' in src and "SCRIPT_DIR:~-2" in src, (
@@ -107,4 +112,20 @@ def test_start_bat_ps_fallback_is_backquoted():
     src = _read()
     assert "in (`powershell" in src, (
         "START.bat usebackq PowerShell fallback must be back-quoted to execute"
+    )
+
+
+def test_start_bat_seed_gated_on_marker_not_config_absence():
+    """A shipped bundle already contains a sanitized default kling_config.json,
+    so gating the snapshot seed on that file's ABSENCE meant the richer
+    _user_state snapshot was never installed (codex P2). The seed must be gated
+    on a one-time `.seeded` marker so the snapshot wins on first run, and later
+    runs never re-clobber the user's edits."""
+    src = _read()
+    assert "SEED_MARKER" in src and ".seeded" in src, (
+        "START.bat must gate the config seed on a one-time .seeded marker"
+    )
+    # The seed must be driven by the marker, not by the live config's absence.
+    assert 'if not exist "%SEED_MARKER%"' in src, (
+        "START.bat seed must be gated on the .seeded marker, not kling_config.json absence"
     )

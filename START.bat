@@ -39,13 +39,17 @@ echo  ============================================================
 echo   [%TS%] Root: %SCRIPT_DIR%
 echo(
 
-rem --- Seed config from the bundled snapshot on FIRST run only --------------
-rem On Windows the GUI reads kling_config.json from the app dir. If the bundle
-rem carried a _user_state\app_support snapshot and no live config exists yet,
-rem copy it in. Never overwrite an existing live config.
-if not exist "%SCRIPT_DIR%\kling_config.json" (
+rem --- Seed config from the bundled snapshot, ONCE -------------------------
+rem A shipped bundle already carries a sanitized default kling_config.json,
+rem so gating on its ABSENCE meant the richer _user_state\app_support
+rem snapshot (prompts/UI/keys) was never installed (codex P2). Gate on a
+rem one-time marker instead: first run with a snapshot present seeds it
+rem (over the pristine default), then writes the marker so later runs never
+rem re-clobber the user's own edits.
+set "SEED_MARKER=%USER_STATE%\.seeded"
+if not exist "%SEED_MARKER%" (
   if exist "%APP_SUPPORT%\kling_config.json" (
-    echo   [%TS%] Seeding config from bundled snapshot...
+    echo   [%TS%] Seeding config from bundled snapshot ^(first run^)...
     copy /Y "%APP_SUPPORT%\kling_config.json" "%SCRIPT_DIR%\kling_config.json" >nul 2>&1
     if exist "%APP_SUPPORT%\ui_config.json" copy /Y "%APP_SUPPORT%\ui_config.json" "%SCRIPT_DIR%\ui_config.json" >nul 2>&1
     if exist "%APP_SUPPORT%\kling_history.json" copy /Y "%APP_SUPPORT%\kling_history.json" "%SCRIPT_DIR%\kling_history.json" >nul 2>&1
@@ -56,11 +60,12 @@ if not exist "%SCRIPT_DIR%\kling_config.json" (
       if not exist "%SCRIPT_DIR%\model_cache" mkdir "%SCRIPT_DIR%\model_cache" >nul 2>&1
       xcopy /E /Y /Q "%APP_SUPPORT%\model_cache" "%SCRIPT_DIR%\model_cache" >nul 2>&1
     )
+    if exist "%USER_STATE%" >"%SEED_MARKER%" echo seeded %TS%
   ) else (
     echo   [%TS%] No bundled config snapshot -- add API keys in the GUI.
   )
 ) else (
-  echo   [%TS%] Existing config found -- leaving it untouched.
+  echo   [%TS%] Config already seeded -- leaving your settings untouched.
 )
 
 rem --- venv: extract the bundled tarball if absent, then ALWAYS validate ---
