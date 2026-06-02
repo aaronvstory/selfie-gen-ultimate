@@ -73,6 +73,30 @@ def test_main_accepts_batch_flag(monkeypatch):
     assert captured["kwargs"].get("max_cases_override") == "10"
 
 
+def test_reprocess_override_enables_allow_reprocess(tmp_path, monkeypatch):
+    """--reprocess must also flip automation_allow_reprocess=True, else
+    AutoPipelineRunner._effective_reprocess_mode() forces 'skip' and the
+    override is silently ignored (code-review Gemini HIGH, PR #69)."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    # Stop after the override is applied — discovery short-circuits to return 1.
+    monkeypatch.setattr(kling_automation_ui, "discover_case_folders", lambda *a, **k: [])
+    ui = _bare_ui(tmp_path)
+    ui.run_automation_headless(str(tmp_path), auto_approve=True, reprocess_override="overwrite")
+    assert ui.config["automation_reprocess_mode"] == "overwrite"
+    assert ui.config["automation_allow_reprocess"] is True
+
+
+def test_main_batch_rejects_invalid_limit(monkeypatch):
+    """--limit only accepts 1/5/10/all; an out-of-set value must error at
+    argparse (exit 2) rather than silently falling back to 5."""
+    monkeypatch.setenv("KLING_SKIP_PY_STARTUP_DEP_CHECK", "1")
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    with pytest.raises(SystemExit) as exc:
+        kling_automation_ui.main(["--batch", "/r", "--limit", "3"])
+    # argparse exits 2 on invalid choice
+    assert exc.value.code == 2
+
+
 def test_main_batch_propagates_nonzero_exit(monkeypatch):
     """A non-zero return from the headless runner must surface as a non-zero
     process exit (cron / Task Scheduler failure signalling)."""

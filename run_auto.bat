@@ -23,7 +23,8 @@ if not exist "%TARGET%" (
     echo.
     echo ERROR: Missing launcher: %TARGET%
     echo.
-    pause
+    rem No pause: this is the headless batch entry; pausing would hang an
+    rem unattended cron / Task Scheduler job forever (code-review Gemini HIGH).
     exit /b 1
 )
 

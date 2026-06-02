@@ -134,6 +134,7 @@ def test_run_auto_command_is_executable_in_git():
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            errors="replace",  # Windows localized codepage safety (Gemini MEDIUM, PR #69)
         ).stdout.strip()
     except (FileNotFoundError, OSError, subprocess.SubprocessError):
         out = ""

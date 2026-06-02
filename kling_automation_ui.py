@@ -2978,6 +2978,10 @@ class KlingAutomationUI:
             self.config["automation_max_cases_per_run"] = str(max_cases_override)
         if reprocess_override is not None:
             self.config["automation_reprocess_mode"] = str(reprocess_override)
+            # AutoPipelineRunner._effective_reprocess_mode() forces "skip" unless
+            # automation_allow_reprocess is True, so an explicit --reprocess on the
+            # CLI is silently ignored without this (code-review Gemini HIGH, PR #69).
+            self.config["automation_allow_reprocess"] = True
 
         root = (root or "").strip()
         if not root:
@@ -3860,8 +3864,10 @@ def main(argv=None):
             "--limit",
             metavar="N",
             default=None,
+            choices=["1", "5", "10", "all"],
             help="Headless --batch only: cap cases per run (1, 5, 10, or 'all'). "
-            "Overrides automation_max_cases_per_run.",
+            "Overrides automation_max_cases_per_run. (Other values fall back to 5, "
+            "so they're rejected here with a clear error.)",
         )
         parser.add_argument(
             "--reprocess",
