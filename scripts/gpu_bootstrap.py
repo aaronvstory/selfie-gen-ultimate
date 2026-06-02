@@ -700,21 +700,50 @@ def _install_torch_from_index(
 ) -> tuple[bool, str]:
     """Force-reinstall torch from the resolved cuda/cpu wheel index.
 
-    --extra-index-url pypi so torch's runtime deps (filelock/sympy/networkx/
-    jinja2/fsspec) resolve; -c constraints so a transitive resolve can't pull
-    numpy 2.x back in (constraints does NOT cap torch, so the index URL stays
-    in control of the variant).
+    TWO-STEP to guarantee the chosen index wins (code-review Codex P2): a single
+    ``pip install --index-url <cuda> --extra-index-url pypi torch>=2.2,<3`` lets
+    pip consider BOTH indexes and pick the best *version* — so a newer plain
+    PyPI torch can BEAT the cu121 wheel, silently installing CPU torch on an
+    NVIDIA box and defeating GPU selection. Instead:
+
+      1. Install torch ALONE from the wheel index with ``--no-deps`` and NO
+         extra-index, so ONLY that index is consulted and its torch wheel
+         (cu121/cu128/cpu) is the one that lands.
+      2. Install torch's runtime deps (filelock/sympy/networkx/jinja2/fsspec
+         + typing-extensions) from PyPI in a separate, deps-only pass.
+
+    -c constraints on both passes so a transitive resolve can't pull numpy 2.x.
     """
-    cmd = [
+    constraint = ["-c", constraints_path] if constraints_path else []
+
+    # Step 1: torch ONLY, from the resolved index, no competing PyPI index.
+    step1 = [
         python_exe, "-m", "pip", "install",
         "--upgrade", "--force-reinstall", "--no-cache-dir", "--no-input",
+        "--no-deps",
         "--index-url", decision["index_url"],
-        "--extra-index-url", decision["extra_index_url"],
+        *constraint,
+        torch_spec,
     ]
-    if constraints_path:
-        cmd += ["-c", constraints_path]
-    cmd.append(torch_spec)
-    return _run_torch_pip(cmd, decision["mode"])
+    ok, msg = _run_torch_pip(step1, f"{decision['mode']} (wheel)")
+    if not ok:
+        return (ok, msg)
+
+    # Step 2: torch's runtime deps from PyPI (the wheel index doesn't host them).
+    # No --no-deps here so these pull their own (light) deps; -c keeps numpy<2.
+    step2 = [
+        python_exe, "-m", "pip", "install",
+        "--no-cache-dir", "--no-input",
+        "--index-url", decision["extra_index_url"],
+        *constraint,
+        "filelock", "sympy", "networkx", "jinja2", "fsspec", "typing-extensions",
+    ]
+    ok2, msg2 = _run_torch_pip(step2, f"{decision['mode']} (runtime deps)")
+    if not ok2:
+        # torch itself landed; deps failed. Surface it but the torch wheel is
+        # in place — the caller's probe will reveal if it's actually importable.
+        return (False, f"torch wheel ok but runtime-deps install failed: {msg2}")
+    return (True, f"torch {decision['mode']} install completed")
 
 
 def _run_torch_pip(cmd: list, label: str) -> tuple[bool, str]:
