@@ -299,6 +299,9 @@ def test_headless_success_returns_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(kling_automation_ui, "AutoPipelineRunner", _Runner)
 
     ui = _bare_ui(tmp_path)
+    # Force the TTY branch so the live-dashboard mock below is used (pytest's
+    # captured stdout is non-TTY, which would otherwise take the direct-run path).
+    monkeypatch.setattr(kling_automation_ui.sys.stdout, "isatty", lambda: True, raising=False)
     monkeypatch.setattr(
         ui,
         "_collect_case_snapshot",
@@ -355,6 +358,8 @@ def _run_with_stats(tmp_path, monkeypatch, final_stats):
     monkeypatch.setattr(kling_automation_ui, "AutoPipelineRunner", _Runner)
 
     ui = _bare_ui(tmp_path)
+    # Force the TTY branch so the dashboard mock is used (pytest stdout is non-TTY).
+    monkeypatch.setattr(kling_automation_ui.sys.stdout, "isatty", lambda: True, raising=False)
     monkeypatch.setattr(
         ui,
         "_collect_case_snapshot",
@@ -390,3 +395,133 @@ def test_headless_manual_review_returns_two(tmp_path, monkeypatch):
     rc = _run_with_stats(tmp_path, monkeypatch,
                          {"completed": 0, "failed": 0, "manual_review": 2, "skipped": 0})
     assert rc == 2
+
+
+def test_headless_non_tty_runs_pipeline_directly_no_dashboard(tmp_path, monkeypatch):
+    """Under a non-TTY (cron/pipe), the run goes straight through runner.run --
+    NOT the Rich live dashboard (no ANSI pollution / polling thread). Code-review
+    Gemini MEDIUM, PR #69."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    monkeypatch.setattr(kling_automation_ui.sys.stdout, "isatty", lambda: False, raising=False)
+
+    class _Rec:
+        relative_key = "case-a"
+
+    monkeypatch.setattr(kling_automation_ui, "discover_case_folders", lambda *a, **k: [_Rec()])
+
+    class _Manifest:
+        manifest_path = tmp_path / "manifest.json"
+        data = {"cases": {}}
+
+        @classmethod
+        def create_or_load(cls, **kwargs):
+            return cls()
+
+    monkeypatch.setattr(kling_automation_ui, "AutomationManifest", _Manifest)
+
+    ran = {"direct": False}
+
+    class _Runner:
+        last_case_results = {"case-a": {"status": "complete", "reason": ""}}
+
+        def __init__(self, **kwargs):
+            pass
+
+        def validate_configuration(self):
+            return []
+
+        def run(self, cases):
+            ran["direct"] = True
+            return {"completed": 1, "failed": 0, "manual_review": 0, "skipped": 0}
+
+    monkeypatch.setattr(kling_automation_ui, "AutoPipelineRunner", _Runner)
+
+    ui = _bare_ui(tmp_path)
+    # If the dashboard is wrongly used in non-TTY, this blows up the test.
+    monkeypatch.setattr(
+        ui, "_run_with_live_dashboard",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("dashboard used in non-TTY")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ui, "_collect_case_snapshot",
+        lambda records, manifest: ([], {"will_run": 1, "discovered": 1, "pending": 1,
+                                         "completed_total": 0, "skipped_complete": 0,
+                                         "manual_review": 0, "failed": 0}, [_Rec()]),
+        raising=False,
+    )
+    monkeypatch.setattr(ui, "_write_automation_summary", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(ui, "_get_selected_selfie_prompt", lambda: (3, "prompt", "slot"), raising=False)
+    monkeypatch.setattr(ui, "_automation_status_lines", lambda: [], raising=False)
+    monkeypatch.setattr(ui, "_automation_manifest_path", lambda: tmp_path / "manifest.json", raising=False)
+
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True)
+    assert rc == 0
+    assert ran["direct"] is True
+
+
+def _reach_override(tmp_path, monkeypatch, reprocess_override):
+    """Drive run_automation_headless past discovery + manifest to the override
+    block (the override is applied POST-manifest, so empty discovery would return
+    before it). Stops at preflight via a validate_configuration issue."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+
+    class _Rec:
+        relative_key = "case-a"
+
+    monkeypatch.setattr(kling_automation_ui, "discover_case_folders", lambda *a, **k: [_Rec()])
+
+    class _Manifest:
+        manifest_path = tmp_path / "manifest.json"
+        data = {"cases": {}}
+
+        @classmethod
+        def create_or_load(cls, **kwargs):
+            return cls()
+
+    monkeypatch.setattr(kling_automation_ui, "AutomationManifest", _Manifest)
+
+    class _Runner:
+        last_case_results = {}
+
+        def __init__(self, **kwargs):
+            pass
+
+        def validate_configuration(self):
+            return ["stop-after-overrides"]
+
+    monkeypatch.setattr(kling_automation_ui, "AutoPipelineRunner", _Runner)
+
+    ui = _bare_ui(tmp_path)
+    monkeypatch.setattr(
+        ui, "_collect_case_snapshot",
+        lambda records, manifest: ([], {"will_run": 1, "discovered": 1, "pending": 1,
+                                         "completed_total": 0, "skipped_complete": 0,
+                                         "manual_review": 0, "failed": 0}, [_Rec()]),
+        raising=False,
+    )
+    monkeypatch.setattr(ui, "_automation_manifest_path", lambda: tmp_path / "manifest.json", raising=False)
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True, reprocess_override=reprocess_override)
+    return ui, rc
+
+
+def test_reprocess_overwrite_disables_skip_guards(tmp_path, monkeypatch):
+    """--reprocess overwrite/increment must drop automation_skip_completed +
+    skip_if_*_exists so completed manifest cases actually re-run, else
+    _planned_action_for_case returns skip_complete and the batch reports 'no
+    runnable cases' (code-review Codex P1, PR #69)."""
+    ui, rc = _reach_override(tmp_path, monkeypatch, "overwrite")
+    assert ui.config["automation_skip_completed"] is False
+    assert ui.config["automation_skip_if_selfie_exists"] is False
+    assert ui.config["automation_skip_if_video_exists"] is False
+    assert ui.config["automation_allow_reprocess"] is True
+    assert ui.config["automation_reprocess_mode"] == "overwrite"
+
+
+def test_reprocess_skip_leaves_guards_untouched(tmp_path, monkeypatch):
+    """--reprocess skip must NOT drop the skip guards (only overwrite/increment do)."""
+    ui, rc = _reach_override(tmp_path, monkeypatch, "skip")
+    # skip mode sets reprocess_mode + allow_reprocess but must NOT clear the
+    # skip-completed guard (skip is the safe default behaviour).
+    assert ui.config["automation_reprocess_mode"] == "skip"
+    assert ui.config.get("automation_skip_completed", True) is not False

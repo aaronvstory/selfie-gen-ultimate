@@ -3028,10 +3028,21 @@ class KlingAutomationUI:
         if max_cases_override is not None:
             self.config["automation_max_cases_per_run"] = str(max_cases_override)
         if reprocess_override is not None:
-            self.config["automation_reprocess_mode"] = str(reprocess_override)
+            mode = str(reprocess_override)
+            self.config["automation_reprocess_mode"] = mode
             # _effective_reprocess_mode() forces "skip" unless allow_reprocess is
             # True, so an explicit --reprocess is inert without this flag.
             self.config["automation_allow_reprocess"] = True
+            # For overwrite/increment, the user explicitly wants completed cases
+            # RE-RUN. But _planned_action_for_case() returns "skip_complete" (and
+            # the runner re-skips) while automation_skip_completed / the
+            # skip_if_*_exists guards stay on -- so the reprocess command would
+            # still report "no runnable cases" (code-review Codex P1, PR #69).
+            # Drop those skip guards so completed cases actually flow through.
+            if mode in ("overwrite", "increment"):
+                self.config["automation_skip_completed"] = False
+                self.config["automation_skip_if_selfie_exists"] = False
+                self.config["automation_skip_if_video_exists"] = False
 
         try:
             _rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
@@ -3077,7 +3088,20 @@ class KlingAutomationUI:
         print(f"  selfie prompt slot/source: {selfie_slot} / {selfie_source}")
         print(f"  selfie prompt preview: {prompt_preview}")
 
-        stats, run_error = self._run_with_live_dashboard(runner, runnable_cases, manifest)
+        # Under a real terminal, show the live Rich dashboard. Under cron / Task
+        # Scheduler / a pipe (no TTY), render NOTHING live -- run the pipeline
+        # directly in the main thread so the log isn't polluted with ANSI escape
+        # codes + we skip the dashboard's polling thread (code-review Gemini, PR #69).
+        if sys.stdout.isatty():
+            stats, run_error = self._run_with_live_dashboard(runner, runnable_cases, manifest)
+        else:
+            run_error = None
+            try:
+                runner.progress_cb = lambda message, level="info": print(f"  [{level}] {message}")
+                stats = runner.run(runnable_cases)
+            except Exception as exc:
+                stats = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
+                run_error = str(exc)
         if run_error:
             self.print_red(f"[batch] Automation run failed: {run_error}")
             return 1
