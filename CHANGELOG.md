@@ -2,6 +2,89 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-02 (v2.16) — granular failure logging across the app
+
+A friend's v2.13 rPPG failure log read only:
+
+```text
+[WARN] Core imports missing; running pip install.
+[ERROR] Self-heal pip install did not satisfy imports.
+```
+
+…with **no module name** — uselessly vague. Two stacked logging bugs hid the
+detail: (1) the rPPG launcher's per-module diagnostic printed to the console
+only, never to `rppg.log` (the file the friend actually read); and (2) even the
+console line was demoted to `debug` by the GUI tracker, which `verbose_gui_mode`
+(default off) drops from the panel. So the one line that names the failing
+dependency was thrown away twice. This release makes failure detail visible
+everywhere.
+
+### Added
+
+- **`scripts/rppg_import_diag.py`** — per-module rPPG import diagnostic. Reports
+  each of `cv2/numpy/mediapipe/scipy/absl` as `OK` / `MISSING` (not installed) /
+  `BROKEN` (installed but `import` raises — the numpy-2.x-ABI class), with the
+  ACTUAL `ImportError` text and the installed numpy version (flagged when ≥2).
+  Distinguishes "pip didn't land it" from "pip landed a broken combo" — the two
+  failure modes the old check conflated.
+- **`log_utils.py`** — shared `format_exception_detail(exc)` (always `"Type: msg"`,
+  never empty even for `TimeoutError`) and `format_exception_traceback(exc)`.
+
+### Fixed
+
+- **rPPG self-heal now names the failing module in BOTH sinks.** `run_rppg.bat`'s
+  post-self-heal re-verify runs `rppg_import_diag.py` through a new `:rppg_diag_tee`
+  subroutine that mirrors EVERY diagnostic line to the console (→ GUI stream) AND
+  `rppg.log`. No more "Core imports missing" with no name.
+- **rPPG setup diagnostics reach the main GUI panel.** `queue_manager._is_rppg_setup_diag`
+  classifies the launcher's `[rppg-diag]` / `WARN:` / `ERROR:` lines as warning/error
+  so they bypass the `verbose_gui_mode` debug gate; on failure the queue tails
+  `.launcher_state/rppg.log` into the panel so the user never has to hunt for the file.
+- **Video-step failures now name their reason.** `kling_generator_falai.py`'s
+  timeout / connection / generic submit branches now call `_set_last_error` +
+  `_report_progress`, so the queue reports the real cause instead of a bare
+  "Generation failed".
+- **Prep/vision errors surface the API body.** `vision_analyzer.py` extracts the
+  OpenRouter error body (insufficient credits / invalid model / content policy /
+  rate limit) instead of only the bare `"<code> Client Error … for url"`.
+- **Tab/queue catch sites use `format_exception_detail`** (selfie/prep/outpaint
+  tabs + the queue worker) so empty-message exceptions still name their type;
+  the queue worker also routes the full traceback to the file log.
+
+## 2026-06-02 (v2.15) — fix rPPG missing absl-py on fresh install
+
+A friend's v2.13 install ran the WHOLE pipeline (Face Crop → selfie → Kling →
+oldcam) but **rPPG still failed** (saved `-NORPPG`). v2.13 fixed the rPPG
+launcher's mediapipe-spec PARSER; this is a different, second rPPG failure mode.
+
+Root cause (confirmed by reproduction): `rPPG/rppg_injector.py` does an
+**unguarded `import absl.logging`** at module top. `absl-py` was pinned nowhere
+in the project — it only arrived transitively. mediapipe declares `absl-py~=2.3`
+but the rPPG launcher installs mediapipe with `--no-deps` (correct, to block
+numpy 2.x), which **skips absl**; and on a fresh venv the TF-side absl can
+resolve as "already satisfied" against a global Python or simply not land. So
+absl ends up absent → `import absl.logging` crashes → the rPPG step exits 1 and
+the video is marked `-NORPPG`. Everything else works because oldcam (v24) and
+the other steps don't import absl. Verified live: rPPG succeeds with absl
+present, and `import absl.logging` hard-crashes when absl is blocked.
+
+### Fixed
+
+- **Pinned `absl-py`** explicitly in `requirements.txt` (`~=2.1`) and
+  `constraints.txt` (`>=2.1,<3`) so a fresh venv always installs it as a direct
+  requirement (pip can't skip a top-level pin the way it skipped the transitive).
+- **Guarded `import absl.logging`** in `rppg_injector.py` — absl is only used to
+  quiet TF/mediapipe log spam, never essential to injection, so a missing absl
+  now degrades to noisier logs instead of crashing the whole rPPG step.
+- **Added `absl` to the rPPG launcher self-heal import-check** (`run_rppg.bat`:
+  `import cv2, numpy, mediapipe, scipy` → `+ absl`) so a missing absl is
+  detected and triggers the dependency re-install instead of silently passing.
+
+### Notes
+
+- Surgical, rPPG-only. The numpy<2 constraints, Face Crop repair, video/oldcam
+  paths, and macOS launchers are unchanged.
+
 ## 2026-06-02 (v2.13) — fix rPPG MediaPipe requirement parser
 
 A friend's v2.12 run completed the full pipeline (Face Crop → selfie → Kling

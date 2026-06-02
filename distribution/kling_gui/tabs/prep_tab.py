@@ -17,6 +17,8 @@ from ..theme import (
     debounce_command,
 )
 from ..image_state import ImageSession
+from log_utils import format_exception_detail
+
 
 class PrepTab(tk.Frame):
     """Tab 1: Analyze portrait images using vision AI."""
@@ -464,7 +466,7 @@ class PrepTab(tk.Frame):
                     0, lambda: self._on_analyze_complete(result)
                 )
             except Exception as e:
-                err = str(e)
+                err = format_exception_detail(e)
                 self.winfo_toplevel().after(
                     0, lambda: self._on_analyze_error(err)
                 )

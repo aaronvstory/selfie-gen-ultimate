@@ -146,14 +146,18 @@ if errorlevel 1 (
     exit /b 1
   )
   :rppg_post_dep_check
-  rem Re-check imports after the self-heal install. If still missing,
-  rem report exactly WHICH modules failed so the user has an actionable
-  rem error instead of the generic 4-module list.
-  "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
-  if errorlevel 1 (
-    echo   ERROR: rPPG deps still missing after pip sync. Detail:
-    "!PYTHON_BIN!" -c "import importlib.util; mods=['cv2','numpy','mediapipe','scipy']; missing=[m for m in mods if importlib.util.find_spec(m) is None]; print('     Still missing:', ', '.join(missing) if missing else 'none (deeper import failure)')"
-    >>"%LOG_FILE%" echo [ERROR] Self-heal pip install did not satisfy imports.
+  rem Re-check imports after the self-heal install with the granular
+  rem per-module diagnostic (v2.16). The old check swallowed stderr and
+  rem printed its find_spec hint to the console only, so the rppg.log a
+  rem user reads showed a useless "Core imports missing" with NO module
+  rem name. rppg_import_diag.py reports each module OK/MISSING/BROKEN plus
+  rem the actual ImportError and the installed numpy version, and
+  rem :rppg_diag_tee mirrors EVERY line to BOTH the console (-> GUI stream)
+  rem AND rppg.log so the failing module is always visible.
+  call :rppg_diag_tee "post-self-heal import check"
+  if !RPPG_DIAG_EXIT! neq 0 (
+    echo   ERROR: rPPG deps still missing after pip sync ^(see detail above^).
+    >>"%LOG_FILE%" echo [ERROR] Self-heal pip install did not satisfy imports ^(detail above^).
     %PAUSE%
     exit /b 1
   )
@@ -187,6 +191,24 @@ if errorlevel 1 exit /b 1
 set "PYTHON_BIN=%~1"
 set "ENV_KIND=%~2"
 exit /b 0
+
+:rppg_diag_tee
+rem Run the granular per-module import diagnostic and mirror its output to
+rem BOTH the console (so the GUI subprocess stream captures it) AND rppg.log
+rem (so a user reading the log file sees the same detail). %~1 is a short
+rem context label for the log. Sets RPPG_DIAG_EXIT to the helper exit code
+rem (0 = all modules import, 1 = at least one MISSING/BROKEN).
+set "RPPG_DIAG_EXIT=1"
+set "RPPG_DIAG_TMP=%TEMP%\rppg_diag_%RANDOM%_%RANDOM%.txt"
+>>"%LOG_FILE%" echo [INFO] rPPG import diagnostic (%~1):
+"!PYTHON_BIN!" "%REPO_ROOT%\scripts\rppg_import_diag.py" > "!RPPG_DIAG_TMP!" 2>&1
+set "RPPG_DIAG_EXIT=!errorlevel!"
+if exist "!RPPG_DIAG_TMP!" (
+  type "!RPPG_DIAG_TMP!"
+  type "!RPPG_DIAG_TMP!" >>"%LOG_FILE%"
+  del "!RPPG_DIAG_TMP!" >nul 2>&1
+)
+exit /b !RPPG_DIAG_EXIT!
 
 :rppg_sync_deps
 rem P1 (codex PR #54): MediaPipe must install with --no-deps (Hard Rule #6).

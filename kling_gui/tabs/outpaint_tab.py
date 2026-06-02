@@ -15,6 +15,7 @@ from ..theme import (
 )
 from ..image_state import ImageSession
 from path_utils import get_gen_images_folder
+from log_utils import format_exception_detail
 from automation.config import get_outpaint_fal_timeout_seconds
 
 
@@ -469,7 +470,7 @@ class OutpaintTab(tk.Frame):
                     0, lambda: self._on_complete(result, similarity)
                 )
             except Exception as e:
-                err = str(e)
+                err = format_exception_detail(e)
                 self.winfo_toplevel().after(
                     0, lambda: self._on_error(err)
                 )

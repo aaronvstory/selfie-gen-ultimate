@@ -9,6 +9,39 @@ from typing import Optional, Callable
 logger = logging.getLogger(__name__)
 
 
+def _extract_openrouter_error_detail(exc: requests.RequestException) -> str:
+    """Pull the human-readable reason out of an OpenRouter error response.
+
+    ``str(exc)`` for an HTTP error is just "<code> Client Error ... for url".
+    The actionable reason (e.g. "Insufficient credits", "model not found",
+    "content policy", rate-limit window) lives in the JSON body. Return a
+    truncated, single-line version of it, or "" if no usable body is present.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return ""
+    # Collapse internal whitespace/newlines so a multiline error body stays a
+    # single readable GUI-log line (matches the docstring promise; CodeRabbit
+    # Minor, PR #67).
+    def _one_line(value: object) -> str:
+        return " ".join(str(value).split())[:300]
+
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict):
+                msg = err.get("message") or err.get("code")
+                if msg:
+                    return _one_line(msg)
+            if data.get("message"):
+                return _one_line(data["message"])
+            return _one_line(data)
+    except Exception:  # noqa: BLE001 — body not JSON; fall back to raw text
+        pass
+    return _one_line(getattr(resp, "text", "") or "")
+
+
 class VisionAnalyzer:
     """Analyze portrait images using OpenRouter vision models."""
 
@@ -159,8 +192,17 @@ class VisionAnalyzer:
             self._report("Analysis complete", "success")
             return {"prompt": prompt}
         except requests.RequestException as e:
-            self._report(f"API error: {e}", "error")
-            logger.error("VisionAnalyzer error: %s", e)
+            # str(e) on a raise_for_status() HTTPError gives only
+            # "400 Client Error ... for url" — OpenRouter puts the ACTUAL
+            # reason (insufficient credits, invalid model, content policy,
+            # rate limit) in the response BODY, which str(e) drops. Surface
+            # a truncated body so the Prep error is actionable (v2.16).
+            detail = _extract_openrouter_error_detail(e)
+            message = f"API error: {e}"
+            if detail:
+                message = f"{message} — {detail}"
+            self._report(message, "error")
+            logger.error("VisionAnalyzer error: %s", message)
             return None
         except (KeyError, IndexError) as e:
             self._report(f"Unexpected response format: {e}", "error")

@@ -29,6 +29,7 @@ from ..theme import (
 from ..image_state import ImageSession
 from path_utils import get_gen_images_folder
 from tk_dialogs import select_directory, select_save_file
+from log_utils import format_exception_detail
 
 try:
     from selfie_prompt_composer import DEFAULT_GENDER
@@ -1414,7 +1415,7 @@ class SelfieTab(tk.Frame):
                     0, lambda r=results, fl=failed_models, sk=skipped_models: self._on_complete_batch(r, fl, sk)
                 )
             except Exception as e:
-                err = str(e)
+                err = format_exception_detail(e)
                 self.winfo_toplevel().after(
                     0, lambda: self._on_error(err)
                 )
@@ -1435,7 +1436,14 @@ class SelfieTab(tk.Frame):
             self.log(message, "success")
             self._refresh_result_actions()
         else:
-            self.log("Selfie generation failed", "error")
+            # The generator streams the actual reason (HTTP status / API
+            # error body / upload failure) through the progress callback as
+            # it happens; this terminal line points the user at that detail
+            # instead of implying there was none.
+            self.log(
+                "Selfie generation failed — see the reason logged above.",
+                "error",
+            )
 
     @staticmethod
     def _truncate_model_label(label: str) -> str:

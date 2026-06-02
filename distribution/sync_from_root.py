@@ -14,6 +14,12 @@ SYNC_ITEMS = [
     # ModuleNotFoundError (Codex P1, PR #61). Keep it in SYNC_ITEMS so a future
     # sync_from_root run doesn't drop it again.
     "tk_dialogs.py",
+    # log_utils.py: kling_gui/{queue_manager,tabs/*}.py + kling_generator_falai.py
+    # import it (`from log_utils import format_exception_detail`) for uniform
+    # failure messages (v2.16). The distribution copy must carry it or
+    # `cwd=distribution python -c "import kling_gui.queue_manager"` raises
+    # ModuleNotFoundError (Codex P2, PR #67).
+    "log_utils.py",
     "model_schema_manager.py",
     "dependency_checker.py",
     # dependency_health_check.py: kling_gui/dependency_repair_dialog.py imports it

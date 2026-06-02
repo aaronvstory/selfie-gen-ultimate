@@ -136,19 +136,33 @@ def test_self_heal_uses_resolved_python_not_hardcoded_path(bat_source: str):
 
 
 def test_self_heal_re_runs_import_check_after_pip(bat_source: str):
-    """After the pip install, the .bat MUST re-run the import check.
-    Without this, a partial-success pip (e.g. mediapipe install
-    failed but the others worked) would still launch the injector
-    which would crash on the missing module."""
-    # Two consecutive import-check lines are the proxy for "checked,
-    # tried to fix, re-checked." Count them.
-    count = bat_source.count(
+    """After the pip install, the .bat MUST re-verify imports. Without
+    this, a partial-success pip (e.g. mediapipe install failed but the
+    others worked) would still launch the injector which would crash on
+    the missing module.
+
+    v2.16: the pre-pip gate + lock-wait fast-path still use the inline
+    `import ...` check, but the POST-self-heal re-verify is now done via
+    `call :rppg_diag_tee` (which runs scripts/rppg_import_diag.py and
+    branches on RPPG_DIAG_EXIT) so the failing module is named and logged.
+    Assert BOTH layers exist."""
+    # The pre-pip gate + the post-lock-wait fast-path use the inline check
+    # (essential-only since v2.16 — absl dropped, it's optional at runtime).
+    inline_count = bat_source.count(
         '"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy"'
     )
-    assert count >= 2, (
-        f"expected >=2 occurrences of the import check (one before "
-        f"pip, one after self-heal + one after lock-wait fast-path), "
-        f"found {count}"
+    assert inline_count >= 2, (
+        f"expected >=2 occurrences of the inline import check (the pre-pip "
+        f"gate + the post-lock-wait fast-path), found {inline_count}"
+    )
+    # The post-self-heal re-verify is the granular diagnostic, branched on.
+    assert "call :rppg_diag_tee" in bat_source, (
+        "the post-self-heal re-verify must run the granular diagnostic via "
+        ":rppg_diag_tee so the failing module is named"
+    )
+    assert "if !RPPG_DIAG_EXIT! neq 0 (" in bat_source, (
+        "the .bat must branch on the diagnostic exit code (RPPG_DIAG_EXIT) "
+        "so a still-broken import aborts before launching the injector"
     )
 
 
@@ -189,14 +203,29 @@ def test_self_heal_lock_wait_is_bounded(bat_source: str):
 
 
 def test_self_heal_diagnostic_lists_missing_modules(bat_source: str):
-    """If pip succeeds but the imports still fail, the error message
-    must name WHICH modules are still missing — not just repeat the
-    generic 4-module list."""
-    # The diagnostic uses importlib.util.find_spec to list missing
-    # modules by name. Look for the find_spec usage.
-    assert "importlib.util.find_spec" in bat_source, (
-        "diagnostic must enumerate the specific missing modules; the "
-        "single-line python -c uses importlib.util.find_spec"
+    """If pip succeeds but the imports still fail, the launcher must name
+    WHICH modules are still missing — not just repeat the generic list.
+
+    v2.16: the inline `find_spec` one-liner (which printed to the console
+    only and never to rppg.log, so the friend's pasted log showed no module
+    name) is replaced by scripts/rppg_import_diag.py, invoked through
+    :rppg_diag_tee which mirrors EVERY diagnostic line to BOTH the console
+    and rppg.log. Assert the launcher calls the helper and tees its output."""
+    assert "rppg_import_diag.py" in bat_source, (
+        "the post-self-heal diagnostic must run scripts/rppg_import_diag.py "
+        "to enumerate each module's OK/MISSING/BROKEN state by name"
+    )
+    # The tee subroutine must write the diagnostic to BOTH sinks: the
+    # console (-> GUI stream) AND the log file (the sink the friend read).
+    diag_body = bat_source.split(":rppg_diag_tee", 1)[-1].split(":rppg_sync_deps", 1)[0]
+    assert 'type "!RPPG_DIAG_TMP!"' in diag_body, (
+        "the diagnostic must echo to the console so the GUI subprocess "
+        "stream captures it"
+    )
+    assert 'type "!RPPG_DIAG_TMP!" >>"%LOG_FILE%"' in diag_body, (
+        "the diagnostic must ALSO append to rppg.log — the friend's v2.13 "
+        "bug was that the per-module detail went to the console only and "
+        "the rppg.log he pasted showed a useless 'Core imports missing'"
     )
 
 
@@ -210,3 +239,63 @@ def test_no_dev_null_in_bat(bat_source: str):
         "`/dev/null` — a checkout-local linter silently rewrites the "
         "former to the latter and breaks every redirection in the file"
     )
+
+
+def test_self_heal_inline_gate_is_essential_only(bat_source: str):
+    """v2.16 correction (Codex P2, PR #67): absl is a GUARDED import in
+    rppg_injector.py — a missing absl only means noisier logs, never a crash.
+    So the inline self-heal gate must check ONLY the essential runtime deps
+    (cv2/numpy/mediapipe/scipy) and must NOT include absl: a working install
+    that merely lacks absl should run rPPG (noisier), not get force-skipped to
+    -NORPPG. (absl is still pinned + installed everywhere — see
+    test_absl_pinned_in_requirements_and_constraints; this governs RUNTIME
+    tolerance, not install policy.)"""
+    assert "import cv2, numpy, mediapipe, scipy" in bat_source, (
+        "the inline gate must check the essential runtime deps"
+    )
+    # absl must NOT be in the fatal inline gate anymore.
+    assert "import cv2, numpy, mediapipe, scipy, absl" not in bat_source, (
+        "absl must be removed from the fatal inline gate — it's optional at "
+        "runtime (guarded import); the granular diag reports it as optional/warning"
+    )
+    # The granular diag (rppg_import_diag.py) is what reports absl, and it
+    # classifies absl as optional (exit 0 when only absl is missing).
+    from pathlib import Path
+
+    diag = (
+        Path(__file__).resolve().parent.parent / "scripts" / "rppg_import_diag.py"
+    ).read_text(encoding="utf-8")
+    assert 'OPTIONAL_MODULES = ["absl"]' in diag, (
+        "rppg_import_diag.py must classify absl as OPTIONAL so a missing absl "
+        "does not fail the gate (exit code) and force -NORPPG"
+    )
+
+
+def test_absl_pinned_in_requirements_and_constraints():
+    """absl-py must STILL be an explicit top-level pin (not just transitive) in
+    both requirements.txt and constraints.txt so every launcher installs it
+    (v2.15). Runtime tolerance (absl optional at the rPPG gate) is a SEPARATE
+    concern from install policy (absl always installed)."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    reqs = (root / "requirements.txt").read_text(encoding="utf-8")
+    cons = (root / "constraints.txt").read_text(encoding="utf-8")
+    assert "absl-py~=2.3" in reqs, "requirements.txt must pin absl-py explicitly"
+    assert "absl-py>=2.3,<3" in cons, "constraints.txt must pin absl-py"
+
+
+def test_rppg_injector_absl_import_is_guarded():
+    """rppg_injector.py's absl import must be wrapped in try/except so a missing
+    absl degrades to noisier logs instead of crashing the whole rPPG step
+    (belt-and-suspenders for the v2.15 absl fix)."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "rPPG" / "rppg_injector.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    # The import + set_verbosity must sit inside a try block.
+    assert "try:\n    import absl.logging" in src, (
+        "rppg_injector.py must guard `import absl.logging` in a try/except"
+    )
+    assert "except Exception:" in src
