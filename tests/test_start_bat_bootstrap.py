@@ -129,3 +129,14 @@ def test_start_bat_seed_gated_on_marker_not_config_absence():
     assert 'if not exist "%SEED_MARKER%"' in src, (
         "START.bat seed must be gated on the .seeded marker, not kling_config.json absence"
     )
+
+
+def test_start_bat_backs_up_pre_marker_config():
+    """A portable folder upgraded to the marker-based script may hold a
+    user-edited kling_config.json with no .seeded marker; the first-run seed
+    must back it up before overwriting so pre-marker edits are never lost
+    (codex P2)."""
+    src = _read()
+    assert "kling_config.pre-seed.bak" in src, (
+        "START.bat must back up an existing config before the snapshot seed"
+    )

@@ -50,6 +50,14 @@ set "SEED_MARKER=%USER_STATE%\.seeded"
 if not exist "%SEED_MARKER%" (
   if exist "%APP_SUPPORT%\kling_config.json" (
     echo   [%TS%] Seeding config from bundled snapshot ^(first run^)...
+    rem Preserve a PRE-MARKER user config (codex P2): an existing portable
+    rem folder upgraded to this marker-based script can already hold a
+    rem user-edited kling_config.json with no .seeded marker. Back it up
+    rem before the snapshot overwrites it so nothing is ever lost.
+    if exist "%SCRIPT_DIR%\kling_config.json" (
+      copy /Y "%SCRIPT_DIR%\kling_config.json" "%SCRIPT_DIR%\kling_config.pre-seed.bak" >nul 2>&1
+      echo   [%TS%] Backed up your existing config to kling_config.pre-seed.bak
+    )
     copy /Y "%APP_SUPPORT%\kling_config.json" "%SCRIPT_DIR%\kling_config.json" >nul 2>&1
     if exist "%APP_SUPPORT%\ui_config.json" copy /Y "%APP_SUPPORT%\ui_config.json" "%SCRIPT_DIR%\ui_config.json" >nul 2>&1
     if exist "%APP_SUPPORT%\kling_history.json" copy /Y "%APP_SUPPORT%\kling_history.json" "%SCRIPT_DIR%\kling_history.json" >nul 2>&1
