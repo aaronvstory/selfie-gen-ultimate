@@ -1195,7 +1195,10 @@ class KlingGUIWindow:
             "log_max_mb": 5,
             "log_backups": 3,
             "duplicate_detection": True,
-            "current_prompt_slot": 4,
+            # Keep in sync with default_config_template.json current_prompt_slot
+            # (v2.17 = slot 5 "head turn 35 degrees v3"). code-review: this
+            # in-code fallback was stale at 4 (CodeRabbit 2026-06-03).
+            "current_prompt_slot": 5,
             "saved_prompts": {str(i): "" for i in range(1, 11)},
             "negative_prompts": {str(i): "" for i in range(1, 11)},
             "model_capabilities": {},
@@ -1322,9 +1325,9 @@ class KlingGUIWindow:
             selfie_slot = 3
         default_config["selfie_current_prompt_slot"] = min(10, max(1, selfie_slot))
         try:
-            kling_slot = int(default_config.get("current_prompt_slot", 4))
+            kling_slot = int(default_config.get("current_prompt_slot", 5))
         except Exception:
-            kling_slot = 4
+            kling_slot = 5
         default_config["current_prompt_slot"] = min(10, max(1, kling_slot))
         default_config["outpaint_fal_timeout_seconds"] = get_outpaint_fal_timeout_seconds(default_config)
 
@@ -3740,8 +3743,19 @@ class KlingGUIWindow:
                     )
                 # install_failed / lock_timeout / skipped: stay quiet here; the
                 # gpu_bootstrap script already logged the detail to its stamp.
-            except Exception:  # noqa: BLE001 — GPU setup is strictly best-effort
-                pass
+            except Exception as exc:  # noqa: BLE001 — GPU setup is best-effort
+                # Don't crash the GUI, but DO leave a trace so a broken auto-
+                # bootstrap (e.g. gpu_bootstrap.py missing on a partial tree)
+                # is diagnosable instead of an invisible silent-CPU
+                # (code-review: don't swallow bootstrap failures silently).
+                try:
+                    self._log_thread_safe(
+                        f"GPU: auto-setup skipped ({type(exc).__name__}); "
+                        "rPPG runs on CPU. Launch via run_gui.bat for GPU setup.",
+                        "warning",
+                    )
+                except Exception:  # noqa: BLE001 — logging must never raise here
+                    pass
 
         import threading as _threading
         _threading.Thread(target=_worker, daemon=True).start()

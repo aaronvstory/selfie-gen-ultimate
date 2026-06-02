@@ -91,6 +91,16 @@ except ImportError:
 # smooth_roi_boundaries) run on GPU; when not, everything stays on NumPy+OpenCV
 # with byte-for-byte the same behaviour as before. The xp_of/to_gpu/to_cpu
 # helpers let those methods accept either backend's arrays without branching.
+
+# Module-level list that RETAINS the os.add_dll_directory() handles for the
+# whole process lifetime. CRITICAL (code-review 2026-06-03): on Windows the
+# DLL search-path entry only stays active while the returned handle is alive —
+# if it's GC'd, Python calls RemoveDllDirectory and nvrtc can no longer be
+# found. Discarding the handle made the GPU fix flaky (it only worked because
+# GC hadn't run yet). Keep them here so the entries persist until exit.
+_CUDA_DLL_DIR_HANDLES = []
+
+
 def _register_cuda_dll_dirs():
     """Add the pip-installed NVIDIA CUDA component dirs (nvrtc, cudart, cublas,
     ...) to the Windows DLL search path BEFORE importing cupy.
@@ -125,7 +135,10 @@ def _register_cuda_dll_dirs():
                     continue
                 seen.add(d)
                 try:
-                    os.add_dll_directory(d)
+                    # RETAIN the handle (module-level list) — the DLL dir entry
+                    # is removed when this object is GC'd, so a discarded handle
+                    # makes the nvrtc fix flaky (code-review CRITICAL).
+                    _CUDA_DLL_DIR_HANDLES.append(os.add_dll_directory(d))
                 except OSError:
                     pass
                 # add_dll_directory lets cupy load nvrtc64_*.dll, but nvrtc
