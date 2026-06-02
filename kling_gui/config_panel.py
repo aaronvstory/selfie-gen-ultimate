@@ -1805,21 +1805,35 @@ class ConfigPanel(tk.Frame):
         if api_desc:
             sections.append(f"\u2500\u2500 Provider Info \u2500\u2500\n{api_desc}")
 
-        # Pricing (from API)
+        # Pricing: prefer LIVE pricing from the fal.ai API; fall back to the
+        # verified static price in models.json (``pricing_fallback``) when the
+        # live fetch is unavailable OR returns nothing. The live API has been
+        # observed returning wrong/stale numbers for the Kling models, so the
+        # fallback is the authoritative human-verified value (audio off, the
+        # cheaper tier). When the fallback is used we tag it so it's clear the
+        # number isn't a live quote.
         pricing = model.get("pricing_info", {})
-        if pricing:
-            unit = pricing.get("unit", "")
-            price = pricing.get("unit_price", 0)
-            if price:
-                if unit == "second":
-                    price_str = f"${price:.3f}/second (${price * 5:.2f}/5s, ${price * 10:.2f}/10s)"
-                elif unit == "video":
-                    price_str = f"${price:.2f}/video (flat rate)"
-                elif unit == "image":
-                    price_str = f"${price:.2f}/image"
-                else:
-                    price_str = f"${price:.3f}/{unit}" if unit else f"${price:.3f}"
-                sections.append(f"\u2500\u2500 Pricing \u2500\u2500\n{price_str}")
+        unit = pricing.get("unit", "") if pricing else ""
+        price = pricing.get("unit_price", 0) if pricing else 0
+        is_fallback = False
+        if not price:
+            fb = model.get("pricing_fallback", {})
+            if fb:
+                unit = fb.get("unit", "second")
+                price = fb.get("unit_price", 0)
+                is_fallback = bool(price)
+        if price:
+            if unit == "second":
+                price_str = f"${price:.3f}/second (${price * 5:.2f}/5s, ${price * 10:.2f}/10s)"
+            elif unit == "video":
+                price_str = f"${price:.2f}/video (flat rate)"
+            elif unit == "image":
+                price_str = f"${price:.2f}/image"
+            else:
+                price_str = f"${price:.3f}/{unit}" if unit else f"${price:.3f}"
+            if is_fallback:
+                price_str += "\n(verified reference, audio off; live API quote unavailable)"
+            sections.append(f"\u2500\u2500 Pricing \u2500\u2500\n{price_str}")
 
         # User notes (from models.json user_notes field)
         user_notes = model.get("user_notes", "")

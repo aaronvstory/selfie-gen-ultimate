@@ -52,6 +52,12 @@ SYNC_ITEMS = [
     "fal_utils.py",
     "kling_generator_falai.py",
     "model_metadata.py",
+    # models.json: model_metadata.py loads it from "next to this file", so the
+    # distribution copy needs it too or a cwd=distribution run falls back to the
+    # hardcoded list (losing the pricing_fallback + capability user_notes). It
+    # already ships in the release zip (release_prep walks the working tree);
+    # this keeps the distribution/ direct-run tree in parity.
+    "models.json",
     "outpaint_generator.py",
     "outpaint_geometry.py",
     "selfie_generator.py",

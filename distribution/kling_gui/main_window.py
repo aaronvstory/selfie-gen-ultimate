@@ -1551,6 +1551,13 @@ class KlingGUIWindow:
     def _save_history(self):
         """Persist processed video history."""
         try:
+            # Ensure the per-instance runtime dir exists before writing — a
+            # fresh launch may not have materialized
+            # runtime/instances/<id>/ yet when the first history save fires
+            # (e.g. right after an Oldcam-only rerun), which produced the
+            # benign "Could not save history: [Errno 2] No such file or
+            # directory: ...kling_history.json" warning.
+            os.makedirs(os.path.dirname(self.history_path) or ".", exist_ok=True)
             with open(self.history_path, "w", encoding="utf-8") as f:
                 json.dump(self.history[-500:], f, indent=2)
         except Exception as e:
