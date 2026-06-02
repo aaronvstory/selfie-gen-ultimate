@@ -180,3 +180,38 @@ def test_is_rppg_setup_diag_ignores_normal_progress(line: str):
     from kling_gui.queue_manager import _is_rppg_setup_diag
 
     assert not _is_rppg_setup_diag(line.strip())
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "[rppg-diag] BROKEN  mediapipe    (required) ModuleNotFoundError: No module named 'x'",
+        "[rppg-diag] MISSING scipy        (required) not installed",
+        "[rppg-diag] RESULT: 1 required module(s) not importable: mediapipe",
+        "[rppg-diag] numpy-version: 2.4.1  <-- WARNING: numpy>=2 breaks ...",
+        "     Still missing: scipy",
+    ],
+)
+def test_failure_detail_line_surfaces_failures(line: str):
+    """Only FAILING diagnostic markers are surfaced on a failure (CodeRabbit
+    Major, PR #67)."""
+    from kling_gui.queue_manager import _is_rppg_failure_detail_line
+
+    assert _is_rppg_failure_detail_line(line.strip())
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "[rppg-diag] OK      cv2          (4.11.0)",
+        "[rppg-diag] RESULT: all required modules import OK",
+        "[rppg-diag] numpy-version: 1.26.4",  # no WARNING -> not a failure
+        "[rppg-diag] NOTE: optional module(s) unavailable ...",
+    ],
+)
+def test_failure_detail_line_ignores_success_and_ok(line: str):
+    """A failure that happens AFTER imports succeed must NOT echo OK/all-clear
+    lines as if they explained it."""
+    from kling_gui.queue_manager import _is_rppg_failure_detail_line
+
+    assert not _is_rppg_failure_detail_line(line.strip())

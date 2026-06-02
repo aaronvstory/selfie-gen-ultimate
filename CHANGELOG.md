@@ -6,7 +6,7 @@ All notable changes to this project are documented here.
 
 A friend's v2.13 rPPG failure log read only:
 
-```
+```text
 [WARN] Core imports missing; running pip install.
 [ERROR] Self-heal pip install did not satisfy imports.
 ```

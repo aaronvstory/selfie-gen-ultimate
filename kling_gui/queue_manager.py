@@ -344,6 +344,27 @@ def _is_rppg_setup_diag(line: str) -> bool:
     return any(pat in low for pat in _RPPG_SETUP_DIAG_PATTERNS)
 
 
+def _is_rppg_failure_detail_line(line: str) -> bool:
+    """True only for diagnostic lines that explain a FAILURE.
+
+    Used when surfacing rPPG failure detail into the GUI log: a failure that
+    occurs AFTER imports succeed must not echo "[rppg-diag] OK ..." lines or the
+    "all required modules import OK" verdict as if they explained the failure
+    (CodeRabbit Major, PR #67). Matches per-module BROKEN/MISSING, the
+    failing-RESULT verdict, "still missing", and the numpy-2 warning — but NOT
+    the OK lines or the all-clear verdict.
+    """
+    low = line.lower()
+    if low.startswith("[rppg-diag]"):
+        return (
+            "broken" in low
+            or "missing" in low
+            or "not importable" in low  # "RESULT: N required module(s) not importable"
+            or ("numpy-version" in low and "warning" in low)
+        )
+    return "still missing" in low
+
+
 def get_next_available_path(
     image_path: str,
     output_folder: str,
@@ -2539,31 +2560,35 @@ class QueueManager:
            tracker may have filtered (or that the launcher wrote file-only)
            reaches the user.
 
-        Falls back to the prior "last output" tail when no structured detail
-        is present. Every branch is wrapped so a logging failure can never
-        turn a graceful rPPG skip into a crash.
+        Only FAILING diagnostic markers are surfaced — a failure that happens
+        AFTER imports succeed must not echo "[rppg-diag] OK ..." lines (or a
+        stale prior-run rppg.log tail) as if they explained the current failure
+        (CodeRabbit Major, PR #67). The rppg.log tail is a FALLBACK, used only
+        when the live subprocess output didn't already carry current-run detail.
+        Every branch is wrapped so a logging failure can never turn a graceful
+        rPPG skip into a crash.
         """
+        surfaced_live_detail = False
         try:
             lines = [str(ln).strip() for ln in (output_lines or []) if str(ln).strip()]
-            diag = [
-                ln
-                for ln in lines
-                if ln.startswith("[rppg-diag]")
-                or "still missing" in ln.lower()
-                or "numpy-version" in ln.lower()
-            ]
+            diag = [ln for ln in lines if _is_rppg_failure_detail_line(ln)]
             if diag:
                 self.log("   rPPG dependency diagnostic:", "warning")
                 for ln in diag:
                     self.log(f"     {ln}", "warning")
+                surfaced_live_detail = True
             elif lines:
-                # No structured diagnostic in the stream — tail the last line.
+                # No structured failure detail in the stream — tail the last line.
                 self.log(f"   last output: {lines[-1]}", "warning")
+                surfaced_live_detail = True
         except Exception:  # noqa: BLE001 — diagnostics must never crash the skip
             pass
 
-        # Tail rppg.log so file-only launcher detail (the [INFO]/[WARN]/[ERROR]
-        # status lines + the mirrored [rppg-diag] block) is always visible.
+        # Fallback only: if the live subprocess output already gave current-run
+        # detail, do NOT also dump the rppg.log tail — that append-only file can
+        # carry stale prior-run lines that would mislead about THIS failure.
+        if surfaced_live_detail:
+            return
         try:
             repo_root = Path(launcher).resolve().parent.parent
             log_path = repo_root / ".launcher_state" / "rppg.log"

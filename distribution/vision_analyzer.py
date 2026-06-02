@@ -20,6 +20,12 @@ def _extract_openrouter_error_detail(exc: requests.RequestException) -> str:
     resp = getattr(exc, "response", None)
     if resp is None:
         return ""
+    # Collapse internal whitespace/newlines so a multiline error body stays a
+    # single readable GUI-log line (matches the docstring promise; CodeRabbit
+    # Minor, PR #67).
+    def _one_line(value: object) -> str:
+        return " ".join(str(value).split())[:300]
+
     try:
         data = resp.json()
         if isinstance(data, dict):
@@ -27,14 +33,13 @@ def _extract_openrouter_error_detail(exc: requests.RequestException) -> str:
             if isinstance(err, dict):
                 msg = err.get("message") or err.get("code")
                 if msg:
-                    return str(msg)[:300]
+                    return _one_line(msg)
             if data.get("message"):
-                return str(data["message"])[:300]
-            return str(data)[:300]
+                return _one_line(data["message"])
+            return _one_line(data)
     except Exception:  # noqa: BLE001 — body not JSON; fall back to raw text
         pass
-    text = (getattr(resp, "text", "") or "").strip()
-    return text[:300]
+    return _one_line(getattr(resp, "text", "") or "")
 
 
 class VisionAnalyzer:
