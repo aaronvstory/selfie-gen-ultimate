@@ -50,7 +50,12 @@ if not exist "%SCRIPT_DIR%\kling_config.json" (
     if exist "%APP_SUPPORT%\ui_config.json" copy /Y "%APP_SUPPORT%\ui_config.json" "%SCRIPT_DIR%\ui_config.json" >nul 2>&1
     if exist "%APP_SUPPORT%\kling_history.json" copy /Y "%APP_SUPPORT%\kling_history.json" "%SCRIPT_DIR%\kling_history.json" >nul 2>&1
     if exist "%APP_SUPPORT%\pricing_cache.json" copy /Y "%APP_SUPPORT%\pricing_cache.json" "%SCRIPT_DIR%\pricing_cache.json" >nul 2>&1
-    if exist "%APP_SUPPORT%\model_cache" xcopy /E /I /Y /Q "%APP_SUPPORT%\model_cache" "%SCRIPT_DIR%\model_cache" >nul 2>&1
+    rem mkdir the dest first + drop /I so xcopy never prompts file-vs-dir on
+    rem a single-file model_cache (gemini MED, PR #66) -- keeps it non-interactive.
+    if exist "%APP_SUPPORT%\model_cache" (
+      if not exist "%SCRIPT_DIR%\model_cache" mkdir "%SCRIPT_DIR%\model_cache" >nul 2>&1
+      xcopy /E /Y /Q "%APP_SUPPORT%\model_cache" "%SCRIPT_DIR%\model_cache" >nul 2>&1
+    )
   ) else (
     echo   [%TS%] No bundled config snapshot -- add API keys in the GUI.
   )
@@ -58,31 +63,23 @@ if not exist "%SCRIPT_DIR%\kling_config.json" (
   echo   [%TS%] Existing config found -- leaving it untouched.
 )
 
-rem --- Optional: extract a pre-built venv to skip the slow first install ----
+rem --- venv: extract the bundled tarball if absent, then ALWAYS validate ---
+rem If no venv exists and a pre-built tarball is bundled, extract it to skip
+rem the slow first install. Then probe WHATEVER venv now exists (freshly
+rem extracted OR a stale one left on the SSD by another machine / a prior
+rem run): a venv tarball carries the original base-Python path in
+rem pyvenv.cfg, so python.exe can exist yet be unusable here. run_gui.bat
+rem only rebuilds when python.exe is ABSENT, so we must delete a broken
+rem venv ourselves (codex P1) -- otherwise it is handed off and fails.
 if not exist "%SCRIPT_DIR%\venv\Scripts\python.exe" (
   if exist "%USER_STATE%\venv-windows.tar" (
     echo   [%TS%] Extracting pre-built venv ^(faster than a fresh install^)...
     tar -xf "%USER_STATE%\venv-windows.tar" -C "%SCRIPT_DIR%" >nul 2>&1
-    rem Validate the extracted interpreter before trusting it (codex P1): a
-    rem venv tarball from another machine can carry a stale base-Python path
-    rem in pyvenv.cfg, so python.exe exists but cannot run. If the probe
-    rem fails, delete the venv so run_gui.bat rebuilds it cleanly instead of
-    rem handing off a broken interpreter.
-    if exist "%SCRIPT_DIR%\venv\Scripts\python.exe" (
-      "%SCRIPT_DIR%\venv\Scripts\python.exe" -c "import sys" >nul 2>&1
-      if errorlevel 1 (
-        echo   [%TS%] Extracted venv not usable here -- removing so it rebuilds.
-        rd /S /Q "%SCRIPT_DIR%\venv" >nul 2>&1
-      ) else (
-        echo   [%TS%] venv extracted and verified.
-      )
-    ) else (
-      echo   [%TS%] venv extract incomplete -- run_gui.bat will build one.
-    )
   ) else (
     echo   [%TS%] No pre-built venv -- first launch installs deps ^(5-15 min^).
   )
 )
+if exist "%SCRIPT_DIR%\venv\Scripts\python.exe" call :probe_venv
 
 rem --- Hand off to the canonical GUI launcher -------------------------------
 echo   [%TS%] Launching GUI...
@@ -99,3 +96,18 @@ if exist "%GUI_LAUNCHER%" (
 )
 set "EXIT_CODE=%ERRORLEVEL%"
 endlocal & exit /b %EXIT_CODE%
+
+rem ============================================================
+:probe_venv
+rem Validate the existing venv interpreter; if it cannot run, delete the
+rem venv so run_gui.bat rebuilds it. In a subroutine so `if errorlevel`
+rem reads the LIVE errorlevel (a nested if-errorlevel inside parens would
+rem capture the pre-block value).
+"%SCRIPT_DIR%\venv\Scripts\python.exe" -c "import sys" >nul 2>&1
+if errorlevel 1 (
+  echo   [%TS%] Bundled/existing venv is not usable here -- removing so it rebuilds.
+  rd /S /Q "%SCRIPT_DIR%\venv" >nul 2>&1
+) else (
+  echo   [%TS%] venv present and verified.
+)
+goto :eof
