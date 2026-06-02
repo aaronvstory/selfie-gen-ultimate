@@ -29,6 +29,7 @@ The rule we enforce (conservative, matches cmd's real behaviour):
 """
 
 from pathlib import Path
+from typing import List, Tuple
 
 import pytest
 
@@ -46,8 +47,17 @@ BAT_FILES = sorted(
 
 
 def _strip_quoted(s: str) -> str:
-    """Remove double-quoted spans so parens inside quotes don't count (cmd does
-    not treat `"(...)"` as block delimiters)."""
+    """Remove double-quoted spans from a cmd line.
+
+    Parens inside `"..."` are literal to cmd's block scanner, so they must not
+    count toward block depth.
+
+    Args:
+        s: A single raw line of batch-file text.
+
+    Returns:
+        The line with all double-quoted spans (and the quote chars) removed.
+    """
     out = []
     in_q = False
     for ch in s:
@@ -59,8 +69,16 @@ def _strip_quoted(s: str) -> str:
     return "".join(out)
 
 
-def _count_unescaped_unquoted(text: str):
-    """(open_count, close_count) of UNescaped, UNquoted parens in `text`."""
+def _count_unescaped_unquoted(text: str) -> Tuple[int, int]:
+    """Count UNescaped, UNquoted parens in a cmd line.
+
+    Args:
+        text: A line (or line fragment) of batch-file text.
+
+    Returns:
+        A ``(open_count, close_count)`` tuple of literal ``(`` and ``)`` that are
+        neither caret-escaped (``^(``/``^)``) nor inside a double-quoted span.
+    """
     text = _strip_quoted(text)
     opens = closes = 0
     i = 0
@@ -77,20 +95,26 @@ def _count_unescaped_unquoted(text: str):
     return opens, closes
 
 
-def _structural_delta(line: str):
-    """How much this line changes cmd's compound-statement block DEPTH.
+def _structural_delta(line: str) -> int:
+    """Compute how much a line changes cmd's compound-statement block DEPTH.
 
     cmd only changes block depth on STRUCTURAL parens, not parens inside an
-    `echo`/command's argument text. We model the two structural forms:
+    ``echo``/command's argument text. The two structural forms modelled:
 
-    * an opener: a control-flow head (`if ... (`, `for ... (`, `else (`, or a
-      bare `(`) where the line ENDS in an unescaped `(`  -> +1.
-    * a closer: a line that STARTS with `)` (e.g. `)`, `) else (`)            -> the
-      leading `)` is -1, and a trailing `(` on `) else (` re-opens +1.
+    * an opener: a control-flow head (``if ... (``, ``for ... (``, ``else (``, or
+      a bare ``(``) where the line ENDS in an unescaped ``(`` -> +1.
+    * a closer: a line that STARTS with ``)`` (e.g. ``)``, ``) else (``) -> the
+      leading ``)`` is -1, and a trailing ``(`` on ``) else (`` re-opens +1.
 
-    Parens that appear only as `echo (text)` arguments do NOT move depth (cmd
-    treats them literally once it's parsing the command's args). Returns the net
-    structural delta for the line.
+    Parens that appear only as ``echo (text)`` arguments do NOT move depth (cmd
+    treats them literally once parsing the command's args), and the ``echo(``
+    blank-line idiom (bare or after a redirect) is also excluded.
+
+    Args:
+        line: A single line of batch-file text (leading/trailing space ignored).
+
+    Returns:
+        The net structural block-depth delta for the line (-1, 0, or +1).
     """
     delta = 0
     stripped = line.rstrip()
@@ -116,12 +140,23 @@ def _structural_delta(line: str):
     return delta
 
 
-def scan_for_offenders(text: str):
-    """Core detector (shared by the parametrized fleet test + unit tests so they
-    can never drift). Returns a list of (lineno, line) for echo lines that carry
-    an unescaped paren while INSIDE a cmd `(...)` block -> the crash pattern."""
+def scan_for_offenders(text: str) -> List[Tuple[int, str]]:
+    """Detect the cmd unescaped-paren-in-block crash pattern in a .bat file.
+
+    Shared by the parametrized fleet test and the unit tests so the two can never
+    drift apart. Walks the text tracking cmd ``(...)`` block depth (resetting at
+    labels, skipping ``rem``/``::`` comments) and flags any ``echo`` line whose
+    argument text carries an unescaped paren while INSIDE a block.
+
+    Args:
+        text: The full text of a batch file.
+
+    Returns:
+        A list of ``(lineno, stripped_line)`` tuples for each offending line
+        (empty if the file is clean).
+    """
     depth = 0
-    offenders = []
+    offenders: List[Tuple[int, str]] = []
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
         if not line:
@@ -172,7 +207,7 @@ def scan_for_offenders(text: str):
 
 
 @pytest.mark.parametrize("bat", BAT_FILES, ids=lambda p: str(p.relative_to(REPO_ROOT)))
-def test_no_unescaped_paren_inside_cmd_block(bat: Path):
+def test_no_unescaped_paren_inside_cmd_block(bat: Path) -> None:
     """Walk the .bat tracking `(...)` block depth; flag an `echo` line executed
     inside a block (depth>0 at line start) that adds an unescaped paren which
     cmd would mis-parse as a block delimiter."""
@@ -186,7 +221,7 @@ def test_no_unescaped_paren_inside_cmd_block(bat: Path):
     )
 
 
-def test_structural_delta_treats_redirect_echo_blank_as_zero():
+def test_structural_delta_treats_redirect_echo_blank_as_zero() -> None:
     """`>>file echo(` is the redirect form of the echo-blank-line idiom; it must
     NOT count as a block opener (would inflate tracked depth -> spurious false
     positives downstream). Code-review MEDIUM, PR #70."""
@@ -204,7 +239,7 @@ def test_structural_delta_treats_redirect_echo_blank_as_zero():
     assert _structural_delta("echo done ^(") == 0
 
 
-def test_rem_comment_with_parens_in_block_is_not_flagged():
+def test_rem_comment_with_parens_in_block_is_not_flagged() -> None:
     """A `rem` comment is a cmd no-op: it must NOT shift block depth nor be
     flagged even with parens / the word echo (code-review Gemini MEDIUM, PR#70)."""
     text = (
@@ -217,7 +252,7 @@ def test_rem_comment_with_parens_in_block_is_not_flagged():
     assert scan_for_offenders(text) == []
 
 
-def test_scanner_catches_the_real_crash_pattern():
+def test_scanner_catches_the_real_crash_pattern() -> None:
     """Positive control: an unescaped paren on an echo line INSIDE a block IS
     flagged (the exact rPPG crash shape). Proves the scanner isn't vacuous."""
     text = (
@@ -233,7 +268,7 @@ def test_scanner_catches_the_real_crash_pattern():
     assert scan_for_offenders(text_ok) == []
 
 
-def test_scanner_ignores_top_level_echo_parens():
+def test_scanner_ignores_top_level_echo_parens() -> None:
     """Negative control: balanced parens in an echo at TOP level (depth 0, e.g.
     after a label) are safe and must NOT be flagged."""
     text = (
@@ -245,7 +280,7 @@ def test_scanner_ignores_top_level_echo_parens():
     assert scan_for_offenders(text) == []
 
 
-def test_run_rppg_bat_gpu_log_line_is_escaped():
+def test_run_rppg_bat_gpu_log_line_is_escaped() -> None:
     """Direct regression pin for the exact line that crashed rPPG on every
     v2.17 Windows run (the (CuPy) paren)."""
     src = (REPO_ROOT / "rPPG" / "run_rppg.bat").read_text(encoding="utf-8", errors="replace")
