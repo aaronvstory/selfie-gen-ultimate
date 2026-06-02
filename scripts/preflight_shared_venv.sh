@@ -28,6 +28,18 @@ selfiegen_preflight_shared_venv() {
   local health="${repo_root}/dependency_health_check.py"
   [[ -f "${health}" ]] || return 0
 
+  # v2.17 (Codex P2): only repair the SHARED root venv. If the caller resolved
+  # a SELFIEGEN_PYTHON override / SELFIEGEN_VENV_DIR / a local/other venv, do
+  # NOT force-reinstall the full TF/MediaPipe stack into it — the user may keep
+  # that env minimal on purpose. macOS shared venvs: .venv-macos / venv /
+  # .venv311 / .venv under repo_root. Skip otherwise (the sub-launcher's own
+  # minimal install + import-gate remain the safety net).
+  local _shared=""
+  for _v in venv .venv311 .venv .venv-macos; do
+    if [[ "${py}" == "${repo_root}/${_v}/bin/python" ]]; then _shared=1; break; fi
+  done
+  [[ -n "${_shared}" ]] || return 0
+
   local state="${repo_root}/.launcher_state"
   mkdir -p "${state}" 2>/dev/null || true
 

@@ -36,6 +36,10 @@ def test_win_preflight_helper_runs_canonical_health_check():
     assert "SELFIEGEN_SKIP_PREFLIGHT" in src
     # No POSIX /dev/null leaked into a .bat (the linter trap).
     assert "/dev/null" not in src
+    # Codex P2: only repair the SHARED root venv, not a SELFIEGEN_PYTHON
+    # override / local venv. Must gate on a shared-venv match before repair.
+    assert "_PF_SHARED" in src and "venv\\Scripts\\python.exe" in src
+    assert "if not defined _PF_SHARED goto :_pf_done" in src
 
 
 def test_sh_preflight_helper_runs_canonical_health_check():
@@ -46,6 +50,9 @@ def test_sh_preflight_helper_runs_canonical_health_check():
     assert "SELFIEGEN_SKIP_PREFLIGHT" in src
     # The function the launchers source + call.
     assert "selfiegen_preflight_shared_venv()" in src
+    # Codex P2: only repair the SHARED root venv (.venv-macos/venv/.venv*),
+    # not a user override / local env. Must gate before repair.
+    assert ".venv-macos" in src and "_shared" in src
 
 
 _OLDCAM_BATS = sorted(glob.glob(str(REPO_ROOT / "oldcam-v*" / "oldcam_launcher.bat")))

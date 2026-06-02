@@ -24,6 +24,18 @@ if "%SELFIEGEN_SKIP_PREFLIGHT%"=="1" goto :_pf_done
 if "%_PF_PY%"=="" goto :_pf_done
 if "%_PF_ROOT%"=="" goto :_pf_done
 if not exist "%_PF_ROOT%\dependency_health_check.py" goto :_pf_done
+rem v2.17 (Codex P2): only repair the SHARED root venv. If the caller
+rem resolved a SELFIEGEN_PYTHON override / SELFIEGEN_VENV_DIR / a local
+rem fallback venv, do NOT force-reinstall the full TF/MediaPipe stack into
+rem it -- the user may keep that env minimal on purpose. Match the python
+rem path against the canonical shared-venv locations under REPO_ROOT; skip
+rem the preflight otherwise (the sub-launcher's own minimal install +
+rem import-gate remain the safety net).
+set "_PF_SHARED="
+if /I "%_PF_PY%"=="%_PF_ROOT%\venv\Scripts\python.exe" set "_PF_SHARED=1"
+if /I "%_PF_PY%"=="%_PF_ROOT%\.venv311\Scripts\python.exe" set "_PF_SHARED=1"
+if /I "%_PF_PY%"=="%_PF_ROOT%\.venv\Scripts\python.exe" set "_PF_SHARED=1"
+if not defined _PF_SHARED goto :_pf_done
 set "_PF_HEALTH=%_PF_ROOT%\dependency_health_check.py"
 set "_PF_STATE=%_PF_ROOT%\.launcher_state"
 if not exist "%_PF_STATE%\" mkdir "%_PF_STATE%" >nul 2>&1
@@ -49,4 +61,5 @@ set "_PF_PY="
 set "_PF_ROOT="
 set "_PF_HEALTH="
 set "_PF_STATE="
+set "_PF_SHARED="
 goto :eof
