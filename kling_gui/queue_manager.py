@@ -2339,12 +2339,25 @@ class QueueManager:
                 # user always sees WHICH dependency broke and WHY (v2.16).
                 stripped = text.strip()
                 if _is_rppg_setup_diag(stripped):
-                    level = (
-                        "error"
-                        if ("MISSING" in stripped or "BROKEN" in stripped
-                            or stripped.startswith(("ERROR", "[ERROR]")))
-                        else "warning"
-                    )
+                    low = stripped.lower()
+                    if (
+                        "MISSING" in stripped
+                        or "BROKEN" in stripped
+                        or stripped.startswith(("ERROR", "[ERROR]"))
+                    ):
+                        level = "error"
+                    elif (
+                        # A SUCCESSFUL self-heal emits "[rppg-diag] OK ...",
+                        # "RESULT: all core modules import OK", and "deps
+                        # installed" — those are good news, not warnings, so
+                        # don't paint a clean recovery yellow (code-review LOW).
+                        "] ok" in low
+                        or "all core modules import" in low
+                        or "deps installed" in low
+                    ):
+                        level = "info"
+                    else:
+                        level = "warning"
                     self.log(stripped, level)
                     return
                 # Panel noise (heavy TF chatter) is always debug-level
@@ -2551,9 +2564,15 @@ class QueueManager:
             repo_root = Path(launcher).resolve().parent.parent
             log_path = repo_root / ".launcher_state" / "rppg.log"
             if log_path.is_file():
-                tail = log_path.read_text(
-                    encoding="utf-8", errors="replace"
-                ).splitlines()[-12:]
+                # rppg.log is append-only across every launch and never
+                # rotated, so read only the last 8 KB rather than the whole
+                # file just to keep 12 lines (code-review LOW).
+                with log_path.open("rb") as fh:
+                    fh.seek(0, 2)
+                    size = fh.tell()
+                    fh.seek(max(0, size - 8192))
+                    raw = fh.read()
+                tail = raw.decode("utf-8", errors="replace").splitlines()[-12:]
                 tail = [t for t in tail if t.strip()]
                 if tail:
                     self.log(

@@ -48,6 +48,19 @@ def test_format_exception_detail_never_empty_for_blank_message():
         assert format_exception_detail(exc) == "TimeoutError"
 
 
+def test_format_exception_detail_collapses_multiline_message():
+    """A multi-line exception message must collapse to a single line so a
+    panel entry doesn't fragment across rows (code-review LOW)."""
+    from log_utils import format_exception_detail
+
+    try:
+        raise ValueError("line one\nline two\n  indented three")
+    except ValueError as exc:
+        out = format_exception_detail(exc)
+        assert "\n" not in out
+        assert out == "ValueError: line one line two indented three"
+
+
 def test_format_exception_traceback_contains_stack():
     from log_utils import format_exception_traceback
 
@@ -116,9 +129,11 @@ def test_rppg_diag_default_module_set_is_the_rppg_core():
     [
         "[rppg-diag] MISSING mediapipe    not installed",
         "[rppg-diag] numpy-version: 2.4.1  <-- WARNING",
+        "[rppg-diag] OK      cv2          (4.11.0)",  # success lines surface too
         "  WARN: rPPG deps missing -- syncing repo requirements before retry...",
         "  ERROR: rPPG deps still missing after pip sync (see detail above).",
         "  Installing MediaPipe separately with --no-deps: mediapipe==0.10.35",
+        "  OK: rPPG deps installed.",
     ],
 )
 def test_is_rppg_setup_diag_matches_launcher_diagnostics(line: str):

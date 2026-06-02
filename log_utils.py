@@ -35,7 +35,10 @@ def format_exception_detail(exc: BaseException) -> str:
     sources.
     """
     type_name = type(exc).__name__
-    message = str(exc).strip()
+    # Collapse internal whitespace/newlines so a multi-line exception message
+    # (some subprocess/HTTP wrappers carry them) stays a single readable panel
+    # line instead of fragmenting the log (code-review LOW).
+    message = " ".join(str(exc).split())
     if message:
         return f"{type_name}: {message}"
     return type_name
