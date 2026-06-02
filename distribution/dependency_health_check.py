@@ -523,6 +523,12 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
     """
     messages: list[str] = []
     cuda_ok = True  # Treated as "no fallback needed" when no CUDA failure.
+    # Initialize the mediapipe outcome flags up front (code-review H1): they're
+    # currently always assigned before the return, but a future early-return /
+    # `if face_ok:` guard around the mediapipe steps would otherwise raise
+    # NameError. Default False = "not done" so a skipped step never reads as OK.
+    mediapipe_ok = False
+    mp_runtime_ok = False
 
     if failures and _failures_indicate_torch_cuda_break(failures):
         cuda_ok, cuda_msg = run_torch_cpu_fallback()

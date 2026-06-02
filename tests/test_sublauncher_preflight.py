@@ -61,9 +61,15 @@ _SIMRES_CMDS = [
 
 
 def test_found_all_oldcam_launchers():
-    # 10 oldcam versions ship today; the glob must not silently drop any.
-    assert len(_OLDCAM_BATS) == 10, _OLDCAM_BATS
-    assert len(_OLDCAM_CMDS) == 10, _OLDCAM_CMDS
+    # Floor guard (code-review M4): 10 oldcam versions ship today, but a magic
+    # ==10 breaks the instant v25 is added. Assert a non-zero floor + equal
+    # .bat/.command counts (every version must ship BOTH); the per-launcher
+    # parametrized tests below verify each found file calls the preflight.
+    assert len(_OLDCAM_BATS) >= 10, _OLDCAM_BATS
+    assert len(_OLDCAM_CMDS) == len(_OLDCAM_BATS), (
+        f"each oldcam version needs BOTH a .bat and a .command: "
+        f"{len(_OLDCAM_BATS)} bats vs {len(_OLDCAM_CMDS)} commands"
+    )
 
 
 @pytest.mark.parametrize("bat", _OLDCAM_BATS + [str(REPO_ROOT / p) for p in _SIMRES_BATS])

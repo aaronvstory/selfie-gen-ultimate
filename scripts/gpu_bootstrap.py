@@ -161,12 +161,18 @@ def _log(msg: str, *, quiet: bool = False) -> None:
 
 class _PipResult:
     """Minimal stand-in for subprocess.CompletedProcess (returncode/stdout/
-    stderr) so callers that read those three attrs work unchanged."""
+    stderr) so callers that read those three attrs work unchanged.
+
+    NOTE (code-review M1): _run_pip_with_heartbeat merges stderr INTO stdout
+    (stderr=subprocess.STDOUT), so on results it produces ``stderr`` is ALWAYS
+    "" and all output lives in ``stdout``. This is intentional (we want one
+    combined stream for the ERROR:-line extractor). A caller must NOT rely on
+    ``stderr`` being populated separately — read ``stdout`` for all output."""
 
     def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
         self.returncode = returncode
         self.stdout = stdout
-        self.stderr = stderr
+        self.stderr = stderr  # always "" from _run_pip_with_heartbeat (merged)
 
 
 def _run_pip_with_heartbeat(
@@ -642,9 +648,14 @@ def select_torch_install(
             _log_macos_mps(python_exe)
             return (True, "torch already present (macOS default wheel)")
         # torch missing/broken — let pip install the default wheel.
-        cmd = [python_exe, "-m", "pip", "install", "--no-input", torch_spec]
+        # Build the command append-style (constraints before the spec),
+        # consistent with _install_torch_from_index — code-review C2 flagged
+        # the prior cmd[4:4] splice as fragile (silently wrong if the literal
+        # is ever reordered).
+        cmd = [python_exe, "-m", "pip", "install", "--no-input"]
         if constraints_path:
-            cmd[4:4] = ["-c", constraints_path]
+            cmd += ["-c", constraints_path]
+        cmd.append(torch_spec)
         ok, msg = _run_torch_pip(cmd, "macOS default")
         if ok:
             _log_macos_mps(python_exe)
@@ -774,6 +785,17 @@ def compute_stamp_token(constraints_path: Optional[str] = None) -> str:
     (bounded to a 10s timeout). When a user later installs/removes a GPU, the
     CuPy bootstrap refreshes gpu_status.json, which flips this token, which
     invalidates the dep stamp, which re-runs the full sync + select-torch.
+
+    KNOWN one-launch lag (code-review H3, accepted): on the FIRST launch after
+    a user PHYSICALLY removes the GPU, this reads the stale cached cuda_major
+    (still 12/13) before the CuPy bootstrap refreshes the stamp, so the token
+    — and thus the dep stamp — does NOT change that launch, and select-torch
+    isn't re-run to downgrade CUDA torch -> CPU torch. This degrades silently
+    (CUDA init just fails and torch uses CPU; production never calls
+    torch.cuda.*), and the NEXT launch (stamp refreshed) corrects it. We accept
+    the one-launch lag rather than pay an nvidia-smi probe on every cached
+    launch. GPU-ADD is fine immediately: no cache claims a GPU, so the first
+    branch's `cuda_major` stays None until the bootstrap installs + stamps.
     """
     import hashlib
 

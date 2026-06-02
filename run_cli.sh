@@ -32,12 +32,21 @@ export KLING_SKIP_PY_STARTUP_DEP_CHECK=1
 # Clear HEALTH_STAMP before repair so a failed repair can't leave a stale
 # "healthy" marker.
 if [[ -f "${ROOT_DIR}/dependency_health_check.py" ]]; then
-  "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode check || {
+  # Refresh HEALTH_STAMP ONLY on a successful probe / successful repair
+  # (matches run_gui.sh). Writing it unconditionally would cache a venv whose
+  # repair FAILED as "healthy", so the next launch skips the probe and the
+  # user is stuck with a broken venv (code-review C1, 2026-06-03).
+  if "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode check; then
+    cp "${REQUIREMENTS_STAMP}" "${HEALTH_STAMP}" 2>/dev/null || true
+  else
     echo "Runtime dependency health check failed. Attempting auto-repair..." >&2
     rm -f "${HEALTH_STAMP}" 2>/dev/null || true
-    "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode repair
-  }
-  cp "${REQUIREMENTS_STAMP}" "${HEALTH_STAMP}" 2>/dev/null || true
+    if "${PYTHON_BIN}" "${ROOT_DIR}/dependency_health_check.py" --mode repair; then
+      cp "${REQUIREMENTS_STAMP}" "${HEALTH_STAMP}" 2>/dev/null || true
+    else
+      echo "Auto-repair failed; HEALTH_STAMP left cleared so next launch re-probes." >&2
+    fi
+  fi
 fi
 
 # Auto-detect NVIDIA + bootstrap CuPy (same as run_gui.sh — see that

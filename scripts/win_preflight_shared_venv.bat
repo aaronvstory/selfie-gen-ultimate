@@ -28,6 +28,11 @@ set "_PF_HEALTH=%_PF_ROOT%\dependency_health_check.py"
 set "_PF_STATE=%_PF_ROOT%\.launcher_state"
 if not exist "%_PF_STATE%\" mkdir "%_PF_STATE%" >nul 2>&1
 rem Quick probe of the FULL runtime set against the shared venv.
+rem NOTE (code-review M2): this helper is CALLed (no setlocal/delayed expansion),
+rem so it reads %errorlevel% directly and uses the CALLed-subroutine idiom
+rem "if not errorlevel 1" (= exit code is 0). Do NOT wrap the probe in a
+rem parenthesized block without first adding setlocal enabledelayedexpansion +
+rem switching to !errorlevel! -- %errorlevel% is not re-read inside ( ) blocks.
 "%_PF_PY%" "%_PF_HEALTH%" --mode check >"%_PF_STATE%\preflight_health.log" 2>&1
 if not errorlevel 1 goto :_pf_done
 echo   [preflight] shared venv incomplete/broken -- running canonical repair...
