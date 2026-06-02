@@ -11,6 +11,6 @@ if not exist "%TARGET%" (
     exit /b 1
 )
 
-call "%TARGET%"
+call "%TARGET%" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 endlocal & exit /b %EXIT_CODE%

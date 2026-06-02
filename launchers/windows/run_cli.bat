@@ -216,7 +216,7 @@ if exist "%ROOT_DIR%\scripts\gpu_bootstrap.py" (
 echo(
 echo   [%LAUNCH_TS%] Launching CLI...
 echo(
-"%VENV_PYTHON%" -u "%CLI_SCRIPT%"
+"%VENV_PYTHON%" -u "%CLI_SCRIPT%" %*
 set "EXIT_CODE=!errorlevel!"
 
 if !EXIT_CODE! neq 0 (

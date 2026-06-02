@@ -14,4 +14,4 @@ if [[ ! -x "${TARGET}" ]]; then
   chmod +x "${TARGET}" || true
 fi
 
-exec "${TARGET}"
+exec "${TARGET}" "$@"

@@ -10,7 +10,7 @@ if [[ ! -x "${ROOT_DIR}/run_cli.sh" ]]; then
 fi
 
 set +e
-"${ROOT_DIR}/run_cli.sh"
+"${ROOT_DIR}/run_cli.sh" "$@"
 status=$?
 set -e
 

@@ -2936,6 +2936,116 @@ class KlingAutomationUI:
         print("  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video -> oldcam")
         self.pause_review("\nPress Enter to continue...")
 
+    def run_automation_headless(
+        self,
+        root: str,
+        *,
+        auto_approve: bool = True,
+        max_cases_override: Optional[str] = None,
+        reprocess_override: Optional[str] = None,
+    ) -> int:
+        """Non-interactive batch runner for the automation pipeline.
+
+        Mirrors the runnable body of :meth:`_run_resume_automation` but reads
+        NO stdin (so it can run from cron / Windows Task Scheduler) and returns
+        a process exit code instead of pausing:
+
+        * ``0``   -- batch ran with zero failed cases.
+        * ``1``   -- missing/invalid root, no case folders, preflight failure,
+                     a run-level exception, or one or more failed cases.
+
+        ``auto_approve=False`` is reserved for a future confirm hook; in headless
+        mode the caller already opted in via ``--batch``/``--yes`` so the default
+        is to proceed. The interactive :meth:`_run_resume_automation` is left
+        untouched -- this is an additive path, not a replacement.
+        """
+        if max_cases_override is not None:
+            self.config["automation_max_cases_per_run"] = str(max_cases_override)
+        if reprocess_override is not None:
+            self.config["automation_reprocess_mode"] = str(reprocess_override)
+
+        root = (root or "").strip()
+        if not root:
+            self.print_red("[batch] No automation root provided.")
+            return 1
+        self.automation_root_folder = root
+        self.config["automation_root_folder"] = root
+
+        root_path = Path(root)
+        if not root_path.exists():
+            self.print_red(f"[batch] Automation root does not exist: {root}")
+            return 1
+
+        records = discover_case_folders(root_path, self.config.get("automation_front_names", []))
+        if not records:
+            self.print_yellow(f"[batch] No case folders found under {root}.")
+            return 1
+
+        try:
+            manifest = AutomationManifest.create_or_load(
+                manifest_path=self._automation_manifest_path(),
+                root_dir=root_path,
+                config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
+            )
+        except Exception as exc:
+            self.print_red(f"[batch] Failed to load manifest: {exc}")
+            return 1
+
+        _rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
+        print("[batch] Run preview:")
+        print(f"  discovered: {counts['discovered']}")
+        print(f"  completed total: {counts.get('completed_total', 0)}")
+        print(f"  skipped complete: {counts.get('skipped_complete', 0)}")
+        print(f"  pending/runnable: {counts.get('pending', 0)}")
+        print(f"  will run this batch: {counts.get('will_run', 0)}")
+        print(f"  manual review: {counts.get('manual_review', 0)}")
+        print(f"  failed: {counts.get('failed', 0)}")
+        if not runnable_cases:
+            self.print_yellow("[batch] No runnable cases for this batch; nothing to do.")
+            return 1
+
+        runner = AutoPipelineRunner(
+            config=self.config,
+            automation_config=from_app_config(self.config),
+            manifest=manifest,
+            progress_cb=None,
+        )
+        issues = runner.validate_configuration()
+        if issues:
+            self.print_red("[batch] Automation preflight failed:")
+            for issue in issues:
+                print(f"  - {issue}")
+            return 1
+
+        print("[batch] Automation preflight:")
+        print(f"  cases discovered: {len(records)}")
+        print(f"  running this batch: {len(runnable_cases)}")
+        print(f"  reprocess mode: {self.config.get('automation_reprocess_mode', 'skip')}")
+        for line in self._automation_status_lines():
+            print(f"  {line}")
+        selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
+        prompt_preview = selfie_prompt if len(selfie_prompt) <= 160 else f"{selfie_prompt[:160]}..."
+        print(f"  selfie prompt slot/source: {selfie_slot} / {selfie_source}")
+        print(f"  selfie prompt preview: {prompt_preview}")
+
+        stats, run_error = self._run_with_live_dashboard(runner, runnable_cases, manifest)
+        if run_error:
+            self.print_red(f"[batch] Automation run failed: {run_error}")
+            return 1
+        print("[batch] Automation run complete.")
+        print(f"  completed: {stats.get('completed', 0)}")
+        print(f"  failed: {stats.get('failed', 0)}")
+        print(f"  manual_review: {stats.get('manual_review', 0)}")
+        print(f"  skipped: {stats.get('skipped', 0)}")
+        try:
+            self._write_automation_summary(manifest, runner.last_case_results, stats)
+        except Exception as exc:
+            # A summary-write failure must not flip an otherwise-good run to a
+            # non-zero exit; surface it but keep the run's verdict.
+            self.print_yellow(f"[batch] Could not write run summary: {exc}")
+        # A scheduled batch treats any failed case as a job failure.
+        return 1 if int(stats.get("failed", 0)) > 0 else 0
+
     def _run_resume_automation(self):
         if not self.automation_root_folder:
             self.print_red("Set automation root folder first.")
@@ -3705,7 +3815,34 @@ def main(argv=None):
     """Entry point"""
     try:
         parser = argparse.ArgumentParser(add_help=True)
-        parser.add_argument("--auto", action="store_true", help="Launch directly into automation workflow")
+        parser.add_argument("--auto", action="store_true", help="Launch directly into the interactive automation menu")
+        parser.add_argument(
+            "--batch",
+            metavar="ROOT",
+            default=None,
+            help="Run the automation pipeline NON-INTERACTIVELY over ROOT and exit "
+            "(0=success, non-zero=failure). For cron / Task Scheduler.",
+        )
+        parser.add_argument(
+            "--limit",
+            metavar="N",
+            default=None,
+            help="Headless --batch only: cap cases per run (1, 5, 10, or 'all'). "
+            "Overrides automation_max_cases_per_run.",
+        )
+        parser.add_argument(
+            "--reprocess",
+            metavar="MODE",
+            default=None,
+            choices=["skip", "overwrite", "increment"],
+            help="Headless --batch only: reprocess mode override.",
+        )
+        parser.add_argument(
+            "--yes",
+            "-y",
+            action="store_true",
+            help="Headless --batch only: auto-approve the run (default in --batch).",
+        )
         parser.add_argument("--manual-video", action="store_true", help="Launch legacy manual Kling tools")
         parser.add_argument("--gui", action="store_true", help="Launch GUI manual lab directly")
         parser.add_argument("--verbose-startup", action="store_true", help="Show full startup dependency diagnostics")
@@ -3752,6 +3889,16 @@ def main(argv=None):
                 pass
 
         app = KlingAutomationUI(legacy_pauses=legacy_pauses)
+        if args.batch is not None:
+            # Non-interactive batch: run + exit with the runner's status code so
+            # cron / Task Scheduler can detect failures. --yes is implied here.
+            rc = app.run_automation_headless(
+                args.batch,
+                auto_approve=True,
+                max_cases_override=args.limit,
+                reprocess_override=args.reprocess,
+            )
+            sys.exit(int(rc))
         if args.gui:
             app.launch_gui()
             return

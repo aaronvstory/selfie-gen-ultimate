@@ -73,4 +73,4 @@ if [[ -f "${ROOT_DIR}/scripts/gpu_bootstrap.py" ]]; then
   "${PYTHON_BIN}" "${ROOT_DIR}/scripts/gpu_bootstrap.py" --quiet-if-cached || true
 fi
 
-exec "${PYTHON_BIN}" -u "${ROOT_DIR}/kling_automation_ui.py"
+exec "${PYTHON_BIN}" -u "${ROOT_DIR}/kling_automation_ui.py" "$@"
