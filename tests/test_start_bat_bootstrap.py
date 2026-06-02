@@ -80,3 +80,31 @@ def test_user_facing_launchers_have_wmic_timestamp_fallback():
         assert "Get-Date -Format" in src, (
             f"{rel}: missing the PowerShell timestamp fallback for wmic-less Win11"
         )
+
+
+def test_start_bat_drive_root_guard():
+    """START.bat must NOT strip the trailing backslash when run from a drive
+    root (D:\ -> D: is drive-relative and breaks path joins) — gemini HIGH."""
+    src = _read()
+    assert '":\\"' in src and "SCRIPT_DIR:~-2" in src, (
+        "START.bat must guard the trailing-backslash strip against a drive root"
+    )
+
+
+def test_start_bat_validates_extracted_venv():
+    """START.bat must probe the extracted venv interpreter and remove it on
+    failure (a tarball from another machine can carry a stale pyvenv.cfg base
+    path) so run_gui.bat rebuilds rather than handing off a broken venv — codex P1."""
+    src = _read()
+    assert "import sys" in src and "errorlevel 1" in src, (
+        "START.bat must probe the extracted venv before trusting it"
+    )
+
+
+def test_start_bat_ps_fallback_is_backquoted():
+    """The wmic-less PowerShell timestamp fallback must be back-quoted under
+    `usebackq` or it never executes (falls through to locale time) — codex P3."""
+    src = _read()
+    assert "in (`powershell" in src, (
+        "START.bat usebackq PowerShell fallback must be back-quoted to execute"
+    )

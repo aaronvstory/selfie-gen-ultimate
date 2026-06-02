@@ -13,7 +13,9 @@ rem  to the GUI. Safe to double-click from a virgin Windows machine.
 rem ============================================================
 
 set "SCRIPT_DIR=%~dp0"
-if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+rem Strip trailing backslash, but NOT for a drive root (D:\ -> D: would be
+rem drive-RELATIVE and break path joins). Guard on not ending in ":\".
+if "%SCRIPT_DIR:~-1%"=="\" if not "%SCRIPT_DIR:~-2%"==":\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 set "USER_STATE=%SCRIPT_DIR%\_user_state"
 set "APP_SUPPORT=%USER_STATE%\app_support"
 set "GUI_LAUNCHER=%SCRIPT_DIR%\launchers\windows\run_gui.bat"
@@ -28,7 +30,7 @@ if defined WDT (
   set "WDT=!WDT: =!"
   set "TS=!WDT:~0,4!-!WDT:~4,2!-!WDT:~6,2! !WDT:~8,2!:!WDT:~10,2!:!WDT:~12,2!"
 )
-if not defined TS for /f "usebackq delims=" %%T in (powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'" 2^>nul) do set "TS=%%T"
+if not defined TS for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'" 2^>nul`) do set "TS=%%T"
 if not defined TS set "TS=%DATE% %TIME%"
 echo(
 echo  ============================================================
@@ -61,8 +63,19 @@ if not exist "%SCRIPT_DIR%\venv\Scripts\python.exe" (
   if exist "%USER_STATE%\venv-windows.tar" (
     echo   [%TS%] Extracting pre-built venv ^(faster than a fresh install^)...
     tar -xf "%USER_STATE%\venv-windows.tar" -C "%SCRIPT_DIR%" >nul 2>&1
+    rem Validate the extracted interpreter before trusting it (codex P1): a
+    rem venv tarball from another machine can carry a stale base-Python path
+    rem in pyvenv.cfg, so python.exe exists but cannot run. If the probe
+    rem fails, delete the venv so run_gui.bat rebuilds it cleanly instead of
+    rem handing off a broken interpreter.
     if exist "%SCRIPT_DIR%\venv\Scripts\python.exe" (
-      echo   [%TS%] venv extracted.
+      "%SCRIPT_DIR%\venv\Scripts\python.exe" -c "import sys" >nul 2>&1
+      if errorlevel 1 (
+        echo   [%TS%] Extracted venv not usable here -- removing so it rebuilds.
+        rd /S /Q "%SCRIPT_DIR%\venv" >nul 2>&1
+      ) else (
+        echo   [%TS%] venv extracted and verified.
+      )
     ) else (
       echo   [%TS%] venv extract incomplete -- run_gui.bat will build one.
     )
