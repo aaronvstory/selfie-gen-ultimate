@@ -99,12 +99,29 @@ def _bare_ui(tmp_path) -> KlingAutomationUI:
     return ui
 
 
-def test_headless_missing_root_returns_nonzero(tmp_path, monkeypatch):
+def test_headless_missing_root_returns_one(tmp_path, monkeypatch):
+    """Could-not-run conditions return exactly 1 (distinct from the exit-2
+    ran-but-needs-attention code)."""
     monkeypatch.setattr("builtins.input", _forbid_input)
     ui = _bare_ui(tmp_path)
     missing = tmp_path / "does-not-exist"
     rc = ui.run_automation_headless(str(missing), auto_approve=True)
-    assert rc != 0
+    assert rc == 1
+
+
+def test_headless_auto_approve_false_aborts(tmp_path, monkeypatch):
+    """auto_approve=False is not supported in headless mode -- it must abort
+    loudly (return 1) rather than silently proceeding (code-review HIGH-2)."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    # Must NOT even reach discovery -- guard is the first thing checked.
+    monkeypatch.setattr(
+        kling_automation_ui,
+        "discover_case_folders",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not discover when auto_approve=False")),
+    )
+    ui = _bare_ui(tmp_path)
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=False)
+    assert rc == 1
 
 
 def test_headless_no_cases_returns_nonzero(tmp_path, monkeypatch):
@@ -218,9 +235,9 @@ def test_headless_success_returns_zero(tmp_path, monkeypatch):
     assert rc == 0
 
 
-def test_headless_run_failures_return_nonzero(tmp_path, monkeypatch):
-    """If the pipeline reports failed cases, the batch exits non-zero so a
-    scheduler treats it as a failed job."""
+def _run_with_stats(tmp_path, monkeypatch, final_stats):
+    """Drive a full headless run that reaches the dashboard, returning the
+    final per-run stats dict ``final_stats``. Returns the exit code."""
     monkeypatch.setattr("builtins.input", _forbid_input)
 
     class _Rec:
@@ -239,7 +256,7 @@ def test_headless_run_failures_return_nonzero(tmp_path, monkeypatch):
     monkeypatch.setattr(kling_automation_ui, "AutomationManifest", _Manifest)
 
     class _Runner:
-        last_case_results = {"case-a": {"status": "failed", "reason": "x"}}
+        last_case_results = {"case-a": {"status": "x", "reason": "y"}}
 
         def __init__(self, **kwargs):
             pass
@@ -261,13 +278,27 @@ def test_headless_run_failures_return_nonzero(tmp_path, monkeypatch):
     monkeypatch.setattr(
         ui,
         "_run_with_live_dashboard",
-        lambda runner, run_cases, manifest: ({"completed": 0, "failed": 1, "manual_review": 0, "skipped": 0}, None),
+        lambda runner, run_cases, manifest: (final_stats, None),
         raising=False,
     )
     monkeypatch.setattr(ui, "_write_automation_summary", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(ui, "_get_selected_selfie_prompt", lambda: (3, "prompt", "slot"), raising=False)
     monkeypatch.setattr(ui, "_automation_status_lines", lambda: [], raising=False)
     monkeypatch.setattr(ui, "_automation_manifest_path", lambda: tmp_path / "manifest.json", raising=False)
+    return ui.run_automation_headless(str(tmp_path), auto_approve=True)
 
-    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True)
-    assert rc != 0
+
+def test_headless_run_failures_return_two(tmp_path, monkeypatch):
+    """Failed cases -> exit 2 (ran-but-needs-attention), NOT 1 (could-not-run)."""
+    rc = _run_with_stats(tmp_path, monkeypatch,
+                         {"completed": 0, "failed": 1, "manual_review": 0, "skipped": 0})
+    assert rc == 2
+
+
+def test_headless_manual_review_returns_two(tmp_path, monkeypatch):
+    """manual_review cases must NOT be silently swallowed as success -- a
+    scheduled batch with cases needing human action exits 2 (code-review
+    HIGH-1, PR #69)."""
+    rc = _run_with_stats(tmp_path, monkeypatch,
+                         {"completed": 0, "failed": 0, "manual_review": 2, "skipped": 0})
+    assert rc == 2

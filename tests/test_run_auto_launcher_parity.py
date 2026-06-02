@@ -79,6 +79,16 @@ def test_root_run_cli_bat_forwards_args():
     )
 
 
+def test_intermediate_run_cli_bat_forwards_args():
+    """The middle link launchers/run_cli.bat must forward %* too -- it's in the
+    --batch forwarding chain (run_auto.bat -> THIS -> windows/run_cli.bat) and a
+    dropped %* here breaks --batch with no other test catching it (HIGH-pinned
+    by code-review MEDIUM-5, PR #69)."""
+    assert 'call "%ROOT_DIR%\\launchers\\windows\\run_cli.bat" %*' in _read_text("launchers/run_cli.bat"), (
+        "launchers/run_cli.bat (intermediate wrapper) dropped %* forwarding."
+    )
+
+
 def test_windows_canonical_run_cli_bat_forwards_args():
     assert '"%VENV_PYTHON%" -u "%CLI_SCRIPT%" %*' in _read_text("launchers/windows/run_cli.bat"), (
         "launchers/windows/run_cli.bat dropped %* forwarding to "

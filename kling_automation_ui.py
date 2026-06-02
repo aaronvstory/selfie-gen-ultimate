@@ -2950,15 +2950,30 @@ class KlingAutomationUI:
         NO stdin (so it can run from cron / Windows Task Scheduler) and returns
         a process exit code instead of pausing:
 
-        * ``0``   -- batch ran with zero failed cases.
-        * ``1``   -- missing/invalid root, no case folders, preflight failure,
-                     a run-level exception, or one or more failed cases.
+        * ``0`` -- batch ran and EVERY case completed cleanly.
+        * ``1`` -- could not run: missing/invalid root, no case folders, no
+                   runnable cases, manifest load error, preflight failure, or a
+                   run-level exception.
+        * ``2`` -- the batch ran but one or more cases ended ``failed`` or
+                   ``manual_review``. A scheduled job MUST treat this as
+                   needs-attention, not success -- ``manual_review`` cases
+                   (similarity-gate undecided / anti-spoofing flagged) are
+                   silently dropped from the operator's view if we exit 0
+                   (code-review HIGH-1, PR #69).
 
-        ``auto_approve=False`` is reserved for a future confirm hook; in headless
-        mode the caller already opted in via ``--batch``/``--yes`` so the default
-        is to proceed. The interactive :meth:`_run_resume_automation` is left
-        untouched -- this is an additive path, not a replacement.
+        ``auto_approve`` must be ``True`` in headless mode -- the caller already
+        opted in via ``--batch``. ``False`` is reserved for a future interactive
+        confirm hook that is not yet implemented, so we abort loudly rather than
+        silently proceeding (code-review HIGH-2, PR #69). The interactive
+        :meth:`_run_resume_automation` is left untouched -- this is an additive
+        path, not a replacement.
         """
+        if not auto_approve:
+            # Reserved for a future confirm hook; not implemented. Fail loud
+            # instead of silently running unapproved (the param was previously
+            # accepted-and-ignored, which could mislead a future caller).
+            self.print_red("[batch] auto_approve=False is not supported in headless mode.")
+            return 1
         if max_cases_override is not None:
             self.config["automation_max_cases_per_run"] = str(max_cases_override)
         if reprocess_override is not None:
@@ -2991,7 +3006,14 @@ class KlingAutomationUI:
             self.print_red(f"[batch] Failed to load manifest: {exc}")
             return 1
 
-        _rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
+        try:
+            _rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
+        except Exception as exc:
+            # Filesystem errors on a discovered case dir (permissions, a corrupt
+            # entry) must surface as a clean [batch] exit-1, not an unhandled
+            # traceback bubbling to main() (code-review MEDIUM-3, PR #69).
+            self.print_red(f"[batch] Failed to build case snapshot: {exc}")
+            return 1
         print("[batch] Run preview:")
         print(f"  discovered: {counts['discovered']}")
         print(f"  completed total: {counts.get('completed_total', 0)}")
@@ -3043,8 +3065,19 @@ class KlingAutomationUI:
             # A summary-write failure must not flip an otherwise-good run to a
             # non-zero exit; surface it but keep the run's verdict.
             self.print_yellow(f"[batch] Could not write run summary: {exc}")
-        # A scheduled batch treats any failed case as a job failure.
-        return 1 if int(stats.get("failed", 0)) > 0 else 0
+        # A scheduled batch must treat BOTH failed and manual_review cases as
+        # needs-attention (exit 2), not success -- otherwise manual_review cases
+        # silently vanish from the operator's view (code-review HIGH-1, PR #69).
+        # Exit 2 (ran-but-needs-attention) is distinct from exit 1 (could-not-run)
+        # so a caller can tell "nothing ran" from "ran with problem cases".
+        needs_attention = int(stats.get("failed", 0)) + int(stats.get("manual_review", 0))
+        if needs_attention > 0:
+            self.print_yellow(
+                f"[batch] {needs_attention} case(s) need attention "
+                f"(failed={stats.get('failed', 0)}, manual_review={stats.get('manual_review', 0)}); exiting 2."
+            )
+            return 2
+        return 0
 
     def _run_resume_automation(self):
         if not self.automation_root_folder:

@@ -55,9 +55,11 @@ Resume behavior:
 ### Headless / unattended batch (`--batch`)
 
 For cron / Windows Task Scheduler / CI, run the pipeline **non-interactively**
-— no menu, no `[y/N]` prompt. It reads no stdin and exits `0` on success,
-non-zero on a missing root, no runnable cases, preflight failure, or any failed
-case:
+— no menu, no `[y/N]` prompt. It reads no stdin. Exit codes:
+
+- `0` — ran and every case completed cleanly
+- `1` — could not run (missing root, no cases, preflight failure, run exception)
+- `2` — ran, but one or more cases ended `failed` or `manual_review` (needs attention)
 
 ```powershell
 :: Windows — delegates to the canonical launcher chain (full dependency
