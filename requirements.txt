@@ -50,7 +50,11 @@ retina-face==0.0.17
 absl-py~=2.3
 # torch is required by DeepFace's anti-spoofing classifier (MiniFASNetV2).
 # Without it the engine fails ALL similarity comparisons when anti_spoofing=True.
-# Pinned to a CPU-only-compatible version range; user can swap for the CUDA build manually.
+# This installs the DEFAULT (CPU/PyPI) wheel; the launchers then run
+# `gpu_bootstrap.py --select-torch` which detects the GPU and reinstalls the
+# hardware-appropriate build (Windows+NVIDIA -> CUDA index, macOS -> default
+# MPS/CPU, else -> CPU index). v2.17: no longer a manual swap. CUDA only
+# affects speed, not correctness, so the CPU wheel here is always safe.
 torch>=2.2,<3
 
 # scipy is required by rPPG/rppg_injector.py (signal, butter, filtfilt,

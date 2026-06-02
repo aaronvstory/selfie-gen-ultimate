@@ -177,6 +177,17 @@ if [[ "${REBUILD_VENV}" -eq 1 ]]; then
 fi
 
 CURRENT_REQUIREMENTS_HASH="$(requirements_hash "${PYTHON_BIN}")"
+# v2.17: fold the installer/GPU-mode token into the stamp so an installer
+# logic bump or GPU-mode change invalidates the macOS dep stamp too (parity
+# with the Windows STAMP_KEY fold-in). On macOS the token's torch mode is
+# always mac_default, so in practice this picks up INSTALLER_VERSION +
+# constraints-sha changes. Best-effort: a probe failure leaves the hash as-is.
+if [[ -f "${ROOT_DIR}/scripts/gpu_bootstrap.py" ]]; then
+  _gpu_token="$("${PYTHON_BIN}" "${ROOT_DIR}/scripts/gpu_bootstrap.py" --print-stamp-token 2>/dev/null || true)"
+  if [[ -n "${_gpu_token}" ]]; then
+    CURRENT_REQUIREMENTS_HASH="${CURRENT_REQUIREMENTS_HASH}-${_gpu_token}"
+  fi
+fi
 SYNC_REQUIREMENTS=0
 
 if [[ "${REBUILD_VENV}" -eq 1 || ! -f "${REQUIREMENTS_STAMP}" ]]; then
@@ -227,6 +238,17 @@ if [[ "${SYNC_REQUIREMENTS}" -eq 1 ]]; then
   # builds declare numpy>=2 and pip will refuse to install otherwise.
   "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" \
     "matplotlib" "opencv-contrib-python<4.12" "sounddevice" "numpy>=1.26,<2.0"
+  # v2.17: select the hardware-appropriate torch wheel. On macOS resolve_torch_mode
+  # ALWAYS returns mac_default (never CUDA) — this is a near no-op that just
+  # confirms torch imports and logs MPS availability. Best-effort (exits 0).
+  if [[ -f "${ROOT_DIR}/scripts/gpu_bootstrap.py" ]]; then
+    _torch_constraints=()
+    if [[ -f "${ROOT_DIR}/constraints.txt" ]]; then
+      _torch_constraints=(--constraints "${ROOT_DIR}/constraints.txt")
+    fi
+    "${VENV_DIR}/bin/python" "${ROOT_DIR}/scripts/gpu_bootstrap.py" \
+      --select-torch "torch>=2.2,<3" "${_torch_constraints[@]+"${_torch_constraints[@]}"}" || true
+  fi
   if ! "${VENV_DIR}/bin/python" -c "${MP_VALIDATE_CMD}" >/dev/null 2>&1; then
     printf 'MediaPipe installed but Tasks FaceLandmarker API unavailable. Oldcam v9/v10 cannot run.\n' >&2
     printf 'Close Python/GUI processes, delete/rebuild venv, and retry.\n' >&2

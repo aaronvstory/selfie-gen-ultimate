@@ -670,15 +670,34 @@ def compute_stamp_token(constraints_path: Optional[str] = None) -> str:
     stamp keys, so a GPU-mode change or installer bump invalidates the stamp.
 
     Combines: INSTALLER_VERSION, platform tag, resolved torch mode, cuda_major,
-    and a short sha of constraints.txt (if locatable). No pip work — only a
-    cheap nvidia-smi probe (already bounded to a 10s timeout in detect_nvidia).
+    and a short sha of constraints.txt (if locatable).
+
+    GPU mode is read from the CACHED ``gpu_status.json`` stamp (written by the
+    CuPy bootstrap) when present, so this stays a cheap file read on the hot
+    per-launch path — it does NOT run nvidia-smi every launch. Only when no
+    cache exists yet (first launch) do we fall back to a live detect_nvidia()
+    (bounded to a 10s timeout). When a user later installs/removes a GPU, the
+    CuPy bootstrap refreshes gpu_status.json, which flips this token, which
+    invalidates the dep stamp, which re-runs the full sync + select-torch.
     """
     import hashlib
 
-    nvidia = detect_nvidia()
+    cuda_major = None
+    stamp = _load_stamp()
+    if stamp is not None and "cuda_major" in stamp:
+        # Cached: trust the GPU bootstrap's recorded view (cheap).
+        cuda_major = stamp.get("cuda_major")
+    else:
+        # First launch / no cache: one live probe.
+        nvidia = detect_nvidia()
+        cuda_major = nvidia.get("cuda_major") if nvidia else None
+
     decision = resolve_torch_mode(
-        platform_is_darwin=(sys.platform == "darwin"), nvidia=nvidia
+        platform_is_darwin=(sys.platform == "darwin"),
+        nvidia=({"cuda_major": cuda_major, "driver_version": None}
+                if cuda_major is not None else None),
     )
+
     constraints_sha = "none"
     path = constraints_path or (REPO_ROOT / "constraints.txt")
     try:

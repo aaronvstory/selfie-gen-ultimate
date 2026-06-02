@@ -144,7 +144,21 @@ for %%F in ("%REQUIREMENTS%" "%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS
 set "STAMP_KEY=%STAMP_KEY: =_%"
 set "STAMP_KEY=%STAMP_KEY:/=-%"
 set "STAMP_KEY=%STAMP_KEY::=-%"
-set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,60%.ok"
+rem --- v2.17: fold in the installer/GPU-mode/constraints token so the dep
+rem --- stamp invalidates when the installer logic bumps, the user adds/
+rem --- removes a GPU, or constraints.txt changes. The for/f wraps the
+rem --- quoted python path in `cmd /c "..."` (a bare caret-quoted first
+rem --- token captures NOTHING and the fold-in silently no-ops).
+set "GPU_STAMP_TOKEN="
+if exist "%ROOT_DIR%\scripts\gpu_bootstrap.py" (
+    for /f "usebackq delims=" %%T in (`cmd /c ""%VENV_PYTHON%" "%ROOT_DIR%\scripts\gpu_bootstrap.py" --print-stamp-token"`) do set "GPU_STAMP_TOKEN=%%T"
+)
+set "STAMP_KEY=%STAMP_KEY%!GPU_STAMP_TOKEN!"
+set "STAMP_KEY=%STAMP_KEY: =_%"
+set "STAMP_KEY=%STAMP_KEY:/=-%"
+set "STAMP_KEY=%STAMP_KEY::=-%"
+set "STAMP_KEY=%STAMP_KEY:.=-%"
+set "STAMP=%STATE_DIR%\deps_%STAMP_KEY:~0,72%.ok"
 
 rem --- Stamp present? Skip the expensive pip-install sync, but STILL run a
 rem --- runtime health check on every launch and auto-repair if it fails.
@@ -258,6 +272,17 @@ for %%R in ("%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_RE
     echo(
     call :INSTALL_REQUIREMENTS "%%~R" "oldcam"
     if !errorlevel! neq 0 goto :DEPENDENCY_FAIL
+)
+
+rem --- v2.17: select the hardware-appropriate torch wheel. The -r install
+rem --- above landed the default CPU/PyPI torch wheel; this detects NVIDIA
+rem --- and reinstalls the CUDA build when present (macOS path never runs
+rem --- this .bat; on Windows no-NVIDIA it is a no-op CPU reinstall). It
+rem --- probes torch.cuda.is_available() and falls back to CPU torch if a
+rem --- CUDA build is runtime-broken. Best-effort: always exits 0, never
+rem --- blocks launch (torch only affects similarity anti-spoofing speed).
+if exist "%ROOT_DIR%\scripts\gpu_bootstrap.py" (
+    "%VENV_PYTHON%" "%ROOT_DIR%\scripts\gpu_bootstrap.py" --select-torch "torch>=2.2,<3" --constraints "%CONSTRAINTS_FILE%"
 )
 
 echo(
