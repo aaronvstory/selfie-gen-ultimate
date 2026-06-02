@@ -164,3 +164,21 @@ def test_start_bat_backs_up_pre_marker_config():
     assert "kling_config.pre-seed.bak" in src, (
         "START.bat must back up an existing config before the snapshot seed"
     )
+
+
+def test_relaunch_app_detaches_cross_os():
+    """relaunch_app must detach the re-spawned GUI so it survives the old
+    process exiting — DETACHED_PROCESS on Windows, start_new_session on
+    macOS/POSIX (mac+win parity, PR #66). Without the POSIX session detach,
+    the child shares this Tk process's session and can be SIGHUP'd when the
+    old process os._exit()s right after spawning."""
+    src = (REPO_ROOT / "kling_gui" / "dependency_repair_dialog.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert "0x00000008" in src, "Windows relaunch must use DETACHED_PROCESS"
+    assert "start_new_session" in src, (
+        "POSIX relaunch must use start_new_session so the child survives os._exit"
+    )
+    # DETACHED_PROCESS must be gated to Windows only (start_new_session is not a
+    # valid Windows Popen kwarg and vice-versa).
+    assert 'os.name == "nt"' in src

@@ -296,10 +296,17 @@ def relaunch_app(log: Optional[Callable[[str, str], None]] = None) -> bool:
         else:
             cmd = [sys.executable] + sys.argv
         _safe_log(log, "Face Crop: restarting the app to load the repaired libraries…", "info")
-        creationflags = 0
+        # Detach the child so it survives this process exiting. On Windows:
+        # DETACHED_PROCESS. On macOS/POSIX the analog is start_new_session=True
+        # (own session/process group) so the relaunched GUI isn't killed when
+        # the old process calls os._exit right after spawning (mac+win parity,
+        # PR #66) — without it the child shared this Tk process's session and
+        # could be SIGHUP'd or tied to the terminal.
+        popen_kwargs = {"cwd": None, "close_fds": True}
         if os.name == "nt":
-            # DETACHED_PROCESS so the new app isn't killed when this one exits.
-            creationflags = 0x00000008  # DETACHED_PROCESS
+            popen_kwargs["creationflags"] = 0x00000008  # DETACHED_PROCESS
+        else:
+            popen_kwargs["start_new_session"] = True
         # Anchor cwd to the entry script's directory, NOT os.getcwd() (gemini
         # MED, PR #65): the running app may have os.chdir'd during use, which
         # would relaunch the new process in the wrong directory. The entry
@@ -308,12 +315,8 @@ def relaunch_app(log: Optional[Callable[[str, str], None]] = None) -> bool:
         launch_cwd = os.path.dirname(os.path.abspath(entry)) if entry else None
         if not launch_cwd or not os.path.isdir(launch_cwd):
             launch_cwd = None  # let subprocess inherit a sane default
-        subprocess.Popen(
-            cmd,
-            cwd=launch_cwd,
-            creationflags=creationflags,
-            close_fds=True,
-        )
+        popen_kwargs["cwd"] = launch_cwd
+        subprocess.Popen(cmd, **popen_kwargs)
         return True
     except Exception as exc:
         _safe_log(log, f"Face Crop: could not auto-restart ({type(exc).__name__}: {exc})", "error")
