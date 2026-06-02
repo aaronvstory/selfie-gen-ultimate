@@ -2968,12 +2968,37 @@ class KlingAutomationUI:
         :meth:`_run_resume_automation` is left untouched -- this is an additive
         path, not a replacement.
         """
+        # TTY-aware status helpers: under cron/pipe (non-TTY) the colour-wrapping
+        # print_red/print_yellow would inject raw ANSI escapes (\033[..]) into the
+        # log, so headless messages use plain print() there (code-review Codex P2,
+        # PR #69). sys.stdout can be None when run as a Windows background service,
+        # so guard the isatty() call (code-review Gemini, PR #69).
+        _is_tty = bool(getattr(sys, "stdout", None)) and sys.stdout.isatty()
+
+        def _err(msg: str) -> None:
+            self.print_red(msg) if _is_tty else print(msg)
+
+        def _warn(msg: str) -> None:
+            self.print_yellow(msg) if _is_tty else print(msg)
+
         if not auto_approve:
             # Reserved for a future confirm hook; not implemented. Fail loud
             # instead of silently running unapproved (the param was previously
             # accepted-and-ignored, which could mislead a future caller).
-            self.print_red("[batch] auto_approve=False is not supported in headless mode.")
+            _err("[batch] auto_approve=False is not supported in headless mode.")
             return 1
+
+        # Validate --limit HERE (not via argparse choices): argparse rejects an
+        # invalid choice with ArgumentParser.error() -> exit 2, which collides
+        # with our documented "exit 2 = ran-but-needs-attention" contract. Doing
+        # it in-runner keeps exit 2 reserved for runs that actually ran
+        # (code-review Codex P2, PR #69).
+        if max_cases_override is not None:
+            norm_limit = str(max_cases_override).strip().lower()
+            if norm_limit not in {"1", "5", "10", "all"}:
+                _err(f"[batch] Invalid --limit '{max_cases_override}'; use 1, 5, 10, or all.")
+                return 1
+            max_cases_override = norm_limit
         # NOTE: --reprocess / --limit overrides are applied AFTER the manifest is
         # loaded, NOT here. AutomationManifest fingerprints every automation_*
         # key and REJECTS a changed fingerprint on load -- so flipping
@@ -2985,21 +3010,21 @@ class KlingAutomationUI:
 
         root = (root or "").strip()
         if not root:
-            self.print_red("[batch] No automation root provided.")
+            _err("[batch] No automation root provided.")
             return 1
         self.automation_root_folder = root
         self.config["automation_root_folder"] = root
 
         root_path = Path(root)
         if not root_path.exists():
-            self.print_red(f"[batch] Automation root does not exist: {root}")
+            _err(f"[batch] Automation root does not exist: {root}")
             return 1
         if not root_path.is_dir():
             # A file path passes exists() but is not a valid root; reject it as
             # the documented invalid-root preflight rather than letting it fall
             # into discover_case_folders and misreport as "no case folders"
             # (code-review CodeRabbit Major, PR #69).
-            self.print_red(f"[batch] Automation root is not a directory: {root}")
+            _err(f"[batch] Automation root is not a directory: {root}")
             return 1
 
         # EAFP: directly attempt discovery and catch OSError (restricted FS /
@@ -3007,10 +3032,10 @@ class KlingAutomationUI:
         try:
             records = discover_case_folders(root_path, self.config.get("automation_front_names", []))
         except OSError as exc:
-            self.print_red(f"[batch] Failed to scan automation root: {exc}")
+            _err(f"[batch] Failed to scan automation root: {exc}")
             return 1
         if not records:
-            self.print_yellow(f"[batch] No case folders found under {root}.")
+            _warn(f"[batch] No case folders found under {root}.")
             return 1
 
         try:
@@ -3028,7 +3053,11 @@ class KlingAutomationUI:
         if max_cases_override is not None:
             self.config["automation_max_cases_per_run"] = str(max_cases_override)
         if reprocess_override is not None:
-            mode = str(reprocess_override)
+            # Normalize case/whitespace so a direct caller passing "Overwrite" /
+            # " increment " behaves identically to the runner's later lowercasing
+            # (code-review CodeRabbit, PR #69) -- else the skip-guard branch below
+            # would compare a raw mixed-case string and silently no-op.
+            mode = str(reprocess_override).strip().lower()
             self.config["automation_reprocess_mode"] = mode
             # _effective_reprocess_mode() forces "skip" unless allow_reprocess is
             # True, so an explicit --reprocess is inert without this flag.
@@ -3050,7 +3079,7 @@ class KlingAutomationUI:
             # Filesystem errors on a discovered case dir (permissions, a corrupt
             # entry) must surface as a clean [batch] exit-1, not an unhandled
             # traceback bubbling to main() (code-review MEDIUM-3, PR #69).
-            self.print_red(f"[batch] Failed to build case snapshot: {exc}")
+            _err(f"[batch] Failed to build case snapshot: {exc}")
             return 1
         print("[batch] Run preview:")
         print(f"  discovered: {counts['discovered']}")
@@ -3061,7 +3090,7 @@ class KlingAutomationUI:
         print(f"  manual review: {counts.get('manual_review', 0)}")
         print(f"  failed: {counts.get('failed', 0)}")
         if not runnable_cases:
-            self.print_yellow("[batch] No runnable cases for this batch; nothing to do.")
+            _warn("[batch] No runnable cases for this batch; nothing to do.")
             return 1
 
         runner = AutoPipelineRunner(
@@ -3072,7 +3101,7 @@ class KlingAutomationUI:
         )
         issues = runner.validate_configuration()
         if issues:
-            self.print_red("[batch] Automation preflight failed:")
+            _err("[batch] Automation preflight failed:")
             for issue in issues:
                 print(f"  - {issue}")
             return 1
@@ -3092,7 +3121,7 @@ class KlingAutomationUI:
         # Scheduler / a pipe (no TTY), render NOTHING live -- run the pipeline
         # directly in the main thread so the log isn't polluted with ANSI escape
         # codes + we skip the dashboard's polling thread (code-review Gemini, PR #69).
-        if sys.stdout.isatty():
+        if _is_tty:
             stats, run_error = self._run_with_live_dashboard(runner, runnable_cases, manifest)
         else:
             run_error = None
@@ -3103,7 +3132,7 @@ class KlingAutomationUI:
                 stats = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
                 run_error = str(exc)
         if run_error:
-            self.print_red(f"[batch] Automation run failed: {run_error}")
+            _err(f"[batch] Automation run failed: {run_error}")
             return 1
         print("[batch] Automation run complete.")
         print(f"  completed: {stats.get('completed', 0)}")
@@ -3115,7 +3144,7 @@ class KlingAutomationUI:
         except Exception as exc:
             # A summary-write failure must not flip an otherwise-good run to a
             # non-zero exit; surface it but keep the run's verdict.
-            self.print_yellow(f"[batch] Could not write run summary: {exc}")
+            _warn(f"[batch] Could not write run summary: {exc}")
         # A scheduled batch must treat BOTH failed and manual_review cases as
         # needs-attention (exit 2), not success -- otherwise manual_review cases
         # silently vanish from the operator's view (code-review HIGH-1, PR #69).
@@ -3123,7 +3152,7 @@ class KlingAutomationUI:
         # so a caller can tell "nothing ran" from "ran with problem cases".
         needs_attention = int(stats.get("failed", 0)) + int(stats.get("manual_review", 0))
         if needs_attention > 0:
-            self.print_yellow(
+            _warn(
                 f"[batch] {needs_attention} case(s) need attention "
                 f"(failed={stats.get('failed', 0)}, manual_review={stats.get('manual_review', 0)}); exiting 2."
             )
@@ -3911,10 +3940,12 @@ def main(argv=None):
             "--limit",
             metavar="N",
             default=None,
-            choices=["1", "5", "10", "all"],
+            # No argparse `choices=` here: an invalid choice makes argparse exit
+            # with status 2, which collides with our "exit 2 = ran-but-needs-
+            # attention" contract. run_automation_headless validates --limit and
+            # returns 1 on a bad value instead (code-review Codex P2, PR #69).
             help="Headless --batch only: cap cases per run (1, 5, 10, or 'all'). "
-            "Overrides automation_max_cases_per_run. (Other values fall back to 5, "
-            "so they're rejected here with a clear error.)",
+            "Overrides automation_max_cases_per_run. An invalid value exits 1.",
         )
         parser.add_argument(
             "--reprocess",

@@ -150,15 +150,47 @@ def test_headless_rejects_file_as_root(tmp_path, monkeypatch):
     assert called["discover"] is False  # never reached discovery
 
 
-def test_main_batch_rejects_invalid_limit(monkeypatch):
-    """--limit only accepts 1/5/10/all; an out-of-set value must error at
-    argparse (exit 2) rather than silently falling back to 5."""
+def test_main_batch_rejects_invalid_limit_with_exit_1(monkeypatch):
+    """--limit only accepts 1/5/10/all; an out-of-set value is validated INSIDE
+    run_automation_headless and exits 1 -- NOT argparse exit 2, which would
+    collide with the 'exit 2 = ran-but-needs-attention' contract (code-review
+    Codex P2, PR #69)."""
     monkeypatch.setenv("KLING_SKIP_PY_STARTUP_DEP_CHECK", "1")
     monkeypatch.setattr("builtins.input", _forbid_input)
+    monkeypatch.setattr(KlingAutomationUI, "_run_startup_key_onboarding", lambda self: None, raising=False)
+    # discovery must NOT be reached -- --limit is validated before it.
+    monkeypatch.setattr(
+        kling_automation_ui, "discover_case_folders",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("validated limit too late")),
+    )
     with pytest.raises(SystemExit) as exc:
         kling_automation_ui.main(["--batch", "/r", "--limit", "3"])
-    # argparse exits 2 on invalid choice
-    assert exc.value.code == 2
+    assert exc.value.code == 1
+
+
+def test_headless_invalid_limit_returns_1(tmp_path, monkeypatch):
+    """Direct call: an invalid --limit returns 1 before discovery."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    monkeypatch.setattr(
+        kling_automation_ui, "discover_case_folders",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("validated limit too late")),
+    )
+    ui = _bare_ui(tmp_path)
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True, max_cases_override="7")
+    assert rc == 1
+
+
+def test_headless_non_tty_messages_have_no_ansi(tmp_path, monkeypatch, capsys):
+    """Headless (non-TTY) status messages must be plain -- no \\033[ ANSI escapes
+    polluting cron/Task Scheduler logs (code-review Codex P2, PR #69)."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    monkeypatch.setattr(kling_automation_ui.sys.stdout, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(kling_automation_ui, "discover_case_folders", lambda *a, **k: [])
+    ui = _bare_ui(tmp_path)
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True)  # -> "no case folders" warn
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "\033[" not in out and "[batch] No case folders" in out
 
 
 def test_main_batch_propagates_nonzero_exit(monkeypatch):
