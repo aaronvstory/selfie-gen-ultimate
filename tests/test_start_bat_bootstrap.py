@@ -87,6 +87,30 @@ def test_user_facing_launchers_have_wmic_timestamp_fallback():
         )
 
 
+def test_all_wmic_timestamp_bats_have_fallback():
+    """EVERY .bat using the wmic LocalDateTime timestamp must carry the
+    PowerShell fallback — wmic is gone on Win11 so a bare wmic banner is blank
+    everywhere (sub-tool launchers included, PR #66 round 8)."""
+    import glob
+
+    bats = []
+    for pat in ("oldcam-v*/oldcam_launcher.bat", "similarity/run_*.bat",
+                "resemble-score/run_*.bat", "run_auto.bat",
+                "oldcam-testing/run_rppg_harness.bat",
+                "launchers/windows/run_*.bat", "START.bat"):
+        bats += glob.glob(str(REPO_ROOT / pat))
+    checked = 0
+    for path in bats:
+        src = open(path, encoding="utf-8", errors="replace").read()
+        if "wmic os get LocalDateTime" not in src:
+            continue
+        checked += 1
+        assert "Get-Date -Format" in src, (
+            f"{path}: uses wmic timestamp but lacks the PowerShell Win11 fallback"
+        )
+    assert checked >= 15, f"expected to check 15+ wmic-timestamp .bats, checked {checked}"
+
+
 def test_start_bat_drive_root_guard():
     r"""START.bat must NOT strip the trailing backslash when run from a drive
     root (D:\ -> D: is drive-relative and breaks path joins) — gemini HIGH."""

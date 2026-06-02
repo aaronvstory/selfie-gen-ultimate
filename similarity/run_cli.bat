@@ -20,9 +20,17 @@ if not exist "%STATE_DIR%" mkdir "%STATE_DIR%" >nul 2>&1
 set "LOG_FILE=%STATE_DIR%\similarity_cli.log"
 
 rem --- Timestamp banner
+set "WMIC_DT="
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
-set "WMIC_DT=%WMIC_DT: =_%"
-set "LAUNCH_TS=%WMIC_DT:~0,4%-%WMIC_DT:~4,2%-%WMIC_DT:~6,2% %WMIC_DT:~8,2%:%WMIC_DT:~10,2%:%WMIC_DT:~12,2%"
+set "LAUNCH_TS="
+if defined WMIC_DT (
+    set "WMIC_DT=!WMIC_DT: =_!"
+    set "LAUNCH_TS=!WMIC_DT:~0,4!-!WMIC_DT:~4,2!-!WMIC_DT:~6,2! !WMIC_DT:~8,2!:!WMIC_DT:~10,2!:!WMIC_DT:~12,2!"
+)
+rem wmic is removed on modern Win11 -> PowerShell fallback, then locale
+rem date/time, so log timestamps are never blank (gemini MED, PR #66).
+if not defined LAUNCH_TS for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'" 2^>nul`) do set "LAUNCH_TS=%%T"
+if not defined LAUNCH_TS set "LAUNCH_TS=%DATE% %TIME%"
 echo(
 echo  ============================================================
 echo   Ultimate-Selfie-Gen  --  Similarity CLI
