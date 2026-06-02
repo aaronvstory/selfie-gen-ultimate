@@ -2211,7 +2211,7 @@ class QueueManager:
                 return None
 
             output_path = self._build_rppg_output_path(input_path)
-            self.log("🩺 Applying rPPG injection...", "info")
+            self.log("[rPPG] Applying rPPG injection...", "info")
             # Iterative-mode flags. Defaults match rPPG/rppg.bat (the
             # friend's canonical launcher): --iterative is MANDATORY
             # for production because the initial single-shot rarely
@@ -2415,7 +2415,7 @@ class QueueManager:
                     if not getattr(self, "_rppg_dep_note_shown", False):
                         self._rppg_dep_note_shown = True
                         self.log(
-                            "🩺 Checking / preparing rPPG dependencies… "
+                            "[rPPG] Checking / preparing rPPG dependencies… "
                             "(details in the log file)",
                             "info",
                         )
@@ -2613,7 +2613,7 @@ class QueueManager:
 
         if modules:
             self.log(
-                f"   📦 rPPG dependency problem: {modules}. "
+                f"   [deps] rPPG dependency problem: {modules}. "
                 "The app will keep working; only the rPPG step is skipped.",
                 "warning",
             )
@@ -2624,7 +2624,7 @@ class QueueManager:
             repo_root = Path(launcher).resolve().parent.parent
             log_path = repo_root / ".launcher_state" / "rppg.log"
             if log_path.is_file():
-                self.log(f"   📄 Full details in: {log_path}", "warning")
+                self.log(f"   [log] Full details in: {log_path}", "warning")
         except Exception:  # noqa: BLE001 — best-effort; never break the skip
             pass
 

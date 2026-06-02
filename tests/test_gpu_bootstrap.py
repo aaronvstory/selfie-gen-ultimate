@@ -154,7 +154,13 @@ def test_install_cupy_surfaces_pip_error_lines(monkeypatch):
         )
         stderr = ""
 
-    monkeypatch.setattr(gpu_bootstrap.subprocess, "run", lambda *a, **k: _Proc())
+    # v2.17: install_cupy now runs through _run_pip_with_heartbeat (Popen-based,
+    # for the elapsed-time heartbeat on multi-GB CUDA-wheel downloads), so mock
+    # THAT rather than subprocess.run. It returns a _PipResult with the same
+    # returncode/stdout/stderr attrs the failure-detail extractor reads.
+    monkeypatch.setattr(
+        gpu_bootstrap, "_run_pip_with_heartbeat", lambda *a, **k: _Proc()
+    )
     ok, msg = gpu_bootstrap.install_cupy("python", 12)
     assert ok is False
     assert "Could not find a version" in msg
@@ -695,3 +701,29 @@ def test_compute_stamp_token_prefers_cached_gpu_status(monkeypatch, tmp_path):
     monkeypatch.setattr(gpu_bootstrap, "detect_nvidia", _boom)
     token = gpu_bootstrap.compute_stamp_token(str(constraints))
     assert "cuda" in token and "13" in token
+
+
+def test_run_pip_with_heartbeat_returns_pipresult_and_no_early_beat(capsys):
+    """v2.17: a FAST command must complete cleanly via the heartbeat wrapper
+    and NOT print a heartbeat line (first beat is at 20s). Returns a
+    _PipResult with the captured stdout."""
+    import sys as _sys
+
+    r = gpu_bootstrap._run_pip_with_heartbeat(
+        [_sys.executable, "-c", "print('hello-heartbeat')"],
+        timeout=30,
+        label="unit",
+    )
+    assert r.returncode == 0
+    assert "hello-heartbeat" in r.stdout
+    out = capsys.readouterr().out
+    assert "still running" not in out, "fast command must not emit a heartbeat"
+
+
+def test_run_pip_with_heartbeat_handles_bad_command():
+    """A non-existent executable must return a _PipResult(returncode!=0), not
+    raise — the launcher must never crash on a pip subprocess error."""
+    r = gpu_bootstrap._run_pip_with_heartbeat(
+        ["this_executable_does_not_exist_xyz"], timeout=10, label="bad"
+    )
+    assert r.returncode != 0

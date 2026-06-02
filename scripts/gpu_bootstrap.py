@@ -159,6 +159,69 @@ def _log(msg: str, *, quiet: bool = False) -> None:
     print(f"  GPU: {msg}", flush=True)
 
 
+class _PipResult:
+    """Minimal stand-in for subprocess.CompletedProcess (returncode/stdout/
+    stderr) so callers that read those three attrs work unchanged."""
+
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _run_pip_with_heartbeat(
+    cmd: list, *, timeout: int, label: str = "install"
+) -> _PipResult:
+    """Run a long pip command, printing an elapsed-time heartbeat every ~20s so
+    the launcher console never looks frozen during a multi-GB GPU-wheel
+    download (the user-reported "10 min of silence" on the CuPy/torch CUDA
+    install). Captures output like subprocess.run(capture_output=True) and
+    returns a _PipResult. Falls back gracefully on timeout/OS error.
+
+    The heartbeat reads from a wall clock derived from time.monotonic() ticks
+    (NOT Date.now/new Date — those are unavailable here); we only ever measure
+    *elapsed* time, never absolute time, so this is resume/replay safe.
+    """
+    import threading
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+    except OSError as exc:
+        return _PipResult(1, "", f"pip subprocess error: {exc!r}")
+
+    start = time.monotonic()
+    stop = threading.Event()
+
+    def _beat() -> None:
+        # Print every 20s; first beat at 20s so quick installs stay quiet.
+        while not stop.wait(20):
+            elapsed = int(time.monotonic() - start)
+            _log(f"...{label} still running ({elapsed//60}m {elapsed%60}s elapsed)")
+
+    beater = threading.Thread(target=_beat, daemon=True)
+    beater.start()
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            out, _ = proc.communicate(timeout=10)
+        except Exception:
+            out = ""
+        rc = 1
+        out = (out or "") + f"\nERROR: {label} exceeded {timeout}s timeout"
+    finally:
+        stop.set()
+    return _PipResult(rc, out or "", "")
+
+
 def _load_stamp() -> Optional[dict]:
     # EAFP (gemini MEDIUM PR #54): skip a pre-flight STAMP_PATH.exists() — on a
     # restricted/corrupted FS exists() itself can raise OSError and crash the
@@ -362,14 +425,13 @@ def install_cupy(python_exe: str, cuda_major: int) -> tuple[bool, str]:
         "--no-input",
         pkg,
     ]
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            errors="replace",
-            timeout=PIP_INSTALL_TIMEOUT_SECONDS,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return (False, f"pip subprocess error: {exc!r}")
+    # Heartbeat-wrapped: the CuPy [ctk] wheels are ~1-2GB; a plain blocking
+    # subprocess.run prints nothing until done, which looked frozen to users
+    # (reported "10 min of silence"). _run_pip_with_heartbeat prints an
+    # elapsed-time line every 20s.
+    proc = _run_pip_with_heartbeat(
+        cmd, timeout=PIP_INSTALL_TIMEOUT_SECONDS, label="CuPy install"
+    )
     if proc.returncode != 0:
         # Code-review MEDIUM (PR #54): surface pip's own ``ERROR:`` lines
         # rather than a blind last-400-chars tail. pip prints the actual
@@ -649,13 +711,11 @@ def _run_torch_pip(cmd: list, label: str) -> tuple[bool, str]:
 
     Same ERROR-line-preferring failure-detail extraction as ``install_cupy``.
     """
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            errors="replace", timeout=PIP_INSTALL_TIMEOUT_SECONDS,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return (False, f"torch {label} pip subprocess error: {exc!r}")
+    # Heartbeat-wrapped: CUDA torch wheels are ~2GB; print elapsed every 20s
+    # so a long download never looks frozen (the user-reported silence).
+    proc = _run_pip_with_heartbeat(
+        cmd, timeout=PIP_INSTALL_TIMEOUT_SECONDS, label=f"torch {label} install"
+    )
     if proc.returncode != 0:
         combined = f"{proc.stdout or ''}\n{proc.stderr or ''}"
         err_lines = [
@@ -945,7 +1005,9 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
             f"NVIDIA driver {info['driver_version']} / CUDA "
             f"{info['cuda_major']}.x detected -- installing "
             f"{_CUDA_TO_CUPY[info['cuda_major']]} "
-            "(one-time, may take ~30-120s)..."
+            "(one-time GPU setup, downloads ~1-2GB of CUDA wheels; typically "
+            "2-10 min, longer on a slow connection). A heartbeat line prints "
+            "every 20s so you know it's not frozen..."
         )
         ok, msg = install_cupy(python_exe, info["cuda_major"])
         if ok:
