@@ -2973,7 +2973,11 @@ class KlingAutomationUI:
         # log, so headless messages use plain print() there (code-review Codex P2,
         # PR #69). sys.stdout can be None when run as a Windows background service,
         # so guard the isatty() call (code-review Gemini, PR #69).
-        _is_tty = bool(getattr(sys, "stdout", None)) and sys.stdout.isatty()
+        # sys.stdout may be None (Windows background service) OR a custom stream
+        # (io.StringIO in tests, IDE/GUI console wrappers) lacking isatty(), so
+        # check both before calling it (code-review Gemini, PR #69).
+        _stdout = getattr(sys, "stdout", None)
+        _is_tty = bool(_stdout) and hasattr(_stdout, "isatty") and _stdout.isatty()
 
         def _err(msg: str) -> None:
             self.print_red(msg) if _is_tty else print(msg)
@@ -3045,7 +3049,7 @@ class KlingAutomationUI:
                 config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
             )
         except Exception as exc:
-            self.print_red(f"[batch] Failed to load manifest: {exc}")
+            _err(f"[batch] Failed to load manifest: {exc}")
             return 1
 
         # Apply CLI overrides NOW (post-manifest): these are run policy, not part

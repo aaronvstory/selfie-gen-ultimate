@@ -193,6 +193,52 @@ def test_headless_non_tty_messages_have_no_ansi(tmp_path, monkeypatch, capsys):
     assert "\033[" not in out and "[batch] No case folders" in out
 
 
+def test_headless_manifest_load_failure_non_tty_no_ansi(tmp_path, monkeypatch, capsys):
+    """The manifest-load-failure path must also use the TTY-aware helper (no raw
+    ANSI in non-TTY logs) -- the one print_red the round-5 sweep missed
+    (code-review Gemini, PR #69 round 5)."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    monkeypatch.setattr(kling_automation_ui.sys.stdout, "isatty", lambda: False, raising=False)
+
+    class _Rec:
+        relative_key = "case-a"
+
+    monkeypatch.setattr(kling_automation_ui, "discover_case_folders", lambda *a, **k: [_Rec()])
+
+    class _BoomManifest:
+        @classmethod
+        def create_or_load(cls, **kwargs):
+            raise ValueError("fingerprint mismatch")
+
+    monkeypatch.setattr(kling_automation_ui, "AutomationManifest", _BoomManifest)
+    ui = _bare_ui(tmp_path)
+    monkeypatch.setattr(ui, "_automation_manifest_path", lambda: tmp_path / "m.json", raising=False)
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "\033[" not in out and "Failed to load manifest" in out
+
+
+def test_headless_tty_check_survives_stream_without_isatty(tmp_path, monkeypatch):
+    """sys.stdout may be a custom stream lacking isatty() (io.StringIO in tests,
+    IDE consoles) -- the TTY check must not raise AttributeError
+    (code-review Gemini, PR #69 round 5)."""
+    monkeypatch.setattr("builtins.input", _forbid_input)
+    monkeypatch.setattr(kling_automation_ui, "discover_case_folders", lambda *a, **k: [])
+    # A plain object with no isatty attribute at all.
+    class _NoIsatty:
+        def write(self, *_a):  # minimal stream surface
+            return 0
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(kling_automation_ui.sys, "stdout", _NoIsatty(), raising=False)
+    ui = _bare_ui(tmp_path)
+    # Must return cleanly (no AttributeError) -- non-TTY path, "no case folders".
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True)
+    assert rc == 1
+
+
 def test_main_batch_propagates_nonzero_exit(monkeypatch):
     """A non-zero return from the headless runner must surface as a non-zero
     process exit (cron / Task Scheduler failure signalling)."""
