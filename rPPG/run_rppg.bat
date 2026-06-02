@@ -174,6 +174,21 @@ rem while MediaPipe loads + baseline ROIs extract. The wrapper streamer ALSO
 rem sets this in its subprocess env (belt + suspenders).
 set "PYTHONUNBUFFERED=1"
 
+rem v2.17: rPPG is the ONLY component that uses CuPy (GPU frame math). The
+rem main GUI launcher runs the CuPy bootstrap, but an rPPG RE-RUN shells
+rem out through THIS launcher directly and previously never triggered it,
+rem so rPPG silently ran on CPU ("CuPy unavailable") unless the user had
+rem opened the GUI first. Run the bootstrap here too: NVIDIA -> auto-install
+rem the matching CuPy wheel (one-time, cached); no NVIDIA -> CPU. The script
+rem prints its own "GPU: ..." status so the log makes the GPU/CPU decision
+rem EXPLICIT instead of leaving the user guessing. Best-effort: never blocks
+rem rPPG (the script always exits 0). Opt-out: KLING_SKIP_GPU_BOOTSTRAP=1.
+if exist "%REPO_ROOT%\scripts\gpu_bootstrap.py" (
+  echo   Checking GPU acceleration for rPPG ^(CuPy^)...
+  "!PYTHON_BIN!" "%REPO_ROOT%\scripts\gpu_bootstrap.py" --quiet-if-cached
+  >>"%LOG_FILE%" echo [INFO] ran gpu_bootstrap (CuPy) before rPPG injector
+)
+
 echo   Launching rppg_injector.py %*
 >>"%LOG_FILE%" echo [INFO] Launching rppg_injector.py %*
 "!PYTHON_BIN!" rppg_injector.py %*

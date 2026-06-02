@@ -3693,6 +3693,59 @@ class KlingGUIWindow:
         except Exception as e:
             self._log(f"Failed to initialize queue manager: {e}", "error")
 
+        # v2.17: trigger the GPU (CuPy) bootstrap IN-APP, in the background, so
+        # GPU acceleration for rPPG is automatic REGARDLESS of how the app was
+        # launched. Previously CuPy install lived ONLY in run_gui.bat at the
+        # post-dep-sync :launch step — so (a) a direct `python gui_launcher.py`
+        # launch skipped it, and (b) on a fresh install the user could start
+        # rPPG before the long first-run dep sync reached that step, leaving
+        # CuPy uninstalled and rPPG silently on CPU. Running it here (daemon
+        # thread, never blocks the GUI) makes "NVIDIA -> GPU" truly automatic.
+        self._start_gpu_bootstrap_async()
+
+    def _start_gpu_bootstrap_async(self):
+        """Run the CuPy GPU bootstrap in a daemon thread (best-effort).
+
+        rPPG is the only CuPy consumer; on an NVIDIA box this installs the
+        matching CuPy wheel once (cached via .launcher_state/gpu_status.json),
+        else logs CPU mode. Never blocks the GUI and never raises into the UI.
+        Opt-out: KLING_SKIP_GPU_BOOTSTRAP=1.
+        """
+        import os as _os
+        if _os.environ.get("KLING_SKIP_GPU_BOOTSTRAP") == "1":
+            return
+
+        def _worker():
+            try:
+                import sys as _sys
+                from pathlib import Path as _Path
+                scripts_dir = _Path(__file__).resolve().parent.parent / "scripts"
+                if str(scripts_dir) not in _sys.path:
+                    _sys.path.insert(0, str(scripts_dir))
+                import gpu_bootstrap  # noqa: WPS433 (local import: optional component)
+
+                result = gpu_bootstrap.bootstrap(_sys.executable, quiet_if_cached=True)
+                if result in ("gpu_installed_now",):
+                    self._log_thread_safe(
+                        "GPU: CuPy installed — rPPG will use GPU acceleration.",
+                        "success",
+                    )
+                elif result == "gpu_ready":
+                    self._log_thread_safe(
+                        "GPU: CuPy ready — rPPG uses GPU acceleration.", "info"
+                    )
+                elif result in ("no_nvidia", "cached_no_nvidia"):
+                    self._log_thread_safe(
+                        "GPU: no NVIDIA GPU detected — rPPG runs on CPU.", "info"
+                    )
+                # install_failed / lock_timeout / skipped: stay quiet here; the
+                # gpu_bootstrap script already logged the detail to its stamp.
+            except Exception:  # noqa: BLE001 — GPU setup is strictly best-effort
+                pass
+
+        import threading as _threading
+        _threading.Thread(target=_worker, daemon=True).start()
+
     def _prompt_startup_provider_keys_on_first_run(self):
         """First-launch key onboarding (Fal.ai + BFL), never exits app."""
         prompt_specs = startup_prompt_specs()

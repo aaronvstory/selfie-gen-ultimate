@@ -46,6 +46,11 @@ class _Stub:
     def _on_item_complete(self, item):
         pass
 
+    # _init_generator triggers the in-app GPU bootstrap; no-op in the stub
+    # (the dedicated test overrides this to count the call).
+    def _start_gpu_bootstrap_async(self):
+        pass
+
 
 def _run_init_generator(config):
     from kling_gui import main_window as mw
@@ -145,3 +150,41 @@ def test_process_queue_with_none_generator_fails_item_gracefully():
     assert completed and completed[0] is item
     joined = " ".join(m for _lvl, m in logs).lower()
     assert "api key" in joined
+
+
+def test_init_generator_triggers_gpu_bootstrap_async():
+    """v2.17: _init_generator must kick off the in-app GPU (CuPy) bootstrap so
+    rPPG GPU acceleration is automatic regardless of launch method (the bug:
+    CuPy install lived only in run_gui.bat's post-dep-sync step, so a direct
+    launch or a fresh-install rPPG-before-sync-finished left CuPy uninstalled
+    -> rPPG silently on CPU)."""
+    from kling_gui import main_window as mw
+
+    if not mw.HAS_GENERATOR:
+        pytest.skip("generator backend unavailable")
+
+    called = {"n": 0}
+    stub = _Stub({"falai_api_key": ""})
+    stub._start_gpu_bootstrap_async = lambda: called.__setitem__("n", called["n"] + 1)
+    mw.KlingGUIWindow._init_generator(stub)
+    assert called["n"] == 1, "_init_generator must call _start_gpu_bootstrap_async()"
+
+
+def test_start_gpu_bootstrap_async_is_nonblocking_and_safe(monkeypatch):
+    """The async bootstrap must spawn a daemon thread and never raise into the
+    UI, even if gpu_bootstrap import/run fails. Honours KLING_SKIP_GPU_BOOTSTRAP."""
+    from kling_gui import main_window as mw
+
+    if not mw.HAS_GENERATOR:
+        pytest.skip("generator backend unavailable")
+
+    # Opt-out path: must early-return, spawn nothing.
+    monkeypatch.setenv("KLING_SKIP_GPU_BOOTSTRAP", "1")
+    stub = _Stub({})
+    mw.KlingGUIWindow._start_gpu_bootstrap_async(stub)  # must not raise
+
+    # Normal path: spawns a daemon thread; we just assert it returns promptly
+    # and doesn't raise (the worker is best-effort and swallows everything).
+    monkeypatch.delenv("KLING_SKIP_GPU_BOOTSTRAP", raising=False)
+    stub2 = _Stub({})
+    mw.KlingGUIWindow._start_gpu_bootstrap_async(stub2)  # must not raise
