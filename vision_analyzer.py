@@ -9,6 +9,34 @@ from typing import Optional, Callable
 logger = logging.getLogger(__name__)
 
 
+def _extract_openrouter_error_detail(exc: requests.RequestException) -> str:
+    """Pull the human-readable reason out of an OpenRouter error response.
+
+    ``str(exc)`` for an HTTP error is just "<code> Client Error ... for url".
+    The actionable reason (e.g. "Insufficient credits", "model not found",
+    "content policy", rate-limit window) lives in the JSON body. Return a
+    truncated, single-line version of it, or "" if no usable body is present.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return ""
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict):
+                msg = err.get("message") or err.get("code")
+                if msg:
+                    return str(msg)[:300]
+            if data.get("message"):
+                return str(data["message"])[:300]
+            return str(data)[:300]
+    except Exception:  # noqa: BLE001 — body not JSON; fall back to raw text
+        pass
+    text = (getattr(resp, "text", "") or "").strip()
+    return text[:300]
+
+
 class VisionAnalyzer:
     """Analyze portrait images using OpenRouter vision models."""
 
@@ -159,8 +187,17 @@ class VisionAnalyzer:
             self._report("Analysis complete", "success")
             return {"prompt": prompt}
         except requests.RequestException as e:
-            self._report(f"API error: {e}", "error")
-            logger.error("VisionAnalyzer error: %s", e)
+            # str(e) on a raise_for_status() HTTPError gives only
+            # "400 Client Error ... for url" — OpenRouter puts the ACTUAL
+            # reason (insufficient credits, invalid model, content policy,
+            # rate limit) in the response BODY, which str(e) drops. Surface
+            # a truncated body so the Prep error is actionable (v2.16).
+            detail = _extract_openrouter_error_detail(e)
+            message = f"API error: {e}"
+            if detail:
+                message = f"{message} — {detail}"
+            self._report(message, "error")
+            logger.error("VisionAnalyzer error: %s", message)
             return None
         except (KeyError, IndexError) as e:
             self._report(f"Unexpected response format: {e}", "error")

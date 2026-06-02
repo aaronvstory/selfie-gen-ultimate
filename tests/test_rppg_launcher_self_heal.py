@@ -136,20 +136,32 @@ def test_self_heal_uses_resolved_python_not_hardcoded_path(bat_source: str):
 
 
 def test_self_heal_re_runs_import_check_after_pip(bat_source: str):
-    """After the pip install, the .bat MUST re-run the import check.
-    Without this, a partial-success pip (e.g. mediapipe install
-    failed but the others worked) would still launch the injector
-    which would crash on the missing module."""
-    # Two consecutive import-check lines are the proxy for "checked,
-    # tried to fix, re-checked." Count them. (v2.15: the check now also
-    # includes absl — see test_self_heal_import_check_includes_absl.)
-    count = bat_source.count(
+    """After the pip install, the .bat MUST re-verify imports. Without
+    this, a partial-success pip (e.g. mediapipe install failed but the
+    others worked) would still launch the injector which would crash on
+    the missing module.
+
+    v2.16: the pre-pip gate + lock-wait fast-path still use the inline
+    `import ...` check, but the POST-self-heal re-verify is now done via
+    `call :rppg_diag_tee` (which runs scripts/rppg_import_diag.py and
+    branches on RPPG_DIAG_EXIT) so the failing module is named and logged.
+    Assert BOTH layers exist."""
+    # The pre-pip gate + the post-lock-wait fast-path use the inline check.
+    inline_count = bat_source.count(
         '"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy, absl"'
     )
-    assert count >= 2, (
-        f"expected >=2 occurrences of the import check (one before "
-        f"pip, one after self-heal + one after lock-wait fast-path), "
-        f"found {count}"
+    assert inline_count >= 2, (
+        f"expected >=2 occurrences of the inline import check (the pre-pip "
+        f"gate + the post-lock-wait fast-path), found {inline_count}"
+    )
+    # The post-self-heal re-verify is the granular diagnostic, branched on.
+    assert "call :rppg_diag_tee" in bat_source, (
+        "the post-self-heal re-verify must run the granular diagnostic via "
+        ":rppg_diag_tee so the failing module is named"
+    )
+    assert "if !RPPG_DIAG_EXIT! neq 0 (" in bat_source, (
+        "the .bat must branch on the diagnostic exit code (RPPG_DIAG_EXIT) "
+        "so a still-broken import aborts before launching the injector"
     )
 
 
@@ -190,14 +202,29 @@ def test_self_heal_lock_wait_is_bounded(bat_source: str):
 
 
 def test_self_heal_diagnostic_lists_missing_modules(bat_source: str):
-    """If pip succeeds but the imports still fail, the error message
-    must name WHICH modules are still missing — not just repeat the
-    generic 4-module list."""
-    # The diagnostic uses importlib.util.find_spec to list missing
-    # modules by name. Look for the find_spec usage.
-    assert "importlib.util.find_spec" in bat_source, (
-        "diagnostic must enumerate the specific missing modules; the "
-        "single-line python -c uses importlib.util.find_spec"
+    """If pip succeeds but the imports still fail, the launcher must name
+    WHICH modules are still missing — not just repeat the generic list.
+
+    v2.16: the inline `find_spec` one-liner (which printed to the console
+    only and never to rppg.log, so the friend's pasted log showed no module
+    name) is replaced by scripts/rppg_import_diag.py, invoked through
+    :rppg_diag_tee which mirrors EVERY diagnostic line to BOTH the console
+    and rppg.log. Assert the launcher calls the helper and tees its output."""
+    assert "rppg_import_diag.py" in bat_source, (
+        "the post-self-heal diagnostic must run scripts/rppg_import_diag.py "
+        "to enumerate each module's OK/MISSING/BROKEN state by name"
+    )
+    # The tee subroutine must write the diagnostic to BOTH sinks: the
+    # console (-> GUI stream) AND the log file (the sink the friend read).
+    diag_body = bat_source.split(":rppg_diag_tee", 1)[-1].split(":rppg_sync_deps", 1)[0]
+    assert 'type "!RPPG_DIAG_TMP!"' in diag_body, (
+        "the diagnostic must echo to the console so the GUI subprocess "
+        "stream captures it"
+    )
+    assert 'type "!RPPG_DIAG_TMP!" >>"%LOG_FILE%"' in diag_body, (
+        "the diagnostic must ALSO append to rppg.log — the friend's v2.13 "
+        "bug was that the per-module detail went to the console only and "
+        "the rppg.log he pasted showed a useless 'Core imports missing'"
     )
 
 

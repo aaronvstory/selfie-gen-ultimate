@@ -2,6 +2,55 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-02 (v2.16) — granular failure logging across the app
+
+A friend's v2.13 rPPG failure log read only:
+
+```
+[WARN] Core imports missing; running pip install.
+[ERROR] Self-heal pip install did not satisfy imports.
+```
+
+…with **no module name** — uselessly vague. Two stacked logging bugs hid the
+detail: (1) the rPPG launcher's per-module diagnostic printed to the console
+only, never to `rppg.log` (the file the friend actually read); and (2) even the
+console line was demoted to `debug` by the GUI tracker, which `verbose_gui_mode`
+(default off) drops from the panel. So the one line that names the failing
+dependency was thrown away twice. This release makes failure detail visible
+everywhere.
+
+### Added
+
+- **`scripts/rppg_import_diag.py`** — per-module rPPG import diagnostic. Reports
+  each of `cv2/numpy/mediapipe/scipy/absl` as `OK` / `MISSING` (not installed) /
+  `BROKEN` (installed but `import` raises — the numpy-2.x-ABI class), with the
+  ACTUAL `ImportError` text and the installed numpy version (flagged when ≥2).
+  Distinguishes "pip didn't land it" from "pip landed a broken combo" — the two
+  failure modes the old check conflated.
+- **`log_utils.py`** — shared `format_exception_detail(exc)` (always `"Type: msg"`,
+  never empty even for `TimeoutError`) and `format_exception_traceback(exc)`.
+
+### Fixed
+
+- **rPPG self-heal now names the failing module in BOTH sinks.** `run_rppg.bat`'s
+  post-self-heal re-verify runs `rppg_import_diag.py` through a new `:rppg_diag_tee`
+  subroutine that mirrors EVERY diagnostic line to the console (→ GUI stream) AND
+  `rppg.log`. No more "Core imports missing" with no name.
+- **rPPG setup diagnostics reach the main GUI panel.** `queue_manager._is_rppg_setup_diag`
+  classifies the launcher's `[rppg-diag]` / `WARN:` / `ERROR:` lines as warning/error
+  so they bypass the `verbose_gui_mode` debug gate; on failure the queue tails
+  `.launcher_state/rppg.log` into the panel so the user never has to hunt for the file.
+- **Video-step failures now name their reason.** `kling_generator_falai.py`'s
+  timeout / connection / generic submit branches now call `_set_last_error` +
+  `_report_progress`, so the queue reports the real cause instead of a bare
+  "Generation failed".
+- **Prep/vision errors surface the API body.** `vision_analyzer.py` extracts the
+  OpenRouter error body (insufficient credits / invalid model / content policy /
+  rate limit) instead of only the bare `"<code> Client Error … for url"`.
+- **Tab/queue catch sites use `format_exception_detail`** (selfie/prep/outpaint
+  tabs + the queue worker) so empty-message exceptions still name their type;
+  the queue worker also routes the full traceback to the file log.
+
 ## 2026-06-02 (v2.15) — fix rPPG missing absl-py on fresh install
 
 A friend's v2.13 install ran the WHOLE pipeline (Face Crop → selfie → Kling →
