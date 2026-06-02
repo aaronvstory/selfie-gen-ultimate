@@ -58,6 +58,13 @@ SYNC_ITEMS = [
     # already ships in the release zip (release_prep walks the working tree);
     # this keeps the distribution/ direct-run tree in parity.
     "models.json",
+    # scripts/: kling_gui/main_window._start_gpu_bootstrap_async imports
+    # gpu_bootstrap from REPO_ROOT/scripts at runtime. Without this, a
+    # cwd=distribution direct launch (run_gui_direct.bat) silently skips GPU
+    # setup (ModuleNotFoundError swallowed). Sync the whole scripts/ dir so the
+    # distribution tree can self-bootstrap GPU like the root tree (code-review
+    # MEDIUM 2026-06-03). win_resolve_python.bat etc. ride along harmlessly.
+    "scripts",
     "outpaint_generator.py",
     "outpaint_geometry.py",
     "selfie_generator.py",

@@ -277,7 +277,12 @@ def test_successful_install_writes_gpu_ready_stamp(monkeypatch):
     payload = json.loads(gpu_bootstrap.STAMP_PATH.read_text())
     assert payload["result"] == "gpu_ready"
     assert payload["cupy_version"] == "13.3.0"
-    assert payload["cupy_package"] == "cupy-cuda12x[ctk]"
+    # v2.17: pinned to the CuPy 13.x line (14.x needs numpy>=2, conflicts with
+    # our numpy<2 face stack). Assert the package family + the pin, not a bare
+    # exact string, so the version cap is locked too.
+    assert payload["cupy_package"] == gpu_bootstrap._CUDA_TO_CUPY[12]
+    assert payload["cupy_package"].startswith("cupy-cuda12x[ctk]")
+    assert ">=13.6,<14" in payload["cupy_package"]
     assert payload["attempts"] == 0
 
 
@@ -727,3 +732,23 @@ def test_run_pip_with_heartbeat_handles_bad_command():
         ["this_executable_does_not_exist_xyz"], timeout=10, label="bad"
     )
     assert r.returncode != 0
+
+
+def test_cupy_pinned_to_numpy1_compatible_line():
+    """v2.17 (verified 2026-06-03): CuPy 14.x requires numpy>=2.0 and FAILS to
+    import under our numpy<2 face-stack pin. Both CuPy specs MUST pin the 13.x
+    line (>=13.6,<14) — the last numpy-1.x-compatible release. If this drifts to
+    14.x, rPPG GPU silently breaks (cupy import fails -> CPU fallback)."""
+    for major in (12, 13):
+        spec = gpu_bootstrap._CUDA_TO_CUPY[major]
+        assert "<14" in spec, f"CUDA {major}: CuPy must be pinned <14 (numpy<2): {spec!r}"
+        assert ">=13.6" in spec, f"CUDA {major}: expected >=13.6 floor: {spec!r}"
+        assert "[ctk]" in spec, f"CUDA {major}: [ctk] extra needed for CUDA wheels: {spec!r}"
+
+
+def test_pip_install_timeout_covers_large_ctk_download():
+    """The cupy[ctk] CUDA-component download is ~2-3GB; the old 900s cap timed
+    out on a real box -> install_failed -> CPU. Timeout must be generous, and
+    LOCK_STALE must still exceed it (so a live install isn't force-broken)."""
+    assert gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS >= 1800, "too short for 2-3GB [ctk]"
+    assert gpu_bootstrap.LOCK_STALE_SECONDS > gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS

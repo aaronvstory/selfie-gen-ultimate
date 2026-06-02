@@ -162,3 +162,19 @@ def test_real_mediapipe_tasks_import():
     from mediapipe.tasks.python import vision  # noqa: F401
 
     assert vision.FaceLandmarker is not None
+
+
+def test_rppg_injector_registers_cuda_dll_dirs_and_force_cpu():
+    """v2.17: the injector must (a) register the pip-installed NVIDIA CUDA DLL
+    dirs before importing cupy (os.add_dll_directory + PATH) so nvrtc loads and
+    the GPU kernel compiles — without this, CuPy imports but the first kernel
+    compile fails 'Could not find nvrtc64_*.dll' and rPPG silently falls to CPU
+    even on a good GPU box (verified RTX 4090 2026-06-03); and (b) honour
+    RPPG_FORCE_CPU=1 as a benchmarking/escape-hatch."""
+    src = (REPO_ROOT / "rPPG" / "rppg_injector.py").read_text(encoding="utf-8", errors="replace")
+    assert "_register_cuda_dll_dirs" in src
+    assert "add_dll_directory" in src
+    assert 'os.environ["PATH"]' in src or "os.environ['PATH']" in src
+    assert "RPPG_FORCE_CPU" in src
+    # The helper must run BEFORE `import cupy`.
+    assert src.index("_register_cuda_dll_dirs()") < src.index("import cupy as _cp")

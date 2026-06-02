@@ -86,8 +86,13 @@ INSTALL_FAILED_MAX_ATTEMPTS = 3
 # lock and kick off a parallel pip install into the same venv. Margin
 # of 300s gives plenty of headroom for pip's own warm-down +
 # clock-skew between processes.
-PIP_INSTALL_TIMEOUT_SECONDS = 900   # 15 min: covers the +500 MB CuPy
-                                    # wheel + CUDA component fetches.
+# 2400s (40 min): the cupy-cudaNNx[ctk] variant pulls the full CUDA Toolkit
+# component wheels — for CUDA 13 that's ~2-3GB, NOT the "~500MB" an earlier
+# comment claimed. A real RTX 4090 box hit the old 900s cap mid-download and
+# stamped install_failed, so CuPy never landed and rPPG silently stayed on CPU
+# (verified 2026-06-03). 40 min covers 2-3GB on a slow connection; the
+# heartbeat keeps the console alive so it never looks frozen.
+PIP_INSTALL_TIMEOUT_SECONDS = 2400
 LOCK_STALE_SECONDS = PIP_INSTALL_TIMEOUT_SECONDS + 300
 
 # Map CUDA major → PyPI package name. Per CuPy 14+ install docs the
@@ -97,9 +102,15 @@ LOCK_STALE_SECONDS = PIP_INSTALL_TIMEOUT_SECONDS + 300
 # log CPU fallback instead. Append [ctk] to pull CUDA component
 # wheels (matches the official "Installing CuPy with CUDA from PyPI"
 # path that doesn't require a system CUDA Toolkit).
+# PIN to the CuPy 13.x line (`>=13.6,<14`): CuPy 14.x is compiled against
+# numpy>=2.0 and FAILS to import under our numpy<2 face-stack pin
+# (ImportError: numpy.core.multiarray failed to import). CuPy 13.6.0 is the
+# last numpy-1.x-compatible release + ships the [ctk] CUDA component wheels.
+# Verified 2026-06-03: CuPy 13.6.0 + numpy 1.26.4 + TF 2.16.2 import together
+# and the GPU kernel compiles on an RTX 4090. (See project_cupy_numpy2_conflict.)
 _CUDA_TO_CUPY = {
-    12: "cupy-cuda12x[ctk]",
-    13: "cupy-cuda13x[ctk]",
+    12: "cupy-cuda12x[ctk]>=13.6,<14",
+    13: "cupy-cuda13x[ctk]>=13.6,<14",
 }
 
 
