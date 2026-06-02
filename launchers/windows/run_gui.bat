@@ -202,7 +202,8 @@ if exist "%STAMP%" (
                 echo         --no-cache-dir numpy==1.26.4 tensorflow==2.16.2 ^^^^
                 echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^^^
                 echo         tf-keras==2.16.0 retina-face==0.0.17 ^^^^
-                echo         deepface==0.0.92
+                echo         deepface==0.0.92 ^^^^
+                echo         scipy>=1.11,<2 absl-py>=2.3,<3
                 echo    3. Inspect the diagnostic log at:
                 echo       %STATE_DIR%\last_health.log
                 echo    4. Inspect the launch log at:
@@ -312,7 +313,8 @@ if exist "%DEP_HEALTH_SCRIPT%" (
             echo         --no-cache-dir numpy==1.26.4 tensorflow==2.16.2 ^^^^
             echo         tensorflow-intel==2.16.2 protobuf==4.25.3 ^^^^
             echo         tf-keras==2.16.0 retina-face==0.0.17 ^^^^
-            echo         deepface==0.0.92
+            echo         deepface==0.0.92 ^^^^
+            echo         scipy>=1.11,<2 absl-py>=2.3,<3
             echo    3. Inspect the diagnostic log at:
             echo       %STATE_DIR%\last_health.log
             echo    4. Inspect the launch log at:

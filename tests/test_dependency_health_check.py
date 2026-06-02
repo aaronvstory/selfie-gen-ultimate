@@ -5,6 +5,47 @@ from unittest import mock
 import dependency_health_check as dhc
 
 
+def _healthy_module_set():
+    """Module stubs for the happy-path probe — full v2.17 runtime set.
+
+    Shared by both DependencyHealthCheckTests and TorchCudaFallbackTests.
+    Includes scipy/absl/mediapipe (+ the Tasks-API FaceLandmarker symbol) so a
+    test that overrides only torch still passes the now-fuller probe.
+    """
+    return {
+        "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
+        "tensorflow.compat.v2": types.SimpleNamespace(),
+        "tf_keras": types.SimpleNamespace(__version__="2.16.0"),
+        "retinaface": types.SimpleNamespace(RetinaFace=object()),
+        "cv2": types.SimpleNamespace(),
+        "numpy": types.SimpleNamespace(),
+        "torch": types.SimpleNamespace(
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+        ),
+        "scipy": types.SimpleNamespace(),
+        "absl": types.SimpleNamespace(),
+        "mediapipe": types.SimpleNamespace(),
+        "mediapipe.tasks.python.vision": types.SimpleNamespace(
+            FaceLandmarker=object()
+        ),
+    }
+
+
+def _classify_repair_call(cmd):
+    """Classify a mocked ``subprocess.run`` pip command from run_repair into
+    one of: 'cpu_fallback' (torch CPU index), 'mediapipe' (the v2.17 --no-deps
+    mediapipe step), or 'face_stack_repair' (the REPAIR_PACKAGES install).
+
+    Order of checks matters: the mediapipe step is also a non-index install,
+    so it must be distinguished from the face-stack repair BEFORE the catch-all.
+    """
+    if "--index-url" in cmd and dhc._TORCH_CPU_INDEX_URL in cmd:
+        return "cpu_fallback"
+    if "--no-deps" in cmd and any("mediapipe" in str(a) for a in cmd):
+        return "mediapipe"
+    return "face_stack_repair"
+
+
 class DependencyHealthCheckTests(unittest.TestCase):
     def test_fails_for_broken_tensorflow_namespace(self):
         tf_module = types.SimpleNamespace()
@@ -38,26 +79,9 @@ class DependencyHealthCheckTests(unittest.TestCase):
         self.assertIn("tensorflow.compat.v2 import failed", combined)
 
     def _healthy_module_set(self):
-        """Module stubs for the happy-path probe.
-
-        ``torch.cuda.is_available`` is the canonical eager-init call the
-        probe now uses (subagent PR #55 round 5 MED — previous
-        ``torch.zeros(1)`` defaulted to ``device='cpu'`` and never forced
-        CUDA init, missing the deferred-CUDA-init class of failures).
-        Stub returns False (i.e. CPU-only torch) since the probe only
-        cares whether the call raises.
-        """
-        return {
-            "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
-            "tensorflow.compat.v2": types.SimpleNamespace(),
-            "tf_keras": types.SimpleNamespace(__version__="2.16.0"),
-            "retinaface": types.SimpleNamespace(RetinaFace=object()),
-            "cv2": types.SimpleNamespace(),
-            "numpy": types.SimpleNamespace(),
-            "torch": types.SimpleNamespace(
-                cuda=types.SimpleNamespace(is_available=lambda: False),
-            ),
-        }
+        """Instance wrapper around the module-level helper (shared with
+        TorchCudaFallbackTests). See _healthy_module_set() at module scope."""
+        return _healthy_module_set()
 
     def test_passes_for_valid_import_set(self):
         modules = self._healthy_module_set()
@@ -342,19 +366,13 @@ class TorchCudaFallbackTests(unittest.TestCase):
         passes the probe — but pin it explicitly to prevent a future edit
         from regressing the distinction.
         """
-        modules = {
-            "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
-            "tensorflow.compat.v2": types.SimpleNamespace(),
-            "tf_keras": types.SimpleNamespace(__version__="2.16.0"),
-            "retinaface": types.SimpleNamespace(RetinaFace=object()),
-            "cv2": types.SimpleNamespace(),
-            "numpy": types.SimpleNamespace(),
-            # CPU-only torch: explicit version.cuda=None
-            "torch": types.SimpleNamespace(
-                cuda=types.SimpleNamespace(is_available=lambda: False),
-                version=types.SimpleNamespace(cuda=None),
-            ),
-        }
+        # Start from the full healthy set (incl. v2.17 scipy/absl/mediapipe)
+        # and override torch with the explicit CPU-only shape under test.
+        modules = _healthy_module_set()
+        modules["torch"] = types.SimpleNamespace(
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+            version=types.SimpleNamespace(cuda=None),  # CPU-only torch
+        )
 
         def fake_importer(name: str):
             if name in modules:
@@ -373,15 +391,8 @@ class TorchCudaFallbackTests(unittest.TestCase):
         without a ``torch.cuda`` submodule. The probe must NOT crash on
         ``AttributeError: module has no attribute 'cuda'`` — it should
         just skip the eager probe (no failure to surface)."""
-        modules = {
-            "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
-            "tensorflow.compat.v2": types.SimpleNamespace(),
-            "tf_keras": types.SimpleNamespace(__version__="2.16.0"),
-            "retinaface": types.SimpleNamespace(RetinaFace=object()),
-            "cv2": types.SimpleNamespace(),
-            "numpy": types.SimpleNamespace(),
-            "torch": types.SimpleNamespace(),  # no .cuda attribute
-        }
+        modules = _healthy_module_set()
+        modules["torch"] = types.SimpleNamespace()  # no .cuda attribute
 
         def fake_importer(name: str):
             if name in modules:
@@ -433,11 +444,8 @@ class TorchCudaFallbackTests(unittest.TestCase):
         def fake_run(cmd, *args, **kwargs):
             # First call: torch CPU fallback (recognizable by the --index-url
             # arg + just `torch` as the package). Second call: face stack
-            # repair (REPAIR_PACKAGES).
-            if "--index-url" in cmd and dhc._TORCH_CPU_INDEX_URL in cmd:
-                call_order.append("cpu_fallback")
-            else:
-                call_order.append("face_stack_repair")
+            # repair (REPAIR_PACKAGES). Third (v2.17): mediapipe --no-deps.
+            call_order.append(_classify_repair_call(cmd))
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with mock.patch("dependency_health_check.subprocess.run", side_effect=fake_run):
@@ -446,7 +454,9 @@ class TorchCudaFallbackTests(unittest.TestCase):
             )
 
         self.assertTrue(ok, message)
-        self.assertEqual(call_order, ["cpu_fallback", "face_stack_repair"])
+        self.assertEqual(
+            call_order, ["cpu_fallback", "face_stack_repair", "mediapipe"]
+        )
         self.assertIn("CPU-only fallback", message)
 
     def test_run_repair_skips_cpu_fallback_when_no_cuda_signature(self):
@@ -456,17 +466,14 @@ class TorchCudaFallbackTests(unittest.TestCase):
         call_order = []
 
         def fake_run(cmd, *args, **kwargs):
-            if "--index-url" in cmd:
-                call_order.append("cpu_fallback")
-            else:
-                call_order.append("face_stack_repair")
+            call_order.append(_classify_repair_call(cmd))
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with mock.patch("dependency_health_check.subprocess.run", side_effect=fake_run):
             ok, _ = dhc.run_repair(failures=["tensorflow missing __version__"])
 
         self.assertTrue(ok)
-        self.assertEqual(call_order, ["face_stack_repair"])
+        self.assertEqual(call_order, ["face_stack_repair", "mediapipe"])
 
     def test_run_repair_back_compat_no_failures_arg(self):
         """``run_repair()`` with no args (back-compat for external callers)
@@ -474,17 +481,14 @@ class TorchCudaFallbackTests(unittest.TestCase):
         call_order = []
 
         def fake_run(cmd, *args, **kwargs):
-            if "--index-url" in cmd:
-                call_order.append("cpu_fallback")
-            else:
-                call_order.append("face_stack_repair")
+            call_order.append(_classify_repair_call(cmd))
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with mock.patch("dependency_health_check.subprocess.run", side_effect=fake_run):
             ok, _ = dhc.run_repair()  # no failures arg
 
         self.assertTrue(ok)
-        self.assertEqual(call_order, ["face_stack_repair"])
+        self.assertEqual(call_order, ["face_stack_repair", "mediapipe"])
 
     def test_run_repair_continues_face_stack_when_cpu_fallback_fails(self):
         """Codex PR #55 round 4 P2: if the CPU fallback fails (e.g.
@@ -497,14 +501,14 @@ class TorchCudaFallbackTests(unittest.TestCase):
         call_order = []
 
         def fake_run(cmd, *args, **kwargs):
-            if "--index-url" in cmd:
-                call_order.append("cpu_fallback")
+            kind = _classify_repair_call(cmd)
+            call_order.append(kind)
+            if kind == "cpu_fallback":
                 return types.SimpleNamespace(
                     returncode=1,
                     stdout="",
                     stderr="ERROR: Could not find a version that satisfies torch==999",
                 )
-            call_order.append("face_stack_repair")
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
         with mock.patch("dependency_health_check.subprocess.run", side_effect=fake_run):
@@ -512,9 +516,12 @@ class TorchCudaFallbackTests(unittest.TestCase):
                 failures=["torch_cuda_failure:cudart: ImportError"]
             )
 
-        # Overall NOT ok because cuda_ok was False, but face_stack DID run.
+        # Overall NOT ok because cuda_ok was False, but face_stack DID run
+        # (and mediapipe too, both independently repairable).
         self.assertFalse(ok)
-        self.assertEqual(call_order, ["cpu_fallback", "face_stack_repair"])
+        self.assertEqual(
+            call_order, ["cpu_fallback", "face_stack_repair", "mediapipe"]
+        )
         self.assertIn("torch CPU fallback failed", message)
         self.assertIn("repair install completed", message)
 
@@ -536,9 +543,12 @@ class TorchCudaFallbackTests(unittest.TestCase):
         self.assertIn("repair install completed", message)
 
         # Now face-stack fails; cuda fallback ok. Overall should be False.
+        # v2.17: run_repair now makes THREE pip calls (cpu fallback, face
+        # stack, mediapipe --no-deps) — the seq must supply a result for each.
         seq = [
             types.SimpleNamespace(returncode=0, stdout="", stderr=""),  # cuda ok
-            types.SimpleNamespace(returncode=1, stdout="", stderr="pip resolution conflict"),
+            types.SimpleNamespace(returncode=1, stdout="", stderr="pip resolution conflict"),  # face fails
+            types.SimpleNamespace(returncode=0, stdout="", stderr=""),  # mediapipe ok
         ]
         with mock.patch("dependency_health_check.subprocess.run", side_effect=seq):
             ok, message = dhc.run_repair(
@@ -842,20 +852,13 @@ class TorchCudaFallbackTests(unittest.TestCase):
         probe gate. The RetinaFace probe now runs under CUDA-only
         failure, and its failures get reported as expected.
         """
-        modules = {
-            "tensorflow": types.SimpleNamespace(__version__="2.16.2"),
-            "tensorflow.compat.v2": types.SimpleNamespace(),
-            "tf_keras": types.SimpleNamespace(__version__="2.16.0"),
-            "retinaface": types.SimpleNamespace(RetinaFace=object()),
-            "cv2": types.SimpleNamespace(),
-            "numpy": types.SimpleNamespace(),
-            # CUDA-built torch wheel with broken runtime — classified as
-            # torch_cuda_failure:build_runtime_mismatch
-            "torch": types.SimpleNamespace(
-                cuda=types.SimpleNamespace(is_available=lambda: False),
-                version=types.SimpleNamespace(cuda="12.1"),
-            ),
-        }
+        modules = _healthy_module_set()
+        # CUDA-built torch wheel with broken runtime — classified as
+        # torch_cuda_failure:build_runtime_mismatch
+        modules["torch"] = types.SimpleNamespace(
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+            version=types.SimpleNamespace(cuda="12.1"),
+        )
 
         def fake_importer(name: str):
             if name in modules:

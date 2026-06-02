@@ -361,6 +361,12 @@ def test_launcher_manual_recovery_pip_command_matches_repair_packages():
         "tf-keras==2.16.0",
         "retina-face==0.0.17",
         "deepface==0.0.92",
+        # v2.17: scipy + absl-py joined REPAIR_PACKAGES (the complete runtime
+        # set). mediapipe is NOT here — it's repaired via a dedicated --no-deps
+        # step (see dependency_health_check.run_repair) and is intentionally
+        # excluded from REPAIR_PACKAGES so pip can't pull its numpy-2.x deps.
+        "scipy>=1.11,<2",
+        "absl-py>=2.3,<3",
     ]
     EXPECTED_MACOS_PACKAGES = [
         pkg for pkg in EXPECTED_WINDOWS_PACKAGES if "tensorflow-intel" not in pkg

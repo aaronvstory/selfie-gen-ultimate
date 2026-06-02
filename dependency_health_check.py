@@ -34,7 +34,21 @@ _BASE_REPAIR_PACKAGES = [
     "tf-keras==2.16.0",
     "retina-face==0.0.17",
     "deepface==0.0.92",
+    # v2.17: scipy + absl-py are part of the COMPLETE runtime set (rPPG +
+    # mediapipe deps) and were previously only repaired via rPPG self-heal.
+    # Both declare clean numpy-compatible deps and do NOT pull numpy 2.x, so
+    # they're safe as plain ==-style pins here (UNLIKE mediapipe, which must
+    # stay --no-deps — see run_repair's dedicated mediapipe step).
+    "scipy>=1.11,<2",
+    "absl-py>=2.3,<3",
 ]
+
+# v2.17: mediapipe is repaired via a DEDICATED --no-deps step (see run_repair),
+# never as a plain REPAIR_PACKAGES entry. A bare `mediapipe==0.10.35` would let
+# pip resolve its transitive deps and pull numpy 2.x back in, re-breaking TF
+# 2.16.2 (the exact v2.10/v2.13 fresh-install bug). Pinned here so the launcher
+# echo blocks + the run_repair step share one source of truth.
+_MEDIAPIPE_SPEC = "mediapipe==0.10.35"
 
 
 def _with_win_tensorflow_intel(base: "list[str]") -> "list[str]":
@@ -239,11 +253,28 @@ def check_runtime_dependencies(
     except Exception as exc:
         failures.append(f"retinaface import failed: {type(exc).__name__}: {exc}")
 
-    for module_name in ("cv2", "numpy"):
+    for module_name in ("cv2", "numpy", "scipy", "absl"):
         try:
             importer(module_name)
         except Exception as exc:
             failures.append(f"{module_name} import failed: {type(exc).__name__}: {exc}")
+
+    # v2.17: mediapipe is part of the COMPLETE runtime set (Face Crop / oldcam
+    # landmark path). A bare `import mediapipe` PASSES even when the Tasks API
+    # is missing/broken, so probe the deeper Tasks-API symbol the app actually
+    # uses (FaceLandmarker) — mirrors setup_macos.sh's MP_VALIDATE_CMD. This is
+    # the structural hole that let a partial venv (no mediapipe/scipy/absl) get
+    # cached as "healthy": only rPPG's own self-heal caught it before.
+    try:
+        importer("mediapipe")
+        vision_mod = importer("mediapipe.tasks.python.vision")
+        if not hasattr(vision_mod, "FaceLandmarker"):
+            failures.append(
+                "mediapipe Tasks API incomplete: "
+                "mediapipe.tasks.python.vision.FaceLandmarker missing"
+            )
+    except Exception as exc:
+        failures.append(f"mediapipe import failed: {type(exc).__name__}: {exc}")
 
     # Direct version assert: numpy can import fine yet still be 2.x (which
     # breaks TF 2.16.2's C-extension on a later call, not at numpy import).
@@ -539,7 +570,37 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
         messages.append(f"repair failed (code {completed.returncode}): {details}")
         face_ok = False
 
-    return (cuda_ok and face_ok), "; ".join(messages)
+    # v2.17: mediapipe repair as a SEPARATE --no-deps step. mediapipe must NOT
+    # go through the REPAIR_PACKAGES force-reinstall (which re-resolves deps)
+    # because its declared deps would pull numpy 2.x and re-break TF 2.16.2.
+    # --no-deps installs the mediapipe wheel alone; the numpy<2 / opencv caps
+    # already satisfied by the face-stack install above remain intact. -c
+    # constraints is still threaded as belt-and-suspenders.
+    mp_cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--force-reinstall",
+        "--no-cache-dir",
+        "--no-deps",
+        *constraint_args,
+        _MEDIAPIPE_SPEC,
+    ]
+    mp_completed = subprocess.run(
+        mp_cmd, capture_output=True, text=True, errors="replace", check=False
+    )
+    if mp_completed.returncode == 0:
+        messages.append("mediapipe --no-deps repair completed")
+        mediapipe_ok = True
+    else:
+        mp_details = _extract_pip_failure_detail(mp_completed)
+        messages.append(
+            f"mediapipe repair failed (code {mp_completed.returncode}): {mp_details}"
+        )
+        mediapipe_ok = False
+
+    return (cuda_ok and face_ok and mediapipe_ok), "; ".join(messages)
 
 
 def verify_in_fresh_process() -> tuple[bool, list[str]]:
