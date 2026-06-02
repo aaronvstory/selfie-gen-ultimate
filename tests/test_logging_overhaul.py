@@ -215,3 +215,46 @@ def test_failure_detail_line_ignores_success_and_ok(line: str):
     from kling_gui.queue_manager import _is_rppg_failure_detail_line
 
     assert not _is_rppg_failure_detail_line(line.strip())
+
+
+# --------------------------------------------------------------------------- #
+# queue_manager._extract_rppg_failed_modules — friendly 1-line summary
+# --------------------------------------------------------------------------- #
+def test_extract_failed_modules_from_per_module_lines():
+    """The user-facing summary names the failing module(s) concisely — not a
+    raw dump (user feedback, PR #67)."""
+    from kling_gui.queue_manager import _extract_rppg_failed_modules
+
+    lines = [
+        "[rppg-diag] OK      cv2          (4.11.0)",
+        "[rppg-diag] BROKEN  mediapipe    (required) ModuleNotFoundError: No module named matplotlib",
+        "[rppg-diag] RESULT: 1 required module(s) not importable: mediapipe",
+    ]
+    assert _extract_rppg_failed_modules(lines) == "mediapipe (broken)"
+
+
+def test_extract_failed_modules_multiple_missing():
+    from kling_gui.queue_manager import _extract_rppg_failed_modules
+
+    lines = [
+        "[rppg-diag] MISSING numpy (required) not installed",
+        "[rppg-diag] MISSING scipy (required) not installed",
+    ]
+    assert _extract_rppg_failed_modules(lines) == "numpy (missing), scipy (missing)"
+
+
+def test_extract_failed_modules_result_only_fallback():
+    """When only the RESULT verdict is present, fall back to its module list."""
+    from kling_gui.queue_manager import _extract_rppg_failed_modules
+
+    lines = ["[rppg-diag] RESULT: 2 required module(s) not importable: numpy, scipy"]
+    assert _extract_rppg_failed_modules(lines) == "numpy, scipy"
+
+
+def test_extract_failed_modules_returns_empty_when_unnameable():
+    """A post-import crash with no nameable module returns '' so the caller
+    shows only the log-file pointer (no misleading guess)."""
+    from kling_gui.queue_manager import _extract_rppg_failed_modules
+
+    assert _extract_rppg_failed_modules(["some traceback", "another line"]) == ""
+    assert _extract_rppg_failed_modules([]) == ""

@@ -344,6 +344,75 @@ def _is_rppg_setup_diag(line: str) -> bool:
     return any(pat in low for pat in _RPPG_SETUP_DIAG_PATTERNS)
 
 
+def _extract_rppg_failed_modules(lines) -> str:
+    """Distil the failing rPPG dependency name(s) into a short friendly string.
+
+    Parses the launcher's ``[rppg-diag] BROKEN <name>`` / ``MISSING <name>``
+    per-module lines and the ``RESULT: N required module(s) not importable:
+    a, b`` verdict (and a legacy ``Still missing: a, b`` line) into a concise
+    comma-joined list like ``"mediapipe (broken), scipy (missing)"`` — for a
+    ONE-line user-facing summary, NOT a raw dump. Returns "" if nothing
+    nameable is found (caller then shows only the log-file pointer).
+    """
+    import re
+
+    broken_missing: "list[str]" = []
+    result_modules: "list[str]" = []
+    seen = set()
+
+    def _add(name: str, kind: str) -> None:
+        name = name.strip()
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            broken_missing.append(f"{name} ({kind})")
+
+    for raw in lines or []:
+        ln = str(raw).strip()
+        low = ln.lower()
+        # "[rppg-diag] BROKEN  mediapipe    (required) ModuleNotFoundError: ..."
+        m = re.match(r"\[rppg-diag\]\s+(BROKEN|MISSING)\s+(\S+)", ln, re.IGNORECASE)
+        if m:
+            _add(m.group(2), m.group(1).lower())
+            continue
+        # "[rppg-diag] RESULT: 1 required module(s) not importable: mediapipe"
+        if "not importable:" in low:
+            tail = ln.split("not importable:", 1)[1]
+            result_modules = [t.strip() for t in tail.split(",") if t.strip()]
+            continue
+        # Legacy: "Still missing: scipy, absl"
+        if low.startswith("still missing:"):
+            tail = ln.split(":", 1)[1]
+            for t in (x.strip() for x in tail.split(",")):
+                _add(t, "missing")
+
+    if broken_missing:
+        return ", ".join(broken_missing)
+    if result_modules:
+        return ", ".join(result_modules)
+    return ""
+
+
+def _is_rppg_failure_detail_line(line: str) -> bool:
+    """True only for diagnostic lines that explain a FAILURE.
+
+    Used when surfacing rPPG failure detail into the GUI log: a failure that
+    occurs AFTER imports succeed must not echo "[rppg-diag] OK ..." lines or the
+    "all required modules import OK" verdict as if they explained the failure
+    (CodeRabbit Major, PR #67). Matches per-module BROKEN/MISSING, the
+    failing-RESULT verdict, "still missing", and the numpy-2 warning — but NOT
+    the OK lines or the all-clear verdict.
+    """
+    low = line.lower()
+    if low.startswith("[rppg-diag]"):
+        return (
+            "broken" in low
+            or "missing" in low
+            or "not importable" in low  # "RESULT: N required module(s) not importable"
+            or ("numpy-version" in low and "warning" in low)
+        )
+    return "still missing" in low
+
+
 def get_next_available_path(
     image_path: str,
     output_folder: str,
@@ -2103,6 +2172,9 @@ class QueueManager:
         used to update the per-queue-item progress bar as the rPPG
         injector emits synthesized "(~PCT%)" progress lines.
         """
+        # Reset the once-per-run "checking dependencies" note flag so the
+        # friendly note shows once for THIS run (not suppressed by a prior one).
+        self._rppg_dep_note_shown = False
         try:
             input_path = Path(video_path)
             if not input_path.exists():
@@ -2329,40 +2401,25 @@ class QueueManager:
             def _on_rppg_line(text: str) -> None:
                 if _is_tf_noise(text):
                     return
-                # The launcher's own setup/self-heal diagnostics (the
-                # rppg_import_diag.py per-module report + its WARN/ERROR
-                # status lines) MUST reach the main GUI panel — otherwise
-                # they fall through the tracker to "debug" and get hidden
-                # behind verbose_gui_mode (default off), which is exactly
-                # why the friend's "Core imports missing" log never named
-                # the failing module. Surface them at warning/error so the
-                # user always sees WHICH dependency broke and WHY (v2.16).
                 stripped = text.strip()
+                # The launcher's own dependency self-heal diagnostics (the
+                # rppg_import_diag.py per-module report + WARN/ERROR status
+                # lines) are kept OUT of the user-facing panel to avoid a
+                # wall of raw [rppg-diag] text in front of a non-technical
+                # user (user feedback, PR #67). They still go to the rotating
+                # FILE log (debug level) so they're fully recoverable, and a
+                # single friendly "checking dependencies" note is shown once.
+                # The precise 1–2 line cause + a pointer to rppg.log is
+                # surfaced by _surface_rppg_failure_detail only IF rPPG fails.
                 if _is_rppg_setup_diag(stripped):
-                    # Case-insensitive throughout: the diag helper emits
-                    # uppercase MISSING/BROKEN, but the launcher's own status
-                    # lines (and any future variant) may differ in case
-                    # (gemini MEDIUM, PR #67).
-                    low = stripped.lower()
-                    if (
-                        "missing" in low
-                        or "broken" in low
-                        or low.startswith(("error", "[error]"))
-                    ):
-                        level = "error"
-                    elif (
-                        # A SUCCESSFUL self-heal emits "[rppg-diag] OK ...",
-                        # "RESULT: all core modules import OK", and "deps
-                        # installed" — those are good news, not warnings, so
-                        # don't paint a clean recovery yellow (code-review LOW).
-                        "] ok" in low
-                        or "all core modules import" in low
-                        or "deps installed" in low
-                    ):
-                        level = "info"
-                    else:
-                        level = "warning"
-                    self.log(stripped, level)
+                    if not getattr(self, "_rppg_dep_note_shown", False):
+                        self._rppg_dep_note_shown = True
+                        self.log(
+                            "🩺 Checking / preparing rPPG dependencies… "
+                            "(details in the log file)",
+                            "info",
+                        )
+                    self.log(stripped, "debug")  # file-only unless verbose
                     return
                 # Panel noise (heavy TF chatter) is always debug-level
                 # regardless of verbose, otherwise pass to the tracker
@@ -2525,66 +2582,43 @@ class QueueManager:
             return None
 
     def _surface_rppg_failure_detail(self, output_lines, launcher) -> None:
-        """Surface the actionable rPPG failure detail into the main GUI log.
+        """Show a FRIENDLY 1–2 line cause + a pointer to the full log.
 
-        The friend's v2.13 "Core imports missing / did not satisfy imports"
-        log named no module because the granular diagnostic was either
-        swallowed (``>nul 2>&1``) or written only to ``.launcher_state/rppg.log``
-        — a file a non-technical user never opens. This pulls the named-module
-        detail back into the panel from two sources, best-effort:
+        The GUI processing log is read by a non-technical end user, so this
+        must NOT dump a wall of raw ``[rppg-diag]`` lines or an 8 KB log tail
+        (user feedback, PR #67). Instead:
 
-        1. The captured subprocess output — any ``[rppg-diag]`` per-module
-           report line, ``Still missing:`` line, or ``numpy-version:`` warning.
-        2. The tail of ``.launcher_state/rppg.log`` — so even detail that the
-           tracker may have filtered (or that the launcher wrote file-only)
-           reaches the user.
+          • If the failing module(s) can be extracted from the captured output,
+            show ONE concise line naming them ("📦 missing/broken: mediapipe").
+          • Always show a single pointer line to ``.launcher_state/rppg.log``
+            ("📄 Full details: <path>") so the precise stack is one click away.
 
-        Falls back to the prior "last output" tail when no structured detail
-        is present. Every branch is wrapped so a logging failure can never
-        turn a graceful rPPG skip into a crash.
+        The full per-module diagnostic still lands in that file (the launcher
+        tees it there) and in the GUI's own rotating file log (the live diag
+        lines are logged at ``debug``). Every branch is wrapped so a logging
+        failure can never turn a graceful rPPG skip into a crash.
         """
+        modules = ""
         try:
             lines = [str(ln).strip() for ln in (output_lines or []) if str(ln).strip()]
-            diag = [
-                ln
-                for ln in lines
-                if ln.startswith("[rppg-diag]")
-                or "still missing" in ln.lower()
-                or "numpy-version" in ln.lower()
-            ]
-            if diag:
-                self.log("   rPPG dependency diagnostic:", "warning")
-                for ln in diag:
-                    self.log(f"     {ln}", "warning")
-            elif lines:
-                # No structured diagnostic in the stream — tail the last line.
-                self.log(f"   last output: {lines[-1]}", "warning")
-        except Exception:  # noqa: BLE001 — diagnostics must never crash the skip
-            pass
+            modules = _extract_rppg_failed_modules(lines)
+        except Exception:  # noqa: BLE001 — extraction must never crash the skip
+            modules = ""
 
-        # Tail rppg.log so file-only launcher detail (the [INFO]/[WARN]/[ERROR]
-        # status lines + the mirrored [rppg-diag] block) is always visible.
+        if modules:
+            self.log(
+                f"   📦 rPPG dependency problem: {modules}. "
+                "The app will keep working; only the rPPG step is skipped.",
+                "warning",
+            )
+
+        # Always give the user a single, clickable path to the full detail
+        # instead of pasting the log into the panel.
         try:
             repo_root = Path(launcher).resolve().parent.parent
             log_path = repo_root / ".launcher_state" / "rppg.log"
             if log_path.is_file():
-                # rppg.log is append-only across every launch and never
-                # rotated, so read only the last 8 KB rather than the whole
-                # file just to keep 12 lines (code-review LOW).
-                with log_path.open("rb") as fh:
-                    fh.seek(0, 2)
-                    size = fh.tell()
-                    fh.seek(max(0, size - 8192))
-                    raw = fh.read()
-                tail = raw.decode("utf-8", errors="replace").splitlines()[-12:]
-                tail = [t for t in tail if t.strip()]
-                if tail:
-                    self.log(
-                        f"   rppg.log tail ({log_path}):",
-                        "warning",
-                    )
-                    for t in tail:
-                        self.log(f"     {t}", "warning")
+                self.log(f"   📄 Full details in: {log_path}", "warning")
         except Exception:  # noqa: BLE001 — best-effort; never break the skip
             pass
 
