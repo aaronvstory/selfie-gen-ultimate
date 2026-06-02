@@ -32,17 +32,21 @@ def _healthy_module_set():
 
 
 def _classify_repair_call(cmd):
-    """Classify a mocked ``subprocess.run`` pip command from run_repair into
-    one of: 'cpu_fallback' (torch CPU index), 'mediapipe' (the v2.17 --no-deps
-    mediapipe step), or 'face_stack_repair' (the REPAIR_PACKAGES install).
+    """Classify a mocked ``subprocess.run`` pip command from run_repair into:
+    'cpu_fallback' (torch CPU index), 'mediapipe' (--no-deps mediapipe step),
+    'mediapipe_runtime' (the v2.17 matplotlib/opencv-contrib/sounddevice step
+    that fixes the recurring Windows rPPG failure), or 'face_stack_repair'
+    (the REPAIR_PACKAGES install).
 
-    Order of checks matters: the mediapipe step is also a non-index install,
-    so it must be distinguished from the face-stack repair BEFORE the catch-all.
+    Order of checks matters: mediapipe_runtime + face_stack are both non-index,
+    non--no-deps installs, so the matplotlib marker must be checked first.
     """
     if "--index-url" in cmd and dhc._TORCH_CPU_INDEX_URL in cmd:
         return "cpu_fallback"
     if "--no-deps" in cmd and any("mediapipe" in str(a) for a in cmd):
         return "mediapipe"
+    if any("matplotlib" in str(a) for a in cmd):
+        return "mediapipe_runtime"
     return "face_stack_repair"
 
 
@@ -455,7 +459,8 @@ class TorchCudaFallbackTests(unittest.TestCase):
 
         self.assertTrue(ok, message)
         self.assertEqual(
-            call_order, ["cpu_fallback", "face_stack_repair", "mediapipe"]
+            call_order,
+            ["cpu_fallback", "face_stack_repair", "mediapipe", "mediapipe_runtime"],
         )
         self.assertIn("CPU-only fallback", message)
 
@@ -473,7 +478,7 @@ class TorchCudaFallbackTests(unittest.TestCase):
             ok, _ = dhc.run_repair(failures=["tensorflow missing __version__"])
 
         self.assertTrue(ok)
-        self.assertEqual(call_order, ["face_stack_repair", "mediapipe"])
+        self.assertEqual(call_order, ["face_stack_repair", "mediapipe", "mediapipe_runtime"])
 
     def test_run_repair_back_compat_no_failures_arg(self):
         """``run_repair()`` with no args (back-compat for external callers)
@@ -488,7 +493,7 @@ class TorchCudaFallbackTests(unittest.TestCase):
             ok, _ = dhc.run_repair()  # no failures arg
 
         self.assertTrue(ok)
-        self.assertEqual(call_order, ["face_stack_repair", "mediapipe"])
+        self.assertEqual(call_order, ["face_stack_repair", "mediapipe", "mediapipe_runtime"])
 
     def test_run_repair_continues_face_stack_when_cpu_fallback_fails(self):
         """Codex PR #55 round 4 P2: if the CPU fallback fails (e.g.
@@ -520,7 +525,8 @@ class TorchCudaFallbackTests(unittest.TestCase):
         # (and mediapipe too, both independently repairable).
         self.assertFalse(ok)
         self.assertEqual(
-            call_order, ["cpu_fallback", "face_stack_repair", "mediapipe"]
+            call_order,
+            ["cpu_fallback", "face_stack_repair", "mediapipe", "mediapipe_runtime"],
         )
         self.assertIn("torch CPU fallback failed", message)
         self.assertIn("repair install completed", message)
@@ -543,12 +549,13 @@ class TorchCudaFallbackTests(unittest.TestCase):
         self.assertIn("repair install completed", message)
 
         # Now face-stack fails; cuda fallback ok. Overall should be False.
-        # v2.17: run_repair now makes THREE pip calls (cpu fallback, face
-        # stack, mediapipe --no-deps) — the seq must supply a result for each.
+        # v2.17: run_repair now makes FOUR pip calls (cpu fallback, face stack,
+        # mediapipe --no-deps, mediapipe runtime deps) — seq supplies each.
         seq = [
             types.SimpleNamespace(returncode=0, stdout="", stderr=""),  # cuda ok
             types.SimpleNamespace(returncode=1, stdout="", stderr="pip resolution conflict"),  # face fails
-            types.SimpleNamespace(returncode=0, stdout="", stderr=""),  # mediapipe ok
+            types.SimpleNamespace(returncode=0, stdout="", stderr=""),  # mediapipe --no-deps ok
+            types.SimpleNamespace(returncode=0, stdout="", stderr=""),  # mediapipe runtime deps ok
         ]
         with mock.patch("dependency_health_check.subprocess.run", side_effect=seq):
             ok, message = dhc.run_repair(

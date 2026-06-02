@@ -89,6 +89,11 @@ if [ ! -f "$STAMP" ] || ! "$PYTHON_CMD" -c "import cv2, numpy" >/dev/null 2>&1 |
     echo "Close running Python processes and retry. If still failing, recreate venv."
     exit 1
   }
+  # v2.17: mediapipe --no-deps leaves matplotlib (imported by
+  # mediapipe.tasks at load) + opencv-contrib/sounddevice absent, so
+  # MP_VALIDATE_CMD below would crash. Install them (numpy<2 pinned).
+  "$PYTHON_CMD" -m pip install "${CONSTRAINTS_ARG[@]+"${CONSTRAINTS_ARG[@]}"}" \
+    matplotlib "opencv-contrib-python<4.12" sounddevice "numpy>=1.26,<2" || true
   if ! "$PYTHON_CMD" -c "$MP_VALIDATE_CMD" >/dev/null 2>&1; then
     echo "MediaPipe installed but Tasks FaceLandmarker API unavailable. Oldcam v10 cannot run."
     echo "Close Python/GUI processes, delete/rebuild venv, and retry."

@@ -600,7 +600,48 @@ def run_repair(failures: list[str] | None = None) -> tuple[bool, str]:
         )
         mediapipe_ok = False
 
-    return (cuda_ok and face_ok and mediapipe_ok), "; ".join(messages)
+    # v2.17 CRITICAL FIX (the recurring Windows rPPG-failure root cause):
+    # mediapipe is installed --no-deps, so its RUNTIME deps are never pulled.
+    # But `mediapipe.tasks.python.vision` (the FaceLandmarker the rPPG injector
+    # and oldcam use) imports matplotlib (via drawing_utils) AT MODULE LOAD,
+    # and uses opencv-contrib-python + sounddevice at runtime. A bare
+    # `import mediapipe` PASSES, so every prior Windows install gate thought
+    # mediapipe was fine -- then `from mediapipe.tasks.python import vision`
+    # crashed with "No module named 'matplotlib'" and rPPG fell back to
+    # -NORPPG on EVERY run. setup_macos.sh always installed these three;
+    # the Windows launchers + this repair NEVER did. Install them now, pinned
+    # numpy<2 so matplotlib->contourpy->numpy can't upgrade numpy and break TF.
+    mp_runtime_pkgs = [
+        "matplotlib",
+        "opencv-contrib-python<4.12",
+        "sounddevice",
+        "numpy>=1.26,<2",
+    ]
+    mp_rt_cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--no-cache-dir",
+        *constraint_args,
+        *mp_runtime_pkgs,
+    ]
+    mp_rt_completed = subprocess.run(
+        mp_rt_cmd, capture_output=True, text=True, errors="replace", check=False
+    )
+    if mp_rt_completed.returncode == 0:
+        messages.append("mediapipe runtime deps (matplotlib/contrib/sounddevice) installed")
+        mp_runtime_ok = True
+    else:
+        mp_rt_details = _extract_pip_failure_detail(mp_rt_completed)
+        messages.append(
+            f"mediapipe runtime deps failed (code {mp_rt_completed.returncode}): {mp_rt_details}"
+        )
+        mp_runtime_ok = False
+
+    return (
+        cuda_ok and face_ok and mediapipe_ok and mp_runtime_ok
+    ), "; ".join(messages)
 
 
 def verify_in_fresh_process() -> tuple[bool, list[str]]:

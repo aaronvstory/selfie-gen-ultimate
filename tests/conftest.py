@@ -17,6 +17,20 @@ real bugs) should propagate so the test suite catches them loudly
 instead of silently leaking state.
 """
 
+# v2.17: set the ML-backend env BEFORE importing anything that could import
+# TensorFlow. TF 2.16 ships Keras 3 by default, under which `tf.keras` is
+# unavailable and `mtcnn` (a deepface dependency) crashes at import with
+# "module 'tensorflow' has no attribute 'keras'", failing test_similarity_engine
+# COLLECTION. The app avoids this via ensure_ml_backend_env() (TF_USE_LEGACY_KERAS=1
+# + KERAS_BACKEND=tensorflow) before importing TF. These MUST be set before TF is
+# first imported in the pytest process — and conftest is imported before any test
+# module — so set the raw vars at the very top here, unconditionally, with no
+# import that could pull TF in first.
+import os
+
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+os.environ.setdefault("KERAS_BACKEND", "tensorflow")
+
 import uuid
 
 import pytest

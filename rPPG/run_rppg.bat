@@ -66,7 +66,7 @@ if errorlevel 1 (
   %PAUSE%
   exit /b 1
 )
-"!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
+"!PYTHON_BIN!" -c "import cv2, numpy, scipy; from mediapipe.tasks.python import vision; assert vision.FaceLandmarker" >nul 2>&1
 if errorlevel 1 (
   rem v2.7 friend-zip self-heal (PR #54 / 2026-05-27): the prior block
   rem only ECHOED the sync command and exited. A user opening a fresh
@@ -131,7 +131,7 @@ if errorlevel 1 (
   rem Re-check imports after acquiring the lock - a sibling may have
   rem ALREADY installed them while we waited, in which case we can skip
   rem the pip work entirely.
-  "!PYTHON_BIN!" -c "import cv2, numpy, mediapipe, scipy" >nul 2>&1
+  "!PYTHON_BIN!" -c "import cv2, numpy, scipy; from mediapipe.tasks.python import vision; assert vision.FaceLandmarker" >nul 2>&1
   if !errorlevel! equ 0 (
     rmdir /S /Q "!RPPG_SETUP_LOCK!" >nul 2>&1
     echo   OK: rPPG deps installed by sibling launcher; continuing.
@@ -251,6 +251,16 @@ if defined RPPG_MEDIAPIPE_SPEC (
   echo   Installing MediaPipe separately with --no-deps: !RPPG_MEDIAPIPE_SPEC!
   "!PYTHON_BIN!" -m pip install --no-deps -c "%REPO_ROOT%\constraints.txt" "!RPPG_MEDIAPIPE_SPEC!"
   set "PIP_EXIT=!errorlevel!"
+  rem v2.17 CRITICAL: mediapipe --no-deps leaves its RUNTIME deps absent.
+  rem mediapipe.tasks.python.vision imports matplotlib at load time + uses
+  rem opencv-contrib-python / sounddevice. Without these the deep import
+  rem gate above fails forever and rPPG -NORPPGs every run (the recurring
+  rem Windows bug). numpy<2 pinned so matplotlib->contourpy can not upgrade it.
+  if !PIP_EXIT! equ 0 (
+    echo   Installing MediaPipe runtime deps ^(matplotlib/opencv-contrib/sounddevice^)...
+    "!PYTHON_BIN!" -m pip install -c "%REPO_ROOT%\constraints.txt" matplotlib "opencv-contrib-python<4.12" sounddevice "numpy>=1.26,<2"
+    set "PIP_EXIT=!errorlevel!"
+  )
 )
 del "%RPPG_REQ_FILTERED%" >nul 2>&1
 exit /b !PIP_EXIT!

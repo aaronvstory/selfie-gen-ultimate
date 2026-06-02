@@ -108,6 +108,11 @@ if "%NEED_PIP%"=="0" (
     set "HAD_ERRORS=1"
     goto DONE
   )
+  rem v2.17: mediapipe was just installed --no-deps; install its RUNTIME
+  rem deps (matplotlib at module load + opencv-contrib/sounddevice) or the
+  rem MP_VALIDATE_CMD below crashes with "No module named matplotlib"
+  rem (the recurring rPPG/oldcam bug). numpy<2 pinned so it cannot upgrade.
+  "%PYTHON_CMD%" -m pip install !CC! matplotlib "opencv-contrib-python<4.12" sounddevice "numpy>=1.26,<2" >nul 2>&1
   for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1
   "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%" >nul 2>&1
   if errorlevel 1 (

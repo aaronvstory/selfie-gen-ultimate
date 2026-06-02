@@ -266,6 +266,21 @@ if !errorlevel! equ 0 (
         del "%REQ_FILTERED%" >nul 2>&1
         exit /b 1
     )
+    rem v2.17 CRITICAL: mediapipe was just installed --no-deps, so its
+    rem RUNTIME deps are NOT present. mediapipe.tasks.python.vision (the
+    rem FaceLandmarker rPPG + oldcam use) imports matplotlib at load time +
+    rem uses opencv-contrib-python / sounddevice. A bare "import mediapipe"
+    rem passes, so the old gate thought it was fine -- then the real import
+    rem crashed with "No module named matplotlib" and rPPG fell back to
+    rem -NORPPG on EVERY run. setup_macos.sh always installed these three;
+    rem the Windows launcher never did (the recurring rPPG bug). numpy<2
+    rem pinned so matplotlib->contourpy->numpy cannot upgrade numpy + break TF.
+    echo   Installing MediaPipe runtime deps ^(matplotlib/opencv-contrib/sounddevice^)...
+    "%VENV_PYTHON%" -m pip install !CC! matplotlib "opencv-contrib-python<4.12" sounddevice "numpy>=1.26,<2"
+    if !errorlevel! neq 0 (
+        del "%REQ_FILTERED%" >nul 2>&1
+        exit /b 1
+    )
 )
 del "%REQ_FILTERED%" >nul 2>&1
 exit /b 0
