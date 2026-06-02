@@ -20,9 +20,17 @@ set "LOG_FILE=%STATE_DIR%\launch.log"
 if not exist "%STATE_DIR%\" mkdir "%STATE_DIR%"
 
 rem --- Timestamp banner -----------------------------------------------------
+set "LAUNCH_TS="
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
-set "WMIC_DT=%WMIC_DT: =%"
-set "LAUNCH_TS=%WMIC_DT:~0,4%-%WMIC_DT:~4,2%-%WMIC_DT:~6,2% %WMIC_DT:~8,2%:%WMIC_DT:~10,2%:%WMIC_DT:~12,2%"
+if defined WMIC_DT (
+    set "WMIC_DT=!WMIC_DT: =!"
+    set "LAUNCH_TS=!WMIC_DT:~0,4!-!WMIC_DT:~4,2!-!WMIC_DT:~6,2! !WMIC_DT:~8,2!:!WMIC_DT:~10,2!:!WMIC_DT:~12,2!"
+)
+rem wmic is removed on modern Win11 -> fall back to PowerShell (always
+rem present on Win10/11), then locale date/time, so launch-log timestamps
+rem are never blank (gemini MED, PR #66).
+if not defined LAUNCH_TS for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'" 2^>nul`) do set "LAUNCH_TS=%%T"
+if not defined LAUNCH_TS set "LAUNCH_TS=%DATE% %TIME%"
 rem --- Release version (parsed from app_version.py text; no Python needed,
 rem --- so it prints even on a truly fresh system before the venv exists).
 rem --- Single source of truth: app_version.RELEASE_VERSION -- same constant

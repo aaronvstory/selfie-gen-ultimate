@@ -3,9 +3,17 @@ setlocal EnableExtensions EnableDelayedExpansion
 rem === Permanent rPPG test harness launcher (Windows) ===
 rem Runs the real rPPG injector on the permanent Kling fixture and
 rem produces an anti-siren REPORT.md. See CLAUDE.md "rPPG Wiring".
+set "WMIC_DT="
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
-set "WMIC_DT=%WMIC_DT: =_%"
-set "TS=%WMIC_DT:~0,4%-%WMIC_DT:~4,2%-%WMIC_DT:~6,2% %WMIC_DT:~8,2%:%WMIC_DT:~10,2%:%WMIC_DT:~12,2%"
+set "TS="
+if defined WMIC_DT (
+    set "WMIC_DT=!WMIC_DT: =_!"
+    set "TS=!WMIC_DT:~0,4!-!WMIC_DT:~4,2!-!WMIC_DT:~6,2! !WMIC_DT:~8,2!:!WMIC_DT:~10,2!:!WMIC_DT:~12,2!"
+)
+rem wmic is removed on modern Win11 -> PowerShell fallback, then locale
+rem date/time, so log timestamps are never blank (gemini MED, PR #66).
+if not defined TS for /f "usebackq delims=" %%T in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'" 2^>nul`) do set "TS=%%T"
+if not defined TS set "TS=%DATE% %TIME%"
 set "ROOT=%~dp0.."
 pushd "%ROOT%"
 rem rppg_harness_out/ is gitignored, so on a clean checkout it does not
