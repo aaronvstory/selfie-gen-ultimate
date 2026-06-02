@@ -47,7 +47,7 @@ retina-face==0.0.17
 # missing absl crashes the whole rPPG step (the friend's v2.13 "rPPG fails,
 # everything else works" bug). Pin it so a fresh venv always gets it. The
 # ~=2.3 range matches what mediapipe 0.10.35 + TF 2.16.2 expect.
-absl-py~=2.1
+absl-py~=2.3
 # torch is required by DeepFace's anti-spoofing classifier (MiniFASNetV2).
 # Without it the engine fails ALL similarity comparisons when anti_spoofing=True.
 # Pinned to a CPU-only-compatible version range; user can swap for the CUDA build manually.

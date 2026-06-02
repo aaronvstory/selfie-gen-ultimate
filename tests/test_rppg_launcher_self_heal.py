@@ -238,8 +238,8 @@ def test_absl_pinned_in_requirements_and_constraints():
     root = Path(__file__).resolve().parent.parent
     reqs = (root / "requirements.txt").read_text(encoding="utf-8")
     cons = (root / "constraints.txt").read_text(encoding="utf-8")
-    assert "absl-py~=2.1" in reqs, "requirements.txt must pin absl-py explicitly"
-    assert "absl-py>=2.1,<3" in cons, "constraints.txt must pin absl-py"
+    assert "absl-py~=2.3" in reqs, "requirements.txt must pin absl-py explicitly"
+    assert "absl-py>=2.3,<3" in cons, "constraints.txt must pin absl-py"
 
 
 def test_rppg_injector_absl_import_is_guarded():

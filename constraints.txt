@@ -28,4 +28,4 @@ tf-keras==2.16.0
 # installed --no-deps (so its absl-py~=2.3 is skipped) and the TF-side absl can
 # fail to land on a fresh venv. Pin it so any -c-constrained resolve keeps absl
 # present. (v2.15 — friend's "rPPG fails, everything else works" bug.)
-absl-py>=2.1,<3
+absl-py>=2.3,<3
