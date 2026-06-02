@@ -82,7 +82,12 @@ set "STAMP=%STATE_DIR%\oldcam_v11_%STAMP_KEY:~0,60%.ok"
 
 set "NEED_PIP=1"
 if exist "%STAMP%" (
-  "%PYTHON_CMD%" -c "import cv2, numpy, mediapipe" >nul 2>&1
+  rem v2.17 (Codex P2): deep-validate the mediapipe Tasks API (FaceLandmarker)
+  rem on the cached-stamp path too -- a bare `import ...mediapipe` passes even
+  rem when matplotlib (a mediapipe.tasks runtime dep) is missing, so a stale
+  rem stamp would skip the sync and Oldcam would then crash on FaceLandmarker.
+  "%PYTHON_CMD%" -c "import cv2, numpy" >nul 2>&1
+  if not errorlevel 1 "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%" >nul 2>&1
   if not errorlevel 1 set "NEED_PIP=0"
 )
 if "%NEED_PIP%"=="0" (

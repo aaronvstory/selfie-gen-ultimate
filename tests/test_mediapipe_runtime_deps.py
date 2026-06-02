@@ -178,3 +178,17 @@ def test_rppg_injector_registers_cuda_dll_dirs_and_force_cpu():
     assert "RPPG_FORCE_CPU" in src
     # The helper must run BEFORE `import cupy`.
     assert src.index("_register_cuda_dll_dirs()") < src.index("import cupy as _cp")
+
+
+@pytest.mark.parametrize("v", ["v9", "v10", "v11"])
+def test_oldcam_cached_stamp_probe_deep_validates_mediapipe(v):
+    """Codex P2 (2026-06-03): the oldcam v9/v10/v11 cached-stamp skip probe must
+    deep-validate the mediapipe Tasks API (MP_VALIDATE_CMD / FaceLandmarker),
+    not just `import cv2, numpy, mediapipe` — a bare import passes even when
+    matplotlib (a mediapipe.tasks runtime dep) is missing, so a stale stamp
+    would skip the sync and Oldcam then crashes on FaceLandmarker."""
+    src = _read(f"oldcam-{v}/oldcam_launcher.bat")
+    # The cached-stamp block must run MP_VALIDATE_CMD before clearing NEED_PIP.
+    assert "%MP_VALIDATE_CMD%" in src
+    # And must NOT trust a bare `import cv2, numpy, mediapipe` alone as the gate.
+    assert 'if not errorlevel 1 "%PYTHON_CMD%" -c "%MP_VALIDATE_CMD%"' in src
