@@ -3626,28 +3626,52 @@ class KlingGUIWindow:
                     pass
 
     def _init_generator(self):
-        """Initialize the video generator and queue manager."""
+        """Initialize the video generator and queue manager.
+
+        The QueueManager is created ALWAYS (even without a fal.ai key), because
+        LOCAL-ONLY post-processes — rPPG re-run, Oldcam re-run, Loop — operate
+        on an EXISTING video and never touch the Kling generator. Gating the
+        whole queue manager behind ``falai_api_key`` (the prior behaviour) left
+        ``self.queue_manager = None`` for key-less users, so every re-run /
+        queue action failed with "Queue manager not initialized" and they
+        couldn't even test rPPG. Only the live ``generator`` (used by actual
+        Kling generation) requires the key; that part degrades to None + a
+        targeted warning, while the queue manager stays usable for reruns.
+        """
         if not HAS_GENERATOR:
             self._log(
                 "Generator not available - check kling_generator_falai.py", "error"
             )
             return
 
+        # Build the Kling generator only when a key is present. A missing key
+        # is NOT fatal — local reruns don't need it.
         api_key = self.config.get("falai_api_key", "")
-        if not api_key:
-            self._log("No API key configured - set it in the main app first", "warning")
-            return
-
-        try:
-            self.generator = FalAIKlingGenerator(
-                api_key=api_key,
-                verbose=self.config.get("verbose_logging", True),
-                model_endpoint=self.config.get("current_model"),
-                model_display_name=self.config.get("model_display_name"),
-                prompt_slot=self.config.get("current_prompt_slot", 1),
-                freeimage_key=self.config.get("freeimage_api_key", ""),
+        if api_key:
+            try:
+                self.generator = FalAIKlingGenerator(
+                    api_key=api_key,
+                    verbose=self.config.get("verbose_logging", True),
+                    model_endpoint=self.config.get("current_model"),
+                    model_display_name=self.config.get("model_display_name"),
+                    prompt_slot=self.config.get("current_prompt_slot", 1),
+                    freeimage_key=self.config.get("freeimage_api_key", ""),
+                )
+            except Exception as e:
+                self.generator = None
+                self._log(f"Failed to initialize generator: {e}", "error")
+        else:
+            self.generator = None
+            self._log(
+                "No fal.ai API key yet - video generation disabled until you add "
+                "one, but rPPG / Oldcam / Loop re-runs still work.",
+                "warning",
             )
 
+        # ALWAYS create the queue manager (tolerates generator=None; the
+        # generator is only dereferenced during Kling generation, which the
+        # missing-key guard blocks separately).
+        try:
             self.queue_manager = QueueManager(
                 generator=self.generator,
                 config_getter=lambda: self.config,
@@ -3655,11 +3679,12 @@ class KlingGUIWindow:
                 queue_update_callback=self._update_queue_display_thread_safe,
                 processing_complete_callback=self._on_item_complete,
             )
-
-            self._log("Generator initialized successfully", "success")
-
+            if self.generator is not None:
+                self._log("Generator initialized successfully", "success")
+            else:
+                self._log("Queue ready (local re-runs enabled; add a key for generation).", "info")
         except Exception as e:
-            self._log(f"Failed to initialize generator: {e}", "error")
+            self._log(f"Failed to initialize queue manager: {e}", "error")
 
     def _prompt_startup_provider_keys_on_first_run(self):
         """First-launch key onboarding (Fal.ai + BFL), never exits app."""

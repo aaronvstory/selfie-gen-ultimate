@@ -1,0 +1,102 @@
+"""Regression: the QueueManager must initialize even WITHOUT a fal.ai API key.
+
+Bug (2026-06-03, friend + user both hit it): `_init_generator` returned early
+when `falai_api_key` was empty, leaving `self.queue_manager = None`. Every queue
+action + every LOCAL re-run (rPPG / Oldcam / Loop) then failed with "Queue
+manager not initialized" — the user couldn't even test rPPG without first
+configuring a generation key, even though rPPG is a local post-process that
+never touches the Kling generator.
+
+Fix: build the generator only when a key is present (else None + a targeted
+warning), but ALWAYS create the queue manager. These tests drive
+`MainWindow._init_generator` against a lightweight stub (no Tk window needed)
+so the contract is locked.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
+class _Stub:
+    """Minimal stand-in exposing only what _init_generator reads/writes."""
+
+    def __init__(self, config):
+        self.config = config
+        self.generator = None
+        self.queue_manager = None
+        self.logs = []
+
+    # _init_generator uses these callbacks/attrs:
+    def _log(self, msg, level="info"):
+        self.logs.append((level, msg))
+
+    def _log_thread_safe(self, msg, level="info"):
+        self.logs.append((level, msg))
+
+    def _update_queue_display_thread_safe(self):
+        pass
+
+    def _on_item_complete(self, item):
+        pass
+
+
+def _run_init_generator(config):
+    from kling_gui import main_window as mw
+
+    if not mw.HAS_GENERATOR:
+        pytest.skip("generator backend unavailable in this env")
+    stub = _Stub(config)
+    # Bind the real method to the stub and run it.
+    mw.KlingGUIWindow._init_generator(stub)
+    return stub, mw
+
+
+def test_queue_manager_created_without_api_key():
+    """No fal.ai key -> generator is None, but the queue manager IS created so
+    local re-runs (rPPG/Oldcam/Loop) work."""
+    stub, _mw = _run_init_generator({"falai_api_key": ""})
+    assert stub.queue_manager is not None, (
+        "queue_manager must be created even without a fal.ai key — otherwise "
+        "rPPG/Oldcam re-runs fail with 'Queue manager not initialized'"
+    )
+    assert stub.generator is None, "no key -> no live generator"
+    # The user must get a helpful, non-fatal warning, not silence.
+    joined = " ".join(m for _lvl, m in stub.logs).lower()
+    assert "re-run" in joined or "rerun" in joined or "generation disabled" in joined
+
+
+def test_queue_manager_created_with_api_key():
+    """A present key -> both the generator and queue manager are created."""
+    stub, _mw = _run_init_generator({
+        "falai_api_key": "test-key-123",
+        "freeimage_api_key": "",
+        "verbose_logging": False,
+    })
+    assert stub.queue_manager is not None
+    # Generator may still be None if FalAIKlingGenerator construction raised on a
+    # fake key, but the queue manager must exist regardless (the whole point).
+
+
+def test_generator_construction_failure_still_creates_queue_manager(monkeypatch):
+    """If FalAIKlingGenerator() raises (bad key, network), the queue manager
+    must STILL be created so local re-runs survive a generator-init failure."""
+    from kling_gui import main_window as mw
+
+    if not mw.HAS_GENERATOR:
+        pytest.skip("generator backend unavailable")
+
+    def _boom(*a, **k):
+        raise RuntimeError("simulated generator init failure")
+
+    monkeypatch.setattr(mw, "FalAIKlingGenerator", _boom)
+    stub = _Stub({"falai_api_key": "key"})
+    mw.KlingGUIWindow._init_generator(stub)
+    assert stub.queue_manager is not None
+    assert stub.generator is None
