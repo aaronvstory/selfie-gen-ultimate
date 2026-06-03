@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
@@ -11,39 +12,57 @@ class ApiKeySpec:
     url: str
     instruction: str
     required_at_start: bool = False
+    # Environment variable to fall back to when this key is missing from the
+    # saved config. Names match each service's own convention + the codebase's
+    # existing usage: fal.ai's SDK reads FAL_KEY natively (fal_utils.py sets it);
+    # FREEIMAGE_API_KEY is already read in fal_utils/kling_generator. A saved
+    # config value ALWAYS wins — the env var is a fallback for an empty key only.
+    env_var: str = ""
 
 
+# NOTHING is required at startup (user direction 2026-06-04): a user may only
+# want rPPG / Oldcam (which need no key at all), or only fal.ai (the default
+# provider for every flow). The first-launch dialog is purely informational and
+# never blocks. BFL in particular is NOT needed — it powers a couple of optional
+# selfie/outpaint models; fal.ai is the default everywhere.
 API_KEY_SPECS: List[ApiKeySpec] = [
     ApiKeySpec(
         config_key="falai_api_key",
         label="Fal.ai",
         url="https://fal.ai/dashboard/keys",
         instruction="Create a key in fal.ai dashboard, then paste it here.",
-        required_at_start=True,
+        env_var="FAL_KEY",
     ),
     ApiKeySpec(
         config_key="bfl_api_key",
         label="BFL",
         url="https://api.bfl.ai/",
         instruction="Create a BFL API key for BFL-powered selfie/outpaint models.",
+        env_var="BFL_API_KEY",
     ),
     ApiKeySpec(
         config_key="openrouter_api_key",
         label="OpenRouter",
         url="https://openrouter.ai/keys",
         instruction="Create an OpenRouter key for Prep tab vision analysis models.",
+        env_var="OPENROUTER_API_KEY",
     ),
     ApiKeySpec(
         config_key="freeimage_api_key",
         label="Freeimage",
         url="https://freeimage.host/page/api",
         instruction="Create a Freeimage API key for image upload URL fallback.",
+        env_var="FREEIMAGE_API_KEY",
     ),
 ]
 
 
 def ensure_key_fields(config: Dict[str, Any]) -> bool:
     """Ensure all expected API key fields exist in config.
+
+    Structural normalization ONLY: a missing/None key becomes "". Does NOT read
+    env vars (that's apply_env_key_fallback, which is in-memory and not
+    persisted) so the saved kling_config.json never silently gains a key value.
 
     Args:
         config: Configuration dictionary to normalize.
@@ -57,6 +76,40 @@ def ensure_key_fields(config: Dict[str, Any]) -> bool:
             config[spec.config_key] = ""
             changed = True
     return changed
+
+
+def apply_env_key_fallback(config: Dict[str, Any]) -> List[str]:
+    """In-memory prefill of empty API keys from their environment variables.
+
+    For each key spec with an ``env_var``: if the config value is empty/blank
+    AND the env var is set, copy the env value into the in-memory config so the
+    app just works without nagging. A saved (non-empty) config value ALWAYS
+    overrides — the env var is a fallback for a missing key only.
+
+    Deliberately MUTATES ``config`` in place but does NOT mark it dirty for save:
+    callers must NOT persist on the strength of this, so the env value is
+    re-read every launch (env stays the source of truth; rotating the env var
+    takes effect immediately; the saved config file never silently gains the
+    secret). Returns the list of config_keys that were filled from env (for an
+    optional one-line "loaded from environment" log).
+
+    Args:
+        config: Configuration dictionary to prefill in place.
+
+    Returns:
+        List of config_key names that were populated from their env var.
+    """
+    filled: List[str] = []
+    for spec in API_KEY_SPECS:
+        if not spec.env_var:
+            continue
+        if str(config.get(spec.config_key, "") or "").strip():
+            continue  # user-saved value wins
+        env_val = os.environ.get(spec.env_var, "")
+        if env_val and env_val.strip():
+            config[spec.config_key] = env_val.strip()
+            filled.append(spec.config_key)
+    return filled
 
 
 def key_is_set(config: Dict[str, Any], config_key: str) -> bool:
