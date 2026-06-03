@@ -39,6 +39,17 @@ if not defined _PF_SHARED goto :_pf_done
 set "_PF_HEALTH=%_PF_ROOT%\dependency_health_check.py"
 set "_PF_STATE=%_PF_ROOT%\.launcher_state"
 if not exist "%_PF_STATE%\" mkdir "%_PF_STATE%" >nul 2>&1
+rem --- v2.20 uv fast-path: provision the FULL shared env via one uv sync
+rem  (oldcam/similarity launched before the main app still install no
+rem  subset -- they funnel through the same canonical uv sync). On any uv
+rem  problem this no-ops + we fall through to the health probe/repair below.
+if not "%KLING_USE_PIP%"=="1" if exist "%_PF_ROOT%\scripts\win_uv_sync.bat" (
+    call "%_PF_ROOT%\scripts\win_uv_sync.bat" "%_PF_PY%" "%_PF_ROOT%"
+    if defined UV_SYNCED (
+        echo   [preflight] shared env ready via uv.
+        goto :_pf_done
+    )
+)
 rem Quick probe of the FULL runtime set against the shared venv.
 rem NOTE (code-review M2): this helper is CALLed (no setlocal/delayed expansion),
 rem so it reads %errorlevel% directly and uses the CALLed-subroutine idiom

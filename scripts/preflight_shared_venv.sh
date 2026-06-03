@@ -43,6 +43,19 @@ selfiegen_preflight_shared_venv() {
   local state="${repo_root}/.launcher_state"
   mkdir -p "${state}" 2>/dev/null || true
 
+  # v2.20: prefer the uv fast-path. A sub-launcher (oldcam/similarity) launched
+  # before the main app provisions the FULL shared env via one `uv sync` — so
+  # it still installs no divergent subset; it funnels through the same canonical
+  # uv sync the GUI/CLI use. On any uv problem this no-ops and we fall through
+  # to the canonical health-check/repair below (KLING_USE_PIP=1 forces pip).
+  if [[ -f "${repo_root}/scripts/uv_sync.sh" ]]; then
+    local UV_SYNCED=""
+    # shellcheck source=/dev/null
+    source "${repo_root}/scripts/uv_sync.sh"
+    selfiegen_uv_sync "${py}" "${repo_root}" || true
+    [[ -n "${UV_SYNCED}" ]] && return 0
+  fi
+
   if "${py}" "${health}" --mode check >"${state}/preflight_health.log" 2>&1; then
     return 0
   fi

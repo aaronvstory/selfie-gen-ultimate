@@ -75,6 +75,20 @@ def test_uv_sync_deps_sets_generous_http_timeout():
     assert "UV_HTTP_TIMEOUT" in src, "uv_sync_deps must raise UV_HTTP_TIMEOUT"
 
 
+def test_preflight_helpers_try_uv_fast_path():
+    """The shared sub-launcher preflight (oldcam/similarity/resemble) must try
+    the uv fast-path so those sub-apps provision the FULL shared env via uv —
+    still installing no divergent subset (they funnel through the same canonical
+    uv sync). The pip health-check/repair stays as the fallback below it."""
+    win = _read("scripts/win_preflight_shared_venv.bat")
+    sh = _read("scripts/preflight_shared_venv.sh")
+    assert "win_uv_sync.bat" in win, "win preflight must try the uv fast-path"
+    assert "uv_sync.sh" in sh, "sh preflight must try the uv fast-path"
+    # Fallback intact: the canonical health probe/repair must still be present.
+    assert "dependency_health_check" in win and "--mode" in win
+    assert "dependency_health_check" in sh and "--mode" in sh
+
+
 def test_run_auto_inherits_uv_via_delegation():
     """run_auto.bat is a thin wrapper over the CLI chain — it must NOT install
     deps itself; it inherits the uv fast-path by delegating to run_cli.bat."""
