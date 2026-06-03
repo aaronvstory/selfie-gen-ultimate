@@ -1237,7 +1237,9 @@ def stream_subprocess_with_timeout(
                 process.kill()
                 try:
                     process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
+                except (subprocess.TimeoutExpired, OSError):
+                    # OSError: handle already reaped/closed by a racing kill —
+                    # must not crash the stream on the abort path (gemini MEDIUM).
                     pass
             raise subprocess.TimeoutExpired(cmd, timeout_seconds)
         remaining = deadline - time.monotonic()

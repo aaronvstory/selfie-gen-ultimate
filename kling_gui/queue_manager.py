@@ -639,6 +639,29 @@ class QueueManager:
         """True if the user asked to abort the in-flight job."""
         return self._abort_event.is_set()
 
+    def _handle_item_abort(self, item):
+        """Clean up after a user Abort mid-item (code-review Codex P2).
+
+        Called from the worker loop when ``_abort_requested()`` is observed
+        between post-processing stages. Re-queues the item (so a later Resume
+        re-runs it cleanly rather than leaving a half-finished output marked
+        done), drops the worker out of the run loop (the queue is already
+        paused by abort_current_job), and logs it. Does NOT mark the item
+        failed — an abort is a user choice, not an error.
+        """
+        with self.lock:
+            if item.status == "processing":
+                item.status = "pending"
+                item.stage = "queued"
+                item.stage_percent = 0
+        self.is_running = False
+        self.log(
+            f"⛔ Aborted '{item.filename}' mid-job; re-queued. "
+            "Press Resume to re-run it.",
+            "warning",
+        )
+        self.update_queue_display()
+
     def _publish_active_subprocess(self, proc: Optional[subprocess.Popen]):
         """Record the long-running child so abort_current_job() can kill it.
 
@@ -1430,6 +1453,17 @@ class QueueManager:
                         else:
                             final_video = self._mark_norppg(final_video)
 
+                    # Abort guard (code-review Codex P2): _rppg_video returns
+                    # None on a user Abort exactly like an ordinary skip, so
+                    # WITHOUT this check the worker would march on into Loop /
+                    # Oldcam / final "done" and still produce + mark a completed
+                    # output AFTER the user pressed Abort. Bail the whole item
+                    # the instant an abort is observed (the queue is already
+                    # paused; the item is re-queued so resume re-runs it clean).
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        continue
+
                     # Step 2: Loop on the rPPG'd (or raw if rPPG was
                     # OFF/skipped) base. After this step, ``final_video``
                     # is the single source every Oldcam version + the
@@ -1441,6 +1475,10 @@ class QueueManager:
                         looped_video = self._loop_video(final_video, item)
                         if looped_video:
                             final_video = looped_video
+
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        continue
 
                     # Step 3: Oldcam runs EVERY selected version.
                     # _oldcam_video returns the highest version's path;
@@ -1458,6 +1496,10 @@ class QueueManager:
                             final_video = oldcam_video
                         summary = self._last_oldcam_run_summary or {}
                         oldcam_outputs = list(summary.get("outputs") or [])
+
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        continue
 
                     # Step 4 (OPTIONAL): legacy per-Oldcam rPPG fan-out.
                     # When ``rppg_per_oldcam_fanout`` is True AND rPPG

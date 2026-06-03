@@ -99,3 +99,27 @@ def test_abort_event_cleared_per_item_semantics():
     assert qm._abort_requested()
     qm._abort_event.clear()
     assert not qm._abort_requested(), "clearing the Event must reset abort state"
+
+
+def test_handle_item_abort_requeues_not_fails():
+    """code-review Codex P2: aborting mid-item must re-queue the item (pending),
+    NOT mark it failed and NOT mark it done. The user can then Resume to re-run
+    it cleanly instead of getting a half-finished output marked complete."""
+    qm, logs = _make_qm()
+
+    class _Item:
+        filename = "clip.mp4"
+        status = "processing"
+        stage = "rppg"
+        stage_percent = 42
+        output_path = None
+
+    item = _Item()
+    qm._handle_item_abort(item)
+    assert item.status == "pending", "aborted item must be re-queued, not failed/done"
+    assert item.stage == "queued"
+    assert item.stage_percent == 0
+    assert qm.is_running is False
+    # An abort is a user choice — it must NOT be logged as an error.
+    assert any("Aborted" in m for _lvl, m in logs)
+    assert not any(lvl in ("error", "error_bold") for lvl, _m in logs)
