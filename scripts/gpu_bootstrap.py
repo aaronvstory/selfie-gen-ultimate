@@ -404,18 +404,20 @@ def _resolve_nvidia_smi() -> Optional[str]:
     return None
 
 
-def _smi_query_driver_version(exe: str) -> Optional[str]:
-    """Driver version via the STABLE ``--query-gpu`` interface.
+def _smi_query_driver_and_name(exe: str) -> Optional[tuple]:
+    """``(driver_version, gpu_name)`` via the STABLE ``--query-gpu`` interface.
 
-    ``nvidia-smi --query-gpu=driver_version --format=csv,noheader`` has been
-    stable since ~2016 and is INDEPENDENT of the free-form header layout. We
-    use it for GPU-presence + driver detection so a header redesign (see
-    ``_parse_smi_header_cuda_major``) can never make a real GPU vanish.
-    Returns the first non-empty driver string, or None.
+    ``nvidia-smi --query-gpu=driver_version,name --format=csv,noheader`` has been
+    stable since ~2016 and is INDEPENDENT of the free-form header layout. We use
+    it for GPU-presence + driver + NAME detection so a header redesign (see
+    ``_parse_smi_header_cuda_major``) can never make a real GPU vanish. The name
+    (e.g. "NVIDIA GeForce RTX 4090 Laptop GPU") feeds the GUI's "✅ GPU detected"
+    banner. Returns ``(driver, name)`` on success — ``name`` may be ``None`` if
+    the field is blank — or ``None`` when no usable GPU/driver is found.
     """
     try:
         proc = subprocess.run(
-            [exe, "--query-gpu=driver_version", "--format=csv,noheader"],
+            [exe, "--query-gpu=driver_version,name", "--format=csv,noheader"],
             capture_output=True,
             text=True,
             errors="replace",
@@ -426,9 +428,12 @@ def _smi_query_driver_version(exe: str) -> Optional[str]:
     if proc.returncode != 0:
         return None
     for line in (proc.stdout or "").splitlines():
-        ver = line.strip()
+        # CSV row: "610.47, NVIDIA GeForce RTX 4090 Laptop GPU"
+        parts = [p.strip() for p in line.split(",", 1)]
+        ver = parts[0] if parts else ""
         if ver and re.match(r"^[0-9][0-9.]*$", ver):
-            return ver
+            name = parts[1] if len(parts) > 1 and parts[1] else None
+            return (ver, name)
     return None
 
 
@@ -504,10 +509,11 @@ def detect_nvidia() -> Optional[dict]:
     if exe is None:
         return None
 
-    # 1) Stable presence + driver probe. If this fails, there's no usable GPU.
-    driver_version = _smi_query_driver_version(exe)
-    if driver_version is None:
+    # 1) Stable presence + driver + name probe. If this fails, no usable GPU.
+    driver_and_name = _smi_query_driver_and_name(exe)
+    if driver_and_name is None:
         return None
+    driver_version, gpu_name = driver_and_name
 
     # 2) CUDA major from the header (both layouts), then driver-branch fallback.
     # Shorter timeout than the presence probe (code-review MEDIUM #4): presence
@@ -532,11 +538,16 @@ def detect_nvidia() -> Optional[dict]:
     if cuda_major is None:
         # GPU present but we genuinely can't tell the CUDA major. resolve_torch_mode
         # treats an unmapped/None major as CPU, which is the safe outcome.
-        return {"driver_version": driver_version, "cuda_major": None}
+        return {
+            "driver_version": driver_version,
+            "cuda_major": None,
+            "gpu_name": gpu_name,
+        }
 
     return {
         "driver_version": driver_version,
         "cuda_major": cuda_major,
+        "gpu_name": gpu_name,
     }
 
 
@@ -1336,6 +1347,7 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
                 "result": "gpu_ready",
                 "driver_version": info["driver_version"],
                 "cuda_major": info["cuda_major"],
+                "gpu_name": info.get("gpu_name"),
                 "cupy_package": _CUDA_TO_CUPY[info["cuda_major"]],
                 "cupy_version": msg,
                 "attempts": 0,
