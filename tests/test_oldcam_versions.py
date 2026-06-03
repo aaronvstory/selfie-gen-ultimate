@@ -1443,14 +1443,30 @@ def test_verbose_gui_mode_legacy_true_migrated_to_false_once():
     overriding the user's preference if they later opt back into verbose."""
     from kling_gui.main_window import KlingGUIWindow
 
-    # Legacy config: had True from old default, no migration flag.
+    # Legacy config: had True from old default, no migration flag. Both the v17
+    # migration AND the v2.22.1 reset fire on this fresh-of-flags config.
     legacy = {"verbose_gui_mode": True}
     KlingGUIWindow._migrate_legacy_defaults(legacy)
     assert legacy["verbose_gui_mode"] is False
     assert legacy["verbose_gui_mode_migrated_v17"] is True
+    assert legacy["verbose_gui_mode_reset_v222"] is True
 
-    # User opted into verbose AFTER the migration ran: stays True.
-    opted_in = {"verbose_gui_mode": True, "verbose_gui_mode_migrated_v17": True}
+    # v2.22.1 ONE-TIME reset: a config that opted into verbose after v17 but has
+    # NOT seen the v2.22.1 reset gets forced OFF once (user direction 2026-06-04:
+    # the curated panel must default clean; the rPPG curation only works with
+    # verbose OFF). The reset flag is then set so it won't fire again.
+    pre_v222 = {"verbose_gui_mode": True, "verbose_gui_mode_migrated_v17": True}
+    KlingGUIWindow._migrate_legacy_defaults(pre_v222)
+    assert pre_v222["verbose_gui_mode"] is False
+    assert pre_v222["verbose_gui_mode_reset_v222"] is True
+
+    # User opts BACK into verbose AFTER the v2.22.1 reset already ran: stays True
+    # (we never override a deliberate post-reset choice).
+    opted_in = {
+        "verbose_gui_mode": True,
+        "verbose_gui_mode_migrated_v17": True,
+        "verbose_gui_mode_reset_v222": True,
+    }
     KlingGUIWindow._migrate_legacy_defaults(opted_in)
     assert opted_in["verbose_gui_mode"] is True
 
@@ -1459,6 +1475,7 @@ def test_verbose_gui_mode_legacy_true_migrated_to_false_once():
     KlingGUIWindow._migrate_legacy_defaults(fresh)
     assert fresh["verbose_gui_mode"] is False
     assert fresh["verbose_gui_mode_migrated_v17"] is True
+    assert fresh["verbose_gui_mode_reset_v222"] is True
 
 
 # ---------------------------------------------------------------------------

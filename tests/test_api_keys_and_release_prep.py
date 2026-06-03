@@ -66,6 +66,39 @@ def test_every_key_has_an_env_var_mapping():
     assert by_key["freeimage_api_key"] == "FREEIMAGE_API_KEY"
 
 
+def test_falai_accepts_fal_api_key_alias(monkeypatch):
+    """User direction 2026-06-04: the user stores their fal.ai key under
+    FAL_API_KEY, not FAL_KEY — auto-detect must accept BOTH (first non-empty
+    wins). This was the 'fal.ai key still not detected from env' bug."""
+    for name in ("FAL_KEY", "FAL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("FAL_API_KEY", "fal-from-api-key-alias")
+    config = {"falai_api_key": ""}
+    filled = apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "fal-from-api-key-alias"
+    assert "falai_api_key" in filled
+
+
+def test_falai_prefers_fal_key_over_fal_api_key(monkeypatch):
+    """When BOTH are set, the first alias (FAL_KEY, fal's native name) wins."""
+    monkeypatch.setenv("FAL_KEY", "native")
+    monkeypatch.setenv("FAL_API_KEY", "suffix-form")
+    config = {"falai_api_key": ""}
+    apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "native"
+
+
+def test_every_key_has_at_least_one_env_alias():
+    """Every key must map to >=1 env var alias; fal.ai must accept both names."""
+    by_key = {spec.config_key: spec.env_vars for spec in API_KEY_SPECS}
+    assert "FAL_KEY" in by_key["falai_api_key"]
+    assert "FAL_API_KEY" in by_key["falai_api_key"]
+    assert "BFL_API_KEY" in by_key["bfl_api_key"]
+    assert "OPENROUTER_API_KEY" in by_key["openrouter_api_key"]
+    assert "FREEIMAGE_API_KEY" in by_key["freeimage_api_key"]
+    assert all(spec.env_vars for spec in API_KEY_SPECS)
+
+
 def test_apply_env_key_fallback_fills_empty_keys(monkeypatch):
     """An empty key is silently prefilled from its env var."""
     monkeypatch.setenv("FAL_KEY", "fal-from-env")

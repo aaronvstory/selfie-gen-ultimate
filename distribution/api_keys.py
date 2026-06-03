@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, List, Tuple
 
 
 @dataclass(frozen=True)
@@ -12,12 +12,18 @@ class ApiKeySpec:
     url: str
     instruction: str
     required_at_start: bool = False
-    # Environment variable to fall back to when this key is missing from the
-    # saved config. Names match each service's own convention + the codebase's
-    # existing usage: fal.ai's SDK reads FAL_KEY natively (fal_utils.py sets it);
-    # FREEIMAGE_API_KEY is already read in fal_utils/kling_generator. A saved
-    # config value ALWAYS wins — the env var is a fallback for an empty key only.
-    env_var: str = ""
+    # Environment variable name(s) to fall back to when this key is missing from
+    # the saved config, checked IN ORDER (first non-empty wins). Multiple aliases
+    # because users store the same key under different conventional names — e.g.
+    # fal.ai is FAL_KEY (its SDK's native name) OR the common FAL_API_KEY
+    # ("…_API_KEY" suffix, matching OPENROUTER_API_KEY). A saved config value
+    # ALWAYS wins — the env var is a fallback for an empty key only.
+    env_vars: Tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def env_var(self) -> str:
+        """Back-compat: the primary (first) env var name, or '' if none."""
+        return self.env_vars[0] if self.env_vars else ""
 
 
 # NOTHING is required at startup (user direction 2026-06-04): a user may only
@@ -31,28 +37,30 @@ API_KEY_SPECS: List[ApiKeySpec] = [
         label="Fal.ai",
         url="https://fal.ai/dashboard/keys",
         instruction="Create a key in fal.ai dashboard, then paste it here.",
-        env_var="FAL_KEY",
+        # FAL_KEY (fal SDK native) + FAL_API_KEY (the common …_API_KEY form the
+        # user actually had set — that's why auto-detect missed it before).
+        env_vars=("FAL_KEY", "FAL_API_KEY"),
     ),
     ApiKeySpec(
         config_key="bfl_api_key",
         label="BFL",
         url="https://api.bfl.ai/",
         instruction="Create a BFL API key for BFL-powered selfie/outpaint models.",
-        env_var="BFL_API_KEY",
+        env_vars=("BFL_API_KEY", "BFL_KEY"),
     ),
     ApiKeySpec(
         config_key="openrouter_api_key",
         label="OpenRouter",
         url="https://openrouter.ai/keys",
         instruction="Create an OpenRouter key for Prep tab vision analysis models.",
-        env_var="OPENROUTER_API_KEY",
+        env_vars=("OPENROUTER_API_KEY", "OPENROUTER_KEY"),
     ),
     ApiKeySpec(
         config_key="freeimage_api_key",
         label="Freeimage",
         url="https://freeimage.host/page/api",
         instruction="Create a Freeimage API key for image upload URL fallback.",
-        env_var="FREEIMAGE_API_KEY",
+        env_vars=("FREEIMAGE_API_KEY", "FREEIMAGE_KEY"),
     ),
 ]
 
@@ -101,14 +109,17 @@ def apply_env_key_fallback(config: Dict[str, Any]) -> List[str]:
     """
     filled: List[str] = []
     for spec in API_KEY_SPECS:
-        if not spec.env_var:
+        if not spec.env_vars:
             continue
         if str(config.get(spec.config_key, "") or "").strip():
             continue  # user-saved value wins
-        env_val = os.environ.get(spec.env_var, "")
-        if env_val and env_val.strip():
-            config[spec.config_key] = env_val.strip()
-            filled.append(spec.config_key)
+        # Try each accepted env var name in order; first non-empty wins.
+        for name in spec.env_vars:
+            env_val = os.environ.get(name, "")
+            if env_val and env_val.strip():
+                config[spec.config_key] = env_val.strip()
+                filled.append(spec.config_key)
+                break
     return filled
 
 
