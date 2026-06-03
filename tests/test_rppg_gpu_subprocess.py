@@ -27,7 +27,8 @@ SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
 def _gpu_available() -> bool:
     """True only when a real CuPy GPU kernel can compile on this box."""
     try:
-        sys.path.insert(0, SCRIPTS_DIR)
+        if SCRIPTS_DIR not in sys.path:
+            sys.path.insert(0, SCRIPTS_DIR)
         from cuda_dll_paths import register_cuda_dll_dirs
 
         register_cuda_dll_dirs()
@@ -100,7 +101,8 @@ def test_honest_probe_passes_on_gpu_box():
     the probe registers the nvidia DLL dirs before compiling a kernel (the §5
     false-negative guard: a probe that skipped registration would return None
     even here and stamp install_failed)."""
-    sys.path.insert(0, SCRIPTS_DIR)
+    if SCRIPTS_DIR not in sys.path:
+        sys.path.insert(0, SCRIPTS_DIR)
     import gpu_bootstrap
 
     version = gpu_bootstrap.probe_cupy(sys.executable)

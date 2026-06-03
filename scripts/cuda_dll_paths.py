@@ -116,9 +116,13 @@ def register_cuda_dll_dirs():
                 # Compare case-insensitively so a second call (or a PATH entry
                 # added with different casing) can't double-prepend the same dir
                 # and grow PATH unboundedly across restarts (code-review CRITICAL
-                # PR #72 — Windows paths are case-insensitive).
+                # PR #72 — Windows paths are case-insensitive). Strip surrounding
+                # quotes too: a Windows PATH entry with spaces is sometimes stored
+                # quoted ("C:\\Program Files\\..."), but abspath(d) is never quoted,
+                # so without stripping the quoted form wouldn't dedup-match and
+                # we'd re-prepend (gemini MEDIUM PR #72).
                 existing = {
-                    os.path.normcase(p)
+                    os.path.normcase(p.strip('"'))
                     for p in os.environ.get("PATH", "").split(os.pathsep)
                 }
                 if os.path.normcase(d) not in existing:
