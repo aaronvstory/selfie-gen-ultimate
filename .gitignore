@@ -117,3 +117,5 @@ rPPG/iteration_history/
 OLDCAM_DECISION_BRIEF.md
 OLDCAM_GUIDE.md
 docs/analysis/
+# Friend debug logs (PII: emails, machine paths) — never commit
+_friend_logs/

@@ -129,14 +129,31 @@ def test_no_other_nodeps_mediapipe_site_is_unguarded():
             for seg in norm.split("/")
         )
 
+    def _strip_comments(text: str) -> str:
+        """Drop comment-only lines so a `--no-deps` mention in an explanatory
+        `rem`/`#` banner (e.g. run_auto.bat documenting what the delegated
+        chain does) isn't mistaken for a real install site. A thin wrapper that
+        only DESCRIBES the bootstrap must not trip the guard."""
+        kept = []
+        for line in text.splitlines():
+            stripped = line.lstrip()
+            low = stripped.lower()
+            if low.startswith("rem ") or low == "rem" or low.startswith("::"):
+                continue  # cmd/.bat comment
+            if stripped.startswith("#"):
+                continue  # sh/.command comment
+            kept.append(line)
+        return "\n".join(kept)
+
     for pat in patterns:
         for f in glob.glob(str(REPO_ROOT / pat), recursive=True):
             if ".launcher_state" in f or _in_venv(f):
                 continue
             try:
-                txt = Path(f).read_text(encoding="utf-8", errors="replace")
+                raw = Path(f).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+            txt = _strip_comments(raw)
             if "mediapipe" in txt and nodeps_re.search(txt):
                 rf = str(Path(f).resolve())
                 if rf in covered:
@@ -165,19 +182,28 @@ def test_real_mediapipe_tasks_import():
 
 
 def test_rppg_injector_registers_cuda_dll_dirs_and_force_cpu():
-    """v2.17: the injector must (a) register the pip-installed NVIDIA CUDA DLL
-    dirs before importing cupy (os.add_dll_directory + PATH) so nvrtc loads and
-    the GPU kernel compiles — without this, CuPy imports but the first kernel
-    compile fails 'Could not find nvrtc64_*.dll' and rPPG silently falls to CPU
-    even on a good GPU box (verified RTX 4090 2026-06-03); and (b) honour
-    RPPG_FORCE_CPU=1 as a benchmarking/escape-hatch."""
+    """v2.17 / v2.21: the injector must (a) register the pip/uv-installed NVIDIA
+    CUDA DLL dirs before importing cupy so nvrtc loads and the GPU kernel
+    compiles — without this, CuPy imports but the first kernel compile fails
+    'Could not find nvrtc64_*.dll' and rPPG silently falls to CPU even on a good
+    GPU box (verified RTX 4090 2026-06-03); and (b) honour RPPG_FORCE_CPU=1 as a
+    benchmarking/escape-hatch. The registration logic now lives in the SHARED
+    helper scripts/cuda_dll_paths.py (reused by gpu_bootstrap.probe_cupy so the
+    GUI probe and the injector register the EXACT same dirs)."""
     src = (REPO_ROOT / "rPPG" / "rppg_injector.py").read_text(encoding="utf-8", errors="replace")
     assert "_register_cuda_dll_dirs" in src
-    assert "add_dll_directory" in src
-    assert 'os.environ["PATH"]' in src or "os.environ['PATH']" in src
     assert "RPPG_FORCE_CPU" in src
-    # The helper must run BEFORE `import cupy`.
+    # The injector imports the shared helper and runs it BEFORE `import cupy`.
+    assert "from cuda_dll_paths import register_cuda_dll_dirs" in src
     assert src.index("_register_cuda_dll_dirs()") < src.index("import cupy as _cp")
+    # The actual add_dll_directory + PATH logic lives in the shared helper.
+    helper = (REPO_ROOT / "scripts" / "cuda_dll_paths.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert "add_dll_directory" in helper
+    assert 'os.environ["PATH"]' in helper or "os.environ['PATH']" in helper
+    # CUDA-major agnostic: must glob the cu13 (bin/x86_64) AND cu12 (bin) layouts.
+    assert "*/bin/x86_64" in helper and "*/bin" in helper
 
 
 @pytest.mark.parametrize("v", ["v9", "v10", "v11"])

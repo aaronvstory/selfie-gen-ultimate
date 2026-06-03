@@ -52,10 +52,11 @@ def test_cuda_to_cupy_map_has_only_supported_majors():
     assert set(gpu_bootstrap._CUDA_TO_CUPY) == {12, 13}
     assert gpu_bootstrap._CUDA_TO_CUPY[12].startswith("cupy-cuda12x")
     assert gpu_bootstrap._CUDA_TO_CUPY[13].startswith("cupy-cuda13x")
-    # [ctk] extra pulls CUDA component wheels from PyPI so the install
-    # works on driver-only hosts (no system CUDA toolkit needed).
-    assert "[ctk]" in gpu_bootstrap._CUDA_TO_CUPY[12]
-    assert "[ctk]" in gpu_bootstrap._CUDA_TO_CUPY[13]
+    # The `[ctk]` extra is GONE — it was a no-op on cupy 13.6.0 (pulled NO
+    # nvidia wheels). The CUDA component wheels now ship explicitly via
+    # _CUDA_TO_NVIDIA_WHEELS, asserted below.
+    assert "[ctk]" not in gpu_bootstrap._CUDA_TO_CUPY[12]
+    assert "[ctk]" not in gpu_bootstrap._CUDA_TO_CUPY[13]
 
 
 def test_skip_env_var_short_circuits(monkeypatch):
@@ -281,7 +282,8 @@ def test_successful_install_writes_gpu_ready_stamp(monkeypatch):
     # our numpy<2 face stack). Assert the package family + the pin, not a bare
     # exact string, so the version cap is locked too.
     assert payload["cupy_package"] == gpu_bootstrap._CUDA_TO_CUPY[12]
-    assert payload["cupy_package"].startswith("cupy-cuda12x[ctk]")
+    assert payload["cupy_package"].startswith("cupy-cuda12x")
+    assert "[ctk]" not in payload["cupy_package"]
     assert ">=13.6,<14" in payload["cupy_package"]
     assert payload["attempts"] == 0
 
@@ -306,6 +308,44 @@ def test_gpu_ready_cache_revalidates_via_probe(monkeypatch):
     assert result == "gpu_ready"
     assert probe_calls == ["python_used"], (
         "gpu_ready cache must re-probe to catch a wiped venv between launches"
+    )
+
+
+def test_stale_gpu_ready_with_broken_nvrtc_re_enters_install(monkeypatch):
+    """THE friend-fix idempotence guard (Plan-agent §1).
+
+    The friend has a STALE ``gpu_ready`` stamp from his broken v2.17 install
+    (his OLD probe passed because it never compiled a kernel — nvrtc was never
+    there). The ONLY thing that dislodges that stale stamp and reinstalls the
+    now-explicit nvidia wheels is the HONEST re-probe returning None. Prove
+    that a gpu_ready stamp + a failing probe re-enters detect_nvidia +
+    install_cupy rather than trusting the stamp. Without this, the fix would
+    NEVER fire for the friend (he'd stay on CPU forever).
+    """
+    gpu_bootstrap._write_stamp({
+        "result": "gpu_ready",
+        "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "driver_version": "576.80", "cuda_major": 12,
+        "cupy_package": "cupy-cuda12x>=13.6,<14", "cupy_version": "13.6.0",
+        "attempts": 0,
+    })
+    # Honest probe FAILS (nvrtc unloadable on his broken install).
+    monkeypatch.setattr(gpu_bootstrap, "probe_cupy", lambda exe: None)
+    monkeypatch.setattr(
+        gpu_bootstrap, "detect_nvidia",
+        lambda: {"driver_version": "576.80", "cuda_major": 12},
+    )
+    install_called = []
+    monkeypatch.setattr(
+        gpu_bootstrap, "install_cupy",
+        lambda exe, major: install_called.append((exe, major)) or (True, "13.6.0"),
+    )
+    result = gpu_bootstrap.bootstrap("python_friend")
+    assert result == "gpu_installed_now", (
+        "stale gpu_ready + failing probe MUST reinstall, not trust the stamp"
+    )
+    assert install_called == [("python_friend", 12)], (
+        "the nvidia-wheel reinstall must actually fire for the friend"
     )
 
 
@@ -743,12 +783,67 @@ def test_cupy_pinned_to_numpy1_compatible_line():
         spec = gpu_bootstrap._CUDA_TO_CUPY[major]
         assert "<14" in spec, f"CUDA {major}: CuPy must be pinned <14 (numpy<2): {spec!r}"
         assert ">=13.6" in spec, f"CUDA {major}: expected >=13.6 floor: {spec!r}"
-        assert "[ctk]" in spec, f"CUDA {major}: [ctk] extra needed for CUDA wheels: {spec!r}"
+        # `[ctk]` is GONE (no-op on 13.6.0) — the nvidia component wheels ship
+        # explicitly now (see test_nvidia_component_wheels_*).
+        assert "[ctk]" not in spec, f"CUDA {major}: [ctk] is a no-op, must be dropped: {spec!r}"
 
 
-def test_pip_install_timeout_covers_large_ctk_download():
-    """The cupy[ctk] CUDA-component download is ~2-3GB; the old 900s cap timed
-    out on a real box -> install_failed -> CPU. Timeout must be generous, and
-    LOCK_STALE must still exceed it (so a live install isn't force-broken)."""
-    assert gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS >= 1800, "too short for 2-3GB [ctk]"
+def test_pip_install_timeout_covers_large_cuda_download():
+    """The CuPy + nvidia component download is ~1.5-2.5GB; the old 900s cap
+    timed out on a real box -> install_failed -> CPU. Timeout must be generous,
+    and LOCK_STALE must still exceed it (so a live install isn't force-broken)."""
+    assert gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS >= 1800, "too short for 1.5-2.5GB CUDA set"
     assert gpu_bootstrap.LOCK_STALE_SECONDS > gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS
+
+
+def test_nvidia_component_wheels_present_per_cuda_major():
+    """The explicit nvidia-* component wheels (the REAL replacement for the
+    no-op [ctk]) must exist for both CUDA majors: 12 (-cu12 suffixed) and 13
+    (un-suffixed). Without nvrtc, cupy imports but can't compile a kernel ->
+    rPPG silently runs on CPU (the friend's 20-min/iter bug)."""
+    wheels = gpu_bootstrap._CUDA_TO_NVIDIA_WHEELS
+    assert set(wheels) == {12, 13}
+    # nvrtc is the load-bearing one — assert it's present in both.
+    assert any("nvidia-cuda-nvrtc" in w for w in wheels[12])
+    assert any("nvidia-cuda-nvrtc" in w for w in wheels[13])
+    # cu12 set is ALL -cu12 suffixed; cu13 set is NONE -cu12 suffixed.
+    assert all("-cu12" in w for w in wheels[12]), wheels[12]
+    assert all("-cu12" not in w for w in wheels[13]), wheels[13]
+    # Both sets cover the 8 components cupy dispatches to.
+    for major in (12, 13):
+        names = " ".join(wheels[major])
+        for comp in ("nvrtc", "runtime", "cublas", "cufft",
+                     "curand", "cusolver", "cusparse", "nvjitlink"):
+            assert comp in names, f"CUDA {major} missing nvidia-*{comp}*"
+
+
+def test_nvidia_wheel_specs_parity_with_pyproject_extras():
+    """The pip-path nvidia wheel specs MUST equal the uv pyproject.toml
+    cu121/cu128 extras (modulo the `; sys_platform` marker) so the two install
+    paths can't silently drift. Skips gracefully if pyproject.toml is absent
+    (this test ships on the pip-only main branch where it lives at repo root
+    only on the uv branch)."""
+    import os
+    import re
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(gpu_bootstrap.__file__)))
+    pyproject = os.path.join(repo_root, "pyproject.toml")
+    if not os.path.isfile(pyproject):
+        import pytest
+        pytest.skip("pyproject.toml absent (pip-only branch) — parity checked on uv branch")
+    text = open(pyproject, encoding="utf-8").read()
+
+    def _extra_nvidia(extra_name):
+        m = re.search(rf"^{extra_name} = \[(.*?)^\]", text, re.S | re.M)
+        assert m, f"extra {extra_name} not found in pyproject.toml"
+        specs = set()
+        for line in m.group(1).splitlines():
+            s = line.strip().strip(",").strip('"').strip("'")
+            s = s.split(";")[0].strip()  # drop the marker
+            if s.startswith("nvidia-"):
+                specs.add(s)
+        return specs
+
+    # cu121 extra <-> CUDA 12; cu128 extra <-> CUDA 13.
+    assert _extra_nvidia("cu121") == set(gpu_bootstrap._CUDA_TO_NVIDIA_WHEELS[12])
+    assert _extra_nvidia("cu128") == set(gpu_bootstrap._CUDA_TO_NVIDIA_WHEELS[13])
