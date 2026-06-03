@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 
-from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs
+from api_keys import API_KEY_SPECS, apply_env_key_fallback, ensure_key_fields, key_status, non_required_missing_specs
 from app_version import RELEASE_VERSION
 from automation.config import get_outpaint_fal_timeout_seconds
 from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
@@ -881,6 +881,14 @@ class KlingGUIWindow:
         self.config = self._load_config()
         if ensure_key_fields(self.config):
             self._save_config()
+        # Silently prefill any still-empty API key from its env var (FAL_KEY,
+        # BFL_API_KEY, OPENROUTER_API_KEY, FREEIMAGE_API_KEY). In-memory only —
+        # NOT saved, so the env stays the source of truth and the config file
+        # never gains the secret. A user-saved key always overrides. This is
+        # what suppresses the first-launch nag when the keys live in the env.
+        env_filled = apply_env_key_fallback(self.config)
+        if env_filled:
+            self._env_prefilled_keys = list(env_filled)
         self.ui_config_path = (
             get_config_path("ui_config.json")
             if sys.platform == "darwin"
@@ -3622,12 +3630,23 @@ class KlingGUIWindow:
             style=TTK_BTN_TAB_NAV,
         )
         self.pause_btn.pack(side=tk.RIGHT, padx=4)
+
+        # Abort: kill the in-flight job's subprocess (rPPG can run 10 iters /
+        # 20+ min) without quitting the whole app. Danger styling + leftmost so
+        # it reads as the "stop this now" control next to Pause.
+        self.abort_btn = create_action_button(
+            control_frame,
+            text="Abort",
+            command=self._dbcmd("controls_abort", self._abort_current_job),
+            style=TTK_BTN_DANGER,
+        )
+        self.abort_btn.pack(side=tk.RIGHT, padx=4)
         self._set_queue_controls_enabled(False)
 
     def _set_queue_controls_enabled(self, enabled: bool):
         """Enable or disable queue control buttons without removing them from UI."""
         state = tk.NORMAL if enabled else tk.DISABLED
-        for btn_name in ("pause_btn", "retry_btn", "clear_btn"):
+        for btn_name in ("pause_btn", "abort_btn", "retry_btn", "clear_btn"):
             btn = getattr(self, btn_name, None)
             if btn is not None:
                 try:
@@ -4998,6 +5017,24 @@ class KlingGUIWindow:
             self.queue_manager.pause_processing()
             self.pause_btn.config(text="Resume")
 
+    def _abort_current_job(self):
+        """Abort the in-flight job (the Abort button).
+
+        Signals the QueueManager to kill the active subprocess (rPPG / Oldcam)
+        immediately and pause the queue, so the user can stop a long run without
+        force-quitting the app. Safe to call when nothing is running (no-op).
+        """
+        if not self.queue_manager:
+            return
+        self.queue_manager.abort_current_job()
+        # Reflect the paused state in the Pause button + disable Abort until the
+        # next job starts (re-enabled by _set_queue_controls_enabled).
+        try:
+            self.pause_btn.config(text="Resume")
+            self.abort_btn.config(state=tk.DISABLED)
+        except Exception:
+            pass
+
     def _retry_failed(self):
         """Retry all failed items."""
         if self.queue_manager:
@@ -5610,6 +5647,16 @@ class KlingGUIWindow:
     def run(self):
         """Run the GUI main loop."""
         self._log("GUI started - drag images to process", "info")
+        # Quiet, informational note (NOT a dialog) when keys were auto-loaded
+        # from environment variables — so the user knows where they came from.
+        env_keys = getattr(self, "_env_prefilled_keys", None)
+        if env_keys:
+            labels = {spec.config_key: spec.label for spec in API_KEY_SPECS}
+            names = ", ".join(labels.get(k, k) for k in env_keys)
+            self._log(
+                f"Loaded {names} key(s) from environment variables.",
+                "info",
+            )
         self.root.mainloop()
 
 

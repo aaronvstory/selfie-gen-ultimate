@@ -18,7 +18,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-from api_keys import API_KEY_SPECS, ApiKeySpec, ensure_key_fields, key_status, non_required_missing_specs, status_lines
+from api_keys import API_KEY_SPECS, ApiKeySpec, apply_env_key_fallback, ensure_key_fields, key_status, non_required_missing_specs, status_lines
 from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 
 try:
@@ -184,6 +184,10 @@ class KlingAutomationUI:
         self.config = merge_automation_defaults(self.load_config())
         if ensure_key_fields(self.config):
             self.save_config()
+        # Silently prefill any still-empty API key from its env var (FAL_KEY,
+        # BFL_API_KEY, OPENROUTER_API_KEY, FREEIMAGE_API_KEY). In-memory only —
+        # NOT saved, so the env stays the source of truth. User-saved keys win.
+        self._env_prefilled_keys = apply_env_key_fallback(self.config)
         self.automation_root_folder = self.config.get("automation_root_folder", "")
         self.verbose_logging = self.config.get("verbose_logging", False)
         self.legacy_pauses = legacy_pauses

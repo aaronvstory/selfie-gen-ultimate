@@ -2,7 +2,12 @@ import json
 import zipfile
 from pathlib import Path
 
-from api_keys import API_KEY_SPECS, ensure_key_fields, required_missing_specs
+from api_keys import (
+    API_KEY_SPECS,
+    apply_env_key_fallback,
+    ensure_key_fields,
+    required_missing_specs,
+)
 from distribution.build_release import refresh_extracted_bundle
 from distribution.release_prep import (
     LATEST_ALIAS_ZIP_NAME,
@@ -41,11 +46,65 @@ def test_ensure_key_fields_adds_all_keys():
         assert config[spec.config_key] == ""
 
 
-def test_required_missing_specs_flags_falai_only():
-    config = {"falai_api_key": "", "bfl_api_key": "x", "openrouter_api_key": "x", "freeimage_api_key": "x"}
-    missing = required_missing_specs(config)
-    assert len(missing) == 1
-    assert missing[0].config_key == "falai_api_key"
+def test_nothing_is_required_at_start():
+    """User direction 2026-06-04: NO key is required at startup — a user may
+    only want rPPG/Oldcam (no key) or only fal.ai. required_missing_specs (the
+    required_at_start gate) must therefore be empty even with all keys blank."""
+    config = {spec.config_key: "" for spec in API_KEY_SPECS}
+    assert required_missing_specs(config) == []
+    assert all(spec.required_at_start is False for spec in API_KEY_SPECS)
+
+
+def test_every_key_has_an_env_var_mapping():
+    """All four keys must map to a fallback env var so the app can auto-prefill
+    from the environment (FAL_KEY / BFL_API_KEY / OPENROUTER_API_KEY /
+    FREEIMAGE_API_KEY)."""
+    by_key = {spec.config_key: spec.env_var for spec in API_KEY_SPECS}
+    assert by_key["falai_api_key"] == "FAL_KEY"
+    assert by_key["bfl_api_key"] == "BFL_API_KEY"
+    assert by_key["openrouter_api_key"] == "OPENROUTER_API_KEY"
+    assert by_key["freeimage_api_key"] == "FREEIMAGE_API_KEY"
+
+
+def test_apply_env_key_fallback_fills_empty_keys(monkeypatch):
+    """An empty key is silently prefilled from its env var."""
+    monkeypatch.setenv("FAL_KEY", "fal-from-env")
+    monkeypatch.setenv("BFL_API_KEY", "bfl-from-env")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("FREEIMAGE_API_KEY", raising=False)
+    config = {spec.config_key: "" for spec in API_KEY_SPECS}
+    filled = apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "fal-from-env"
+    assert config["bfl_api_key"] == "bfl-from-env"
+    assert config["openrouter_api_key"] == ""  # no env -> stays empty
+    assert set(filled) == {"falai_api_key", "bfl_api_key"}
+
+
+def test_apply_env_key_fallback_user_value_overrides_env(monkeypatch):
+    """A non-empty saved config value ALWAYS wins over the env var."""
+    monkeypatch.setenv("FAL_KEY", "fal-from-env")
+    config = {"falai_api_key": "user-saved-key"}
+    filled = apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "user-saved-key"
+    assert "falai_api_key" not in filled
+
+
+def test_apply_env_key_fallback_strips_whitespace(monkeypatch):
+    """Whitespace-only config is treated as empty; env value is trimmed."""
+    monkeypatch.setenv("FAL_KEY", "  spaced-key  ")
+    config = {"falai_api_key": "   "}
+    apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "spaced-key"
+
+
+def test_apply_env_key_fallback_noop_when_no_env(monkeypatch):
+    """No env vars set -> nothing filled, keys stay empty, returns []."""
+    for spec in API_KEY_SPECS:
+        if spec.env_var:
+            monkeypatch.delenv(spec.env_var, raising=False)
+    config = {spec.config_key: "" for spec in API_KEY_SPECS}
+    assert apply_env_key_fallback(config) == []
+    assert all(config[spec.config_key] == "" for spec in API_KEY_SPECS)
 
 
 def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
