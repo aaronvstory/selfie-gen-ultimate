@@ -121,11 +121,17 @@ def register_cuda_dll_dirs():
                 # quoted ("C:\\Program Files\\..."), but abspath(d) is never quoted,
                 # so without stripping the quoted form wouldn't dedup-match and
                 # we'd re-prepend (gemini MEDIUM PR #72).
+                # normpath collapses trailing slashes + redundant separators
+                # ("C:\\dir\\" vs "C:\\dir") which normcase alone leaves distinct;
+                # abspath(d) has no trailing slash, so without normpath a slashed
+                # PATH entry wouldn't match and we'd re-prepend (gemini MEDIUM PR
+                # #72). Skip empty segments too.
                 existing = {
-                    os.path.normcase(p.strip('"'))
+                    os.path.normcase(os.path.normpath(p.strip('"')))
                     for p in os.environ.get("PATH", "").split(os.pathsep)
+                    if p.strip()
                 }
-                if os.path.normcase(d) not in existing:
+                if os.path.normcase(os.path.normpath(d)) not in existing:
                     os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
                 registered.append(d)
     return registered

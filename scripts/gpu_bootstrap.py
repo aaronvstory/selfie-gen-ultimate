@@ -321,8 +321,11 @@ def _write_stamp(payload: dict) -> None:
         # now-fixed installer and re-attempt (Codex P2 PR #72 — without this, a
         # user who exhausted the 3-attempt cap on the broken [ctk] installer
         # stays on CPU forever even after the fix ships, because bootstrap()
-        # returns at the capped-stamp check before re-installing).
-        payload.setdefault("installer_version", INSTALLER_VERSION)
+        # returns at the capped-stamp check before re-installing). Direct
+        # assignment, NOT setdefault (gemini MEDIUM PR #72): the stamp MUST
+        # reflect the installer WRITING it — a caller-supplied stale value would
+        # silently break the capped-failure-reset comparison.
+        payload["installer_version"] = INSTALLER_VERSION
         # Atomic write (gemini MEDIUM PR #54): on non-NVIDIA hosts the
         # stamp is written OUTSIDE the mkdir-lock, so two launchers can
         # write concurrently. A bare write_text() can interleave and
@@ -525,11 +528,12 @@ def _resolve_constraints_path() -> Optional[str]:
     numpy 2.x (the numpy<2 face-stack invariant). Returns None if absent (the
     install still runs unconstrained — better than failing to provision GPU).
     """
-    candidate = Path(__file__).resolve().parent.parent / "constraints.txt"
-    # EAFP (gemini MEDIUM PR #72): is_file() can raise on a restricted FS; treat
-    # any OSError as "absent" so a permissions quirk degrades to an unconstrained
-    # install rather than crashing the GPU bootstrap.
+    # EAFP (gemini MEDIUM PR #72): resolve() AND is_file() can raise on a
+    # restricted FS / symlink loop; keep BOTH inside the try so any OSError
+    # degrades to "absent" (unconstrained install) rather than crashing the GPU
+    # bootstrap.
     try:
+        candidate = Path(__file__).resolve().parent.parent / "constraints.txt"
         return str(candidate) if candidate.is_file() else None
     except OSError:
         return None
