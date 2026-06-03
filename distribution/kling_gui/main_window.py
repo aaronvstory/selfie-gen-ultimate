@@ -1596,10 +1596,23 @@ class KlingGUIWindow:
                 data = dict(self.config)
                 for k in env_filled:
                     data.pop(k, None)
-            with open(self.config_path, "w", encoding="utf-8") as f:
+            # ATOMIC write (gemini MEDIUM #73): concurrent GUI launches share
+            # kling_config.json, and _save_config fires on routine events (resize,
+            # any setting change, close). A direct open("w") truncates then
+            # writes, so another process reading mid-write sees a truncated/empty
+            # file. Write to a per-process temp then os.replace (atomic rename on
+            # both Windows + POSIX) so a reader always sees a complete file.
+            tmp_path = f"{self.config_path}.tmp.{os.getpid()}"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            os.replace(tmp_path, self.config_path)
         except Exception as e:
             self._log(f"Error saving config: {e}", "error")
+            try:
+                if 'tmp_path' in dir() and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
 
     def _clear_env_prefill_marker(self, config_key: str):
         """Stop treating a key as env-sourced (the user explicitly set it).
