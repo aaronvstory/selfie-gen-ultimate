@@ -760,8 +760,43 @@ When adding any NEW launcher or NEW `pip install` site, thread `-c
 constraints.txt` through it and add it to the launcher guard test, or the
 numpy-2 hole reopens.
 
----
+## uv dependency management (v2.20 — primary path, pip fallback)
 
+Dependency management migrated from pip + requirements.txt + constraints.txt
+to **uv with a committed `uv.lock`** (the `cpu`/`cu121`/`cu128` torch extras
+carry the GPU split). Full design + file map + cross-OS wheel-gap notes:
+
+> **➡️ [`docs/uv-migration.md`](docs/uv-migration.md) — READ BEFORE editing
+> `pyproject.toml`, `uv.lock`, or any `scripts/uv_*` / `*_uv_*` launcher**
+
+Load-bearing rules (the ones that bite):
+
+- **The pip path is KEPT as an automatic fallback.** Every launcher tries
+  `scripts/uv_sync_deps.py` first; on any uv problem it returns exit **3** and
+  the launcher falls through to the legacy pip install. `KLING_USE_PIP=1`
+  forces pip. Do NOT delete `requirements.txt` / `constraints.txt` until uv is
+  proven on both OSes in production.
+- **The same numpy<2 / opencv<4.12 / TF 2.16.2 / tf-keras / absl / scipy /
+  mediapipe invariants apply** — now enforced by `uv.lock`, not `-c
+  constraints.txt`. When you bump a pin in `pyproject.toml`, re-run `uv lock`
+  and verify the always-on real-import probes (`pytest
+  tests/test_uv_lock_imports.py`) still pass (numpy stays <2, deep mediapipe
+  Tasks-API still imports).
+- **The uv bootstrap chain (`ensure_uv` -> `uv_torch_select` -> `uv_sync_deps`
+  -> `gpu_bootstrap`) MUST stay stdlib-only** — it runs with the SYSTEM Python
+  BEFORE `uv sync` materializes the env. A third-party import there breaks
+  fresh-install provisioning.
+- **`.bat` helpers (`win_uv_sync.bat`, the preflight uv block) follow ALL the
+  Windows launcher rules** — CRLF via byte-level write (the generators
+  `scripts/_gen_*` / `_patch_*` are committed for reproducibility), no
+  `/dev/null`, and FLAT `if`/`goto` (never nested-`if` + paren block — the
+  Windows 11 25H2 `. was unexpected at this time` crash, bounce-traps Trap 7).
+- **`required-environments` in `pyproject.toml`** forces the lock to resolve
+  for win-AMD64 + darwin-arm64 + linux-x64, catching cross-OS wheel gaps at
+  lock time. Intel macOS is intentionally omitted (mediapipe has no
+  darwin-x86_64 wheel). Don't add it back.
+
+---
 ## Supply Chain Audit
 
 Two project-level scanners run on every commit that touches a dep manifest,
