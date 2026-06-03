@@ -510,6 +510,13 @@ class QueueManager:
         self.is_running = False
         self.worker_thread: Optional[threading.Thread] = None
         self._stop_flag = False
+        # Abort support: a threading.Event the GUI sets to cancel the IN-FLIGHT
+        # job (rPPG can run 10 iters / 20+ min, so item-boundary stop isn't
+        # enough). The active long-running subprocess handle is published here so
+        # abort_current_job() can .kill() it immediately instead of waiting for
+        # the stage to finish. Both are reset at the start of each new item.
+        self._abort_event = threading.Event()
+        self._active_subprocess: Optional[subprocess.Popen] = None
         self._oldcam_deps_status_by_version: Dict[str, bool] = {}
         self._last_oldcam_run_summary: Optional[Dict[str, object]] = None
         self._oldcam_rerun_thread: Optional[threading.Thread] = None
@@ -604,6 +611,43 @@ class QueueManager:
         """Stop processing completely."""
         self._stop_flag = True
         self.is_paused = True
+
+    def abort_current_job(self):
+        """Abort the IN-FLIGHT job immediately (the GUI 'Abort' button).
+
+        Sets the abort Event (which the rPPG/Oldcam stream loops poll every
+        ≤1s) AND kills the active subprocess right now so the user doesn't wait
+        out the rest of a 20-minute rPPG run. Stops the queue after this item
+        (sets is_paused) but does NOT mark remaining items failed — the user
+        can resume. Safe to call from the GUI thread: Event.set() + Popen.kill()
+        are both thread-safe, and the worker thread observes the Event on its
+        next poll.
+        """
+        self._abort_event.set()
+        # Also pause the queue so it doesn't roll straight into the next item.
+        self.is_paused = True
+        proc = self._active_subprocess
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+            except Exception:  # noqa: BLE001 — handle may have just exited
+                pass
+        self.log("⛔ Abort requested — stopping the current job…", "warning")
+
+    def _abort_requested(self) -> bool:
+        """True if the user asked to abort the in-flight job."""
+        return self._abort_event.is_set()
+
+    def _publish_active_subprocess(self, proc: Optional[subprocess.Popen]):
+        """Record the long-running child so abort_current_job() can kill it.
+
+        Passed as ``on_process_start`` to the rPPG streamer and set directly by
+        the Oldcam loop. A dead handle left here is harmless — abort_current_job
+        only kills it when ``poll() is None`` — but callers clear it (pass None)
+        when the stage ends so the next abort can't target a finished process.
+        """
+        self._active_subprocess = proc
 
     def retry_failed(self):
         """Re-queue all failed items."""
@@ -1137,6 +1181,11 @@ class QueueManager:
                 self.is_running = False
                 self.log("🏁 Queue processing complete", "success")
                 return
+
+            # Fresh abort slate for this item — a prior item's abort (or a
+            # leftover set from a cancelled run) must not cancel this one.
+            self._abort_event.clear()
+            self._active_subprocess = None
 
             self.update_queue_display()
             self.log(f"🎬 Processing: {item.filename}", "info")
@@ -1791,8 +1840,16 @@ class QueueManager:
                 bufsize=1,
             )
             assert process.stdout is not None
+            # Publish for the GUI Abort button (kills it instantly).
+            self._publish_active_subprocess(process)
             deadline = time.monotonic() + _TIMEOUT
             while True:
+                # Abort check (GUI Abort button). Oldcam is a blocking
+                # readline loop, so a kill from abort_current_job() unblocks
+                # readline with EOF; we also raise TimeoutExpired here so a
+                # check between lines fires promptly.
+                if self._abort_requested():
+                    raise subprocess.TimeoutExpired(run_cmd, _TIMEOUT)
                 line = process.stdout.readline()
                 if not line:
                     break
@@ -1839,7 +1896,10 @@ class QueueManager:
                         process.stdout.close()
                     except Exception:
                         pass
-            self.log(f"Oldcam {version} timed out after 600s", "warning")
+            if self._abort_requested():
+                self.log(f"⛔ Oldcam {version} aborted by user.", "warning")
+            else:
+                self.log(f"Oldcam {version} timed out after 600s", "warning")
             return None
         except Exception as exc:
             if process is not None:
@@ -1856,6 +1916,10 @@ class QueueManager:
                         pass
             self.log(f"Oldcam {version} launcher error: {exc}", "warning")
             return None
+        finally:
+            # Clear the published handle so a later Abort can't target this
+            # (now-finished) oldcam process.
+            self._publish_active_subprocess(None)
 
         if returncode == 0:
             input_path = Path(video_path)
@@ -2510,8 +2574,19 @@ class QueueManager:
                     deadline_extender=tracker_extender,
                     on_heartbeat=_on_rppg_heartbeat,
                     heartbeat_silence_predicate=is_rppg_progress_line,
+                    abort_event=self._abort_event,
+                    on_process_start=self._publish_active_subprocess,
                 )
             except subprocess.TimeoutExpired:
+                # A user Abort raises the same TimeoutExpired as a real
+                # timeout — distinguish them so the log message is honest.
+                if self._abort_requested():
+                    self.log(
+                        "⛔ rPPG aborted by user. Continuing without rPPG; "
+                        "filename will be marked with -NORPPG.",
+                        "warning",
+                    )
+                    return None
                 minutes = max(1, int(_TIMEOUT // 60))
                 self.log(
                     f"❌ RPPG FAILED — took longer than {minutes} min "

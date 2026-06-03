@@ -325,6 +325,87 @@ def test_tracker_anchor_start_time_aligns_with_subprocess_launch():
     )
 
 
+def test_abort_event_kills_child_and_raises_timeout():
+    """v2.21 (GUI Abort button): setting ``abort_event`` mid-run must kill the
+    child within ≤1s and raise ``subprocess.TimeoutExpired`` so the caller takes
+    the graceful-skip (-NORPPG) path. Without abort the child would run ~10s."""
+    import threading
+
+    abort = threading.Event()
+    # Child runs for 10s with no output, so the ONLY way the streamer returns
+    # quickly is the abort poll (not EOF, not the 30s timeout).
+    code = "import time; time.sleep(10)"
+    cmd = [sys.executable, "-c", code]
+
+    # Fire the abort ~0.5s after launch from a side thread.
+    threading.Timer(0.5, abort.set).start()
+
+    start = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        rppg_module.stream_subprocess_with_timeout(
+            cmd,
+            cwd=os.getcwd(),
+            timeout_seconds=30,
+            abort_event=abort,
+        )
+    elapsed = time.monotonic() - start
+    # Must return promptly after the abort fires (~0.5s + ≤1s poll + reap),
+    # NOT wait out the child's 10s sleep or the 30s timeout.
+    assert elapsed < 5.0, (
+        f"abort took {elapsed:.1f}s; expected <5s (poll interval is ≤1s)"
+    )
+
+
+def test_on_process_start_receives_live_popen():
+    """v2.21: ``on_process_start`` must be called once with the live Popen so
+    the GUI queue can publish it for the Abort button. The handle must be a real
+    process (has a pid) at the moment of the callback."""
+    seen = []
+
+    def _capture(proc):
+        seen.append(proc.pid)
+
+    rc, lines = rppg_module.stream_subprocess_with_timeout(
+        [sys.executable, "-c", "print('done')"],
+        cwd=os.getcwd(),
+        timeout_seconds=30,
+        on_process_start=_capture,
+    )
+    assert rc == 0
+    assert lines == ["done"]
+    assert len(seen) == 1 and isinstance(seen[0], int), (
+        "on_process_start must fire exactly once with a live Popen (pid)"
+    )
+
+
+def test_on_process_start_exception_does_not_break_stream():
+    """A buggy on_process_start callback must NOT crash the stream (same
+    guarantee as the heartbeat/deadline_extender swallows)."""
+    def _broken(_proc):
+        raise RuntimeError("intentional")
+
+    rc, lines = rppg_module.stream_subprocess_with_timeout(
+        [sys.executable, "-c", "print('ok')"],
+        cwd=os.getcwd(),
+        timeout_seconds=30,
+        on_process_start=_broken,
+    )
+    assert rc == 0
+    assert lines == ["ok"]
+
+
+def test_no_abort_event_is_back_compat():
+    """Omitting abort_event (the default None) must not change behaviour —
+    a normal short run still returns (0, [...])."""
+    rc, lines = rppg_module.stream_subprocess_with_timeout(
+        [sys.executable, "-c", "print('hi')"],
+        cwd=os.getcwd(),
+        timeout_seconds=30,
+    )
+    assert rc == 0
+    assert lines == ["hi"]
+
+
 def test_heartbeat_exception_does_not_kill_subprocess(monkeypatch):
     """A buggy heartbeat callback must not bring down the subprocess
     wait — same guarantee as the deadline_extender exception swallow."""

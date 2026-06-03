@@ -1076,6 +1076,8 @@ def stream_subprocess_with_timeout(
     on_heartbeat: Optional[Callable[[float], None]] = None,
     heartbeat_interval_seconds: float = 60.0,
     heartbeat_silence_predicate: Optional[Callable[[str], bool]] = None,
+    abort_event: Optional["threading.Event"] = None,
+    on_process_start: Optional[Callable[["subprocess.Popen"], None]] = None,
 ) -> Tuple[int, List[str]]:
     """Run *cmd*, stream stdout line-by-line, and enforce a wall-clock
     timeout that fires even if the child stalls mid-line with no newline
@@ -1122,6 +1124,19 @@ def stream_subprocess_with_timeout(
     silence the heartbeat. ``None`` preserves the original
     silence-on-any-line behaviour for callers that launch the child
     directly.
+
+    *abort_event* (v2.21, GUI Abort button): an optional ``threading.Event``
+    the GUI sets to cancel an in-flight run. The main wall-clock loop polls it
+    every ≤1s; when set, the child is killed and ``subprocess.TimeoutExpired``
+    is raised so the caller takes the same graceful-skip path as a timeout
+    (filename marked ``-NORPPG``). Lets the user stop a 10-iteration / 20-minute
+    rPPG run without force-quitting the whole GUI.
+
+    *on_process_start* (v2.21): optional callback invoked once with the live
+    ``Popen`` handle just after launch, so the GUI queue can publish it as the
+    "active subprocess" and ``.kill()`` it instantly from the Abort button
+    (rather than waiting up to 1s for the abort_event poll). Called inside a
+    try/except so a misbehaving callback can never crash the stream.
 
     Returns ``(returncode, output_lines)``. Raises
     ``subprocess.TimeoutExpired`` on timeout (caller treats that as a
@@ -1172,6 +1187,12 @@ def stream_subprocess_with_timeout(
         env=env,
     )
     assert process.stdout is not None
+    # Publish the live handle so the GUI Abort button can kill it instantly.
+    if on_process_start is not None:
+        try:
+            on_process_start(process)
+        except Exception:
+            pass
     line_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
 
     def _drain() -> None:
@@ -1207,6 +1228,18 @@ def stream_subprocess_with_timeout(
     max_deadline = start_time + max(timeout_seconds * 8, 600.0)
     eof = False
     while not eof:
+        # Abort check (GUI Abort button): kill the child and surface the same
+        # TimeoutExpired the timeout path raises, so the caller treats it as a
+        # graceful skip (-NORPPG) rather than a crash. Polled here so it fires
+        # within ≤1s even when the child is mid-iteration with no new output.
+        if abort_event is not None and abort_event.is_set():
+            if process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+            raise subprocess.TimeoutExpired(cmd, timeout_seconds)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             if process.poll() is None:

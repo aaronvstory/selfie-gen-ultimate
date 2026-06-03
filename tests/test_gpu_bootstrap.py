@@ -140,6 +140,112 @@ def test_resolve_nvidia_smi_finds_windows_system32(monkeypatch, tmp_path):
     assert gpu_bootstrap._resolve_nvidia_smi() == str(smi)
 
 
+# --- detect_nvidia header-format robustness (driver 610+ regression) ---------
+#
+# Real nvidia-smi no-flag headers, captured verbatim. The NEW one (driver 610.x,
+# 2026) DROPPED the legacy "Driver Version:" / "CUDA Version:" strings entirely,
+# replacing them with "NVIDIA-SMI 610.47", "KMD Version:" and "CUDA UMD Version:
+# 13.3". The old regex matched neither -> detect_nvidia returned None -> a real
+# RTX 4090 silently ran rPPG on CPU (verified 2026-06-04). These tests pin BOTH
+# layouts so a future header tweak can't reintroduce the regression.
+
+_SMI_HEADER_LEGACY = (
+    "Tue May 13 10:00:00 2025\n"
+    "+-----------------------------------------------------------------------------+\n"
+    "| NVIDIA-SMI 555.52       Driver Version: 555.52       CUDA Version: 12.6      |\n"
+    "|-------------------------------+----------------------+----------------------+\n"
+)
+
+_SMI_HEADER_NEW_610 = (
+    "Thu Jun  4 02:47:53 2026\n"
+    "+-----------------------------------------------------------------------------------------+\n"
+    "| NVIDIA-SMI 610.47                 KMD Version: 610.47        CUDA UMD Version: 13.3     |\n"
+    "+-----------------------------------------+------------------------+----------------------+\n"
+)
+
+
+def _fake_smi(monkeypatch, *, driver_query: str | None, header: str):
+    """Monkeypatch subprocess.run so detect_nvidia sees a fixed nvidia-smi.
+
+    ``driver_query`` is the stdout of ``--query-gpu=driver_version`` (None = the
+    query fails / returns nothing); ``header`` is the no-flag header stdout.
+    """
+
+    class _Proc:
+        def __init__(self, stdout, rc=0):
+            self.stdout = stdout
+            self.returncode = rc
+
+    def _run(cmd, *a, **k):
+        # cmd[0] is the resolved nvidia-smi exe; a "--query-gpu=..." arg means
+        # the stable driver probe, otherwise it's the free-form header call.
+        if any(isinstance(c, str) and c.startswith("--query-gpu") for c in cmd):
+            if driver_query is None:
+                return _Proc("", rc=1)
+            return _Proc(driver_query, rc=0)
+        return _Proc(header, rc=0)
+
+    monkeypatch.setattr(gpu_bootstrap, "_resolve_nvidia_smi", lambda: "nvidia-smi")
+    monkeypatch.setattr(gpu_bootstrap.subprocess, "run", _run)
+
+
+def test_detect_nvidia_parses_legacy_header(monkeypatch):
+    """Legacy driver header (Driver Version: / CUDA Version:) still parses."""
+    _fake_smi(monkeypatch, driver_query="555.52\n", header=_SMI_HEADER_LEGACY)
+    got = gpu_bootstrap.detect_nvidia()
+    assert got == {"driver_version": "555.52", "cuda_major": 12}
+
+
+def test_detect_nvidia_parses_new_610_header(monkeypatch):
+    """Driver 610+ header (CUDA UMD Version:, no legacy strings) — THE bug.
+
+    Before the fix detect_nvidia returned None here and the RTX 4090 ran on CPU.
+    """
+    _fake_smi(monkeypatch, driver_query="610.47\n", header=_SMI_HEADER_NEW_610)
+    got = gpu_bootstrap.detect_nvidia()
+    assert got == {"driver_version": "610.47", "cuda_major": 13}
+
+
+def test_detect_nvidia_falls_back_to_driver_branch_when_no_cuda_field(monkeypatch):
+    """GPU present but header has NEITHER CUDA field -> driver-branch fallback
+    picks the CUDA major rather than silently dropping a visible GPU to CPU."""
+    headerless = (
+        "Thu Jun  4 02:47:53 2026\n"
+        "| NVIDIA-SMI 612.00   KMD Version: 612.00   (no cuda field at all) |\n"
+    )
+    _fake_smi(monkeypatch, driver_query="612.00\n", header=headerless)
+    got = gpu_bootstrap.detect_nvidia()
+    # 612 >= 580 -> CUDA 13 by the driver-branch table.
+    assert got == {"driver_version": "612.00", "cuda_major": 13}
+
+
+def test_detect_nvidia_none_when_query_driver_fails(monkeypatch):
+    """If the stable --query-gpu driver probe yields nothing, there's no usable
+    GPU -> None (even if a stale header string is somehow present)."""
+    _fake_smi(monkeypatch, driver_query=None, header=_SMI_HEADER_NEW_610)
+    assert gpu_bootstrap.detect_nvidia() is None
+
+
+def test_detect_nvidia_gpu_present_unknown_cuda_returns_none_major(monkeypatch):
+    """GPU present, no CUDA field, and a driver branch BELOW the fallback floor
+    -> cuda_major None (resolve_torch_mode then treats it as CPU). Never None
+    for the whole dict — we still record the driver so the GPU isn't 'lost'."""
+    old_driver = (
+        "Tue May 13 10:00:00 2020\n"
+        "| NVIDIA-SMI 440.33   (ancient driver, no cuda string)            |\n"
+    )
+    _fake_smi(monkeypatch, driver_query="440.33\n", header=old_driver)
+    got = gpu_bootstrap.detect_nvidia()
+    assert got == {"driver_version": "440.33", "cuda_major": None}
+
+
+def test_parse_smi_header_cuda_major_prefers_umd_over_legacy():
+    """If BOTH fields somehow appear, the NEW 'CUDA UMD Version:' wins (it's the
+    authoritative runtime field on the new layout)."""
+    both = "CUDA Version: 12.4   CUDA UMD Version: 13.3"
+    assert gpu_bootstrap._parse_smi_header_cuda_major(both) == 13
+
+
 def test_install_cupy_surfaces_pip_error_lines(monkeypatch):
     """Code-review MEDIUM (PR #54): a failed pip install must report pip's
     own ERROR: line, not a blind tail that often captures only the generic
