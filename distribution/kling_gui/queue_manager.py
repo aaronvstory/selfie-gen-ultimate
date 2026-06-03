@@ -313,6 +313,18 @@ _PANEL_NOISE_PATTERNS = (
     "saved video to:",
     "video processing complete.",
     "finalizing video with ffmpeg codec",
+    # rPPG launcher/injector banner + diagnostic chatter that wrapped long
+    # absolute paths across the panel (user feedback 2026-06-04: too noisy).
+    # File-only (debug) — the user-facing progress is the per-iteration line +
+    # the GPU banner + the final "rPPG output:" line.
+    "python: shared root venv",
+    "python: standalone venv",
+    "checking gpu acceleration for rppg",
+    "mediapipe gpu delegate unavailable",
+    "imageclonecalculator: gpu processing is disabled",
+    "using mediapipe tasks facelandmarker model:",
+    "pipeline: v5 (deband-first)",
+    "rppg corrector v",
 )
 
 
@@ -2581,6 +2593,23 @@ class QueueManager:
                 if _is_tf_noise(text):
                     return
                 stripped = text.strip()
+                # The verbose "Launching rppg_injector.py "<full in>" --output
+                # "<full out>" <flags>" banner wraps the PANEL across lines. Show
+                # a short basenames version in the panel (info) but keep the FULL
+                # command in the terminal + file (debug) — the terminal is the
+                # data-rich surface (user direction 2026-06-04).
+                low = stripped.lower()
+                if low.startswith("launching rppg_injector.py"):
+                    self.log(stripped, "debug")  # full command -> terminal + file
+                    quoted = re.findall(r'"([^"]+)"', stripped)
+                    if quoted:
+                        src_name = Path(quoted[0]).name
+                        out_name = Path(quoted[1]).name if len(quoted) > 1 else None
+                        msg = f"Launching rppg_injector.py on {src_name}"
+                        if out_name:
+                            msg += f" → {out_name}"
+                        self.log(msg, "info")  # friendly short -> panel
+                    return
                 # The launcher's own dependency self-heal diagnostics (the
                 # rppg_import_diag.py per-module report + WARN/ERROR status
                 # lines) are kept OUT of the user-facing panel to avoid a
