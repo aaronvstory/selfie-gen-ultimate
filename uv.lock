@@ -2643,7 +2643,7 @@ dependencies = [
     { name = "selenium" },
     { name = "tensorflow" },
     { name = "tensorflow-intel", marker = "sys_platform == 'win32' or (extra == 'extra-19-selfie-gen-ultimate-cpu' and extra == 'extra-19-selfie-gen-ultimate-cu121') or (extra == 'extra-19-selfie-gen-ultimate-cpu' and extra == 'extra-19-selfie-gen-ultimate-cu128') or (extra == 'extra-19-selfie-gen-ultimate-cu121' and extra == 'extra-19-selfie-gen-ultimate-cu128')" },
-    { name = "tensorflow-io-gcs-filesystem", version = "0.31.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'win32' or (extra == 'extra-19-selfie-gen-ultimate-cpu' and extra == 'extra-19-selfie-gen-ultimate-cu121') or (extra == 'extra-19-selfie-gen-ultimate-cpu' and extra == 'extra-19-selfie-gen-ultimate-cu128') or (extra == 'extra-19-selfie-gen-ultimate-cu121' and extra == 'extra-19-selfie-gen-ultimate-cu128')" },
+    { name = "tensorflow-io-gcs-filesystem", version = "0.31.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform == 'win32') or (python_full_version >= '3.12' and extra == 'extra-19-selfie-gen-ultimate-cpu' and extra == 'extra-19-selfie-gen-ultimate-cu121') or (python_full_version >= '3.12' and extra == 'extra-19-selfie-gen-ultimate-cpu' and extra == 'extra-19-selfie-gen-ultimate-cu128') or (python_full_version >= '3.12' and extra == 'extra-19-selfie-gen-ultimate-cu121' and extra == 'extra-19-selfie-gen-ultimate-cu128') or (sys_platform != 'win32' and extra == 'extra-19-selfie-gen-ultimate-cpu' and extra == 'extra-19-selfie-gen-ultimate-cu121') or (sys_platform != 'win32' and extra == 'extra-19-selfie-gen-ultimate-cpu' and extra == 'extra-19-selfie-gen-ultimate-cu128') or (sys_platform != 'win32' and extra == 'extra-19-selfie-gen-ultimate-cu121' and extra == 'extra-19-selfie-gen-ultimate-cu128')" },
     { name = "tensorflow-io-gcs-filesystem", version = "0.37.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32' or (extra == 'extra-19-selfie-gen-ultimate-cpu' and extra == 'extra-19-selfie-gen-ultimate-cu121') or (extra == 'extra-19-selfie-gen-ultimate-cpu' and extra == 'extra-19-selfie-gen-ultimate-cu128') or (extra == 'extra-19-selfie-gen-ultimate-cu121' and extra == 'extra-19-selfie-gen-ultimate-cu128')" },
     { name = "tf-keras" },
     { name = "tkinterdnd2" },
@@ -2733,7 +2733,7 @@ requires-dist = [
     { name = "tensorflow", specifier = "==2.16.2" },
     { name = "tensorflow-intel", marker = "sys_platform == 'win32'", specifier = "==2.16.2" },
     { name = "tensorflow-io-gcs-filesystem", marker = "sys_platform != 'win32'", specifier = ">=0.37.1" },
-    { name = "tensorflow-io-gcs-filesystem", marker = "sys_platform == 'win32'", specifier = "==0.31.0" },
+    { name = "tensorflow-io-gcs-filesystem", marker = "python_full_version < '3.12' and sys_platform == 'win32'", specifier = "==0.31.0" },
     { name = "tf-keras", specifier = "==2.16.0" },
     { name = "tkinterdnd2", specifier = ">=0.3,<1" },
     { name = "torch", marker = "(sys_platform == 'linux' and extra == 'cpu') or (sys_platform == 'win32' and extra == 'cpu')", specifier = ">=2.2,<3", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "selfie-gen-ultimate", extra = "cpu" } },
@@ -2986,7 +2986,6 @@ name = "tensorflow-io-gcs-filesystem"
 version = "0.31.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.12' and sys_platform == 'win32'",
     "python_full_version == '3.11.*' and platform_machine != 'AMD64' and sys_platform == 'win32'",
     "python_full_version < '3.11' and platform_machine != 'AMD64' and sys_platform == 'win32'",
     "python_full_version == '3.11.*' and platform_machine == 'AMD64' and sys_platform == 'win32'",

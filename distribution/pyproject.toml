@@ -57,18 +57,22 @@ dependencies = [
     # TensorFlow pinned explicitly (deepface only declares tensorflow>=1.9.0).
     "tensorflow==2.16.2",
     "tensorflow-intel==2.16.2; sys_platform == 'win32'",
-    # tensorflow-io-gcs-filesystem: a transitive TF dep with a CROSS-OS WHEEL
-    # GAP. TF 2.16.2 declares `>=0.23.1` (no upper bound). uv's universal lock
-    # otherwise picks 0.37.1 (newest), which has NO Windows wheel — a fresh
-    # `uv sync` then dies on Windows with "no wheel for win_amd64" (the exact
-    # failure test_uv_sync_extra_real_import caught). pip never hit this because
-    # it omits the package on Windows entirely (TF imports fine without it).
-    # The last version WITH a win_amd64 wheel is 0.31.0 — but 0.31.0 has NO
-    # Apple-Silicon (macosx arm64) wheel, so we can't pin it globally either.
-    # So: split per platform — Windows pins 0.31.0 (its last win wheel),
-    # mac/linux float to >=0.37.1 (which DOES publish darwin-arm64 + manylinux
-    # wheels). Each OS gets a version it actually has a wheel for.
-    "tensorflow-io-gcs-filesystem==0.31.0; sys_platform == 'win32'",
+    # tensorflow-io-gcs-filesystem: a transitive TF dep with a CROSS-OS + CROSS-
+    # PYTHON-VERSION WHEEL GAP. TF 2.16.2 declares `>=0.23.1` (no upper bound).
+    # uv's universal lock otherwise picks 0.37.1 (newest), which has NO Windows
+    # wheel — a fresh `uv sync` dies on Windows with "no wheel for win_amd64".
+    # pip never hit this because it omits the package on Windows entirely (TF
+    # imports fine without it). The constraints:
+    #   * Last version WITH ANY win wheel = 0.31.0, but it ships ONLY cp310/cp311
+    #     win wheels — there is NO win cp312 wheel for ANY tfgcs version.
+    #   * 0.31.0 has NO Apple-Silicon (macosx arm64) wheel.
+    # So: scope per (platform, python). Windows + py<3.12 pins 0.31.0 (its only
+    # win wheels); Windows + py3.12 OMITS tfgcs entirely (no win cp312 wheel
+    # exists; TF works without it — verified); mac/linux float to >=0.37.1
+    # (darwin-arm64 + manylinux wheels). Without the py<3.12 gate, a Windows
+    # Python 3.12 `uv sync` is unsatisfiable and silently falls back to pip every
+    # launch (Codex P2, PR #71).
+    "tensorflow-io-gcs-filesystem==0.31.0; sys_platform == 'win32' and python_version < '3.12'",
     "tensorflow-io-gcs-filesystem>=0.37.1; sys_platform != 'win32'",
     "numpy>=1.26,<2",
     "tf-keras==2.16.0",

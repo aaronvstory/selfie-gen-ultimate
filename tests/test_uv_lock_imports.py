@@ -135,6 +135,62 @@ def test_tensorflow_legacy_keras_import():
 
 
 # --------------------------------------------------------------------------
+# Cross-platform lock-resolution guards (fast — `uv sync --dry-run` per target)
+# --------------------------------------------------------------------------
+
+def test_committed_lock_is_internally_consistent():
+    """`uv lock --check` proves the committed uv.lock resolves correctly for
+    ALL `required-environments` (win-AMD64 + darwin-arm64 + linux-x64) without
+    re-resolving. This is the authoritative cross-platform guard — it covers
+    every target the project ships to, including the macOS wheels a Windows-host
+    `--dry-run` can't faithfully simulate (the dry-run defaults to an older
+    macOS than some wheels require)."""
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv not on PATH")
+    proc = subprocess.run(
+        [uv, "lock", "--check"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, (
+        "committed uv.lock is stale or doesn't resolve for a required "
+        f"environment:\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}"
+    )
+
+
+@pytest.mark.parametrize("python", ["3.11", "3.12"])
+def test_lock_resolves_for_windows(python):
+    """Windows is the uv fast-path's primary platform — the lock MUST `uv sync
+    --dry-run` cleanly for BOTH supported Windows pythons or the fast-path
+    silently falls back to pip there. The 3.12 case is the exact gap Codex P2
+    (PR #71) caught: tensorflow-io-gcs-filesystem publishes NO Windows cp312
+    wheel for any version, so its Windows pin is gated python_version < '3.12'.
+    (Windows wheels don't have the macOS-version-floor subtlety that makes a
+    cross-host macOS dry-run unreliable, so Windows is dry-run-testable here.)"""
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv not on PATH")
+    proc = subprocess.run(
+        [
+            uv, "sync", "--dry-run", "--frozen",
+            "--python-platform", "windows", "--python", python,
+            "--no-default-groups", "--extra", "cpu",
+        ],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, (
+        f"lock does not resolve for Windows py{python} — the uv fast-path would "
+        f"fall back to pip there:\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}"
+    )
+
+
+# --------------------------------------------------------------------------
 # Layer 2 — env-gated fresh `uv sync` resolution + deep import
 # --------------------------------------------------------------------------
 
