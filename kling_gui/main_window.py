@@ -1192,17 +1192,24 @@ class KlingGUIWindow:
         # report 2026-06-04). INFO-level keeps the DEBUG noise (raw FFmpeg/
         # subprocess spam) file-only, matching the panel. Guarded: a frozen
         # pythonw build has no real stdout (sys.stdout is None) — skip then.
-        if getattr(sys, "stdout", None) is not None and not any(
-            isinstance(h, logging.StreamHandler)
-            and not isinstance(h, RotatingFileHandler)
-            for h in logger.handlers
-        ):
+        #
+        # Dedup via an explicit marker attribute (not an isinstance check):
+        # RotatingFileHandler IS a StreamHandler subclass, and the "kling_gui"
+        # logger is process-global, so a second KlingGUIWindow (concurrent
+        # launches, PR #49) re-running _setup_logging must not add a 2nd stdout
+        # handler. A marker is exact + immune to handler-subclass confusion
+        # (gemini MEDIUM / subagent M1 PR #73).
+        already_has_stdout = any(
+            getattr(h, "_kling_stdout_mirror", False) for h in logger.handlers
+        )
+        if getattr(sys, "stdout", None) is not None and not already_has_stdout:
             try:
                 stream = logging.StreamHandler(sys.stdout)
                 stream.setLevel(logging.INFO)
                 stream.setFormatter(
                     logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
                 )
+                stream._kling_stdout_mirror = True  # type: ignore[attr-defined]
                 logger.addHandler(stream)
             except Exception:  # noqa: BLE001 — stdout mirroring is best-effort
                 pass
