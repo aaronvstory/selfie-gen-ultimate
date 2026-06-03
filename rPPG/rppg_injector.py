@@ -108,9 +108,21 @@ try:
     _scripts_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"
     )
-    if _scripts_dir not in sys.path:
+    # Temporarily front of sys.path ONLY for this import, then remove it so we
+    # don't permanently shadow stdlib/3rd-party modules with anything in
+    # scripts/ (gemini MEDIUM PR #72). Once imported, the module is cached in
+    # sys.modules, so the path entry is no longer needed.
+    _added_scripts_dir = _scripts_dir not in sys.path
+    if _added_scripts_dir:
         sys.path.insert(0, _scripts_dir)
-    from cuda_dll_paths import register_cuda_dll_dirs as _register_cuda_dll_dirs
+    try:
+        from cuda_dll_paths import register_cuda_dll_dirs as _register_cuda_dll_dirs
+    finally:
+        if _added_scripts_dir:
+            try:
+                sys.path.remove(_scripts_dir)
+            except ValueError:
+                pass
 except Exception:  # noqa: BLE001 — helper absent/unimportable => CPU fallback
     def _register_cuda_dll_dirs():
         return []
