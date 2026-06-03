@@ -528,13 +528,15 @@ def _resolve_constraints_path() -> Optional[str]:
     numpy 2.x (the numpy<2 face-stack invariant). Returns None if absent (the
     install still runs unconstrained — better than failing to provision GPU).
     """
-    # EAFP (gemini MEDIUM PR #72): resolve() AND is_file() can raise on a
-    # restricted FS / symlink loop; keep BOTH inside the try so any OSError
-    # degrades to "absent" (unconstrained install) rather than crashing the GPU
-    # bootstrap.
+    # EAFP (gemini MEDIUM PR #72): attempt to open the file directly inside the
+    # try rather than a pre-flight is_file() check — resolve()/open() can raise
+    # on a restricted FS / symlink loop, and any OSError must degrade to "absent"
+    # (unconstrained install) rather than crashing the GPU bootstrap. The context
+    # manager closes the probe handle immediately.
     try:
         candidate = Path(__file__).resolve().parent.parent / "constraints.txt"
-        return str(candidate) if candidate.is_file() else None
+        with open(candidate):
+            return str(candidate)
     except OSError:
         return None
 

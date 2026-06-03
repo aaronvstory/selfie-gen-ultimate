@@ -155,8 +155,11 @@ except Exception as _cupy_err:
     _cupy_detail = str(_cupy_err).strip().replace("\n", " ")
     if len(_cupy_detail) > 200:
         _cupy_detail = _cupy_detail[:200] + "…"
-    print(f"GPU backend: CuPy unavailable ({type(_cupy_err).__name__}: "
-          f"{_cupy_detail}); frame math stays on CPU.")
+    # Omit the ": <detail>" entirely when the exception has no message, so the
+    # log reads "(RuntimeError)" not a dangling "(RuntimeError: )" (gemini PR #72).
+    _detail_suffix = f": {_cupy_detail}" if _cupy_detail else ""
+    print(f"GPU backend: CuPy unavailable ({type(_cupy_err).__name__}"
+          f"{_detail_suffix}); frame math stays on CPU.")
 
 
 def xp_of(arr):

@@ -77,6 +77,11 @@ LOCAL_ONLY_RESEARCH_DIRS: Set[str] = {
     "test-material",             # ~35 MB fixture videos
     "rppg_harness_out",          # rPPG harness byproducts (lives nested
                                  # under oldcam-testing/ in practice)
+    "_friend_logs",              # PII: friend debug logs with real emails +
+                                 # machine paths. .gitignore alone does NOT
+                                 # shield it from the working-tree release sweep
+                                 # (Codex P1 PR #72 — same leak class as the
+                                 # PR #51 PII + PR #61 analysis-file leaks).
 }
 # Note: oldcam-testing/ itself is kept (frozen A/B oldcam_v*.py files are
 # tracked + ship). Only the byproduct subdir + the gitignored *.mp4 / reports/

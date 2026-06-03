@@ -299,6 +299,7 @@ def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
         "analysis_frames",
         "test-material",
         "rppg_harness_out",
+        "_friend_logs",  # PII: friend debug logs (Codex P1 PR #72) — must stay excluded
     }
     missing_minimum = EXPECTED_MINIMUM_DIRS - LOCAL_ONLY_RESEARCH_DIRS
     assert not missing_minimum, (
