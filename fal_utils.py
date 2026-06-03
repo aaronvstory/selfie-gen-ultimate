@@ -484,13 +484,26 @@ def fal_queue_poll(
             elapsed_s_full = int(time.monotonic() - start_time)
             elapsed = int(elapsed_s_full / 60)
             if progress_cb:
+                # Full diagnostic blob FIRST, at debug (terminal + file only).
+                # It must precede the progress_update line below: a non-
+                # progress_update log() ends the in-place row, so emitting the
+                # debug line AFTER would close the row and the next heartbeat
+                # would start a fresh one (re-spamming the panel). Debug-then-
+                # progress_update keeps the growing row as the last line.
                 progress_cb(
                     (
                         f"Still waiting... {elapsed} min elapsed "
                         f"[provider={provider} endpoint={endpoint or 'unknown'} req=*{safe_request} "
                         f"attempt={attempt} status={last_status} elapsed={elapsed_s_full}s cap={int(max_wait_seconds)}s]"
                     ),
-                    "progress",
+                    "debug",
+                )
+                # Short growing line in the panel (one in-place row that counts
+                # up), at the progress_update level the GUI overwrites in place.
+                progress_cb(
+                    f"{operation_name} — {last_status or 'IN_PROGRESS'} "
+                    f"({elapsed_s_full}s)",
+                    "progress_update",
                 )
 
         try:

@@ -1750,16 +1750,22 @@ class QueueManager:
         _raw_lock_ef = _parse_bool(_cfg_cfg.get("lock_end_frame", True))
         _lock_end_frame = True if _raw_lock_ef is None else bool(_raw_lock_ef)
 
-        # Set up verbose callback for generator progress
+        # Generator progress callback. progress_update lines (the growing
+        # in-place "Video gen — IN_PROGRESS (Xs)" row) ALWAYS reach the panel so
+        # the user sees a video gen is alive even with Verbose Mode off (user
+        # direction 2026-06-04 — unify all progress reporting). All OTHER
+        # generator chatter stays verbose-gated as before.
         def progress_callback(message: str, level: str = "info"):
-            self.log_verbose(message, level)
+            if level == "progress_update":
+                self.log(message, "progress_update")
+            else:
+                self.log_verbose(message, level)
 
-        # Attach callback to generator if verbose mode
+        # Always attach now (the callback self-gates non-progress lines on
+        # verbose); previously it was attached only in verbose mode, which hid
+        # the new progress_update row.
         config = self.get_config()
-        if config.get("verbose_gui_mode", False):
-            self.generator.set_progress_callback(progress_callback)
-        else:
-            self.generator.set_progress_callback(None)
+        self.generator.set_progress_callback(progress_callback)
 
         # For increment mode, we need to handle the output path ourselves
         if custom_output_path:
@@ -1833,7 +1839,11 @@ class QueueManager:
         try:
             from .video_looper import create_looped_video
 
-            self.log(f"Creating looped video...", "info")
+            # Loop encoding is a blocking ffmpeg call (no live %), so this is a
+            # single in-place status row; the "✅ LOOP DONE"/next milestone line
+            # ends it (progress_update unifies all progress reporting, user
+            # direction 2026-06-04).
+            self.log("Loop — encoding… (ffmpeg, please wait)", "progress_update")
 
             # Create looped version (adds _looped suffix)
             looped_path = create_looped_video(

@@ -842,6 +842,7 @@ class FalAIKlingGenerator:
             attempt = 0
             consecutive_errors = 0
             max_consecutive_errors = 10
+            last_status = "IN_QUEUE"  # for the progress-row heartbeat label
 
             # Exponential backoff settings
             base_delay = 5
@@ -863,15 +864,21 @@ class FalAIKlingGenerator:
 
                 logger.debug(f" Polling attempt {attempt}/{max_attempts}, delay: {delay}s")
 
-                # Show progress every minute
+                # Growing in-place progress row, every minute. progress_update
+                # so the GUI overwrites ONE line (user direction 2026-06-04 —
+                # unify all progress reporting); always emitted (not gated by
+                # verbose) so the user sees the video gen is alive. fal.ai gives
+                # no percent, so we show elapsed time.
                 if attempt % (60 // base_delay) == 0:
-                    elapsed_mins = (attempt * base_delay) // 60
+                    elapsed_s = attempt * base_delay
+                    elapsed_mins = elapsed_s // 60
                     if self.verbose:
                         logger.info(
                             f"⏳ Still waiting... {elapsed_mins} min elapsed (attempt {attempt}/{max_attempts})"
                         )
                     self._report_progress(
-                        f"⏳ Still waiting... {elapsed_mins} min elapsed", "progress"
+                        f"Video gen — {last_status or 'IN_PROGRESS'} ({elapsed_s}s)",
+                        "progress_update",
                     )
 
                 try:
@@ -924,6 +931,10 @@ class FalAIKlingGenerator:
 
                     status_result = status_response.json()
                     status = status_result.get("status")
+                    if isinstance(status, str) and status:
+                        # Remember the most recent status so the heartbeat's
+                        # growing progress row can show IN_QUEUE vs IN_PROGRESS.
+                        last_status = status
 
                     # Log queue position if available
                     queue_position = status_result.get("queue_position")

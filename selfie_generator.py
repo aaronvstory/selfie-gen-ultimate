@@ -341,14 +341,16 @@ class SelfieGenerator:
             self._report("No status URL in response", "error")
             return False
 
+        # Start the in-place progress row (the poll loop's heartbeat updates it).
         self._report(
-            f"Waiting for generation... (timeout {poll_timeout_seconds}s)",
-            "progress",
+            f"Selfie — submitted (timeout {poll_timeout_seconds}s)",
+            "progress_update",
         )
         final = fal_queue_poll(
             self.api_key, status_url, self._progress_callback,
             max_wait_seconds=poll_timeout_seconds,
             cancel_event=self._cancel_event,
+            operation_name="Selfie",
         )
         if not final:
             self._report("Generation failed or timed out", "error")
