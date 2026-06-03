@@ -19,47 +19,22 @@ set "LOG_FILE=%STATE_DIR%\launch.log"
 
 if not exist "%STATE_DIR%\" mkdir "%STATE_DIR%"
 
-rem --- Full-transcript tee (whole run on screen AND saved to one file) -----
-rem  Re-launches THIS script through scripts\win_tee_launch.ps1, which pipes
-rem  the run through PowerShell Tee-Object: every line the launcher + GUI
-rem  print to the console is shown live AND written to a rolling
-rem  transcript-<ts>.log under .launcher_state\. Lets the user copy the whole
-rem  terminal window (or hand over one file) when reporting an issue instead
-rem  of hunting for scattered logs -- parity with the macOS `tee` launchers.
-rem  Guarded to run once (KLING_TRANSCRIPT), opt-out KLING_NO_TRANSCRIPT=1
-rem  (subprocess callers set it), and a no-op if PowerShell is missing -- the
-rem  launch must never depend on the transcript. FLAT if/goto (no nested-paren
-rem  block: the cmd 25H2 parens crash, bounce-trap 7). The .ps1 helper avoids
-rem  cmd<->PowerShell quote-nesting that mangles spaced paths / drops exit codes.
-if defined KLING_TRANSCRIPT goto :transcript_ready
-if defined KLING_NO_TRANSCRIPT goto :transcript_ready
-where powershell >nul 2>&1
-if errorlevel 1 goto :transcript_ready
-if not exist "%ROOT_DIR%\scripts\win_tee_launch.ps1" goto :transcript_ready
-rem  Timestamped name from WMIC datetime; fall back to "run" if unavailable.
+rem --- GUI-runtime transcript setup (the LAUNCHER/install is never piped) -----
+rem  The dependency install (uv/pip) runs on a real console so its live progress
+rem  bars + colors render beautifully (piping through tee would kill the bars +
+rem  paint benign stderr red). Only the GUI RUNTIME is tee'd -- as you USE the
+rem  app, its output (rPPG processing, crashes, etc.) is written live to a
+rem  rolling transcript-<ts>.log under .launcher_state\ so you can hand over one
+rem  file. Compute the filename here; the GUI-launch step below tees to it.
+rem  Opt-out: set KLING_NO_TRANSCRIPT=1 (subprocess callers set this).
+set "TRANSCRIPT_FILE="
+if defined KLING_NO_TRANSCRIPT goto :transcript_setup_done
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "TEE_DT=%%B"
 set "TEE_DT=%TEE_DT: =%"
 if "%TEE_DT%"=="" set "TEE_STAMP=run"
 if not "%TEE_DT%"=="" set "TEE_STAMP=%TEE_DT:~0,8%-%TEE_DT:~8,6%"
 set "TRANSCRIPT_FILE=%STATE_DIR%\transcript-%TEE_STAMP%.log"
-set "KLING_TRANSCRIPT=1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\scripts\win_tee_launch.ps1" "%~f0" "%TRANSCRIPT_FILE%" %*
-set "TEE_RC=%errorlevel%"
-rem  rc 3 = the tee infrastructure itself failed (cmd missing, disk full,
-rem  locked-down ExecutionPolicy, read-only .launcher_state). The transcript
-rem  is best-effort and must NEVER block the launch -- fall through to a
-rem  normal (un-teed) launch in that case (code-review HIGH). Any other rc is
-rem  the GUI's own exit code, so propagate it. FLAT if/goto (no paren block --
-rem  the cmd 25H2 nested-paren crash, bounce-trap 7).
-if "%TEE_RC%"=="3" goto :transcript_tee_failed
-echo(
-echo   Full transcript of this run saved to:
-echo     %TRANSCRIPT_FILE%
-exit /b %TEE_RC%
-:transcript_tee_failed
-echo   [transcript] capture unavailable; launching directly without a transcript file.
-goto :transcript_ready
-:transcript_ready
+:transcript_setup_done
 
 rem --- Timestamp banner -----------------------------------------------------
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
@@ -456,8 +431,25 @@ echo   Venv: %VENV_PYTHON%
 echo(
 
 set "KLING_GUI_CLI_ERRORS=1"
+rem  Tee the GUI RUNTIME to the transcript as you use the app (rPPG/crash/etc.).
+rem  The dep install already ran on a real console so its progress bars stayed
+rem  pretty; only this app-runtime portion is captured. Falls back to a direct
+rem  launch if a transcript wasn't set up, the helper is missing, PowerShell is
+rem  absent, or the tee infra fails (rc 3). FLAT if/goto (cmd 25H2 paren crash).
+if "%TRANSCRIPT_FILE%"=="" goto :gui_launch_direct
+if not exist "%ROOT_DIR%\scripts\win_tee_launch.ps1" goto :gui_launch_direct
+where powershell >nul 2>&1
+if errorlevel 1 goto :gui_launch_direct
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\scripts\win_tee_launch.ps1" "%VENV_PYTHON%" "%TRANSCRIPT_FILE%" -u "%GUI_SCRIPT%" %*
+set "EXIT_CODE=!errorlevel!"
+if "!EXIT_CODE!"=="3" goto :gui_launch_direct
+echo(
+echo   App log for this session saved to: %TRANSCRIPT_FILE%
+goto :gui_launch_done
+:gui_launch_direct
 "%VENV_PYTHON%" -u "%GUI_SCRIPT%" %*
 set "EXIT_CODE=!errorlevel!"
+:gui_launch_done
 
 echo(
 if !EXIT_CODE! neq 0 (

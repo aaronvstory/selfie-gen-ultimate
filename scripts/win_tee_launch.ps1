@@ -61,29 +61,47 @@ function Invoke-TranscriptPrune {
     }
 }
 
-# Run from the .bat's own directory so a relative %~dp0 / cmd CWD is always
-# valid (a bad inherited CWD is what prints "The system cannot find the path
-# specified." to the console).
-$batDir = Split-Path -Parent $BatPath
-if ($batDir -and (Test-Path -LiteralPath $batDir)) {
-    Set-Location -LiteralPath $batDir
+# When the target is a .bat/.cmd, run from ITS directory so a relative %~dp0 /
+# cmd CWD is always valid (a bad inherited CWD prints "The system cannot find
+# the path specified."). When the target is an EXE (e.g. the GUI is launched as
+# venv\Scripts\python.exe -u gui_launcher.py), do NOT cd into the venv Scripts
+# dir — keep the caller's inherited CWD so the app sees the same working dir it
+# would on a direct launch.
+$ext = [System.IO.Path]::GetExtension($BatPath)
+if ($ext -ieq '.bat' -or $ext -ieq '.cmd') {
+    $batDir = Split-Path -Parent $BatPath
+    if ($batDir -and (Test-Path -LiteralPath $batDir)) {
+        Set-Location -LiteralPath $batDir
+    }
 }
 
 $rc = $null
 try {
-    # cmd.exe is the correct host for a .bat. Build the arg list explicitly so
-    # spaced paths/args survive (no manual quote concatenation). Tee-Object
-    # mirrors combined stdout+stderr to the file while passing it through to the
-    # console, so the window shows everything live.
+    # cmd.exe is the correct host for a .bat. Build a single command string and
+    # merge the child's stderr into stdout INSIDE cmd ("... 2>&1") rather than at
+    # the PowerShell level.
     #
+    # Why the merge happens in cmd, not via PowerShell's `2>&1` (the v2.21.1 red-
+    # text bug): when PowerShell's redirection captures a native command's stderr,
+    # it wraps each stderr line in an ErrorRecord and renders it RED with a scary
+    # ``NativeCommandError``/``RemoteException`` block — even for purely
+    # informational stderr lines. `py -m venv` on a junctioned path (C:\claude ->
+    # F:\claude) prints a benign "Actual environment location may have moved..."
+    # notice to stderr, which then looked like a crash. Merging in cmd makes
+    # PowerShell see one plain stdout text stream — no ErrorRecords, no red, no
+    # wrapper — while the transcript still captures stdout+stderr in full.
+    #
+    # Quote the .bat path; append each arg quoted. The combined string is handed
+    # to one `cmd /c` so spaced paths/args survive.
+    $cmdLine = '"' + $BatPath + '"'
+    foreach ($a in $BatArgs) { $cmdLine += ' "' + $a + '"' }
+    $cmdLine += ' 2>&1'
+
     # Exit-code capture (code-review HIGH #2): on Windows PowerShell 5.1
     # ``$LASTEXITCODE`` read AFTER a pipeline whose LAST element is a cmdlet
-    # (Tee-Object) is unreliable — it can report 0 even when cmd.exe failed,
-    # silently hiding a GUI crash from the caller's ``set TEE_RC=%errorlevel%``.
-    # Capture cmd's real code from INSIDE the pipeline (a foreach-side scriptblock
-    # that records $LASTEXITCODE the instant the native command upstream
-    # finishes), so it's correct on both PS5.1 and PS7.
-    & cmd.exe /c $BatPath @BatArgs 2>&1 |
+    # (Tee-Object) is unreliable. Capture cmd's real code from INSIDE the pipeline
+    # (a foreach -End block) so it's correct on both PS5.1 and PS7.
+    & $env:ComSpec /c $cmdLine |
         Tee-Object -FilePath $TranscriptPath |
         ForEach-Object {
             $_                       # pass the line through (preserves live console)
