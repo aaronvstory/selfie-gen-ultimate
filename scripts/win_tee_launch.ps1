@@ -40,6 +40,27 @@ $ErrorActionPreference = 'Continue'
 # Child .bat sees this and skips the tee wrapper (no infinite relaunch).
 $env:KLING_TRANSCRIPT = '1'
 
+function Invoke-TranscriptPrune {
+    # Keep only the newest 5 transcript-*.log (code-review MEDIUM #5): done HERE
+    # in a real .ps1 (where $TranscriptPath is a typed [string] parameter) rather
+    # than as an inline `powershell -Command "...'%STATE_DIR%'..."` in the .bat,
+    # where a single quote in the install path would break the PowerShell string.
+    # Run AFTER the launch so THIS run's transcript (created by Tee-Object during
+    # the run) is counted — otherwise steady-state leaves 6 files, not 5.
+    # Best-effort: pruning must never block or fail the launch.
+    try {
+        $tDir = Split-Path -Parent $TranscriptPath
+        if ($tDir -and (Test-Path -LiteralPath $tDir)) {
+            Get-ChildItem -LiteralPath $tDir -Filter 'transcript-*.log' -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -Skip 5 |
+                Remove-Item -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # pruning is never allowed to block the launch
+    }
+}
+
 # Run from the .bat's own directory so a relative %~dp0 / cmd CWD is always
 # valid (a bad inherited CWD is what prints "The system cannot find the path
 # specified." to the console).
@@ -48,20 +69,39 @@ if ($batDir -and (Test-Path -LiteralPath $batDir)) {
     Set-Location -LiteralPath $batDir
 }
 
+$rc = $null
 try {
     # cmd.exe is the correct host for a .bat. Build the arg list explicitly so
     # spaced paths/args survive (no manual quote concatenation). Tee-Object
     # mirrors combined stdout+stderr to the file while passing it through to the
     # console, so the window shows everything live.
+    #
+    # Exit-code capture (code-review HIGH #2): on Windows PowerShell 5.1
+    # ``$LASTEXITCODE`` read AFTER a pipeline whose LAST element is a cmdlet
+    # (Tee-Object) is unreliable — it can report 0 even when cmd.exe failed,
+    # silently hiding a GUI crash from the caller's ``set TEE_RC=%errorlevel%``.
+    # Capture cmd's real code from INSIDE the pipeline (a foreach-side scriptblock
+    # that records $LASTEXITCODE the instant the native command upstream
+    # finishes), so it's correct on both PS5.1 and PS7.
     & cmd.exe /c $BatPath @BatArgs 2>&1 |
-        Tee-Object -FilePath $TranscriptPath
-    $rc = $LASTEXITCODE
+        Tee-Object -FilePath $TranscriptPath |
+        ForEach-Object {
+            $_                       # pass the line through (preserves live console)
+        } -End {
+            $script:rc = $LASTEXITCODE
+        }
+    # Belt-and-suspenders: if the -End block didn't capture (empty output edge
+    # case), fall back to the post-pipeline value.
+    if ($null -eq $rc) { $rc = $LASTEXITCODE }
 } catch {
     # If the tee pipeline itself fails, surface the error but don't crash the
     # launch — return non-zero so the caller can fall back to a direct run.
     Write-Host "  [transcript] tee failed: $($_.Exception.Message)"
     $rc = 1
 }
+
+# Prune AFTER the run so this run's own transcript is included in the newest-5.
+Invoke-TranscriptPrune
 
 if ($null -eq $rc) { $rc = 0 }
 exit $rc

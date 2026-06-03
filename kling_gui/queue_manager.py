@@ -1187,6 +1187,25 @@ class QueueManager:
             self._abort_event.clear()
             self._active_subprocess = None
 
+            # Re-check pause AFTER clearing the abort slate (code-review
+            # CRITICAL #1): abort_current_job() sets BOTH _abort_event and
+            # is_paused from the GUI thread. If the user clicked Abort in the
+            # window between the top-of-loop is_paused check and the clear()
+            # above, the clear() would have wiped that abort — and the queue
+            # would roll straight into THIS item instead of stopping. Honour
+            # the pause here so an abort landing in that window stops the queue
+            # (the item stays 'processing'→re-queued on resume, not run+killed).
+            if self.is_paused:
+                # Put the item back to pending so resume re-runs it cleanly.
+                with self.lock:
+                    if item.status == "processing":
+                        item.status = "pending"
+                        item.stage = "queued"
+                        item.stage_percent = 0
+                self.is_running = False
+                self.update_queue_display()
+                return
+
             self.update_queue_display()
             self.log(f"🎬 Processing: {item.filename}", "info")
 
@@ -2603,6 +2622,11 @@ class QueueManager:
                     "error_bold",
                 )
                 return None
+            finally:
+                # Clear the published handle so a later Abort can't target this
+                # (now-finished) rPPG process before the next stage publishes
+                # its own (code-review HIGH #3).
+                self._publish_active_subprocess(None)
 
             if returncode == 0:
                 # The injector renames our --output to append a metric

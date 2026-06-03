@@ -42,8 +42,6 @@ set "TEE_DT=%TEE_DT: =%"
 if "%TEE_DT%"=="" set "TEE_STAMP=run"
 if not "%TEE_DT%"=="" set "TEE_STAMP=%TEE_DT:~0,8%-%TEE_DT:~8,6%"
 set "TRANSCRIPT_FILE=%STATE_DIR%\transcript-%TEE_STAMP%.log"
-rem  Prune: keep only the newest 5 transcript-*.log. Best-effort.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath '%STATE_DIR%' -Filter 'transcript-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force -ErrorAction SilentlyContinue" >nul 2>&1
 set "KLING_TRANSCRIPT=1"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\scripts\win_tee_launch.ps1" "%~f0" "%TRANSCRIPT_FILE%" %*
 set "TEE_RC=%errorlevel%"
