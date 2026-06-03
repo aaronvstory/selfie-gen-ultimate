@@ -397,25 +397,18 @@ def _resolve_nvidia_smi() -> Optional[str]:
     return None
 
 
-def detect_nvidia() -> Optional[dict]:
-    """Run ``nvidia-smi`` and return {'driver_version', 'cuda_major'}
-    or None when there's no NVIDIA GPU / driver.
+def _smi_query_driver_version(exe: str) -> Optional[str]:
+    """Driver version via the STABLE ``--query-gpu`` interface.
 
-    nvidia-smi's no-flag output includes a ``CUDA Version: 12.6`` field
-    in the header. We parse that rather than guessing from the driver
-    version because the driver→CUDA-runtime table changes per release
-    and the header is canonical.
-
-    Robust to: missing executable (Linux/macOS without NVIDIA, or a
-    Windows box where nvidia-smi isn't on PATH), non-zero exit,
-    unexpected output. All failures → None.
+    ``nvidia-smi --query-gpu=driver_version --format=csv,noheader`` has been
+    stable since ~2016 and is INDEPENDENT of the free-form header layout. We
+    use it for GPU-presence + driver detection so a header redesign (see
+    ``_parse_smi_header_cuda_major``) can never make a real GPU vanish.
+    Returns the first non-empty driver string, or None.
     """
-    exe = _resolve_nvidia_smi()
-    if exe is None:
-        return None
     try:
         proc = subprocess.run(
-            [exe],
+            [exe, "--query-gpu=driver_version", "--format=csv,noheader"],
             capture_output=True,
             text=True,
             errors="replace",
@@ -425,16 +418,111 @@ def detect_nvidia() -> Optional[dict]:
         return None
     if proc.returncode != 0:
         return None
-    out = proc.stdout or ""
-    # Driver version: "Driver Version: 555.52"
-    m_drv = re.search(r"Driver Version:\s*([0-9.]+)", out)
-    # CUDA version: "CUDA Version: 12.6" (header, not per-GPU)
-    m_cuda = re.search(r"CUDA Version:\s*([0-9]+)\.([0-9]+)", out)
-    if not m_drv or not m_cuda:
+    for line in (proc.stdout or "").splitlines():
+        ver = line.strip()
+        if ver and re.match(r"^[0-9][0-9.]*$", ver):
+            return ver
+    return None
+
+
+def _parse_smi_header_cuda_major(header: str) -> Optional[int]:
+    """CUDA major from the free-form ``nvidia-smi`` header (no-flag output).
+
+    Accepts BOTH header layouts NVIDIA has shipped:
+
+    * Legacy (driver ≤ ~570): ``... CUDA Version: 12.6``
+    * New (driver 610+, 2026): ``... CUDA UMD Version: 13.3`` — the older
+      ``Driver Version:`` / ``CUDA Version:`` strings were DROPPED entirely in
+      this redesign, which silently knocked detect_nvidia down to CPU on a
+      perfectly good RTX 4090 box (verified 2026-06-04, driver 610.47).
+
+    Order matters: match the NEW ``CUDA UMD Version:`` first, because a naive
+    ``CUDA Version:`` regex would also (wrongly) match inside ``CUDA UMD
+    Version:`` on some spacings. Returns the major int, or None if neither
+    field is present.
+    """
+    m_umd = re.search(r"CUDA UMD Version:\s*([0-9]+)\.([0-9]+)", header)
+    if m_umd:
+        return int(m_umd.group(1))
+    m_cuda = re.search(r"CUDA Version:\s*([0-9]+)\.([0-9]+)", header)
+    if m_cuda:
+        return int(m_cuda.group(1))
+    return None
+
+
+# Driver-branch → CUDA-runtime major, used ONLY as a last-resort fallback when
+# BOTH header CUDA fields are absent but a GPU is confirmed present. The driver
+# floors below are conservative lower bounds for each CUDA major's earliest
+# Windows driver branch (NVIDIA's driver→CUDA table). A GPU we can SEE must
+# never drop to CPU just because we couldn't read the CUDA string — picking a
+# CUDA extra that's slightly off still degrades to CPU via the torch.cuda probe,
+# whereas guessing CPU here strands a real GPU silently (the bug we're fixing).
+_DRIVER_BRANCH_TO_CUDA_MAJOR = (
+    (580, 13),  # 580+ driver branch ships the CUDA 13.x runtime
+    (525, 12),  # 525+ driver branch ships the CUDA 12.x runtime
+)
+
+
+def _cuda_major_from_driver(driver_version: str) -> Optional[int]:
+    """Best-effort CUDA major from a driver version string (fallback only)."""
+    try:
+        branch = int(driver_version.split(".", 1)[0])
+    except (ValueError, AttributeError):
         return None
+    for floor, major in _DRIVER_BRANCH_TO_CUDA_MAJOR:
+        if branch >= floor:
+            return major
+    return None
+
+
+def detect_nvidia() -> Optional[dict]:
+    """Return {'driver_version', 'cuda_major'} for the local NVIDIA GPU,
+    or None when there's no NVIDIA GPU / driver.
+
+    GPU presence + driver version come from the STABLE
+    ``--query-gpu=driver_version`` interface (layout-independent). The CUDA
+    major is parsed from the free-form header, accepting BOTH the legacy
+    ``CUDA Version:`` and the new (driver 610+) ``CUDA UMD Version:`` fields;
+    if neither is present we fall back to a driver-branch→CUDA-major table so
+    a visible GPU is never silently dropped to CPU.
+
+    Robust to: missing executable (Linux/macOS without NVIDIA, or a Windows
+    box where nvidia-smi isn't on PATH), non-zero exit, header redesigns.
+    All hard failures → None.
+    """
+    exe = _resolve_nvidia_smi()
+    if exe is None:
+        return None
+
+    # 1) Stable presence + driver probe. If this fails, there's no usable GPU.
+    driver_version = _smi_query_driver_version(exe)
+    if driver_version is None:
+        return None
+
+    # 2) CUDA major from the header (both layouts), then driver-branch fallback.
+    try:
+        proc = subprocess.run(
+            [exe],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=10,
+        )
+        header = proc.stdout or "" if proc.returncode == 0 else ""
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        header = ""
+
+    cuda_major = _parse_smi_header_cuda_major(header)
+    if cuda_major is None:
+        cuda_major = _cuda_major_from_driver(driver_version)
+    if cuda_major is None:
+        # GPU present but we genuinely can't tell the CUDA major. resolve_torch_mode
+        # treats an unmapped/None major as CPU, which is the safe outcome.
+        return {"driver_version": driver_version, "cuda_major": None}
+
     return {
-        "driver_version": m_drv.group(1),
-        "cuda_major": int(m_cuda.group(1)),
+        "driver_version": driver_version,
+        "cuda_major": cuda_major,
     }
 
 

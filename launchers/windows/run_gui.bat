@@ -19,6 +19,40 @@ set "LOG_FILE=%STATE_DIR%\launch.log"
 
 if not exist "%STATE_DIR%\" mkdir "%STATE_DIR%"
 
+rem --- Full-transcript tee (whole run on screen AND saved to one file) -----
+rem  Re-launches THIS script through scripts\win_tee_launch.ps1, which pipes
+rem  the run through PowerShell Tee-Object: every line the launcher + GUI
+rem  print to the console is shown live AND written to a rolling
+rem  transcript-<ts>.log under .launcher_state\. Lets the user copy the whole
+rem  terminal window (or hand over one file) when reporting an issue instead
+rem  of hunting for scattered logs -- parity with the macOS `tee` launchers.
+rem  Guarded to run once (KLING_TRANSCRIPT), opt-out KLING_NO_TRANSCRIPT=1
+rem  (subprocess callers set it), and a no-op if PowerShell is missing -- the
+rem  launch must never depend on the transcript. FLAT if/goto (no nested-paren
+rem  block: the cmd 25H2 parens crash, bounce-trap 7). The .ps1 helper avoids
+rem  cmd<->PowerShell quote-nesting that mangles spaced paths / drops exit codes.
+if defined KLING_TRANSCRIPT goto :transcript_ready
+if defined KLING_NO_TRANSCRIPT goto :transcript_ready
+where powershell >nul 2>&1
+if errorlevel 1 goto :transcript_ready
+if not exist "%ROOT_DIR%\scripts\win_tee_launch.ps1" goto :transcript_ready
+rem  Timestamped name from WMIC datetime; fall back to "run" if unavailable.
+for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "TEE_DT=%%B"
+set "TEE_DT=%TEE_DT: =%"
+if "%TEE_DT%"=="" set "TEE_STAMP=run"
+if not "%TEE_DT%"=="" set "TEE_STAMP=%TEE_DT:~0,8%-%TEE_DT:~8,6%"
+set "TRANSCRIPT_FILE=%STATE_DIR%\transcript-%TEE_STAMP%.log"
+rem  Prune: keep only the newest 5 transcript-*.log. Best-effort.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath '%STATE_DIR%' -Filter 'transcript-*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force -ErrorAction SilentlyContinue" >nul 2>&1
+set "KLING_TRANSCRIPT=1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\scripts\win_tee_launch.ps1" "%~f0" "%TRANSCRIPT_FILE%" %*
+set "TEE_RC=%errorlevel%"
+echo(
+echo   Full transcript of this run saved to:
+echo     %TRANSCRIPT_FILE%
+exit /b %TEE_RC%
+:transcript_ready
+
 rem --- Timestamp banner -----------------------------------------------------
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
 set "WMIC_DT=%WMIC_DT: =%"

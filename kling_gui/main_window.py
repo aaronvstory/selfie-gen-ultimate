@@ -3622,12 +3622,23 @@ class KlingGUIWindow:
             style=TTK_BTN_TAB_NAV,
         )
         self.pause_btn.pack(side=tk.RIGHT, padx=4)
+
+        # Abort: kill the in-flight job's subprocess (rPPG can run 10 iters /
+        # 20+ min) without quitting the whole app. Danger styling + leftmost so
+        # it reads as the "stop this now" control next to Pause.
+        self.abort_btn = create_action_button(
+            control_frame,
+            text="Abort",
+            command=self._dbcmd("controls_abort", self._abort_current_job),
+            style=TTK_BTN_DANGER,
+        )
+        self.abort_btn.pack(side=tk.RIGHT, padx=4)
         self._set_queue_controls_enabled(False)
 
     def _set_queue_controls_enabled(self, enabled: bool):
         """Enable or disable queue control buttons without removing them from UI."""
         state = tk.NORMAL if enabled else tk.DISABLED
-        for btn_name in ("pause_btn", "retry_btn", "clear_btn"):
+        for btn_name in ("pause_btn", "abort_btn", "retry_btn", "clear_btn"):
             btn = getattr(self, btn_name, None)
             if btn is not None:
                 try:
@@ -4997,6 +5008,24 @@ class KlingGUIWindow:
         else:
             self.queue_manager.pause_processing()
             self.pause_btn.config(text="Resume")
+
+    def _abort_current_job(self):
+        """Abort the in-flight job (the Abort button).
+
+        Signals the QueueManager to kill the active subprocess (rPPG / Oldcam)
+        immediately and pause the queue, so the user can stop a long run without
+        force-quitting the app. Safe to call when nothing is running (no-op).
+        """
+        if not self.queue_manager:
+            return
+        self.queue_manager.abort_current_job()
+        # Reflect the paused state in the Pause button + disable Abort until the
+        # next job starts (re-enabled by _set_queue_controls_enabled).
+        try:
+            self.pause_btn.config(text="Resume")
+            self.abort_btn.config(state=tk.DISABLED)
+        except Exception:
+            pass
 
     def _retry_failed(self):
         """Retry all failed items."""
