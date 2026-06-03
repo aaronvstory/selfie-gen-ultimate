@@ -19,6 +19,24 @@ printf '  ============================================================\n'
 printf '   Ultimate-Selfie-Gen  %s  --  CLI Launcher\n' "${APP_VER}"
 printf '  ============================================================\n\n'
 
+# --- v2.20 uv fast-path ----------------------------------------------------
+# Try the uv-native dependency sync FIRST (one `uv sync` resolves the whole
+# locked set: full face stack + GPU-aware torch, no subset, no --no-deps gap,
+# no constraints threading). On success we skip setup_macos.sh + the legacy
+# stamp/health block and exec the CLI directly. On any uv problem the helper
+# leaves UV_SYNCED empty and we fall through to the proven pip path
+# (KLING_USE_PIP=1 forces pip).
+UV_SYNCED=""
+if [[ -f "${ROOT_DIR}/scripts/uv_sync.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/scripts/uv_sync.sh"
+  selfiegen_uv_sync "${PYTHON_BIN}" "${ROOT_DIR}" || true
+fi
+if [[ -n "${UV_SYNCED}" && -x "${PYTHON_BIN}" ]]; then
+  export KLING_SKIP_PY_STARTUP_DEP_CHECK=1
+  exec "${PYTHON_BIN}" -u "${ROOT_DIR}/kling_automation_ui.py" "$@"
+fi
+
 # setup_macos.sh installs deps and writes REQUIREMENTS_STAMP when they change
 "${ROOT_DIR}/setup_macos.sh"
 export KLING_SKIP_PY_STARTUP_DEP_CHECK=1

@@ -136,6 +136,23 @@ if !errorlevel! equ 0 (
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-os %DIAG_OS%
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-gpu %DIAG_GPU%
 
+rem --- v2.20 uv fast-path -------------------------------------------------
+rem  Try the uv-native dependency sync FIRST (one `uv sync` resolves the
+rem  whole locked set: full face stack + GPU-aware torch/CuPy, no subset, no
+rem  --no-deps gap, no constraints threading -- the lock IS the constraint).
+rem  On success we skip the entire legacy stamp + pip block below and launch
+rem  directly. On any uv problem the helper leaves UV_SYNCED empty and we
+rem  fall through to the proven pip path (set KLING_USE_PIP=1 to force pip).
+call "%ROOT_DIR%\scripts\win_uv_sync.bat" "%VENV_PYTHON%" "%ROOT_DIR%"
+if defined UV_SYNCED (
+    echo   [%LAUNCH_TS%] Dependencies ready via uv; skipping pip sync.
+    >>"%LOG_FILE%" echo [%LAUNCH_TS%] uv-sync OK; skipping pip path
+    call :release_setup_lock
+    goto :launch
+)
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] uv-sync not used; continuing on pip path
+
+
 rem --- Build stamp key from req file dates+sizes (no subprocess needed) -----
 set "STAMP_KEY="
 for %%F in ("%REQUIREMENTS%" "%OLDCAM_V7_REQUIREMENTS%" "%OLDCAM_V8_REQUIREMENTS%" "%OLDCAM_V9_REQUIREMENTS%" "%OLDCAM_V10_REQUIREMENTS%") do (
