@@ -39,6 +39,11 @@ SYNC_ITEMS = [
     # direct-run + frozen tree in parity so a cwd=distribution uv sync resolves.
     "pyproject.toml",
     "uv.lock",
+    # README.md: distribution/pyproject.toml declares `readme = "README.md"`, so
+    # the self-contained copy must carry it too (CodeRabbit Major, PR #71) — even
+    # though distribution uses package=false (readme inert), parity keeps a
+    # cwd=distribution tooling run from erroring on a missing readme.
+    "README.md",
     "hooks/hook-tkinterdnd2.py",
     "kling_gui",
     # First-party root modules the kling_gui/ package imports transitively.

@@ -777,8 +777,10 @@ Load-bearing rules (the ones that bite):
   forces pip. Do NOT delete `requirements.txt` / `constraints.txt` until uv is
   proven on both OSes in production.
 - **The same numpy<2 / opencv<4.12 / TF 2.16.2 / tf-keras / absl / scipy /
-  mediapipe invariants apply** — now enforced by `uv.lock`, not `-c
-  constraints.txt`. When you bump a pin in `pyproject.toml`, re-run `uv lock`
+  mediapipe invariants apply.** On the **uv path** they are enforced by
+  `uv.lock`. On the **pip fallback path** (still in-tree) they remain enforced
+  by `-c constraints.txt` at EVERY pip-install site — do NOT drop that. When
+  you bump a pin in `pyproject.toml`, re-run `uv lock`
   and verify the always-on real-import probes (`pytest
   tests/test_uv_lock_imports.py`) still pass (numpy stays <2, deep mediapipe
   Tasks-API still imports).

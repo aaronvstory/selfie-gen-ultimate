@@ -27,8 +27,10 @@ fresh-install bugs by construction:
   mediapipe resolves with its FULL dep tree (matplotlib included) — the deep
   `mediapipe.tasks.python.vision` import (the recurring rPPG `-NORPPG` killer) is
   satisfied by the lock, not a post-install top-up.
-- **No `-c constraints.txt` threading.** The lock IS the constraint. numpy can't
-  float to 2.x because the lock forbids it.
+- **No `-c constraints.txt` threading on the uv path.** The lock is the
+  constraint for `uv sync`; numpy can't float to 2.x because the lock forbids
+  it. The **pip fallback path stays in-tree and still requires `-c
+  constraints.txt` at every pip-install site** — that rule is unchanged.
 - **Reproducible + hashed.** `uv.lock` is cross-platform (locks per-marker) and
   carries hashes.
 

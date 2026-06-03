@@ -51,21 +51,58 @@ def _log(msg: str, *, quiet: bool) -> None:
         print(f"  uv-sync: {msg}", flush=True)
 
 
+def venv_dir_for_python(python_exe: str | None) -> Path | None:
+    """Derive the venv ROOT dir from an interpreter path, so uv targets the
+    SAME env the CALLER resolved (not always the canonical default).
+
+    Windows layout: <venv>/Scripts/python.exe  -> parent.parent
+    POSIX  layout : <venv>/bin/python           -> parent.parent
+
+    Returns None if the path is empty / doesn't look like a venv interpreter.
+    Code-review (CodeRabbit Major ×3): the callers (preflight, run_*.sh) pass a
+    specific interpreter (`venv` / `.venv311` / `.venv` / `.venv-macos`), but the
+    orchestrator used to hard-default UV_PROJECT_ENVIRONMENT to the canonical
+    dir -- so uv could provision the canonical ``venv`` while the launcher then
+    ran the stale ``.venv311`` interpreter (false UV_SYNCED, skipped repair).
+    Deriving the env
+    from the caller's python keeps both sides on ONE env.
+    """
+    if not python_exe:
+        return None
+    p = Path(python_exe)
+    # <venv>/Scripts/python.exe  or  <venv>/bin/python
+    if p.parent.name in ("Scripts", "bin"):
+        return p.parent.parent
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Canonical uv dependency sync.")
     parser.add_argument("--project", default=str(REPO_ROOT))
+    parser.add_argument(
+        "--python",
+        default=None,
+        help="caller's resolved interpreter; uv targets ITS venv dir so both "
+        "sides stay on one env (falls back to the canonical venv if omitted)",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
     quiet = args.quiet
     project = Path(args.project)
 
-    # Point uv at the SAME canonical venv the legacy pip path uses, so the GUI
-    # launches one interpreter regardless of which path provisioned it (no
-    # confusing dual-venv). Windows -> venv\ ; macOS -> .venv-macos\ . Honour an
-    # explicit UV_PROJECT_ENVIRONMENT if the caller already set one (tests do).
+    # Point uv at the venv the CALLER resolved (derived from --python), so the
+    # GUI launches the SAME interpreter uv provisioned — no dual-venv, no false
+    # "ready" on a different env (CodeRabbit Major ×3). Precedence:
+    #   1. an explicit UV_PROJECT_ENVIRONMENT (tests / power users) wins;
+    #   2. else the caller's --python venv dir;
+    #   3. else the canonical default (Windows venv\ , macOS .venv-macos\).
     if "UV_PROJECT_ENVIRONMENT" not in os.environ:
-        canonical = "venv" if sys.platform == "win32" else ".venv-macos"
-        os.environ["UV_PROJECT_ENVIRONMENT"] = str(project / canonical)
+        caller_env = venv_dir_for_python(args.python)
+        if caller_env is not None:
+            os.environ["UV_PROJECT_ENVIRONMENT"] = str(caller_env)
+        else:
+            canonical = "venv" if sys.platform == "win32" else ".venv-macos"
+            os.environ["UV_PROJECT_ENVIRONMENT"] = str(project / canonical)
 
     # uv's default HTTP timeout is 30s — far too short for the multi-GB CUDA /
     # torch wheels this project pulls (nvidia-cusolver, torch+cuXXX, etc.). On a
@@ -102,9 +139,16 @@ def main(argv: list[str] | None = None) -> int:
         _log(f"uv_torch_select import failed ({exc!r}); pip fallback", quiet=quiet)
         return FALLBACK_TO_PIP
 
-    rc = uv_torch_select.main(
-        (["--quiet"] if quiet else []) + ["--project", str(project)]
-    )
+    # Wrap the selector — it's the last external step before launch. A crash
+    # there (selector bug, transient subprocess/OS error) must degrade to the
+    # pip fallback, NOT bubble out and break the launch (CodeRabbit Major).
+    try:
+        rc = uv_torch_select.main(
+            (["--quiet"] if quiet else []) + ["--project", str(project)]
+        )
+    except Exception as exc:
+        _log(f"uv torch selector crashed ({exc!r}); pip fallback", quiet=quiet)
+        return FALLBACK_TO_PIP
     # uv_torch_select always returns 0; verify an env actually materialized.
     env_dir = os.environ.get("UV_PROJECT_ENVIRONMENT")
     base = Path(env_dir) if env_dir else (project / ".venv")

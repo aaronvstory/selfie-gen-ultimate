@@ -148,10 +148,21 @@ def _run_uv_sync(uv: str, project: Path, extra: str, *, quiet: bool) -> int:
 
 
 def _synced_python(project: Path) -> Path:
-    """Path to the interpreter inside the uv project env (.venv by default,
-    overridable via UV_PROJECT_ENVIRONMENT)."""
+    """Path to the interpreter inside the uv project env.
+
+    Reads ``UV_PROJECT_ENVIRONMENT`` (which uv_sync_deps sets to the caller's
+    venv). The standalone fallback matches uv_sync_deps' canonical default —
+    ``venv\\`` on Windows, ``.venv-macos`` on macOS — NOT a bare ``.venv`` (which
+    would probe a different env than the one uv_sync_deps materialized, a
+    CodeRabbit Major). When called via uv_sync_deps the env var is always set,
+    so the fallback only matters for a direct standalone invocation.
+    """
     env_dir = os.environ.get("UV_PROJECT_ENVIRONMENT")
-    base = Path(env_dir) if env_dir else (project / ".venv")
+    if env_dir:
+        base = Path(env_dir)
+    else:
+        canonical = "venv" if sys.platform == "win32" else ".venv-macos"
+        base = project / canonical
     if sys.platform == "win32":
         return base / "Scripts" / "python.exe"
     return base / "bin" / "python"

@@ -44,8 +44,11 @@ selfiegen_uv_sync() {
     fi
   fi
   printf '  [uv] syncing dependencies via uv (set KLING_USE_PIP=1 to force pip)...\n'
-  # uv_sync_deps exit codes: 0 = env ready; 3 = fall back to pip.
-  if "${_uv_py}" "${_uv_root}/scripts/uv_sync_deps.py" --project "${_uv_root}"; then
+  # uv_sync_deps exit codes: 0 = env ready; 3 = fall back to pip. Pass --python
+  # so uv targets the SAME venv the caller resolved (not the canonical default)
+  # -- avoids provisioning one env while the launcher runs another (CodeRabbit
+  # Major, PR #71).
+  if "${_uv_py}" "${_uv_root}/scripts/uv_sync_deps.py" --project "${_uv_root}" --python "${_uv_py}"; then
     UV_SYNCED=1
     printf '  [uv] dependencies ready (uv-managed venv).\n'
   fi

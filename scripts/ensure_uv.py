@@ -70,8 +70,13 @@ def _log(msg: str, *, quiet: bool) -> None:
 
 
 def _run(cmd: list[str], *, timeout: int = 600) -> bool:
+    # Route the installer's child stdout to STDERR. main() uses stdout as the
+    # `--print-path` transport (a launcher captures exactly one path line), and
+    # on a cold machine powershell/winget/curl|sh/brew print banners + progress
+    # to stdout that would otherwise corrupt that capture (CodeRabbit Major).
+    # Installer chatter is diagnostic, so stderr is the right sink anyway.
     try:
-        proc = subprocess.run(cmd, timeout=timeout)
+        proc = subprocess.run(cmd, timeout=timeout, stdout=sys.stderr)
         return proc.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
