@@ -30,7 +30,15 @@ for p in (str(_REPO_ROOT), str(_SCRIPTS)):
         sys.path.insert(0, p)
 
 import gpu_bootstrap  # noqa: E402
-import uv_torch_select  # noqa: E402
+
+# uv_torch_select only exists on the uv line (it maps the same decision to a uv
+# --extra). On the pip line it's absent — the equivalent decision lives in
+# gpu_bootstrap.resolve_torch_mode, which we test directly. Import optionally so
+# this matrix runs on BOTH lines; the uv-extra assertions skip when it's absent.
+try:
+    import uv_torch_select  # noqa: E402
+except ModuleNotFoundError:
+    uv_torch_select = None  # type: ignore[assignment]
 
 
 class _Proc:
@@ -102,11 +110,12 @@ def test_nvidia_card_maps_to_cuda(monkeypatch, label, dq, hdr, exp_major, exp_ex
     decision = gpu_bootstrap.resolve_torch_mode(platform_is_darwin=False, nvidia=nv)
     assert decision["mode"] == "cuda", f"{label}: must select a CUDA torch build"
 
-    # And the uv path picks the matching extra (delegates to the same logic).
-    monkeypatch.setattr(uv_torch_select.sys, "platform", "win32", raising=False)
-    monkeypatch.setattr(uv_torch_select, "detect_nvidia", lambda: nv)
-    extra, _reason = uv_torch_select.resolve_extra()
-    assert extra == exp_extra, f"{label}: uv extra should be {exp_extra}, got {extra}"
+    # And (uv line only) the uv path picks the matching extra via the same logic.
+    if uv_torch_select is not None:
+        monkeypatch.setattr(uv_torch_select.sys, "platform", "win32", raising=False)
+        monkeypatch.setattr(uv_torch_select, "detect_nvidia", lambda: nv)
+        extra, _reason = uv_torch_select.resolve_extra()
+        assert extra == exp_extra, f"{label}: uv extra should be {exp_extra}, got {extra}"
 
 
 def test_cuda_major_fallback_when_header_unreadable(monkeypatch):
@@ -132,15 +141,16 @@ def test_apple_silicon_never_cuda_never_probes_smi(monkeypatch):
     assert decision["mode"] == "mac_default"
     assert decision["cuda_major"] is None
 
-    # uv_torch_select.resolve_extra on darwin must return 'cpu' and must never
+    # uv line only: resolve_extra on darwin must return 'cpu' and must never
     # invoke detect_nvidia (we make detect_nvidia explode to prove it).
-    monkeypatch.setattr(uv_torch_select.sys, "platform", "darwin", raising=False)
-    monkeypatch.setattr(
-        uv_torch_select, "detect_nvidia",
-        lambda: pytest.fail("detect_nvidia called on darwin — mac must never probe CUDA"),
-    )
-    extra, reason = uv_torch_select.resolve_extra()
-    assert extra == "cpu", f"darwin must pick the cpu extra, got {extra}"
+    if uv_torch_select is not None:
+        monkeypatch.setattr(uv_torch_select.sys, "platform", "darwin", raising=False)
+        monkeypatch.setattr(
+            uv_torch_select, "detect_nvidia",
+            lambda: pytest.fail("detect_nvidia called on darwin — mac must never probe CUDA"),
+        )
+        extra, reason = uv_torch_select.resolve_extra()
+        assert extra == "cpu", f"darwin must pick the cpu extra, got {extra}"
 
 
 def test_apple_silicon_even_with_a_gpu_dict_stays_cpu():
