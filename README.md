@@ -52,6 +52,36 @@ Resume behavior:
 - Manifest stores per-step status, output path, error, and metadata.
 - Recommended expansion defaults: front expand `70%`, selfie expand `30%`.
 
+### Headless / unattended batch (`--batch`)
+
+For cron / Windows Task Scheduler / CI, run the pipeline **non-interactively**
+— no menu, no `[y/N]` prompt. It reads no stdin. Exit codes:
+
+- `0` — ran and every case completed cleanly
+- `1` — could not run (missing root, no cases, preflight failure, run exception)
+- `2` — ran, but one or more cases ended `failed` or `manual_review` (needs attention)
+
+```powershell
+:: Windows — delegates to the canonical launcher chain (full dependency
+:: bootstrap: GPU/OS-aware torch, CuPy, mediapipe, health-gated stamp), then runs.
+run_auto.bat "C:\path\to\cases_root" --limit 5 --reprocess skip
+```
+
+```bash
+# macOS — same canonical chain via setup_macos.sh + health probe, then runs.
+./run_auto.command "/path/to/cases_root" --limit all
+```
+
+Direct (inside an already-bootstrapped venv):
+
+```bash
+python kling_automation_ui.py --batch "/path/to/cases_root" [--limit N] [--reprocess MODE]
+```
+
+`--auto` (no root) still drops into the interactive automation menu; `--batch`
+is the unattended path. A run summary is written to
+`automation_run_summary.md` beside the manifest.
+
 ## Reusable Test Folders (Repeatable Batch Testing)
 
 Use a stable test root with reusable case folders:
@@ -78,7 +108,8 @@ Retest policy:
 | Mode | Windows | macOS |
 | --- | --- | --- |
 | GUI | `launchers/windows/run_gui.bat` | `launchers/macos/run_gui.command` (or `./run_gui.sh`) |
-| CLI | `launchers/windows/run_cli.bat` | `launchers/macos/run_cli.command` (or `./run_cli.sh`) |
+| CLI (interactive) | `launchers/windows/run_cli.bat` | `launchers/macos/run_cli.command` (or `./run_cli.sh`) |
+| Automation batch (headless) | `run_auto.bat "<cases_root>" [--limit N]` | `./run_auto.command "<cases_root>" [--limit N]` |
 | Setup | `python -m venv venv` + `pip install -r requirements.txt` | `./setup_macos.sh` |
 
 macOS compatibility constraints:

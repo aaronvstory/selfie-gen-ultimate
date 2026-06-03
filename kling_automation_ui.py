@@ -2936,6 +2936,240 @@ class KlingAutomationUI:
         print("  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video -> oldcam")
         self.pause_review("\nPress Enter to continue...")
 
+    def run_automation_headless(
+        self,
+        root: str,
+        *,
+        auto_approve: bool = True,
+        max_cases_override: Optional[str] = None,
+        reprocess_override: Optional[str] = None,
+    ) -> int:
+        """Non-interactive batch runner for the automation pipeline.
+
+        Mirrors the runnable body of :meth:`_run_resume_automation` but reads
+        NO stdin (so it can run from cron / Windows Task Scheduler) and returns
+        a process exit code instead of pausing:
+
+        * ``0`` -- batch ran and EVERY case completed cleanly.
+        * ``1`` -- could not run: missing/invalid root, no case folders, no
+                   runnable cases, manifest load error, preflight failure, or a
+                   run-level exception.
+        * ``2`` -- the batch ran but one or more cases ended ``failed`` or
+                   ``manual_review``. A scheduled job MUST treat this as
+                   needs-attention, not success -- ``manual_review`` cases
+                   (similarity-gate undecided / anti-spoofing flagged) are
+                   silently dropped from the operator's view if we exit 0
+                   (code-review HIGH-1, PR #69).
+
+        ``auto_approve`` must be ``True`` in headless mode -- the caller already
+        opted in via ``--batch``. ``False`` is reserved for a future interactive
+        confirm hook that is not yet implemented, so we abort loudly rather than
+        silently proceeding (code-review HIGH-2, PR #69). The interactive
+        :meth:`_run_resume_automation` is left untouched -- this is an additive
+        path, not a replacement.
+        """
+        # TTY-aware status helpers: under cron/pipe (non-TTY) the colour-wrapping
+        # print_red/print_yellow would inject raw ANSI escapes (\033[..]) into the
+        # log, so headless messages use plain print() there (code-review Codex P2,
+        # PR #69). sys.stdout can be None when run as a Windows background service,
+        # so guard the isatty() call (code-review Gemini, PR #69).
+        # sys.stdout may be None (Windows background service) OR a custom stream
+        # (io.StringIO in tests, IDE/GUI console wrappers) lacking isatty(), so
+        # check both before calling it (code-review Gemini, PR #69).
+        _stdout = getattr(sys, "stdout", None)
+        _is_tty = bool(_stdout) and hasattr(_stdout, "isatty") and _stdout.isatty()
+
+        def _err(msg: str) -> None:
+            self.print_red(msg) if _is_tty else print(msg)
+
+        def _warn(msg: str) -> None:
+            self.print_yellow(msg) if _is_tty else print(msg)
+
+        if not auto_approve:
+            # Reserved for a future confirm hook; not implemented. Fail loud
+            # instead of silently running unapproved (the param was previously
+            # accepted-and-ignored, which could mislead a future caller).
+            _err("[batch] auto_approve=False is not supported in headless mode.")
+            return 1
+
+        # Validate --limit HERE (not via argparse choices): argparse rejects an
+        # invalid choice with ArgumentParser.error() -> exit 2, which collides
+        # with our documented "exit 2 = ran-but-needs-attention" contract. Doing
+        # it in-runner keeps exit 2 reserved for runs that actually ran
+        # (code-review Codex P2, PR #69).
+        if max_cases_override is not None:
+            norm_limit = str(max_cases_override).strip().lower()
+            if norm_limit not in {"1", "5", "10", "all"}:
+                _err(f"[batch] Invalid --limit '{max_cases_override}'; use 1, 5, 10, or all.")
+                return 1
+            max_cases_override = norm_limit
+        # Validate --reprocess HERE too (same reasoning as --limit: argparse
+        # choices= would exit 2, colliding with the contract; and a direct Python
+        # caller could pass a bogus value that _effective_reprocess_mode() then
+        # silently swallows back to "skip" -- code-review Codex P2 + Gemini, PR #69).
+        if reprocess_override is not None:
+            norm_reprocess = str(reprocess_override).strip().lower()
+            if norm_reprocess not in {"skip", "overwrite", "increment"}:
+                _err(f"[batch] Invalid --reprocess '{reprocess_override}'; use skip, overwrite, or increment.")
+                return 1
+            reprocess_override = norm_reprocess
+        # NOTE: --reprocess / --limit overrides are applied AFTER the manifest is
+        # loaded, NOT here. AutomationManifest fingerprints every automation_*
+        # key and REJECTS a changed fingerprint on load -- so flipping
+        # automation_allow_reprocess / automation_reprocess_mode before
+        # create_or_load turns an existing-manifest run into a load FAILURE
+        # (exit 1) instead of reprocessing (code-review Codex P1, PR #69). These
+        # are run policy, not manifest identity, so they go on the config only
+        # once the manifest is loaded.
+
+        root = (root or "").strip()
+        if not root:
+            _err("[batch] No automation root provided.")
+            return 1
+        self.automation_root_folder = root
+        self.config["automation_root_folder"] = root
+
+        root_path = Path(root)
+        if not root_path.exists():
+            _err(f"[batch] Automation root does not exist: {root}")
+            return 1
+        if not root_path.is_dir():
+            # A file path passes exists() but is not a valid root; reject it as
+            # the documented invalid-root preflight rather than letting it fall
+            # into discover_case_folders and misreport as "no case folders"
+            # (code-review CodeRabbit Major, PR #69).
+            _err(f"[batch] Automation root is not a directory: {root}")
+            return 1
+
+        # EAFP: directly attempt discovery and catch OSError (restricted FS /
+        # permission errors) rather than pre-flighting (code-review Gemini, PR #69).
+        try:
+            records = discover_case_folders(root_path, self.config.get("automation_front_names", []))
+        except OSError as exc:
+            _err(f"[batch] Failed to scan automation root: {exc}")
+            return 1
+        if not records:
+            _warn(f"[batch] No case folders found under {root}.")
+            return 1
+
+        try:
+            manifest = AutomationManifest.create_or_load(
+                manifest_path=self._automation_manifest_path(),
+                root_dir=root_path,
+                config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
+            )
+        except Exception as exc:
+            _err(f"[batch] Failed to load manifest: {exc}")
+            return 1
+
+        # Apply CLI overrides NOW (post-manifest): these are run policy, not part
+        # of the manifest fingerprint, so they must not influence create_or_load.
+        if max_cases_override is not None:
+            self.config["automation_max_cases_per_run"] = str(max_cases_override)
+        if reprocess_override is not None:
+            # Already normalized + validated above (skip|overwrite|increment).
+            mode = reprocess_override
+            self.config["automation_reprocess_mode"] = mode
+            # _effective_reprocess_mode() forces "skip" unless allow_reprocess is
+            # True, so an explicit --reprocess is inert without this flag.
+            self.config["automation_allow_reprocess"] = True
+            # For overwrite/increment, the user explicitly wants completed cases
+            # RE-RUN. But _planned_action_for_case() returns "skip_complete" (and
+            # the runner re-skips) while automation_skip_completed / the
+            # skip_if_*_exists guards stay on -- so the reprocess command would
+            # still report "no runnable cases" (code-review Codex P1, PR #69).
+            # Drop those skip guards so completed cases actually flow through.
+            if mode in ("overwrite", "increment"):
+                self.config["automation_skip_completed"] = False
+                self.config["automation_skip_if_selfie_exists"] = False
+                self.config["automation_skip_if_video_exists"] = False
+
+        try:
+            _rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
+        except Exception as exc:
+            # Filesystem errors on a discovered case dir (permissions, a corrupt
+            # entry) must surface as a clean [batch] exit-1, not an unhandled
+            # traceback bubbling to main() (code-review MEDIUM-3, PR #69).
+            _err(f"[batch] Failed to build case snapshot: {exc}")
+            return 1
+        print("[batch] Run preview:")
+        print(f"  discovered: {counts['discovered']}")
+        print(f"  completed total: {counts.get('completed_total', 0)}")
+        print(f"  skipped complete: {counts.get('skipped_complete', 0)}")
+        print(f"  pending/runnable: {counts.get('pending', 0)}")
+        print(f"  will run this batch: {counts.get('will_run', 0)}")
+        print(f"  manual review: {counts.get('manual_review', 0)}")
+        print(f"  failed: {counts.get('failed', 0)}")
+        if not runnable_cases:
+            _warn("[batch] No runnable cases for this batch; nothing to do.")
+            return 1
+
+        runner = AutoPipelineRunner(
+            config=self.config,
+            automation_config=from_app_config(self.config),
+            manifest=manifest,
+            progress_cb=None,
+        )
+        issues = runner.validate_configuration()
+        if issues:
+            _err("[batch] Automation preflight failed:")
+            for issue in issues:
+                print(f"  - {issue}")
+            return 1
+
+        print("[batch] Automation preflight:")
+        print(f"  cases discovered: {len(records)}")
+        print(f"  running this batch: {len(runnable_cases)}")
+        print(f"  reprocess mode: {self.config.get('automation_reprocess_mode', 'skip')}")
+        for line in self._automation_status_lines():
+            print(f"  {line}")
+        selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
+        prompt_preview = selfie_prompt if len(selfie_prompt) <= 160 else f"{selfie_prompt[:160]}..."
+        print(f"  selfie prompt slot/source: {selfie_slot} / {selfie_source}")
+        print(f"  selfie prompt preview: {prompt_preview}")
+
+        # Under a real terminal, show the live Rich dashboard. Under cron / Task
+        # Scheduler / a pipe (no TTY), render NOTHING live -- run the pipeline
+        # directly in the main thread so the log isn't polluted with ANSI escape
+        # codes + we skip the dashboard's polling thread (code-review Gemini, PR #69).
+        if _is_tty:
+            stats, run_error = self._run_with_live_dashboard(runner, runnable_cases, manifest)
+        else:
+            run_error = None
+            try:
+                runner.progress_cb = lambda message, level="info": print(f"  [{level}] {message}")
+                stats = runner.run(runnable_cases)
+            except Exception as exc:
+                stats = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
+                run_error = str(exc)
+        if run_error:
+            _err(f"[batch] Automation run failed: {run_error}")
+            return 1
+        print("[batch] Automation run complete.")
+        print(f"  completed: {stats.get('completed', 0)}")
+        print(f"  failed: {stats.get('failed', 0)}")
+        print(f"  manual_review: {stats.get('manual_review', 0)}")
+        print(f"  skipped: {stats.get('skipped', 0)}")
+        try:
+            self._write_automation_summary(manifest, runner.last_case_results, stats)
+        except Exception as exc:
+            # A summary-write failure must not flip an otherwise-good run to a
+            # non-zero exit; surface it but keep the run's verdict.
+            _warn(f"[batch] Could not write run summary: {exc}")
+        # A scheduled batch must treat BOTH failed and manual_review cases as
+        # needs-attention (exit 2), not success -- otherwise manual_review cases
+        # silently vanish from the operator's view (code-review HIGH-1, PR #69).
+        # Exit 2 (ran-but-needs-attention) is distinct from exit 1 (could-not-run)
+        # so a caller can tell "nothing ran" from "ran with problem cases".
+        needs_attention = int(stats.get("failed", 0)) + int(stats.get("manual_review", 0))
+        if needs_attention > 0:
+            _warn(
+                f"[batch] {needs_attention} case(s) need attention "
+                f"(failed={stats.get('failed', 0)}, manual_review={stats.get('manual_review', 0)}); exiting 2."
+            )
+            return 2
+        return 0
+
     def _run_resume_automation(self):
         if not self.automation_root_folder:
             self.print_red("Set automation root folder first.")
@@ -3705,7 +3939,42 @@ def main(argv=None):
     """Entry point"""
     try:
         parser = argparse.ArgumentParser(add_help=True)
-        parser.add_argument("--auto", action="store_true", help="Launch directly into automation workflow")
+        parser.add_argument("--auto", action="store_true", help="Launch directly into the interactive automation menu")
+        parser.add_argument(
+            "--batch",
+            metavar="ROOT",
+            default=None,
+            help="Run the automation pipeline NON-INTERACTIVELY over ROOT and exit "
+            "(0=success, non-zero=failure). For cron / Task Scheduler.",
+        )
+        parser.add_argument(
+            "--limit",
+            metavar="N",
+            default=None,
+            # No argparse `choices=` here: an invalid choice makes argparse exit
+            # with status 2, which collides with our "exit 2 = ran-but-needs-
+            # attention" contract. run_automation_headless validates --limit and
+            # returns 1 on a bad value instead (code-review Codex P2, PR #69).
+            help="Headless --batch only: cap cases per run (1, 5, 10, or 'all'). "
+            "Overrides automation_max_cases_per_run. An invalid value exits 1.",
+        )
+        parser.add_argument(
+            "--reprocess",
+            metavar="MODE",
+            default=None,
+            # No argparse choices= (would exit 2 on a bad value, colliding with
+            # the "exit 2 = ran-but-needs-attention" contract). Validated inside
+            # run_automation_headless -> exit 1 on a bad value (code-review Codex
+            # P2 + Gemini, PR #69; matches --limit).
+            help="Headless --batch only: reprocess mode (skip|overwrite|increment). "
+            "An invalid value exits 1.",
+        )
+        parser.add_argument(
+            "--yes",
+            "-y",
+            action="store_true",
+            help="Headless --batch only: auto-approve the run (default in --batch).",
+        )
         parser.add_argument("--manual-video", action="store_true", help="Launch legacy manual Kling tools")
         parser.add_argument("--gui", action="store_true", help="Launch GUI manual lab directly")
         parser.add_argument("--verbose-startup", action="store_true", help="Show full startup dependency diagnostics")
@@ -3752,6 +4021,16 @@ def main(argv=None):
                 pass
 
         app = KlingAutomationUI(legacy_pauses=legacy_pauses)
+        if args.batch is not None:
+            # Non-interactive batch: run + exit with the runner's status code so
+            # cron / Task Scheduler can detect failures. --yes is implied here.
+            rc = app.run_automation_headless(
+                args.batch,
+                auto_approve=True,
+                max_cases_override=args.limit,
+                reprocess_override=args.reprocess,
+            )
+            sys.exit(int(rc))
         if args.gui:
             app.launch_gui()
             return

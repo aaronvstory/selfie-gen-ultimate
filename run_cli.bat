@@ -7,10 +7,10 @@ if not exist "%TARGET%" (
     echo.
     echo ERROR: Missing launcher: %TARGET%
     echo.
-    pause
+    if not defined KLING_NONINTERACTIVE pause
     exit /b 1
 )
 
-call "%TARGET%"
+call "%TARGET%" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 endlocal & exit /b %EXIT_CODE%
