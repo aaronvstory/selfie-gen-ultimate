@@ -82,8 +82,12 @@ def register_cuda_dll_dirs():
             continue
         # Any bin dir under nvidia/* (cu13: nvidia/cu13/bin/x86_64;
         # cu12: nvidia/cuda_nvrtc/bin; some wheels ship lib/x64 too).
+        # glob.escape the install ROOT (the user's path may contain glob
+        # metacharacters like [ ] — e.g. an install under "C:\...[backup]\...")
+        # while leaving the wildcard PATTERN unescaped (gemini MEDIUM PR #72).
+        escaped_root = glob.escape(root)
         for binglob in ("*/bin/x86_64", "*/bin", "*/lib/x64"):
-            for d in glob.glob(os.path.join(root, binglob)):
+            for d in glob.glob(os.path.join(escaped_root, binglob)):
                 d = os.path.abspath(d)
                 if d in seen or not os.path.isdir(d):
                     continue

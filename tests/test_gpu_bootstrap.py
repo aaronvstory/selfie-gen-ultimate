@@ -349,6 +349,66 @@ def test_stale_gpu_ready_with_broken_nvrtc_re_enters_install(monkeypatch):
     )
 
 
+def test_capped_install_failed_from_older_installer_re_attempts(monkeypatch):
+    """Codex P2 PR #72: a user who exhausted the 3-attempt install_failed cap on
+    an OLDER installer (e.g. the broken `[ctk]` one) must get a fresh set of
+    attempts after the installer is fixed — otherwise bootstrap() returns at the
+    capped-stamp check and the fix never runs for the stranded-upgrade case."""
+    gpu_bootstrap._write_stamp({
+        "result": "install_failed",
+        "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "driver_version": "576.80", "cuda_major": 12,
+        "cupy_package": "cupy-cuda12x[ctk]>=13.6,<14", "cupy_version": None,
+        "attempts": 3, "installer_version": "2.17.0",  # the OLD broken installer
+    })
+    # Current installer is newer (2.17.1) — the cap must be ignored.
+    monkeypatch.setattr(gpu_bootstrap, "INSTALLER_VERSION", "2.17.1")
+    monkeypatch.setattr(
+        gpu_bootstrap, "detect_nvidia",
+        lambda: {"driver_version": "576.80", "cuda_major": 12},
+    )
+    install_called = []
+    monkeypatch.setattr(
+        gpu_bootstrap, "install_cupy",
+        lambda exe, major: install_called.append((exe, major)) or (True, "13.6.0"),
+    )
+    result = gpu_bootstrap.bootstrap("python_friend")
+    assert result == "gpu_installed_now", (
+        "a capped failure from an OLDER installer must re-attempt, not stay capped"
+    )
+    assert install_called == [("python_friend", 12)]
+
+
+def test_capped_install_failed_same_installer_stays_capped(monkeypatch):
+    """The cap MUST still hold when the failures came from the CURRENT installer
+    (don't turn the cap into a no-op — that would re-introduce the 3x-per-launch
+    log spam the cap was added to prevent)."""
+    gpu_bootstrap._write_stamp({
+        "result": "install_failed",
+        "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "driver_version": "576.80", "cuda_major": 12,
+        "cupy_package": "cupy-cuda12x>=13.6,<14", "cupy_version": None,
+        "attempts": 3, "installer_version": "2.17.1",  # SAME as current
+    })
+    monkeypatch.setattr(gpu_bootstrap, "INSTALLER_VERSION", "2.17.1")
+    install_called = []
+    monkeypatch.setattr(
+        gpu_bootstrap, "install_cupy",
+        lambda exe, major: install_called.append((exe, major)) or (True, "x"),
+    )
+    result = gpu_bootstrap.bootstrap("python_unused")
+    assert result == "install_failed"
+    assert install_called == [], "cap must hold for same-installer failures"
+
+
+def test_write_stamp_records_installer_version():
+    """Every stamp must carry installer_version so the capped-failure reset
+    (Codex P2 PR #72) can tell which installer produced it."""
+    gpu_bootstrap._write_stamp({"result": "no_nvidia", "cuda_major": None})
+    payload = json.loads(gpu_bootstrap.STAMP_PATH.read_text())
+    assert payload["installer_version"] == gpu_bootstrap.INSTALLER_VERSION
+
+
 def test_unsupported_cuda_major_short_circuits_to_no_nvidia(monkeypatch):
     """Subagent MEDIUM on PR #54 round 1: CUDA 11.x / 10.x / 14+ has no
     current-stable CuPy wheel. Before the fix, install_cupy returned
@@ -831,7 +891,8 @@ def test_nvidia_wheel_specs_parity_with_pyproject_extras():
     if not os.path.isfile(pyproject):
         import pytest
         pytest.skip("pyproject.toml absent (pip-only branch) — parity checked on uv branch")
-    text = open(pyproject, encoding="utf-8").read()
+    with open(pyproject, encoding="utf-8") as fh:
+        text = fh.read()
 
     def _extra_nvidia(extra_name):
         m = re.search(rf"^{extra_name} = \[(.*?)^\]", text, re.S | re.M)

@@ -308,6 +308,13 @@ def _write_stamp(payload: dict) -> None:
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         payload.setdefault("checked_at", _now_iso())
+        # Record the installer version that produced this stamp so a later
+        # bootstrap can tell whether a capped install_failed came from an OLDER,
+        # now-fixed installer and re-attempt (Codex P2 PR #72 — without this, a
+        # user who exhausted the 3-attempt cap on the broken [ctk] installer
+        # stays on CPU forever even after the fix ships, because bootstrap()
+        # returns at the capped-stamp check before re-installing).
+        payload.setdefault("installer_version", INSTALLER_VERSION)
         # Atomic write (gemini MEDIUM PR #54): on non-NVIDIA hosts the
         # stamp is written OUTSIDE the mkdir-lock, so two launchers can
         # write concurrently. A bare write_text() can interleave and
@@ -1080,14 +1087,27 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
                  quiet=quiet_if_cached)
             return "cached_no_nvidia"
 
-    # Cached install_failed: respect retry cap.
+    # Cached install_failed: respect retry cap — UNLESS the cap was reached by a
+    # DIFFERENT (older) installer. A changed INSTALLER_VERSION means the install
+    # logic itself changed (e.g. this PR's explicit nvidia-wheel install replacing
+    # the no-op [ctk]), so the old failures are no longer predictive — give the
+    # new installer a fresh set of attempts (Codex P2 PR #72: the stranded-upgrade
+    # case, exactly the friend if he'd exhausted the cap on the broken installer).
     if stamp and stamp.get("result") == "install_failed":
-        if stamp.get("attempts", 0) >= INSTALL_FAILED_MAX_ATTEMPTS:
+        capped = stamp.get("attempts", 0) >= INSTALL_FAILED_MAX_ATTEMPTS
+        same_installer = stamp.get("installer_version") == INSTALLER_VERSION
+        if capped and same_installer:
             _log(
                 f"install failed {stamp['attempts']} times; "
                 "not retrying. Clear .launcher_state/gpu_status.json to retry."
             )
             return "install_failed"
+        if capped and not same_installer:
+            _log(
+                "previous GPU install failures were from an older installer "
+                f"({stamp.get('installer_version')} -> {INSTALLER_VERSION}); "
+                "retrying with the updated installer"
+            )
 
     # Active detection.
     info = detect_nvidia()
@@ -1165,6 +1185,9 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
             fresh_stamp
             and fresh_stamp.get("result") == "install_failed"
             and fresh_stamp.get("attempts", 0) >= INSTALL_FAILED_MAX_ATTEMPTS
+            # ...but only if those failures came from the CURRENT installer
+            # (Codex P2 PR #72) — an installer-version change resets the cap.
+            and fresh_stamp.get("installer_version") == INSTALLER_VERSION
         ):
             _log(
                 f"install failed {fresh_stamp['attempts']} times "
@@ -1206,8 +1229,16 @@ def bootstrap(python_exe: str, *, quiet_if_cached: bool = False) -> str:
             _log(f"CuPy {msg} ready -- rPPG injector will use GPU")
             return "gpu_installed_now"
         # Read attempts from the locked re-load so concurrent retries
-        # increment monotonically.
-        prior_attempts = (locked_stamp or {}).get("attempts", 0)
+        # increment monotonically. BUT reset to 0 when the prior failures came
+        # from a different installer (Codex P2 PR #72) — otherwise the carried
+        # count would re-cap immediately and the fixed installer would get only
+        # one shot (or zero) instead of a fresh INSTALL_FAILED_MAX_ATTEMPTS.
+        prior = locked_stamp or {}
+        prior_attempts = (
+            prior.get("attempts", 0)
+            if prior.get("installer_version") == INSTALLER_VERSION
+            else 0
+        )
         _write_stamp({
             "result": "install_failed",
             "driver_version": info["driver_version"],
