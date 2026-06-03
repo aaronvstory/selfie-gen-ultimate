@@ -126,8 +126,12 @@ def register_cuda_dll_dirs():
                 # abspath(d) has no trailing slash, so without normpath a slashed
                 # PATH entry wouldn't match and we'd re-prepend (gemini MEDIUM PR
                 # #72). Skip empty segments too.
+                # .strip() BEFORE .strip('"'): a PATH segment can have whitespace
+                # OUTSIDE the quotes (' "C:\\Program Files\\..." '); stripping
+                # quotes first would leave the spaces and the dedup would miss
+                # (gemini MEDIUM PR #72).
                 existing = {
-                    os.path.normcase(os.path.normpath(p.strip('"')))
+                    os.path.normcase(os.path.normpath(p.strip().strip('"')))
                     for p in os.environ.get("PATH", "").split(os.pathsep)
                     if p.strip()
                 }

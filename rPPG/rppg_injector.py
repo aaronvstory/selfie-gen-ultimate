@@ -105,8 +105,10 @@ except ImportError:
 # bin) and a no-op off-Windows. Guarded so a zip missing the helper degrades to
 # CPU instead of crashing the whole rPPG step.
 try:
+    # realpath (not abspath) so a symlinked rppg_injector.py still resolves the
+    # real repo-root scripts/ dir for the shared helper import (gemini PR #72).
     _scripts_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"
+        os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "scripts"
     )
     # Temporarily front of sys.path ONLY for this import, then remove it so we
     # don't permanently shadow stdlib/3rd-party modules with anything in

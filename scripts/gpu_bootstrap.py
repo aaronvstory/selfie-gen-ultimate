@@ -470,7 +470,9 @@ def probe_cupy(python_exe: str) -> Optional[str]:
     # fresh probe subprocess can import it regardless of cwd. Written as a real
     # multi-line program (newline-joined) — a ``;``-joined one-liner can't carry
     # a compound ``try:`` block (SyntaxError), which would itself false-negative.
-    _scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    # realpath (not abspath) so a symlinked gpu_bootstrap.py still resolves the
+    # real scripts/ dir for the probe subprocess's helper import (gemini PR #72).
+    _scripts_dir = os.path.dirname(os.path.realpath(__file__))
     probe_src = "\n".join(
         (
             "import sys",
