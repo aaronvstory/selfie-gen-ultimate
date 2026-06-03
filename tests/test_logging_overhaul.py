@@ -258,3 +258,41 @@ def test_extract_failed_modules_returns_empty_when_unnameable():
 
     assert _extract_rppg_failed_modules(["some traceback", "another line"]) == ""
     assert _extract_rppg_failed_modules([]) == ""
+
+
+# --------------------------------------------------------------------------- #
+# v2.22 panel-friendliness: terminal stays data-rich, GUI panel stays friendly
+# --------------------------------------------------------------------------- #
+def test_verbose_rppg_banner_lines_are_panel_noise():
+    """User direction 2026-06-04: the GUI 'processing log' panel should be
+    friendly while the TERMINAL stays data-rich. These verbose rPPG launcher /
+    injector banner + wrapping-path lines are classified as panel-noise, so
+    _on_rppg_line demotes them to 'debug' — hidden from the PANEL but (with the
+    stdout handler at DEBUG) still flowing to the terminal + file."""
+    from kling_gui.queue_manager import _is_panel_noise
+
+    noisy = [
+        r"Python: shared root venv -- C:\foo\venv\Scripts\python.exe",
+        "Checking GPU acceleration for rPPG (CuPy)...",
+        "MediaPipe GPU delegate unavailable (NotImplementedError: ...)",
+        "ImageCloneCalculator: GPU processing is disabled in build flags",
+        r"Using MediaPipe Tasks FaceLandmarker model: C:\foo\face_landmarker.task [CPU]",
+        "Pipeline: v5 (deband-first)",
+    ]
+    for line in noisy:
+        assert _is_panel_noise(line), f"should be panel-noise (terminal-only): {line!r}"
+
+
+def test_real_rppg_progress_lines_stay_in_panel():
+    """The user-facing progress + GPU banner + injector device line must NOT be
+    classified as panel-noise — they stay visible in the GUI panel."""
+    from kling_gui.queue_manager import _is_panel_noise
+
+    keep = [
+        "rPPG iter 1/10 frame 72/241 (~25%)",
+        "rPPG backend — CuPy 13.6.0 on 1 device(s)",
+        "rPPG iteration 2/10 starting",
+        "Target heart rate: 81.2 bpm",
+    ]
+    for line in keep:
+        assert not _is_panel_noise(line), f"should stay in panel: {line!r}"

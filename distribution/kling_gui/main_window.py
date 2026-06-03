@@ -1185,13 +1185,16 @@ class KlingGUIWindow:
             handler.setFormatter(fmt)
             logger.addHandler(handler)
 
-        # Also mirror INFO+ to stdout so the launcher terminal shows the app
-        # runtime log AS YOU USE THE APP (rPPG/oldcam/crash lines). Those lines
-        # otherwise go ONLY to the panel + the rotating file, never to stdout, so
-        # the launcher's GUI-tee captured nothing of the actual session (user
-        # report 2026-06-04). INFO-level keeps the DEBUG noise (raw FFmpeg/
-        # subprocess spam) file-only, matching the panel. Guarded: a frozen
-        # pythonw build has no real stdout (sys.stdout is None) — skip then.
+        # Also mirror EVERYTHING (DEBUG+) to stdout so the launcher terminal
+        # shows the full app runtime log AS YOU USE THE APP. User direction
+        # 2026-06-04: the TERMINAL should be as data-rich as possible (noisy is
+        # fine there), while the GUI "processing log" PANEL stays friendly. That
+        # split works because lines we demote to "debug" (verbose rPPG/oldcam
+        # banners, wrapping path dumps) are dropped from the PANEL (see _log) but
+        # — with this handler at DEBUG — still flow to the terminal + file. So
+        # "demote to debug" == "keep in terminal, hide from panel", exactly the
+        # behaviour we want. Guarded: a frozen pythonw build has no real stdout
+        # (sys.stdout is None) — skip then.
         #
         # Dedup via an explicit marker attribute (not an isinstance check):
         # RotatingFileHandler IS a StreamHandler subclass, and the "kling_gui"
@@ -1205,7 +1208,10 @@ class KlingGUIWindow:
         if getattr(sys, "stdout", None) is not None and not already_has_stdout:
             try:
                 stream = logging.StreamHandler(sys.stdout)
-                stream.setLevel(logging.INFO)
+                # DEBUG so the terminal mirrors EVERYTHING (incl. panel-hidden
+                # debug lines) — the terminal is the data-rich surface; the panel
+                # is the friendly one (user direction 2026-06-04).
+                stream.setLevel(logging.DEBUG)
                 stream.setFormatter(
                     logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
                 )
@@ -4914,9 +4920,33 @@ class KlingGUIWindow:
                     str(self.config.get("freeimage_api_key", ""))
                 )
 
-        # Log the specific change if description provided
+        # Log the specific change if description provided. "Oldcam versions set
+        # to …" fires on EVERY checkbox toggle, so ticking 4 boxes spammed 4
+        # near-identical lines (user feedback 2026-06-04). Debounce that one
+        # message: coalesce rapid toggles into a SINGLE log line ~600ms after
+        # the last change (the config save above still happens immediately).
         if change_description:
-            self._log(change_description, "info")
+            if change_description.startswith("Oldcam versions set to"):
+                self._debounced_log(change_description, "info")
+            else:
+                self._log(change_description, "info")
+
+    def _debounced_log(self, message: str, level: str = "info", delay_ms: int = 600):
+        """Log ``message`` only after ``delay_ms`` of no further debounced calls.
+
+        Coalesces a burst of rapid identical-category log lines (e.g. toggling
+        several Oldcam-version checkboxes) into one. Cancels any pending timer
+        and schedules a fresh one; the last message in the burst wins.
+        """
+        pending = getattr(self, "_debounced_log_after_id", None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except Exception:  # noqa: BLE001 — stale id; ignore
+                pass
+        self._debounced_log_after_id = self.root.after(
+            delay_ms, lambda: self._log(message, level)
+        )
 
     def _scan_folders_for_new_media(self, folders) -> tuple:
         """Walk ``folders`` for images + videos not yet in the session
