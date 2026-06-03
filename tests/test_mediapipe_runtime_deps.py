@@ -53,18 +53,19 @@ def _strip_comments(text: str) -> str:
     Stripping comments keys the guard to real install commands, not prose.
 
     Handles the comment syntaxes used by our launchers:
-      * .bat / .cmd : a line whose first token is `rem` (any case) or that
-        starts with `::`
+      * .bat / .cmd : `rem ...`, the echo-suppressed `@rem ...` (very common),
+        or `:: ...` (gemini PR #72 — @rem was previously missed).
       * .sh / .command : a line starting with `#` (after leading whitespace).
         A bare `#!` shebang is a comment too. We do NOT try to strip trailing
         inline `# ...` on sh lines — install commands here never carry an
         inline comment that contains both "mediapipe" and "--no-deps".
     """
+    _bat_comment_prefixes = ("rem ", "rem\t", "@rem ", "@rem\t", "::")
     kept = []
     for raw in text.splitlines():
         stripped = raw.lstrip()
         low = stripped.lower()
-        if low.startswith("rem ") or low == "rem" or stripped.startswith("::"):
+        if low in ("rem", "@rem") or low.startswith(_bat_comment_prefixes):
             continue
         if stripped.startswith("#"):
             continue
@@ -148,16 +149,20 @@ def test_no_other_nodeps_mediapipe_site_is_unguarded():
     # Skip any virtualenv dir — bundled launcher scripts inside site-packages
     # are not ours. Match venv/.venv/.venv311/.venv-macos etc. (code-review:
     # the prior "/venv/" check missed the common .venv* names).
+    # Exact virtualenv dir names (dotted + undotted, canonical + version- and
+    # platform-suffixed). An EXACT-match set, NOT a startswith(".venv") prefix:
+    # a repo cloned into e.g. ".venv-kling/" would otherwise make _in_venv() True
+    # for EVERY file and silently skip the whole guard (gemini PR #72). Mirrors
+    # release_prep.EXCLUDED_DIRS' venv variants.
+    _VENV_DIR_NAMES = frozenset({
+        "venv", ".venv", ".venv-macos",
+        ".venv311", ".venv312", ".venv313", ".venv314",
+        "venv311", "venv312", "venv313", "venv314",
+    })
+
     def _in_venv(path: str) -> bool:
-        # Match a path SEGMENT that is a virtualenv dir. Only the canonical
-        # names + the .venv* family — NOT a bare "venv-*" prefix, which could
-        # be the repo root itself if cloned into e.g. "venv-kling" (Gemini
-        # 2026-06-03). A real venv dir is "venv" or ".venv"/".venv311"/etc.
         norm = path.replace("\\", "/")
-        return any(
-            seg == "venv" or seg == ".venv" or seg.startswith(".venv")
-            for seg in norm.split("/")
-        )
+        return any(seg in _VENV_DIR_NAMES for seg in norm.split("/"))
 
     for pat in patterns:
         for f in glob.glob(str(REPO_ROOT / pat), recursive=True):
