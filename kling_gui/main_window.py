@@ -3938,6 +3938,17 @@ class KlingGUIWindow:
         stream (raw FFmpeg stderr, subprocess path dumps, demoted summary
         duplicates) without having to open kling_gui.log.
         """
+        # "progress_update": a single IN-PLACE updating line (live rPPG frame
+        # progress grows 0→100% on one row instead of spamming the panel). The
+        # panel renders it via update_line; the FILE/terminal get it as a normal
+        # info line (no in-place trick there). Always panel-visible (it IS the
+        # friendly progress, not debug).
+        if level == "progress_update":
+            if hasattr(self, "log_display"):
+                self.log_display.update_line(message, "progress")
+            if self.logger:
+                self.logger.info(message)
+            return
         show_in_panel = level != "debug" or bool(self.config.get("verbose_gui_mode", False))
         if show_in_panel and hasattr(self, "log_display"):
             # Render debug lines with the "info" tag in the panel so they

@@ -700,9 +700,27 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # heart-rate injection making progress?". Kept in the file log via the
 # raw-line "debug" path. Matched against the ANSI-stripped, leading-
 # whitespace-stripped form.
-_RPPG_SUPPRESS_PATTERNS = (
+# Curated lines KEPT in the GUI panel even when Verbose Mode is OFF — the
+# physiological data the user explicitly wants to see (per-region face means +
+# the per-iteration SNR/Phase/Temporal scoreboard). Checked BEFORE the suppress
+# list so these survive non-verbose curation (user, 2026-06-04: "the cheek /
+# facial results is cool", "we do like to see the SNR data"). Everything NOT in
+# this keep-set and NOT a structural progress line (iter header, frame %, etc.)
+# is dropped from the panel in non-verbose mode.
+_RPPG_KEEP_PATTERNS = (
     re.compile(r"^(forehead|left_cheek|right_cheek|chin|nose):\s+mean="),
     re.compile(r"^(Baseline|Iter\s+\d+)\s+SNR:"),
+    # Final "ITERATIVE ENHANCEMENT SUMMARY" rows + its Targets line — the
+    # at-a-glance before/after the user wants to keep.
+    re.compile(r"^ITERATIVE ENHANCEMENT SUMMARY"),
+    re.compile(r"^rPPG (Baseline|Iter\s+\d+)"),
+    re.compile(r"^Targets:\s+SNR\b"),
+    # One-time run header bits the user likes (target HR + corrector version).
+    re.compile(r"^Target heart rate:"),
+    re.compile(r"^rPPG Corrector v"),
+)
+
+_RPPG_SUPPRESS_PATTERNS = (
     re.compile(r"^PTT phase offsets"),
     re.compile(r"^Pulse strength:"),
     re.compile(r"^Tuned knobs:"),
@@ -711,7 +729,7 @@ _RPPG_SUPPRESS_PATTERNS = (
     re.compile(r"^Strength calibration blocked"),
     re.compile(r"^Breakthrough mode:"),
     re.compile(r"^Dynamic strength bounds:"),
-    re.compile(r"^Targets:\s+SNR\b"),
+    # NOTE: "Targets: SNR …" moved to _RPPG_KEEP_PATTERNS (user wants the goals).
     re.compile(r"^Stage\s+SNR\b"),
     re.compile(r"^-+\s*$"),
     re.compile(r"^=+\s*$"),
@@ -972,9 +990,20 @@ class _RppgProgressTracker:
                 )
             return
 
-        # Suppress patterns: per-ROI stats, MediaPipe boot, knob
-        # internals, summary table borders, etc. These go to debug
-        # (kept in file log, dropped by GUI).
+        # Curated KEEP lines (per-region face means + per-iter SNR scoreboard):
+        # always shown in the panel at info, even in non-verbose mode — the
+        # physiological data the user wants. Checked BEFORE suppress.
+        for pat in _RPPG_KEEP_PATTERNS:
+            if pat.match(stripped):
+                _report(self._report_cb, stripped, "info")
+                return
+
+        # Suppress patterns: MediaPipe boot, knob internals, summary table
+        # borders, etc. These go to debug (kept in file log, dropped by GUI in
+        # non-verbose; shown in verbose via the fallthrough below... no —
+        # suppress is ALWAYS debug regardless of verbose, since these are the
+        # controller/knob internals even a verbose user rarely needs. The
+        # fallthrough at the end handles the "verbose shows everything else").
         for pat in _RPPG_SUPPRESS_PATTERNS:
             if pat.match(stripped):
                 _report(self._report_cb, stripped, "debug")
@@ -1000,24 +1029,25 @@ class _RppgProgressTracker:
                         self._iter_frame_iter_marker = self._iter_current
                         self._iter_frame_milestone = 0
                     pct = int((cur / total) * 100)
-                    # Snap DOWN to the most recent 25% milestone the
-                    # current pct has crossed.
-                    milestone = (pct // 25) * 25
-                    if milestone > self._iter_frame_milestone and milestone >= 25:
-                        self._iter_frame_milestone = milestone
-                        iter_label = (
-                            f"iter {self._iter_current}/{self._iter_max} "
-                            if self._iter_current and self._iter_max
-                            else ""
-                        )
-                        _report(
-                            self._report_cb,
-                            f"rPPG {iter_label}frame {cur}/{total} (~{milestone}%)",
-                            "info",
-                        )
-            # Frame matches always fall through to debug for the raw
-            # line — never to info. The synthesized "rPPG frame X/N
-            # (~25%)" above is the user-facing line.
+                    iter_label = (
+                        f"iter {self._iter_current}/{self._iter_max} "
+                        if self._iter_current and self._iter_max
+                        else ""
+                    )
+                    # Emit on EVERY frame line at the "progress_update" level,
+                    # which the GUI renders as ONE in-place-updating line (it
+                    # grows 0%→100% on a single row instead of spamming ~10
+                    # 'Processing frame N' lines per iteration). User direction
+                    # 2026-06-04. Non-GUI callers (the CLI) treat
+                    # progress_update like info — still one short line per frame,
+                    # which the terminal naturally scrolls.
+                    _report(
+                        self._report_cb,
+                        f"rPPG {iter_label}{pct}% (frame {cur}/{total})",
+                        "progress_update",
+                    )
+            # The raw "Processing frame N/M" line is file-only (debug); the
+            # synthesized progress_update line above is the user-facing one.
             _report(self._report_cb, stripped, "debug")
             return
 
@@ -1076,6 +1106,8 @@ def stream_subprocess_with_timeout(
     on_heartbeat: Optional[Callable[[float], None]] = None,
     heartbeat_interval_seconds: float = 60.0,
     heartbeat_silence_predicate: Optional[Callable[[str], bool]] = None,
+    abort_event: Optional["threading.Event"] = None,
+    on_process_start: Optional[Callable[["subprocess.Popen"], None]] = None,
 ) -> Tuple[int, List[str]]:
     """Run *cmd*, stream stdout line-by-line, and enforce a wall-clock
     timeout that fires even if the child stalls mid-line with no newline
@@ -1122,6 +1154,19 @@ def stream_subprocess_with_timeout(
     silence the heartbeat. ``None`` preserves the original
     silence-on-any-line behaviour for callers that launch the child
     directly.
+
+    *abort_event* (v2.21, GUI Abort button): an optional ``threading.Event``
+    the GUI sets to cancel an in-flight run. The main wall-clock loop polls it
+    every ≤1s; when set, the child is killed and ``subprocess.TimeoutExpired``
+    is raised so the caller takes the same graceful-skip path as a timeout
+    (filename marked ``-NORPPG``). Lets the user stop a 10-iteration / 20-minute
+    rPPG run without force-quitting the whole GUI.
+
+    *on_process_start* (v2.21): optional callback invoked once with the live
+    ``Popen`` handle just after launch, so the GUI queue can publish it as the
+    "active subprocess" and ``.kill()`` it instantly from the Abort button
+    (rather than waiting up to 1s for the abort_event poll). Called inside a
+    try/except so a misbehaving callback can never crash the stream.
 
     Returns ``(returncode, output_lines)``. Raises
     ``subprocess.TimeoutExpired`` on timeout (caller treats that as a
@@ -1172,6 +1217,12 @@ def stream_subprocess_with_timeout(
         env=env,
     )
     assert process.stdout is not None
+    # Publish the live handle so the GUI Abort button can kill it instantly.
+    if on_process_start is not None:
+        try:
+            on_process_start(process)
+        except Exception:
+            pass
     line_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
 
     def _drain() -> None:
@@ -1207,6 +1258,20 @@ def stream_subprocess_with_timeout(
     max_deadline = start_time + max(timeout_seconds * 8, 600.0)
     eof = False
     while not eof:
+        # Abort check (GUI Abort button): kill the child and surface the same
+        # TimeoutExpired the timeout path raises, so the caller treats it as a
+        # graceful skip (-NORPPG) rather than a crash. Polled here so it fires
+        # within ≤1s even when the child is mid-iteration with no new output.
+        if abort_event is not None and abort_event.is_set():
+            if process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    # OSError: handle already reaped/closed by a racing kill —
+                    # must not crash the stream on the abort path (gemini MEDIUM).
+                    pass
+            raise subprocess.TimeoutExpired(cmd, timeout_seconds)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             if process.poll() is None:

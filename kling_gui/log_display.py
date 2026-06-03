@@ -11,6 +11,15 @@ from datetime import datetime
 # isolated palette duplicate so it gets its own font constant too).
 FONT_MONO = "Menlo" if sys.platform == "darwin" else "Consolas"
 
+# Panel font sizes. Windows Consolas renders noticeably LARGER than macOS Menlo
+# at the same point size, so the panel looked oversized on Windows (user
+# feedback 2026-06-04). Use a smaller base on Windows; keep the macOS size the
+# user said is fine. (base, milestone-bold, error-bold)
+if sys.platform == "darwin":
+    _FONT_SIZE, _FONT_SIZE_MILESTONE, _FONT_SIZE_ERR = 11, 12, 11
+else:
+    _FONT_SIZE, _FONT_SIZE_MILESTONE, _FONT_SIZE_ERR = 9, 10, 9
+
 
 # Color palette matching LoopVideo dark theme
 COLORS = {
@@ -46,6 +55,8 @@ class LogDisplay(tk.Frame):
 
     def __init__(self, parent, **kwargs):
         super().__init__(parent, bg=COLORS["bg_panel"], **kwargs)
+        # Line index of the current in-place "progress_update" row, or None.
+        self._progress_line = None
 
         # Create header
         header = tk.Label(
@@ -72,7 +83,7 @@ class LogDisplay(tk.Frame):
             wrap=tk.WORD,
             bg=COLORS["bg_main"],
             fg=COLORS["text_light"],
-            font=(FONT_MONO, 11),
+            font=(FONT_MONO, _FONT_SIZE),
             state=tk.DISABLED,
             yscrollcommand=self.scrollbar.set,
             padx=4,
@@ -103,14 +114,14 @@ class LogDisplay(tk.Frame):
         self.text.tag_configure(
             "milestone",
             foreground=COLORS["milestone"],
-            font=(FONT_MONO, 12, "bold"),
+            font=(FONT_MONO, _FONT_SIZE_MILESTONE, "bold"),
         )
         # ❌ RPPG FAILED-style banners — bold red so the user can spot a
         # silent-failure path even when the log autoscrolled past it.
         self.text.tag_configure(
             "error_bold",
             foreground=COLORS["error_bold"],
-            font=(FONT_MONO, 11, "bold"),
+            font=(FONT_MONO, _FONT_SIZE_ERR, "bold"),
         )
 
     def log(self, message: str, level: str = "info"):
@@ -135,9 +146,47 @@ class LogDisplay(tk.Frame):
         self.text.see(tk.END)
 
         self.text.config(state=tk.DISABLED)
+        # A normal log() ends any in-progress overwriting line — the next
+        # update_line() starts fresh below it instead of replacing this one.
+        self._progress_line = None
+
+    def update_line(self, message: str, level: str = "progress"):
+        """Show a single IN-PLACE updating line (e.g. live frame progress).
+
+        The first call inserts a timestamped line and remembers its line index.
+        Subsequent calls REPLACE that line's text instead of adding a new one —
+        so '… 25% … 50% … 100%' grows on one row rather than spamming the panel.
+        Any normal log() call (or clear()) ends the overwriting line so the next
+        update_line() starts a fresh one.
+        """
+        timestamp = datetime.now().strftime("[%H:%M:%S]")
+        self.text.config(state=tk.NORMAL)
+        line_idx = getattr(self, "_progress_line", None)
+        try:
+            if line_idx is not None:
+                # Overwrite the existing progress line in full.
+                self.text.delete(f"{line_idx} linestart", f"{line_idx} lineend")
+                self.text.insert(f"{line_idx} linestart", timestamp + " ", "timestamp")
+                self.text.insert(f"{line_idx} lineend", message, level)
+            else:
+                # Start a fresh progress line; remember its (integer) line number
+                # so a later log() that appends below doesn't shift our target.
+                self.text.insert(tk.END, timestamp + " ", "timestamp")
+                self.text.insert(tk.END, message + "\n", level)
+                # index of the line we just wrote (END now points past the
+                # trailing newline, so step back one line).
+                self._progress_line = self.text.index("end-2c").split(".")[0] + ".0"
+        except tk.TclError:
+            # Index drifted (e.g. panel cleared mid-run) — fall back to a plain
+            # append and reset the tracker.
+            self._progress_line = None
+            self.text.insert(tk.END, timestamp + " " + message + "\n", level)
+        self.text.see(tk.END)
+        self.text.config(state=tk.DISABLED)
 
     def clear(self):
         """Clear all log messages."""
         self.text.config(state=tk.NORMAL)
         self.text.delete(1.0, tk.END)
         self.text.config(state=tk.DISABLED)
+        self._progress_line = None
