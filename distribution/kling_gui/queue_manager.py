@@ -1893,15 +1893,14 @@ class QueueManager:
     # enough that a future launcher variant (e.g. omitting the trailing
     # "complete...") still updates the queue widget bar.
     _OLDCAM_PCT_PAT = re.compile(r"\[Oldcam\]\s+Processing:\s+(\d+)%")
-    # Matches the rPPG progress-tracker's synthesized
-    #   "rPPG iter 3/10 frame 144/242 (~50%)"
-    # progress lines. Class-level for parity with _OLDCAM_PCT_PAT and to
-    # survive __new__-constructed test instances that bypass __init__.
-    # (Gemini medium on PR #52 round 2 — was previously compiled
-    # inside _rppg_video; moving to class level removes one re-compile
-    # per queue item and keeps regex catalogue centralized.)
+    # Matches the rPPG progress-tracker's synthesized progress line. v2.22.1
+    # collapsed the per-frame spam into ONE in-place-updating line, changing the
+    # format from "rPPG iter 3/10 frame 144/242 (~50%)" to
+    #   "rPPG iter 3/10 50% (frame 144/242)"
+    # — so the bar parser must accept the new shape. Class-level for parity with
+    # _OLDCAM_PCT_PAT and to survive __new__-constructed test instances.
     _RPPG_PCT_PAT = re.compile(
-        r"rPPG iter\s+(\d+)/(\d+)\s+frame\s+\d+/\d+\s+\(~(\d+)%\)"
+        r"rPPG iter\s+(\d+)/(\d+)\s+(\d+)%\s+\(frame\s+\d+/\d+\)"
     )
 
     def _run_oldcam_version(
@@ -2532,8 +2531,19 @@ class QueueManager:
             # (or its non-prefixed alias) so "more nitty gritty when
             # verbose is checked" works.
             from automation.rppg import _RppgProgressTracker
+            # The rPPG panel firehose follows the GUI's "Verbose Mode" checkbox
+            # (verbose_gui_mode, default FALSE), NOT the CLI/automation
+            # verbose_logging key. THE bug behind "rPPG log is way too noisy"
+            # (user, 2026-06-04, ~30×): this used verbose_logging/
+            # automation_verbose_logging with default TRUE, so the tracker
+            # emitted the full controller/knob/per-ROI/path chatter at INFO
+            # regardless of the GUI Verbose Mode toggle. Now: Verbose OFF
+            # (default) = curated friendly panel (launch+flags, per-iter SNR +
+            # face means, summary, output, milestones); Verbose ON = the full
+            # nitty-gritty. The TERMINAL + file still get everything either way
+            # (the stdout handler is at DEBUG).
             verbose = _cfg_bool(
-                "verbose_logging", "automation_verbose_logging", True,
+                "verbose_gui_mode", "verbose_logging", False,
             )
 
             # The tracker emits synthesized progress lines like
