@@ -1421,6 +1421,23 @@ class KlingGUIWindow:
                 )
             config["verbose_gui_mode_migrated_v17"] = True
 
+        # v2.22.1 ONE-TIME reset: the curated friendly rPPG panel only kicks in
+        # when Verbose Mode is OFF, but many existing configs still carry
+        # verbose_gui_mode=True (turned back on after the v1.7 migration, or
+        # never migrated). The user repeatedly asked for the panel to default
+        # CLEAN. Force it OFF exactly once here, then mark migrated so a user
+        # who deliberately re-enables verbose afterwards is never overridden
+        # again. (Separate flag from v17 so it fires for configs already
+        # past the v17 migration.)
+        if not config.get("verbose_gui_mode_reset_v222"):
+            if config.get("verbose_gui_mode") is True:
+                config["verbose_gui_mode"] = False
+                print(
+                    "Reset verbose_gui_mode -> False (v2.22.1 clean-panel "
+                    "default). Re-enable via the 'Verbose Mode' checkbox."
+                )
+            config["verbose_gui_mode_reset_v222"] = True
+
         # Slot 3 defaults backfill (2026-05-21): older saved configs
         # carry empty slot 3 prompt + negative because the template
         # values were added after the user's install. Backfill from the

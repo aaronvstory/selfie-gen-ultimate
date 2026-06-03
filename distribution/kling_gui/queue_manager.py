@@ -1961,12 +1961,28 @@ class QueueManager:
                 line_text = line.rstrip()
                 if line_text:
                     output_lines.append(line_text)
+                    m_pct = self._OLDCAM_PCT_PAT.search(line_text)
                     if not _is_tf_noise(line_text):
-                        # Panel-noisy lines (already summarized elsewhere or
-                        # pure path dumps) go to the file log only; everything
-                        # else continues to the user-facing panel.
-                        level = "debug" if _is_panel_noise(line_text) else "info"
-                        self.log(line_text, level)
+                        if m_pct is not None:
+                            # Oldcam "[Oldcam] Processing: N% complete…" lines
+                            # collapse into ONE in-place updating panel line
+                            # (same growing-progress treatment as rPPG frames,
+                            # user direction 2026-06-04) instead of 4 separate
+                            # 25/50/75/100% rows. The raw line still hits the
+                            # file/terminal via the progress_update level map.
+                            try:
+                                pct = int(m_pct.group(1))
+                            except (TypeError, ValueError):
+                                pct = 0
+                            self.log(
+                                f"Oldcam {version} — {pct}%", "progress_update"
+                            )
+                        else:
+                            # Panel-noisy lines (already summarized elsewhere or
+                            # pure path dumps) go to the file log only; everything
+                            # else continues to the user-facing panel.
+                            level = "debug" if _is_panel_noise(line_text) else "info"
+                            self.log(line_text, level)
                     # Update per-item progress bar from the launcher's
                     # native progress lines. Capped at 99 here; the
                     # caller flips to 100/done when the success branch
@@ -1975,16 +1991,14 @@ class QueueManager:
                     # the redraw if the value didn't change — subagent
                     # M3 on PR #52 round 1 (avoids ~40 redundant
                     # listbox repaints per rPPG run).
-                    if item is not None:
-                        m = self._OLDCAM_PCT_PAT.search(line_text)
-                        if m is not None:
-                            try:
-                                pct = max(0, min(99, int(m.group(1))))
-                            except (TypeError, ValueError):
-                                pct = 0
-                            if pct != item.stage_percent:
-                                item.stage_percent = pct
-                                self.update_queue_display()
+                    if item is not None and m_pct is not None:
+                        try:
+                            pct = max(0, min(99, int(m_pct.group(1))))
+                        except (TypeError, ValueError):
+                            pct = 0
+                        if pct != item.stage_percent:
+                            item.stage_percent = pct
+                            self.update_queue_display()
             returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             if process is not None:
