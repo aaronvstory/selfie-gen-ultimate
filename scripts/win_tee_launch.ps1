@@ -94,10 +94,14 @@ try {
     # case), fall back to the post-pipeline value.
     if ($null -eq $rc) { $rc = $LASTEXITCODE }
 } catch {
-    # If the tee pipeline itself fails, surface the error but don't crash the
-    # launch — return non-zero so the caller can fall back to a direct run.
+    # If the tee pipeline INFRASTRUCTURE itself fails (cmd.exe missing, disk
+    # full on the transcript write, locked-down ExecutionPolicy, permission
+    # denied on .launcher_state\), surface it and return the DISTINCT sentinel
+    # exit code 3 so the caller can tell "tee broke" from "the GUI exited N"
+    # and fall through to a direct (un-teed) launch — the transcript is
+    # best-effort and must NEVER block the launch (code-review HIGH).
     Write-Host "  [transcript] tee failed: $($_.Exception.Message)"
-    $rc = 1
+    $rc = 3
 }
 
 # Prune AFTER the run so this run's own transcript is included in the newest-5.

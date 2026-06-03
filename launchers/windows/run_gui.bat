@@ -45,10 +45,20 @@ set "TRANSCRIPT_FILE=%STATE_DIR%\transcript-%TEE_STAMP%.log"
 set "KLING_TRANSCRIPT=1"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\scripts\win_tee_launch.ps1" "%~f0" "%TRANSCRIPT_FILE%" %*
 set "TEE_RC=%errorlevel%"
+rem  rc 3 = the tee infrastructure itself failed (cmd missing, disk full,
+rem  locked-down ExecutionPolicy, read-only .launcher_state). The transcript
+rem  is best-effort and must NEVER block the launch -- fall through to a
+rem  normal (un-teed) launch in that case (code-review HIGH). Any other rc is
+rem  the GUI's own exit code, so propagate it. FLAT if/goto (no paren block --
+rem  the cmd 25H2 nested-paren crash, bounce-trap 7).
+if "%TEE_RC%"=="3" goto :transcript_tee_failed
 echo(
 echo   Full transcript of this run saved to:
 echo     %TRANSCRIPT_FILE%
 exit /b %TEE_RC%
+:transcript_tee_failed
+echo   [transcript] capture unavailable; launching directly without a transcript file.
+goto :transcript_ready
 :transcript_ready
 
 rem --- Timestamp banner -----------------------------------------------------

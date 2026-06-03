@@ -1519,6 +1519,13 @@ class QueueManager:
                     ):
                         last_rppg: Optional[str] = None
                         for src in oldcam_outputs:
+                            # Abort guard (code-review MEDIUM): without this an
+                            # abort fires N spurious launch-and-kill cycles (one
+                            # per remaining oldcam output) + a misleading
+                            # FANOUT-FAILED N/M log. Break on the first observed
+                            # abort; the outer post-stage guard handles the item.
+                            if self._abort_requested():
+                                break
                             fanout_total += 1
                             rppg_video = self._rppg_video(src, item)
                             if rppg_video:
@@ -1553,6 +1560,12 @@ class QueueManager:
                                 str(preferred) if preferred.exists()
                                 else last_rppg
                             )
+
+                    # Final abort guard before marking the item done — an abort
+                    # during the fan-out loop must not fall through to "done".
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        continue
 
                     item.output_path = final_video
                     item.stage = "done"
