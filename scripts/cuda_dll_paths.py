@@ -87,6 +87,15 @@ def register_cuda_dll_dirs():
                 d = os.path.abspath(d)
                 if d in seen or not os.path.isdir(d):
                     continue
+                # cu13 ships DLLs in bin/x86_64, not the bin parent. When a
+                # matched ".../bin" has an x86_64 child, the DLLs are in the
+                # child (already registered by the earlier glob) — skip the
+                # parent to avoid a wasted handle + PATH entry. cu12 has no
+                # x86_64 child (DLLs live directly in bin), so it's kept.
+                if os.path.basename(d) == "bin" and os.path.isdir(
+                    os.path.join(d, "x86_64")
+                ):
+                    continue
                 seen.add(d)
                 try:
                     # RETAIN the handle (module-level list) — the DLL dir entry
@@ -100,7 +109,15 @@ def register_cuda_dll_dirs():
                 # env (it's a C lib, not a Python ext), so the dir must ALSO be
                 # on os.environ['PATH'] or the first kernel compile throws
                 # CompileException "failed to open nvrtc-builtins64_*.dll".
-                if d not in os.environ.get("PATH", "").split(os.pathsep):
+                # Compare case-insensitively so a second call (or a PATH entry
+                # added with different casing) can't double-prepend the same dir
+                # and grow PATH unboundedly across restarts (code-review CRITICAL
+                # PR #72 — Windows paths are case-insensitive).
+                existing = {
+                    os.path.normcase(p)
+                    for p in os.environ.get("PATH", "").split(os.pathsep)
+                }
+                if os.path.normcase(d) not in existing:
                     os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
                 registered.append(d)
     return registered

@@ -88,8 +88,11 @@ def test_injector_force_cpu_surfaces_detail():
     env["RPPG_FORCE_CPU"] = "1"
     out = _run_injector_help(cwd=REPO_ROOT, env=env)
     assert "CuPy unavailable" in out, out
-    # The detail (the exception message) must be present, not just the class.
-    assert "RPPG_FORCE_CPU=1" in out, out
+    # Assert the COLON-separated "(Type: message)" format, not just that the
+    # message substring appears somewhere — that distinguishes the new surfaced
+    # format from a regression back to the bare "(RuntimeError)" (code-review
+    # HIGH #3 PR #72).
+    assert "(RuntimeError: RPPG_FORCE_CPU=1)" in out, out
 
 
 def test_honest_probe_passes_on_gpu_box():

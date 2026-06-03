@@ -842,6 +842,9 @@ def test_nvidia_wheel_specs_parity_with_pyproject_extras():
             s = s.split(";")[0].strip()  # drop the marker
             if s.startswith("nvidia-"):
                 specs.add(s)
+        # Guard against a regex that matched but extracted nothing (e.g. an
+        # inline comment after `]`) silently passing `assert set() == set()`.
+        assert specs, f"no nvidia-* specs extracted for {extra_name} — regex drift?"
         return specs
 
     # cu121 extra <-> CUDA 12; cu128 extra <-> CUDA 13.

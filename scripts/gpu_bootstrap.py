@@ -101,6 +101,11 @@ INSTALL_FAILED_MAX_ATTEMPTS = 3
 # heartbeat keeps the console alive so it never looks frozen.
 PIP_INSTALL_TIMEOUT_SECONDS = 2400
 LOCK_STALE_SECONDS = PIP_INSTALL_TIMEOUT_SECONDS + 300
+# probe_cupy now forces a real nvrtc kernel compile; on a fresh install the JIT
+# cache is empty and the first compile (NVRTC + PTX) can take 1-2 min. Generous
+# cap so a cold-cache compile isn't mistaken for a broken GPU (code-review HIGH
+# PR #72). Still well under LOCK_STALE so a probe can't outlive the install lock.
+PROBE_TIMEOUT_SECONDS = 180
 
 # Map CUDA major → PyPI package name. Per CuPy 14+ install docs the
 # stable wheels are cupy-cuda12x and cupy-cuda13x; older 11.x is no
@@ -486,7 +491,13 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             capture_output=True,
             text=True,
             errors="replace",
-            timeout=30,
+            # Generous timeout (was 30s): the probe now does a REAL nvrtc kernel
+            # COMPILE, and on a fresh install the CuPy JIT cache is EMPTY, so the
+            # first compile (NVRTC + PTX assembly) can take 1-2 min. The friend's
+            # box is exactly this case (just-installed nvidia wheels). A 30s cap
+            # would TimeoutExpired -> probe None -> install_failed -> stranded on
+            # CPU again, defeating the whole fix (code-review HIGH #2/#4 PR #72).
+            timeout=PROBE_TIMEOUT_SECONDS,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
@@ -542,6 +553,14 @@ def install_cupy(python_exe: str, cuda_major: int) -> tuple[bool, str]:
     constraints_path = _resolve_constraints_path()
     if constraints_path:
         cmd += ["-c", constraints_path]
+    else:
+        # numpy<2 is a NON-NEGOTIABLE project invariant (cupy 14.x / numpy 2.x
+        # break the TF 2.16.2 face stack). If constraints.txt went missing
+        # (e.g. a mis-packaged zip), make that VISIBLE rather than silently
+        # resolving an unconstrained install (code-review MEDIUM PR #72). The
+        # cupy `<14` pin in the spec is still the primary guard.
+        _log("WARNING: constraints.txt not found — installing CuPy without the "
+             "numpy<2 constraint file (cupy <14 pin still applies)")
     cmd.append(pkg)
     cmd.extend(nvidia_pkgs)
     # Heartbeat-wrapped: the CuPy + nvidia component wheels are ~1.5-2.5GB; a
