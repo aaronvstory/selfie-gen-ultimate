@@ -354,13 +354,16 @@ def test_capped_install_failed_from_older_installer_re_attempts(monkeypatch):
     an OLDER installer (e.g. the broken `[ctk]` one) must get a fresh set of
     attempts after the installer is fixed — otherwise bootstrap() returns at the
     capped-stamp check and the fix never runs for the stranded-upgrade case."""
-    gpu_bootstrap._write_stamp({
+    # Write the stale stamp DIRECTLY to disk (not via _write_stamp, which now
+    # stamps the CURRENT installer_version) — this is what an old-installer stamp
+    # actually looks like on the friend's box.
+    gpu_bootstrap.STAMP_PATH.write_text(json.dumps({
         "result": "install_failed",
         "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "driver_version": "576.80", "cuda_major": 12,
         "cupy_package": "cupy-cuda12x[ctk]>=13.6,<14", "cupy_version": None,
         "attempts": 3, "installer_version": "2.17.0",  # the OLD broken installer
-    })
+    }), encoding="utf-8")
     # Current installer is newer (2.17.1) — the cap must be ignored.
     monkeypatch.setattr(gpu_bootstrap, "INSTALLER_VERSION", "2.17.1")
     monkeypatch.setattr(
