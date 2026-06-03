@@ -91,10 +91,13 @@ try {
     # PowerShell see one plain stdout text stream — no ErrorRecords, no red, no
     # wrapper — while the transcript still captures stdout+stderr in full.
     #
-    # Quote the .bat path; append each arg quoted. The combined string is handed
-    # to one `cmd /c` so spaced paths/args survive.
-    $cmdLine = '"' + $BatPath + '"'
-    foreach ($a in $BatArgs) { $cmdLine += ' "' + $a + '"' }
+    # Quote the target path; append each arg quoted. The combined string is
+    # handed to one `cmd /c` so spaced paths/args survive. Embedded double-quotes
+    # are doubled ("") — cmd's literal-quote escape inside a quoted token — so an
+    # arg like foo"bar can't break the command string (gemini MEDIUM PR #73).
+    $quote = { param($s) '"' + ($s -replace '"', '""') + '"' }
+    $cmdLine = (& $quote $BatPath)
+    foreach ($a in $BatArgs) { $cmdLine += ' ' + (& $quote $a) }
     $cmdLine += ' 2>&1'
 
     # Exit-code capture (code-review HIGH #2): on Windows PowerShell 5.1

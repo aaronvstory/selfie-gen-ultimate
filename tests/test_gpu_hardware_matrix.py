@@ -47,13 +47,21 @@ class _Proc:
         self.returncode = rc
 
 
+_MATRIX_GPU_NAME = "NVIDIA GeForce RTX 4090 Laptop GPU"
+
+
 def _fake_nvidia_smi(monkeypatch, *, driver_query, header):
-    """Patch _resolve_nvidia_smi + subprocess.run to simulate a given GPU."""
+    """Patch _resolve_nvidia_smi + subprocess.run to simulate a given GPU.
+
+    The driver+name probe (``--query-gpu=driver_version,name``) returns the
+    realistic ``"<driver>, <name>"`` CSV row so detect_nvidia's gpu_name parse
+    is exercised.
+    """
     def _run(cmd, *a, **k):
         if any(isinstance(c, str) and c.startswith("--query-gpu") for c in cmd):
             if driver_query is None:
                 return _Proc("", rc=1)
-            return _Proc(driver_query, rc=0)
+            return _Proc(f"{driver_query.strip()}, {_MATRIX_GPU_NAME}\n", rc=0)
         if header is None:
             return _Proc("", rc=1)
         return _Proc(header, rc=0)
@@ -127,7 +135,7 @@ def test_cuda_major_fallback_when_header_unreadable(monkeypatch):
         header="| NVIDIA-SMI 611.00   KMD Version: 611.00   (no cuda string)  |\n",
     )
     nv = gpu_bootstrap.detect_nvidia()
-    assert nv == {"driver_version": "611.00", "cuda_major": 13}  # 611 ≥ 580 → 13
+    assert nv == {"driver_version": "611.00", "cuda_major": 13, "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU"}  # 611 ≥ 580 → 13
 
 
 # --- Apple Silicon mac -----------------------------------------------------
@@ -199,6 +207,6 @@ def test_gpu_present_unknown_cuda_returns_none_major(monkeypatch):
         header="| NVIDIA-SMI 450.80  (very old, no cuda string) |\n",
     )
     nv = gpu_bootstrap.detect_nvidia()
-    assert nv == {"driver_version": "450.80", "cuda_major": None}
+    assert nv == {"driver_version": "450.80", "cuda_major": None, "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU"}
     decision = gpu_bootstrap.resolve_torch_mode(platform_is_darwin=False, nvidia=nv)
     assert decision["mode"] == "cpu"

@@ -18,7 +18,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-from api_keys import API_KEY_SPECS, ApiKeySpec, apply_env_key_fallback, ensure_key_fields, key_status, non_required_missing_specs, status_lines
+from api_keys import API_KEY_SPECS, ApiKeySpec, apply_env_key_fallback, ensure_key_fields, key_is_set, key_status, non_required_missing_specs, status_lines
 from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 
 try:
@@ -588,10 +588,19 @@ class KlingAutomationUI:
         self._startup_key_onboarding_done = True
         prompt_specs = startup_prompt_specs()
         if not sys.stdin.isatty():
-            missing_any = missing_startup_specs(self.config)
-            if missing_any:
+            # Warn about the keys the ACTIVE automation config actually needs
+            # (config-aware: fal for core gen + BFL only when a stage selects the
+            # BFL provider), not a generic fal/BFL pair — so the non-interactive
+            # warning stays accurate after BFL was dropped from the generic
+            # first-launch prompt (it's still flagged here when truly required).
+            required = [
+                spec
+                for spec, _reason in self._startup_required_key_specs()
+                if not key_is_set(self.config, spec.config_key)
+            ]
+            if required:
                 print("\nStartup API keys missing in non-interactive mode (continuing).")
-                for spec in missing_any:
+                for spec in required:
                     print(f"  - {spec.label}: {spec.url}")
                 print("Key-required features will show an error when used until keys are configured.")
             return

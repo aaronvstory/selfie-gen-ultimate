@@ -510,6 +510,13 @@ class QueueManager:
         self.is_running = False
         self.worker_thread: Optional[threading.Thread] = None
         self._stop_flag = False
+        # Abort support: a threading.Event the GUI sets to cancel the IN-FLIGHT
+        # job (rPPG can run 10 iters / 20+ min, so item-boundary stop isn't
+        # enough). The active long-running subprocess handle is published here so
+        # abort_current_job() can .kill() it immediately instead of waiting for
+        # the stage to finish. Both are reset at the start of each new item.
+        self._abort_event = threading.Event()
+        self._active_subprocess: Optional[subprocess.Popen] = None
         self._oldcam_deps_status_by_version: Dict[str, bool] = {}
         self._last_oldcam_run_summary: Optional[Dict[str, object]] = None
         self._oldcam_rerun_thread: Optional[threading.Thread] = None
@@ -604,6 +611,66 @@ class QueueManager:
         """Stop processing completely."""
         self._stop_flag = True
         self.is_paused = True
+
+    def abort_current_job(self):
+        """Abort the IN-FLIGHT job immediately (the GUI 'Abort' button).
+
+        Sets the abort Event (which the rPPG/Oldcam stream loops poll every
+        ≤1s) AND kills the active subprocess right now so the user doesn't wait
+        out the rest of a 20-minute rPPG run. Stops the queue after this item
+        (sets is_paused) but does NOT mark remaining items failed — the user
+        can resume. Safe to call from the GUI thread: Event.set() + Popen.kill()
+        are both thread-safe, and the worker thread observes the Event on its
+        next poll.
+        """
+        self._abort_event.set()
+        # Also pause the queue so it doesn't roll straight into the next item.
+        self.is_paused = True
+        proc = self._active_subprocess
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+            except Exception:  # noqa: BLE001 — handle may have just exited
+                pass
+        self.log("⛔ Abort requested — stopping the current job…", "warning")
+
+    def _abort_requested(self) -> bool:
+        """True if the user asked to abort the in-flight job."""
+        return self._abort_event.is_set()
+
+    def _handle_item_abort(self, item):
+        """Clean up after a user Abort mid-item (code-review Codex P2).
+
+        Called from the worker loop when ``_abort_requested()`` is observed
+        between post-processing stages. Re-queues the item (so a later Resume
+        re-runs it cleanly rather than leaving a half-finished output marked
+        done), drops the worker out of the run loop (the queue is already
+        paused by abort_current_job), and logs it. Does NOT mark the item
+        failed — an abort is a user choice, not an error.
+        """
+        with self.lock:
+            if item.status == "processing":
+                item.status = "pending"
+                item.stage = "queued"
+                item.stage_percent = 0
+        self.is_running = False
+        self.log(
+            f"⛔ Aborted '{item.filename}' mid-job; re-queued. "
+            "Press Resume to re-run it.",
+            "warning",
+        )
+        self.update_queue_display()
+
+    def _publish_active_subprocess(self, proc: Optional[subprocess.Popen]):
+        """Record the long-running child so abort_current_job() can kill it.
+
+        Passed as ``on_process_start`` to the rPPG streamer and set directly by
+        the Oldcam loop. A dead handle left here is harmless — abort_current_job
+        only kills it when ``poll() is None`` — but callers clear it (pass None)
+        when the stage ends so the next abort can't target a finished process.
+        """
+        self._active_subprocess = proc
 
     def retry_failed(self):
         """Re-queue all failed items."""
@@ -1072,8 +1139,10 @@ class QueueManager:
                         + ",".join(str(v) for v in succeeded_versions)
                         + "; failed/skipped versions="
                         + ",".join(f"{v} ({r})" for v, r in failed_versions)
+                        # basename, not full path (the canonical full output path
+                        # is the "💾 Saved to:" / oldcam "Saved video to:" line)
                         + "; primary output="
-                        + str(primary_output),
+                        + (Path(primary_output).name if primary_output else ""),
                         "debug",
                     )
                 if output_path and Path(output_path).exists():
@@ -1136,6 +1205,30 @@ class QueueManager:
                 # No more items to process
                 self.is_running = False
                 self.log("🏁 Queue processing complete", "success")
+                return
+
+            # Fresh abort slate for this item — a prior item's abort (or a
+            # leftover set from a cancelled run) must not cancel this one.
+            self._abort_event.clear()
+            self._active_subprocess = None
+
+            # Re-check pause AFTER clearing the abort slate (code-review
+            # CRITICAL #1): abort_current_job() sets BOTH _abort_event and
+            # is_paused from the GUI thread. If the user clicked Abort in the
+            # window between the top-of-loop is_paused check and the clear()
+            # above, the clear() would have wiped that abort — and the queue
+            # would roll straight into THIS item instead of stopping. Honour
+            # the pause here so an abort landing in that window stops the queue
+            # (the item stays 'processing'→re-queued on resume, not run+killed).
+            if self.is_paused:
+                # Put the item back to pending so resume re-runs it cleanly.
+                with self.lock:
+                    if item.status == "processing":
+                        item.status = "pending"
+                        item.stage = "queued"
+                        item.stage_percent = 0
+                self.is_running = False
+                self.update_queue_display()
                 return
 
             self.update_queue_display()
@@ -1362,6 +1455,21 @@ class QueueManager:
                         else:
                             final_video = self._mark_norppg(final_video)
 
+                    # Abort guard (code-review Codex P2): _rppg_video returns
+                    # None on a user Abort exactly like an ordinary skip, so
+                    # WITHOUT this check the worker would march on into Loop /
+                    # Oldcam / final "done" and still produce + mark a completed
+                    # output AFTER the user pressed Abort. Bail the whole item
+                    # the instant an abort is observed (the queue is already
+                    # paused; the item is re-queued so resume re-runs it clean).
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
+
                     # Step 2: Loop on the rPPG'd (or raw if rPPG was
                     # OFF/skipped) base. After this step, ``final_video``
                     # is the single source every Oldcam version + the
@@ -1373,6 +1481,14 @@ class QueueManager:
                         looped_video = self._loop_video(final_video, item)
                         if looped_video:
                             final_video = looped_video
+
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
 
                     # Step 3: Oldcam runs EVERY selected version.
                     # _oldcam_video returns the highest version's path;
@@ -1390,6 +1506,14 @@ class QueueManager:
                             final_video = oldcam_video
                         summary = self._last_oldcam_run_summary or {}
                         oldcam_outputs = list(summary.get("outputs") or [])
+
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
 
                     # Step 4 (OPTIONAL): legacy per-Oldcam rPPG fan-out.
                     # When ``rppg_per_oldcam_fanout`` is True AND rPPG
@@ -1409,6 +1533,13 @@ class QueueManager:
                     ):
                         last_rppg: Optional[str] = None
                         for src in oldcam_outputs:
+                            # Abort guard (code-review MEDIUM): without this an
+                            # abort fires N spurious launch-and-kill cycles (one
+                            # per remaining oldcam output) + a misleading
+                            # FANOUT-FAILED N/M log. Break on the first observed
+                            # abort; the outer post-stage guard handles the item.
+                            if self._abort_requested():
+                                break
                             fanout_total += 1
                             rppg_video = self._rppg_video(src, item)
                             if rppg_video:
@@ -1443,6 +1574,16 @@ class QueueManager:
                                 str(preferred) if preferred.exists()
                                 else last_rppg
                             )
+
+                    # Final abort guard before marking the item done — an abort
+                    # during the fan-out loop must not fall through to "done".
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
 
                     item.output_path = final_video
                     item.stage = "done"
@@ -1791,8 +1932,16 @@ class QueueManager:
                 bufsize=1,
             )
             assert process.stdout is not None
+            # Publish for the GUI Abort button (kills it instantly).
+            self._publish_active_subprocess(process)
             deadline = time.monotonic() + _TIMEOUT
             while True:
+                # Abort check (GUI Abort button). Oldcam is a blocking
+                # readline loop, so a kill from abort_current_job() unblocks
+                # readline with EOF; we also raise TimeoutExpired here so a
+                # check between lines fires promptly.
+                if self._abort_requested():
+                    raise subprocess.TimeoutExpired(run_cmd, _TIMEOUT)
                 line = process.stdout.readline()
                 if not line:
                     break
@@ -1839,7 +1988,10 @@ class QueueManager:
                         process.stdout.close()
                     except Exception:
                         pass
-            self.log(f"Oldcam {version} timed out after 600s", "warning")
+            if self._abort_requested():
+                self.log(f"⛔ Oldcam {version} aborted by user.", "warning")
+            else:
+                self.log(f"Oldcam {version} timed out after 600s", "warning")
             return None
         except Exception as exc:
             if process is not None:
@@ -1856,6 +2008,10 @@ class QueueManager:
                         pass
             self.log(f"Oldcam {version} launcher error: {exc}", "warning")
             return None
+        finally:
+            # Clear the published handle so a later Abort can't target this
+            # (now-finished) oldcam process.
+            self._publish_active_subprocess(None)
 
         if returncode == 0:
             input_path = Path(video_path)
@@ -2068,8 +2224,10 @@ class QueueManager:
                     + ",".join(version for version, _ in outputs)
                     + "; failed/skipped versions="
                     + ",".join(f"{version} ({reason})" for version, reason in failures)
+                    # basename, not full path (the canonical full output path is
+                    # the "💾 Saved to:" / oldcam "Saved video to:" line)
                     + "; primary output="
-                    + primary[1],
+                    + (Path(primary[1]).name if primary[1] else ""),
                     "debug",
                 )
                 return primary[1]
@@ -2510,8 +2668,19 @@ class QueueManager:
                     deadline_extender=tracker_extender,
                     on_heartbeat=_on_rppg_heartbeat,
                     heartbeat_silence_predicate=is_rppg_progress_line,
+                    abort_event=self._abort_event,
+                    on_process_start=self._publish_active_subprocess,
                 )
             except subprocess.TimeoutExpired:
+                # A user Abort raises the same TimeoutExpired as a real
+                # timeout — distinguish them so the log message is honest.
+                if self._abort_requested():
+                    self.log(
+                        "⛔ rPPG aborted by user. Continuing without rPPG; "
+                        "filename will be marked with -NORPPG.",
+                        "warning",
+                    )
+                    return None
                 minutes = max(1, int(_TIMEOUT // 60))
                 self.log(
                     f"❌ RPPG FAILED — took longer than {minutes} min "
@@ -2528,6 +2697,11 @@ class QueueManager:
                     "error_bold",
                 )
                 return None
+            finally:
+                # Clear the published handle so a later Abort can't target this
+                # (now-finished) rPPG process before the next stage publishes
+                # its own (code-review HIGH #3).
+                self._publish_active_subprocess(None)
 
             if returncode == 0:
                 # The injector renames our --output to append a metric

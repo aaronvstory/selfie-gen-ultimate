@@ -1185,6 +1185,28 @@ class KlingGUIWindow:
             handler.setFormatter(fmt)
             logger.addHandler(handler)
 
+        # Also mirror INFO+ to stdout so the launcher terminal shows the app
+        # runtime log AS YOU USE THE APP (rPPG/oldcam/crash lines). Those lines
+        # otherwise go ONLY to the panel + the rotating file, never to stdout, so
+        # the launcher's GUI-tee captured nothing of the actual session (user
+        # report 2026-06-04). INFO-level keeps the DEBUG noise (raw FFmpeg/
+        # subprocess spam) file-only, matching the panel. Guarded: a frozen
+        # pythonw build has no real stdout (sys.stdout is None) — skip then.
+        if getattr(sys, "stdout", None) is not None and not any(
+            isinstance(h, logging.StreamHandler)
+            and not isinstance(h, RotatingFileHandler)
+            for h in logger.handlers
+        ):
+            try:
+                stream = logging.StreamHandler(sys.stdout)
+                stream.setLevel(logging.INFO)
+                stream.setFormatter(
+                    logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+                )
+                logger.addHandler(stream)
+            except Exception:  # noqa: BLE001 — stdout mirroring is best-effort
+                pass
+
         return logger
 
     def _load_config(self) -> dict:
@@ -3756,6 +3778,34 @@ class KlingGUIWindow:
         # thread, never blocks the GUI) makes "NVIDIA -> GPU" truly automatic.
         self._start_gpu_bootstrap_async()
 
+    def _format_gpu_ready_banner(self, gpu_bootstrap) -> str:
+        """Build the green '✅ NVIDIA GPU DETECTED' banner from gpu_status.json.
+
+        Reads the stamp (gpu_name + cupy_version + cuda_major) the bootstrap
+        just wrote. Each piece is optional — degrades to a still-useful line if
+        a field is absent (e.g. an older stamp without gpu_name). Never raises.
+        """
+        name = ver = major = None
+        try:
+            stamp = gpu_bootstrap._load_stamp() or {}
+            name = stamp.get("gpu_name")
+            ver = stamp.get("cupy_version")
+            major = stamp.get("cuda_major")
+        except Exception:  # noqa: BLE001 — banner is cosmetic; never crash
+            pass
+        parts = []
+        if name:
+            parts.append(str(name))
+        bits = []
+        if ver:
+            bits.append(f"CuPy {ver}")
+        if major:
+            bits.append(f"CUDA {major}.x")
+        if bits:
+            parts.append(" / ".join(bits))
+        detail = " — ".join(parts) if parts else "rPPG uses GPU acceleration"
+        return f"✅ NVIDIA GPU DETECTED — {detail}"
+
     def _start_gpu_bootstrap_async(self):
         """Run the CuPy GPU bootstrap in a daemon thread (best-effort).
 
@@ -3778,15 +3828,12 @@ class KlingGUIWindow:
                 import gpu_bootstrap  # noqa: WPS433 (local import: optional component)
 
                 result = gpu_bootstrap.bootstrap(_sys.executable, quiet_if_cached=True)
-                if result in ("gpu_installed_now",):
-                    self._log_thread_safe(
-                        "GPU: CuPy installed — rPPG will use GPU acceleration.",
-                        "success",
-                    )
-                elif result == "gpu_ready":
-                    self._log_thread_safe(
-                        "GPU: CuPy ready — rPPG uses GPU acceleration.", "info"
-                    )
+                if result in ("gpu_installed_now", "gpu_ready"):
+                    # Build a green "✅ NVIDIA GPU DETECTED — <name> / CuPy <ver>
+                    # / CUDA <major>.x" banner from the gpu_status.json stamp so
+                    # it's crystal-clear detection worked + GPU is in use.
+                    banner = self._format_gpu_ready_banner(gpu_bootstrap)
+                    self._log_thread_safe(banner, "success")
                 elif result in ("no_nvidia", "cached_no_nvidia"):
                     self._log_thread_safe(
                         "GPU: no NVIDIA GPU detected — rPPG runs on CPU.", "info"
@@ -3825,8 +3872,10 @@ class KlingGUIWindow:
             "First Launch: API Key Setup",
             "Key status:\n"
             f"{status_text}\n\n"
-            "Fal.ai and BFL keys can be added now or later.\n"
-            "If skipped, key-required features will show targeted errors when used.\n\n"
+            "The Fal.ai key powers generation and can be added now or later.\n"
+            "Nothing is required — rPPG / Oldcam re-runs work with no key. If a\n"
+            "key-required feature is used without its key, it shows a targeted\n"
+            "error. Add any key anytime via the badges at the bottom bar.\n\n"
             "Where to get keys:\n"
             f"{links_text}",
             parent=self.root,
@@ -4219,7 +4268,8 @@ class KlingGUIWindow:
         if success and output_path:
             self._set_persisted_oldcam_source(source_video)
             self._log(
-                f"Re-run complete: {os.path.basename(source_video)} → {output_path}",
+                "Re-run complete: "
+                f"{os.path.basename(source_video)} → {os.path.basename(output_path)}",
                 "success",
             )
         else:
@@ -4979,8 +5029,11 @@ class KlingGUIWindow:
             source_video = self._resolve_oldcam_rerun_source(item.output_path)
             if source_video and os.path.isfile(source_video):
                 self._set_persisted_oldcam_source(source_video)
+            out_name = (
+                os.path.basename(item.output_path) if item.output_path else "(no output)"
+            )
             self._log(
-                f"Finished {os.path.basename(item.path)} → {item.output_path}",
+                f"Finished {os.path.basename(item.path)} → {out_name}",
                 "success",
             )
 

@@ -1139,8 +1139,10 @@ class QueueManager:
                         + ",".join(str(v) for v in succeeded_versions)
                         + "; failed/skipped versions="
                         + ",".join(f"{v} ({r})" for v, r in failed_versions)
+                        # basename, not full path (the canonical full output path
+                        # is the "💾 Saved to:" / oldcam "Saved video to:" line)
                         + "; primary output="
-                        + str(primary_output),
+                        + (Path(primary_output).name if primary_output else ""),
                         "debug",
                     )
                 if output_path and Path(output_path).exists():
@@ -1462,7 +1464,11 @@ class QueueManager:
                     # paused; the item is re-queued so resume re-runs it clean).
                     if self._abort_requested():
                         self._handle_item_abort(item)
-                        continue
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
 
                     # Step 2: Loop on the rPPG'd (or raw if rPPG was
                     # OFF/skipped) base. After this step, ``final_video``
@@ -1478,7 +1484,11 @@ class QueueManager:
 
                     if self._abort_requested():
                         self._handle_item_abort(item)
-                        continue
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
 
                     # Step 3: Oldcam runs EVERY selected version.
                     # _oldcam_video returns the highest version's path;
@@ -1499,7 +1509,11 @@ class QueueManager:
 
                     if self._abort_requested():
                         self._handle_item_abort(item)
-                        continue
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
 
                     # Step 4 (OPTIONAL): legacy per-Oldcam rPPG fan-out.
                     # When ``rppg_per_oldcam_fanout`` is True AND rPPG
@@ -1565,7 +1579,11 @@ class QueueManager:
                     # during the fan-out loop must not fall through to "done".
                     if self._abort_requested():
                         self._handle_item_abort(item)
-                        continue
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
 
                     item.output_path = final_video
                     item.stage = "done"
@@ -2206,8 +2224,10 @@ class QueueManager:
                     + ",".join(version for version, _ in outputs)
                     + "; failed/skipped versions="
                     + ",".join(f"{version} ({reason})" for version, reason in failures)
+                    # basename, not full path (the canonical full output path is
+                    # the "💾 Saved to:" / oldcam "Saved video to:" line)
                     + "; primary output="
-                    + primary[1],
+                    + (Path(primary[1]).name if primary[1] else ""),
                     "debug",
                 )
                 return primary[1]

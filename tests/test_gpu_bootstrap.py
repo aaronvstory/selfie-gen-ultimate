@@ -164,11 +164,16 @@ _SMI_HEADER_NEW_610 = (
 )
 
 
-def _fake_smi(monkeypatch, *, driver_query: str | None, header: str):
+_DEFAULT_GPU_NAME = "NVIDIA GeForce RTX 4090 Laptop GPU"
+
+
+def _fake_smi(monkeypatch, *, driver_query, header, gpu_name=_DEFAULT_GPU_NAME):
     """Monkeypatch subprocess.run so detect_nvidia sees a fixed nvidia-smi.
 
-    ``driver_query`` is the stdout of ``--query-gpu=driver_version`` (None = the
-    query fails / returns nothing); ``header`` is the no-flag header stdout.
+    ``driver_query`` is the DRIVER VERSION the ``--query-gpu=driver_version,name``
+    probe should report (None = the query fails / returns nothing). The fake
+    builds the real ``"<driver>, <name>"`` CSV row so the name-parse path is
+    exercised. ``header`` is the no-flag header stdout (for the CUDA-major parse).
     """
 
     class _Proc:
@@ -178,11 +183,13 @@ def _fake_smi(monkeypatch, *, driver_query: str | None, header: str):
 
     def _run(cmd, *a, **k):
         # cmd[0] is the resolved nvidia-smi exe; a "--query-gpu=..." arg means
-        # the stable driver probe, otherwise it's the free-form header call.
+        # the stable driver+name probe, otherwise it's the free-form header call.
         if any(isinstance(c, str) and c.startswith("--query-gpu") for c in cmd):
             if driver_query is None:
                 return _Proc("", rc=1)
-            return _Proc(driver_query, rc=0)
+            drv = driver_query.strip()
+            row = f"{drv}, {gpu_name}\n" if gpu_name else f"{drv}\n"
+            return _Proc(row, rc=0)
         return _Proc(header, rc=0)
 
     monkeypatch.setattr(gpu_bootstrap, "_resolve_nvidia_smi", lambda: "nvidia-smi")
@@ -193,7 +200,7 @@ def test_detect_nvidia_parses_legacy_header(monkeypatch):
     """Legacy driver header (Driver Version: / CUDA Version:) still parses."""
     _fake_smi(monkeypatch, driver_query="555.52\n", header=_SMI_HEADER_LEGACY)
     got = gpu_bootstrap.detect_nvidia()
-    assert got == {"driver_version": "555.52", "cuda_major": 12}
+    assert got == {"driver_version": "555.52", "cuda_major": 12, "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU"}
 
 
 def test_detect_nvidia_parses_new_610_header(monkeypatch):
@@ -203,7 +210,7 @@ def test_detect_nvidia_parses_new_610_header(monkeypatch):
     """
     _fake_smi(monkeypatch, driver_query="610.47\n", header=_SMI_HEADER_NEW_610)
     got = gpu_bootstrap.detect_nvidia()
-    assert got == {"driver_version": "610.47", "cuda_major": 13}
+    assert got == {"driver_version": "610.47", "cuda_major": 13, "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU"}
 
 
 def test_detect_nvidia_falls_back_to_driver_branch_when_no_cuda_field(monkeypatch):
@@ -216,7 +223,7 @@ def test_detect_nvidia_falls_back_to_driver_branch_when_no_cuda_field(monkeypatc
     _fake_smi(monkeypatch, driver_query="612.00\n", header=headerless)
     got = gpu_bootstrap.detect_nvidia()
     # 612 >= 580 -> CUDA 13 by the driver-branch table.
-    assert got == {"driver_version": "612.00", "cuda_major": 13}
+    assert got == {"driver_version": "612.00", "cuda_major": 13, "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU"}
 
 
 def test_detect_nvidia_none_when_query_driver_fails(monkeypatch):
@@ -236,7 +243,7 @@ def test_detect_nvidia_gpu_present_unknown_cuda_returns_none_major(monkeypatch):
     )
     _fake_smi(monkeypatch, driver_query="440.33\n", header=old_driver)
     got = gpu_bootstrap.detect_nvidia()
-    assert got == {"driver_version": "440.33", "cuda_major": None}
+    assert got == {"driver_version": "440.33", "cuda_major": None, "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU"}
 
 
 def test_parse_smi_header_cuda_major_prefers_umd_over_legacy():
