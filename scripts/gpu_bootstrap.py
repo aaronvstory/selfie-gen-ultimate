@@ -54,6 +54,13 @@ Concurrency: two launchers starting simultaneously must not both run
 work; the second launcher prints "GPU bootstrap already running;
 waiting..." and blocks. Released as soon as the install finishes or
 the script exits.
+
+STDLIB-ONLY CONTRACT (v2.20): this module is imported by the uv bootstrap
+chain (scripts/uv_torch_select.py -> uv_sync_deps.py) which runs with the
+SYSTEM Python BEFORE `uv sync` has materialized the project env. It (and that
+chain) MUST therefore stay standard-library-only — adding a third-party import
+here (e.g. psutil) would break dependency provisioning on a fresh install. Keep
+the GPU detection in pure stdlib (subprocess/nvidia-smi), as it already is.
 """
 from __future__ import annotations
 

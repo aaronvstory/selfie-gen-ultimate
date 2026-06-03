@@ -107,6 +107,56 @@ def test_extra_map_parity_with_gpu_bootstrap_cuda_index():
         )
 
 
+def test_main_returns_nonzero_when_both_syncs_fail(monkeypatch):
+    """Code-review HIGH #4: if the CUDA sync fails AND the CPU fallback ALSO
+    fails, main() must return non-zero so the caller (uv_sync_deps) pip-falls-
+    back instead of launching a half-built env."""
+    _set_platform(monkeypatch, "win32")
+    monkeypatch.setattr(
+        uv_torch_select, "detect_nvidia", lambda: {"cuda_major": 13, "driver_version": "x"}
+    )
+    monkeypatch.setattr(uv_torch_select, "_uv_exe", lambda: "uv")
+    # Both syncs fail (rc=1 every call).
+    monkeypatch.setattr(uv_torch_select, "_run_uv_sync", lambda *a, **k: 1)
+    rc = uv_torch_select.main(["--quiet"])
+    assert rc == 1
+
+
+def test_main_returns_zero_when_cpu_fallback_succeeds(monkeypatch):
+    """CUDA sync fails but the CPU fallback succeeds -> usable env -> return 0."""
+    _set_platform(monkeypatch, "win32")
+    monkeypatch.setattr(
+        uv_torch_select, "detect_nvidia", lambda: {"cuda_major": 13, "driver_version": "x"}
+    )
+    monkeypatch.setattr(uv_torch_select, "_uv_exe", lambda: "uv")
+    calls = {"n": 0}
+
+    def _sync(uv, project, extra, *, quiet):
+        calls["n"] += 1
+        # First call (cu128) fails; second (cpu fallback) succeeds.
+        return 1 if extra == "cu128" else 0
+
+    monkeypatch.setattr(uv_torch_select, "_run_uv_sync", _sync)
+    rc = uv_torch_select.main(["--quiet"])
+    assert rc == 0
+    assert calls["n"] == 2  # cu128 attempt + cpu fallback
+
+
+def test_main_cuda_broken_then_cpu_resync(monkeypatch):
+    """CUDA sync succeeds but torch.cuda.is_available() is False -> re-sync cpu.
+    If that cpu re-sync succeeds, return 0."""
+    _set_platform(monkeypatch, "win32")
+    monkeypatch.setattr(
+        uv_torch_select, "detect_nvidia", lambda: {"cuda_major": 13, "driver_version": "x"}
+    )
+    monkeypatch.setattr(uv_torch_select, "_uv_exe", lambda: "uv")
+    monkeypatch.setattr(uv_torch_select, "_run_uv_sync", lambda *a, **k: 0)
+    # torch imports but CUDA not available (broken DLLs) -> triggers cpu re-sync.
+    monkeypatch.setattr(uv_torch_select, "_probe_torch_cuda", lambda py: (True, False))
+    rc = uv_torch_select.main(["--quiet"])
+    assert rc == 0
+
+
 def test_print_extra_emits_only_extra_name(monkeypatch, capsys):
     """--print-extra must print ONLY the extra name (a launcher captures it)."""
     _set_platform(monkeypatch, "win32")

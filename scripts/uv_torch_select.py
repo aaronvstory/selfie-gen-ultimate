@@ -212,28 +212,33 @@ def main(argv: list[str] | None = None) -> int:
     rc = _run_uv_sync(uv, project, extra, quiet=args.quiet)
     if rc != 0:
         # A failed sync of a CUDA extra: try CPU as a last resort so the user
-        # still gets a working (CPU) env rather than a hard failure.
+        # still gets a working (CPU) env rather than a hard failure. Code-review
+        # HIGH (#4): PROPAGATE the CPU fallback's result — if it ALSO fails,
+        # return non-zero so the caller (uv_sync_deps) pip-falls-back instead of
+        # launching into a half-built env (interpreter present, torch absent).
         if extra != "cpu":
             _log(f"uv sync --extra {extra} failed (rc={rc}); falling back to --extra cpu")
-            _run_uv_sync(uv, project, "cpu", quiet=args.quiet)
-        return 0
+            cpu_rc = _run_uv_sync(uv, project, "cpu", quiet=args.quiet)
+            return 0 if cpu_rc == 0 else 1
+        # CPU sync itself failed and there's nothing weaker to fall back to.
+        return 1
 
     # Verify a CUDA sync actually yields a working CUDA runtime; fall back to
-    # CPU torch if not (broken DLLs / driver mismatch / AV quarantine).
+    # CPU torch if not (broken DLLs / driver mismatch / AV quarantine). Same
+    # propagation: a failed CPU re-sync must surface so the caller pip-falls-back.
     if extra in ("cu121", "cu128"):
         py = _synced_python(project)
         import_ok, cuda_available = _probe_torch_cuda(py)
         if not import_ok:
             _log("CUDA torch synced but import failed; falling back to --extra cpu")
-            _run_uv_sync(uv, project, "cpu", quiet=args.quiet)
-        elif not cuda_available:
+            return 0 if _run_uv_sync(uv, project, "cpu", quiet=args.quiet) == 0 else 1
+        if not cuda_available:
             _log(
                 "CUDA torch synced but torch.cuda.is_available() is False "
                 "(broken DLLs / driver mismatch); falling back to --extra cpu"
             )
-            _run_uv_sync(uv, project, "cpu", quiet=args.quiet)
-        else:
-            _log("CUDA torch verified (torch.cuda.is_available() == True)", quiet=args.quiet)
+            return 0 if _run_uv_sync(uv, project, "cpu", quiet=args.quiet) == 0 else 1
+        _log("CUDA torch verified (torch.cuda.is_available() == True)", quiet=args.quiet)
 
     return 0
 
