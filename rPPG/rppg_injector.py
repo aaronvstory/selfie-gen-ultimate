@@ -92,77 +92,28 @@ except ImportError:
 # with byte-for-byte the same behaviour as before. The xp_of/to_gpu/to_cpu
 # helpers let those methods accept either backend's arrays without branching.
 
-# Module-level list that RETAINS the os.add_dll_directory() handles for the
-# whole process lifetime. CRITICAL (code-review 2026-06-03): on Windows the
-# DLL search-path entry only stays active while the returned handle is alive —
-# if it's GC'd, Python calls RemoveDllDirectory and nvrtc can no longer be
-# found. Discarding the handle made the GPU fix flaky (it only worked because
-# GC hadn't run yet). Keep them here so the entries persist until exit.
-_CUDA_DLL_DIR_HANDLES = []
-
-
-def _register_cuda_dll_dirs():
-    """Add the pip-installed NVIDIA CUDA component dirs (nvrtc, cudart, cublas,
-    ...) to the Windows DLL search path BEFORE importing cupy.
-
-    CuPy's CUDA-component wheels (cupy-cudaNNx[ctk]) drop their DLLs under
-    site-packages/nvidia/<...>/bin. On Python 3.8+ Windows, a bare PATH entry
-    is IGNORED for an extension module's dependent DLLs — only
-    os.add_dll_directory() works. Without this, cupy imports but the first GPU
-    kernel compile fails with "Could not find nvrtc64_*.dll" /
-    "nvrtc-builtins64_*.dll", so CuPy reports unavailable and rPPG silently
-    falls back to CPU even on a perfectly good GPU box (verified 2026-06-03 on
-    an RTX 4090). No-op off-Windows / when the dirs don't exist.
-    """
-    if not hasattr(os, "add_dll_directory"):
-        return
-    import glob as _glob
-    import site as _site
-    import sys as _sys
-    sp_dirs = []
-    if hasattr(_site, "getsitepackages"):
-        try:
-            sp_dirs.extend(_site.getsitepackages())
-        except Exception:  # noqa: BLE001 — some embeds raise; fall through
-            pass
-    if hasattr(_site, "getusersitepackages"):
-        try:
-            sp_dirs.append(_site.getusersitepackages())
-        except Exception:  # noqa: BLE001
-            pass
-    # Fallback for a virtualenv on Python < 3.11 where getsitepackages() is
-    # absent: derive from sys.prefix (code-review MEDIUM-4 — the old
-    # os.path.dirname(os.__file__) pointed at the stdlib Lib/ dir, NOT
-    # Lib/site-packages, so the NVIDIA DLL dirs were never registered there and
-    # CuPy's kernel compile failed). Windows venv layout = <prefix>/Lib/site-packages.
-    sp_dirs.append(os.path.join(_sys.prefix, "Lib", "site-packages"))
-    roots = [os.path.join(sp, "nvidia") for sp in sp_dirs if sp]
-    seen = set()
-    for root in roots:
-        if not os.path.isdir(root):
-            continue
-        # Any bin dir under nvidia/* (e.g. nvidia/cu13/bin/x86_64, nvidia/*/bin).
-        for binglob in ("*/bin/x86_64", "*/bin", "*/lib/x64"):
-            for d in _glob.glob(os.path.join(root, binglob)):
-                d = os.path.abspath(d)
-                if d in seen or not os.path.isdir(d):
-                    continue
-                seen.add(d)
-                try:
-                    # RETAIN the handle (module-level list) — the DLL dir entry
-                    # is removed when this object is GC'd, so a discarded handle
-                    # makes the nvrtc fix flaky (code-review CRITICAL).
-                    _CUDA_DLL_DIR_HANDLES.append(os.add_dll_directory(d))
-                except OSError:
-                    pass
-                # add_dll_directory lets cupy load nvrtc64_*.dll, but nvrtc
-                # ITSELF then loads nvrtc-builtins64_*.dll via the plain PATH
-                # env (it's a C lib, not a Python ext), so the dir must ALSO be
-                # on os.environ['PATH'] or the first kernel compile throws
-                # CompileException "failed to open nvrtc-builtins64_*.dll".
-                if d not in os.environ.get("PATH", "").split(os.pathsep):
-                    os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
-
+# Register the pip/uv-installed NVIDIA CUDA component DLL dirs on the Windows
+# DLL search path BEFORE importing cupy. The logic lives in the shared
+# stdlib-only helper scripts/cuda_dll_paths.py so this injector and the GUI's
+# gpu_bootstrap.probe_cupy register the EXACT same dirs (no drift — the probe
+# false-negatived on a correctly-installed box when it skipped this, stranding
+# the user on CPU; see scripts/cuda_dll_paths.py docstring). Without it, cupy
+# imports but the first GPU kernel compile fails with "Could not find
+# nvrtc64_*.dll", so CuPy reports unavailable and rPPG silently falls back to
+# CPU even on a good GPU box (verified 2026-06-03 on an RTX 4090). The helper
+# is CUDA-major agnostic (cu13 nvidia/cu13/bin/x86_64 + cu12 nvidia/cuda_nvrtc/
+# bin) and a no-op off-Windows. Guarded so a zip missing the helper degrades to
+# CPU instead of crashing the whole rPPG step.
+try:
+    _scripts_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"
+    )
+    if _scripts_dir not in sys.path:
+        sys.path.insert(0, _scripts_dir)
+    from cuda_dll_paths import register_cuda_dll_dirs as _register_cuda_dll_dirs
+except Exception:  # noqa: BLE001 — helper absent/unimportable => CPU fallback
+    def _register_cuda_dll_dirs():
+        return []
 
 _register_cuda_dll_dirs()
 try:
@@ -184,8 +135,16 @@ except Exception as _cupy_err:
     _cp = None
     _cp_gaussian_filter = None
     GPU_AVAILABLE = False
-    print(f"GPU backend: CuPy unavailable ({type(_cupy_err).__name__}); "
-          f"frame math stays on CPU.")
+    # Surface the FULL exception detail, not just the class name. The bare
+    # "(RuntimeError)" log stranded a friend's RTX 4080 on CPU for 20 min/iter
+    # with no clue WHY — the message ("Could not find nvrtc64_130_0.dll") is
+    # what actually identifies the missing DLL. Truncate so a pathological
+    # message can't flood the log (2026-06-03).
+    _cupy_detail = str(_cupy_err).strip().replace("\n", " ")
+    if len(_cupy_detail) > 200:
+        _cupy_detail = _cupy_detail[:200] + "…"
+    print(f"GPU backend: CuPy unavailable ({type(_cupy_err).__name__}: "
+          f"{_cupy_detail}); frame math stays on CPU.")
 
 
 def xp_of(arr):

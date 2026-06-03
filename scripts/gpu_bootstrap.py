@@ -106,18 +106,57 @@ LOCK_STALE_SECONDS = PIP_INSTALL_TIMEOUT_SECONDS + 300
 # stable wheels are cupy-cuda12x and cupy-cuda13x; older 11.x is no
 # longer the current-stable target. CUDA 11.x on a current driver
 # *would* downgrade us to a legacy CuPy pin which is out of scope —
-# log CPU fallback instead. Append [ctk] to pull CUDA component
-# wheels (matches the official "Installing CuPy with CUDA from PyPI"
-# path that doesn't require a system CUDA Toolkit).
+# log CPU fallback instead.
+#
 # PIN to the CuPy 13.x line (`>=13.6,<14`): CuPy 14.x is compiled against
 # numpy>=2.0 and FAILS to import under our numpy<2 face-stack pin
 # (ImportError: numpy.core.multiarray failed to import). CuPy 13.6.0 is the
-# last numpy-1.x-compatible release + ships the [ctk] CUDA component wheels.
-# Verified 2026-06-03: CuPy 13.6.0 + numpy 1.26.4 + TF 2.16.2 import together
-# and the GPU kernel compiles on an RTX 4090. (See project_cupy_numpy2_conflict.)
+# last numpy-1.x-compatible release.
+#
+# NOTE the `[ctk]` extra is GONE (2026-06-03): it is a NO-OP on cupy 13.6.0 —
+# `cupy-cuda13x` only ``Requires: fastrlock, numpy``, so `[ctk]` pulled NO
+# nvidia component wheels. That is exactly why a friend's CUDA-12.9 RTX 4090
+# install ran every rPPG on CPU (~20 min/iter): nvrtc was never installed, so
+# the injector could not compile a kernel. The nvidia component wheels are now
+# installed EXPLICITLY via _CUDA_TO_NVIDIA_WHEELS below (mirrors the uv path's
+# cu121/cu128 extras). Verified: CuPy 13.6.0 + numpy 1.26.4 + TF 2.16.2 import
+# together and the GPU kernel compiles. (See project_cupy_numpy2_conflict +
+# project_gpu_rppg_nvrtc_ctk_noop.)
 _CUDA_TO_CUPY = {
-    12: "cupy-cuda12x[ctk]>=13.6,<14",
-    13: "cupy-cuda13x[ctk]>=13.6,<14",
+    12: "cupy-cuda12x>=13.6,<14",
+    13: "cupy-cuda13x>=13.6,<14",
+}
+
+# Explicit NVIDIA CUDA component wheels per CUDA major — the REAL replacement
+# for the no-op `[ctk]`. cupy's import-time kernel compile needs nvrtc + the
+# math libs it dispatches to. Specs mirror pyproject.toml's cu121/cu128 extras
+# VERBATIM (a parity test asserts they stay equal so the pip and uv paths can't
+# drift). Component versions are NOT all the CUDA major — NVIDIA versions each
+# wheel independently (cufft 12.x, curand 10.x, cusolver 12.x, cusparse 12.x
+# even on CUDA 13), so DO NOT "tidy" these to a single major or pip will report
+# "no matching distribution". The `-cu12` packages publish only 12.x; the
+# un-suffixed packages are the CUDA-13 line.
+_CUDA_TO_NVIDIA_WHEELS = {
+    12: (
+        "nvidia-cuda-nvrtc-cu12",
+        "nvidia-cuda-runtime-cu12",
+        "nvidia-cublas-cu12",
+        "nvidia-cufft-cu12",
+        "nvidia-curand-cu12",
+        "nvidia-cusolver-cu12",
+        "nvidia-cusparse-cu12",
+        "nvidia-nvjitlink-cu12",
+    ),
+    13: (
+        "nvidia-cuda-nvrtc>=13.3,<14",
+        "nvidia-cuda-runtime>=13.3,<14",
+        "nvidia-cublas>=13.5,<14",
+        "nvidia-cufft>=12.3,<13",
+        "nvidia-curand>=10.4,<11",
+        "nvidia-cusolver>=12.2,<13",
+        "nvidia-cusparse>=12.8,<13",
+        "nvidia-nvjitlink>=13.3,<14",
+    ),
 }
 
 
@@ -128,7 +167,7 @@ _CUDA_TO_CUPY = {
 # fold --print-stamp-token into their stamp keys), forcing a fresh resync after
 # an installer-logic change even when requirements.txt/constraints.txt are
 # untouched. Bump this whenever the install BEHAVIOUR changes, not the dep set.
-INSTALLER_VERSION = "2.17.0"
+INSTALLER_VERSION = "2.17.1"
 
 # Map a detected CUDA major -> a PyTorch-SUPPORTED wheel index URL.
 #
@@ -404,12 +443,42 @@ def probe_cupy(python_exe: str) -> Optional[str]:
     # chain may print after us — taking [-1] blindly would stamp a garbage
     # ``cupy_version`` like "UserWarning: ...". The sentinel makes the parse
     # robust to trailing noise.
-    probe_src = (
-        "import sys; import cupy as cp;"
-        "x = cp.asarray([1, 2, 3]);"
-        "_ = cp.asnumpy(x);"
-        "_ = cp.cuda.runtime.getDeviceCount();"
-        "print('CUPYVER=' + cp.__version__)"
+    #
+    # The probe MUST do two things the old probe didn't (2026-06-03):
+    #   1. Register the NVIDIA DLL dirs via the SHARED helper
+    #      (scripts/cuda_dll_paths.py) BEFORE ``import cupy`` — otherwise the
+    #      kernel compile below fails with "Could not find nvrtc64_*.dll" on a
+    #      correctly-installed box (Windows ignores PATH for an ext module's
+    #      dependent DLLs), giving a FALSE NEGATIVE → install_failed → the user
+    #      is stranded on CPU. Same registration the rPPG injector uses.
+    #   2. Force a real nvrtc KERNEL COMPILE (gaussian_filter), not just
+    #      asarray/getDeviceCount. The old probe never touched nvrtc, so it
+    #      reported "GPU ready" on a box where rPPG's kernels could never
+    #      compile — a false POSITIVE the GUI showed the user (the friend's
+    #      "CuPy ready" line while every rPPG silently ran on CPU). Compiling
+    #      here makes the GUI status match the injector's reality.
+    # The helper dir is this file's own directory (scripts/); inject it so the
+    # fresh probe subprocess can import it regardless of cwd. Written as a real
+    # multi-line program (newline-joined) — a ``;``-joined one-liner can't carry
+    # a compound ``try:`` block (SyntaxError), which would itself false-negative.
+    _scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    probe_src = "\n".join(
+        (
+            "import sys",
+            "sys.path.insert(0, " + repr(_scripts_dir) + ")",
+            "try:",
+            "    from cuda_dll_paths import register_cuda_dll_dirs",
+            "    register_cuda_dll_dirs()",
+            "except Exception:",
+            "    pass",
+            "import cupy as cp",
+            "from cupyx.scipy.ndimage import gaussian_filter as _g",
+            "x = cp.asarray([1, 2, 3])",
+            "_ = cp.asnumpy(x)",
+            "_ = cp.cuda.runtime.getDeviceCount()",
+            "_ = _g(cp.zeros((4, 4), dtype=cp.float32), 1.0)",
+            "print('CUPYVER=' + cp.__version__)",
+        )
     )
     try:
         proc = subprocess.run(
@@ -430,31 +499,57 @@ def probe_cupy(python_exe: str) -> Optional[str]:
     return None
 
 
+def _resolve_constraints_path() -> Optional[str]:
+    """Locate the repo-root ``constraints.txt`` relative to this file.
+
+    Threaded into the CuPy/nvidia install so a transitive resolve can't pull
+    numpy 2.x (the numpy<2 face-stack invariant). Returns None if absent (the
+    install still runs unconstrained — better than failing to provision GPU).
+    """
+    candidate = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "constraints.txt",
+    )
+    return candidate if os.path.isfile(candidate) else None
+
+
 def install_cupy(python_exe: str, cuda_major: int) -> tuple[bool, str]:
-    """``pip install`` the right CuPy wheel for the detected CUDA major.
+    """``pip install`` CuPy + its NVIDIA component wheels for the CUDA major.
 
     Returns ``(success, message)``. ``message`` is either the CuPy
     version on success or the pip stderr tail on failure.
 
+    Installs cupy AND the explicit nvidia-* component wheels (nvrtc, cublas,
+    ...) in ONE pip call: one resolver pass picks mutually-compatible versions,
+    one heartbeat subprocess, and an atomic success/fail so a partial install
+    can never be stamped ``gpu_ready``. The nvidia wheels are the REAL
+    replacement for the no-op ``[ctk]`` extra — without nvrtc, cupy imports but
+    can't compile a kernel and rPPG silently runs on CPU (the friend's bug).
+
     Uses ``--only-binary :all:`` so we never try to compile from sdist
     (slow, requires NVCC). ``--no-input`` so an unexpected prompt never
-    blocks the launcher chain.
+    blocks the launcher chain. ``-c constraints.txt`` keeps numpy<2.
     """
     pkg = _CUDA_TO_CUPY.get(cuda_major)
-    if pkg is None:
+    nvidia_pkgs = _CUDA_TO_NVIDIA_WHEELS.get(cuda_major)
+    if pkg is None or nvidia_pkgs is None:
         return (False, f"unsupported CUDA major {cuda_major}; need 12 or 13")
     cmd = [
         python_exe, "-m", "pip", "install",
         "--only-binary", ":all:",
         "--no-input",
-        pkg,
     ]
-    # Heartbeat-wrapped: the CuPy [ctk] wheels are ~1-2GB; a plain blocking
-    # subprocess.run prints nothing until done, which looked frozen to users
-    # (reported "10 min of silence"). _run_pip_with_heartbeat prints an
-    # elapsed-time line every 20s.
+    constraints_path = _resolve_constraints_path()
+    if constraints_path:
+        cmd += ["-c", constraints_path]
+    cmd.append(pkg)
+    cmd.extend(nvidia_pkgs)
+    # Heartbeat-wrapped: the CuPy + nvidia component wheels are ~1.5-2.5GB; a
+    # plain blocking subprocess.run prints nothing until done, which looked
+    # frozen to users (reported "10 min of silence"). _run_pip_with_heartbeat
+    # prints an elapsed-time line every 20s.
     proc = _run_pip_with_heartbeat(
-        cmd, timeout=PIP_INSTALL_TIMEOUT_SECONDS, label="CuPy install"
+        cmd, timeout=PIP_INSTALL_TIMEOUT_SECONDS, label="CuPy + CUDA components install"
     )
     if proc.returncode != 0:
         # Code-review MEDIUM (PR #54): surface pip's own ``ERROR:`` lines
