@@ -175,6 +175,27 @@ class ProgressTrackerEmissionTests(unittest.TestCase):
             t.on_line(noise)
             self.assertEqual(calls[-1][0], "debug", f"should be debug: {noise!r}")
 
+    def test_corrector_version_kept_in_panel(self):
+        """code-review HIGH PR #73: the 'rPPG Corrector v…' line must reach the
+        panel at info (user wants the corrector version). Previously
+        queue_manager._is_panel_noise matched it FIRST and forced it to debug,
+        overriding the tracker's KEEP. The tracker now owns it."""
+        t, calls = self._tracker(verbose=False)
+        t.on_line("rPPG Corrector v5.10+spectrum (v6 modules active)")
+        self.assertEqual(calls[-1][0], "info")
+
+    def test_mediapipe_cpu_and_pipeline_suppressed_when_not_verbose(self):
+        """The MediaPipe-CPU trio + 'Pipeline: v5' banner are suppressed by the
+        tracker (debug) in non-verbose mode — single source of truth (HIGH #73)."""
+        t, calls = self._tracker(verbose=False)
+        for noise in (
+            "MediaPipe GPU delegate unavailable (NotImplementedError: x)",
+            "ImageCloneCalculator: GPU processing is disabled in build flags",
+            "Pipeline: v5 (deband-first)",
+        ):
+            t.on_line(noise)
+            self.assertEqual(calls[-1][0], "debug", f"should be debug: {noise!r}")
+
     def test_ansi_codes_stripped_before_match(self):
         """PR #48 round 4: the v6 spectrum corrector wraps "Iteration
         N/M" in ANSI escapes. Strip ANSI BEFORE regex match so the

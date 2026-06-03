@@ -313,18 +313,18 @@ _PANEL_NOISE_PATTERNS = (
     "saved video to:",
     "video processing complete.",
     "finalizing video with ffmpeg codec",
-    # rPPG launcher/injector banner + diagnostic chatter that wrapped long
-    # absolute paths across the panel (user feedback 2026-06-04: too noisy).
-    # File-only (debug) — the user-facing progress is the per-iteration line +
-    # the GPU banner + the final "rPPG output:" line.
+    # rPPG LAUNCHER banner lines (from run_rppg.bat, NOT the injector) that
+    # wrapped long absolute paths across the panel (user feedback 2026-06-04).
+    # File-only (debug). These must stay HERE because they never reach the rPPG
+    # progress tracker (the tracker only sees the injector's stdout). The
+    # INJECTOR-emitted lines (MediaPipe / Pipeline / "rPPG Corrector v" / "Using
+    # MediaPipe model") are deliberately NOT listed here — the tracker's
+    # _RPPG_KEEP/_RPPG_SUPPRESS patterns are the single source of truth for them,
+    # and double-filtering here let the noise filter (which runs first) override
+    # the tracker's KEEP for the corrector-version line (code-review HIGH PR #73).
     "python: shared root venv",
     "python: standalone venv",
     "checking gpu acceleration for rppg",
-    "mediapipe gpu delegate unavailable",
-    "imageclonecalculator: gpu processing is disabled",
-    "using mediapipe tasks facelandmarker model:",
-    "pipeline: v5 (deband-first)",
-    "rppg corrector v",
 )
 
 
@@ -2566,8 +2566,15 @@ class QueueManager:
             # face means, summary, output, milestones); Verbose ON = the full
             # nitty-gritty. The TERMINAL + file still get everything either way
             # (the stdout handler is at DEBUG).
+            # Only the GUI "Verbose Mode" key gates the rPPG panel. The
+            # automation_key alias is a non-existent sentinel so it can NEVER
+            # silently re-enable verbose via some other config key (code-review
+            # LOW PR #73: passing "verbose_logging" here was dead + misleading —
+            # verbose_gui_mode is always present in the default config so the
+            # alias was unreachable, but it read as if verbose_logging=True could
+            # turn this on, which it cannot).
             verbose = _cfg_bool(
-                "verbose_gui_mode", "verbose_logging", False,
+                "verbose_gui_mode", "__rppg_panel_verbose_unused__", False,
             )
 
             # The tracker emits synthesized progress lines like
