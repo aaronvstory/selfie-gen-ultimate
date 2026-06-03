@@ -32,6 +32,13 @@ SYNC_ITEMS = [
     # `-c` to every pip install + read by dependency_health_check._constraints_path
     # during in-app repair. Must ship so the repair can hold numpy <2 (v2.11).
     "constraints.txt",
+    # pyproject.toml + uv.lock: the v2.20 uv dependency manifest + lockfile. The
+    # uv fast-path (scripts/uv_sync_deps.py, called by the launchers) needs both
+    # next to the project root it syncs. The release zip already ships them
+    # (release_prep walks the working tree); these keep the distribution/
+    # direct-run + frozen tree in parity so a cwd=distribution uv sync resolves.
+    "pyproject.toml",
+    "uv.lock",
     "hooks/hook-tkinterdnd2.py",
     "kling_gui",
     # First-party root modules the kling_gui/ package imports transitively.
