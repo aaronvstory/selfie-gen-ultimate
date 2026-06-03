@@ -737,6 +737,15 @@ _RPPG_SUPPRESS_PATTERNS = (
     re.compile(r"^Fiber init:"),
     re.compile(r"^Using MediaPipe Tasks"),
     re.compile(r"^MediaPipe:"),
+    # MediaPipe GPU-delegate-unavailable / "GPU processing is disabled" trio
+    # (expected on every box — public wheel is CPU-only; rPPG math still runs on
+    # GPU via CuPy) + the "Pipeline: v5" banner. Suppressed via the tracker (the
+    # single source of truth) instead of queue_manager._is_panel_noise so they
+    # don't fight the keep-list (code-review HIGH PR #73).
+    re.compile(r"^MediaPipe GPU delegate unavailable"),
+    re.compile(r"^ImageCloneCalculator:"),
+    re.compile(r"GPU processing is disabled in build flags"),
+    re.compile(r"^Pipeline:\s+v\d"),
     re.compile(r"^Extracting facial ROIs"),
     re.compile(r"^Using cached RGB signals"),
     re.compile(r"^Final knob diff:"),
