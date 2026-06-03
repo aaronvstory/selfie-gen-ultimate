@@ -606,7 +606,15 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
     staging_root = dist_root / "_staging" / "universal"
     if staging_root.exists():
         shutil.rmtree(staging_root)
-    bundle_dir = staging_root / "selfie-gen-ultimate"
+    # FLAT layout (user direction 2026-06-04): the app files live at the ZIP
+    # ROOT, not under a nested ``selfie-gen-ultimate/`` folder. Windows Explorer
+    # already extracts ``SelfieGenUltimate-vX.Y.zip`` into a
+    # ``SelfieGenUltimate-vX.Y/`` folder, so the old inner folder produced an
+    # ugly double nest (``…-personal/selfie-gen-ultimate/<app>``). Zipping the
+    # bundle CONTENTS at the root means one clean level: ``…-personal/<app>``.
+    # Nothing depends on the inner dir name at runtime — the top-level
+    # ``Start GUI.bat`` does ``cd /d "%~dp0"`` and calls launchers relatively.
+    bundle_dir = staging_root
     bundle_dir.mkdir(parents=True, exist_ok=True)
     copy_sanitized_tree(repo_root, bundle_dir)
     config = build_sanitized_config(
@@ -621,7 +629,7 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
     for path in (versioned_zip_path, latest_alias_zip_path):
         if path.exists():
             path.unlink()
-    _make_zip_preserving_exec_bits(staging_root, versioned_zip_path)
+    _make_zip_preserving_exec_bits(bundle_dir, versioned_zip_path)
     shutil.copy2(versioned_zip_path, latest_alias_zip_path)
     created = [versioned_zip_path, latest_alias_zip_path]
     shutil.rmtree(dist_root / "_staging", ignore_errors=True)

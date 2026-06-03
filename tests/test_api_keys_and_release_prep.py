@@ -726,58 +726,68 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
 
     with zipfile.ZipFile(versioned_zip) as zf:
         names = zf.namelist()
-        assert any(name.endswith("selfie-gen-ultimate/Start GUI.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/Start CLI.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/Start GUI.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/Start CLI.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_similarity_gui.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_similarity_cli.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_oldcam_v8.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_oldcam_v7.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_similarity_gui.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_similarity_cli.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_oldcam_v8.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_oldcam_v7.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/face_landmarker.task") for name in names)
+        # FLAT layout (user direction 2026-06-04): the app must sit at the ZIP
+        # ROOT, NOT under a nested ``selfie-gen-ultimate/`` folder (that made an
+        # ugly ``…-personal/selfie-gen-ultimate/<app>`` double nest on extract).
+        assert not any(name.startswith("selfie-gen-ultimate/") for name in names), (
+            "release zip must be FLAT — no nested selfie-gen-ultimate/ wrapper dir"
+        )
+        assert "Start GUI.bat" in names, "Start GUI.bat must be at the zip root"
+        assert any(name.startswith("launchers/") for name in names), (
+            "launchers/ must be at the zip root (flat layout)"
+        )
+        assert any(name.endswith("Start GUI.bat") for name in names)
+        assert any(name.endswith("Start CLI.bat") for name in names)
+        assert any(name.endswith("Start GUI.command") for name in names)
+        assert any(name.endswith("Start CLI.command") for name in names)
+        assert any(name.endswith("launchers/windows/run_similarity_gui.bat") for name in names)
+        assert any(name.endswith("launchers/windows/run_similarity_cli.bat") for name in names)
+        assert any(name.endswith("launchers/windows/run_oldcam_v8.bat") for name in names)
+        assert any(name.endswith("launchers/windows/run_oldcam_v7.bat") for name in names)
+        assert any(name.endswith("launchers/macos/run_similarity_gui.command") for name in names)
+        assert any(name.endswith("launchers/macos/run_similarity_cli.command") for name in names)
+        assert any(name.endswith("launchers/macos/run_oldcam_v8.command") for name in names)
+        assert any(name.endswith("launchers/macos/run_oldcam_v7.command") for name in names)
+        assert any(name.endswith("face_landmarker.task") for name in names)
         # v2.11 numpy-2 guard: the project-wide pip constraints file MUST ship —
         # the launchers pass it via `-c` and dependency_health_check reads it
         # during in-app repair. Without it in the zip, a fresh install can pull
         # numpy 2.x and break Face Crop (the v2.10 bug this release fixes).
-        assert any(name.endswith("selfie-gen-ultimate/constraints.txt") for name in names), (
+        assert any(name.endswith("constraints.txt") for name in names), (
             "constraints.txt missing from release zip — numpy<2 cap would not ship"
         )
-        similarity_gui_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_gui.bat"))
+        similarity_gui_name = next(name for name in names if name.endswith("similarity/run_gui.bat"))
         similarity_gui = zf.read(similarity_gui_name).decode("utf-8")
         assert "set PYTHON_BIN=py -3.12" in similarity_gui
         assert ".venv\\Scripts\\python.exe" in similarity_gui
-        similarity_cli_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_cli.bat"))
+        similarity_cli_name = next(name for name in names if name.endswith("similarity/run_cli.bat"))
         similarity_cli = zf.read(similarity_cli_name).decode("utf-8")
         assert "set PYTHON_BIN=py -3.12" in similarity_cli
-        oldcam_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/oldcam-v8/oldcam_launcher.bat"))
+        oldcam_launcher_name = next(name for name in names if name.endswith("oldcam-v8/oldcam_launcher.bat"))
         oldcam_launcher = zf.read(oldcam_launcher_name).decode("utf-8")
         assert "set PYTHON_CMD=py -3.12" in oldcam_launcher
-        assert not any(name.endswith("selfie-gen-ultimate/tests/test_x.py") for name in names)
-        assert not any(name.endswith("selfie-gen-ultimate/kling_gui.log") for name in names)
-        assert not any(name.endswith("selfie-gen-ultimate/distribution/build_release.py") for name in names)
+        assert not any(name.endswith("tests/test_x.py") for name in names)
+        assert not any(name.endswith("kling_gui.log") for name in names)
+        assert not any(name.endswith("distribution/build_release.py") for name in names)
         assert not any("/.launcher_state/" in name for name in names)
         assert not any("/.recovery/" in name for name in names)
         assert not any("/.tmp_pytest/" in name for name in names)
         assert not any("/venv/" in name for name in names)
         assert not any("/.venv/" in name for name in names)
-        gui_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start GUI.command"))
+        gui_launcher_name = next(name for name in names if name.endswith("Start GUI.command"))
         gui_launcher = zf.read(gui_launcher_name).decode("utf-8")
         assert "if [[ -f ./run_gui.command ]]; then" in gui_launcher
         assert "exec /bin/bash ./run_gui.command" in gui_launcher
         assert "exec /bin/bash ./run_gui.sh" in gui_launcher
-        windows_gui_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start GUI.bat"))
+        windows_gui_launcher_name = next(name for name in names if name.endswith("Start GUI.bat"))
         windows_gui_launcher = zf.read(windows_gui_launcher_name).decode("utf-8")
         assert "call launchers\\windows\\run_gui.bat" in windows_gui_launcher
-        cli_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start CLI.command"))
+        cli_launcher_name = next(name for name in names if name.endswith("Start CLI.command"))
         cli_launcher = zf.read(cli_launcher_name).decode("utf-8")
         assert "if [[ -f ./run_cli.command ]]; then" in cli_launcher
         assert "exec /bin/bash ./run_cli.command" in cli_launcher
         assert "exec /bin/bash ./run_cli.sh" in cli_launcher
-        cfg_name = next(name for name in names if name.endswith("selfie-gen-ultimate/kling_config.json"))
+        cfg_name = next(name for name in names if name.endswith("kling_config.json"))
         cfg = json.loads(zf.read(cfg_name).decode("utf-8"))
         for key in ("falai_api_key", "bfl_api_key", "openrouter_api_key", "freeimage_api_key"):
             assert cfg[key] == ""
@@ -800,8 +810,8 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         assert cfg["outpaint_prompt"] == "outpaint it"
         assert cfg["face_crop_polish_prompt"] == "polish it"
         assert cfg["openrouter_vision_system_prompt"] == "vision system"
-        assert any(name.endswith("selfie-gen-ultimate/run_cli.command") for name in names)
-        readme_name = next(name for name in names if name.endswith("selfie-gen-ultimate/README_FIRST_RUN.txt"))
+        assert any(name.endswith("run_cli.command") for name in names)
+        readme_name = next(name for name in names if name.endswith("README_FIRST_RUN.txt"))
         readme_text = zf.read(readme_name).decode("utf-8")
         assert 'Windows: double-click "Start GUI.bat" or "Start CLI.bat"' in readme_text
         assert 'macOS: double-click "Start GUI.command" or "Start CLI.command"' in readme_text
