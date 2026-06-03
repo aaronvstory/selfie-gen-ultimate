@@ -481,11 +481,30 @@ class KlingAutomationUI:
             pass
         return prices
 
+    def _clear_env_prefill_marker(self, config_key: str):
+        """Stop treating a key as env-sourced (the user explicitly set it), so
+        save_config persists their value instead of stripping it."""
+        env_filled = getattr(self, "_env_prefilled_keys", None)
+        if env_filled and config_key in env_filled:
+            env_filled.remove(config_key)
+
     def save_config(self):
-        """Save current configuration to file"""
+        """Save current configuration to file.
+
+        Env-sourced API keys are never written to disk (code-review CRITICAL):
+        apply_env_key_fallback prefills them in MEMORY only, so we drop them from
+        the serialized copy. A user who explicitly sets a key via the settings
+        editor clears it from _env_prefilled_keys first, so their value persists.
+        """
         try:
+            data = self.config
+            env_filled = getattr(self, "_env_prefilled_keys", None)
+            if env_filled:
+                data = dict(self.config)
+                for k in env_filled:
+                    data.pop(k, None)
             with open(self.config_file, "w") as f:
-                json.dump(self.config, f, indent=2)
+                json.dump(data, f, indent=2)
         except Exception as e:
             if self.verbose_logging:
                 print(f"Error saving config: {e}")
@@ -552,11 +571,13 @@ class KlingAutomationUI:
             value = input(f"Enter {spec.label} API key: ").strip()
             if value:
                 self.config[spec.config_key] = value
+                self._clear_env_prefill_marker(spec.config_key)
                 self.save_config()
                 print(f"Saved {spec.config_key}.")
         elif len(API_KEY_SPECS) < selected <= len(API_KEY_SPECS) * 2:
             spec = API_KEY_SPECS[selected - len(API_KEY_SPECS) - 1]
             self.config[spec.config_key] = ""
+            self._clear_env_prefill_marker(spec.config_key)
             self.save_config()
             print(f"Cleared {spec.config_key}.")
         self.pause_continue("\nPress Enter to continue...")
