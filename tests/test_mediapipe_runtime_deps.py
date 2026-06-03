@@ -42,6 +42,36 @@ def _read(rel: str) -> str:
     return (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
 
 
+def _strip_comments(text: str) -> str:
+    """Drop comment lines so the discovery guard scans only EXECUTABLE lines.
+
+    A launcher's COMMENT may legitimately mention "mediapipe --no-deps" while
+    describing what a delegated chain does without actually running that
+    install itself (e.g. run_auto.bat is a thin wrapper post-v2.19 — it only
+    `call`s the CLI chain, but its banner comment described the chain's
+    mediapipe handling, tripping the raw-text scan with a false positive).
+    Stripping comments keys the guard to real install commands, not prose.
+
+    Handles the comment syntaxes used by our launchers:
+      * .bat / .cmd : a line whose first token is `rem` (any case) or that
+        starts with `::`
+      * .sh / .command : a line starting with `#` (after leading whitespace).
+        A bare `#!` shebang is a comment too. We do NOT try to strip trailing
+        inline `# ...` on sh lines — install commands here never carry an
+        inline comment that contains both "mediapipe" and "--no-deps".
+    """
+    kept = []
+    for raw in text.splitlines():
+        stripped = raw.lstrip()
+        low = stripped.lower()
+        if low.startswith("rem ") or low == "rem" or stripped.startswith("::"):
+            continue
+        if stripped.startswith("#"):
+            continue
+        kept.append(raw)
+    return "\n".join(kept)
+
+
 # --- Layer 1: source-text guards (always on) --------------------------------
 
 # Every install site that does a mediapipe --no-deps install. If a NEW site is
@@ -134,9 +164,12 @@ def test_no_other_nodeps_mediapipe_site_is_unguarded():
             if ".launcher_state" in f or _in_venv(f):
                 continue
             try:
-                txt = Path(f).read_text(encoding="utf-8", errors="replace")
+                raw = Path(f).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+            # Scan only executable lines — a comment that merely DESCRIBES a
+            # delegated chain's mediapipe handling is not an install site.
+            txt = _strip_comments(raw)
             if "mediapipe" in txt and nodeps_re.search(txt):
                 rf = str(Path(f).resolve())
                 if rf in covered:
