@@ -118,27 +118,34 @@ def test_no_other_nodeps_mediapipe_site_is_unguarded():
     # Skip any virtualenv dir — bundled launcher scripts inside site-packages
     # are not ours. Match venv/.venv/.venv311/.venv-macos etc. (code-review:
     # the prior "/venv/" check missed the common .venv* names).
+    # Exact virtualenv dir names (dotted + undotted, canonical + version- and
+    # platform-suffixed). An EXACT-match set, NOT a startswith(".venv") prefix:
+    # a repo cloned into e.g. ".venv-kling/" would otherwise make _in_venv() True
+    # for EVERY file and silently skip the whole guard (gemini PR #72). Mirrors
+    # release_prep.EXCLUDED_DIRS' venv variants.
+    _VENV_DIR_NAMES = frozenset({
+        "venv", ".venv", ".venv-macos",
+        ".venv311", ".venv312", ".venv313", ".venv314",
+        "venv311", "venv312", "venv313", "venv314",
+    })
+
     def _in_venv(path: str) -> bool:
-        # Match a path SEGMENT that is a virtualenv dir. Only the canonical
-        # names + the .venv* family — NOT a bare "venv-*" prefix, which could
-        # be the repo root itself if cloned into e.g. "venv-kling" (Gemini
-        # 2026-06-03). A real venv dir is "venv" or ".venv"/".venv311"/etc.
         norm = path.replace("\\", "/")
-        return any(
-            seg == "venv" or seg == ".venv" or seg.startswith(".venv")
-            for seg in norm.split("/")
-        )
+        return any(seg in _VENV_DIR_NAMES for seg in norm.split("/"))
 
     def _strip_comments(text: str) -> str:
         """Drop comment-only lines so a `--no-deps` mention in an explanatory
         `rem`/`#` banner (e.g. run_auto.bat documenting what the delegated
         chain does) isn't mistaken for a real install site. A thin wrapper that
         only DESCRIBES the bootstrap must not trip the guard."""
+        # .bat comment forms: `rem ...`, the echo-suppressed `@rem ...` (very
+        # common), and `:: ...` (gemini PR #72 — @rem was missed).
+        _bat_comment_prefixes = ("rem ", "rem\t", "@rem ", "@rem\t", "::")
         kept = []
         for line in text.splitlines():
             stripped = line.lstrip()
             low = stripped.lower()
-            if low.startswith("rem ") or low == "rem" or low.startswith("::"):
+            if low in ("rem", "@rem") or low.startswith(_bat_comment_prefixes):
                 continue  # cmd/.bat comment
             if stripped.startswith("#"):
                 continue  # sh/.command comment
