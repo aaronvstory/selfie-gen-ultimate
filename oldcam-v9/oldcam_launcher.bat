@@ -119,7 +119,7 @@ if "%NEED_PIP%"=="0" (
   rem (the recurring rPPG/oldcam bug). numpy<2 pinned so it cannot upgrade.
   "%PYTHON_CMD%" -m pip install !CC! matplotlib "opencv-contrib-python<4.12" sounddevice "numpy>=1.26,<2"
   if !errorlevel! neq 0 (
-    echo   [%LAUNCH_TS%] WARNING: MediaPipe runtime deps (matplotlib/opencv-contrib/sounddevice) install failed.
+    echo   [%LAUNCH_TS%] WARNING: MediaPipe runtime deps ^(matplotlib/opencv-contrib/sounddevice^) install failed.
     echo   The FaceLandmarker check below will report the precise missing module.
   )
   for %%F in ("%REQ_FILTERED%") do del "%%F" >nul 2>&1

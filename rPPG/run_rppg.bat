@@ -186,7 +186,7 @@ rem rPPG (the script always exits 0). Opt-out: KLING_SKIP_GPU_BOOTSTRAP=1.
 if exist "%REPO_ROOT%\scripts\gpu_bootstrap.py" (
   echo   Checking GPU acceleration for rPPG ^(CuPy^)...
   "!PYTHON_BIN!" "%REPO_ROOT%\scripts\gpu_bootstrap.py" --quiet-if-cached
-  >>"%LOG_FILE%" echo [INFO] ran gpu_bootstrap (CuPy) before rPPG injector
+  >>"%LOG_FILE%" echo [INFO] ran gpu_bootstrap ^(CuPy^) before rPPG injector
 )
 
 echo   Launching rppg_injector.py %*
@@ -215,7 +215,7 @@ rem context label for the log. Sets RPPG_DIAG_EXIT to the helper exit code
 rem (0 = all modules import, 1 = at least one MISSING/BROKEN).
 set "RPPG_DIAG_EXIT=1"
 set "RPPG_DIAG_TMP=%TEMP%\rppg_diag_%RANDOM%_%RANDOM%.txt"
->>"%LOG_FILE%" echo [INFO] rPPG import diagnostic (%~1):
+>>"%LOG_FILE%" echo [INFO] rPPG import diagnostic ^(%~1^):
 "!PYTHON_BIN!" "%REPO_ROOT%\scripts\rppg_import_diag.py" > "!RPPG_DIAG_TMP!" 2>&1
 set "RPPG_DIAG_EXIT=!errorlevel!"
 if exist "!RPPG_DIAG_TMP!" (

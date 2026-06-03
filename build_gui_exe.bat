@@ -129,12 +129,12 @@ echo   - Configure model, prompt, and output folder in the settings panel
 echo   - Click "Start Queue" to begin generating videos
 echo.
 echo NOTES:
-echo   - Configuration is saved in kling_config.json (next to the exe)
+echo   - Configuration is saved in kling_config.json ^(next to the exe^)
 echo   - Logs are saved in kling_gui.log
 echo   - If the app crashes, check crash_log.txt for details
 echo.
 echo SYSTEM REQUIREMENTS:
-echo   - Windows 10 or later (64-bit)
+echo   - Windows 10 or later ^(64-bit^)
 echo   - Internet connection required
 echo   - No Python installation needed - fully self-contained
 echo.
