@@ -107,6 +107,53 @@ def test_apply_env_key_fallback_noop_when_no_env(monkeypatch):
     assert all(config[spec.config_key] == "" for spec in API_KEY_SPECS)
 
 
+def test_cli_save_config_excludes_env_prefilled_keys(tmp_path: Path):
+    """code-review CRITICAL: an env-prefilled key must NEVER be written to disk
+    (env stays the source of truth; a shared config must not carry the secret).
+    save_config strips keys listed in _env_prefilled_keys."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(tmp_path / "kling_config.json")
+    ui.verbose_logging = False
+    ui.config = {"falai_api_key": "fal-from-env", "bfl_api_key": "", "other": "x"}
+    ui._env_prefilled_keys = ["falai_api_key"]
+    ui.save_config()
+    on_disk = json.loads((tmp_path / "kling_config.json").read_text())
+    assert "falai_api_key" not in on_disk, "env-sourced key must not persist"
+    assert on_disk["other"] == "x", "non-key config still persists"
+    # In-memory config is untouched (the app still has the usable key this run).
+    assert ui.config["falai_api_key"] == "fal-from-env"
+
+
+def test_cli_clear_env_prefill_marker_makes_key_persist(tmp_path: Path):
+    """After the user explicitly sets a key, clearing the env-prefill marker
+    makes save_config persist it (their explicit value wins + is durable)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(tmp_path / "kling_config.json")
+    ui.verbose_logging = False
+    ui.config = {"falai_api_key": "fal-from-env"}
+    ui._env_prefilled_keys = ["falai_api_key"]
+    # User explicitly re-enters the key:
+    ui.config["falai_api_key"] = "user-typed-key"
+    ui._clear_env_prefill_marker("falai_api_key")
+    ui.save_config()
+    on_disk = json.loads((tmp_path / "kling_config.json").read_text())
+    assert on_disk["falai_api_key"] == "user-typed-key", (
+        "an explicitly-entered key must persist after clearing the env marker"
+    )
+
+
+def test_cli_save_config_no_env_marker_persists_everything(tmp_path: Path):
+    """Back-compat: with no _env_prefilled_keys attr, save_config writes the
+    whole config unchanged (the common case for a user with saved keys)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(tmp_path / "kling_config.json")
+    ui.verbose_logging = False
+    ui.config = {"falai_api_key": "saved-key", "x": 1}
+    ui.save_config()
+    on_disk = json.loads((tmp_path / "kling_config.json").read_text())
+    assert on_disk == {"falai_api_key": "saved-key", "x": 1}
+
+
 def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
     template = tmp_path / "default_config_template.json"
     template.write_text(

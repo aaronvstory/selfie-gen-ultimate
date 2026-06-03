@@ -1525,12 +1525,39 @@ class KlingGUIWindow:
         return config
 
     def _save_config(self):
-        """Save configuration to JSON file."""
+        """Save configuration to JSON file.
+
+        Env-sourced API keys are NEVER written to disk (code-review CRITICAL):
+        apply_env_key_fallback fills them in MEMORY only, but _save_config runs
+        on routine events (window resize, any setting change, close), so without
+        this exclusion the env key would leak into kling_config.json on the first
+        session — defeating "env stays the source of truth" and risking a shared
+        config carrying the secret. We write a shallow copy with the env-filled
+        keys dropped. A user who explicitly re-enters such a key clears it from
+        _env_prefilled_keys first (see _prompt_key / onboarding), so their saved
+        override DOES persist.
+        """
         try:
+            data = self.config
+            env_filled = getattr(self, "_env_prefilled_keys", None)
+            if env_filled:
+                data = dict(self.config)
+                for k in env_filled:
+                    data.pop(k, None)
             with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, indent=2)
+                json.dump(data, f, indent=2)
         except Exception as e:
             self._log(f"Error saving config: {e}", "error")
+
+    def _clear_env_prefill_marker(self, config_key: str):
+        """Stop treating a key as env-sourced (the user explicitly set it).
+
+        Once removed from _env_prefilled_keys, _save_config no longer strips it,
+        so the user's explicit value persists to kling_config.json as expected.
+        """
+        env_filled = getattr(self, "_env_prefilled_keys", None)
+        if env_filled and config_key in env_filled:
+            env_filled.remove(config_key)
 
     def _save_ui_config(self):
         """Save ui_config.json."""
@@ -3434,6 +3461,10 @@ class KlingGUIWindow:
         new_key = new_key.strip()
 
         self.config[config_key] = new_key
+        # The user explicitly entered/cleared this key — it is no longer
+        # env-sourced, so it MUST persist (drop it from the env-prefill marker
+        # before saving, else _save_config would strip it back out).
+        self._clear_env_prefill_marker(config_key)
         self._save_config()
         self._update_api_badge(config_key)
 
@@ -3815,6 +3846,7 @@ class KlingGUIWindow:
                 self._log(f"{spec.label} API key setup skipped.", "warning")
                 continue
             self.config[spec.config_key] = new_key
+            self._clear_env_prefill_marker(spec.config_key)
             self._save_config()
             self._update_api_badge(spec.config_key)
             self._log(f"{spec.label} API key saved.", "success")
