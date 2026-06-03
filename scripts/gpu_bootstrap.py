@@ -436,10 +436,13 @@ def _parse_smi_header_cuda_major(header: str) -> Optional[int]:
       this redesign, which silently knocked detect_nvidia down to CPU on a
       perfectly good RTX 4090 box (verified 2026-06-04, driver 610.47).
 
-    Order matters: match the NEW ``CUDA UMD Version:`` first, because a naive
-    ``CUDA Version:`` regex would also (wrongly) match inside ``CUDA UMD
-    Version:`` on some spacings. Returns the major int, or None if neither
-    field is present.
+    We match the NEW ``CUDA UMD Version:`` first as the authoritative runtime
+    field on the new layout. (The two regexes are independent — the ``CUDA
+    Version:`` pattern does NOT match inside ``CUDA UMD Version:`` because the
+    literal ``UMD `` between ``CUDA `` and ``Version:`` breaks it — so order is
+    about *preference* when a future header somehow carries both, not about
+    avoiding a false match.) Returns the major int, or None if neither field is
+    present.
     """
     m_umd = re.search(r"CUDA UMD Version:\s*([0-9]+)\.([0-9]+)", header)
     if m_umd:
@@ -500,13 +503,17 @@ def detect_nvidia() -> Optional[dict]:
         return None
 
     # 2) CUDA major from the header (both layouts), then driver-branch fallback.
+    # Shorter timeout than the presence probe (code-review MEDIUM #4): presence
+    # is already confirmed, so this second call only needs to read the header.
+    # A 5s cap keeps the worst-case bootstrap latency from doubling to ~20s if
+    # nvidia-smi is sluggish right after a driver update.
     try:
         proc = subprocess.run(
             [exe],
             capture_output=True,
             text=True,
             errors="replace",
-            timeout=10,
+            timeout=5,
         )
         header = proc.stdout or "" if proc.returncode == 0 else ""
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
