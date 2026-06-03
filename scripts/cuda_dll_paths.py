@@ -72,9 +72,14 @@ def register_cuda_dll_dirs():
     """
     if not hasattr(os, "add_dll_directory"):
         return []
-    roots = [
-        os.path.join(sp, "nvidia") for sp in _candidate_site_packages() if sp
-    ]
+    # De-dup roots (order-preserving): getsitepackages() and the sys.prefix
+    # fallback often resolve to the SAME site-packages dir, which would
+    # otherwise glob + isdir the identical nvidia/ tree twice (gemini PR #72).
+    roots = list(dict.fromkeys(
+        os.path.abspath(os.path.join(sp, "nvidia"))
+        for sp in _candidate_site_packages()
+        if sp
+    ))
     registered = []
     seen = set()
     for root in roots:
