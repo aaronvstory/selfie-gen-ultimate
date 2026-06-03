@@ -13,9 +13,10 @@ existing ``.launcher_state/setup.lock``).
 
 Per-platform behaviour:
 
-* **Windows**: nvidia-smi parsing → cupy-cuda12x / cupy-cuda13x with the
-  ``[ctk]`` extra to pull CUDA component wheels from PyPI (avoids
-  requiring a system CUDA Toolkit; CuPy 14+ official guidance).
+* **Windows**: nvidia-smi parsing → cupy-cuda12x / cupy-cuda13x PLUS the
+  explicit ``nvidia-*`` CUDA component wheels (nvrtc, cublas, ...) from PyPI
+  (avoids requiring a system CUDA Toolkit). NOTE: the ``[ctk]`` extra is NOT
+  used — it is a no-op on cupy 13.6.0; see ``_CUDA_TO_NVIDIA_WHEELS``.
 * **macOS / Linux without nvidia-smi**: short-circuit to "no_nvidia",
   stamp the result, never retry until the stamp is wiped. CuPy has no
   Metal backend; the M1/M2 path stays CPU.
@@ -86,8 +87,8 @@ INSTALL_FAILED_MAX_ATTEMPTS = 3
 # lock and kick off a parallel pip install into the same venv. Margin
 # of 300s gives plenty of headroom for pip's own warm-down +
 # clock-skew between processes.
-# 2400s (40 min): the cupy-cudaNNx[ctk] variant pulls the full CUDA Toolkit
-# component wheels — for CUDA 13 that's ~2-3GB, NOT the "~500MB" an earlier
+# 2400s (40 min): cupy + the explicit nvidia-* CUDA component wheels pull the
+# full CUDA Toolkit components — for CUDA 13 that's ~2-3GB, NOT the "~500MB" an earlier
 # comment claimed. A real RTX 4090 box hit the old 900s cap mid-download and
 # stamped install_failed, so CuPy never landed and rPPG silently stayed on CPU
 # (verified 2026-06-03). 40 min covers 2-3GB on a slow connection; the
