@@ -3972,6 +3972,11 @@ class KlingGUIWindow:
                 # intent obvious vs. relying on the .get(level, info)
                 # fallback.
                 "milestone": self.logger.info,
+                # progress_update is normally handled by the early-return
+                # above (routed to log_display.update_line). Mapped here too
+                # so a future refactor that drops that early-return doesn't
+                # silently mis-level it (code-review MEDIUM).
+                "progress_update": self.logger.info,
             }
             level_map.get(level, self.logger.info)(message)
 

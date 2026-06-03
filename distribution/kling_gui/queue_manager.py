@@ -2566,14 +2566,18 @@ class QueueManager:
                     try:
                         cur_iter = int(m.group(1))
                         max_iter = max(1, int(m.group(2)))
-                        frame_pct = int(m.group(3))
+                        # group(3) is the WITHIN-ITERATION percent (0-100) from
+                        # the v2.22.1 progress line "rPPG iter 3/10 50% (frame
+                        # 144/242)" — i.e. how far through THIS iteration's
+                        # frames we are (code-review LOW: was misnamed frame_pct).
+                        within_iter_pct = int(m.group(3))
                     except (TypeError, ValueError):
                         return
                     overall = max(
                         0,
                         min(
                             99,
-                            int(((cur_iter - 1) * 100 + frame_pct) / max_iter),
+                            int(((cur_iter - 1) * 100 + within_iter_pct) / max_iter),
                         ),
                     )
                     # Skip the redraw on identical-value re-emissions
