@@ -123,6 +123,36 @@ def apply_env_key_fallback(config: Dict[str, Any]) -> List[str]:
     return filled
 
 
+def _spec_for(config_key: str) -> "ApiKeySpec | None":
+    """The ApiKeySpec for a config_key, or None if unknown."""
+    for spec in API_KEY_SPECS:
+        if spec.config_key == config_key:
+            return spec
+    return None
+
+
+def resolve_api_key(config: Dict[str, Any], config_key: str) -> str:
+    """Resolve an API key value: saved config first, then env-var aliases.
+
+    The single accessor any code should use when it needs a key value and wants
+    the env-var auto-detect to apply (e.g. a standalone CLI/GUI inspector that
+    runs outside the apply_env_key_fallback'd config). A non-empty saved config
+    value wins; otherwise each env alias for the key (FAL_KEY / FAL_API_KEY, …)
+    is tried in order. Returns "" if nothing is set. Fixes the
+    "only checked FAL_KEY, user has FAL_API_KEY" gap (code-review Codex P2 #73).
+    """
+    saved = str(config.get(config_key, "") or "").strip()
+    if saved:
+        return saved
+    spec = _spec_for(config_key)
+    if spec:
+        for name in spec.env_vars:
+            val = os.environ.get(name, "")
+            if val and val.strip():
+                return val.strip()
+    return ""
+
+
 def key_is_set(config: Dict[str, Any], config_key: str) -> bool:
     """Check whether a key exists and has a non-empty value.
 

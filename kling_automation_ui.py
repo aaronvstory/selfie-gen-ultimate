@@ -18,7 +18,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-from api_keys import API_KEY_SPECS, ApiKeySpec, apply_env_key_fallback, ensure_key_fields, key_is_set, key_status, non_required_missing_specs, status_lines
+from api_keys import API_KEY_SPECS, ApiKeySpec, apply_env_key_fallback, ensure_key_fields, key_is_set, key_status, non_required_missing_specs, resolve_api_key, status_lines
 from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 
 try:
@@ -503,11 +503,21 @@ class KlingAutomationUI:
                 data = dict(self.config)
                 for k in env_filled:
                     data.pop(k, None)
-            with open(self.config_file, "w") as f:
+            # ATOMIC write (gemini MEDIUM #73): shared config across concurrent
+            # launches — write a per-process temp then os.replace so a concurrent
+            # reader never sees a truncated file (atomic on Windows + POSIX).
+            tmp_path = f"{self.config_file}.tmp.{os.getpid()}"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            os.replace(tmp_path, self.config_file)
         except Exception as e:
             if self.verbose_logging:
                 print(f"Error saving config: {e}")
+            try:
+                if 'tmp_path' in dir() and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
 
     def setup_logging(self):
         """Setup logging based on verbose setting"""
@@ -1049,9 +1059,16 @@ class KlingAutomationUI:
         print("\033[96m" + "═" * 79 + "\033[0m")
         print()
 
-        api_key = os.getenv("FAL_KEY")
+        # Resolve via the saved config + any fal env alias (FAL_KEY OR
+        # FAL_API_KEY), not a bare os.getenv("FAL_KEY") — otherwise a user who
+        # stores their key as FAL_API_KEY hits "key not set" here even though the
+        # rest of the app works (code-review Codex P2 #73).
+        api_key = resolve_api_key(self.config, "falai_api_key")
         if not api_key:
-            self.print_red("FAL_KEY environment variable not set")
+            self.print_red(
+                "No fal.ai key found (set falai_api_key in config, or the "
+                "FAL_KEY / FAL_API_KEY environment variable)."
+            )
             self.pause_continue("\nPress Enter to continue...")
             return
 

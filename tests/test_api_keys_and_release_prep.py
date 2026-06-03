@@ -66,6 +66,30 @@ def test_every_key_has_an_env_var_mapping():
     assert by_key["freeimage_api_key"] == "FREEIMAGE_API_KEY"
 
 
+def test_resolve_api_key_config_then_env_alias(monkeypatch):
+    """resolve_api_key (used by the CLI + GUI fal inspectors) returns the saved
+    config value first, else any env alias (FAL_KEY / FAL_API_KEY). Fixes the
+    'inspector only checked FAL_KEY' gap (Codex P2 #73)."""
+    from api_keys import resolve_api_key
+
+    for name in ("FAL_KEY", "FAL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    # Saved config wins:
+    assert resolve_api_key({"falai_api_key": "saved"}, "falai_api_key") == "saved"
+    # Empty config + FAL_API_KEY env alias:
+    monkeypatch.setenv("FAL_API_KEY", "from-api-key")
+    assert resolve_api_key({"falai_api_key": ""}, "falai_api_key") == "from-api-key"
+    # FAL_KEY takes precedence over FAL_API_KEY:
+    monkeypatch.setenv("FAL_KEY", "native")
+    assert resolve_api_key({"falai_api_key": ""}, "falai_api_key") == "native"
+    # Nothing anywhere -> "":
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.delenv("FAL_API_KEY", raising=False)
+    assert resolve_api_key({"falai_api_key": ""}, "falai_api_key") == ""
+    # Unknown config_key -> "" (no spec):
+    assert resolve_api_key({}, "not_a_key") == ""
+
+
 def test_falai_accepts_fal_api_key_alias(monkeypatch):
     """User direction 2026-06-04: the user stores their fal.ai key under
     FAL_API_KEY, not FAL_KEY — auto-detect must accept BOTH (first non-empty
@@ -173,6 +197,21 @@ def test_cli_clear_env_prefill_marker_makes_key_persist(tmp_path: Path):
     assert on_disk["falai_api_key"] == "user-typed-key", (
         "an explicitly-entered key must persist after clearing the env marker"
     )
+
+
+def test_cli_save_config_is_atomic_no_tmp_left(tmp_path: Path):
+    """gemini MEDIUM #73: save_config writes a per-process temp then os.replace
+    (atomic) so a concurrent reader never sees a truncated file. After a normal
+    save, no .tmp.* file is left behind and the target is complete JSON."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(tmp_path / "kling_config.json")
+    ui.verbose_logging = False
+    ui.config = {"falai_api_key": "k", "x": 1}
+    ui.save_config()
+    on_disk = json.loads((tmp_path / "kling_config.json").read_text())
+    assert on_disk == {"falai_api_key": "k", "x": 1}
+    leftover = list(tmp_path.glob("kling_config.json.tmp.*"))
+    assert not leftover, f"atomic write left a temp file: {leftover}"
 
 
 def test_cli_save_config_no_env_marker_persists_everything(tmp_path: Path):
