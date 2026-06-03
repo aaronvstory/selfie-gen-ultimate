@@ -40,6 +40,20 @@ import sys
 # GC hadn't run yet). Keep them here so the entries persist until exit.
 _CUDA_DLL_DIR_HANDLES = []
 
+# Module-level set of dirs ALREADY registered this process, keyed by their
+# normalized form (normcase+normpath). Persists ACROSS calls so a second
+# register_cuda_dll_dirs() (e.g. the injector's module-level call followed by a
+# later explicit call) does NOT re-add a handle or re-prepend PATH — that leaked
+# DLL-dir handles + grew PATH unboundedly in a long-lived GUI process
+# (CodeRabbit/Gemini PR #72). The per-call `seen` set only de-duped within one
+# call; this is the cross-call guard.
+_REGISTERED_CUDA_DLL_DIRS = set()
+
+
+def _norm_key(path):
+    """Normalized comparison key for a path (case + separators + quotes)."""
+    return os.path.normcase(os.path.normpath(path.strip().strip('"')))
+
 
 def _candidate_site_packages():
     """Site-packages dirs to scan for an ``nvidia/`` component tree."""
@@ -81,68 +95,69 @@ def register_cuda_dll_dirs():
         if sp
     ))
     registered = []
-    seen = set()
     for root in roots:
-        if not os.path.isdir(root):
+        # EVERY filesystem touch (isdir/glob/abspath) is wrapped: an
+        # antivirus quarantine / restricted-ACL / symlink-loop on one root must
+        # NOT crash rPPG import — skip that root and continue. Worst case: no
+        # dirs registered → CPU fallback, never a crash (external review PR #72).
+        try:
+            if not os.path.isdir(root):
+                continue
+            # glob.escape the install ROOT (the user's path may contain glob
+            # metacharacters like [ ] — e.g. "C:\\...[backup]\\...") while
+            # leaving the wildcard PATTERN unescaped (gemini PR #72).
+            escaped_root = glob.escape(root)
+            candidates = []
+            for binglob in ("*/bin/x86_64", "*/bin", "*/lib/x64"):
+                candidates.extend(glob.glob(os.path.join(escaped_root, binglob)))
+        except OSError:
             continue
-        # Any bin dir under nvidia/* (cu13: nvidia/cu13/bin/x86_64;
-        # cu12: nvidia/cuda_nvrtc/bin; some wheels ship lib/x64 too).
-        # glob.escape the install ROOT (the user's path may contain glob
-        # metacharacters like [ ] — e.g. an install under "C:\...[backup]\...")
-        # while leaving the wildcard PATTERN unescaped (gemini MEDIUM PR #72).
-        escaped_root = glob.escape(root)
-        for binglob in ("*/bin/x86_64", "*/bin", "*/lib/x64"):
-            for d in glob.glob(os.path.join(escaped_root, binglob)):
+        for d in candidates:
+            try:
                 d = os.path.abspath(d)
-                if d in seen or not os.path.isdir(d):
+                if not os.path.isdir(d):
                     continue
                 # cu13 ships DLLs in bin/x86_64, not the bin parent. When a
                 # matched ".../bin" has an x86_64 child, the DLLs are in the
                 # child (already registered by the earlier glob) — skip the
-                # parent to avoid a wasted handle + PATH entry. cu12 has no
-                # x86_64 child (DLLs live directly in bin), so it's kept.
+                # parent. cu12 has no x86_64 child (DLLs live in bin), so keep it.
                 if os.path.basename(d) == "bin" and os.path.isdir(
                     os.path.join(d, "x86_64")
                 ):
                     continue
-                seen.add(d)
-                try:
-                    # RETAIN the handle (module-level list) — the DLL dir entry
-                    # is removed when this object is GC'd, so a discarded handle
-                    # makes the nvrtc fix flaky (code-review CRITICAL).
-                    _CUDA_DLL_DIR_HANDLES.append(os.add_dll_directory(d))
-                except OSError:
-                    pass
-                # add_dll_directory lets cupy load nvrtc64_*.dll, but nvrtc
-                # ITSELF then loads nvrtc-builtins64_*.dll via the plain PATH
-                # env (it's a C lib, not a Python ext), so the dir must ALSO be
-                # on os.environ['PATH'] or the first kernel compile throws
-                # CompileException "failed to open nvrtc-builtins64_*.dll".
-                # Compare case-insensitively so a second call (or a PATH entry
-                # added with different casing) can't double-prepend the same dir
-                # and grow PATH unboundedly across restarts (code-review CRITICAL
-                # PR #72 — Windows paths are case-insensitive). Strip surrounding
-                # quotes too: a Windows PATH entry with spaces is sometimes stored
-                # quoted ("C:\\Program Files\\..."), but abspath(d) is never quoted,
-                # so without stripping the quoted form wouldn't dedup-match and
-                # we'd re-prepend (gemini MEDIUM PR #72).
-                # normpath collapses trailing slashes + redundant separators
-                # ("C:\\dir\\" vs "C:\\dir") which normcase alone leaves distinct;
-                # abspath(d) has no trailing slash, so without normpath a slashed
-                # PATH entry wouldn't match and we'd re-prepend (gemini MEDIUM PR
-                # #72). Skip empty segments too.
-                # .strip() BEFORE .strip('"'): a PATH segment can have whitespace
-                # OUTSIDE the quotes (' "C:\\Program Files\\..." '); stripping
-                # quotes first would leave the spaces and the dedup would miss
-                # (gemini MEDIUM PR #72).
-                existing = {
-                    os.path.normcase(os.path.normpath(p.strip().strip('"')))
-                    for p in os.environ.get("PATH", "").split(os.pathsep)
-                    if p.strip()
-                }
-                if os.path.normcase(os.path.normpath(d)) not in existing:
-                    os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
-                registered.append(d)
+            except OSError:
+                continue
+            key = _norm_key(d)
+            # Cross-call idempotence: if this dir was already registered in this
+            # process, do NOT re-add the handle, re-prepend PATH, or report it as
+            # newly-registered (external review PR #72).
+            if key in _REGISTERED_CUDA_DLL_DIRS:
+                continue
+            _REGISTERED_CUDA_DLL_DIRS.add(key)
+            try:
+                # RETAIN the handle (module-level list) — the DLL dir entry is
+                # removed when this object is GC'd, so a discarded handle makes
+                # the nvrtc fix flaky (code-review CRITICAL).
+                _CUDA_DLL_DIR_HANDLES.append(os.add_dll_directory(d))
+            except OSError:
+                pass
+            # add_dll_directory lets cupy load nvrtc64_*.dll, but nvrtc ITSELF
+            # then loads nvrtc-builtins64_*.dll via the plain PATH env (it's a C
+            # lib, not a Python ext), so the dir must ALSO be on os.environ['PATH']
+            # or the first kernel compile throws "failed to open
+            # nvrtc-builtins64_*.dll". Normalize (case + separators + quotes +
+            # surrounding whitespace) on BOTH sides before the membership test so
+            # a differently-formatted existing entry can't cause a re-prepend
+            # (gemini PR #72). The _REGISTERED set above already prevents a
+            # second add for THIS process; this guards a pre-existing PATH entry.
+            existing = {
+                _norm_key(p)
+                for p in os.environ.get("PATH", "").split(os.pathsep)
+                if p.strip()
+            }
+            if key not in existing:
+                os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+            registered.append(d)
     return registered
 
 

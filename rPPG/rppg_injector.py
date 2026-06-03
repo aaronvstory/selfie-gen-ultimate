@@ -129,7 +129,15 @@ except Exception:  # noqa: BLE001 — helper absent/unimportable => CPU fallback
     def _register_cuda_dll_dirs():
         return []
 
-_register_cuda_dll_dirs()
+# Guard the RUNTIME call too, not just the import: the helper now wraps its own
+# filesystem touches, but a belt-and-suspenders try/except here guarantees that
+# ANY unexpected failure (a future regression, an exotic FS error) degrades to
+# CPU rather than crashing the whole rPPG step before the CuPy fallback below
+# (external review PR #72).
+try:
+    _register_cuda_dll_dirs()
+except Exception:  # noqa: BLE001 — registration must never break rPPG import
+    pass
 try:
     if os.environ.get("RPPG_FORCE_CPU") == "1":
         # Escape hatch: force the CPU path even when a working GPU is present
