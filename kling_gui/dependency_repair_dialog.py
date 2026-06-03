@@ -15,6 +15,14 @@ retry the import — all without the user ever touching a shell.
 The public entry point is :func:`run_face_stack_repair`. It is intentionally
 defensive: any import/runtime failure degrades to ``False`` (caller falls back
 to the manual hint) rather than crashing the GUI.
+
+uv interaction note (v2.20): this repair runs ``pip install --force-reinstall``
+against the ACTIVE venv. On a uv-provisioned env that's still safe (it just
+overwrites wheels), but it leaves the env "dirty" vs ``uv.lock`` — the NEXT
+``uv sync`` will reconcile those packages back to the locked versions. So an
+in-app repair followed by a relaunch may trigger a one-time uv re-sync of the
+repaired packages. That's correct (the lock wins) and non-fatal; it's the
+expected hand-off between the runtime safety net and uv's lock authority.
 """
 
 from __future__ import annotations

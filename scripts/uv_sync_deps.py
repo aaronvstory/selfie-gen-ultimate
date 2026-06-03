@@ -149,9 +149,17 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         _log(f"uv torch selector crashed ({exc!r}); pip fallback", quiet=quiet)
         return FALLBACK_TO_PIP
-    # uv_torch_select always returns 0; verify an env actually materialized.
+    # Verify an env actually materialized. UV_PROJECT_ENVIRONMENT is always set
+    # above, so the `else` is only reached in a standalone/test call that didn't
+    # pre-set it — use the SAME canonical default as uv_torch_select._synced_python
+    # (venv\ / .venv-macos), NOT a bare .venv, or this gate would probe a
+    # different dir than the sync targeted and falsely pip-fall-back on Windows
+    # (round-2 review HIGH #1).
     env_dir = os.environ.get("UV_PROJECT_ENVIRONMENT")
-    base = Path(env_dir) if env_dir else (project / ".venv")
+    if env_dir:
+        base = Path(env_dir)
+    else:
+        base = project / ("venv" if sys.platform == "win32" else ".venv-macos")
     py = (
         base / "Scripts" / "python.exe"
         if sys.platform == "win32"

@@ -49,6 +49,11 @@ selfiegen_preflight_shared_venv() {
   # uv sync the GUI/CLI use. On any uv problem this no-ops and we fall through
   # to the canonical health-check/repair below (KLING_USE_PIP=1 forces pip).
   if [[ -f "${repo_root}/scripts/uv_sync.sh" ]]; then
+    # `local UV_SYNCED` is LOAD-BEARING: selfiegen_uv_sync sets UV_SYNCED in the
+    # current scope. Declaring it local here confines it to this function so it
+    # can't leak into a caller that also sources uv_sync.sh and reads UV_SYNCED
+    # as a global (run_gui.sh / run_cli.sh). Do NOT drop the `local` in a
+    # refactor (round-2 review note #3).
     local UV_SYNCED=""
     # shellcheck source=/dev/null
     source "${repo_root}/scripts/uv_sync.sh"
