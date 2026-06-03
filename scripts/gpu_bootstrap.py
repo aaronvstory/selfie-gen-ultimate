@@ -517,11 +517,14 @@ def _resolve_constraints_path() -> Optional[str]:
     numpy 2.x (the numpy<2 face-stack invariant). Returns None if absent (the
     install still runs unconstrained — better than failing to provision GPU).
     """
-    candidate = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "constraints.txt",
-    )
-    return candidate if os.path.isfile(candidate) else None
+    candidate = Path(__file__).resolve().parent.parent / "constraints.txt"
+    # EAFP (gemini MEDIUM PR #72): is_file() can raise on a restricted FS; treat
+    # any OSError as "absent" so a permissions quirk degrades to an unconstrained
+    # install rather than crashing the GPU bootstrap.
+    try:
+        return str(candidate) if candidate.is_file() else None
+    except OSError:
+        return None
 
 
 def install_cupy(python_exe: str, cuda_major: int) -> tuple[bool, str]:
