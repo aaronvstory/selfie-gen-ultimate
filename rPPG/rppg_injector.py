@@ -311,7 +311,8 @@ try:
         #    deepest cause, from his sidecar log v2.23.1): nvrtc 13.3 vs CuPy
         #    13.6.0's older libcudacxx → `cuda/std/limits(633): error: constexpr
         #    function return is non-constant`. The committed pin caps nvrtc at
-        #    <13.3 for FRESH installs, but an ALREADY-installed 13.3 venv won't
+        #    <13.1 (CUDA 13.0.x line) for FRESH installs, but an ALREADY-installed
+        #    13.3 venv won't
         #    auto-downgrade. Belt: prepend nvrtc's --expt-relaxed-constexpr (the
         #    documented flag for this constexpr-in-device error) by wrapping
         #    cupy.cuda.compiler.compile_using_nvrtc, then retry. Best-effort.

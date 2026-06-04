@@ -167,7 +167,8 @@ _CUDA_TO_NVIDIA_WHEELS = {
         "nvidia-curand>=10.4,<11",
         "nvidia-cusolver>=12.2,<13",
         "nvidia-cusparse>=12.8,<13",
-        "nvidia-nvjitlink>=13.3,<14",
+        # nvjitlink lockstepped on the 13.0.x line (matches pyproject cu128).
+        "nvidia-nvjitlink>=13.0,<13.1",
     ),
 }
 

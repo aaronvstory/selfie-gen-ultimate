@@ -185,7 +185,11 @@ cu128 = [
     "nvidia-curand>=10.4,<11; sys_platform == 'win32' or sys_platform == 'linux'",
     "nvidia-cusolver>=12.2,<13; sys_platform == 'win32' or sys_platform == 'linux'",
     "nvidia-cusparse>=12.8,<13; sys_platform == 'win32' or sys_platform == 'linux'",
-    "nvidia-nvjitlink>=13.3,<14; sys_platform == 'win32' or sys_platform == 'linux'",
+    # nvjitlink held on the SAME 13.0.x line as nvrtc/runtime — it's the JIT
+    # linker (not a CCCL-header source, so 13.3 wouldn't re-break the compile),
+    # but lockstepping the whole CUDA-13 toolchain on one minor removes the
+    # divergence a reviewer (and a future "cleanup") could trip on.
+    "nvidia-nvjitlink>=13.0,<13.1; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
 
 [tool.uv]
