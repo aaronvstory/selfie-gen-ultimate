@@ -147,8 +147,14 @@ _CUDA_TO_NVIDIA_WHEELS = {
         "nvidia-nvjitlink-cu12",
     ),
     13: (
-        "nvidia-cuda-nvrtc>=13.3,<14",
-        "nvidia-cuda-runtime>=13.3,<14",
+        # nvrtc + runtime locked to the SAME 13.3.x minor (<13.4): CuPy 13.x
+        # finds its compile headers ONLY when the runtime wheel's version
+        # exactly matches the major.minor nvrtc reports. A loose >=13.3,<14 let
+        # them drift to different minors → no headers → nvrtc compile fails (the
+        # friend's CUDA-13 rPPG-on-CPU bug, root-caused 2026-06-04). Keep in
+        # lockstep with the pyproject cu128 extra (the parity test enforces it).
+        "nvidia-cuda-nvrtc>=13.3,<13.4",
+        "nvidia-cuda-runtime>=13.3,<13.4",
         "nvidia-cublas>=13.5,<14",
         "nvidia-cufft>=12.3,<13",
         "nvidia-curand>=10.4,<11",

@@ -206,6 +206,59 @@ def clear_cupy_kernel_cache():
     return None
 
 
+def cuda_include_dirs():
+    """site-packages ``nvidia/<...>/include`` dirs that hold cuda_runtime.h etc.
+
+    CuPy 13.x compiles kernels by ``#include``-ing the CUDA Runtime headers, and
+    auto-detects them ONLY when the ``nvidia-cuda-runtime`` wheel version exactly
+    matches the ``major.minor`` nvrtc reports (cupy._environment
+    ._get_include_dir_from_conda_or_wheel). If nvrtc and the runtime wheel drift
+    to different minors (our >=13.3,<14 pins let them float independently), CuPy
+    finds ZERO include dirs and nvrtc compile fails with a cpp_dialect.h /
+    missing-header CompileException — the friend's exact bug. This returns the
+    real on-disk include dir(s) so the injector/probe can set
+    ``CUPY_CUDA_INCLUDE_PATH`` explicitly and retry, regardless of version skew.
+    cu13 layout: ``nvidia/cu13/include``; cu12: ``nvidia/<component>/include``.
+    Order-preserving + de-duped; empty off-Windows / when absent. stdlib-only.
+    """
+    found = []
+    seen = set()
+    roots = list(dict.fromkeys(
+        os.path.abspath(os.path.join(sp, "nvidia"))
+        for sp in _candidate_site_packages()
+        if sp
+    ))
+    for root in roots:
+        try:
+            if not os.path.isdir(root):
+                continue
+            escaped_root = glob.escape(root)
+            # cu13 ships one consolidated include dir; cu12 ships per-component.
+            candidates = glob.glob(os.path.join(escaped_root, "*", "include"))
+        except OSError:
+            continue
+        for d in candidates:
+            try:
+                if not os.path.isdir(d):
+                    continue
+                # Only include dirs that actually carry a CUDA runtime header,
+                # so we don't point CuPy at an unrelated component's include.
+                has_hdr = (
+                    os.path.isfile(os.path.join(d, "cuda_runtime.h"))
+                    or os.path.isfile(os.path.join(d, "cuda.h"))
+                )
+                if not has_hdr:
+                    continue
+                key = _norm_key(d)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(os.path.abspath(d))
+            except OSError:
+                continue
+    return found
+
+
 def is_nvrtc_compile_error(err):
     """True when *err* is an nvrtc/JIT COMPILE failure (cache-clear + retry may
     fix it), as opposed to a missing module / absent CUDA device (which a cache
