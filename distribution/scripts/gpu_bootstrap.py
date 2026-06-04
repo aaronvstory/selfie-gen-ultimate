@@ -154,21 +154,24 @@ _CUDA_TO_NVIDIA_WHEELS = {
         "nvidia-nvjitlink-cu12",
     ),
     13: (
-        # nvrtc + runtime pinned to the CUDA-13.0.x line — the CUDA 13 toolkit
-        # CuPy 13.6.0's docs list as supported. The latest nvrtc 13.3 breaks
-        # CuPy 13.6.0's bundled CCCL with a libcudacxx `limits` constexpr error
-        # (the friend's deepest CUDA-13 bug). Same minor so CuPy's header
-        # version-match also succeeds. Lockstep with the pyproject cu128 extra
-        # (parity test enforces). See pyproject note + the v2.23.2 root cause.
-        "nvidia-cuda-nvrtc>=13.0,<13.1",
-        "nvidia-cuda-runtime>=13.0,<13.1",
+        # nvrtc + runtime + nvjitlink pinned to CUDA-13.3.x to MATCH CuPy
+        # 13.6.0's BUNDLED CCCL 2.8.0 headers (v2.23.3 root cause,
+        # friend-log-confirmed 2026-06-05). CuPy v13 bundles its own CCCL in the
+        # wheel; 13.6.0's `cuda/std/limits` uses a constexpr __half return that
+        # ONLY compiles under nvrtc >= 13.3. Pinning DOWN to 13.0 (the v2.23.2
+        # mistake) FORCED `limits(633): constexpr function return is
+        # non-constant` on the friend's box. 13.3 (== bundled CCCL's toolchain)
+        # compiles on the dev box — VERIFIED in a scratch venv. Lockstep with
+        # the pyproject cu128 extra (parity test enforces).
+        "nvidia-cuda-nvrtc>=13.3,<13.4",
+        "nvidia-cuda-runtime>=13.3,<13.4",
         "nvidia-cublas>=13.5,<14",
         "nvidia-cufft>=12.3,<13",
         "nvidia-curand>=10.4,<11",
         "nvidia-cusolver>=12.2,<13",
         "nvidia-cusparse>=12.8,<13",
-        # nvjitlink lockstepped on the 13.0.x line (matches pyproject cu128).
-        "nvidia-nvjitlink>=13.0,<13.1",
+        # nvjitlink lockstepped on the 13.3.x line (matches pyproject cu128).
+        "nvidia-nvjitlink>=13.3,<13.4",
     ),
 }
 
@@ -180,12 +183,14 @@ _CUDA_TO_NVIDIA_WHEELS = {
 # fold --print-stamp-token into their stamp keys), forcing a fresh resync after
 # an installer-logic change even when requirements.txt/constraints.txt are
 # untouched. Bump this whenever the install BEHAVIOUR changes, not the dep set.
-INSTALLER_VERSION = "2.23.2"  # nvrtc/runtime pin 13.3->13.0 (CuPy-13.6 compat) +
-#                              re-probe a stale "gpu_ready" stamp under the new
-#                              toolchain. Bumped so an existing friend venv that
-#                              already stamped gpu_ready under the broken nvrtc
-#                              13.3 re-runs the GPU bootstrap + honest compile
-#                              probe instead of trusting the stale stamp.
+INSTALLER_VERSION = "2.23.4"  # v2.23.4: force CuPy to IGNORE a system CUDA
+#                              toolkit (friend's v11.8 nvcc on PATH) — clearing
+#                              CUDA_PATH alone was insufficient because
+#                              _get_cuda_path() also falls back to which('nvcc').
+#                              Now neutralize get_cuda_path/get_nvcc_path so CuPy
+#                              uses its bundled CCCL 2.8.0 headers (the REAL cure,
+#                              verified by reproducing the hijack). Bumped so a
+#                              stale friend venv re-probes under the new logic.
 
 # Map a detected CUDA major -> a PyTorch-SUPPORTED wheel index URL.
 #
@@ -608,13 +613,21 @@ def probe_cupy(python_exe: str) -> Optional[str]:
     # The probe MIRRORS the rPPG injector's GPU-init recovery so the GUI "GPU
     # ready" status matches what the injector will actually do: on a compile
     # failure, (a) force the real on-disk CUDA include dir + clear_memo (header
-    # version-skew), (b) prepend nvrtc --expt-relaxed-constexpr (CuPy 13.6.0's
-    # CCCL vs nvrtc 13.3 constexpr error — the friend's deepest cause), and
-    # (c) clear the JIT cache, then retry ONCE. Keep this list in lockstep with
+    # version-skew) and (b) clear the JIT cache, then retry ONCE. (The bogus
+    # nvrtc --expt-relaxed-constexpr belt was REMOVED in v2.23.3 — it's an nvcc
+    # flag nvrtc rejects; the real fix is the nvrtc>=13.3 pin matching CuPy
+    # 13.6's bundled CCCL 2.8.0.) Keep this in lockstep with
     # rPPG/rppg_injector.py's _init_cupy_backend retry block.
     probe_src = "\n".join(
         (
             "import sys, os",
+            # ROOT-CAUSE FIX (v2.23.3): unset CUDA_PATH/CUDA_HOME so CuPy uses
+            # its OWN bundled headers, not an old SYSTEM CUDA toolkit's (the
+            # friend's CUDA v11.8 headers broke CuPy 13.6's bundled CCCL — see
+            # the rPPG injector comment + cupy#9852). MUST match the injector or
+            # the GUI 'GPU ready' probe and the real run disagree.
+            "if os.environ.get('RPPG_KEEP_CUDA_PATH') != '1':",
+            "    os.environ.pop('CUDA_PATH', None); os.environ.pop('CUDA_HOME', None)",
             "sys.path.insert(0, " + repr(_scripts_dir) + ")",
             "_clear = None",
             "_incdirs = None",
@@ -625,6 +638,19 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             "except Exception:",
             "    pass",
             "import cupy as cp",
+            # Force CuPy to ignore a SYSTEM CUDA toolkit (the friend's v11.8 on
+            # PATH via nvcc) and use its OWN bundled headers — clearing CUDA_PATH
+            # alone is NOT enough because _get_cuda_path() also falls back to
+            # shutil.which('nvcc'). MUST match the injector's
+            # _force_cupy_bundled_cuda_headers() (verified by reproduction).
+            "if os.environ.get('RPPG_KEEP_CUDA_PATH') != '1':",
+            "    try:",
+            "        import cupy._environment as _ce0",
+            "        _ce0._cuda_path = None; _ce0._nvcc_path = None",
+            "        _ce0.get_cuda_path = lambda: None",
+            "        _ce0.get_nvcc_path = lambda: None",
+            "    except Exception:",
+            "        pass",
             "from cupyx.scipy.ndimage import gaussian_filter as _g",
             "x = cp.asarray([1, 2, 3])",
             "_ = cp.asnumpy(x)",
@@ -633,7 +659,7 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             "    return _g(cp.zeros((4, 4), dtype=cp.float32), 1.0)",
             "def _recover():",
             "    try:",
-            "        import cupy._environment as _ce, cupy.cuda.compiler as _cc",
+            "        import cupy._environment as _ce",
             "        _dirs = list(_incdirs()) if _incdirs else []",
             "        if _dirs and not getattr(_ce, '_probe_inc_patched', False):",
             "            _o = _ce._get_include_dir_from_conda_or_wheel",
@@ -644,15 +670,6 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             "                return d",
             "            _ce._get_include_dir_from_conda_or_wheel = _p",
             "            _ce._probe_inc_patched = True",
-            "        if not getattr(_cc, '_probe_relaxed_patched', False):",
-            "            _oc = _cc.compile_using_nvrtc",
-            "            def _pc(src, options=(), *a, _oc=_oc, **k):",
-            "                opts = tuple(options or ())",
-            "                if '--expt-relaxed-constexpr' not in opts:",
-            "                    opts = ('--expt-relaxed-constexpr',) + opts",
-            "                return _oc(src, opts, *a, **k)",
-            "            _cc.compile_using_nvrtc = _pc",
-            "            _cc._probe_relaxed_patched = True",
             "        if hasattr(cp, 'clear_memo'): cp.clear_memo()",
             "    except Exception:",
             "        pass",

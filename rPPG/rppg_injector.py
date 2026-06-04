@@ -169,10 +169,41 @@ def _init_cupy_backend():
     in the first frame op.
     """
     import cupy as cp
+    _force_cupy_bundled_cuda_headers()  # MUST run before the first compile
     from cupyx.scipy.ndimage import gaussian_filter as gf
     cp.zeros(1, dtype=cp.float32)  # device probe: raises if no CUDA device
     gf(cp.zeros((4, 4), dtype=cp.float32), 1.0)  # force nvrtc kernel compile
     return cp, gf
+
+
+def _force_cupy_bundled_cuda_headers():
+    """Make CuPy ignore any SYSTEM CUDA toolkit and use its OWN bundled headers.
+
+    THE friend's CUDA-13 rPPG-on-CPU bug, fully root-caused 2026-06-05 by
+    REPRODUCING it: clearing CUDA_PATH/CUDA_HOME (v2.23.3) was NOT enough.
+    CuPy's ``cupy._environment._get_cuda_path()`` has a SECOND fallback —
+    ``shutil.which('nvcc')`` — so on a box with an OLD system CUDA Toolkit
+    (the friend's CUDA v11.8) whose ``nvcc.exe`` is on PATH, CuPy STILL resolved
+    ``C:\\...\\CUDA\\v11.8`` and JIT-compiled against its 11.8 headers, which
+    break CuPy 13.6's bundled CCCL 2.8.0 (``cuda/std/limits(633): constexpr
+    function return is non-constant``). This is CuPy's own documented mismatch
+    (cupy#9852/#9853). The ONLY authoritative lever is to force CuPy's CUDA-path
+    detection to None so it falls back to its wheel/bundled include dir —
+    immune to BOTH CUDA_PATH and nvcc-on-PATH. VERIFIED by reproducing the
+    hijack with a fake nvcc on PATH and confirming this defeats it.
+    RPPG_KEEP_CUDA_PATH=1 opts out (rare box that NEEDS the system toolkit).
+    """
+    if os.environ.get("RPPG_KEEP_CUDA_PATH") == "1":
+        return
+    try:
+        import cupy._environment as _cenv  # noqa: WPS433
+        # Memoized module globals ('' = uninitialized) + the public getters.
+        _cenv._cuda_path = None
+        _cenv._nvcc_path = None
+        _cenv.get_cuda_path = lambda: None
+        _cenv.get_nvcc_path = lambda: None
+    except Exception:  # noqa: BLE001 — best-effort; never break rPPG init
+        pass
 
 
 def _dump_gpu_error_sidecar(err):

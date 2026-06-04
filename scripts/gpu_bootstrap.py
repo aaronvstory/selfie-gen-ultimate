@@ -183,13 +183,14 @@ _CUDA_TO_NVIDIA_WHEELS = {
 # fold --print-stamp-token into their stamp keys), forcing a fresh resync after
 # an installer-logic change even when requirements.txt/constraints.txt are
 # untouched. Bump this whenever the install BEHAVIOUR changes, not the dep set.
-INSTALLER_VERSION = "2.23.3"  # nvrtc/runtime/nvjitlink pin 13.0 -> 13.3 (match
-#                              CuPy 13.6's bundled CCCL 2.8.0) + remove the bogus
-#                              nvrtc --expt-relaxed-constexpr belt. Bumped so an
-#                              existing friend venv that stamped gpu_ready (or
-#                              install_failed) under the broken 13.0 pin re-runs
-#                              the bootstrap + honest compile probe and UPGRADES
-#                              nvrtc 13.0 -> 13.3 instead of trusting the stamp.
+INSTALLER_VERSION = "2.23.4"  # v2.23.4: force CuPy to IGNORE a system CUDA
+#                              toolkit (friend's v11.8 nvcc on PATH) — clearing
+#                              CUDA_PATH alone was insufficient because
+#                              _get_cuda_path() also falls back to which('nvcc').
+#                              Now neutralize get_cuda_path/get_nvcc_path so CuPy
+#                              uses its bundled CCCL 2.8.0 headers (the REAL cure,
+#                              verified by reproducing the hijack). Bumped so a
+#                              stale friend venv re-probes under the new logic.
 
 # Map a detected CUDA major -> a PyTorch-SUPPORTED wheel index URL.
 #
@@ -637,6 +638,19 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             "except Exception:",
             "    pass",
             "import cupy as cp",
+            # Force CuPy to ignore a SYSTEM CUDA toolkit (the friend's v11.8 on
+            # PATH via nvcc) and use its OWN bundled headers — clearing CUDA_PATH
+            # alone is NOT enough because _get_cuda_path() also falls back to
+            # shutil.which('nvcc'). MUST match the injector's
+            # _force_cupy_bundled_cuda_headers() (verified by reproduction).
+            "if os.environ.get('RPPG_KEEP_CUDA_PATH') != '1':",
+            "    try:",
+            "        import cupy._environment as _ce0",
+            "        _ce0._cuda_path = None; _ce0._nvcc_path = None",
+            "        _ce0.get_cuda_path = lambda: None",
+            "        _ce0.get_nvcc_path = lambda: None",
+            "    except Exception:",
+            "        pass",
             "from cupyx.scipy.ndimage import gaussian_filter as _g",
             "x = cp.asarray([1, 2, 3])",
             "_ = cp.asnumpy(x)",

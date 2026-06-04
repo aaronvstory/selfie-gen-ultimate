@@ -286,6 +286,59 @@ def test_gpu_bootstrap_probe_unsets_cuda_path():
         "gpu_bootstrap probe must unset CUDA_PATH like the injector")
 
 
+def test_injector_neutralizes_cupy_system_cuda_detection():
+    """v2.23.4 — clearing CUDA_PATH was NOT enough: CuPy's _get_cuda_path()
+    ALSO falls back to shutil.which('nvcc'), so an OLD system CUDA toolkit on
+    PATH (the friend's v11.8) still hijacked the compile headers. The injector +
+    probe must ALSO neutralize cupy._environment.get_cuda_path / get_nvcc_path
+    (force None) so CuPy uses its bundled CCCL 2.8.0 headers — verified by
+    reproduction. Guard both surfaces have it."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    for rel in ("rPPG/rppg_injector.py", "scripts/gpu_bootstrap.py"):
+        src = (root / rel).read_text(encoding="utf-8", errors="replace")
+        assert "get_cuda_path = lambda: None" in src, (
+            f"{rel} must force cupy get_cuda_path to None (defeat nvcc-on-PATH)")
+        assert "get_nvcc_path = lambda: None" in src, (
+            f"{rel} must force cupy get_nvcc_path to None")
+
+
+def test_force_bundled_headers_helper_neutralizes_detection(monkeypatch):
+    """Run the injector's _force_cupy_bundled_cuda_headers() against a STUB
+    cupy._environment and assert it forces get_cuda_path/get_nvcc_path to None —
+    the runtime behaviour, not just source text. Skips if cupy is absent (the
+    helper imports cupy._environment)."""
+    import importlib, re, pathlib, types
+    # Build a stub cupy._environment so the helper has something to patch.
+    stub_env = types.ModuleType("cupy._environment")
+    stub_env._cuda_path = "C:/Program Files/.../CUDA/v11.8"
+    stub_env._nvcc_path = "C:/Program Files/.../CUDA/v11.8/bin/nvcc.exe"
+    stub_env.get_cuda_path = lambda: stub_env._cuda_path
+    stub_env.get_nvcc_path = lambda: stub_env._nvcc_path
+    stub_cupy = types.ModuleType("cupy")
+    monkeypatch.setitem(sys.modules, "cupy", stub_cupy)
+    monkeypatch.setitem(sys.modules, "cupy._environment", stub_env)
+    monkeypatch.delenv("RPPG_KEEP_CUDA_PATH", raising=False)
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "rPPG" / "rppg_injector.py").read_text(encoding="utf-8")
+    m = re.search(r"def _force_cupy_bundled_cuda_headers.*?(?=\ndef |\Z)", src, re.S)
+    assert m, "helper not found"
+    ns = {"os": os}
+    exec(m.group(0), ns)
+    ns["_force_cupy_bundled_cuda_headers"]()
+    assert stub_env.get_cuda_path() is None, "system CUDA path must be neutralized"
+    assert stub_env.get_nvcc_path() is None, "nvcc path must be neutralized"
+
+    # Opt-out: with RPPG_KEEP_CUDA_PATH=1 it must NOT touch detection.
+    stub_env.get_cuda_path = lambda: "kept"
+    monkeypatch.setenv("RPPG_KEEP_CUDA_PATH", "1")
+    ns2 = {"os": os}
+    exec(m.group(0), ns2)
+    ns2["_force_cupy_bundled_cuda_headers"]()
+    assert stub_env.get_cuda_path() == "kept", "opt-out must preserve detection"
+
+
 def test_nvrtc_runtime_pinned_to_133_in_gpu_bootstrap():
     """gpu_bootstrap pins nvrtc + runtime + nvjitlink to 13.3.x — the toolchain
     CuPy 13.6.0's BUNDLED CCCL 2.8.0 headers expect. Pinning DOWN to 13.0 (the
