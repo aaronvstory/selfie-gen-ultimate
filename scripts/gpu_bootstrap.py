@@ -598,10 +598,17 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             "import sys",
             "sys.path.insert(0, " + repr(_scripts_dir) + ")",
             "_clear = None",
+            # Import the LOAD-BEARING register fn on its OWN: a stale
+            # cuda_dll_paths.py lacking clear_cupy_kernel_cache must NOT also
+            # drop register (a combined import fails on the first missing name),
+            # else the probe false-negatives on a good box (code-review).
             "try:",
-            "    from cuda_dll_paths import register_cuda_dll_dirs, "
-            "clear_cupy_kernel_cache as _clear",
+            "    from cuda_dll_paths import register_cuda_dll_dirs",
             "    register_cuda_dll_dirs()",
+            "except Exception:",
+            "    pass",
+            "try:",
+            "    from cuda_dll_paths import clear_cupy_kernel_cache as _clear",
             "except Exception:",
             "    pass",
             "import cupy as cp",

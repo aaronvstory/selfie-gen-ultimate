@@ -219,7 +219,14 @@ def test_rppg_injector_registers_cuda_dll_dirs_and_force_cpu():
     # pulls clear_cupy_kernel_cache + the nvrtc-error helpers — so match the
     # module + symbol rather than a single-line literal.)
     assert "from cuda_dll_paths import" in src
-    assert "register_cuda_dll_dirs as _register_cuda_dll_dirs" in src
+    # The LOAD-BEARING register fn must be imported on its OWN line, NOT combined
+    # with the v2.23 helpers — a stale cuda_dll_paths.py lacking those helpers
+    # must still get DLL registration (code-review HIGH: a combined import would
+    # fail on the first missing name and silently strand a good GPU on CPU).
+    assert (
+        "from cuda_dll_paths import register_cuda_dll_dirs as _register_cuda_dll_dirs"
+        in src
+    )
     assert src.index("_register_cuda_dll_dirs()") < src.index("import cupy as cp")
     # v2.23 GPU fix: the injector recovers from a stale-JIT-cache CompileException
     # by clearing the cache + retrying the compile once before CPU fallback.

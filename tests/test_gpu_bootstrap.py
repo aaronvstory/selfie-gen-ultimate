@@ -800,6 +800,35 @@ def test_probe_cupy_parses_sentinel_line_despite_trailing_noise(monkeypatch):
     assert gpu_bootstrap.probe_cupy("python_unused") == "13.3.0"
 
 
+def test_probe_src_imports_register_independently_and_clears_cache_on_compile_fail(monkeypatch):
+    """v2.23 GPU fix: the probe program must (a) import + call
+    register_cuda_dll_dirs on its OWN, so a stale cuda_dll_paths.py lacking
+    clear_cupy_kernel_cache doesn't also drop the load-bearing register call
+    (code-review HIGH → false-negative probe → needless reinstall); and (b)
+    wipe a stale JIT cache + retry the compile once, mirroring the injector."""
+    import types
+
+    captured = {}
+
+    def _fake_run(cmd, *args, **kwargs):
+        # cmd == [python_exe, "-c", probe_src]
+        captured["src"] = cmd[2]
+        return types.SimpleNamespace(returncode=0, stdout="CUPYVER=13.6.0\n", stderr="")
+
+    monkeypatch.setattr(gpu_bootstrap.subprocess, "run", _fake_run)
+    assert gpu_bootstrap.probe_cupy("python_unused") == "13.6.0"
+
+    src = captured["src"]
+    # register imported on its OWN (not combined with clear_cupy_kernel_cache).
+    assert "from cuda_dll_paths import register_cuda_dll_dirs\n" in src
+    assert "register_cuda_dll_dirs, clear_cupy_kernel_cache" not in src
+    # clear is imported separately + used in the compile-failure retry.
+    assert "from cuda_dll_paths import clear_cupy_kernel_cache as _clear" in src
+    assert "_clear()" in src
+    # The program must be syntactically valid (it's run via python -c).
+    compile(src, "<probe_src>", "exec")
+
+
 def test_probe_cupy_returns_none_when_sentinel_absent(monkeypatch):
     """If the probe somehow emits no CUPYVER= line (crash before print,
     truncated output), probe_cupy returns None rather than a junk string,

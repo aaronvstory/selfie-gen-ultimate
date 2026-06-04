@@ -104,6 +104,36 @@ except ImportError:
 # is CUDA-major agnostic (cu13 nvidia/cu13/bin/x86_64 + cu12 nvidia/cuda_nvrtc/
 # bin) and a no-op off-Windows. Guarded so a zip missing the helper degrades to
 # CPU instead of crashing the whole rPPG step.
+# Module-level fallbacks used whenever the shared helper can't be imported, so
+# the stubs are defined ONCE (no copy-paste between the two except branches
+# below). The fallback summarizer mirrors cuda_dll_paths.summarize_nvrtc_compile_error
+# so a partial deploy still surfaces the real ``error:`` line instead of
+# regressing to the head-truncation that hid the friend's cause (code-review).
+def _fallback_register_cuda_dll_dirs():
+    return []
+
+
+def _fallback_clear_cupy_kernel_cache():
+    return None
+
+
+def _fallback_is_nvrtc_compile_error(err):
+    name = type(err).__name__.lower()
+    return "compile" in name or "nvrtc" in name
+
+
+def _fallback_summarize_nvrtc_compile_error(err, limit=300):
+    raw = str(err).strip().replace("\r", "")
+    lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+    keyed = [
+        ln for ln in lines
+        if ("error" in ln.lower() or "fatal" in ln.lower())
+        and "remark" not in ln.lower()
+    ]
+    detail = " | ".join(keyed) if keyed else " ".join(lines)
+    return (detail[:limit] + "…") if len(detail) > limit else detail
+
+
 try:
     # realpath (not abspath) so a symlinked rppg_injector.py still resolves the
     # real repo-root scripts/ dir for the shared helper import (gemini PR #72).
@@ -118,32 +148,36 @@ try:
     if _added_scripts_dir:
         sys.path.insert(0, _scripts_dir)
     try:
-        from cuda_dll_paths import (
-            register_cuda_dll_dirs as _register_cuda_dll_dirs,
-            clear_cupy_kernel_cache as _clear_cupy_kernel_cache,
-            is_nvrtc_compile_error as _is_nvrtc_compile_error,
-            summarize_nvrtc_compile_error as _summarize_nvrtc_compile_error,
-        )
+        # Import the LOAD-BEARING register fn on its OWN so a stale
+        # cuda_dll_paths.py predating the v2.23 helpers (no clear/is/summarize)
+        # still gets DLL registration. A single combined import would fail on
+        # the first missing name and drop register too — silently stranding a
+        # good GPU on CPU, the exact regression this fix prevents (code-review).
+        try:
+            from cuda_dll_paths import register_cuda_dll_dirs as _register_cuda_dll_dirs
+        except Exception:  # noqa: BLE001
+            _register_cuda_dll_dirs = _fallback_register_cuda_dll_dirs
+        try:
+            from cuda_dll_paths import (
+                clear_cupy_kernel_cache as _clear_cupy_kernel_cache,
+                is_nvrtc_compile_error as _is_nvrtc_compile_error,
+                summarize_nvrtc_compile_error as _summarize_nvrtc_compile_error,
+            )
+        except Exception:  # noqa: BLE001 — pre-v2.23 helper: keep DLL reg, stub the rest
+            _clear_cupy_kernel_cache = _fallback_clear_cupy_kernel_cache
+            _is_nvrtc_compile_error = _fallback_is_nvrtc_compile_error
+            _summarize_nvrtc_compile_error = _fallback_summarize_nvrtc_compile_error
     finally:
         if _added_scripts_dir:
             try:
                 sys.path.remove(_scripts_dir)
             except ValueError:
                 pass
-except Exception:  # noqa: BLE001 — helper absent/unimportable => CPU fallback
-    def _register_cuda_dll_dirs():
-        return []
-
-    def _clear_cupy_kernel_cache():
-        return None
-
-    def _is_nvrtc_compile_error(err):
-        name = type(err).__name__.lower()
-        return "compile" in name or "nvrtc" in name
-
-    def _summarize_nvrtc_compile_error(err, limit=300):
-        detail = str(err).strip().replace("\n", " ")
-        return (detail[:limit] + "…") if len(detail) > limit else detail
+except Exception:  # noqa: BLE001 — scripts-dir resolution itself failed => CPU
+    _register_cuda_dll_dirs = _fallback_register_cuda_dll_dirs
+    _clear_cupy_kernel_cache = _fallback_clear_cupy_kernel_cache
+    _is_nvrtc_compile_error = _fallback_is_nvrtc_compile_error
+    _summarize_nvrtc_compile_error = _fallback_summarize_nvrtc_compile_error
 
 # Guard the RUNTIME call too, not just the import: the helper now wraps its own
 # filesystem touches, but a belt-and-suspenders try/except here guarantees that
@@ -154,6 +188,8 @@ try:
     _register_cuda_dll_dirs()
 except Exception:  # noqa: BLE001 — registration must never break rPPG import
     pass
+
+
 def _init_cupy_backend():
     """Import CuPy, verify a CUDA device, and force a real nvrtc kernel compile.
 
@@ -185,7 +221,13 @@ def _dump_gpu_error_sidecar(err):
         import datetime
         import tempfile
         import traceback
-        path = os.path.join(tempfile.gettempdir(), "rppg_gpu_compile_error.log")
+        # PID-keyed filename so concurrent rPPG processes (the GUI supports
+        # concurrent launches) don't clobber each other's diagnostic, and the
+        # path printed in the console line always names THIS process's log
+        # (per the CLAUDE.md per-instance runtime-file rule).
+        path = os.path.join(
+            tempfile.gettempdir(), f"rppg_gpu_compile_error_{os.getpid()}.log"
+        )
         with open(path, "w", encoding="utf-8", errors="replace") as fh:
             fh.write(f"# rPPG GPU backend init failure — {datetime.datetime.now().isoformat()}\n")
             fh.write(f"# exception type: {type(err).__name__}\n\n")
