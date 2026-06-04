@@ -582,12 +582,27 @@ class KlingAutomationUI:
             if value:
                 self.config[spec.config_key] = value
                 self._clear_env_prefill_marker(spec.config_key)
+                # A real value was entered — opt this key BACK IN to the env
+                # fallback (drop it from the persisted opt-out list). Mirrors the
+                # GUI clear/set logic (Codex P2, PR #73).
+                optout = list(self.config.get("_env_key_optout") or [])
+                if spec.config_key in optout:
+                    optout.remove(spec.config_key)
+                    self.config["_env_key_optout"] = optout
                 self.save_config()
                 print(f"Saved {spec.config_key}.")
         elif len(API_KEY_SPECS) < selected <= len(API_KEY_SPECS) * 2:
             spec = API_KEY_SPECS[selected - len(API_KEY_SPECS) - 1]
             self.config[spec.config_key] = ""
             self._clear_env_prefill_marker(spec.config_key)
+            # Persist the clear so it survives restart even when the env var is
+            # still set — otherwise apply_env_key_fallback() refills it from the
+            # env on the next launch and "Clear key" does nothing (Codex P2,
+            # PR #73). Same persisted opt-out the GUI uses.
+            optout = list(self.config.get("_env_key_optout") or [])
+            if spec.config_key not in optout:
+                optout.append(spec.config_key)
+                self.config["_env_key_optout"] = optout
             self.save_config()
             print(f"Cleared {spec.config_key}.")
         self.pause_continue("\nPress Enter to continue...")

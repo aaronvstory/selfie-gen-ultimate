@@ -475,6 +475,14 @@ def check_github_repos_for_marker() -> CheckResult:
         return CheckResult(name, ok=False, details=[
             "Could not parse gh repo list output.",
         ])
+    # `gh repo list --json` should yield a LIST of repo dicts. Guard against a
+    # corrupted / unexpected shape (e.g. {} or a bare string) so the iteration
+    # below can't AttributeError/TypeError mid-scan (gemini MEDIUM, PR #73).
+    if not isinstance(repos, list):
+        return CheckResult(name, ok=False, details=[
+            f"gh repo list returned a {type(repos).__name__}, expected a list.",
+        ])
+    repos = [r for r in repos if isinstance(r, dict)]
     # Gemini security-medium on 49702c0 (2026-05-22): when the account
     # has MORE than --limit repos, `gh` silently truncates and we'd
     # miss any exfil repo in the un-scanned tail. Surface the

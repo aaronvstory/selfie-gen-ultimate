@@ -78,7 +78,13 @@ def _run(cmd: list[str], *, timeout: int = 600) -> bool:
     try:
         proc = subprocess.run(cmd, timeout=timeout, stdout=sys.stderr)
         return proc.returncode == 0
-    except (OSError, subprocess.SubprocessError):
+    except Exception:  # noqa: BLE001
+        # Broadened from (OSError, SubprocessError): when sys.stderr is a custom
+        # stream with no real file descriptor (frozen exe / pythonw GUI),
+        # redirecting stdout=sys.stderr raises io.UnsupportedOperation (a
+        # ValueError) which the narrow tuple missed — crashing the stdlib-only
+        # uv bootstrap (gemini HIGH, PR #73). Any failure here just means "uv
+        # not installed by this path", so returning False is correct.
         return False
 
 

@@ -162,6 +162,23 @@ def test_apply_env_key_fallback_respects_persisted_optout(monkeypatch):
     assert config2.get("openrouter_api_key") == "or-from-env"
 
 
+def test_cli_clear_key_path_manages_optout_like_gui():
+    """The CLI provider-settings clear/set path must manage _env_key_optout the
+    same way the GUI does (Codex P2, PR #73) — clearing adds the key to the
+    persisted opt-out, entering a real value removes it. Without this, the CLI
+    'Clear key' didn't survive restart (env refilled it)."""
+    import inspect
+    import kling_automation_ui as cli
+
+    src = inspect.getsource(cli.KlingAutomationUI)
+    # The clear branch appends to the opt-out; the set branch removes from it.
+    assert "_env_key_optout" in src, "CLI must touch the persisted opt-out list"
+    assert "optout.append(spec.config_key)" in src, (
+        "CLI clear must add the key to _env_key_optout")
+    assert "optout.remove(spec.config_key)" in src, (
+        "CLI set-real-value must remove the key from _env_key_optout")
+
+
 def test_apply_env_key_fallback_strips_whitespace(monkeypatch):
     """Whitespace-only config is treated as empty; env value is trimmed."""
     monkeypatch.setenv("FAL_KEY", "  spaced-key  ")
