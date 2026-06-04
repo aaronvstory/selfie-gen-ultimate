@@ -123,6 +123,7 @@ try:
             clear_cupy_kernel_cache as _clear_cupy_kernel_cache,
             is_nvrtc_compile_error as _is_nvrtc_compile_error,
             summarize_nvrtc_compile_error as _summarize_nvrtc_compile_error,
+            cuda_include_dirs as _cuda_include_dirs,
         )
     finally:
         if _added_scripts_dir:
@@ -144,6 +145,9 @@ except Exception:  # noqa: BLE001 — helper absent/unimportable => CPU fallback
     def _summarize_nvrtc_compile_error(err, limit=300):
         detail = str(err).strip().replace("\n", " ")
         return (detail[:limit] + "…") if len(detail) > limit else detail
+
+    def _cuda_include_dirs():
+        return []
 
 # Guard the RUNTIME call too, not just the import: the helper now wraps its own
 # filesystem touches, but a belt-and-suspenders try/except here guarantees that
@@ -218,14 +222,73 @@ try:
         # module) can't be helped by a cache wipe — re-raise it immediately.
         if not _is_nvrtc_compile_error(_first_gpu_err):
             raise
+        # TWO independent causes of an nvrtc compile failure on a box whose
+        # nvidia DLLs load fine, recovered together before the CPU fallback:
+        #
+        # 1. MISSING CUDA RUNTIME HEADERS (the friend's actual bug, root-caused
+        #    2026-06-04). CuPy 13.x compiles kernels by #include-ing the CUDA
+        #    Runtime headers, and auto-detects them ONLY when the
+        #    nvidia-cuda-runtime wheel's version EXACTLY matches the major.minor
+        #    nvrtc reports. Our >=13.3,<14 pins let nvrtc + runtime float to
+        #    DIFFERENT minors independently; when they skew, CuPy finds ZERO
+        #    include dirs → "cannot open cuda_runtime.h" surfaced behind a benign
+        #    cpp_dialect.h remark. FIX: point CUPY_CUDA_INCLUDE_PATH at the real
+        #    on-disk nvidia/<...>/include dir (which always exists regardless of
+        #    the version label) and retry, so a future skew self-heals.
+        # 2. STALE JIT CACHE (a previous CUDA toolkit's cubins after a driver
+        #    upgrade). FIX: clear ~/.cupy/kernel_cache and retry.
+        # Apply BOTH, then retry the compile ONCE.
+        try:
+            _inc_dirs = _cuda_include_dirs()
+        except Exception:  # noqa: BLE001
+            _inc_dirs = []
+        # Force CuPy to use the real on-disk CUDA include dir even when its own
+        # wheel-version-match detector returned [] (the skew case). CuPy builds
+        # the nvrtc -I flags in cupy.cuda.compiler._get_extra_include_dir_opts
+        # (memoized) from _environment._get_include_dir_from_conda_or_wheel. We
+        # WRAP that detector so it appends our discovered include dirs, then
+        # clear the memoize cache so the retry recomputes the -I flags. There is
+        # NO CUPY_CUDA_INCLUDE_PATH env var — this monkeypatch is the only way to
+        # inject the path into an already-imported CuPy (root cause 2026-06-04).
+        _inc_applied = ""
+        if _inc_dirs:
+            try:
+                import cupy._environment as _cenv  # noqa: WPS433
+                import cupy.cuda.compiler as _ccompiler  # noqa: WPS433
+                if not getattr(_cenv, "_rppg_include_patched", False):
+                    _orig_get_inc = _cenv._get_include_dir_from_conda_or_wheel
+
+                    def _patched_get_inc(major, minor, _orig=_orig_get_inc,
+                                         _extra=tuple(_inc_dirs)):
+                        dirs = list(_orig(major, minor))
+                        for d in _extra:
+                            if d not in dirs:
+                                dirs.append(d)
+                        return dirs
+
+                    _cenv._get_include_dir_from_conda_or_wheel = _patched_get_inc
+                    _cenv._rppg_include_patched = True
+                # _get_extra_include_dir_opts is @cupy._util.memoize'd, so its
+                # cached -I tuple won't see the patch. cupy.clear_memo() is
+                # CuPy's official reset for ALL memoized funcs — use it so the
+                # retry recomputes the include flags with our forced dir.
+                import cupy as _cupy_mod  # noqa: WPS433
+                if hasattr(_cupy_mod, "clear_memo"):
+                    _cupy_mod.clear_memo()
+                _ = _ccompiler  # keep the import referenced (module side effects)
+                _inc_applied = os.pathsep.join(_inc_dirs)
+            except Exception:  # noqa: BLE001 — include patch is best-effort
+                pass
         try:
             _cleared = _clear_cupy_kernel_cache()
         except Exception:  # noqa: BLE001 — cache wipe must never crash rPPG
             _cleared = None
         print(f"GPU backend: nvrtc kernel compile failed "
               f"({type(_first_gpu_err).__name__}: "
-              f"{_summarize_nvrtc_compile_error(_first_gpu_err)}); cleared CuPy "
-              f"JIT cache ({_cleared or 'nothing to clear'}); retrying once…")
+              f"{_summarize_nvrtc_compile_error(_first_gpu_err)}); "
+              f"forced CUDA include dir ({_inc_applied or 'none found'}); "
+              f"cleared CuPy JIT cache ({_cleared or 'nothing to clear'}); "
+              f"retrying once…")
         _cp, _cp_gaussian_filter = _init_cupy_backend()
     GPU_AVAILABLE = True
     print(f"GPU backend: CuPy {_cp.__version__} on "

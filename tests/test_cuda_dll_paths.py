@@ -207,3 +207,44 @@ def test_summarize_truncates_to_limit():
     )
     assert len(summary) <= 51  # 50 chars + the … ellipsis
     assert summary.endswith("…")
+
+
+# --- cuda_include_dirs (the CUDA-13 header-skew fix, root-caused 2026-06-04) ---
+def test_cuda_include_dirs_finds_runtime_header_dir(tmp_path, monkeypatch):
+    """cuda_include_dirs returns only nvidia/<...>/include dirs that actually
+    carry a CUDA runtime header — the dir CuPy needs to compile kernels when its
+    own wheel-version-match detector returns [] (the friend's CUDA-13 bug)."""
+    sp = tmp_path / "site-packages"
+    cu13_inc = sp / "nvidia" / "cu13" / "include"
+    cu13_inc.mkdir(parents=True)
+    (cu13_inc / "cuda_runtime.h").write_text("// header")
+    # A component dir with NO cuda header must be ignored.
+    other_inc = sp / "nvidia" / "cccl" / "include"
+    other_inc.mkdir(parents=True)
+    (other_inc / "something_else.h").write_text("// not a cuda runtime header")
+
+    monkeypatch.setattr(cuda_dll_paths, "_candidate_site_packages", lambda: [str(sp)])
+    dirs = cuda_dll_paths.cuda_include_dirs()
+    assert any(d.endswith(os.path.join("cu13", "include")) for d in dirs), dirs
+    assert not any("cccl" in d for d in dirs), "include dir without a CUDA header must be skipped"
+
+
+def test_cuda_include_dirs_empty_when_no_nvidia_tree(tmp_path, monkeypatch):
+    """No nvidia/ tree (e.g. CPU-only / macOS) -> [] (never crashes)."""
+    monkeypatch.setattr(
+        cuda_dll_paths, "_candidate_site_packages", lambda: [str(tmp_path)]
+    )
+    assert cuda_dll_paths.cuda_include_dirs() == []
+
+
+def test_cuda_include_dirs_survives_oserror(tmp_path, monkeypatch):
+    """A restricted/AV-quarantined include dir must not crash the helper."""
+    sp = tmp_path / "site-packages"
+    (sp / "nvidia").mkdir(parents=True)
+    monkeypatch.setattr(cuda_dll_paths, "_candidate_site_packages", lambda: [str(sp)])
+
+    def _boom(*a, **k):
+        raise OSError("simulated permission error")
+
+    monkeypatch.setattr(cuda_dll_paths.glob, "glob", _boom)
+    assert cuda_dll_paths.cuda_include_dirs() == []  # no crash

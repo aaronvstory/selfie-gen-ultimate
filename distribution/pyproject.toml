@@ -166,10 +166,17 @@ cu128 = [
     # CuPy is win/linux-only (see cu121 note) — gate it so the darwin arm64
     # required-environment can still resolve this extra (cupy simply absent).
     "cupy-cuda13x>=13.6,<14; sys_platform == 'win32' or sys_platform == 'linux'",
-    # CUDA 13.x component wheels (un-suffixed nvidia-* line). Versions float
-    # within the 13.x major to track cupy-cuda13x's expectations.
-    "nvidia-cuda-nvrtc>=13.3,<14; sys_platform == 'win32' or sys_platform == 'linux'",
-    "nvidia-cuda-runtime>=13.3,<14; sys_platform == 'win32' or sys_platform == 'linux'",
+    # CUDA 13.x component wheels (un-suffixed nvidia-* line).
+    # nvrtc + runtime are pinned to the SAME 13.3.x minor (<13.4) on purpose:
+    # CuPy 13.x finds its compile headers ONLY when the nvidia-cuda-runtime
+    # wheel's version EXACTLY matches the major.minor nvrtc reports
+    # (cupy._environment._get_include_dir_from_conda_or_wheel). A loose
+    # >=13.3,<14 let them drift to different minors → CuPy got ZERO include dirs
+    # → nvrtc "cannot open cuda_runtime.h" behind a benign cpp_dialect.h remark =
+    # the friend's CUDA-13 GPU-rPPG failure (root-caused 2026-06-04). Keep nvrtc
+    # and runtime locked to the same minor so the header match always succeeds.
+    "nvidia-cuda-nvrtc>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cuda-runtime>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
     "nvidia-cublas>=13.5,<14; sys_platform == 'win32' or sys_platform == 'linux'",
     "nvidia-cufft>=12.3,<13; sys_platform == 'win32' or sys_platform == 'linux'",
     "nvidia-curand>=10.4,<11; sys_platform == 'win32' or sys_platform == 'linux'",
