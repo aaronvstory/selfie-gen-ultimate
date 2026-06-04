@@ -1609,7 +1609,7 @@ class KlingGUIWindow:
         except Exception as e:
             self._log(f"Error saving config: {e}", "error")
             try:
-                if 'tmp_path' in dir() and os.path.exists(tmp_path):
+                if 'tmp_path' in locals() and os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except Exception:
                 pass
@@ -3924,24 +3924,18 @@ class KlingGUIWindow:
             parent=self.root,
         )
 
+        # First launch is PURELY INFORMATIONAL (Codex P2, PR #73 + user
+        # direction 2026-06-04: "nothing is required at startup"). Do NOT pop a
+        # blocking askstring per missing key — the info box above already tells
+        # the user to add keys anytime via the bottom-bar badges. The old prompt
+        # loop contradicted the "nothing required" contract and made a no-key
+        # launch nag for a Fal.ai key it then said was optional.
         for spec in missing:
-            new_key = simpledialog.askstring(
-                f"{spec.label} API Key",
-                f"Enter your {spec.label} API key:\n{spec.url}\n\nCancel or leave blank to skip for now.",
-                parent=self.root,
+            self._log(
+                f"{spec.label} API key not set — add it via the bottom-bar "
+                f"badge when you need {spec.label}.",
+                "info",
             )
-            if new_key is None:
-                self._log(f"{spec.label} API key setup skipped.", "warning")
-                continue
-            new_key = new_key.strip()
-            if not new_key:
-                self._log(f"{spec.label} API key setup skipped.", "warning")
-                continue
-            self.config[spec.config_key] = new_key
-            self._clear_env_prefill_marker(spec.config_key)
-            self._save_config()
-            self._update_api_badge(spec.config_key)
-            self._log(f"{spec.label} API key saved.", "success")
 
         optional_missing = list(non_required_missing_specs(self.config))
         if optional_missing:

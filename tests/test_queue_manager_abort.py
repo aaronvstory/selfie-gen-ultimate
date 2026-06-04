@@ -123,3 +123,69 @@ def test_handle_item_abort_requeues_not_fails():
     # An abort is a user choice — it must NOT be logged as an error.
     assert any("Aborted" in m for _lvl, m in logs)
     assert not any(lvl in ("error", "error_bold") for lvl, _m in logs)
+
+
+def test_handle_item_abort_requeues_completed_item():
+    """code-review Codex P2 (PR #73): _process_queue marks the item 'completed'
+    right after Kling generation RETURNS, BEFORE the post-processing stages
+    (rPPG/Loop/Oldcam). An Abort DURING those stages reaches _handle_item_abort
+    with status=='completed'; the old processing-only guard silently no-op'd
+    while the log still claimed 're-queued' — the row stayed done and Resume
+    couldn't pick it up. A completed item must now also be re-queued."""
+    qm, _logs = _make_qm()
+
+    class _Item:
+        filename = "clip.mp4"
+        status = "completed"  # already flipped to completed before post-proc
+        stage = "oldcam"
+        stage_percent = 80
+        output_path = None
+        resume_kling_output = None
+        resume_from_existing = False
+
+    item = _Item()
+    qm._handle_item_abort(item)
+    assert item.status == "pending", "completed-then-aborted item must re-queue"
+    assert item.stage == "queued"
+
+
+def test_handle_item_abort_arms_resume_when_kling_output_exists(tmp_path):
+    """When the Kling video already exists at abort time (abort during
+    post-processing), the handler must arm resume_from_existing so Resume skips
+    re-generating Kling and continues post-processing from the existing file
+    (Codex P2, PR #73). When NO output exists yet (abort during Kling gen),
+    resume must stay OFF so Resume does a clean full re-run."""
+    qm, logs = _make_qm()
+    kling = tmp_path / "clip_kling.mp4"
+    kling.write_bytes(b"fake-mp4")
+
+    class _Item:
+        filename = "clip.mp4"
+        status = "completed"
+        stage = "rppg"
+        stage_percent = 10
+        output_path = None
+        resume_kling_output = str(kling)
+        resume_from_existing = False
+
+    item = _Item()
+    qm._handle_item_abort(item)
+    assert item.resume_from_existing is True
+    assert any("continue from the existing Kling" in m for _lvl, m in logs)
+
+    # No Kling output on disk -> resume must NOT arm (clean full re-run on Resume)
+    qm2, logs2 = _make_qm()
+
+    class _Item2:
+        filename = "clip2.mp4"
+        status = "processing"
+        stage = "kling"
+        stage_percent = 5
+        output_path = None
+        resume_kling_output = None
+        resume_from_existing = False
+
+    item2 = _Item2()
+    qm2._handle_item_abort(item2)
+    assert item2.resume_from_existing is False
+    assert any("re-run it" in m for _lvl, m in logs2)

@@ -133,7 +133,14 @@ class GuiLauncherBatchModeTests(unittest.TestCase):
 
 
 class GuiStartupKeyPromptTests(unittest.TestCase):
-    def test_key_prompt_cancel_does_not_close_app(self):
+    """First-launch onboarding is PURELY INFORMATIONAL (Codex P2, PR #73 +
+    user direction 2026-06-04 "nothing is required at startup"). The old
+    blocking ``simpledialog.askstring`` per-missing-key loop was removed — it
+    contradicted the "nothing required" contract by nagging for a Fal.ai key it
+    then called optional. These tests lock the new contract: show the info box,
+    NEVER prompt, NEVER save, never close the app."""
+
+    def test_first_launch_is_informational_only_no_prompt(self):
         module = importlib.import_module("kling_gui.main_window")
         window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)
         window.config = {"falai_api_key": "", "bfl_api_key": ""}
@@ -145,16 +152,19 @@ class GuiStartupKeyPromptTests(unittest.TestCase):
         window._update_api_badge = lambda _key: None
         window._on_close = mock.Mock()
 
-        with mock.patch.object(module.messagebox, "showinfo"), mock.patch.object(
-            module.simpledialog, "askstring", side_effect=[None, None]
-        ):
+        with mock.patch.object(module.messagebox, "showinfo") as info_mock, \
+            mock.patch.object(module.simpledialog, "askstring") as ask_mock:
             window._prompt_startup_provider_keys_on_first_run()
 
-        window._on_close.assert_not_called()
+        # Informational box shown, but NO blocking key prompt and NO save.
+        info_mock.assert_called()
+        ask_mock.assert_not_called()
         self.assertEqual(saved["count"], 0)
-        self.assertTrue(any("skipped" in message.lower() for message, _ in logs))
+        window._on_close.assert_not_called()
+        # A missing Fal.ai key produces an informational "add via badge" line.
+        self.assertTrue(any("badge" in message.lower() for message, _ in logs))
 
-    def test_key_prompt_saves_fal_and_skips_bfl(self):
+    def test_first_launch_does_not_persist_keys(self):
         module = importlib.import_module("kling_gui.main_window")
         window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)
         window.config = {"falai_api_key": "", "bfl_api_key": ""}
@@ -166,15 +176,16 @@ class GuiStartupKeyPromptTests(unittest.TestCase):
         window._save_config = lambda: saved.__setitem__("count", saved["count"] + 1)
         window._update_api_badge = lambda key: updated.append(key)
 
-        with mock.patch.object(module.messagebox, "showinfo"), mock.patch.object(
-            module.simpledialog, "askstring", side_effect=["fal-key", ""]
-        ):
+        with mock.patch.object(module.messagebox, "showinfo"), \
+            mock.patch.object(module.simpledialog, "askstring") as ask_mock:
             window._prompt_startup_provider_keys_on_first_run()
 
-        self.assertEqual(window.config["falai_api_key"], "fal-key")
+        # No key is written or persisted on first launch (badge-driven entry only).
+        self.assertEqual(window.config["falai_api_key"], "")
         self.assertEqual(window.config["bfl_api_key"], "")
-        self.assertEqual(saved["count"], 1)
-        self.assertIn("falai_api_key", updated)
+        self.assertEqual(saved["count"], 0)
+        ask_mock.assert_not_called()
+        self.assertEqual(updated, [])
         window._on_close.assert_not_called()
 
 

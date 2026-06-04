@@ -1609,7 +1609,7 @@ class KlingGUIWindow:
         except Exception as e:
             self._log(f"Error saving config: {e}", "error")
             try:
-                if 'tmp_path' in dir() and os.path.exists(tmp_path):
+                if 'tmp_path' in locals() and os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except Exception:
                 pass

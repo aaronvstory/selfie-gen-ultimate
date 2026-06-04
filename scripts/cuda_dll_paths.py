@@ -134,14 +134,23 @@ def register_cuda_dll_dirs():
             # newly-registered (external review PR #72).
             if key in _REGISTERED_CUDA_DLL_DIRS:
                 continue
-            _REGISTERED_CUDA_DLL_DIRS.add(key)
             try:
                 # RETAIN the handle (module-level list) — the DLL dir entry is
                 # removed when this object is GC'd, so a discarded handle makes
                 # the nvrtc fix flaky (code-review CRITICAL).
                 _CUDA_DLL_DIR_HANDLES.append(os.add_dll_directory(d))
             except OSError:
+                # Mark registered ONLY after a SUCCESSFUL add_dll_directory
+                # (Codex P2, PR #73). Adding the idempotence key before the call
+                # meant a transient OSError (ACL/quarantine) permanently skipped
+                # this dir on every later retry in the same process — stranding
+                # CuPy on CPU until restart, since PATH alone is insufficient for
+                # extension-module-dependent DLLs. On failure, fall through to
+                # the PATH prepend below (best-effort) but leave the key UNSET so
+                # a subsequent call can retry the add.
                 pass
+            else:
+                _REGISTERED_CUDA_DLL_DIRS.add(key)
             # add_dll_directory lets cupy load nvrtc64_*.dll, but nvrtc ITSELF
             # then loads nvrtc-builtins64_*.dll via the plain PATH env (it's a C
             # lib, not a Python ext), so the dir must ALSO be on os.environ['PATH']

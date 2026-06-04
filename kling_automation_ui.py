@@ -514,7 +514,7 @@ class KlingAutomationUI:
             if self.verbose_logging:
                 print(f"Error saving config: {e}")
             try:
-                if 'tmp_path' in dir() and os.path.exists(tmp_path):
+                if 'tmp_path' in locals() and os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except Exception:
                 pass

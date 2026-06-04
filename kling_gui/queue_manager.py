@@ -477,6 +477,14 @@ class QueueItem:
     # widget renders a unicode bar from these two fields.
     stage: str = "queued"
     stage_percent: int = 0
+    # Resume-after-abort state (Codex P2, PR #73). When the user presses Abort
+    # DURING post-generation (rPPG/Loop/Oldcam), the Kling video is already on
+    # disk — regenerating it on Resume would waste a render AND trip the
+    # duplicate-skip ("video already exists"). Instead the abort handler records
+    # the finished Kling output here; on the next process pass the worker SKIPS
+    # Kling generation and resumes straight into post-processing from this file.
+    resume_from_existing: bool = False
+    resume_kling_output: Optional[str] = None
 
     @property
     def filename(self) -> str:
@@ -662,16 +670,38 @@ class QueueManager:
         failed — an abort is a user choice, not an error.
         """
         with self.lock:
-            if item.status == "processing":
+            # Re-queue whether the item is still "processing" OR already
+            # "completed". Codex P2 (PR #73): _process_queue marks the item
+            # "completed" right after Kling generation RETURNS, BEFORE running
+            # the post-generation stages (rPPG / Loop / Oldcam). An Abort during
+            # those stages reaches here with status=="completed", so a
+            # processing-only guard silently no-ops while the log still claims
+            # "re-queued" — the row stays done and Resume won't pick it up.
+            # Treat any non-failed item as re-queueable on user abort.
+            if item.status in ("processing", "completed"):
                 item.status = "pending"
                 item.stage = "queued"
                 item.stage_percent = 0
+                # If Kling already produced its output (abort happened DURING
+                # post-processing), arm a resume that skips re-generating Kling
+                # and continues from the existing file — so Resume neither wastes
+                # a render nor trips the duplicate-skip (Codex P2, PR #73).
+                kling_out = getattr(item, "resume_kling_output", None)
+                if kling_out and os.path.exists(kling_out):
+                    item.resume_from_existing = True
         self.is_running = False
-        self.log(
-            f"⛔ Aborted '{item.filename}' mid-job; re-queued. "
-            "Press Resume to re-run it.",
-            "warning",
-        )
+        if getattr(item, "resume_from_existing", False):
+            msg = (
+                f"⛔ Aborted '{item.filename}' during post-processing; re-queued. "
+                "Press Resume to continue from the existing Kling video "
+                "(post-processing only)."
+            )
+        else:
+            msg = (
+                f"⛔ Aborted '{item.filename}' mid-job; re-queued. "
+                "Press Resume to re-run it."
+            )
+        self.log(msg, "warning")
         self.update_queue_display()
 
     def _publish_active_subprocess(self, proc: Optional[subprocess.Popen]):
@@ -1331,11 +1361,34 @@ class QueueManager:
                     actual_output = output_folder
                     self.log_verbose(f"  Output: {actual_output}", "debug")
 
-                # Check if video already exists (with current model and prompt slot)
-                video_exists, found_video_path = check_video_exists(
-                    item.path, actual_output, self.generator, config
+                # Resume-after-abort fast path (Codex P2, PR #73): if a prior
+                # Abort happened DURING post-processing, the Kling video is
+                # already on disk. Skip BOTH the duplicate check and the
+                # re-generation, and resume straight into post-processing from
+                # the recorded output. Falls back to a normal run if the file
+                # vanished in the meantime.
+                _resuming = (
+                    item.resume_from_existing
+                    and item.resume_kling_output
+                    and os.path.exists(item.resume_kling_output)
                 )
-                custom_output_path = None
+                if _resuming:
+                    self.log(
+                        f"↻ Resuming '{item.filename}' post-processing from "
+                        f"existing Kling video (no re-generation).",
+                        "info",
+                    )
+                    video_exists, found_video_path = False, None
+                    custom_output_path = None
+                    # consume the one-shot flag so a future natural completion
+                    # of this item doesn't accidentally resume again
+                    item.resume_from_existing = False
+                else:
+                    # Check if video already exists (with current model and prompt slot)
+                    video_exists, found_video_path = check_video_exists(
+                        item.path, actual_output, self.generator, config
+                    )
+                    custom_output_path = None
 
                 if video_exists:
                     if not allow_reprocess:
@@ -1412,22 +1465,26 @@ class QueueManager:
                 # Skip duplicate check if we've already handled it (overwrite mode deleted file,
                 # increment mode uses custom path)
                 skip_check = video_exists and reprocess_mode == "overwrite"
-                result = self._generate_video(
-                    item,
-                    actual_output,
-                    prompt,
-                    negative_prompt,
-                    False,  # always False — we already computed gen-images/ path
-                    custom_output_path,
-                    skip_duplicate_check=skip_check,
-                    video_duration=video_duration,
-                    aspect_ratio=aspect_ratio,
-                    resolution=resolution,
-                    seed=seed,
-                    camera_fixed=camera_fixed,
-                    generate_audio=generate_audio,
-                    generation_timestamp=generation_timestamp,
-                )
+                if _resuming:
+                    # Reuse the existing Kling output instead of regenerating.
+                    result = item.resume_kling_output
+                else:
+                    result = self._generate_video(
+                        item,
+                        actual_output,
+                        prompt,
+                        negative_prompt,
+                        False,  # always False — we already computed gen-images/ path
+                        custom_output_path,
+                        skip_duplicate_check=skip_check,
+                        video_duration=video_duration,
+                        aspect_ratio=aspect_ratio,
+                        resolution=resolution,
+                        seed=seed,
+                        camera_fixed=camera_fixed,
+                        generate_audio=generate_audio,
+                        generation_timestamp=generation_timestamp,
+                    )
 
                 if result:
                     item.status = "completed"
@@ -1444,6 +1501,10 @@ class QueueManager:
                     # behind the rppg_per_oldcam_fanout opt-in flag
                     # below (defaults OFF).
                     final_video = result
+                    # Record the finished Kling base so an Abort during the
+                    # post-processing stages below can offer a clean Resume that
+                    # skips re-generating Kling (Codex P2, PR #73).
+                    item.resume_kling_output = result
 
                     # Step 1: rPPG on raw Kling FIRST when enabled.
                     # Produces ``<stem>-rppg.mp4`` if it succeeds. On
@@ -1600,6 +1661,11 @@ class QueueManager:
                     item.output_path = final_video
                     item.stage = "done"
                     item.stage_percent = 100
+                    # Item completed cleanly — drop the resume-after-abort
+                    # state so a future natural reprocess of this row never
+                    # resumes from a now-stale Kling path (Codex P2, PR #73).
+                    item.resume_from_existing = False
+                    item.resume_kling_output = None
                     self.log(f"💾 Saved to: {final_video}", "info")
                     # Synthesize a final summary milestone so the user
                     # can see, at a glance, what was applied (and what
