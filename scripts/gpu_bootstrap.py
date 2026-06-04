@@ -154,14 +154,14 @@ _CUDA_TO_NVIDIA_WHEELS = {
         "nvidia-nvjitlink-cu12",
     ),
     13: (
-        # nvrtc + runtime locked to the SAME 13.3.x minor (<13.4): CuPy 13.x
-        # finds its compile headers ONLY when the runtime wheel's version
-        # exactly matches the major.minor nvrtc reports. A loose >=13.3,<14 let
-        # them drift to different minors → no headers → nvrtc compile fails (the
-        # friend's CUDA-13 rPPG-on-CPU bug, root-caused 2026-06-04). Keep in
-        # lockstep with the pyproject cu128 extra (the parity test enforces it).
-        "nvidia-cuda-nvrtc>=13.3,<13.4",
-        "nvidia-cuda-runtime>=13.3,<13.4",
+        # nvrtc + runtime pinned to the CUDA-13.0.x line — the CUDA 13 toolkit
+        # CuPy 13.6.0's docs list as supported. The latest nvrtc 13.3 breaks
+        # CuPy 13.6.0's bundled CCCL with a libcudacxx `limits` constexpr error
+        # (the friend's deepest CUDA-13 bug). Same minor so CuPy's header
+        # version-match also succeeds. Lockstep with the pyproject cu128 extra
+        # (parity test enforces). See pyproject note + the v2.23.2 root cause.
+        "nvidia-cuda-nvrtc>=13.0,<13.1",
+        "nvidia-cuda-runtime>=13.0,<13.1",
         "nvidia-cublas>=13.5,<14",
         "nvidia-cufft>=12.3,<13",
         "nvidia-curand>=10.4,<11",
@@ -179,7 +179,12 @@ _CUDA_TO_NVIDIA_WHEELS = {
 # fold --print-stamp-token into their stamp keys), forcing a fresh resync after
 # an installer-logic change even when requirements.txt/constraints.txt are
 # untouched. Bump this whenever the install BEHAVIOUR changes, not the dep set.
-INSTALLER_VERSION = "2.17.1"
+INSTALLER_VERSION = "2.23.2"  # nvrtc/runtime pin 13.3->13.0 (CuPy-13.6 compat) +
+#                              re-probe a stale "gpu_ready" stamp under the new
+#                              toolchain. Bumped so an existing friend venv that
+#                              already stamped gpu_ready under the broken nvrtc
+#                              13.3 re-runs the GPU bootstrap + honest compile
+#                              probe instead of trusting the stale stamp.
 
 # Map a detected CUDA major -> a PyTorch-SUPPORTED wheel index URL.
 #
@@ -599,14 +604,22 @@ def probe_cupy(python_exe: str) -> Optional[str]:
     # GUI "GPU ready" status matches the injector's reality AND a stale cache
     # doesn't false-negative into a needless reinstall. Only a compile that
     # STILL fails after the cache wipe exits non-zero -> probe None (correct).
+    # The probe MIRRORS the rPPG injector's GPU-init recovery so the GUI "GPU
+    # ready" status matches what the injector will actually do: on a compile
+    # failure, (a) force the real on-disk CUDA include dir + clear_memo (header
+    # version-skew), (b) prepend nvrtc --expt-relaxed-constexpr (CuPy 13.6.0's
+    # CCCL vs nvrtc 13.3 constexpr error — the friend's deepest cause), and
+    # (c) clear the JIT cache, then retry ONCE. Keep this list in lockstep with
+    # rPPG/rppg_injector.py's _init_cupy_backend retry block.
     probe_src = "\n".join(
         (
-            "import sys",
+            "import sys, os",
             "sys.path.insert(0, " + repr(_scripts_dir) + ")",
             "_clear = None",
+            "_incdirs = None",
             "try:",
             "    from cuda_dll_paths import register_cuda_dll_dirs, "
-            "clear_cupy_kernel_cache as _clear",
+            "clear_cupy_kernel_cache as _clear, cuda_include_dirs as _incdirs",
             "    register_cuda_dll_dirs()",
             "except Exception:",
             "    pass",
@@ -617,14 +630,39 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             "_ = cp.cuda.runtime.getDeviceCount()",
             "def _compile():",
             "    return _g(cp.zeros((4, 4), dtype=cp.float32), 1.0)",
+            "def _recover():",
+            "    try:",
+            "        import cupy._environment as _ce, cupy.cuda.compiler as _cc",
+            "        _dirs = list(_incdirs()) if _incdirs else []",
+            "        if _dirs and not getattr(_ce, '_probe_inc_patched', False):",
+            "            _o = _ce._get_include_dir_from_conda_or_wheel",
+            "            def _p(M, m, _o=_o, _e=tuple(_dirs)):",
+            "                d = list(_o(M, m))",
+            "                for x in _e:",
+            "                    if x not in d: d.append(x)",
+            "                return d",
+            "            _ce._get_include_dir_from_conda_or_wheel = _p",
+            "            _ce._probe_inc_patched = True",
+            "        if not getattr(_cc, '_probe_relaxed_patched', False):",
+            "            _oc = _cc.compile_using_nvrtc",
+            "            def _pc(src, options=(), *a, _oc=_oc, **k):",
+            "                opts = tuple(options or ())",
+            "                if '--expt-relaxed-constexpr' not in opts:",
+            "                    opts = ('--expt-relaxed-constexpr',) + opts",
+            "                return _oc(src, opts, *a, **k)",
+            "            _cc.compile_using_nvrtc = _pc",
+            "            _cc._probe_relaxed_patched = True",
+            "        if hasattr(cp, 'clear_memo'): cp.clear_memo()",
+            "    except Exception:",
+            "        pass",
+            "    try:",
+            "        if _clear is not None: _clear()",
+            "    except Exception:",
+            "        pass",
             "try:",
             "    _compile()",
             "except Exception:",
-            "    try:",
-            "        if _clear is not None:",
-            "            _clear()",
-            "    except Exception:",
-            "        pass",
+            "    _recover()",
             "    _compile()",
             "print('CUPYVER=' + cp.__version__)",
         )

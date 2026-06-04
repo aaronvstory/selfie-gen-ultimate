@@ -189,16 +189,44 @@ def _dump_gpu_error_sidecar(err):
         import datetime
         import tempfile
         import traceback
-        path = os.path.join(tempfile.gettempdir(), "rppg_gpu_compile_error.log")
-        with open(path, "w", encoding="utf-8", errors="replace") as fh:
-            fh.write(f"# rPPG GPU backend init failure — {datetime.datetime.now().isoformat()}\n")
-            fh.write(f"# exception type: {type(err).__name__}\n\n")
-            fh.write(str(err))
-            fh.write("\n\n--- traceback ---\n")
-            fh.write("".join(
-                traceback.format_exception(type(err), err, err.__traceback__)
-            ))
-        return path
+
+        def _body():
+            parts = [
+                f"# rPPG GPU backend init failure — {datetime.datetime.now().isoformat()}\n",
+                f"# exception type: {type(err).__name__}\n\n",
+                str(err),
+                "\n\n--- traceback ---\n",
+                "".join(traceback.format_exception(type(err), err, err.__traceback__)),
+            ]
+            return "".join(parts)
+
+        text = _body()
+        # Write NEXT TO THE OUTPUT VIDEO first (most findable — the friend
+        # couldn't locate the temp copy), then a temp copy as a stable fallback.
+        # Resolve the output dir from the injector's own --output arg.
+        out_dir = None
+        try:
+            argv = sys.argv
+            if "--output" in argv:
+                out_path = argv[argv.index("--output") + 1]
+                cand = os.path.dirname(os.path.abspath(out_path))
+                if os.path.isdir(cand):
+                    out_dir = cand
+        except Exception:  # noqa: BLE001
+            out_dir = None
+        written = None
+        for d in (out_dir, tempfile.gettempdir()):
+            if not d:
+                continue
+            try:
+                p = os.path.join(d, "rppg_gpu_compile_error.log")
+                with open(p, "w", encoding="utf-8", errors="replace") as fh:
+                    fh.write(text)
+                if written is None:
+                    written = p  # report the FIRST (next-to-video) location
+            except Exception:  # noqa: BLE001 — try the next dir
+                continue
+        return written
     except Exception:  # noqa: BLE001 — diagnostics must never crash rPPG
         return None
 
@@ -279,6 +307,34 @@ try:
                 _inc_applied = os.pathsep.join(_inc_dirs)
             except Exception:  # noqa: BLE001 — include patch is best-effort
                 pass
+        # 3. NEWER nvrtc than CuPy's bundled CCCL supports (the friend's ACTUAL
+        #    deepest cause, from his sidecar log v2.23.1): nvrtc 13.3 vs CuPy
+        #    13.6.0's older libcudacxx → `cuda/std/limits(633): error: constexpr
+        #    function return is non-constant`. The committed pin caps nvrtc at
+        #    <13.3 for FRESH installs, but an ALREADY-installed 13.3 venv won't
+        #    auto-downgrade. Belt: prepend nvrtc's --expt-relaxed-constexpr (the
+        #    documented flag for this constexpr-in-device error) by wrapping
+        #    cupy.cuda.compiler.compile_using_nvrtc, then retry. Best-effort.
+        _relaxed_applied = False
+        try:
+            import cupy.cuda.compiler as _cc2  # noqa: WPS433
+            if not getattr(_cc2, "_rppg_relaxed_constexpr_patched", False):
+                _orig_compile = _cc2.compile_using_nvrtc
+
+                def _patched_compile(source, options=(), *a, _orig=_orig_compile, **k):
+                    opts = tuple(options or ())
+                    if "--expt-relaxed-constexpr" not in opts:
+                        opts = ("--expt-relaxed-constexpr",) + opts
+                    return _orig(source, opts, *a, **k)
+
+                _cc2.compile_using_nvrtc = _patched_compile
+                _cc2._rppg_relaxed_constexpr_patched = True
+            import cupy as _cupy_relaxed  # noqa: WPS433
+            if hasattr(_cupy_relaxed, "clear_memo"):
+                _cupy_relaxed.clear_memo()
+            _relaxed_applied = True
+        except Exception:  # noqa: BLE001 — relaxed-constexpr patch is best-effort
+            pass
         try:
             _cleared = _clear_cupy_kernel_cache()
         except Exception:  # noqa: BLE001 — cache wipe must never crash rPPG
@@ -287,6 +343,7 @@ try:
               f"({type(_first_gpu_err).__name__}: "
               f"{_summarize_nvrtc_compile_error(_first_gpu_err)}); "
               f"forced CUDA include dir ({_inc_applied or 'none found'}); "
+              f"relaxed-constexpr ({'on' if _relaxed_applied else 'unavailable'}); "
               f"cleared CuPy JIT cache ({_cleared or 'nothing to clear'}); "
               f"retrying once…")
         _cp, _cp_gaussian_filter = _init_cupy_backend()
