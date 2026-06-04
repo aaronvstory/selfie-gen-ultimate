@@ -118,7 +118,12 @@ try:
     if _added_scripts_dir:
         sys.path.insert(0, _scripts_dir)
     try:
-        from cuda_dll_paths import register_cuda_dll_dirs as _register_cuda_dll_dirs
+        from cuda_dll_paths import (
+            register_cuda_dll_dirs as _register_cuda_dll_dirs,
+            clear_cupy_kernel_cache as _clear_cupy_kernel_cache,
+            is_nvrtc_compile_error as _is_nvrtc_compile_error,
+            summarize_nvrtc_compile_error as _summarize_nvrtc_compile_error,
+        )
     finally:
         if _added_scripts_dir:
             try:
@@ -129,6 +134,17 @@ except Exception:  # noqa: BLE001 — helper absent/unimportable => CPU fallback
     def _register_cuda_dll_dirs():
         return []
 
+    def _clear_cupy_kernel_cache():
+        return None
+
+    def _is_nvrtc_compile_error(err):
+        name = type(err).__name__.lower()
+        return "compile" in name or "nvrtc" in name
+
+    def _summarize_nvrtc_compile_error(err, limit=300):
+        detail = str(err).strip().replace("\n", " ")
+        return (detail[:limit] + "…") if len(detail) > limit else detail
+
 # Guard the RUNTIME call too, not just the import: the helper now wraps its own
 # filesystem touches, but a belt-and-suspenders try/except here guarantees that
 # ANY unexpected failure (a future regression, an exotic FS error) degrades to
@@ -138,18 +154,79 @@ try:
     _register_cuda_dll_dirs()
 except Exception:  # noqa: BLE001 — registration must never break rPPG import
     pass
+def _init_cupy_backend():
+    """Import CuPy, verify a CUDA device, and force a real nvrtc kernel compile.
+
+    Returns ``(cp_module, gaussian_filter)``; raises on any failure. Factored
+    out so the CompileException recovery path can call it twice — once, then once
+    more after clearing a stale JIT cache (see the recovery block below). Forcing
+    a real COMPILE here (not just ``zeros()``/``getDeviceCount()``) makes a
+    missing-nvrtc / stale-cache failure surface NOW, at import, instead of deep
+    in the first frame op.
+    """
+    import cupy as cp
+    from cupyx.scipy.ndimage import gaussian_filter as gf
+    cp.zeros(1, dtype=cp.float32)  # device probe: raises if no CUDA device
+    gf(cp.zeros((4, 4), dtype=cp.float32), 1.0)  # force nvrtc kernel compile
+    return cp, gf
+
+
+def _dump_gpu_error_sidecar(err):
+    """Write the FULL CuPy error + traceback to a discoverable file; return its
+    path (or None).
+
+    The console log shows ONE summarized line (the actual ``error:``); the
+    complete multi-line nvrtc compile log goes here so the exact cause is never
+    lost to truncation again (the friend's CUDA-13 compile failure was hidden
+    behind a 200-char head-truncation that only captured the benign opening
+    remark). Diagnostics must never crash rPPG, so everything is wrapped.
+    """
+    try:
+        import datetime
+        import tempfile
+        import traceback
+        path = os.path.join(tempfile.gettempdir(), "rppg_gpu_compile_error.log")
+        with open(path, "w", encoding="utf-8", errors="replace") as fh:
+            fh.write(f"# rPPG GPU backend init failure — {datetime.datetime.now().isoformat()}\n")
+            fh.write(f"# exception type: {type(err).__name__}\n\n")
+            fh.write(str(err))
+            fh.write("\n\n--- traceback ---\n")
+            fh.write("".join(
+                traceback.format_exception(type(err), err, err.__traceback__)
+            ))
+        return path
+    except Exception:  # noqa: BLE001 — diagnostics must never crash rPPG
+        return None
+
+
 try:
     if os.environ.get("RPPG_FORCE_CPU") == "1":
         # Escape hatch: force the CPU path even when a working GPU is present
         # (benchmarking, or a workaround if a specific CuPy/driver combo
         # misbehaves). Raise so the normal CPU-fallback branch below runs.
         raise RuntimeError("RPPG_FORCE_CPU=1")
-    import cupy as _cp
-    from cupyx.scipy.ndimage import gaussian_filter as _cp_gaussian_filter
-    _cp.zeros(1, dtype=_cp.float32)  # probe: raises if no CUDA device
-    # Force a real kernel COMPILE so a missing nvrtc surfaces HERE (at import),
-    # not deep in the first frame op — a bare zeros() doesn't compile a kernel.
-    _cp_gaussian_filter(_cp.zeros((4, 4), dtype=_cp.float32), 1.0)
+    try:
+        _cp, _cp_gaussian_filter = _init_cupy_backend()
+    except Exception as _first_gpu_err:
+        # CuPy imported and a device exists, but the nvrtc kernel COMPILE failed.
+        # The #1 cause on a box whose nvidia DLLs load correctly is a STALE JIT
+        # kernel cache left by a previous CUDA toolkit/driver: the friend
+        # upgraded CUDA 12.9 -> 13.x (driver 610.47) and the cubins cached under
+        # ~/.cupy no longer compile/load (cpp_dialect.h remark #20200-D was just
+        # the benign head of the log). Clear the cache and retry the compile ONCE
+        # before falling back to CPU. A non-compile failure (no device / missing
+        # module) can't be helped by a cache wipe — re-raise it immediately.
+        if not _is_nvrtc_compile_error(_first_gpu_err):
+            raise
+        try:
+            _cleared = _clear_cupy_kernel_cache()
+        except Exception:  # noqa: BLE001 — cache wipe must never crash rPPG
+            _cleared = None
+        print(f"GPU backend: nvrtc kernel compile failed "
+              f"({type(_first_gpu_err).__name__}: "
+              f"{_summarize_nvrtc_compile_error(_first_gpu_err)}); cleared CuPy "
+              f"JIT cache ({_cleared or 'nothing to clear'}); retrying once…")
+        _cp, _cp_gaussian_filter = _init_cupy_backend()
     GPU_AVAILABLE = True
     print(f"GPU backend: CuPy {_cp.__version__} on "
           f"{_cp.cuda.runtime.getDeviceCount()} device(s)")
@@ -157,19 +234,26 @@ except Exception as _cupy_err:
     _cp = None
     _cp_gaussian_filter = None
     GPU_AVAILABLE = False
-    # Surface the FULL exception detail, not just the class name. The bare
+    # Surface the actual failure detail, not just the class name. The bare
     # "(RuntimeError)" log stranded a friend's RTX 4080 on CPU for 20 min/iter
-    # with no clue WHY — the message ("Could not find nvrtc64_130_0.dll") is
-    # what actually identifies the missing DLL. Truncate so a pathological
-    # message can't flood the log (2026-06-03).
-    _cupy_detail = str(_cupy_err).strip().replace("\n", " ")
-    if len(_cupy_detail) > 200:
-        _cupy_detail = _cupy_detail[:200] + "…"
+    # with no clue WHY. For an nvrtc CompileException, pull the real ``error:``
+    # line (NOT the benign opening #pragma-message remark a head-truncate would
+    # capture) and dump the FULL log to a sidecar file; for everything else keep
+    # the short head-truncated message.
+    if _is_nvrtc_compile_error(_cupy_err):
+        _cupy_detail = _summarize_nvrtc_compile_error(_cupy_err)
+        _sidecar = _dump_gpu_error_sidecar(_cupy_err)
+        _sidecar_suffix = f" [full log: {_sidecar}]" if _sidecar else ""
+    else:
+        _cupy_detail = str(_cupy_err).strip().replace("\n", " ")
+        if len(_cupy_detail) > 200:
+            _cupy_detail = _cupy_detail[:200] + "…"
+        _sidecar_suffix = ""
     # Omit the ": <detail>" entirely when the exception has no message, so the
     # log reads "(RuntimeError)" not a dangling "(RuntimeError: )" (gemini PR #72).
     _detail_suffix = f": {_cupy_detail}" if _cupy_detail else ""
     print(f"GPU backend: CuPy unavailable ({type(_cupy_err).__name__}"
-          f"{_detail_suffix}); frame math stays on CPU.")
+          f"{_detail_suffix}); frame math stays on CPU.{_sidecar_suffix}")
 
 
 def xp_of(arr):

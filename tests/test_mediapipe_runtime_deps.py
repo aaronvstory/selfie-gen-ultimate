@@ -201,8 +201,16 @@ def test_rppg_injector_registers_cuda_dll_dirs_and_force_cpu():
     assert "_register_cuda_dll_dirs" in src
     assert "RPPG_FORCE_CPU" in src
     # The injector imports the shared helper and runs it BEFORE `import cupy`.
-    assert "from cuda_dll_paths import register_cuda_dll_dirs" in src
-    assert src.index("_register_cuda_dll_dirs()") < src.index("import cupy as _cp")
+    # (The import is a parenthesized multi-line form since v2.23 — it now also
+    # pulls clear_cupy_kernel_cache + the nvrtc-error helpers — so match the
+    # module + symbol rather than a single-line literal.)
+    assert "from cuda_dll_paths import" in src
+    assert "register_cuda_dll_dirs as _register_cuda_dll_dirs" in src
+    assert src.index("_register_cuda_dll_dirs()") < src.index("import cupy as cp")
+    # v2.23 GPU fix: the injector recovers from a stale-JIT-cache CompileException
+    # by clearing the cache + retrying the compile once before CPU fallback.
+    assert "clear_cupy_kernel_cache" in src
+    assert "_is_nvrtc_compile_error" in src
     # The actual add_dll_directory + PATH logic lives in the shared helper.
     helper = (REPO_ROOT / "scripts" / "cuda_dll_paths.py").read_text(
         encoding="utf-8", errors="replace"
