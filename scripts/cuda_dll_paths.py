@@ -29,6 +29,7 @@ break GPU provisioning on a fresh install.
 
 import glob
 import os
+import shutil
 import site
 import sys
 
@@ -159,6 +160,83 @@ def register_cuda_dll_dirs():
                 os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
             registered.append(d)
     return registered
+
+
+# ---------------------------------------------------------------------------
+# nvrtc JIT kernel-cache recovery + compile-error helpers
+# ---------------------------------------------------------------------------
+# Registering the DLL dirs (above) gets nvrtc to LOAD. The NEXT failure layer is
+# the kernel COMPILE itself raising a CuPy CompileException even though the DLLs
+# load fine. On a box whose nvidia wheels are correct, the #1 cause is a STALE
+# on-disk JIT cache: cubins/PTX compiled against a PREVIOUS CUDA toolkit/driver
+# that no longer load after the user upgrades their driver (the friend went CUDA
+# 12.9 -> 13.x / driver 610.47, and CuPy then failed to compile its first kernel
+# — cpp_dialect.h remark #20200-D was just the benign head of the log). Wiping
+# the cache forces a clean recompile. These helpers are stdlib-only so BOTH the
+# rPPG injector AND the GUI's gpu_bootstrap.probe_cupy (which runs in a fresh
+# subprocess BEFORE `import cupy`) can call them with no third-party import.
+
+
+def cupy_kernel_cache_dir():
+    """Return CuPy's on-disk JIT kernel-cache directory (may not exist).
+
+    Mirrors CuPy's own resolution order: ``$CUPY_CACHE_DIR`` when set, else
+    ``~/.cupy/kernel_cache``. stdlib-only.
+    """
+    env = os.environ.get("CUPY_CACHE_DIR")
+    if env and env.strip():
+        return os.path.abspath(os.path.expanduser(env.strip()))
+    return os.path.join(os.path.expanduser("~"), ".cupy", "kernel_cache")
+
+
+def clear_cupy_kernel_cache():
+    """Delete CuPy's on-disk JIT kernel cache. Return the path cleared, or None.
+
+    Best-effort and fully wrapped: a locked / in-use / restricted cache dir must
+    NEVER crash the caller — worst case the subsequent compile retry recompiles
+    into the same dir. Returns None when there was nothing to clear.
+    """
+    cache_dir = cupy_kernel_cache_dir()
+    try:
+        if os.path.isdir(cache_dir):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            return cache_dir
+    except OSError:
+        pass
+    return None
+
+
+def is_nvrtc_compile_error(err):
+    """True when *err* is an nvrtc/JIT COMPILE failure (cache-clear + retry may
+    fix it), as opposed to a missing module / absent CUDA device (which a cache
+    wipe can't help). Matched by class name so the caller need not import the
+    cupy exception types (cupy may be only partially importable at that point).
+    """
+    name = type(err).__name__.lower()
+    return "compile" in name or "nvrtc" in name
+
+
+def summarize_nvrtc_compile_error(err, limit=300):
+    """Pull the meaningful nvrtc ``error:`` line(s) out of a CompileException.
+
+    An nvrtc compile log OPENS with benign ``#pragma message`` REMARKS (e.g.
+    ``cpp_dialect.h(41): remark #20200-D``). Head-truncating the raw string (the
+    pre-2026-06-04 behaviour) therefore showed ONLY those remarks and cut off the
+    actual ``error:`` line — which is exactly what hid the friend's real cause.
+    Prefer lines naming an error/fatal over remark/pragma noise; fall back to the
+    head when none are found.
+    """
+    raw = str(err).strip().replace("\r", "")
+    lines = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+    keyed = [
+        ln for ln in lines
+        if ("error" in ln.lower() or "fatal" in ln.lower())
+        and "remark" not in ln.lower()
+    ]
+    detail = " | ".join(keyed) if keyed else " ".join(lines)
+    if len(detail) > limit:
+        detail = detail[:limit] + "…"
+    return detail
 
 
 if __name__ == "__main__":  # tiny manual smoke: print what got registered

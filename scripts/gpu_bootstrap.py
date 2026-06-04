@@ -586,12 +586,21 @@ def probe_cupy(python_exe: str) -> Optional[str]:
     # realpath (not abspath) so a symlinked gpu_bootstrap.py still resolves the
     # real scripts/ dir for the probe subprocess's helper import (gemini PR #72).
     _scripts_dir = os.path.dirname(os.path.realpath(__file__))
+    # The probe registers the nvidia DLL dirs, then forces a REAL nvrtc kernel
+    # compile. On the FIRST compile failure it wipes a possibly-stale on-disk JIT
+    # cache (left by a prior CUDA toolkit/driver — the friend's 12.9 -> 13.x
+    # upgrade) and retries ONCE, mirroring the rPPG injector's recovery so the
+    # GUI "GPU ready" status matches the injector's reality AND a stale cache
+    # doesn't false-negative into a needless reinstall. Only a compile that
+    # STILL fails after the cache wipe exits non-zero -> probe None (correct).
     probe_src = "\n".join(
         (
             "import sys",
             "sys.path.insert(0, " + repr(_scripts_dir) + ")",
+            "_clear = None",
             "try:",
-            "    from cuda_dll_paths import register_cuda_dll_dirs",
+            "    from cuda_dll_paths import register_cuda_dll_dirs, "
+            "clear_cupy_kernel_cache as _clear",
             "    register_cuda_dll_dirs()",
             "except Exception:",
             "    pass",
@@ -600,7 +609,17 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             "x = cp.asarray([1, 2, 3])",
             "_ = cp.asnumpy(x)",
             "_ = cp.cuda.runtime.getDeviceCount()",
-            "_ = _g(cp.zeros((4, 4), dtype=cp.float32), 1.0)",
+            "def _compile():",
+            "    return _g(cp.zeros((4, 4), dtype=cp.float32), 1.0)",
+            "try:",
+            "    _compile()",
+            "except Exception:",
+            "    try:",
+            "        if _clear is not None:",
+            "            _clear()",
+            "    except Exception:",
+            "        pass",
+            "    _compile()",
             "print('CUPYVER=' + cp.__version__)",
         )
     )

@@ -111,3 +111,99 @@ def test_register_is_noop_without_add_dll_directory(monkeypatch):
     """Off-Windows (no os.add_dll_directory) the helper is a clean no-op."""
     monkeypatch.delattr(os, "add_dll_directory", raising=False)
     assert cuda_dll_paths.register_cuda_dll_dirs() == []
+
+
+# ---------------------------------------------------------------------------
+# nvrtc JIT kernel-cache recovery + compile-error helpers (the v2.23 GPU fix:
+# CuPy's DLLs LOAD but the kernel compile fails on a stale cache after a
+# CUDA-toolkit/driver upgrade — clear the cache + retry).
+# ---------------------------------------------------------------------------
+
+
+def test_cache_dir_honours_env_override(monkeypatch, tmp_path):
+    """$CUPY_CACHE_DIR wins over the ~/.cupy/kernel_cache default."""
+    monkeypatch.setenv("CUPY_CACHE_DIR", str(tmp_path / "custom_cache"))
+    got = cuda_dll_paths.cupy_kernel_cache_dir()
+    assert got == os.path.abspath(str(tmp_path / "custom_cache"))
+
+
+def test_cache_dir_default_is_user_dot_cupy(monkeypatch):
+    """With no override, the default mirrors CuPy: ~/.cupy/kernel_cache."""
+    monkeypatch.delenv("CUPY_CACHE_DIR", raising=False)
+    got = cuda_dll_paths.cupy_kernel_cache_dir()
+    assert got == os.path.join(os.path.expanduser("~"), ".cupy", "kernel_cache")
+
+
+def test_clear_cupy_kernel_cache_removes_populated_dir(monkeypatch, tmp_path):
+    """A populated cache dir is wiped and its path returned (the stale-cache
+    recovery that lets the compile retry succeed)."""
+    cache = tmp_path / "kernel_cache"
+    cache.mkdir()
+    (cache / "stale_kernel.cubin").write_bytes(b"\x00\x01")
+    monkeypatch.setenv("CUPY_CACHE_DIR", str(cache))
+
+    cleared = cuda_dll_paths.clear_cupy_kernel_cache()
+
+    assert cleared == os.path.abspath(str(cache))
+    assert not cache.exists(), "stale JIT cache dir must be removed"
+
+
+def test_clear_cupy_kernel_cache_absent_returns_none(monkeypatch, tmp_path):
+    """Nothing to clear -> None (no crash, no spurious path)."""
+    monkeypatch.setenv("CUPY_CACHE_DIR", str(tmp_path / "does_not_exist"))
+    assert cuda_dll_paths.clear_cupy_kernel_cache() is None
+
+
+def test_clear_cupy_kernel_cache_never_raises(monkeypatch, tmp_path):
+    """A filesystem error during the wipe degrades to None, never crashes the
+    rPPG import that calls it."""
+    cache = tmp_path / "kernel_cache"
+    cache.mkdir()
+    monkeypatch.setenv("CUPY_CACHE_DIR", str(cache))
+    monkeypatch.setattr(os.path, "isdir", lambda p: (_ for _ in ()).throw(OSError("boom")))
+    assert cuda_dll_paths.clear_cupy_kernel_cache() is None
+
+
+class _FakeCompileException(Exception):
+    """Stand-in with a cupy-like class name for the matcher (no GPU needed)."""
+
+
+def test_is_nvrtc_compile_error_matches_by_class_name():
+    assert cuda_dll_paths.is_nvrtc_compile_error(_FakeCompileException("x"))
+
+    class NVRTCError(Exception):
+        pass
+
+    assert cuda_dll_paths.is_nvrtc_compile_error(NVRTCError())
+    # A missing module / absent device is NOT a compile error (cache wipe useless).
+    assert not cuda_dll_paths.is_nvrtc_compile_error(ModuleNotFoundError("no cupy"))
+    assert not cuda_dll_paths.is_nvrtc_compile_error(RuntimeError("no CUDA device"))
+
+
+def test_summarize_prefers_error_line_over_pragma_remark():
+    """The real bug: head-truncation showed only the benign opening remark and
+    cut off the actual error. The summarizer must surface the error line."""
+    log = (
+        "C:\\...\\cpp_dialect.h(41): remark #20200-D: #pragma message: "
+        '"some long benign dialect note that dominates the head of the log"\n'
+        "C:\\...\\some_header.h(88): error: identifier \"foobar\" is undefined\n"
+        "1 error detected in the compilation."
+    )
+    summary = cuda_dll_paths.summarize_nvrtc_compile_error(_FakeCompileException(log))
+    assert "error: identifier" in summary
+    assert "remark #20200-D" not in summary
+
+
+def test_summarize_falls_back_to_head_when_no_error_line():
+    summary = cuda_dll_paths.summarize_nvrtc_compile_error(
+        _FakeCompileException("just a remark with no failure keyword"), limit=300
+    )
+    assert "just a remark" in summary
+
+
+def test_summarize_truncates_to_limit():
+    summary = cuda_dll_paths.summarize_nvrtc_compile_error(
+        _FakeCompileException("error: " + "x" * 1000), limit=50
+    )
+    assert len(summary) <= 51  # 50 chars + the … ellipsis
+    assert summary.endswith("…")
