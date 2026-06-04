@@ -839,6 +839,40 @@ class Step3UiTighteningTests(unittest.TestCase):
         self.assertIn("Use active carousel image for video generation", src)
         self.assertNotIn("video queue", src)
 
+    def test_gpu_bootstrap_runs_once_per_session(self):
+        """PR #73: _init_generator() re-runs whenever the Fal.ai key is saved,
+        which re-fired _start_gpu_bootstrap_async() and re-printed the
+        '✅ NVIDIA GPU DETECTED' banner every key entry (the friend saw it
+        twice). The bootstrap must be one-shot per session."""
+        src = inspect.getsource(KlingGUIWindow._start_gpu_bootstrap_async)
+        self.assertIn("_gpu_bootstrap_started", src)
+        # Guards (return early) before setting the flag True.
+        self.assertIn('getattr(self, "_gpu_bootstrap_started", False)', src)
+        self.assertIn("self._gpu_bootstrap_started = True", src)
+
+    def test_gpu_bootstrap_one_shot_behaviour(self):
+        """The actual one-shot behaviour: a second call returns immediately
+        without starting another worker thread."""
+        window = KlingGUIWindow.__new__(KlingGUIWindow)
+        started = {"n": 0}
+        # Stub everything the method touches after the guard so we can count
+        # how many times it proceeds past the one-shot gate.
+        import threading as _threading
+        orig_thread = _threading.Thread
+
+        class _CountingThread:
+            def __init__(self, *a, **k):
+                started["n"] += 1
+
+            def start(self):
+                pass
+
+        with mock.patch.object(_threading, "Thread", _CountingThread):
+            window._start_gpu_bootstrap_async()
+            window._start_gpu_bootstrap_async()
+            window._start_gpu_bootstrap_async()
+        self.assertEqual(started["n"], 1, "bootstrap worker must start only once")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3890,6 +3890,15 @@ class KlingGUIWindow:
         import os as _os
         if _os.environ.get("KLING_SKIP_GPU_BOOTSTRAP") == "1":
             return
+        # Run ONCE per session. _init_generator() also re-runs whenever the
+        # Fal.ai key is saved (to rebuild the generator), which would otherwise
+        # re-fire this bootstrap + re-print the "✅ NVIDIA GPU DETECTED" banner
+        # every time a key is entered (the friend saw it twice). The probe is
+        # idempotent, so the extra run is harmless — but the duplicate banner
+        # is confusing. Guard it.
+        if getattr(self, "_gpu_bootstrap_started", False):
+            return
+        self._gpu_bootstrap_started = True
 
         def _worker():
             try:
