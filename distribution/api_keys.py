@@ -107,10 +107,18 @@ def apply_env_key_fallback(config: Dict[str, Any]) -> List[str]:
     Returns:
         List of config_key names that were populated from their env var.
     """
+    # Keys the user EXPLICITLY cleared to empty in the GUI/CLI opt OUT of the
+    # env fallback, persistently — otherwise clearing a key whose env var is
+    # still set would silently re-prefill on the next launch, so "leave blank to
+    # clear" wouldn't survive a restart (CodeRabbit, PR #73). The opt-out list
+    # IS persisted (it's a plain config key, not an env-prefill marker).
+    optout = set(config.get("_env_key_optout") or [])
     filled: List[str] = []
     for spec in API_KEY_SPECS:
         if not spec.env_vars:
             continue
+        if spec.config_key in optout:
+            continue  # user deliberately cleared this — respect it
         if str(config.get(spec.config_key, "") or "").strip():
             continue  # user-saved value wins
         # Try each accepted env var name in order; first non-empty wins.

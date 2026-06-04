@@ -1064,6 +1064,20 @@ class QueueManager:
                             "warning",
                         )
 
+                # Abort guard (Codex P2, PR #73): _rppg_video returns None on a
+                # user Abort exactly like a skip/failure. WITHOUT this the
+                # standalone rerun would march on into Loop/Oldcam after the user
+                # pressed Abort — the main queue bails here, so the rerun must
+                # too. Report it via the completion callback (no item to
+                # re-queue on this path) and stop.
+                if self._abort_requested():
+                    self.log("⛔ Re-Run aborted by user.", "warning")
+                    if completion_callback:
+                        completion_callback(
+                            False, str(source_video), None, "Aborted by user"
+                        )
+                    return
+
                 # Loop step: same gating as before — skip if the input
                 # was already a loop (use the pre-rPPG capture above)
                 # to avoid ``..._looped_looped.mp4``. The source may
@@ -1109,6 +1123,16 @@ class QueueManager:
                                 "Re-Run: loop step failed; falling back to un-looped source",
                                 "warning",
                             )
+
+                # Abort guard after Loop (Codex P2, PR #73) — same rationale as
+                # the post-rPPG guard: stop before Oldcam if the user aborted.
+                if self._abort_requested():
+                    self.log("⛔ Re-Run aborted by user.", "warning")
+                    if completion_callback:
+                        completion_callback(
+                            False, str(source_video), None, "Aborted by user"
+                        )
+                    return
 
                 # No-Oldcam early-return path:
                 #   - SUCCESS when rPPG and/or Loop actually produced new
@@ -1217,6 +1241,16 @@ class QueueManager:
                     "info",
                 )
                 output_path = self._oldcam_video(str(run_input), QueueItem(str(source_video)))
+                # Abort guard after Oldcam (Codex P2, PR #73): _oldcam_video
+                # returns None on Abort like a failure; bail before the optional
+                # fan-out + completion so an aborted rerun doesn't report done.
+                if self._abort_requested():
+                    self.log("⛔ Re-Run aborted by user.", "warning")
+                    if completion_callback:
+                        completion_callback(
+                            False, str(source_video), None, "Aborted by user"
+                        )
+                    return
                 # OPTIONAL per-Oldcam rPPG fan-out (Phase E of
                 # polish/v2.3, 2026-05-22). The main rPPG pass already
                 # ran on ``source_video`` at the top of this worker
@@ -1235,6 +1269,8 @@ class QueueManager:
                     rerun_oldcam_outputs = list(summary.get("outputs") or [])
                     last_rppg: Optional[str] = None
                     for src in rerun_oldcam_outputs:
+                        if self._abort_requested():
+                            break  # stop fan-out the instant the user aborts
                         rppg_path = self._rppg_video(src, QueueItem(str(source_video)))
                         if rppg_path:
                             last_rppg = rppg_path

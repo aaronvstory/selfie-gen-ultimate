@@ -44,7 +44,12 @@ def test_fal_queue_poll_emits_progress_update_heartbeat(monkeypatch):
             return {"status": "IN_PROGRESS"}
 
     monkeypatch.setattr(fal_utils, "_get_with_auth_fallback", lambda *a, **k: _Resp())
-    monkeypatch.setattr(fal_utils.time, "sleep", lambda *a, **k: None)
+    # fal_queue_poll sleeps via _sleep_with_cancel(..., cancel_event=cancel),
+    # which uses cancel_event.wait(timeout=delay) — NOT time.sleep — when a
+    # cancel_event is passed. Patching time.sleep alone left the test waiting
+    # ~60s of real wall-clock (CodeRabbit, PR #73). Patch the sleep helper
+    # itself to a no-op so the heartbeat fires instantly.
+    monkeypatch.setattr(fal_utils, "_sleep_with_cancel", lambda *a, **k: False)
 
     # Stop after the first heartbeat by setting cancel inside the cb.
     def _cb_then_cancel(msg, level):

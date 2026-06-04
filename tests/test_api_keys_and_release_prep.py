@@ -146,6 +146,22 @@ def test_apply_env_key_fallback_user_value_overrides_env(monkeypatch):
     assert "falai_api_key" not in filled
 
 
+def test_apply_env_key_fallback_respects_persisted_optout(monkeypatch):
+    """A key the user EXPLICITLY cleared (listed in _env_key_optout) must NOT be
+    re-prefilled from the env var on the next launch — so "leave blank to clear"
+    survives a restart even while the env var is still set (CodeRabbit, PR #73)."""
+    monkeypatch.setenv("FAL_KEY", "fal-from-env")
+    config = {"falai_api_key": "", "_env_key_optout": ["falai_api_key"]}
+    filled = apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "", "opted-out key must stay empty"
+    assert "falai_api_key" not in filled
+    # A DIFFERENT (non-opted-out) key still prefills normally.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-from-env")
+    config2 = {"_env_key_optout": ["falai_api_key"]}
+    apply_env_key_fallback(config2)
+    assert config2.get("openrouter_api_key") == "or-from-env"
+
+
 def test_apply_env_key_fallback_strips_whitespace(monkeypatch):
     """Whitespace-only config is treated as empty; env value is trimmed."""
     monkeypatch.setenv("FAL_KEY", "  spaced-key  ")

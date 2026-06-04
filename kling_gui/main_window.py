@@ -3530,6 +3530,16 @@ class KlingGUIWindow:
         # env-sourced, so it MUST persist (drop it from the env-prefill marker
         # before saving, else _save_config would strip it back out).
         self._clear_env_prefill_marker(config_key)
+        # Persist a clear so it survives restart even when the env var is still
+        # set: opt OUT of the env fallback when cleared to empty; opt back IN
+        # (remove from the list) when a real value is entered (CodeRabbit, PR #73).
+        optout = list(self.config.get("_env_key_optout") or [])
+        if new_key:
+            if config_key in optout:
+                optout.remove(config_key)
+        elif config_key not in optout:
+            optout.append(config_key)
+        self.config["_env_key_optout"] = optout
         self._save_config()
         self._update_api_badge(config_key)
 

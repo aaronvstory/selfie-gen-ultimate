@@ -72,7 +72,13 @@ def venv_dir_for_python(python_exe: str | None) -> Path | None:
     p = Path(python_exe)
     # <venv>/Scripts/python.exe  or  <venv>/bin/python
     if p.parent.name in ("Scripts", "bin"):
-        return p.parent.parent
+        root = p.parent.parent
+        # A SYSTEM python (/usr/bin/python3) also has parent.name == "bin", which
+        # would mis-return /usr as a "venv root" and let uv operate on system
+        # dirs (gemini HIGH, PR #73). A real venv has a pyvenv.cfg at its root —
+        # require it (EAFP) so only genuine virtualenvs match.
+        if (root / "pyvenv.cfg").is_file():
+            return root
     return None
 
 

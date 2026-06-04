@@ -112,6 +112,9 @@ def test_python_arg_targets_callers_venv(tmp_path, monkeypatch):
         caller_py = tmp_path / ".venv311" / "bin" / "python"
     caller_py.parent.mkdir(parents=True, exist_ok=True)
     caller_py.write_text("", encoding="utf-8")
+    # venv_dir_for_python now requires a real pyvenv.cfg at the root (so a system
+    # python like /usr/bin/python3 can't be mistaken for a venv — gemini HIGH).
+    (tmp_path / ".venv311" / "pyvenv.cfg").write_text("home = x\n", encoding="utf-8")
 
     uv_sync_deps.main(
         ["--project", str(tmp_path), "--python", str(caller_py), "--quiet"]
@@ -121,22 +124,36 @@ def test_python_arg_targets_callers_venv(tmp_path, monkeypatch):
     )
 
 
-def test_venv_dir_for_python_derivation():
-    """The interpreter-path -> venv-root derivation handles both layouts."""
+def test_venv_dir_for_python_derivation(tmp_path):
+    """The interpreter-path -> venv-root derivation handles both layouts AND
+    refuses a non-venv (no pyvenv.cfg), so a system python can't be mistaken for
+    a venv root (gemini HIGH, PR #73)."""
     assert uv_sync_deps.venv_dir_for_python(None) is None
     assert uv_sync_deps.venv_dir_for_python("") is None
-    # Windows layout
-    win = uv_sync_deps.venv_dir_for_python(r"C:\proj\venv\Scripts\python.exe")
-    assert win is not None and win.name == "venv"
-    # POSIX layout
-    posix = uv_sync_deps.venv_dir_for_python("/proj/.venv-macos/bin/python")
-    assert posix is not None and posix.name == ".venv-macos"
+
+    # A REAL venv layout (Scripts/bin + a pyvenv.cfg at root) -> derives root.
+    sub = "Scripts" if sys.platform == "win32" else "bin"
+    exe = "python.exe" if sys.platform == "win32" else "python"
+    venv_root = tmp_path / "venv"
+    (venv_root / sub).mkdir(parents=True)
+    (venv_root / "pyvenv.cfg").write_text("home = x\n", encoding="utf-8")
+    py = venv_root / sub / exe
+    py.write_text("", encoding="utf-8")
+    got = uv_sync_deps.venv_dir_for_python(str(py))
+    assert got is not None and got.name == "venv"
+
+    # A SYSTEM python (bin/ child but NO pyvenv.cfg at the parent's parent) must
+    # NOT be mistaken for a venv — the whole point of the gemini HIGH fix.
+    sysroot = tmp_path / "usr"
+    (sysroot / "bin").mkdir(parents=True)
+    sys_py = sysroot / "bin" / "python3"
+    sys_py.write_text("", encoding="utf-8")
+    assert uv_sync_deps.venv_dir_for_python(str(sys_py)) is None, (
+        "system python (no pyvenv.cfg) must not resolve to a venv root"
+    )
+
     # A path whose parent is neither Scripts nor bin -> None (not a venv layout).
     assert uv_sync_deps.venv_dir_for_python("/opt/python/python3") is None
-    # NOTE: the heuristic keys on the parent dir name (Scripts/bin), so a SYSTEM
-    # interpreter at /usr/bin/python3 would also derive /usr. That's acceptable:
-    # the launchers only ever pass a resolved *venv* interpreter as --python
-    # (never a bare system python), so this ambiguity can't fire in practice.
 
 
 # --------------------------------------------------------------------------
