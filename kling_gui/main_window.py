@@ -3737,7 +3737,22 @@ class KlingGUIWindow:
             style=TTK_BTN_DANGER,
         )
         self.abort_btn.pack(side=tk.RIGHT, padx=4)
-        self._set_queue_controls_enabled(False)
+        # Enable the queue controls now that the queue manager exists
+        # (_init_generator runs before _setup_controls). Every handler
+        # (_toggle_pause / _abort_current_job / _retry_failed / _clear_queue)
+        # is idle-safe — they early-return / no-op when nothing is running — so
+        # there is no state where these must be disabled. Disabling them at
+        # setup with no matching enable left the whole control row (incl. the
+        # new Abort button) permanently greyed out and unusable (Codex P1 +
+        # CodeRabbit Major, PR #73). Abort starts disabled and is enabled per
+        # active job by the queue-start hook below.
+        self._set_queue_controls_enabled(True)
+        # Abort is only meaningful while a job is actually running; start it
+        # disabled and let the active-subprocess hook flip it on/off.
+        try:
+            self.abort_btn.config(state=tk.DISABLED)
+        except Exception:
+            pass
 
     def _set_queue_controls_enabled(self, enabled: bool):
         """Enable or disable queue control buttons without removing them from UI."""
@@ -3803,6 +3818,11 @@ class KlingGUIWindow:
                 log_callback=self._log_thread_safe,
                 queue_update_callback=self._update_queue_display_thread_safe,
                 processing_complete_callback=self._on_item_complete,
+            )
+            # Enable/disable the Abort button as jobs start/stop (PR #73). The
+            # button is only meaningful while a killable subprocess is in flight.
+            self.queue_manager.on_active_subprocess_change = (
+                self._on_active_subprocess_change
             )
             if self.generator is not None:
                 self._log("Generator initialized successfully", "success")
@@ -5178,6 +5198,25 @@ class KlingGUIWindow:
         else:
             self.queue_manager.pause_processing()
             self.pause_btn.config(text="Resume")
+
+    def _on_active_subprocess_change(self, running: bool):
+        """Enable the Abort button only while a killable job is in flight.
+
+        Called from the QueueManager worker thread, so marshal the Tk widget
+        update onto the GUI thread via root.after (PR #73).
+        """
+        def _apply():
+            try:
+                self.abort_btn.config(
+                    state=tk.NORMAL if running else tk.DISABLED
+                )
+            except Exception:
+                pass
+        try:
+            self.root.after(0, _apply)
+        except Exception:
+            # No event loop yet / teardown — apply directly as a fallback.
+            _apply()
 
     def _abort_current_job(self):
         """Abort the in-flight job (the Abort button).

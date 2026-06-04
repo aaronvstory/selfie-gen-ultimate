@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Pre-commit hook: Shai-Hulud / TeamPCP supply chain audit.
+#
+# Default (fast, ~1-3s):
+#   - Project-level: scripts/detect_compromise.py (if present)
+#   - Kit scanner:   scripts/hulud_kit_scan.py (if present) — adds .claude/
+#                    persistence detection (TeamPCP attack vector against
+#                    Claude Code) that the project scanner doesn't cover.
+#
+# Opt-in (slow, ~5min — kept out of commit path; runs in CI instead):
+#   - Machine-level: ~/.shai-hulud/shai-hulud-audit.{sh,ps1}
+#     Re-enable by exporting SHAI_HULUD_MACHINE_AUDIT=1 in your shell.
+#
+# Exits non-zero on alerts (commit blocked). Warnings are reported but don't block.
+#
+# To install: cp this file to .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# To skip in an emergency: git commit --no-verify (use sparingly)
+
+set -u
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [[ -z "$REPO_ROOT" ]]; then
+    echo "pre-commit: not in a git repo, skipping audit" >&2
+    exit 0
+fi
+
+YELLOW='\033[33m'
+RED='\033[31m'
+GREEN='\033[32m'
+RESET='\033[0m'
+
+FAILED=0
+
+# --- Skip scan when no dep-related files in this commit ---
+# Supply chain risk only materializes when dep manifests change. If this commit
+# touches only source code, the scan adds no signal and ~45s of latency.
+# Override: SHAI_HULUD_FORCE=1 to always scan.
+# Subagent HIGH on b807560 (2026-05-22): the original ``\.pth`` arm
+# only matched a file whose entire basename was literally ``.pth``
+# (a hidden file). Real-world malicious .pth files have names like
+# ``litellm.pth`` or ``attack.pth`` and were silently skipped by
+# the hook, defeating the entire dep-trigger logic for the .pth
+# attack class. Fix: ``[^/]*\.pth`` matches any basename ending in
+# .pth (with at least the ``.pth`` literal — the ``[^/]*`` prefix
+# allows zero or more non-slash chars).
+DEP_PATTERN='(^|/)(requirements[^/]*\.txt|package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|pyproject\.toml|Pipfile(\.lock)?|poetry\.lock|uv\.lock|[^/]*\.pth|\.github/workflows/.*\.ya?ml|\.claude/.*\.(js|mjs|json))$'
+if [[ "${SHAI_HULUD_FORCE:-0}" != "1" ]]; then
+    if ! git diff --cached --name-only | grep -Eq "$DEP_PATTERN"; then
+        echo -e "${GREEN}[pre-commit] no dep/workflow changes — skipping supply chain audit${RESET}" >&2
+        exit 0
+    fi
+fi
+
+# --- Resolve Python once (used by BOTH scanners) ---
+# Subagent HIGH on 9ab368ec (2026-05-22): hoisting this above the
+# project-scanner block ensures the kit scanner still runs if the
+# project scanner file is missing/renamed. Previously PY only got
+# assigned inside the project-scanner `if [[ -f ]]` block, so a
+# missing detect_compromise.py silently disabled the kit scanner too.
+if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+else
+    echo -e "${YELLOW}pre-commit: no python found — skipping all supply-chain audits${RESET}" >&2
+    PY=""
+fi
+
+# --- Project-level scan ---
+PROJECT_SCRIPT="$REPO_ROOT/scripts/detect_compromise.py"
+if [[ -f "$PROJECT_SCRIPT" && -n "$PY" ]]; then
+    echo "[pre-commit] running project audit (dep/workflow files changed)..."
+    # Subagent CRITICAL on b807560 (2026-05-22): detect_compromise.py
+    # is a 2-tier producer (0=clean, 1=alerts) but the prior caller
+    # logic gated FAILED=1 on ``code >= 2`` and printed a yellow
+    # "warnings" line on ``code == 1``. Real IoC alerts (code=1)
+    # silently became "warnings" and the commit went through.
+    # Fix: any non-zero exit blocks the commit. The script doesn't
+    # have a separate "warnings" level today, so the prior elif was
+    # dead code that masqueraded as a safety net.
+    "$PY" "$PROJECT_SCRIPT" --repo-root "$REPO_ROOT"
+    code=$?
+    if [[ $code -ne 0 ]]; then
+        echo -e "${RED}[pre-commit] project audit FAILED (exit $code — see findings above)${RESET}" >&2
+        FAILED=1
+    fi
+fi
+
+# --- Kit scanner (shai-hulud-kit v1.1) ---
+# Adds .claude/ persistence detection + spoofed-author check + campaign string
+# markers — gaps the project scanner doesn't cover. Same fast tier as the
+# project scan; both must pass.
+KIT_SCRIPT="$REPO_ROOT/scripts/hulud_kit_scan.py"
+if [[ -f "$KIT_SCRIPT" && -n "$PY" ]]; then
+    echo "[pre-commit] running hulud-kit scanner (.claude/ persistence + IOCs)..."
+    "$PY" "$KIT_SCRIPT" --root "$REPO_ROOT"
+    code=$?
+    # Kit scanner is 3-tier: 0=clean, 1=warnings, 2=alerts.
+    if [[ $code -ge 2 ]]; then
+        echo -e "${RED}[pre-commit] hulud-kit scanner FAILED (alerts — exit $code)${RESET}" >&2
+        FAILED=1
+    elif [[ $code -eq 1 ]]; then
+        echo -e "${YELLOW}[pre-commit] hulud-kit scanner: warnings (continuing)${RESET}" >&2
+    fi
+fi
+
+# --- Machine-level scan: DISABLED on pre-commit (too slow: ~5min/commit) ---
+# Machine-wide OSV.dev round-trips are kept out of the commit path. They still
+# run in CI (.github/workflows/supply-chain-audit.yml: nightly + push + PR) and
+# you can invoke them manually anytime with `/hulud-kit quick` in Claude Code.
+# To re-enable here, set SHAI_HULUD_MACHINE_AUDIT=1 in your shell.
+if [[ "${SHAI_HULUD_MACHINE_AUDIT:-0}" = "1" ]]; then
+    if [[ -f "$HOME/.shai-hulud/shai-hulud-audit.sh" ]]; then
+        MACHINE_SCRIPT="$HOME/.shai-hulud/shai-hulud-audit.sh"
+        echo "[pre-commit] running machine audit (quick mode)..."
+        "$MACHINE_SCRIPT" --mode quick --quiet
+        code=$?
+        if [[ $code -ge 2 ]]; then
+            echo -e "${RED}[pre-commit] machine audit FAILED (alerts present)${RESET}" >&2
+            echo "Run '/hulud-kit quick' or '$MACHINE_SCRIPT --mode quick' for details." >&2
+            FAILED=1
+        elif [[ $code -eq 1 ]]; then
+            echo -e "${YELLOW}[pre-commit] machine audit has warnings (continuing)${RESET}" >&2
+        fi
+    elif command -v pwsh >/dev/null 2>&1 && [[ -f "$HOME/.shai-hulud/shai-hulud-audit.ps1" ]]; then
+        echo "[pre-commit] running machine audit via pwsh..."
+        pwsh -NoProfile -File "$HOME/.shai-hulud/shai-hulud-audit.ps1" -Mode quick -Quiet
+        code=$?
+        if [[ $code -ge 2 ]]; then
+            echo -e "${RED}[pre-commit] machine audit FAILED (alerts present)${RESET}" >&2
+            FAILED=1
+        elif [[ $code -eq 1 ]]; then
+            echo -e "${YELLOW}[pre-commit] machine audit has warnings (continuing)${RESET}" >&2
+        fi
+    fi
+fi
+
+if [[ $FAILED -ne 0 ]]; then
+    echo "" >&2
+    echo -e "${RED}Commit blocked by supply chain audit.${RESET}" >&2
+    echo "  - Review the findings above" >&2
+    echo "  - See docs/security/IOC_DETECTION_CHECKLIST.md if you have one" >&2
+    echo "  - Use 'git commit --no-verify' to bypass (only if you've confirmed safe)" >&2
+    exit 1
+fi
+
+echo -e "${GREEN}[pre-commit] supply chain audit clean${RESET}" >&2
+exit 0

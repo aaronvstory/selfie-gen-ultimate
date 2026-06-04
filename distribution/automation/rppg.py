@@ -1105,6 +1105,44 @@ class _RppgProgressTracker:
         return self._iter_current
 
 
+def _kill_process_tree(process) -> None:
+    """Kill ``process`` AND its descendants. Stdlib-only; never raises.
+
+    Codex P1 (PR #73): the GUI rPPG path runs through ``run_rppg.bat``, which
+    spawns a separate ``python rppg_injector.py`` child. ``process.kill()`` only
+    terminates the cmd/batch wrapper, leaving the long-running injector orphaned
+    — still burning GPU/CPU and writing output AFTER the user pressed Abort (or
+    after a timeout). Kill the whole tree: ``taskkill /T /F`` on Windows, the
+    process group on POSIX, plus a direct ``kill()`` fallback.
+    """
+    try:
+        if process.poll() is not None:
+            return
+    except Exception:  # noqa: BLE001
+        return
+    pid = getattr(process, "pid", None)
+    if sys.platform == "win32" and pid is not None:
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    elif pid is not None:
+        try:
+            import signal as _signal
+            os.killpg(os.getpgid(pid), _signal.SIGKILL)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        if process.poll() is None:
+            process.kill()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def stream_subprocess_with_timeout(
     cmd: List[str],
     *,
@@ -1273,7 +1311,9 @@ def stream_subprocess_with_timeout(
         # within ≤1s even when the child is mid-iteration with no new output.
         if abort_event is not None and abort_event.is_set():
             if process.poll() is None:
-                process.kill()
+                # Tree-kill so the run_rppg.bat wrapper's injector child can't
+                # keep running after Abort (Codex P1, PR #73).
+                _kill_process_tree(process)
                 try:
                     process.wait(timeout=5)
                 except (subprocess.TimeoutExpired, OSError):
@@ -1284,7 +1324,9 @@ def stream_subprocess_with_timeout(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             if process.poll() is None:
-                process.kill()
+                # Tree-kill (see abort path) so a timeout can't orphan the
+                # injector child either.
+                _kill_process_tree(process)
                 # Reap the SIGKILL'd child so it does not linger as a
                 # zombie (kill() terminates but does not wait()). Bounded
                 # so a wedged kill can't itself hang the caller.

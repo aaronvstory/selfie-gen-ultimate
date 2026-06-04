@@ -477,6 +477,14 @@ class QueueItem:
     # widget renders a unicode bar from these two fields.
     stage: str = "queued"
     stage_percent: int = 0
+    # Resume-after-abort state (Codex P2, PR #73). When the user presses Abort
+    # DURING post-generation (rPPG/Loop/Oldcam), the Kling video is already on
+    # disk — regenerating it on Resume would waste a render AND trip the
+    # duplicate-skip ("video already exists"). Instead the abort handler records
+    # the finished Kling output here; on the next process pass the worker SKIPS
+    # Kling generation and resumes straight into post-processing from this file.
+    resume_from_existing: bool = False
+    resume_kling_output: Optional[str] = None
 
     @property
     def filename(self) -> str:
@@ -529,6 +537,12 @@ class QueueManager:
         # the stage to finish. Both are reset at the start of each new item.
         self._abort_event = threading.Event()
         self._active_subprocess: Optional[subprocess.Popen] = None
+        # Optional GUI hook fired whenever the active long-running subprocess is
+        # published or cleared, with a bool "is a job now running". The GUI uses
+        # it to enable the Abort button ONLY while a killable job is in flight
+        # (Codex P1 / CodeRabbit Major, PR #73 — the button was permanently
+        # disabled before). Set after construction; default no-op.
+        self.on_active_subprocess_change = None
         self._oldcam_deps_status_by_version: Dict[str, bool] = {}
         self._last_oldcam_run_summary: Optional[Dict[str, object]] = None
         self._oldcam_rerun_thread: Optional[threading.Thread] = None
@@ -640,12 +654,52 @@ class QueueManager:
         self.is_paused = True
         proc = self._active_subprocess
         if proc is not None:
-            try:
-                if proc.poll() is None:
-                    proc.kill()
-            except Exception:  # noqa: BLE001 — handle may have just exited
-                pass
+            self._kill_process_tree(proc)
         self.log("⛔ Abort requested — stopping the current job…", "warning")
+
+    @staticmethod
+    def _kill_process_tree(proc):
+        """Kill ``proc`` AND its descendants.
+
+        Codex P1 (PR #73): on Windows the rPPG path runs through
+        ``run_rppg.bat``, which spawns a separate ``python rppg_injector.py``
+        child. ``proc.kill()`` only terminates the cmd/batch wrapper, leaving
+        the long-running injector orphaned — still burning GPU/CPU and writing
+        output AFTER the user pressed Abort. Kill the whole tree:
+        ``taskkill /T /F`` on Windows, the process group on POSIX, with a plain
+        ``proc.kill()`` fallback. Stdlib-only; never raises.
+        """
+        try:
+            if proc.poll() is not None:
+                return  # already exited
+        except Exception:  # noqa: BLE001
+            return
+        pid = getattr(proc, "pid", None)
+        if sys.platform == "win32" and pid is not None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except Exception:  # noqa: BLE001 — taskkill missing/raced
+                pass
+        else:
+            # POSIX: try the process group (works when the child was started in
+            # its own session), then fall back to killing the group leader.
+            try:
+                import signal as _signal  # POSIX-only path; lazy import
+                pgid = os.getpgid(pid) if pid is not None else None
+                if pgid is not None:
+                    os.killpg(pgid, _signal.SIGKILL)
+            except Exception:  # noqa: BLE001 — no pgid / already gone
+                pass
+        # Belt-and-suspenders: always try the direct handle too.
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _abort_requested(self) -> bool:
         """True if the user asked to abort the in-flight job."""
@@ -662,16 +716,38 @@ class QueueManager:
         failed — an abort is a user choice, not an error.
         """
         with self.lock:
-            if item.status == "processing":
+            # Re-queue whether the item is still "processing" OR already
+            # "completed". Codex P2 (PR #73): _process_queue marks the item
+            # "completed" right after Kling generation RETURNS, BEFORE running
+            # the post-generation stages (rPPG / Loop / Oldcam). An Abort during
+            # those stages reaches here with status=="completed", so a
+            # processing-only guard silently no-ops while the log still claims
+            # "re-queued" — the row stays done and Resume won't pick it up.
+            # Treat any non-failed item as re-queueable on user abort.
+            if item.status in ("processing", "completed"):
                 item.status = "pending"
                 item.stage = "queued"
                 item.stage_percent = 0
+                # If Kling already produced its output (abort happened DURING
+                # post-processing), arm a resume that skips re-generating Kling
+                # and continues from the existing file — so Resume neither wastes
+                # a render nor trips the duplicate-skip (Codex P2, PR #73).
+                kling_out = getattr(item, "resume_kling_output", None)
+                if kling_out and os.path.exists(kling_out):
+                    item.resume_from_existing = True
         self.is_running = False
-        self.log(
-            f"⛔ Aborted '{item.filename}' mid-job; re-queued. "
-            "Press Resume to re-run it.",
-            "warning",
-        )
+        if getattr(item, "resume_from_existing", False):
+            msg = (
+                f"⛔ Aborted '{item.filename}' during post-processing; re-queued. "
+                "Press Resume to continue from the existing Kling video "
+                "(post-processing only)."
+            )
+        else:
+            msg = (
+                f"⛔ Aborted '{item.filename}' mid-job; re-queued. "
+                "Press Resume to re-run it."
+            )
+        self.log(msg, "warning")
         self.update_queue_display()
 
     def _publish_active_subprocess(self, proc: Optional[subprocess.Popen]):
@@ -683,6 +759,15 @@ class QueueManager:
         when the stage ends so the next abort can't target a finished process.
         """
         self._active_subprocess = proc
+        # Notify the GUI so the Abort button is enabled only while a killable
+        # job is actually running (PR #73). Best-effort — never let a GUI hook
+        # break the worker.
+        cb = self.on_active_subprocess_change
+        if cb is not None:
+            try:
+                cb(proc is not None)
+            except Exception:  # noqa: BLE001 — GUI hook must not break the queue
+                pass
 
     def retry_failed(self):
         """Re-queue all failed items."""
@@ -1331,11 +1416,34 @@ class QueueManager:
                     actual_output = output_folder
                     self.log_verbose(f"  Output: {actual_output}", "debug")
 
-                # Check if video already exists (with current model and prompt slot)
-                video_exists, found_video_path = check_video_exists(
-                    item.path, actual_output, self.generator, config
+                # Resume-after-abort fast path (Codex P2, PR #73): if a prior
+                # Abort happened DURING post-processing, the Kling video is
+                # already on disk. Skip BOTH the duplicate check and the
+                # re-generation, and resume straight into post-processing from
+                # the recorded output. Falls back to a normal run if the file
+                # vanished in the meantime.
+                _resuming = (
+                    item.resume_from_existing
+                    and item.resume_kling_output
+                    and os.path.exists(item.resume_kling_output)
                 )
-                custom_output_path = None
+                if _resuming:
+                    self.log(
+                        f"↻ Resuming '{item.filename}' post-processing from "
+                        f"existing Kling video (no re-generation).",
+                        "info",
+                    )
+                    video_exists, found_video_path = False, None
+                    custom_output_path = None
+                    # consume the one-shot flag so a future natural completion
+                    # of this item doesn't accidentally resume again
+                    item.resume_from_existing = False
+                else:
+                    # Check if video already exists (with current model and prompt slot)
+                    video_exists, found_video_path = check_video_exists(
+                        item.path, actual_output, self.generator, config
+                    )
+                    custom_output_path = None
 
                 if video_exists:
                     if not allow_reprocess:
@@ -1412,22 +1520,26 @@ class QueueManager:
                 # Skip duplicate check if we've already handled it (overwrite mode deleted file,
                 # increment mode uses custom path)
                 skip_check = video_exists and reprocess_mode == "overwrite"
-                result = self._generate_video(
-                    item,
-                    actual_output,
-                    prompt,
-                    negative_prompt,
-                    False,  # always False — we already computed gen-images/ path
-                    custom_output_path,
-                    skip_duplicate_check=skip_check,
-                    video_duration=video_duration,
-                    aspect_ratio=aspect_ratio,
-                    resolution=resolution,
-                    seed=seed,
-                    camera_fixed=camera_fixed,
-                    generate_audio=generate_audio,
-                    generation_timestamp=generation_timestamp,
-                )
+                if _resuming:
+                    # Reuse the existing Kling output instead of regenerating.
+                    result = item.resume_kling_output
+                else:
+                    result = self._generate_video(
+                        item,
+                        actual_output,
+                        prompt,
+                        negative_prompt,
+                        False,  # always False — we already computed gen-images/ path
+                        custom_output_path,
+                        skip_duplicate_check=skip_check,
+                        video_duration=video_duration,
+                        aspect_ratio=aspect_ratio,
+                        resolution=resolution,
+                        seed=seed,
+                        camera_fixed=camera_fixed,
+                        generate_audio=generate_audio,
+                        generation_timestamp=generation_timestamp,
+                    )
 
                 if result:
                     item.status = "completed"
@@ -1444,6 +1556,10 @@ class QueueManager:
                     # behind the rppg_per_oldcam_fanout opt-in flag
                     # below (defaults OFF).
                     final_video = result
+                    # Record the finished Kling base so an Abort during the
+                    # post-processing stages below can offer a clean Resume that
+                    # skips re-generating Kling (Codex P2, PR #73).
+                    item.resume_kling_output = result
 
                     # Step 1: rPPG on raw Kling FIRST when enabled.
                     # Produces ``<stem>-rppg.mp4`` if it succeeds. On
@@ -1600,6 +1716,11 @@ class QueueManager:
                     item.output_path = final_video
                     item.stage = "done"
                     item.stage_percent = 100
+                    # Item completed cleanly — drop the resume-after-abort
+                    # state so a future natural reprocess of this row never
+                    # resumes from a now-stale Kling path (Codex P2, PR #73).
+                    item.resume_from_existing = False
+                    item.resume_kling_output = None
                     self.log(f"💾 Saved to: {final_video}", "info")
                     # Synthesize a final summary milestone so the user
                     # can see, at a glance, what was applied (and what
@@ -2012,8 +2133,9 @@ class QueueManager:
             returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             if process is not None:
-                if process.poll() is None:
-                    process.kill()
+                # Tree-kill: the Oldcam launcher is a .bat wrapper too, so a bare
+                # process.kill() can orphan the python child (Codex P1, PR #73).
+                self._kill_process_tree(process)
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
@@ -2030,8 +2152,8 @@ class QueueManager:
             return None
         except Exception as exc:
             if process is not None:
-                if process.poll() is None:
-                    process.kill()
+                # Tree-kill (see above) — don't orphan the launcher's child.
+                self._kill_process_tree(process)
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:

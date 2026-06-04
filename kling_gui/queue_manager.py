@@ -537,6 +537,12 @@ class QueueManager:
         # the stage to finish. Both are reset at the start of each new item.
         self._abort_event = threading.Event()
         self._active_subprocess: Optional[subprocess.Popen] = None
+        # Optional GUI hook fired whenever the active long-running subprocess is
+        # published or cleared, with a bool "is a job now running". The GUI uses
+        # it to enable the Abort button ONLY while a killable job is in flight
+        # (Codex P1 / CodeRabbit Major, PR #73 — the button was permanently
+        # disabled before). Set after construction; default no-op.
+        self.on_active_subprocess_change = None
         self._oldcam_deps_status_by_version: Dict[str, bool] = {}
         self._last_oldcam_run_summary: Optional[Dict[str, object]] = None
         self._oldcam_rerun_thread: Optional[threading.Thread] = None
@@ -648,12 +654,52 @@ class QueueManager:
         self.is_paused = True
         proc = self._active_subprocess
         if proc is not None:
-            try:
-                if proc.poll() is None:
-                    proc.kill()
-            except Exception:  # noqa: BLE001 — handle may have just exited
-                pass
+            self._kill_process_tree(proc)
         self.log("⛔ Abort requested — stopping the current job…", "warning")
+
+    @staticmethod
+    def _kill_process_tree(proc):
+        """Kill ``proc`` AND its descendants.
+
+        Codex P1 (PR #73): on Windows the rPPG path runs through
+        ``run_rppg.bat``, which spawns a separate ``python rppg_injector.py``
+        child. ``proc.kill()`` only terminates the cmd/batch wrapper, leaving
+        the long-running injector orphaned — still burning GPU/CPU and writing
+        output AFTER the user pressed Abort. Kill the whole tree:
+        ``taskkill /T /F`` on Windows, the process group on POSIX, with a plain
+        ``proc.kill()`` fallback. Stdlib-only; never raises.
+        """
+        try:
+            if proc.poll() is not None:
+                return  # already exited
+        except Exception:  # noqa: BLE001
+            return
+        pid = getattr(proc, "pid", None)
+        if sys.platform == "win32" and pid is not None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except Exception:  # noqa: BLE001 — taskkill missing/raced
+                pass
+        else:
+            # POSIX: try the process group (works when the child was started in
+            # its own session), then fall back to killing the group leader.
+            try:
+                import signal as _signal  # POSIX-only path; lazy import
+                pgid = os.getpgid(pid) if pid is not None else None
+                if pgid is not None:
+                    os.killpg(pgid, _signal.SIGKILL)
+            except Exception:  # noqa: BLE001 — no pgid / already gone
+                pass
+        # Belt-and-suspenders: always try the direct handle too.
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _abort_requested(self) -> bool:
         """True if the user asked to abort the in-flight job."""
@@ -713,6 +759,15 @@ class QueueManager:
         when the stage ends so the next abort can't target a finished process.
         """
         self._active_subprocess = proc
+        # Notify the GUI so the Abort button is enabled only while a killable
+        # job is actually running (PR #73). Best-effort — never let a GUI hook
+        # break the worker.
+        cb = self.on_active_subprocess_change
+        if cb is not None:
+            try:
+                cb(proc is not None)
+            except Exception:  # noqa: BLE001 — GUI hook must not break the queue
+                pass
 
     def retry_failed(self):
         """Re-queue all failed items."""
@@ -2078,8 +2133,9 @@ class QueueManager:
             returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             if process is not None:
-                if process.poll() is None:
-                    process.kill()
+                # Tree-kill: the Oldcam launcher is a .bat wrapper too, so a bare
+                # process.kill() can orphan the python child (Codex P1, PR #73).
+                self._kill_process_tree(process)
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
@@ -2096,8 +2152,8 @@ class QueueManager:
             return None
         except Exception as exc:
             if process is not None:
-                if process.poll() is None:
-                    process.kill()
+                # Tree-kill (see above) — don't orphan the launcher's child.
+                self._kill_process_tree(process)
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:

@@ -68,6 +68,77 @@ def test_abort_kills_live_published_subprocess():
             proc.wait(timeout=5)
 
 
+def test_kill_process_tree_kills_child_process():
+    """Codex P1 (PR #73): the rPPG/Oldcam paths run through a .bat wrapper that
+    spawns a python child. abort must kill the WHOLE tree, not just the wrapper,
+    or the injector keeps burning GPU after Abort. Simulate it: a parent python
+    that spawns a long-lived grandchild; tree-kill must take BOTH down."""
+    qm, _ = _make_qm()
+    # Parent spawns a child that sleeps 60s, then the parent itself sleeps 60s.
+    # Killing only the parent handle would orphan the child on a naive kill().
+    parent_src = (
+        "import subprocess, sys, time; "
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        "print(c.pid, flush=True); "
+        "time.sleep(60)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", parent_src],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        child_pid = int(proc.stdout.readline().strip())
+        qm._kill_process_tree(proc)
+        for _ in range(50):
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        assert proc.poll() is not None, "parent must be killed"
+        # The grandchild must also be gone (the whole point of the tree-kill).
+        # os.kill(pid, 0) raises if the pid no longer exists.
+        import os as _os
+        gone = False
+        for _ in range(50):
+            try:
+                _os.kill(child_pid, 0)
+                time.sleep(0.1)
+            except OSError:
+                gone = True
+                break
+        assert gone, "child process must be killed by the tree-kill, not orphaned"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_kill_process_tree_on_dead_handle_is_safe():
+    """tree-kill on an already-exited process must not raise."""
+    qm, _ = _make_qm()
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=10)
+    qm._kill_process_tree(proc)  # must be a no-op, no raise
+
+
+def test_on_active_subprocess_change_fires():
+    """The Abort button is enabled only while a job runs (Codex P1/CodeRabbit
+    Major, PR #73): publishing a proc fires the hook with True, clearing it
+    fires False."""
+    qm, _ = _make_qm()
+    events = []
+    qm.on_active_subprocess_change = lambda running: events.append(running)
+
+    class _FakeProc:
+        pid = 12345
+
+        def poll(self):
+            return None
+
+    qm._publish_active_subprocess(_FakeProc())
+    qm._publish_active_subprocess(None)
+    assert events == [True, False]
+
+
 def test_abort_no_active_subprocess_is_noop_safe():
     """abort with nothing running must not raise (button is harmless when idle)."""
     qm, _ = _make_qm()

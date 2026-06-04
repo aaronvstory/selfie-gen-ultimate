@@ -802,9 +802,27 @@ class Step3UiTighteningTests(unittest.TestCase):
         self.assertIn("self._queue_panel_visible = False", src)
         self.assertIn("if self._queue_panel_visible:", src)
 
-    def test_queue_controls_are_disabled_in_setup(self):
+    def test_queue_controls_enabled_in_setup_abort_starts_disabled(self):
+        """PR #73: the queue controls must be ENABLED at setup (every handler is
+        idle-safe), with ONLY the Abort button starting disabled and toggled per
+        active job. The old _set_queue_controls_enabled(False) with no matching
+        enable left the entire control row (incl. the new Abort button)
+        permanently greyed-out and unusable (Codex P1 / CodeRabbit Major)."""
         src = inspect.getsource(KlingGUIWindow._setup_controls)
-        self.assertIn("self._set_queue_controls_enabled(False)", src)
+        # Controls are enabled (not disabled) at setup...
+        self.assertIn("self._set_queue_controls_enabled(True)", src)
+        self.assertNotIn("self._set_queue_controls_enabled(False)", src)
+        # ...but Abort specifically starts disabled (only meaningful mid-job).
+        self.assertIn("self.abort_btn.config(state=tk.DISABLED)", src)
+
+    def test_abort_button_toggled_by_active_subprocess_hook(self):
+        """The Abort button is enabled only while a killable job runs, via the
+        QueueManager.on_active_subprocess_change hook (PR #73)."""
+        gen_src = inspect.getsource(KlingGUIWindow._init_generator)
+        self.assertIn("on_active_subprocess_change", gen_src)
+        cb_src = inspect.getsource(KlingGUIWindow._on_active_subprocess_change)
+        self.assertIn("abort_btn", cb_src)
+        self.assertIn("tk.NORMAL if running else tk.DISABLED", cb_src)
 
     def test_update_queue_display_safe_when_widgets_missing(self):
         window = KlingGUIWindow.__new__(KlingGUIWindow)
