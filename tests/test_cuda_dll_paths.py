@@ -250,40 +250,73 @@ def test_cuda_include_dirs_survives_oserror(tmp_path, monkeypatch):
     assert cuda_dll_paths.cuda_include_dirs() == []  # no crash
 
 
-# --- v2.23.2: CuPy-13.6 vs nvrtc-13.3 constexpr cure (friend's deepest bug) ---
-def test_nvrtc_runtime_capped_below_133_in_gpu_bootstrap():
-    """gpu_bootstrap pins nvrtc + runtime to <13.3 (the CUDA-13.2 line CuPy
-    13.6.0 can compile against; nvrtc 13.3 breaks CuPy's bundled CCCL with a
-    libcudacxx constexpr error). Both on the same minor."""
+# --- v2.23.3: unset CUDA_PATH so CuPy uses BUNDLED headers (the real cure) ---
+def test_injector_unsets_cuda_path_before_cupy():
+    """THE root cause of the friend's CUDA-13 rPPG-on-CPU failure
+    (sidecar-confirmed 2026-06-05): an OLD system CUDA Toolkit (v11.8) on
+    CUDA_PATH made CuPy compile with the SYSTEM headers while loading nvrtc from
+    the wheel — the mismatch breaks CuPy 13.6's bundled CCCL 2.8.0
+    (cupy#9852/#9853). The injector MUST pop CUDA_PATH/CUDA_HOME before importing
+    CuPy so it uses its own bundled headers (the maintainer's documented
+    workaround), gated by RPPG_KEEP_CUDA_PATH=1 for opt-out."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "rPPG" / "rppg_injector.py").read_text(encoding="utf-8", errors="replace")
+    # The injector pops CUDA_PATH + CUDA_HOME (loop over the tuple) + environ.pop.
+    assert "os.environ.pop(" in src and "CUDA_PATH" in src and "CUDA_HOME" in src, (
+        "injector must unset CUDA_PATH/CUDA_HOME before importing CuPy")
+    assert "RPPG_KEEP_CUDA_PATH" in src, "must provide the opt-out env var"
+    # The pop must run BEFORE the module-level _init_cupy_backend() CALL (which is
+    # what actually imports + compiles). `import cupy as cp` lives inside the
+    # _init_cupy_backend def earlier in the file, so compare against the CALL.
+    pop_idx = src.find('("CUDA_PATH", "CUDA_HOME")')
+    call_idx = src.find("_cp, _cp_gaussian_filter = _init_cupy_backend()")
+    assert 0 < pop_idx < call_idx, (
+        "CUDA_PATH unset must precede the _init_cupy_backend() call")
+
+
+def test_gpu_bootstrap_probe_unsets_cuda_path():
+    """The GUI 'GPU ready' probe MUST mirror the injector's CUDA_PATH unset, or
+    the probe (using bundled headers) and the real run (using system headers)
+    disagree — a false-positive 'ready' that then fails on CPU."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    src = (root / "scripts" / "gpu_bootstrap.py").read_text(encoding="utf-8", errors="replace")
+    assert "os.environ.pop('CUDA_PATH', None)" in src, (
+        "gpu_bootstrap probe must unset CUDA_PATH like the injector")
+
+
+def test_nvrtc_runtime_pinned_to_133_in_gpu_bootstrap():
+    """gpu_bootstrap pins nvrtc + runtime + nvjitlink to 13.3.x — the toolchain
+    CuPy 13.6.0's BUNDLED CCCL 2.8.0 headers expect. Pinning DOWN to 13.0 (the
+    v2.23.2 mistake) FORCED the `limits(633): constexpr function return is
+    non-constant` failure on the friend's box because an older nvrtc rejects
+    CCCL 2.8.0's constexpr __half return. All three on the same 13.3 minor."""
     import gpu_bootstrap
     cu13 = gpu_bootstrap._CUDA_TO_NVIDIA_WHEELS[13]
     nvrtc = next(s for s in cu13 if s.startswith("nvidia-cuda-nvrtc"))
     runtime = next(s for s in cu13 if s.startswith("nvidia-cuda-runtime"))
-    assert ">=13.0,<13.1" in nvrtc, f"nvrtc not capped <13.1: {nvrtc}"
-    assert ">=13.0,<13.1" in runtime, f"runtime not capped <13.1: {runtime}"
+    nvjit = next(s for s in cu13 if s.startswith("nvidia-nvjitlink"))
+    assert ">=13.3,<13.4" in nvrtc, f"nvrtc not pinned 13.3: {nvrtc}"
+    assert ">=13.3,<13.4" in runtime, f"runtime not pinned 13.3: {runtime}"
+    assert ">=13.3,<13.4" in nvjit, f"nvjitlink not pinned 13.3: {nvjit}"
 
 
-def test_relaxed_constexpr_flag_prepended_by_patch():
-    """The injector/probe relaxed-constexpr wrapper prepends
-    --expt-relaxed-constexpr to nvrtc options (the documented fix for the
-    'constexpr function return is non-constant' error) without dropping the
-    caller's own options."""
-    seen = {}
-
-    def _orig(source, options=(), *a, **k):
-        seen["options"] = options
-        return "ok"
-
-    # Mirror the wrapper logic used in rppg_injector / gpu_bootstrap probe.
-    def _patched(source, options=(), *a, _orig=_orig, **k):
-        opts = tuple(options or ())
-        if "--expt-relaxed-constexpr" not in opts:
-            opts = ("--expt-relaxed-constexpr",) + opts
-        return _orig(source, opts, *a, **k)
-
-    _patched("__global__ void k(){}", ("-arch=sm_80",))
-    assert seen["options"][0] == "--expt-relaxed-constexpr"
-    assert "-arch=sm_80" in seen["options"]
-    # Idempotent: a second wrap must not double-add.
-    _patched("k", ("--expt-relaxed-constexpr", "-arch=sm_90"))
-    assert seen["options"].count("--expt-relaxed-constexpr") == 1
+def test_no_expt_relaxed_constexpr_belt_anywhere():
+    """v2.23.3: the nvrtc --expt-relaxed-constexpr "belt" was REMOVED. It is an
+    *nvcc* flag that nvrtc REJECTS ("unrecognized option"), so it turned a
+    possibly-recoverable first compile error into a GUARANTEED retry failure on
+    the friend's box. Guard against it sneaking back into the injector or the
+    gpu_bootstrap probe."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    for rel in ("rPPG/rppg_injector.py", "scripts/gpu_bootstrap.py"):
+        src = (root / rel).read_text(encoding="utf-8", errors="replace")
+        # The string may appear ONLY inside explanatory comments, never as an
+        # actual nvrtc option being prepended. Assert it's not injected: no
+        # `('--expt-relaxed-constexpr',) +` tuple-prepend and no
+        # `compile_using_nvrtc = ` monkeypatch that adds it.
+        assert "('--expt-relaxed-constexpr',) +" not in src, (
+            f"{rel} still PREPENDS the bogus nvrtc flag")
+        assert "_relaxed_patched" not in src and "_relaxed_constexpr_patched" not in src, (
+            f"{rel} still installs the relaxed-constexpr nvrtc monkeypatch")

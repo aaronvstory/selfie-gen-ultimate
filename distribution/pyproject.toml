@@ -166,30 +166,28 @@ cu128 = [
     # CuPy is win/linux-only (see cu121 note) — gate it so the darwin arm64
     # required-environment can still resolve this extra (cupy simply absent).
     "cupy-cuda13x>=13.6,<14; sys_platform == 'win32' or sys_platform == 'linux'",
-    # CUDA 13.x component wheels (un-suffixed nvidia-* line). nvrtc + runtime are
-    # pinned to the CUDA-13.0.x line — the toolkit CuPy 13.6.0's docs list as its
-    # supported CUDA 13 version (docs.cupy.dev/en/v13.6.0/install.html). THE
-    # friend's deepest CUDA-13 bug (root-caused 2026-06-04 from his sidecar log):
-    # with the LATEST nvrtc 13.3.x, CuPy 13.6.0's bundled libcudacxx/CCCL headers
-    # fail to compile — `cuda/std/limits(633): error: constexpr function return
-    # is non-constant`. CuPy 14.x supports newer CUDA 13.x but requires numpy>=2,
-    # which breaks our TF-2.16.2 numpy<2 face stack — so CuPy 13.6 + numpy<2 is
-    # the newest line this app can use, and 13.0.x is its documented-compatible
-    # CUDA toolkit. Both nvrtc + runtime on the SAME minor so CuPy's header
-    # version-match also succeeds. Do NOT raise until a CuPy >=13.7 (numpy<2)
-    # ships a CCCL that compiles under newer nvrtc. [[project_cupy_numpy2_conflict]]
-    "nvidia-cuda-nvrtc>=13.0,<13.1; sys_platform == 'win32' or sys_platform == 'linux'",
-    "nvidia-cuda-runtime>=13.0,<13.1; sys_platform == 'win32' or sys_platform == 'linux'",
+    # CUDA 13.x component wheels (un-suffixed nvidia-* line). nvrtc + runtime +
+    # nvjitlink are pinned to the CUDA-13.3.x line to MATCH CuPy 13.6.0's BUNDLED
+    # CCCL headers (v2.23.3 root cause, friend-log-confirmed 2026-06-05):
+    #   CuPy v13 BUNDLES its own CCCL (Thrust/CUB/libcudacxx) headers in the wheel
+    #   (docs.cupy.dev/en/v13.6.0/upgrade.html "Modernized CCCL support"). CuPy
+    #   13.6.0 ships CCCL 2.8.0, whose `cuda/std/limits` uses a constexpr __half
+    #   return that ONLY compiles under nvrtc >= 13.3. An OLDER nvrtc (e.g. 13.0)
+    #   rejects it with `limits(633): constexpr function return is non-constant` —
+    #   so pinning DOWN to 13.0 (the v2.23.2 mistake) FORCED the failure on the
+    #   friend's box. Pinning the nvrtc compiler to 13.3 (== the bundled CCCL's
+    #   expected toolchain) is what compiles on the dev box and is the real cure.
+    # numpy stays <2 (CuPy 14 would allow newer CUDA but needs numpy>=2, which
+    # breaks the TF-2.16.2 face stack). [[project_cupy_numpy2_conflict]]
+    "nvidia-cuda-nvrtc>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cuda-runtime>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
     "nvidia-cublas>=13.5,<14; sys_platform == 'win32' or sys_platform == 'linux'",
     "nvidia-cufft>=12.3,<13; sys_platform == 'win32' or sys_platform == 'linux'",
     "nvidia-curand>=10.4,<11; sys_platform == 'win32' or sys_platform == 'linux'",
     "nvidia-cusolver>=12.2,<13; sys_platform == 'win32' or sys_platform == 'linux'",
     "nvidia-cusparse>=12.8,<13; sys_platform == 'win32' or sys_platform == 'linux'",
-    # nvjitlink held on the SAME 13.0.x line as nvrtc/runtime — it's the JIT
-    # linker (not a CCCL-header source, so 13.3 wouldn't re-break the compile),
-    # but lockstepping the whole CUDA-13 toolchain on one minor removes the
-    # divergence a reviewer (and a future "cleanup") could trip on.
-    "nvidia-nvjitlink>=13.0,<13.1; sys_platform == 'win32' or sys_platform == 'linux'",
+    # nvjitlink held on the SAME 13.3.x line as nvrtc/runtime (lockstep toolchain).
+    "nvidia-nvjitlink>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
 
 [tool.uv]

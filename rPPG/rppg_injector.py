@@ -237,6 +237,26 @@ try:
         # (benchmarking, or a workaround if a specific CuPy/driver combo
         # misbehaves). Raise so the normal CPU-fallback branch below runs.
         raise RuntimeError("RPPG_FORCE_CPU=1")
+    # ROOT CAUSE of the friend's CUDA-13 rPPG-on-CPU failure (v2.23.3,
+    # friend-sidecar-confirmed 2026-06-05): he has an OLD system CUDA Toolkit
+    # (C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8) installed, and
+    # Windows sets CUDA_PATH/CUDA_HOME to point at it. CuPy then JIT-compiles its
+    # kernels using the SYSTEM 11.8 HEADERS (cuda_fp8.hpp etc.) while loading
+    # nvrtc from the WHEEL — a version mismatch that breaks CuPy 13.6's bundled
+    # CCCL 2.8.0 with `cuda/std/limits(633): constexpr function return is
+    # non-constant`. This is CuPy's own documented failure mode (cupy#9852/#9853:
+    # "CuPy loads NVRTC from the wheel but uses headers from the system
+    # installation"). The maintainer's documented workaround: UNSET CUDA_PATH so
+    # CuPy uses the wheel's headers exclusively. We do that here, in-process,
+    # BEFORE importing CuPy — surgical and reversible (only this subprocess's
+    # env), so it can't disturb anything else on the machine. RPPG_KEEP_CUDA_PATH=1
+    # opts out for the rare box that NEEDS the system toolkit headers.
+    if os.environ.get("RPPG_KEEP_CUDA_PATH") != "1":
+        for _cuda_env in ("CUDA_PATH", "CUDA_HOME"):
+            if os.environ.pop(_cuda_env, None):
+                print(f"GPU backend: cleared {_cuda_env} for this run so CuPy "
+                      f"uses its own bundled CUDA headers (avoids a system-CUDA "
+                      f"header/wheel mismatch). Set RPPG_KEEP_CUDA_PATH=1 to keep it.")
     try:
         _cp, _cp_gaussian_filter = _init_cupy_backend()
     except Exception as _first_gpu_err:
@@ -307,35 +327,17 @@ try:
                 _inc_applied = os.pathsep.join(_inc_dirs)
             except Exception:  # noqa: BLE001 — include patch is best-effort
                 pass
-        # 3. NEWER nvrtc than CuPy's bundled CCCL supports (the friend's ACTUAL
-        #    deepest cause, from his sidecar log v2.23.1): nvrtc 13.3 vs CuPy
-        #    13.6.0's older libcudacxx → `cuda/std/limits(633): error: constexpr
-        #    function return is non-constant`. The committed pin caps nvrtc at
-        #    <13.1 (CUDA 13.0.x line) for FRESH installs, but an ALREADY-installed
-        #    13.3 venv won't
-        #    auto-downgrade. Belt: prepend nvrtc's --expt-relaxed-constexpr (the
-        #    documented flag for this constexpr-in-device error) by wrapping
-        #    cupy.cuda.compiler.compile_using_nvrtc, then retry. Best-effort.
-        _relaxed_applied = False
-        try:
-            import cupy.cuda.compiler as _cc2  # noqa: WPS433
-            if not getattr(_cc2, "_rppg_relaxed_constexpr_patched", False):
-                _orig_compile = _cc2.compile_using_nvrtc
-
-                def _patched_compile(source, options=(), *a, _orig=_orig_compile, **k):
-                    opts = tuple(options or ())
-                    if "--expt-relaxed-constexpr" not in opts:
-                        opts = ("--expt-relaxed-constexpr",) + opts
-                    return _orig(source, opts, *a, **k)
-
-                _cc2.compile_using_nvrtc = _patched_compile
-                _cc2._rppg_relaxed_constexpr_patched = True
-            import cupy as _cupy_relaxed  # noqa: WPS433
-            if hasattr(_cupy_relaxed, "clear_memo"):
-                _cupy_relaxed.clear_memo()
-            _relaxed_applied = True
-        except Exception:  # noqa: BLE001 — relaxed-constexpr patch is best-effort
-            pass
+        # NOTE (v2.23.3): a previous build also injected nvrtc
+        # `--expt-relaxed-constexpr` here as a "belt". That was REMOVED — it is
+        # an *nvcc* flag, and nvrtc REJECTS it ("unrecognized option
+        # --expt-relaxed-constexpr"), which turned a possibly-recoverable first
+        # error into a GUARANTEED retry failure on the friend's box. The real
+        # cure for the `cuda/std/limits(633): constexpr function return is
+        # non-constant` error is matching the nvrtc WHEEL to CuPy 13.6.0's
+        # bundled CCCL 2.8.0 (nvrtc >= 13.3) — see the pin in gpu_bootstrap /
+        # pyproject. The include-dir monkeypatch (layer 1) + JIT-cache wipe
+        # (below) remain because they are harmless and fix the OTHER two causes
+        # (header skew + stale cubins).
         try:
             _cleared = _clear_cupy_kernel_cache()
         except Exception:  # noqa: BLE001 — cache wipe must never crash rPPG
@@ -344,7 +346,6 @@ try:
               f"({type(_first_gpu_err).__name__}: "
               f"{_summarize_nvrtc_compile_error(_first_gpu_err)}); "
               f"forced CUDA include dir ({_inc_applied or 'none found'}); "
-              f"relaxed-constexpr ({'on' if _relaxed_applied else 'unavailable'}); "
               f"cleared CuPy JIT cache ({_cleared or 'nothing to clear'}); "
               f"retrying once…")
         _cp, _cp_gaussian_filter = _init_cupy_backend()

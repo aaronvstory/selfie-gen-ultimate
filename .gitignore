@@ -10,6 +10,7 @@ env/
 .venv/
 .venv-macos/
 .venv311/
+.scratch_*/
 crash_log.txt
 
 # IDE
