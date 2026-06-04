@@ -677,8 +677,16 @@ class QueueManager:
         pid = getattr(proc, "pid", None)
         if sys.platform == "win32" and pid is not None:
             try:
+                # Resolve taskkill via PATH, else the canonical System32 path —
+                # a restricted/cleared PATH must not defeat the tree-kill
+                # (gemini MEDIUM, PR #73).
+                import shutil as _shutil
+                taskkill = _shutil.which("taskkill") or os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"),
+                    "System32", "taskkill.exe",
+                )
                 subprocess.run(
-                    ["taskkill", "/T", "/F", "/PID", str(pid)],
+                    [taskkill, "/T", "/F", "/PID", str(pid)],
                     capture_output=True,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
@@ -754,6 +762,15 @@ class QueueManager:
             )
         self.log(msg, "warning")
         self.update_queue_display()
+        # When a partial Kling output already exists (resume armed), notify the
+        # GUI so the carousel picks it up — the abort path `return`s before the
+        # worker's normal on_processing_complete call, so without this the
+        # carousel wouldn't show the partial render (code-review MEDIUM, PR #73).
+        if getattr(item, "resume_from_existing", False) and self.on_processing_complete:
+            try:
+                self.on_processing_complete(item)
+            except Exception:  # noqa: BLE001 — GUI callback must not break abort
+                pass
 
     def _publish_active_subprocess(self, proc: Optional[subprocess.Popen]):
         """Record the long-running child so abort_current_job() can kill it.
@@ -973,6 +990,13 @@ class QueueManager:
         def _worker():
             nonlocal source_video
             temp_input: Optional[Path] = None
+            # Clear any abort latched by a PRIOR standalone re-run. The normal
+            # queue clears _abort_event at the top of _process_queue, but this
+            # standalone path also calls _rppg_video()/_oldcam_video() which poll
+            # the event — without this, one aborted re-run makes EVERY later
+            # standalone re-run abort instantly until a queue item runs (Codex
+            # P2, PR #73).
+            self._abort_event.clear()
             try:
                 config = self.get_config()
                 versions_to_run = self._get_oldcam_versions_to_run()
@@ -1767,6 +1791,15 @@ class QueueManager:
                         f"{Path(final_video).name}",
                         "milestone",
                     )
+                elif self._abort_requested():
+                    # Abort DURING Kling generation: _generate_video returns
+                    # None (the API poll loop exits) exactly like a genuine
+                    # generation failure. Without this guard the item would be
+                    # marked "failed" — so Resume wouldn't pick it up and the
+                    # user would have to hit "Retry Failed" instead (code-review
+                    # HIGH, PR #73). Re-queue it like the post-gen abort path.
+                    self._handle_item_abort(item)
+                    return
                 else:
                     item.status = "failed"
                     item.stage = "failed"
@@ -2043,8 +2076,13 @@ class QueueManager:
     #   "rPPG iter 3/10 50% (frame 144/242)"
     # — so the bar parser must accept the new shape. Class-level for parity with
     # _OLDCAM_PCT_PAT and to survive __new__-constructed test instances.
+    # Matches BOTH the iterative form "rPPG iter 3/10 50% (frame 144/242)" AND
+    # the non-iterative single-pass form "rPPG 47% (frame 114/242)" — the
+    # `iter N/M` group is OPTIONAL (automation/rppg emits an empty iter_label
+    # when _iter_current/_iter_max are unset). Without the optional group the
+    # single-pass progress bar stayed stuck at 0 (code-review MEDIUM, PR #73).
     _RPPG_PCT_PAT = re.compile(
-        r"rPPG iter\s+(\d+)/(\d+)\s+(\d+)%\s+\(frame\s+\d+/\d+\)"
+        r"rPPG\s+(?:iter\s+(\d+)/(\d+)\s+)?(\d+)%\s+\(frame\s+\d+/\d+\)"
     )
 
     def _run_oldcam_version(
@@ -2735,12 +2773,11 @@ class QueueManager:
                 m = self._RPPG_PCT_PAT.search(message)
                 if m is not None:
                     try:
-                        cur_iter = int(m.group(1))
-                        max_iter = max(1, int(m.group(2)))
-                        # group(3) is the WITHIN-ITERATION percent (0-100) from
-                        # the v2.22.1 progress line "rPPG iter 3/10 50% (frame
-                        # 144/242)" — i.e. how far through THIS iteration's
-                        # frames we are (code-review LOW: was misnamed frame_pct).
+                        # iter N/M is OPTIONAL — single-pass runs omit it, so
+                        # default to iter 1/1 (then within_iter_pct IS the
+                        # overall percent). group(3) is always the percent.
+                        cur_iter = int(m.group(1)) if m.group(1) else 1
+                        max_iter = max(1, int(m.group(2))) if m.group(2) else 1
                         within_iter_pct = int(m.group(3))
                     except (TypeError, ValueError):
                         return

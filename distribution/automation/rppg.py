@@ -1123,8 +1123,14 @@ def _kill_process_tree(process) -> None:
     pid = getattr(process, "pid", None)
     if sys.platform == "win32" and pid is not None:
         try:
+            # Resolve taskkill via PATH, else canonical System32 (gemini MEDIUM).
+            import shutil as _shutil
+            taskkill = _shutil.which("taskkill") or os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                "System32", "taskkill.exe",
+            )
             subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                [taskkill, "/T", "/F", "/PID", str(pid)],
                 capture_output=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )

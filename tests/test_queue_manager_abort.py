@@ -85,6 +85,11 @@ def test_kill_process_tree_kills_child_process():
     proc = subprocess.Popen(
         [sys.executable, "-c", parent_src],
         stdout=subprocess.PIPE, text=True,
+        # Own session/group on POSIX (matching the real rPPG/Oldcam launches) so
+        # _kill_process_tree's self-group guard doesn't (correctly) refuse to
+        # killpg pytest's own group, which would leave the grandchild alive and
+        # fail this test on macOS/Linux (Codex, PR #73).
+        start_new_session=(sys.platform != "win32"),
     )
     try:
         child_pid = int(proc.stdout.readline().strip())

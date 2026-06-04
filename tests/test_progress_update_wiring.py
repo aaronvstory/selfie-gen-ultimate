@@ -112,3 +112,22 @@ def test_queue_progress_callback_routes_progress_update_unconditionally():
     src = inspect.getsource(queue_manager.QueueManager._generate_video)
     assert 'if level == "progress_update":' in src
     assert "self.log(message, \"progress_update\")" in src
+
+
+def test_rppg_pct_pattern_matches_iterative_and_single_pass():
+    """_RPPG_PCT_PAT must drive the queue progress bar for BOTH the iterative
+    line 'rPPG iter 3/10 50% (frame 144/242)' AND the single-pass line
+    'rPPG 47% (frame 114/242)'. The single-pass form (empty iter_label in
+    automation/rppg) previously didn't match, leaving the bar stuck at 0
+    (code-review MEDIUM, PR #73)."""
+    from kling_gui.queue_manager import QueueManager
+
+    pat = QueueManager._RPPG_PCT_PAT
+    m_iter = pat.search("rPPG iter 3/10 50% (frame 144/242)")
+    assert m_iter is not None
+    assert (m_iter.group(1), m_iter.group(2), m_iter.group(3)) == ("3", "10", "50")
+
+    m_single = pat.search("rPPG 47% (frame 114/242)")
+    assert m_single is not None, "single-pass progress line must match"
+    assert m_single.group(1) is None and m_single.group(2) is None
+    assert m_single.group(3) == "47"
