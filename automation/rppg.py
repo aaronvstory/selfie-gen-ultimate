@@ -1131,9 +1131,16 @@ def _kill_process_tree(process) -> None:
         except Exception:  # noqa: BLE001
             pass
     elif pid is not None:
+        # POSIX: kill the child's process group ONLY if it differs from ours.
+        # The child is spawned with start_new_session=True so it leads its own
+        # group; the guard guarantees we never SIGKILL our OWN group (the GUI /
+        # test runner) if it somehow shares it (Gemini CRITICAL + Codex P1,
+        # PR #73). proc.kill() below still stops the direct child.
         try:
             import signal as _signal
-            os.killpg(os.getpgid(pid), _signal.SIGKILL)
+            pgid = os.getpgid(pid)
+            if pgid != os.getpgrp():
+                os.killpg(pgid, _signal.SIGKILL)
         except Exception:  # noqa: BLE001
             pass
     try:
@@ -1262,6 +1269,10 @@ def stream_subprocess_with_timeout(
         errors="replace",  # injector stdout may carry non-UTF-8 bytes
         bufsize=1,
         env=env,
+        # Own process group/session on POSIX so an Abort/timeout killpg's the
+        # whole rppg tree (run_rppg.sh wrapper + injector child) without
+        # touching the GUI's group (PR #73). No-op on Windows (taskkill /T).
+        start_new_session=(os.name != "nt"),
     )
     assert process.stdout is not None
     # Publish the live handle so the GUI Abort button can kill it instantly.

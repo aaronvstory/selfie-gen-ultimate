@@ -684,13 +684,18 @@ class QueueManager:
                 )
             except Exception:  # noqa: BLE001 — taskkill missing/raced
                 pass
-        else:
-            # POSIX: try the process group (works when the child was started in
-            # its own session), then fall back to killing the group leader.
+        elif pid is not None:
+            # POSIX: kill the child's process group — but ONLY if it's a
+            # DIFFERENT group than ours. The children are spawned with
+            # start_new_session=True so they lead their own group; if for any
+            # reason they didn't (older code path / inherited group), killpg on
+            # OUR group would SIGKILL the GUI + test runner themselves (Gemini
+            # CRITICAL + Codex P1, PR #73). The guard makes that impossible; the
+            # proc.kill() fallback below still stops the direct child.
             try:
                 import signal as _signal  # POSIX-only path; lazy import
-                pgid = os.getpgid(pid) if pid is not None else None
-                if pgid is not None:
+                pgid = os.getpgid(pid)
+                if pgid != os.getpgrp():
                     os.killpg(pgid, _signal.SIGKILL)
             except Exception:  # noqa: BLE001 — no pgid / already gone
                 pass
@@ -1580,7 +1585,15 @@ class QueueManager:
                         if rppg_base:
                             final_video = rppg_base
                             item.rppg_succeeded = True
-                        else:
+                        elif not self._abort_requested():
+                            # Genuine rPPG SKIP/FAILURE (not an abort): mark the
+                            # Kling output -NORPPG. On a user ABORT, _rppg_video
+                            # ALSO returns None — but renaming here would move the
+                            # file out from under item.resume_kling_output, so
+                            # Resume couldn't continue from the existing render
+                            # AND the run would be mislabeled an rPPG failure
+                            # (Codex P2, PR #73). Skip the rename; the abort guard
+                            # below re-queues the item with its real Kling path.
                             final_video = self._mark_norppg(final_video)
 
                     # Abort guard (code-review Codex P2): _rppg_video returns
@@ -2072,6 +2085,11 @@ class QueueManager:
                 text=True,
                 errors="replace",  # oldcam launcher stdout may carry non-UTF-8 bytes
                 bufsize=1,
+                # Give the child its OWN process group/session on POSIX so an
+                # Abort/timeout can killpg the whole tree (the .bat/.sh wrapper +
+                # its python child) WITHOUT touching the GUI's own group (PR #73).
+                # Ignored on Windows (taskkill /T handles the tree there).
+                start_new_session=(os.name != "nt"),
             )
             assert process.stdout is not None
             # Publish for the GUI Abort button (kills it instantly).

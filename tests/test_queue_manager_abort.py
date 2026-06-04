@@ -139,6 +139,34 @@ def test_on_active_subprocess_change_fires():
     assert events == [True, False]
 
 
+def test_kill_process_tree_never_killpgs_own_group(monkeypatch):
+    """CRITICAL (Gemini + Codex P1, PR #73): on POSIX, if a child shares the
+    GUI's process group, os.killpg(getpgid(pid)) would SIGKILL the GUI + test
+    runner themselves. _kill_process_tree MUST guard: only killpg a group that
+    differs from our own. Simulate the dangerous case (child's pgid == our pgid)
+    and assert killpg is NEVER called."""
+    if sys.platform == "win32":
+        import pytest as _pytest
+        _pytest.skip("killpg guard is POSIX-only; Windows uses taskkill")
+    import os as _os
+    qm, _ = _make_qm()
+
+    class _Proc:
+        pid = 999999
+
+        def poll(self):
+            return None  # 'still running' so the kill path runs
+
+        def kill(self):
+            pass
+
+    killpg_calls = []
+    monkeypatch.setattr(_os, "getpgid", lambda pid: _os.getpgrp())  # SAME group
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killpg_calls.append(pgid))
+    qm._kill_process_tree(_Proc())
+    assert killpg_calls == [], "must NOT killpg our own process group (suicide)"
+
+
 def test_abort_no_active_subprocess_is_noop_safe():
     """abort with nothing running must not raise (button is harmless when idle)."""
     qm, _ = _make_qm()
