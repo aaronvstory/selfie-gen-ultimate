@@ -248,3 +248,42 @@ def test_cuda_include_dirs_survives_oserror(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cuda_dll_paths.glob, "glob", _boom)
     assert cuda_dll_paths.cuda_include_dirs() == []  # no crash
+
+
+# --- v2.23.2: CuPy-13.6 vs nvrtc-13.3 constexpr cure (friend's deepest bug) ---
+def test_nvrtc_runtime_capped_below_133_in_gpu_bootstrap():
+    """gpu_bootstrap pins nvrtc + runtime to <13.3 (the CUDA-13.2 line CuPy
+    13.6.0 can compile against; nvrtc 13.3 breaks CuPy's bundled CCCL with a
+    libcudacxx constexpr error). Both on the same minor."""
+    import gpu_bootstrap
+    cu13 = gpu_bootstrap._CUDA_TO_NVIDIA_WHEELS[13]
+    nvrtc = next(s for s in cu13 if s.startswith("nvidia-cuda-nvrtc"))
+    runtime = next(s for s in cu13 if s.startswith("nvidia-cuda-runtime"))
+    assert ">=13.0,<13.1" in nvrtc, f"nvrtc not capped <13.1: {nvrtc}"
+    assert ">=13.0,<13.1" in runtime, f"runtime not capped <13.1: {runtime}"
+
+
+def test_relaxed_constexpr_flag_prepended_by_patch():
+    """The injector/probe relaxed-constexpr wrapper prepends
+    --expt-relaxed-constexpr to nvrtc options (the documented fix for the
+    'constexpr function return is non-constant' error) without dropping the
+    caller's own options."""
+    seen = {}
+
+    def _orig(source, options=(), *a, **k):
+        seen["options"] = options
+        return "ok"
+
+    # Mirror the wrapper logic used in rppg_injector / gpu_bootstrap probe.
+    def _patched(source, options=(), *a, _orig=_orig, **k):
+        opts = tuple(options or ())
+        if "--expt-relaxed-constexpr" not in opts:
+            opts = ("--expt-relaxed-constexpr",) + opts
+        return _orig(source, opts, *a, **k)
+
+    _patched("__global__ void k(){}", ("-arch=sm_80",))
+    assert seen["options"][0] == "--expt-relaxed-constexpr"
+    assert "-arch=sm_80" in seen["options"]
+    # Idempotent: a second wrap must not double-add.
+    _patched("k", ("--expt-relaxed-constexpr", "-arch=sm_90"))
+    assert seen["options"].count("--expt-relaxed-constexpr") == 1

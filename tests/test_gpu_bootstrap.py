@@ -499,14 +499,19 @@ def test_capped_install_failed_same_installer_stays_capped(monkeypatch):
     """The cap MUST still hold when the failures came from the CURRENT installer
     (don't turn the cap into a no-op — that would re-introduce the 3x-per-launch
     log spam the cap was added to prevent)."""
+    # Monkeypatch the constant BEFORE _write_stamp — the stamp writer forcibly
+    # overwrites installer_version with the live INSTALLER_VERSION (gpu_bootstrap
+    # ~line 339), so the stamp only ends up "SAME as current" if the constant is
+    # already lowered when the stamp is written. (Reordering this is what keeps
+    # the test robust against future INSTALLER_VERSION bumps.)
+    monkeypatch.setattr(gpu_bootstrap, "INSTALLER_VERSION", "2.17.1")
     gpu_bootstrap._write_stamp({
         "result": "install_failed",
         "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "driver_version": "576.80", "cuda_major": 12,
         "cupy_package": "cupy-cuda12x>=13.6,<14", "cupy_version": None,
-        "attempts": 3, "installer_version": "2.17.1",  # SAME as current
+        "attempts": 3,  # installer_version auto-stamped to the (patched) current
     })
-    monkeypatch.setattr(gpu_bootstrap, "INSTALLER_VERSION", "2.17.1")
     install_called = []
     monkeypatch.setattr(
         gpu_bootstrap, "install_cupy",
