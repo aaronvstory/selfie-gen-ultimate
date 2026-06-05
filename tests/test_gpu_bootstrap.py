@@ -1005,28 +1005,30 @@ def test_nvidia_wheel_specs_parity_with_pyproject_extras():
     (this test ships on the pip-only main branch where it lives at repo root
     only on the uv branch)."""
     import os
-    import re
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(gpu_bootstrap.__file__)))
     pyproject = os.path.join(repo_root, "pyproject.toml")
     if not os.path.isfile(pyproject):
         import pytest
         pytest.skip("pyproject.toml absent (pip-only branch) — parity checked on uv branch")
-    with open(pyproject, encoding="utf-8") as fh:
-        text = fh.read()
+
+    # Parse with tomllib (stdlib >=3.11, which this project requires) rather than
+    # a hand-rolled regex — the regex form was fragile to formatting/whitespace
+    # drift in the extras block (code-review MEDIUM, PR #73).
+    import tomllib
+    with open(pyproject, "rb") as fh:
+        data = tomllib.load(fh)
+    extras = data.get("project", {}).get("optional-dependencies", {})
 
     def _extra_nvidia(extra_name):
-        m = re.search(rf"^{extra_name} = \[(.*?)^\]", text, re.S | re.M)
-        assert m, f"extra {extra_name} not found in pyproject.toml"
+        deps = extras.get(extra_name)
+        assert deps, f"extra {extra_name} not found in pyproject.toml [project.optional-dependencies]"
         specs = set()
-        for line in m.group(1).splitlines():
-            s = line.strip().strip(",").strip('"').strip("'")
-            s = s.split(";")[0].strip()  # drop the marker
+        for dep in deps:
+            s = dep.split(";")[0].strip()  # drop the ; sys_platform marker
             if s.startswith("nvidia-"):
                 specs.add(s)
-        # Guard against a regex that matched but extracted nothing (e.g. an
-        # inline comment after `]`) silently passing `assert set() == set()`.
-        assert specs, f"no nvidia-* specs extracted for {extra_name} — regex drift?"
+        assert specs, f"no nvidia-* specs in extra {extra_name}"
         return specs
 
     # cu121 extra <-> CUDA 12; cu128 extra <-> CUDA 13.

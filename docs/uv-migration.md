@@ -122,8 +122,8 @@ darwin-arm64 + linux-x64, catching wheel gaps at lock time:
 
 ## Rollback
 
-The whole migration lives on the `feat/uv-migration` branch and nothing takes
-effect before merge. `requirements.txt` + `constraints.txt` are kept in-tree as
+The uv migration shipped in v2.20 (PR #71). `requirements.txt` + `constraints.txt`
+are kept in-tree as
 the pip fallback; the launchers degrade to them automatically when uv is absent
 or fails (`KLING_USE_PIP=1` forces it). They'll be retired only once uv is
 proven on both OSes in production.

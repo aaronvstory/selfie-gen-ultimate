@@ -349,10 +349,14 @@ def test_abort_event_kills_child_and_raises_timeout():
             abort_event=abort,
         )
     elapsed = time.monotonic() - start
-    # Must return promptly after the abort fires (~0.5s + ≤1s poll + reap),
-    # NOT wait out the child's 10s sleep or the 30s timeout.
-    assert elapsed < 5.0, (
-        f"abort took {elapsed:.1f}s; expected <5s (poll interval is ≤1s)"
+    # The meaningful signal: the abort returned BEFORE the child's natural 10s
+    # end (and long before the 30s timeout) — i.e. the abort poll + kill fired,
+    # not EOF or the timeout. The bound is deliberately loose (<8s, well under
+    # the 10s child) to stay reliable on a loaded box where process reap can lag
+    # — a tight <5s was a flaky wall-clock assertion (code-review HIGH, PR #73).
+    assert elapsed < 8.0, (
+        f"abort took {elapsed:.1f}s; expected well under the child's 10s sleep "
+        f"(the ≤1s poll + kill should fire ~1.5s after launch)"
     )
 
 

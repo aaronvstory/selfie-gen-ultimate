@@ -179,6 +179,30 @@ def test_cli_clear_key_path_manages_optout_like_gui():
         "CLI set-real-value must remove the key from _env_key_optout")
 
 
+def test_cli_optout_survives_save_reload_and_suppresses_env(tmp_path, monkeypatch):
+    """BEHAVIOURAL (not just source-text): a CLI 'clear key' that records the
+    opt-out must (a) persist through save_config + reload from disk, and (b)
+    cause apply_env_key_fallback to leave the key empty even though the env var
+    is set — the actual end-to-end "clear survives restart" contract (PR #73)."""
+    cfg_path = tmp_path / "kling_config.json"
+    # Simulate the CLI clear path: empty key + opt-out recorded, then persist.
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(cfg_path)
+    ui.verbose_logging = False
+    ui.config = {"falai_api_key": "", "_env_key_optout": ["falai_api_key"]}
+    ui.save_config()
+
+    # Reload from disk (next-launch simulation) and run the env fallback with
+    # FAL_KEY set — the opt-out must suppress the prefill.
+    reloaded = json.loads(cfg_path.read_text())
+    assert reloaded.get("_env_key_optout") == ["falai_api_key"], (
+        "opt-out must persist to disk")
+    monkeypatch.setenv("FAL_KEY", "env-secret")
+    apply_env_key_fallback(reloaded)
+    assert reloaded["falai_api_key"] == "", (
+        "a cleared key must STAY empty across restart even with FAL_KEY set")
+
+
 def test_apply_env_key_fallback_strips_whitespace(monkeypatch):
     """Whitespace-only config is treated as empty; env value is trimmed."""
     monkeypatch.setenv("FAL_KEY", "  spaced-key  ")
@@ -280,6 +304,10 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
                 "video_inspector_last_folder": (
                     "F:/Downloads/organized/SUBJECT-FULL-NAME"
                 ),
+                # PER-MACHINE state: the building dev had cleared the fal key in
+                # their own GUI, so their config carries this opt-out. It must
+                # NOT ship (it would suppress the env fallback for recipients).
+                "_env_key_optout": ["falai_api_key", "bfl_api_key"],
                 "selfie_prompt_template": "keep me",
                 "outpaint_prompt": "expand bg",
                 "saved_prompts": {"1": "prompt one"},
@@ -296,6 +324,9 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
     # New blank-list members added 2026-05-28 (v2.7 audit).
     assert sanitized["oldcam_last_source_video"] == ""
     assert sanitized["video_inspector_last_folder"] == ""
+    # _env_key_optout is per-machine state and must be reset so a recipient's
+    # env-var fallback isn't silently suppressed (code-review, PR #73).
+    assert sanitized["_env_key_optout"] == []
     # And the non-secret prompt/setting content must still come through
     # untouched (the "ship everything except secrets" contract).
     assert sanitized["selfie_prompt_template"] == "keep me"

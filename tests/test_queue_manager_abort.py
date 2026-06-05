@@ -293,3 +293,65 @@ def test_handle_item_abort_arms_resume_when_kling_output_exists(tmp_path):
     qm2._handle_item_abort(item2)
     assert item2.resume_from_existing is False
     assert any("re-run it" in m for _lvl, m in logs2)
+
+
+def test_rerun_oldcam_only_clears_abort_event_and_reports_abort(tmp_path, monkeypatch):
+    """The standalone re-run worker must (a) CLEAR a stale _abort_event at start
+    (so one aborted re-run doesn't make every later re-run abort instantly —
+    Codex P2, PR #73), and (b) when an abort fires mid-stage, call
+    completion_callback(False, ..., 'Aborted by user') instead of marching on
+    into later stages. Runs the worker synchronously by patching Thread to run
+    the target inline."""
+    qm, logs = _make_qm()
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"fake-mp4")
+
+    # Pre-set a STALE abort event (as if a prior re-run was aborted).
+    qm._abort_event.set()
+    assert qm._abort_requested() is True
+
+    # Config: rPPG on so the worker enters the rPPG stage; Oldcam selected.
+    monkeypatch.setattr(qm, "get_config", lambda: {"loop_videos": False})
+    monkeypatch.setattr(qm, "_rppg_enabled", lambda: True)
+    monkeypatch.setattr(qm, "_get_oldcam_versions_to_run", lambda: ["v24"])
+    monkeypatch.setattr(qm, "_get_selected_oldcam_versions", lambda: ["v24"])
+
+    # Track whether the event was cleared by the time the first stage runs, and
+    # then RE-set it to simulate the user aborting during the rPPG stage.
+    seen = {"cleared_at_stage": None}
+
+    def _fake_rppg(video, item):
+        # The worker should have cleared the stale event before reaching here.
+        seen["cleared_at_stage"] = not qm._abort_requested()
+        qm._abort_event.set()  # user aborts mid-rPPG
+        return None  # rPPG returns None (like a real abort/skip)
+
+    monkeypatch.setattr(qm, "_rppg_video", _fake_rppg)
+    # If the abort guard fails, these would run — make them loud.
+    monkeypatch.setattr(qm, "_loop_video", lambda *a, **k: pytest.fail("loop ran after abort"))
+    monkeypatch.setattr(qm, "_oldcam_video", lambda *a, **k: pytest.fail("oldcam ran after abort"))
+
+    # Run the worker inline instead of in a daemon thread.
+    import threading as _t
+
+    class _InlineThread:
+        def __init__(self, target=None, **k):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(_t, "Thread", _InlineThread)
+
+    results = []
+    qm.rerun_oldcam_only(str(src), completion_callback=lambda *a: results.append(a))
+
+    assert seen["cleared_at_stage"] is True, (
+        "worker must clear the stale _abort_event before the first stage")
+    assert results, "completion_callback must be called"
+    ok, _src, out, err = results[-1]
+    assert ok is False and out is None, "aborted re-run must report failure"
+    assert err == "Aborted by user", f"expected abort message, got {err!r}"

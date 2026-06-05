@@ -604,6 +604,23 @@ defensive fix in that PR snapshots the current best to a stable name
 the snapshot logic — root cause of the mid-loop deletion is still
 unknown.
 
+**GPU on a box with a SYSTEM CUDA Toolkit (v2.23.3 → v2.23.4 cure):** rPPG uses
+CuPy, which JIT-compiles its kernels. If an OLD system CUDA Toolkit is present
+(e.g. CUDA v11.8), CuPy `_get_cuda_path()` resolves it via `CUDA_PATH` OR
+`shutil.which('nvcc')` and compiles against its headers, breaking CuPy 13.6's
+bundled CCCL 2.8.0 (`cuda/std/limits(633): constexpr function return is
+non-constant`) → CPU fallback. THE FIX (`_force_cupy_bundled_cuda_headers()` in
+`rPPG/rppg_injector.py`, mirrored in the `gpu_bootstrap` probe): before the first
+compile, set `cupy._environment.get_cuda_path`/`get_nvcc_path` to return `None`
+(and pop `CUDA_PATH`/`CUDA_HOME`) so CuPy uses its OWN bundled headers — immune to
+both env vars and nvcc-on-PATH. **`RPPG_KEEP_CUDA_PATH=1`** opts out (rare box that
+NEEDS the system toolkit). nvrtc/runtime/nvjitlink are pinned `>=13.3,<13.4` to
+match the bundled CCCL. The injector ALSO clears the CuPy JIT cache + force-injects
+the wheel include dir on a compile failure before retrying once, then degrades to
+CPU. The bogus `--expt-relaxed-constexpr` "belt" was REMOVED — nvrtc rejects it.
+End users with a contaminating system toolkit can run the safe one-click
+`fix/Run CUDA Cleanup.bat` (ships in the release zip).
+
 **Validation rig:** `oldcam-testing/rppg_harness.py` + `run_rppg_harness.bat`
 run the real injector against a permanent gitignored fixture and emit an
 anti-siren `REPORT.md`. Use it before pushing any rPPG/oldcam change. See
