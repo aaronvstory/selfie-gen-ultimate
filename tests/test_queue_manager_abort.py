@@ -355,3 +355,60 @@ def test_rerun_oldcam_only_clears_abort_event_and_reports_abort(tmp_path, monkey
     ok, _src, out, err = results[-1]
     assert ok is False and out is None, "aborted re-run must report failure"
     assert err == "Aborted by user", f"expected abort message, got {err!r}"
+
+
+def test_start_processing_drains_items_queued_during_rerun(tmp_path, monkeypatch):
+    """Codex P2 (PR #73): the round-7 start_processing mutual-exclusion guard
+    (reject while a standalone re-run thread is alive) must NOT strand items
+    enqueued DURING a re-run. The re-run worker's finally drains pending work,
+    and the guard lets the re-run thread itself through (current_thread)."""
+    qm, logs = _make_qm()
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"fake-mp4")
+
+    monkeypatch.setattr(qm, "get_config", lambda: {"loop_videos": False})
+    monkeypatch.setattr(qm, "_rppg_enabled", lambda: False)
+    monkeypatch.setattr(qm, "_get_oldcam_versions_to_run", lambda: ["v24"])
+    monkeypatch.setattr(qm, "_get_selected_oldcam_versions", lambda: ["v24"])
+    # Oldcam "succeeds" trivially; while it runs, the user enqueues a pending item.
+    out = tmp_path / "out.mp4"; out.write_bytes(b"x")
+
+    class _Item:
+        status = "pending"
+
+    def _fake_oldcam(video, item):
+        # Simulate the user adding a queue item mid-rerun.
+        with qm.lock:
+            qm.items.append(_Item())
+        return str(out)
+
+    monkeypatch.setattr(qm, "_oldcam_video", _fake_oldcam)
+    monkeypatch.setattr(qm, "_last_oldcam_run_summary", {"outputs": [str(out)]}, raising=False)
+
+    started = {"n": 0}
+    real_start = qm.start_processing
+
+    def _counting_start():
+        started["n"] += 1
+        # Don't actually spawn a worker thread in the test; just record the call.
+
+    monkeypatch.setattr(qm, "start_processing", _counting_start)
+
+    # Run the rerun worker inline.
+    import threading as _t
+
+    class _InlineThread:
+        def __init__(self, target=None, name=None, **k):
+            self._target = target
+        def start(self):
+            self._target()
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(_t, "Thread", _InlineThread)
+    qm.rerun_oldcam_only(str(src), completion_callback=lambda *a: None)
+
+    assert started["n"] >= 1, (
+        "items enqueued during the re-run must trigger start_processing in the "
+        "re-run worker's finally (not stranded pending forever)"
+    )

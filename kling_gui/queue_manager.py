@@ -627,8 +627,16 @@ class QueueManager:
             # re-run is still winding down could race the event's clear/set and
             # swallow an abort (code-review, PR #73). rerun_oldcam_only already
             # rejects when is_running is True; this is the reverse guard.
+            # EXCEPTION: the re-run worker itself may start the queue from its
+            # OWN finally (to drain items enqueued DURING the re-run) — at that
+            # point the re-run is finished so the abort-event race is gone, and
+            # rejecting it would strand that work forever (Codex P2, PR #73).
             rerun = getattr(self, "_oldcam_rerun_thread", None)
-            if rerun is not None and rerun.is_alive():
+            if (
+                rerun is not None
+                and rerun.is_alive()
+                and rerun is not threading.current_thread()
+            ):
                 return
             self._stop_flag = False
             self.is_running = True
@@ -1355,6 +1363,22 @@ class QueueManager:
                         temp_input.unlink(missing_ok=True)
                     except Exception:
                         pass
+                # If the user enqueued/retried items DURING this standalone
+                # re-run, start_processing() rejected them (the mutual-exclusion
+                # guard) and the re-run doesn't otherwise kick the queue — so
+                # they'd sit pending forever (Codex P2, PR #73). Drain them now
+                # that the re-run is finishing. The guard lets THIS thread
+                # through (rerun is current_thread), and start_processing no-ops
+                # if there's nothing pending or a queue worker is already up.
+                try:
+                    with self.lock:
+                        has_pending = any(
+                            it.status == "pending" for it in self.items
+                        )
+                    if has_pending and not self.is_running and not self.is_paused:
+                        self.start_processing()
+                except Exception:  # noqa: BLE001 — never let drain break teardown
+                    pass
 
         self._oldcam_rerun_thread = threading.Thread(
             target=_worker,
