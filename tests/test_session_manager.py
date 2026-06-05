@@ -226,7 +226,18 @@ class SessionManagerTests(unittest.TestCase):
             imgs = data["session"]["images"]
             paths = sorted(os.path.basename(i["path"]) for i in imgs)
             self.assertEqual(paths, ["a.png", "b.JPG", "c.webp"])
-            self.assertEqual(data["project_key"], "RenamedProject")
+            # Folder-load now adopts the folder: a stable id marker is stamped
+            # and used as the project_key (rename-safe), with the resolved root
+            # recorded for re-linking. The id is the sg-<uuid> marker value.
+            self.assertTrue(data["project_key"].startswith("sg-"))
+            self.assertEqual(data["folder_id"], data["project_key"])
+            self.assertEqual(
+                os.path.normcase(os.path.abspath(data["project_root"])),
+                os.path.normcase(os.path.abspath(proj)),
+            )
+            self.assertTrue(
+                os.path.isfile(os.path.join(proj, ".selfie_session_id.json"))
+            )
             by_name = {os.path.basename(i["path"]): i["source_type"]
                        for i in imgs}
             # Root images are source inputs; the gen-images/ file is
@@ -348,6 +359,176 @@ class SessionManagerTests(unittest.TestCase):
             listed = sm.list_sessions(app_dir)
             self.assertEqual(listed[0].name, "newer")
             self.assertEqual(listed[1].name, "older")
+
+    # ---- Folder-identity / auto-prune (rename-safe sessions) ---------------
+
+    def _write_record(self, app_dir, fname, *, images, folder_id=None,
+                      project_root=None, kind="manual", name=None):
+        """Write a session JSON into <app_dir>/sessions/ and return its path."""
+        sessions_dir = os.path.join(app_dir, "sessions")
+        os.makedirs(sessions_dir, exist_ok=True)
+        path = os.path.join(sessions_dir, fname)
+        payload = {
+            "name": name or os.path.splitext(fname)[0],
+            "session_kind": kind,
+            "updated_at": "2026-01-01T00:00:00",
+            "created_at": "2026-01-01T00:00:00",
+            "session": {"images": [{"path": p, "source_type": "selfie"} for p in images]},
+        }
+        if folder_id is not None:
+            payload["folder_id"] = folder_id
+        if project_root is not None:
+            payload["project_root"] = project_root
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        return path
+
+    def _make_folder_with_marker(self, root, name):
+        """Create root/name/gen-images/selfie.png + an identity marker. Returns
+        (project_dir, image_path, folder_id)."""
+        from kling_gui import folder_identity as fi
+        proj = os.path.join(root, name)
+        gen = os.path.join(proj, "gen-images")
+        os.makedirs(gen, exist_ok=True)
+        img = os.path.join(gen, "selfie.png")
+        with open(img, "wb") as fh:
+            fh.write(b"x")
+        fid = fi.ensure_folder_id(proj, seed_name=name)
+        return proj, img, fid
+
+    def test_autoprune_disabled_is_noop(self):
+        with self._workspace() as root:
+            app_dir = os.path.join(root, "app")
+            work = os.path.join(root, "work")
+            os.makedirs(work, exist_ok=True)
+            proj, img, fid = self._make_folder_with_marker(work, "Live")
+            live_rec = self._write_record(
+                app_dir, "live.json", images=[img], folder_id=fid, project_root=proj)
+            dead_rec = self._write_record(
+                app_dir, "dead.json",
+                images=[os.path.join(work, "Gone", "x.png")])
+            result = sm.maybe_autoprune_on_launch(app_dir, {})
+            self.assertEqual(
+                result, {"ran": False, "relinked": 0, "pruned": 0, "collapsed": 0})
+            self.assertTrue(os.path.exists(live_rec))
+            self.assertTrue(os.path.exists(dead_rec))  # not pruned when disabled
+
+    def test_autoprune_enabled_removes_dead_keeps_live(self):
+        with self._workspace() as root:
+            app_dir = os.path.join(root, "app")
+            work = os.path.join(root, "work")
+            os.makedirs(work, exist_ok=True)
+            proj, img, fid = self._make_folder_with_marker(work, "Keep")
+            live_rec = self._write_record(
+                app_dir, "live.json", images=[img], folder_id=fid, project_root=proj)
+            dead_rec = self._write_record(
+                app_dir, "dead.json",
+                images=[os.path.join(work, "Vanished", "x.png")])
+            result = sm.maybe_autoprune_on_launch(
+                app_dir, {"session_autoprune_enabled": True})
+            self.assertTrue(result["ran"])
+            self.assertEqual(result["pruned"], 1)
+            self.assertTrue(os.path.exists(live_rec))
+            self.assertFalse(os.path.exists(dead_rec))
+
+    def test_rename_relinks_not_prunes(self):
+        with self._workspace() as root:
+            app_dir = os.path.join(root, "app")
+            work = os.path.join(root, "work")
+            os.makedirs(work, exist_ok=True)
+            proj, img, fid = self._make_folder_with_marker(work, "ShootA")
+            rec = self._write_record(
+                app_dir, "shoot.json", images=[img], folder_id=fid, project_root=proj)
+            # Rename the folder on disk (the user's workflow).
+            proj2 = os.path.join(work, "ShootA_FINAL")
+            os.rename(proj, proj2)
+            # Liveness rescues it via the embedded id.
+            info = sm.session_liveness(rec)
+            self.assertTrue(info["live"])
+            self.assertEqual(
+                os.path.normcase(os.path.abspath(info["relinked_to"])),
+                os.path.normcase(os.path.abspath(proj2)))
+            # Auto-prune re-links (not deletes) and the record now points at the
+            # new path with a valid image path.
+            result = sm.maybe_autoprune_on_launch(
+                app_dir, {"session_autoprune_enabled": True})
+            self.assertEqual(result["relinked"], 1)
+            self.assertEqual(result["pruned"], 0)
+            self.assertTrue(os.path.exists(rec))
+            with open(rec, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.assertEqual(
+                os.path.normcase(os.path.abspath(data["project_root"])),
+                os.path.normcase(os.path.abspath(proj2)))
+            self.assertTrue(os.path.isfile(data["session"]["images"][0]["path"]))
+
+    def test_same_folder_one_entry_across_keying(self):
+        # Two saves resolving the SAME marker'd folder share one project_key
+        # (the embedded id) → one rolling autosave file.
+        with self._workspace() as root:
+            app_dir = os.path.join(root, "app")
+            work = os.path.join(root, "work")
+            os.makedirs(work, exist_ok=True)
+            _proj, img, fid = self._make_folder_with_marker(work, "OneFolder")
+            session = _DummySession(img)
+            self.assertEqual(sm.get_project_key(session), fid)
+            for _ in range(3):
+                sm.save_session(
+                    app_dir, session, config={},
+                    session_kind=sm.SESSION_KIND_AUTOSAVE)
+            autosaves = [r for r in sm.list_sessions(app_dir)
+                         if r.session_kind == sm.SESSION_KIND_AUTOSAVE]
+            self.assertEqual(len(autosaves), 1)
+            self.assertEqual(autosaves[0].project_key, fid)
+
+    def test_autoprune_collapses_duplicate_autosaves(self):
+        with self._workspace() as root:
+            app_dir = os.path.join(root, "app")
+            work = os.path.join(root, "work")
+            os.makedirs(work, exist_ok=True)
+            # A live folder so the autosaves aren't pruned as dead before the
+            # collapse pass runs (prune precedes collapse in the helper).
+            _proj, img, _fid = self._make_folder_with_marker(work, "gamma")
+            sessions_dir = os.path.join(app_dir, "sessions")
+            os.makedirs(sessions_dir, exist_ok=True)
+            for i in range(3):
+                p = os.path.join(
+                    sessions_dir, f"gamma_autosave_2026010{i}_010101.json")
+                with open(p, "w", encoding="utf-8") as fh:
+                    json.dump(
+                        {
+                            "name": f"gamma_autosave_2026010{i}_010101",
+                            "session_kind": "autosave",
+                            "project_key": "gamma",
+                            "updated_at": f"2026-01-0{i}T01:01:01",
+                            "session": {"images": [{"path": img, "source_type": "selfie"}]},
+                        },
+                        fh,
+                    )
+            result = sm.maybe_autoprune_on_launch(
+                app_dir, {"session_autoprune_enabled": True})
+            self.assertTrue(result["ran"])
+            self.assertEqual(result["pruned"], 0)  # live folder → nothing dead
+            self.assertGreaterEqual(result["collapsed"], 1)
+            remaining = [r for r in sm.list_sessions(app_dir)
+                         if r.session_kind == "autosave"]
+            self.assertEqual(len(remaining), 1)
+
+    def test_autoprune_never_raises(self):
+        with self._workspace() as app_dir:
+            original = sm.find_dead_sessions
+
+            def _boom(_app):
+                raise RuntimeError("simulated failure")
+
+            sm.find_dead_sessions = _boom  # type: ignore[assignment]
+            try:
+                result = sm.maybe_autoprune_on_launch(
+                    app_dir, {"session_autoprune_enabled": True})
+            finally:
+                sm.find_dead_sessions = original  # type: ignore[assignment]
+            self.assertIsInstance(result, dict)
+            self.assertTrue(result["ran"])
 
 
 if __name__ == "__main__":

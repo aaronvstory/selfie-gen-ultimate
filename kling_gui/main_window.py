@@ -492,6 +492,21 @@ class SessionManagerDialog(tk.Toplevel):
         interval_menu.pack(side=tk.LEFT)
         interval_menu.bind("<<ComboboxSelected>>", lambda e: self._on_autosave_changed())
 
+        # Auto-Prune: when on, the app cleans up dead sessions at every launch
+        # (re-links renamed folders first so they're never swept, then prunes
+        # sessions whose folder is genuinely gone, then collapses duplicate
+        # autosaves). Opt-in, default off; state persists across launches on
+        # both OSes via kling_config.json.
+        self._autoprune_var = tk.BooleanVar(
+            value=self._config.get("session_autoprune_enabled", False)
+        )
+        autoprune_cb = ttk.Checkbutton(
+            autosave_frame, text="Auto-Prune", variable=self._autoprune_var,
+            style="SessionManager.TCheckbutton",
+            command=self._on_autoprune_changed,
+        )
+        autoprune_cb.pack(side=tk.LEFT, padx=(16, 0))
+
         # Hint clarifying the two save buttons (they look similar but differ).
         tk.Label(
             self,
@@ -861,6 +876,12 @@ class SessionManagerDialog(tk.Toplevel):
         self._config["session_autosave_interval"] = self._interval_var.get()
         self._save_config_fn()
 
+    def _on_autoprune_changed(self):
+        # Dedicated handler (not folded into _on_autosave_changed) so the
+        # interval combobox's binding can't co-mingle the autoprune key.
+        self._config["session_autoprune_enabled"] = self._autoprune_var.get()
+        self._save_config_fn()
+
 
 class KlingGUIWindow:
     """Main GUI window for Kling video generation."""
@@ -960,6 +981,14 @@ class KlingGUIWindow:
             sessions_dir=self.sessions_dir,
         )
         self.image_session.add_on_change(self._on_image_session_changed)
+
+        # Opt-in auto-prune (folder-identity feature). Deferred via after(0) so
+        # the window paints before the (potentially I/O-heavy) liveness scan
+        # runs on the first idle cycle. No-op when the feature is off.
+        try:
+            self.root.after(0, self._run_launch_autoprune)
+        except tk.TclError:
+            pass
 
         # PR #49: workspace liveness marker. Best-effort; failure is non-fatal.
         # cleanup_stale_markers + register_instance themselves swallow OS errors
@@ -5787,6 +5816,29 @@ class KlingGUIWindow:
     def _maybe_autosave(self, reason: str = "manual"):
         """Persist a versioned autosave snapshot for the current project."""
         self.session_controller.maybe_autosave(reason=reason)
+
+    def _run_launch_autoprune(self):
+        """Run opt-in startup session cleanup (folder-identity auto-prune).
+
+        Deferred from __init__ via after(0). No-op + silent when the feature is
+        off. When it runs and changes anything, emits one info log line. The
+        backend helper never raises, so this stays a thin wrapper.
+        """
+        try:
+            from .session_manager import maybe_autoprune_on_launch
+
+            result = maybe_autoprune_on_launch(self.data_dir, self.config)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.warning("Launch auto-prune failed: %s", exc)
+            return
+        if result.get("ran") and (
+            result.get("relinked") or result.get("pruned") or result.get("collapsed")
+        ):
+            self._log(
+                "Auto-prune: re-linked {relinked}, removed {pruned} dead, "
+                "collapsed {collapsed} autosave file(s)".format(**result),
+                "info",
+            )
 
     def _on_close(self):
         """Handle window close."""

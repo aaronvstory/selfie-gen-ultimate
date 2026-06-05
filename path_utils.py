@@ -464,11 +464,41 @@ _REPEATED_UNDERSCORE_RE = re.compile(r"_{2,}")
 
 
 def _walk_up_past_gen_folders(source_path: str) -> str:
-    """Walk up from *source_path*'s parent dir past any gen-images/gen-videos nesting."""
+    """Walk up from *source_path*'s parent dir past any gen-images/gen-videos nesting.
+
+    Pure, side-effect-free — this is also called from read-only paths
+    (session liveness checks), so it must never touch the filesystem beyond the
+    path math. Use :func:`resolve_project_root` from a *writing* context to also
+    stamp the folder's identity marker.
+    """
     current = os.path.dirname(os.path.abspath(source_path))
     while os.path.basename(current) in _GEN_FOLDER_NAMES:
         current = os.path.dirname(current)
     return current
+
+
+def _stamp_project_root_id(project_root: str) -> None:
+    """Best-effort: ensure the resolved project root carries an identity marker.
+
+    Called from the gen-folder chokepoints (a generator is about to write into
+    this project), so the root already exists. Local import + broad guard keep
+    this off the critical path: a failure here must never block a generate.
+    """
+    try:
+        from kling_gui.folder_identity import ensure_folder_id
+
+        ensure_folder_id(project_root)
+    except Exception:  # pragma: no cover - defensive, never crash a generate
+        pass
+
+
+def resolve_project_root(source_path: str) -> str:
+    """Return the project root for *source_path* (past any gen-* nesting).
+
+    Thin alias over :func:`_walk_up_past_gen_folders` for callers that want the
+    project root by name. Side-effect-free like the underlying walker.
+    """
+    return _walk_up_past_gen_folders(source_path)
 
 
 def get_gen_images_folder(source_path: str) -> str:
@@ -479,8 +509,15 @@ def get_gen_images_folder(source_path: str) -> str:
 
     Pure path computation — does NOT call os.makedirs.
     Each caller is responsible for creating it before writing.
+
+    Side effect: stamps the resolved project root with a stable identity marker
+    (best-effort) so the session for this folder survives a later rename. This
+    is the central "the app is committing to work in this folder" chokepoint —
+    every generator resolves its output dir through here before its first write.
     """
-    return os.path.join(_walk_up_past_gen_folders(source_path), "gen-images")
+    root = _walk_up_past_gen_folders(source_path)
+    _stamp_project_root_id(root)
+    return os.path.join(root, "gen-images")
 
 
 def get_gen_videos_folder(source_path: str) -> str:
@@ -490,8 +527,13 @@ def get_gen_videos_folder(source_path: str) -> str:
 
     Pure path computation — does NOT call os.makedirs.
     Each caller is responsible for creating it before writing.
+
+    Side effect: stamps the resolved project root with a stable identity marker
+    (best-effort) — see :func:`get_gen_images_folder`.
     """
-    return os.path.join(_walk_up_past_gen_folders(source_path), "gen-videos")
+    root = _walk_up_past_gen_folders(source_path)
+    _stamp_project_root_id(root)
+    return os.path.join(root, "gen-videos")
 
 
 def sanitize_stem(name: str, default: str = "untitled") -> str:
