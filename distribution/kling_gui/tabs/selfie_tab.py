@@ -133,11 +133,19 @@ class SelfieTab(tk.Frame):
         self._cancel_all = threading.Event()       # stop after current model
         self._abort_flow = threading.Event()       # immediate full termination
         self._model_options = self._load_model_options()
+        # User-added custom fal.ai models (config: selfie_custom_models). Merged
+        # on top of the built-ins so future models need no code change.
+        self._custom_models: List[dict] = self._load_custom_models()
+        self._merge_custom_models()
         self._supported_model_endpoints = {
             model.get("endpoint", "") for model in self._model_options if model.get("endpoint")
         }
         self._migrate_selected_models_config()
         self._model_vars: Dict[str, tk.BooleanVar] = {}
+        # Widgets wired in _build_ui so the Add-Models modal can re-render.
+        self._models_grid_frame: Optional[tk.Frame] = None
+        self._models_canvas: Optional[tk.Canvas] = None
+        self._models_hscroll: Optional[ttk.Scrollbar] = None
         self._handoff_identity_data: Optional[Dict[str, str]] = None
         self._handoff_resolved = False
         self._prompt_template_edit_mode = False
@@ -666,7 +674,11 @@ class SelfieTab(tk.Frame):
             font=(FONT_FAMILY, 9),
         ).grid(row=2, column=2, columnspan=2, sticky="w", padx=(12, 0), pady=(4, 0))
 
-        # Model selection (moved to right side of Generation Settings)
+        # Model selection (right side of Generation Settings). Layout: a fixed
+        # "Add Models" button pinned LEFT, then a checkbox table that grows into
+        # COLUMNS with a max of 2 ROWS (we're out of vertical space); overflow
+        # scrolls horizontally. The checkbox rendering lives in
+        # _render_model_checkboxes() so the Add-Models modal can re-render.
         models_frame = tk.LabelFrame(
             settings_split,
             text="Step 2 Models",
@@ -674,85 +686,67 @@ class SelfieTab(tk.Frame):
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         )
-        models_frame.pack(side=tk.LEFT, fill=tk.BOTH, padx=(12, 0))
-        models_frame.configure(width=360)
-        models_frame.pack_propagate(False)
+        models_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
 
+        # Left: fixed Add-Models button (does not scroll).
+        add_btn = create_action_button(
+            models_frame,
+            text="➕ Add",
+            command=self._open_add_models_dialog,
+            style=TTK_BTN_COMPACT,
+        )
+        add_btn.pack(side=tk.LEFT, anchor="n", padx=(6, 4), pady=4)
+
+        # Right: horizontally-scrolling 2-row checkbox table. Use GRID (not pack)
+        # for the canvas + scrollbar so hiding/showing the scrollbar via
+        # grid_remove()/grid() can't reorder it behind the expand=True canvas
+        # (the pack-order bug Gemini flagged, PR #77).
         models_list_container = tk.Frame(models_frame, bg=COLORS["bg_panel"])
-        models_list_container.pack(fill=tk.BOTH, expand=True, padx=4, pady=3)
+        models_list_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2, pady=3)
+        models_list_container.grid_rowconfigure(0, weight=1)
+        models_list_container.grid_columnconfigure(0, weight=1)
         models_canvas = tk.Canvas(
             models_list_container,
             bg=COLORS["bg_panel"],
             highlightthickness=0,
             borderwidth=0,
-            height=66,
+            height=58,
         )
-        models_scroll = ttk.Scrollbar(
+        models_canvas.grid(row=0, column=0, sticky="nsew")
+        models_hscroll = ttk.Scrollbar(
             models_list_container,
-            orient=tk.VERTICAL,
-            command=models_canvas.yview,
+            orient=tk.HORIZONTAL,
+            command=models_canvas.xview,
         )
-        models_canvas.configure(yscrollcommand=models_scroll.set)
-        models_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        models_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        models_canvas.configure(xscrollcommand=models_hscroll.set)
+        models_hscroll.grid(row=1, column=0, sticky="ew")
 
         models_grid_frame = tk.Frame(models_canvas, bg=COLORS["bg_panel"])
-        models_grid_frame.grid_columnconfigure(0, weight=1)
-        models_window_id = models_canvas.create_window(
-            (0, 0),
-            window=models_grid_frame,
-            anchor="nw",
-        )
+        models_canvas.create_window((0, 0), window=models_grid_frame, anchor="nw")
 
-        def _on_models_grid_configure(_event):
+        def _on_models_grid_configure(_event=None):
             bbox = models_canvas.bbox("all")
-            models_canvas.configure(scrollregion=bbox)
+            models_canvas.configure(scrollregion=bbox or (0, 0, 0, 0))
             if not bbox:
                 return
-            content_height = bbox[3] - bbox[1]
-            viewport_height = models_canvas.winfo_height()
-            if content_height <= viewport_height + 2:
-                if models_scroll.winfo_ismapped():
-                    models_scroll.pack_forget()
+            content_width = bbox[2] - bbox[0]
+            viewport_width = models_canvas.winfo_width()
+            # Show the horizontal scrollbar only when columns overflow the width.
+            if content_width <= viewport_width + 2:
+                if models_hscroll.winfo_ismapped():
+                    models_hscroll.grid_remove()
             else:
-                if not models_scroll.winfo_ismapped():
-                    models_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-
-        def _on_models_canvas_configure(event):
-            models_canvas.itemconfigure(models_window_id, width=event.width)
-            _on_models_grid_configure(None)
+                if not models_hscroll.winfo_ismapped():
+                    models_hscroll.grid()
 
         models_grid_frame.bind("<Configure>", _on_models_grid_configure)
-        models_canvas.bind("<Configure>", _on_models_canvas_configure)
+        models_canvas.bind("<Configure>", lambda _e: _on_models_grid_configure())
 
-        saved_models = self.config.get("selfie_selected_models", {})
-        for idx, model in enumerate(self._model_options):
-            endpoint = model.get("endpoint", "")
-            label = model.get("label", endpoint)
-            default_checked = (
-                endpoint == self.DEFAULT_MODEL_ENDPOINT
-                and endpoint not in self.DISABLED_BY_DEFAULT_ENDPOINTS
-            )
-            checked = bool(saved_models.get(endpoint, default_checked))
-            var = tk.BooleanVar(value=checked)
-            self._model_vars[endpoint] = var
-            tk.Checkbutton(
-                models_grid_frame,
-                text=label,
-                variable=var,
-                bg=COLORS["bg_panel"],
-                fg=COLORS["text_light"],
-                selectcolor=COLORS["bg_input"],
-                activebackground=COLORS["bg_panel"],
-                font=(FONT_FAMILY, 9),
-                anchor="w",
-            ).grid(
-                row=idx,
-                column=0,
-                sticky="w",
-                padx=(8, 8),
-                pady=1,
-            )
+        # Stash for the re-render path (modal).
+        self._models_grid_frame = models_grid_frame
+        self._models_canvas = models_canvas
+        self._models_hscroll = models_hscroll
+        self._render_model_checkboxes()
 
         self.output_path_row = tk.Frame(content_frame, bg=COLORS["bg_panel"])
         self.output_entry = tk.Entry(
@@ -1718,6 +1712,184 @@ class SelfieTab(tk.Frame):
                 },
             ]
 
+    # ── Custom (user-added) fal.ai models ─────────────────────────────────
+
+    @staticmethod
+    def _derive_slug(endpoint: str) -> str:
+        """URL-safe slug from a fal.ai endpoint's last TWO path segments.
+
+        Stored on a custom model (``selfie_custom_models[].slug``) for display /
+        identification. Uses the last two segments (e.g. ``flux-pro/kontext`` →
+        ``flux-pro-kontext``) so endpoints sharing a final segment
+        (``vendor/model`` vs ``vendor2/model``) stay distinct. Output filenames
+        are derived separately by ``SelfieGenerator._model_short_name``, which
+        applies the same last-two-segments rule for unknown endpoints — so the
+        two stay consistent and collision-resistant (code-review, PR #77).
+        """
+        parts = [p for p in endpoint.rstrip("/").split("/") if p] if endpoint else []
+        tail = "-".join(parts[-2:]) if parts else ""
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", tail).strip("-").lower()
+        return slug or "model"
+
+    @staticmethod
+    def _prettify_label(endpoint: str) -> str:
+        """Human-ish label from an endpoint when the user gives none."""
+        tail = endpoint.rstrip("/").split("/")[-1] if endpoint else ""
+        words = re.split(r"[^a-zA-Z0-9]+", tail)
+        pretty = " ".join(w.capitalize() for w in words if w)
+        return pretty or endpoint or "Model"
+
+    @staticmethod
+    def parse_model_lines(text: str) -> List[dict]:
+        """Parse the Add-Models textbox into model dicts.
+
+        One model per line: ``vendor/path/endpoint`` with an optional
+        ``| Friendly Label`` suffix. Blank lines and lines whose endpoint
+        doesn't look like ``vendor/...`` are skipped. Returns a de-duplicated
+        (by endpoint) list of ``{endpoint,label,slug,provider}`` dicts.
+        """
+        seen: set = set()
+        out: List[dict] = []
+        for raw in (text or "").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if "|" in line:
+                endpoint, _, label = line.partition("|")
+                endpoint = endpoint.strip()
+                label = label.strip()
+            else:
+                endpoint, label = line, ""
+            # Must look like a fal.ai endpoint path: vendor/name with no URL
+            # query/fragment (a pasted model-page URL with ?…/#… would 404 at
+            # generation — code-review MEDIUM, PR #77).
+            if (
+                "/" not in endpoint
+                or endpoint.startswith("/")
+                or endpoint.endswith("/")
+                or "?" in endpoint
+                or "#" in endpoint
+            ):
+                continue
+            if endpoint in seen:
+                continue
+            seen.add(endpoint)
+            out.append({
+                "endpoint": endpoint,
+                "label": label or SelfieTab._prettify_label(endpoint),
+                "slug": SelfieTab._derive_slug(endpoint),
+                "provider": "fal",
+                "api_url": f"https://fal.ai/models/{endpoint}/api",
+            })
+        return out
+
+    def _load_custom_models(self) -> List[dict]:
+        """Read + validate the persisted custom-model list from config."""
+        raw = self.config.get("selfie_custom_models", [])
+        if not isinstance(raw, list):
+            return []
+        out: List[dict] = []
+        seen: set = set()
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            endpoint = str(item.get("endpoint", "")).strip()
+            if not endpoint or "/" not in endpoint or endpoint in seen:
+                continue
+            seen.add(endpoint)
+            out.append({
+                "endpoint": endpoint,
+                "label": str(item.get("label") or SelfieTab._prettify_label(endpoint)),
+                "slug": str(item.get("slug") or SelfieTab._derive_slug(endpoint)),
+                "provider": str(item.get("provider") or "fal"),
+                "api_url": str(item.get("api_url") or f"https://fal.ai/models/{endpoint}/api"),
+            })
+        return out
+
+    def _merge_custom_models(self) -> None:
+        """Append custom models to _model_options, skipping built-in dupes."""
+        existing = {m.get("endpoint", "") for m in self._model_options}
+        for model in self._custom_models:
+            if model.get("endpoint") and model["endpoint"] not in existing:
+                self._model_options.append(model)
+                existing.add(model["endpoint"])
+
+    # Max checkbox rows before the table grows into new columns (vertical space
+    # is tight — the user asked for strictly 2 rows, columns + horizontal scroll).
+    MODEL_TABLE_ROWS = 2
+
+    def _render_model_checkboxes(self) -> None:
+        """(Re)build the 2-row × N-column checkbox table.
+
+        Idempotent: preserves existing BooleanVar state for endpoints already
+        shown, creates vars for new ones (custom models default to checked),
+        and lays widgets out column-major (row = idx % 2). Called once at build
+        time and again after the Add-Models modal adds endpoints.
+        """
+        grid = self._models_grid_frame
+        if grid is None:
+            return
+        for child in grid.winfo_children():
+            child.destroy()
+        saved_models = self.config.get("selfie_selected_models", {})
+        if not isinstance(saved_models, dict):
+            saved_models = {}
+        custom_endpoints = {m.get("endpoint", "") for m in self._custom_models}
+        for idx, model in enumerate(self._model_options):
+            endpoint = model.get("endpoint", "")
+            if not endpoint:
+                continue
+            label = model.get("label", endpoint)
+            var = self._model_vars.get(endpoint)
+            if var is None:
+                # New endpoint: custom models default ON; built-ins follow the
+                # saved map / DEFAULT_MODEL_ENDPOINT rule.
+                default_checked = endpoint in custom_endpoints or (
+                    endpoint == self.DEFAULT_MODEL_ENDPOINT
+                    and endpoint not in self.DISABLED_BY_DEFAULT_ENDPOINTS
+                )
+                var = tk.BooleanVar(value=bool(saved_models.get(endpoint, default_checked)))
+                self._model_vars[endpoint] = var
+            row = idx % self.MODEL_TABLE_ROWS
+            col = idx // self.MODEL_TABLE_ROWS
+            tk.Checkbutton(
+                grid,
+                text=label,
+                variable=var,
+                bg=COLORS["bg_panel"],
+                fg=COLORS["text_light"],
+                selectcolor=COLORS["bg_input"],
+                activebackground=COLORS["bg_panel"],
+                font=(FONT_FAMILY, 9),
+                anchor="w",
+            ).grid(row=row, column=col, sticky="w", padx=(8, 10), pady=1)
+
+    def _open_add_models_dialog(self) -> None:
+        """Open the Add-Models modal; merge any returned custom endpoints."""
+        try:
+            from kling_gui.main_window import AddModelsDialog
+        except Exception as exc:  # pragma: no cover - degraded import
+            self.log(f"Add Models unavailable: {exc}", "error")
+            return
+        existing = {m.get("endpoint", "") for m in self._model_options}
+        dialog = AddModelsDialog(self.winfo_toplevel(), existing_endpoints=existing)
+        self.wait_window(dialog)
+        new_models = getattr(dialog, "result", None) or []
+        added = 0
+        for model in new_models:
+            endpoint = model.get("endpoint", "")
+            if not endpoint or endpoint in existing:
+                continue
+            self._custom_models.append(model)
+            self._model_options.append(model)
+            self._supported_model_endpoints.add(endpoint)
+            existing.add(endpoint)
+            added += 1
+        if added:
+            self._render_model_checkboxes()
+            self._save_config_now()
+            self.log(f"Added {added} custom model(s)", "success")
+
     def _get_selected_models(self) -> List[dict]:
         selected = []
         for model in self._model_options:
@@ -1753,6 +1925,7 @@ class SelfieTab(tk.Frame):
                 endpoint: bool(var.get())
                 for endpoint, var in self._model_vars.items()
             },
+            "selfie_custom_models": list(self._custom_models),
             "selfie_prompt_mode": self._prompt_mode_var.get(),
             "selfie_wildcard_template": self._wildcard_text.get("1.0", tk.END).strip(),
         }

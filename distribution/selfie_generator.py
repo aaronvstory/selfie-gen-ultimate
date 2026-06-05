@@ -51,6 +51,13 @@ class SelfieGenerator:
             "provider": "fal",
             "api_url": "https://fal.ai/models/fal-ai/nano-banana-2/edit/api",
         },
+        {
+            "endpoint": "fal-ai/flux-pro/kontext",
+            "label": "Kontext Pro",
+            "slug": "kontext-pro",
+            "provider": "fal",
+            "api_url": "https://fal.ai/models/fal-ai/flux-pro/kontext/api",
+        },
     ]
     _SELFIE_MODELS_FILE = Path(__file__).resolve().parent / "models.json"
     _FALLBACK_SELFIE_MODELS = [dict(item) for item in AVAILABLE_MODELS]
@@ -147,7 +154,13 @@ class SelfieGenerator:
                 slug = model.get("slug", "")
                 if slug:
                     return re.sub(r"[^a-z0-9\-]+", "-", slug.lower()).strip("-")
-        fallback = endpoint.split("/")[-1].lower()
+        # Unknown endpoint (e.g. a custom model added via the GUI Add-Models
+        # modal, which isn't registered in AVAILABLE_MODELS): use the last TWO
+        # path segments so two custom endpoints sharing a final segment
+        # (vendor-a/edit vs vendor-b/edit) don't collide in output filenames
+        # (code-review MEDIUM, PR #77).
+        parts = [p for p in endpoint.split("/") if p]
+        fallback = "-".join(parts[-2:]).lower() if parts else endpoint.lower()
         return re.sub(r"[^a-z0-9\-]+", "-", fallback).strip("-")
 
     @staticmethod
@@ -261,7 +274,29 @@ class SelfieGenerator:
                 "seed": seed,
             }
 
-        raise ValueError(f"Unsupported selfie model endpoint: {model_endpoint}")
+        # FLUX Kontext (Pro/Max) family: single image_url + guidance_scale.
+        if "flux-pro/kontext" in model_endpoint or "flux/kontext" in model_endpoint:
+            return {
+                "prompt": prompt,
+                "image_url": image_url,
+                "num_images": 1,
+                "guidance_scale": 3.5,
+                "aspect_ratio": cls._closest_aspect_ratio(width, height),
+                "output_format": "png",
+                "seed": seed,
+            }
+
+        # Generic fal.ai image-edit payload for any custom endpoint added via the
+        # Add-Models modal (Codex P1, PR #77 — never hard-fail an exposed model).
+        # Covers the common fal edit schema (prompt + image_urls); a model with a
+        # different schema will surface a fal-side error rather than crashing here.
+        return {
+            "prompt": prompt,
+            "image_urls": [image_url],
+            "num_images": 1,
+            "output_format": "png",
+            "seed": seed,
+        }
 
     def _is_cancelled(self) -> bool:
         return self._cancel_event is not None and self._cancel_event.is_set()
