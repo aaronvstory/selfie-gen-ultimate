@@ -83,6 +83,16 @@ STATE_DIR = REPO_ROOT / ".launcher_state"
 STAMP_PATH = STATE_DIR / "gpu_status.json"
 LOCK_PATH = STATE_DIR / "gpu_bootstrap.lock"
 
+# When the GUI runs under pythonw.exe (no console), each nvidia-smi / pip / probe
+# subprocess would FLASH a console window on screen (gemini MEDIUM, PR #73).
+# CREATE_NO_WINDOW suppresses it. No-op off Windows. Spread into every spawn via
+# **_NO_WINDOW_KW.
+_NO_WINDOW_KW = (
+    {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    if sys.platform == "win32"
+    else {}
+)
+
 NO_NVIDIA_TTL_DAYS = 30
 INSTALL_FAILED_MAX_ATTEMPTS = 3
 
@@ -287,6 +297,7 @@ def _run_pip_with_heartbeat(
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
+            **_NO_WINDOW_KW,
         )
     except OSError as exc:
         return _PipResult(1, "", f"pip subprocess error: {exc!r}")
@@ -449,6 +460,7 @@ def _smi_query_driver_and_name(exe: str) -> Optional[tuple]:
             text=True,
             errors="replace",
             timeout=10,
+            **_NO_WINDOW_KW,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
@@ -554,6 +566,7 @@ def detect_nvidia() -> Optional[dict]:
             text=True,
             errors="replace",
             timeout=5,
+            **_NO_WINDOW_KW,
         )
         header = proc.stdout or "" if proc.returncode == 0 else ""
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -723,6 +736,7 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             # would TimeoutExpired -> probe None -> install_failed -> stranded on
             # CPU again, defeating the whole fix (code-review HIGH #2/#4 PR #72).
             timeout=PROBE_TIMEOUT_SECONDS,
+            **_NO_WINDOW_KW,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
@@ -930,6 +944,7 @@ def _probe_torch_cuda(python_exe: str) -> tuple[bool, bool, "str | None"]:
             text=True,
             errors="replace",
             timeout=60,
+            **_NO_WINDOW_KW,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return (False, False, None)
@@ -961,6 +976,7 @@ def _log_macos_mps(python_exe: str) -> None:
         proc = subprocess.run(
             [python_exe, "-c", probe_src],
             capture_output=True, text=True, errors="replace", timeout=60,
+            **_NO_WINDOW_KW,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return

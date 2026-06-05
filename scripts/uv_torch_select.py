@@ -147,8 +147,10 @@ def _run_uv_sync(uv: str, project: Path, extra: str, *, quiet: bool) -> int:
     """
     cmd = [uv, "sync", "--no-default-groups", "--extra", extra]
     _log(f"running: uv sync --extra {extra}", quiet=quiet)
+    # CREATE_NO_WINDOW: no console-flash under pythonw.exe (gemini MEDIUM, PR #73).
+    _flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     try:
-        proc = subprocess.run(cmd, cwd=str(project))
+        proc = subprocess.run(cmd, cwd=str(project), creationflags=_flags)
         return proc.returncode
     except (OSError, subprocess.SubprocessError) as exc:
         _log(f"uv sync failed to launch: {exc!r}", quiet=quiet)
@@ -186,6 +188,7 @@ def _probe_torch_cuda(python_exe: Path) -> tuple[bool, bool]:
         "print('IMPORT_OK');"
         "print('CUDA=' + str(bool(torch.cuda.is_available())))"
     )
+    _flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     try:
         proc = subprocess.run(
             [str(python_exe), "-c", src],
@@ -193,6 +196,7 @@ def _probe_torch_cuda(python_exe: Path) -> tuple[bool, bool]:
             text=True,
             errors="replace",
             timeout=120,
+            creationflags=_flags,
         )
     except (OSError, subprocess.SubprocessError):
         return (False, False)

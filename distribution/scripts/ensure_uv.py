@@ -99,8 +99,11 @@ def _run(cmd: list[str], *, timeout: int = 600) -> bool:
             out_sink = sys.stderr
     except Exception:  # noqa: BLE001 — no usable stderr fd; DEVNULL it is
         out_sink = subprocess.DEVNULL
+    # CREATE_NO_WINDOW: under pythonw.exe (GUI) the installer subprocess would
+    # flash a console window otherwise (gemini MEDIUM, PR #73). No-op off Windows.
+    _flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     try:
-        proc = subprocess.run(cmd, timeout=timeout, stdout=out_sink)
+        proc = subprocess.run(cmd, timeout=timeout, stdout=out_sink, creationflags=_flags)
         return proc.returncode == 0
     except (OSError, subprocess.SubprocessError):
         # A genuine launch/exec failure means uv wasn't installed by this path.
