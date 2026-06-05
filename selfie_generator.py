@@ -268,7 +268,29 @@ class SelfieGenerator:
                 "seed": seed,
             }
 
-        raise ValueError(f"Unsupported selfie model endpoint: {model_endpoint}")
+        # FLUX Kontext (Pro/Max) family: single image_url + guidance_scale.
+        if "flux-pro/kontext" in model_endpoint or "flux/kontext" in model_endpoint:
+            return {
+                "prompt": prompt,
+                "image_url": image_url,
+                "num_images": 1,
+                "guidance_scale": 3.5,
+                "aspect_ratio": cls._closest_aspect_ratio(width, height),
+                "output_format": "png",
+                "seed": seed,
+            }
+
+        # Generic fal.ai image-edit payload for any custom endpoint added via the
+        # Add-Models modal (Codex P1, PR #77 — never hard-fail an exposed model).
+        # Covers the common fal edit schema (prompt + image_urls); a model with a
+        # different schema will surface a fal-side error rather than crashing here.
+        return {
+            "prompt": prompt,
+            "image_urls": [image_url],
+            "num_images": 1,
+            "output_format": "png",
+            "seed": seed,
+        }
 
     def _is_cancelled(self) -> bool:
         return self._cancel_event is not None and self._cancel_event.is_set()

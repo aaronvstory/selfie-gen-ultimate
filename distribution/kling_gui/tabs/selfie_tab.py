@@ -697,9 +697,14 @@ class SelfieTab(tk.Frame):
         )
         add_btn.pack(side=tk.LEFT, anchor="n", padx=(6, 4), pady=4)
 
-        # Right: horizontally-scrolling 2-row checkbox table.
+        # Right: horizontally-scrolling 2-row checkbox table. Use GRID (not pack)
+        # for the canvas + scrollbar so hiding/showing the scrollbar via
+        # grid_remove()/grid() can't reorder it behind the expand=True canvas
+        # (the pack-order bug Gemini flagged, PR #77).
         models_list_container = tk.Frame(models_frame, bg=COLORS["bg_panel"])
         models_list_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=2, pady=3)
+        models_list_container.grid_rowconfigure(0, weight=1)
+        models_list_container.grid_columnconfigure(0, weight=1)
         models_canvas = tk.Canvas(
             models_list_container,
             bg=COLORS["bg_panel"],
@@ -707,14 +712,14 @@ class SelfieTab(tk.Frame):
             borderwidth=0,
             height=58,
         )
+        models_canvas.grid(row=0, column=0, sticky="nsew")
         models_hscroll = ttk.Scrollbar(
             models_list_container,
             orient=tk.HORIZONTAL,
             command=models_canvas.xview,
         )
         models_canvas.configure(xscrollcommand=models_hscroll.set)
-        models_hscroll.pack(side=tk.BOTTOM, fill=tk.X)
-        models_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        models_hscroll.grid(row=1, column=0, sticky="ew")
 
         models_grid_frame = tk.Frame(models_canvas, bg=COLORS["bg_panel"])
         models_canvas.create_window((0, 0), window=models_grid_frame, anchor="nw")
@@ -729,10 +734,10 @@ class SelfieTab(tk.Frame):
             # Show the horizontal scrollbar only when columns overflow the width.
             if content_width <= viewport_width + 2:
                 if models_hscroll.winfo_ismapped():
-                    models_hscroll.pack_forget()
+                    models_hscroll.grid_remove()
             else:
                 if not models_hscroll.winfo_ismapped():
-                    models_hscroll.pack(side=tk.BOTTOM, fill=tk.X)
+                    models_hscroll.grid()
 
         models_grid_frame.bind("<Configure>", _on_models_grid_configure)
         models_canvas.bind("<Configure>", lambda _e: _on_models_grid_configure())

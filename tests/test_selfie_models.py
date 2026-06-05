@@ -5,6 +5,23 @@ from kling_gui.tabs.selfie_tab import SelfieTab
 
 
 class SelfieModelParsingTests(unittest.TestCase):
+    def test_build_payload_supports_kontext_and_custom(self):
+        # Codex P1: exposing Kontext / custom endpoints must not hard-fail in
+        # _build_payload. Kontext gets a flux-kontext payload; an arbitrary
+        # custom endpoint gets a generic fal edit payload (no ValueError).
+        from selfie_generator import SelfieGenerator
+        kontext = SelfieGenerator._build_payload(
+            "fal-ai/flux-pro/kontext", "p", "http://x/y.png", 1.0, 1024, 1024, 7)
+        self.assertEqual(kontext["image_url"], "http://x/y.png")
+        self.assertIn("guidance_scale", kontext)
+        custom = SelfieGenerator._build_payload(
+            "some-vendor/some-model", "p", "http://x/y.png", 1.0, 1024, 1024, 7)
+        self.assertEqual(custom["image_urls"], ["http://x/y.png"])
+        # Built-ins still behave.
+        gpt = SelfieGenerator._build_payload(
+            "openai/gpt-image-2/edit", "p", "http://x/y.png", 1.0, 1024, 1024, 7)
+        self.assertEqual(gpt["image_urls"], ["http://x/y.png"])
+
     def test_kontext_pro_is_available(self):
         from selfie_generator import SelfieGenerator
         models = SelfieGenerator.get_available_models()
