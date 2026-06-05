@@ -65,8 +65,16 @@ torch>=2.2,<3
 # Pinned 1.11+ for python 3.9-3.12 compatibility (matches our supported range).
 scipy>=1.11,<2
 
-# GUI drag-and-drop support
-tkinterdnd2>=0.3,<1
+# GUI drag-and-drop support.
+# Capped <0.4.4: 0.4.4 + 0.4.4.1 bundle a Tcl 9.x libtkdnd for osx-arm64,
+# which is incompatible with the Tcl 8.6 that python.org Python 3.11 ships
+# on macOS — Apple Silicon hits ``RuntimeError: Unable to load tkdnd
+# library (interpreter uses an incompatible stubs mechanism)`` and the
+# whole GUI loses DnD silently (the launcher swallows the error per PR
+# #61). 0.4.3 ships libtkdnd2.9.3 (Tcl 8.6 build) and loads cleanly.
+# Restore the upper bound to <1 once upstream re-ships a Tcl 8.6 arm64
+# build. Guard: tests/test_macos_tkdnd_loads.py.
+tkinterdnd2>=0.3,<0.4.4
 
 # Optional balance tracker support
 selenium>=4.15,<5
