@@ -100,16 +100,34 @@ def test_kill_process_tree_kills_child_process():
             time.sleep(0.1)
         assert proc.poll() is not None, "parent must be killed"
         # The grandchild must also be gone (the whole point of the tree-kill).
-        # os.kill(pid, 0) raises if the pid no longer exists.
+        # os.kill(pid, 0) raises if the pid no longer exists — BUT on POSIX a
+        # killed process can briefly linger as an unreaped ZOMBIE, for which
+        # os.kill(pid, 0) still SUCCEEDS even though it's dead (Codex P2, PR #73).
+        # Accept a zombie (Linux /proc state 'Z') as "gone".
         import os as _os
+
+        def _is_dead_or_zombie(pid):
+            try:
+                _os.kill(pid, 0)
+            except OSError:
+                return True  # no such pid
+            # Process responds to signal-0; check for zombie on Linux.
+            try:
+                with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as _sf:
+                    # field 3 (after "pid (comm)") is the state char.
+                    state = _sf.read().rsplit(")", 1)[1].split()[0]
+                    return state == "Z"
+            except OSError:
+                # /proc absent (macOS) — can't be a zombie check; treat the
+                # signal-0 success as still-alive (loop will retry).
+                return False
+
         gone = False
         for _ in range(50):
-            try:
-                _os.kill(child_pid, 0)
-                time.sleep(0.1)
-            except OSError:
+            if _is_dead_or_zombie(child_pid):
                 gone = True
                 break
+            time.sleep(0.1)
         assert gone, "child process must be killed by the tree-kill, not orphaned"
     finally:
         if proc.poll() is None:
@@ -452,3 +470,28 @@ def test_start_processing_not_blocked_by_a_just_exited_worker():
         "start_processing must launch a worker even when a just-exited worker "
         "thread is still is_alive() (is_running=False is authoritative)"
     )
+
+
+def test_start_processing_resets_is_running_if_thread_start_fails(monkeypatch):
+    """If worker_thread.start() raises (OS resource limit / interpreter
+    shutdown), is_running must roll back to False — otherwise the queue is
+    permanently wedged (thinks it's busy, no worker) until app restart
+    (gemini, PR #73)."""
+    qm, logs = _make_qm()
+    qm.is_running = False
+    qm.is_paused = False
+
+    import threading as _t
+
+    class _FailingThread:
+        def __init__(self, target=None, daemon=None, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(_t, "Thread", _FailingThread)
+    qm.start_processing()  # must not raise
+    assert qm.is_running is False, "is_running must reset after a failed start"
+    assert qm.worker_thread is None
+    assert any(lvl == "error" for lvl, _m in logs), "the failure should be logged"

@@ -161,7 +161,15 @@ def test_no_other_nodeps_mediapipe_site_is_unguarded():
     })
 
     def _in_venv(path: str) -> bool:
-        norm = path.replace("\\", "/")
+        # Check segments RELATIVE to REPO_ROOT — otherwise a repo cloned under a
+        # path that itself contains a venv segment (e.g. /home/user/venv/repo/…)
+        # would mark EVERY file as in-venv and silently skip the whole check
+        # (gemini, PR #73).
+        try:
+            rel = Path(path).resolve().relative_to(REPO_ROOT)
+        except (ValueError, OSError):
+            rel = Path(path)  # outside REPO_ROOT — fall back to the raw path
+        norm = str(rel).replace("\\", "/")
         return any(seg in _VENV_DIR_NAMES for seg in norm.split("/"))
 
     for pat in patterns:

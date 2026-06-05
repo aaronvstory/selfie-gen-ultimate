@@ -658,7 +658,19 @@ class QueueManager:
             self.worker_thread = threading.Thread(
                 target=self._process_queue, daemon=True
             )
-        self.worker_thread.start()
+        try:
+            self.worker_thread.start()
+        except Exception as exc:  # noqa: BLE001
+            # If the OS refuses the thread (resource limits / interpreter
+            # shutdown), is_running would stay True with NO worker running —
+            # permanently wedging the queue (it thinks it's busy forever) until
+            # an app restart (gemini, PR #73). Roll the flag back so a later
+            # add/Resume can retry.
+            with self.lock:
+                self.is_running = False
+                self.worker_thread = None
+            self.log(f"⚠ Could not start queue worker: {exc}", "error")
+            return
         self.log("▶ Processing started", "info")
 
     def pause_processing(self):
