@@ -179,6 +179,23 @@ def test_cli_clear_key_path_manages_optout_like_gui():
         "CLI set-real-value must remove the key from _env_key_optout")
 
 
+def test_resolve_api_key_honors_optout(monkeypatch):
+    """resolve_api_key (the CLI/GUI inspector accessor) must respect a persisted
+    _env_key_optout too — otherwise a cleared key would still resolve from the
+    env alias in those paths, so "clear key" wouldn't stick for the inspectors
+    (code-review, PR #73)."""
+    from api_keys import resolve_api_key
+    monkeypatch.setenv("FAL_KEY", "env-secret")
+    # No opt-out -> env alias resolves.
+    assert resolve_api_key({"falai_api_key": ""}, "falai_api_key") == "env-secret"
+    # Opted out -> empty, env alias ignored.
+    cfg = {"falai_api_key": "", "_env_key_optout": ["falai_api_key"]}
+    assert resolve_api_key(cfg, "falai_api_key") == ""
+    # A saved value still wins regardless of opt-out.
+    cfg2 = {"falai_api_key": "real", "_env_key_optout": ["falai_api_key"]}
+    assert resolve_api_key(cfg2, "falai_api_key") == "real"
+
+
 def test_cli_optout_survives_save_reload_and_suppresses_env(tmp_path, monkeypatch):
     """BEHAVIOURAL (not just source-text): a CLI 'clear key' that records the
     opt-out must (a) persist through save_config + reload from disk, and (b)

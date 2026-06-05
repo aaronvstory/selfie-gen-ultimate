@@ -75,16 +75,24 @@ def _run(cmd: list[str], *, timeout: int = 600) -> bool:
     # on a cold machine powershell/winget/curl|sh/brew print banners + progress
     # to stdout that would otherwise corrupt that capture (CodeRabbit Major).
     # Installer chatter is diagnostic, so stderr is the right sink anyway.
+    # Choose a SAFE stdout sink for the installer's chatter that is NOT this
+    # process's stdout (the `--print-path` transport). Passing sys.stderr
+    # directly raises io.UnsupportedOperation when sys.stderr has no real fileno
+    # (frozen exe / pythonw GUI), which would DISABLE the uv bootstrap entirely
+    # rather than just route output (gemini HIGH, PR #73). Use the real stderr
+    # fd when it exists; otherwise discard to DEVNULL so the install STILL RUNS.
+    out_sink = subprocess.DEVNULL
     try:
-        proc = subprocess.run(cmd, timeout=timeout, stdout=sys.stderr)
+        fd = sys.stderr.fileno()
+        if fd is not None and fd >= 0:
+            out_sink = sys.stderr
+    except Exception:  # noqa: BLE001 — no usable stderr fd; DEVNULL it is
+        out_sink = subprocess.DEVNULL
+    try:
+        proc = subprocess.run(cmd, timeout=timeout, stdout=out_sink)
         return proc.returncode == 0
-    except Exception:  # noqa: BLE001
-        # Broadened from (OSError, SubprocessError): when sys.stderr is a custom
-        # stream with no real file descriptor (frozen exe / pythonw GUI),
-        # redirecting stdout=sys.stderr raises io.UnsupportedOperation (a
-        # ValueError) which the narrow tuple missed — crashing the stdlib-only
-        # uv bootstrap (gemini HIGH, PR #73). Any failure here just means "uv
-        # not installed by this path", so returning False is correct.
+    except (OSError, subprocess.SubprocessError):
+        # A genuine launch/exec failure means uv wasn't installed by this path.
         return False
 
 

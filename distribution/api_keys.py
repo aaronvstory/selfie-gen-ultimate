@@ -152,6 +152,12 @@ def resolve_api_key(config: Dict[str, Any], config_key: str) -> str:
     saved = str(config.get(config_key, "") or "").strip()
     if saved:
         return saved
+    # Honor a persisted "user explicitly cleared this key" opt-out, exactly like
+    # apply_env_key_fallback does — otherwise the CLI/GUI key inspectors would
+    # bypass the clear and resolve the env alias anyway, so "clear key" wouldn't
+    # stick for the inspector paths (code-review, PR #73).
+    if config_key in set(config.get("_env_key_optout") or []):
+        return ""
     spec = _spec_for(config_key)
     if spec:
         for name in spec.env_vars:
