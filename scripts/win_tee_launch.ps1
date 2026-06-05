@@ -4,7 +4,7 @@
   screen AND written to a transcript file.
 
 .DESCRIPTION
-  run_gui.bat / run_cli.bat call this helper once (guarded by KLING_TRANSCRIPT)
+  run_gui.bat / run_cli.bat call this helper once (guarded by KLING_NO_TRANSCRIPT)
   to capture every line the launcher + GUI print to the console into a rolling
   transcript under .launcher_state\. The user asked to be able to just copy the
   whole terminal window (or hand over one file) when reporting an issue, instead
@@ -14,7 +14,7 @@
   Using a real .ps1 (instead of an inline `powershell -Command "..."` string in
   the .bat) avoids the cmd<->PowerShell quote-nesting that mangles spaced paths
   and drops exit codes. Args are passed positionally; the child .bat inherits
-  KLING_TRANSCRIPT=1 so it skips the wrapper and runs its real body.
+  KLING_NO_TRANSCRIPT=1 so it skips the wrapper and runs its real body.
 
   Best-effort by contract: any failure here must NOT block the launch — the
   caller falls back to a direct (un-teed) run. Exit code mirrors the child's.
@@ -37,8 +37,13 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-# Child .bat sees this and skips the tee wrapper (no infinite relaunch).
-$env:KLING_TRANSCRIPT = '1'
+# Child .bat sees this and skips the tee wrapper (no infinite relaunch). MUST be
+# KLING_NO_TRANSCRIPT — that's the exact var run_gui.bat / run_cli.bat guard on
+# (`if defined KLING_NO_TRANSCRIPT goto :transcript_setup_done`). Setting the
+# wrong name (KLING_TRANSCRIPT) left the re-entry guard inert (code-review HIGH,
+# PR #73): harmless today because this helper launches python directly, but it
+# would re-open the infinite-relaunch risk the moment a .bat is the target.
+$env:KLING_NO_TRANSCRIPT = '1'
 
 function Invoke-TranscriptPrune {
     # Keep only the newest 5 transcript-*.log (code-review MEDIUM #5): done HERE
@@ -105,7 +110,7 @@ try {
     # (Tee-Object) is unreliable. Capture cmd's real code from INSIDE the pipeline
     # (a foreach -End block) so it's correct on both PS5.1 and PS7.
     & $env:ComSpec /c $cmdLine |
-        Tee-Object -FilePath $TranscriptPath |
+        Tee-Object -LiteralPath $TranscriptPath |
         ForEach-Object {
             $_                       # pass the line through (preserves live console)
         } -End {

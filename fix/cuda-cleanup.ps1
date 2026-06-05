@@ -175,29 +175,28 @@ foreach ($scope in @('User', 'Machine')) {
     }
 }
 
-# Keep nvidia-smi working. Don't rely on the default install path — a custom
-# driver install (D:\, corporate image) puts nvidia-smi elsewhere. Scan EVERY
-# directory currently resolvable for nvidia-smi.exe (PATH + the common default)
-# and make sure at least one stays on the Machine PATH (code-review MEDIUM,
-# PR #73). The CUDA Toolkit removal above never touches a real nvidia-smi dir
-# (that lives under NVIDIA Corporation, not NVIDIA GPU Computing Toolkit\CUDA),
-# so this is belt-and-suspenders, robust to non-default installs.
-$nvSmiDirs = New-Object System.Collections.Generic.List[string]
-$searchDirs = @()
-foreach ($scope in @('User', 'Machine')) {
-    $p = [Environment]::GetEnvironmentVariable('Path', $scope)
-    if ($p) { $searchDirs += ($p -split ';') }
-}
-$searchDirs += 'C:\Program Files\NVIDIA Corporation\NVSMI'
-foreach ($d in $searchDirs) {
-    $d = $d.Trim()
-    if ($d -and (Test-Path -LiteralPath (Join-Path $d 'nvidia-smi.exe')) -and (-not $nvSmiDirs.Contains($d))) {
-        $nvSmiDirs.Add($d)
-    }
-}
+# Keep nvidia-smi working. NOTE: the CUDA Toolkit removal above only drops dirs
+# under "NVIDIA GPU Computing Toolkit\CUDA" — it NEVER touches a real nvidia-smi
+# dir (that lives under "NVIDIA Corporation", e.g. ...\NVSMI or the driver dir),
+# so nvidia-smi paths already survive untouched. This is purely a belt for the
+# rare case its dir was somehow missing. SCOPE-RESPECTING (CodeRabbit Major,
+# PR #73): we do NOT scan User PATH and promote those (user-writable) dirs into
+# the Machine PATH — that would be a PATH-hijack / privilege-escalation vector.
+# We only ensure the MACHINE-level driver dirs (already machine-scoped, or the
+# canonical Program Files default) are present on the Machine PATH.
 $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 $machineEntries = @($machinePath -split ';' | ForEach-Object { $_.Trim() })
-foreach ($d in $nvSmiDirs) {
+$nvSmiCandidates = New-Object System.Collections.Generic.List[string]
+foreach ($d in $machineEntries) {           # only Machine-scoped dirs
+    if ($d -and (Test-Path -LiteralPath (Join-Path $d 'nvidia-smi.exe')) -and (-not $nvSmiCandidates.Contains($d))) {
+        $nvSmiCandidates.Add($d)
+    }
+}
+$defaultNvSmi = 'C:\Program Files\NVIDIA Corporation\NVSMI'  # machine-level Program Files
+if ((Test-Path -LiteralPath (Join-Path $defaultNvSmi 'nvidia-smi.exe')) -and (-not $nvSmiCandidates.Contains($defaultNvSmi))) {
+    $nvSmiCandidates.Add($defaultNvSmi)
+}
+foreach ($d in $nvSmiCandidates) {
     if ($machineEntries -notcontains $d) {
         Write-Host "Re-adding NVIDIA driver dir so nvidia-smi keeps working: $d"
         $machinePath = ($machinePath.TrimEnd(';') + ';' + $d)
