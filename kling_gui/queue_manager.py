@@ -762,11 +762,14 @@ class QueueManager:
             )
         self.log(msg, "warning")
         self.update_queue_display()
-        # When a partial Kling output already exists (resume armed), notify the
-        # GUI so the carousel picks it up — the abort path `return`s before the
-        # worker's normal on_processing_complete call, so without this the
-        # carousel wouldn't show the partial render (code-review MEDIUM, PR #73).
-        if getattr(item, "resume_from_existing", False) and self.on_processing_complete:
+        # Notify the GUI on EVERY abort (not just the resume-armed case): every
+        # abort guard `return`s out of the worker right after this call, so the
+        # worker's normal bottom-of-loop on_processing_complete(item) never
+        # fires. Without this, a mid-Kling abort (no resume output) leaves the
+        # carousel + queue row frozen at "kling/0%" with no confirmation the
+        # abort was accepted (code-review CRITICAL, PR #73). Safe to always call
+        # — the worker won't double-fire it.
+        if self.on_processing_complete:
             try:
                 self.on_processing_complete(item)
             except Exception:  # noqa: BLE001 — GUI callback must not break abort

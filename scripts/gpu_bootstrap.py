@@ -628,7 +628,12 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             # the GUI 'GPU ready' probe and the real run disagree.
             "if os.environ.get('RPPG_KEEP_CUDA_PATH') != '1':",
             "    os.environ.pop('CUDA_PATH', None); os.environ.pop('CUDA_HOME', None)",
-            "sys.path.insert(0, " + repr(_scripts_dir) + ")",
+            # Temporarily front sys.path ONLY for the helper import, then remove
+            # it (mirrors the injector's finally-cleanup) so scripts/ can't
+            # shadow stdlib/3rd-party for the rest of the probe (code-review
+            # MEDIUM, PR #73).
+            "_added = " + repr(_scripts_dir) + " not in sys.path",
+            "if _added: sys.path.insert(0, " + repr(_scripts_dir) + ")",
             "_clear = None",
             "_incdirs = None",
             "try:",
@@ -637,6 +642,10 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             "    register_cuda_dll_dirs()",
             "except Exception:",
             "    pass",
+            "finally:",
+            "    if _added:",
+            "        try: sys.path.remove(" + repr(_scripts_dir) + ")",
+            "        except ValueError: pass",
             "import cupy as cp",
             # Force CuPy to ignore a SYSTEM CUDA toolkit (the friend's v11.8 on
             # PATH via nvcc) and use its OWN bundled headers — clearing CUDA_PATH

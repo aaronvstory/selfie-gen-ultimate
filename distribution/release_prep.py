@@ -445,6 +445,12 @@ def build_sanitized_config(
         config[spec.config_key] = ""
     for key in _DIST_BLANKED_PATH_KEYS:
         config[key] = ""
+    # _env_key_optout is PER-MACHINE state: it lists keys the building developer
+    # explicitly "cleared" in their own GUI/CLI. Shipping it would silently
+    # suppress the env-var fallback for a RECIPIENT who has e.g. FAL_KEY set —
+    # defeating the auto-prefill feature for new users (code-review MEDIUM,
+    # PR #73). Reset it like the blanked path keys.
+    config["_env_key_optout"] = []
     return config
 
 
@@ -488,8 +494,8 @@ def write_bundle_readme(bundle_root: Path) -> None:
         '2) Windows: double-click "Start GUI.bat" or "Start CLI.bat".\n'
         '3) macOS: double-click "Start GUI.command" or "Start CLI.command".\n'
         "4) If macOS blocks it, right-click -> Open once.\n"
-        "5) On first launch, enter required API keys.\n"
-        "6) Fal.ai key is required.\n"
+        "5) No API key is required to start. rPPG / Oldcam / Loop re-runs work with no key.\n"
+        "6) Add a Fal.ai key (via the bottom-bar badge or CLI settings) only when you want to GENERATE video/selfies.\n"
         "7) BFL key is optional (only needed if you switch providers to BFL in the GUI).\n"
         "8) First launch creates a local virtual environment.\n"
         "9) All prompts are stored in kling_config.json (editable by GUI/CLI or manual edit).\n"

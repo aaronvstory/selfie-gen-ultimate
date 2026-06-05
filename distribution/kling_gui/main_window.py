@@ -5234,8 +5234,13 @@ class KlingGUIWindow:
         try:
             self.root.after(0, _apply)
         except Exception:
-            # No event loop yet / teardown — apply directly as a fallback.
-            _apply()
+            # root.after only raises when the Tk interpreter is gone (teardown).
+            # Do NOT fall back to calling _apply() directly here — that would
+            # touch a Tk widget from the QueueManager WORKER thread, which is
+            # undefined behaviour in Tkinter and can corrupt the event queue
+            # (code-review MEDIUM, PR #73). At teardown the button is being
+            # destroyed anyway, so dropping the update is correct.
+            pass
 
     def _abort_current_job(self):
         """Abort the in-flight job (the Abort button).

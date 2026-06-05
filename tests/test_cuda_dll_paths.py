@@ -180,6 +180,28 @@ def test_is_nvrtc_compile_error_matches_by_class_name():
     assert not cuda_dll_paths.is_nvrtc_compile_error(RuntimeError("no CUDA device"))
 
 
+def test_is_nvrtc_compile_error_matches_by_message_fallback():
+    """If a future CuPy renames its compile exception to a class WITHOUT
+    'compile'/'nvrtc'/'jit' in the name, the message fallback must still catch a
+    real nvrtc compile failure (code-review HIGH, PR #73) — while NOT
+    false-positiving on a generic error."""
+    class JitError(Exception):  # name has 'jit'
+        pass
+    assert cuda_dll_paths.is_nvrtc_compile_error(JitError("boom"))
+
+    class WeirdName(Exception):  # name matches nothing
+        pass
+    # Message names nvrtc -> still a compile error.
+    assert cuda_dll_paths.is_nvrtc_compile_error(
+        WeirdName("nvrtc: error: unrecognized option"))
+    # Message has 'compile' AND 'cuda' -> compile error.
+    assert cuda_dll_paths.is_nvrtc_compile_error(
+        WeirdName("failed to compile cuda kernel"))
+    # Generic Python compile/syntax error must NOT trigger GPU recovery.
+    assert not cuda_dll_paths.is_nvrtc_compile_error(
+        SyntaxError("invalid syntax while compiling"))
+
+
 def test_summarize_prefers_error_line_over_pragma_remark():
     """The real bug: head-truncation showed only the benign opening remark and
     cut off the actual error. The summarizer must surface the error line."""

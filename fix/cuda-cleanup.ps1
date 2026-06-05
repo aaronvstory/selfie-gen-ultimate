@@ -175,13 +175,34 @@ foreach ($scope in @('User', 'Machine')) {
     }
 }
 
-# Keep nvidia-smi working: re-add the driver's NVSMI dir if present.
-$nvSmiDir = 'C:\Program Files\NVIDIA Corporation\NVSMI'
-if (Test-Path (Join-Path $nvSmiDir 'nvidia-smi.exe')) {
-    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-    if (($machinePath -split ';') -notcontains $nvSmiDir) {
-        Write-Host "Re-adding NVIDIA driver NVSMI dir so nvidia-smi keeps working."
-        [Environment]::SetEnvironmentVariable('Path', ($machinePath.TrimEnd(';') + ';' + $nvSmiDir), 'Machine')
+# Keep nvidia-smi working. Don't rely on the default install path — a custom
+# driver install (D:\, corporate image) puts nvidia-smi elsewhere. Scan EVERY
+# directory currently resolvable for nvidia-smi.exe (PATH + the common default)
+# and make sure at least one stays on the Machine PATH (code-review MEDIUM,
+# PR #73). The CUDA Toolkit removal above never touches a real nvidia-smi dir
+# (that lives under NVIDIA Corporation, not NVIDIA GPU Computing Toolkit\CUDA),
+# so this is belt-and-suspenders, robust to non-default installs.
+$nvSmiDirs = New-Object System.Collections.Generic.List[string]
+$searchDirs = @()
+foreach ($scope in @('User', 'Machine')) {
+    $p = [Environment]::GetEnvironmentVariable('Path', $scope)
+    if ($p) { $searchDirs += ($p -split ';') }
+}
+$searchDirs += 'C:\Program Files\NVIDIA Corporation\NVSMI'
+foreach ($d in $searchDirs) {
+    $d = $d.Trim()
+    if ($d -and (Test-Path (Join-Path $d 'nvidia-smi.exe')) -and (-not $nvSmiDirs.Contains($d))) {
+        $nvSmiDirs.Add($d)
+    }
+}
+$machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+$machineEntries = @($machinePath -split ';' | ForEach-Object { $_.Trim() })
+foreach ($d in $nvSmiDirs) {
+    if ($machineEntries -notcontains $d) {
+        Write-Host "Re-adding NVIDIA driver dir so nvidia-smi keeps working: $d"
+        $machinePath = ($machinePath.TrimEnd(';') + ';' + $d)
+        [Environment]::SetEnvironmentVariable('Path', $machinePath, 'Machine')
+        $machineEntries += $d
     }
 }
 

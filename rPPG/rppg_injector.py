@@ -197,11 +197,20 @@ def _force_cupy_bundled_cuda_headers():
         return
     try:
         import cupy._environment as _cenv  # noqa: WPS433
+        # Idempotence guard, mirroring the include-dir patch's
+        # _rppg_include_patched flag: _init_cupy_backend() calls this on BOTH the
+        # first attempt and the retry, so without the flag we'd re-patch an
+        # already-patched module — harmless today but a latent regression vector
+        # if CuPy ever treats None differently from its '' uninitialized
+        # sentinel (code-review HIGH, PR #73).
+        if getattr(_cenv, "_rppg_path_patched", False):
+            return
         # Memoized module globals ('' = uninitialized) + the public getters.
         _cenv._cuda_path = None
         _cenv._nvcc_path = None
         _cenv.get_cuda_path = lambda: None
         _cenv.get_nvcc_path = lambda: None
+        _cenv._rppg_path_patched = True
     except Exception:  # noqa: BLE001 — best-effort; never break rPPG init
         pass
 

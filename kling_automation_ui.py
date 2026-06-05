@@ -646,6 +646,18 @@ class KlingAutomationUI:
                 continue
             if value:
                 self.config[spec.config_key] = value
+                # The user EXPLICITLY entered this key — it is no longer
+                # env-sourced, so drop it from the env-prefill marker BEFORE
+                # saving. Without this, save_config() strips the just-entered
+                # key back out (it excludes _env_prefilled_keys), silently
+                # discarding it so the user is nagged again next launch
+                # (code-review CRITICAL, PR #73 — matches configure_api_provider_settings).
+                self._clear_env_prefill_marker(spec.config_key)
+                # A real value also opts the key BACK IN to the env fallback.
+                optout = list(self.config.get("_env_key_optout") or [])
+                if spec.config_key in optout:
+                    optout.remove(spec.config_key)
+                    self.config["_env_key_optout"] = optout
                 self.save_config()
 
         missing_optional = list(non_required_missing_specs(self.config))

@@ -275,7 +275,17 @@ def is_nvrtc_compile_error(err):
     cupy exception types (cupy may be only partially importable at that point).
     """
     name = type(err).__name__.lower()
-    return "compile" in name or "nvrtc" in name
+    if "compile" in name or "nvrtc" in name or "jit" in name:
+        return True
+    # Fallback on the MESSAGE for the case where a future CuPy renames its
+    # compile exception to something without those tokens (code-review HIGH,
+    # PR #73): an nvrtc compile log unmistakably contains "nvrtc" or a CUDA
+    # compile error. Kept conservative (requires "cuda" alongside "compile") so
+    # a generic Python compile/SyntaxError can't trigger the GPU recovery path.
+    msg = str(err).lower()
+    if "nvrtc" in msg:
+        return True
+    return "compile" in msg and "cuda" in msg
 
 
 def summarize_nvrtc_compile_error(err, limit=300):
