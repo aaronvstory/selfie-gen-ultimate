@@ -801,7 +801,11 @@ class QueueManager:
                 kling_out = getattr(item, "resume_kling_output", None)
                 if kling_out and os.path.exists(kling_out):
                     item.resume_from_existing = True
-        self.is_running = False
+            # Clear is_running INSIDE the lock so start_processing's
+            # lock-guarded read can never observe a stale True and refuse to
+            # re-kick the queue (code-review, PR #73 — every is_running write
+            # is synchronised through self.lock, matching the locked reader).
+            self.is_running = False
         if getattr(item, "resume_from_existing", False):
             msg = (
                 f"⛔ Aborted '{item.filename}' during post-processing; re-queued. "
@@ -1440,14 +1444,18 @@ class QueueManager:
         while not self._stop_flag:
             # Check if paused
             if self.is_paused:
-                self.is_running = False
+                # Synchronise the clear through self.lock so start_processing's
+                # locked is_running read can't see a stale True (PR #73).
+                with self.lock:
+                    self.is_running = False
                 return
 
             # Get next item
             item = self._get_next_pending()
             if item is None:
                 # No more items to process
-                self.is_running = False
+                with self.lock:
+                    self.is_running = False
                 self.log("🏁 Queue processing complete", "success")
                 return
 
@@ -1471,7 +1479,8 @@ class QueueManager:
                         item.status = "pending"
                         item.stage = "queued"
                         item.stage_percent = 0
-                self.is_running = False
+                    # Clear inside the lock (PR #73) — see _handle_item_abort.
+                    self.is_running = False
                 self.update_queue_display()
                 return
 
@@ -1941,7 +1950,10 @@ class QueueManager:
             if self.on_processing_complete:
                 self.on_processing_complete(item)
 
-        self.is_running = False
+        # Worker loop exited (stop flag) — clear inside the lock so the locked
+        # reader in start_processing always sees a synchronised value (PR #73).
+        with self.lock:
+            self.is_running = False
 
     def _generate_video(
         self,
