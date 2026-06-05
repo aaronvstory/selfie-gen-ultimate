@@ -495,6 +495,18 @@ class SessionManagerTests(unittest.TestCase):
             self.assertIn(ext_ref, paths)
             self.assertTrue(os.path.isfile(ext_ref))
 
+    def test_is_near_root_detects_depth_one(self):
+        # A project directly under a drive/FS root can't be probed for a rename
+        # without scanning the whole volume (code-review MEDIUM, round 2).
+        import os as _os
+        # Drive/FS root parent → near-root True.
+        root_child = _os.path.join(_os.path.abspath(_os.sep), "ShootA")
+        self.assertTrue(sm._is_near_root(root_child))
+        # A normal nested path → False.
+        self.assertFalse(
+            sm._is_near_root(_os.path.join(_os.path.abspath(_os.sep), "work", "ShootA")))
+        self.assertFalse(sm._is_near_root(None))
+
     def test_same_folder_one_entry_across_keying(self):
         # Two saves resolving the SAME marker'd folder share one project_key
         # (the embedded id) → one rolling autosave file.

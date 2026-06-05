@@ -1018,7 +1018,32 @@ def session_liveness(record_path: str) -> dict:
         ):
             result["live"] = True
             result["relinked_to"] = relinked
+        elif root_missing and not result["live"] and _is_near_root(project_root):
+            # The project sat directly under a drive/FS root, so _probe_relink
+            # cannot search for a renamed sibling without scanning the whole
+            # volume (code-review MEDIUM, round 2). We cannot confirm the folder
+            # is truly gone vs merely renamed — classify live so auto-prune does
+            # NOT sweep it. Same conservative stance as the unreachable-mount
+            # guard above. Rare layout; logged for diagnosability.
+            result["live"] = True
+            logger.debug(
+                "session_liveness: %s project_root %s is one level below a "
+                "drive root — unsearchable for rename, classifying live",
+                record_path, project_root,
+            )
     return result
+
+
+def _is_near_root(path: Optional[str]) -> bool:
+    """True if ``path``'s parent is a drive/filesystem root (depth 1).
+
+    Such a folder can't have a renamed sibling located without scanning the
+    whole volume, so the rename probe skips it; callers treat it conservatively.
+    """
+    if not path:
+        return False
+    parent = os.path.dirname(os.path.abspath(path))
+    return os.path.dirname(parent) == parent
 
 
 def _probe_relink(data: dict, folders: set) -> Optional[str]:
