@@ -620,8 +620,16 @@ class QueueManager:
         with self.lock:
             if self.is_running:
                 return
-            if self.worker_thread is not None and self.worker_thread.is_alive():
-                return
+            # NOTE: deliberately do NOT also reject on
+            # `worker_thread.is_alive()`. The is_running flag (set False by the
+            # worker exactly when it's logically done — empty queue / pause) is
+            # the authoritative double-worker guard, and it's checked+set under
+            # this lock so two callers can't both pass. An is_alive() check
+            # instead created a window where an item added AFTER the worker set
+            # is_running=False but BEFORE the thread fully exited was rejected
+            # and then never re-kicked → stranded pending forever (Codex P2,
+            # PR #73). With is_running False the old thread is exiting; starting
+            # a fresh worker is correct (the old one returns immediately after).
             # Mutual exclusion with the standalone Oldcam/rPPG re-run worker:
             # both share self._abort_event, so a queue run starting while a
             # re-run is still winding down could race the event's clear/set and

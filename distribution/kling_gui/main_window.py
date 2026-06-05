@@ -55,6 +55,21 @@ def _dnd_live() -> bool:
     to load; the module-level `HAS_DND` imported above is a stale by-value copy,
     so status chips / button fallbacks must read the live module attribute."""
     return bool(getattr(_drop_zone, "HAS_DND", HAS_DND))
+
+
+def _safe_print(msg: str) -> None:
+    """print() that never crashes under pythonw.exe (sys.stdout is None there).
+    Used for the EARLY config-migration notices in _load_config(), which run
+    BEFORE the GUI logger exists — a bare print() would raise AttributeError and
+    abort GUI STARTUP for a frozen/pythonw launch (Codex P2, PR #73)."""
+    out = sys.stdout
+    if out is None:
+        return
+    try:
+        out.write(f"{msg}\n")
+        out.flush()
+    except Exception:  # noqa: BLE001 — a migration notice must not break startup
+        pass
 from .log_display import LogDisplay
 from .config_panel import ConfigPanel
 from .queue_manager import QueueManager, QueueItem
@@ -1335,7 +1350,7 @@ class KlingGUIWindow:
                     if isinstance(loaded, dict):
                         self._deep_merge_dict(default_config, loaded)
         except Exception as e:
-            print(f"Warning: Could not load config: {e}")
+            _safe_print(f"Warning: Could not load config: {e}")
 
         # Layer 3: sanitize prompt slot dicts — ensure all 10 slots exist as
         # strings, not None.  Shallow .update() above replaces the entire nested
@@ -1392,7 +1407,7 @@ class KlingGUIWindow:
         current = config.get("current_model", "")
         if current in _ENDPOINT_MIGRATIONS:
             config["current_model"] = _ENDPOINT_MIGRATIONS[current]
-            print(f"Migrated endpoint: {current} -> {config['current_model']}")
+            _safe_print(f"Migrated endpoint: {current} -> {config['current_model']}")
 
     @staticmethod
     def _migrate_legacy_defaults(config: dict) -> None:
@@ -1415,7 +1430,7 @@ class KlingGUIWindow:
             # flag below so we won't touch their preference again.
             if config.get("verbose_gui_mode") is True:
                 config["verbose_gui_mode"] = False
-                print(
+                _safe_print(
                     "Migrated verbose_gui_mode: True -> False (v1.7 default)."
                     " Use the 'Verbose Mode' checkbox in Settings to re-enable."
                 )
@@ -1432,7 +1447,7 @@ class KlingGUIWindow:
         if not config.get("verbose_gui_mode_reset_v222"):
             if config.get("verbose_gui_mode") is True:
                 config["verbose_gui_mode"] = False
-                print(
+                _safe_print(
                     "Reset verbose_gui_mode -> False (v2.22.1 clean-panel "
                     "default). Re-enable via the 'Verbose Mode' checkbox."
                 )
@@ -1476,17 +1491,17 @@ class KlingGUIWindow:
             if not str(saved.get("3", "")).strip():
                 saved["3"] = canonical_slot3_pos
                 config["saved_prompts"] = saved
-                print("Backfilled saved_prompts slot 3 (was empty)")
+                _safe_print("Backfilled saved_prompts slot 3 (was empty)")
             if not str(neg.get("3", "")).strip():
                 neg["3"] = canonical_neg
                 config["negative_prompts"] = neg
-                print("Backfilled negative_prompts slot 3 (was empty)")
+                _safe_print("Backfilled negative_prompts slot 3 (was empty)")
             # Same backfill for slot 4 (which the user uses as the
             # "macOS-30" slot) — match canonical negative if empty.
             if not str(neg.get("4", "")).strip():
                 neg["4"] = canonical_neg
                 config["negative_prompts"] = neg
-                print("Backfilled negative_prompts slot 4 (was empty)")
+                _safe_print("Backfilled negative_prompts slot 4 (was empty)")
             # If current_model drifted off the canonical Kling 2.5 Pro
             # Turbo AND the user hasn't explicitly set model_display_name,
             # leave it alone — user may have switched intentionally.
@@ -1496,7 +1511,7 @@ class KlingGUIWindow:
                     "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
                 )
                 config["model_display_name"] = "Kling 2.5 Turbo Pro"
-                print("Backfilled current_model: Kling 2.5 Turbo Pro")
+                _safe_print("Backfilled current_model: Kling 2.5 Turbo Pro")
             config["slot3_defaults_backfilled_v21"] = True
 
         # Force-update slot 3 positive if it matches a known stale
@@ -1539,7 +1554,7 @@ class KlingGUIWindow:
                 titles = config.get("prompt_titles") or {}
                 titles["3"] = "head-turn 3/4 view (40° each side, kling 2.5 pro)"
                 config["prompt_titles"] = titles
-                print(
+                _safe_print(
                     "Force-updated slot 3 positive to canonical "
                     "head-turn 3/4 view (was stale template default)."
                 )
@@ -1573,7 +1588,7 @@ class KlingGUIWindow:
                     if isinstance(loaded, dict):
                         self._merge_ui_config(config, loaded)
         except Exception as e:
-            print(f"Warning: Could not load UI config: {e}")
+            _safe_print(f"Warning: Could not load UI config: {e}")
         return config
 
     def _save_config(self):

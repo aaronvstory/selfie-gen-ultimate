@@ -412,3 +412,43 @@ def test_start_processing_drains_items_queued_during_rerun(tmp_path, monkeypatch
         "items enqueued during the re-run must trigger start_processing in the "
         "re-run worker's finally (not stranded pending forever)"
     )
+
+
+def test_start_processing_not_blocked_by_a_just_exited_worker():
+    """Codex P2 (PR #73): start_processing must NOT reject when is_running is
+    False just because a previous worker_thread object is still technically
+    is_alive() (the thread set is_running=False on an empty queue and is about
+    to return). The is_running flag (lock-guarded) is the authoritative guard;
+    a stale-but-alive thread ref must not strand a newly-enqueued item."""
+    qm, _ = _make_qm()
+
+    # Simulate a previous worker that is still 'alive' but already done
+    # (is_running already cleared, as on the empty-queue exit).
+    class _StillAlive:
+        def is_alive(self):
+            return True
+
+        def start(self):
+            pass
+
+    qm.worker_thread = _StillAlive()
+    qm.is_running = False
+    qm.is_paused = False
+
+    started = {"n": 0}
+    import threading as _t
+
+    class _InlineThread:
+        def __init__(self, target=None, daemon=None, **k):
+            started["n"] += 1
+
+        def start(self):
+            pass
+
+    import unittest.mock as _mock
+    with _mock.patch.object(_t, "Thread", _InlineThread):
+        qm.start_processing()
+    assert started["n"] == 1, (
+        "start_processing must launch a worker even when a just-exited worker "
+        "thread is still is_alive() (is_running=False is authoritative)"
+    )
