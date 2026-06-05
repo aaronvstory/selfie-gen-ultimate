@@ -19,6 +19,23 @@ set "LOG_FILE=%STATE_DIR%\launch.log"
 
 if not exist "%STATE_DIR%\" mkdir "%STATE_DIR%"
 
+rem --- GUI-runtime transcript setup (the LAUNCHER/install is never piped) -----
+rem  The dependency install (uv/pip) runs on a real console so its live progress
+rem  bars + colors render beautifully (piping through tee would kill the bars +
+rem  paint benign stderr red). Only the GUI RUNTIME is tee'd -- as you USE the
+rem  app, its output (rPPG processing, crashes, etc.) is written live to a
+rem  rolling transcript-<ts>.log under .launcher_state\ so you can hand over one
+rem  file. Compute the filename here; the GUI-launch step below tees to it.
+rem  Opt-out: set KLING_NO_TRANSCRIPT=1 (subprocess callers set this).
+set "TRANSCRIPT_FILE="
+if defined KLING_NO_TRANSCRIPT goto :transcript_setup_done
+for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "TEE_DT=%%B"
+set "TEE_DT=%TEE_DT: =%"
+if "%TEE_DT%"=="" set "TEE_STAMP=run"
+if not "%TEE_DT%"=="" set "TEE_STAMP=%TEE_DT:~0,8%-%TEE_DT:~8,6%"
+set "TRANSCRIPT_FILE=%STATE_DIR%\transcript-%TEE_STAMP%.log"
+:transcript_setup_done
+
 rem --- Timestamp banner -----------------------------------------------------
 for /f "tokens=1-2 delims==" %%A in ('wmic os get LocalDateTime /value 2^>nul') do if "%%A"=="LocalDateTime" set "WMIC_DT=%%B"
 set "WMIC_DT=%WMIC_DT: =%"
@@ -135,6 +152,23 @@ if !errorlevel! equ 0 (
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-pip %DIAG_PIP%
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-os %DIAG_OS%
 >>"%LOG_FILE%" echo [%LAUNCH_TS%] diag-gpu %DIAG_GPU%
+
+rem --- v2.20 uv fast-path -------------------------------------------------
+rem  Try the uv-native dependency sync FIRST (one `uv sync` resolves the
+rem  whole locked set: full face stack + GPU-aware torch/CuPy, no subset, no
+rem  --no-deps gap, no constraints threading -- the lock IS the constraint).
+rem  On success we skip the entire legacy stamp + pip block below and launch
+rem  directly. On any uv problem the helper leaves UV_SYNCED empty and we
+rem  fall through to the proven pip path (set KLING_USE_PIP=1 to force pip).
+call "%ROOT_DIR%\scripts\win_uv_sync.bat" "%VENV_PYTHON%" "%ROOT_DIR%"
+if defined UV_SYNCED (
+    echo   [%LAUNCH_TS%] Dependencies ready via uv; skipping pip sync.
+    >>"%LOG_FILE%" echo [%LAUNCH_TS%] uv-sync OK; skipping pip path
+    call :release_setup_lock
+    goto :launch
+)
+>>"%LOG_FILE%" echo [%LAUNCH_TS%] uv-sync not used; continuing on pip path
+
 
 rem --- Build stamp key from req file dates+sizes (no subprocess needed) -----
 set "STAMP_KEY="
@@ -397,8 +431,25 @@ echo   Venv: %VENV_PYTHON%
 echo(
 
 set "KLING_GUI_CLI_ERRORS=1"
+rem  Tee the GUI RUNTIME to the transcript as you use the app (rPPG/crash/etc.).
+rem  The dep install already ran on a real console so its progress bars stayed
+rem  pretty; only this app-runtime portion is captured. Falls back to a direct
+rem  launch if a transcript wasn't set up, the helper is missing, PowerShell is
+rem  absent, or the tee infra fails (rc 3). FLAT if/goto (cmd 25H2 paren crash).
+if "%TRANSCRIPT_FILE%"=="" goto :gui_launch_direct
+if not exist "%ROOT_DIR%\scripts\win_tee_launch.ps1" goto :gui_launch_direct
+where powershell >nul 2>&1
+if errorlevel 1 goto :gui_launch_direct
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT_DIR%\scripts\win_tee_launch.ps1" "%VENV_PYTHON%" "%TRANSCRIPT_FILE%" -u "%GUI_SCRIPT%" %*
+set "EXIT_CODE=!errorlevel!"
+if "!EXIT_CODE!"=="3" goto :gui_launch_direct
+echo(
+echo   App log for this session saved to: %TRANSCRIPT_FILE%
+goto :gui_launch_done
+:gui_launch_direct
 "%VENV_PYTHON%" -u "%GUI_SCRIPT%" %*
 set "EXIT_CODE=!errorlevel!"
+:gui_launch_done
 
 echo(
 if !EXIT_CODE! neq 0 (

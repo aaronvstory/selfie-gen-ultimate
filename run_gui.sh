@@ -80,8 +80,24 @@ if [[ ! -f "${REQUIREMENTS_STAMP}" ]]; then
   fi
 fi
 
-# setup_macos.sh installs deps and writes REQUIREMENTS_STAMP when they change
-"${ROOT_DIR}/setup_macos.sh"
+# --- v2.20 uv fast-path ----------------------------------------------------
+# Try the uv-native dependency sync FIRST. On success UV_SYNCED is set and we
+# SKIP setup_macos.sh + the legacy stamp/health block below (the lock is still
+# held across the sync so concurrent launches don't race). The Tk check,
+# gpu_bootstrap, lock release, and GUI exec further down run regardless. On any
+# uv problem UV_SYNCED stays empty and the proven pip path runs (KLING_USE_PIP=1
+# forces pip).
+UV_SYNCED=""
+if [[ -f "${ROOT_DIR}/scripts/uv_sync.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/scripts/uv_sync.sh"
+  selfiegen_uv_sync "${PYTHON_BIN}" "${ROOT_DIR}" || true
+fi
+
+if [[ -z "${UV_SYNCED}" ]]; then
+  # setup_macos.sh installs deps and writes REQUIREMENTS_STAMP when they change
+  "${ROOT_DIR}/setup_macos.sh"
+fi
 export KLING_SKIP_PY_STARTUP_DEP_CHECK=1
 
 # Per-launch diagnostic snapshot — writes Python / pip / OS info to the

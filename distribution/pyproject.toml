@@ -1,0 +1,253 @@
+[project]
+name = "selfie-gen-ultimate"
+version = "2.20.0"
+description = "Ultimate Selfie Gen — AI media generation toolkit (fal.ai + BFL): face cropping, portrait analysis, selfie generation, outpaint, batch video, rPPG, oldcam."
+readme = "README.md"
+# Python floor/ceiling: the pinned face stack (TensorFlow 2.16.2 + tf-keras
+# 2.16.0 + mediapipe 0.10.35 + numpy 1.26.x) ships wheels for cp310–cp312 only.
+# 3.13 has NO TF 2.16.2 / tf-keras 2.16.0 wheel, so cap <3.13. Matches
+# pyrightconfig.json (basic, py3.10) and scripts/win_resolve_python.bat's
+# 3.10–3.12 preference. uv's managed Python honours this when bootstrapping.
+requires-python = ">=3.10,<3.13"
+
+# ---------------------------------------------------------------------------
+# CORE RUNTIME DEPENDENCIES
+#
+# This is the COMPLETE set the whole app needs — GUI, CLI, automation batch,
+# rPPG, oldcam, similarity. It is a 1:1 port of requirements.txt's install
+# lines (minus torch/torchvision + CuPy, which are routed through the
+# cpu/cu* extras below so the GPU-presence split can be selected at launch).
+# Every pin and its rationale is carried verbatim from requirements.txt +
+# constraints.txt — DO NOT relax any of these without re-reading the
+# v2.10–v2.17 dependency saga (CLAUDE.md "numpy<2 / constraints.txt
+# invariant"). The hard invariants:
+#
+#   * numpy < 2          — TF 2.16.2's ml-dtypes~=0.3.1 needs numpy 1.26.x.
+#   * opencv < 4.12 (×3) — 4.12+ declares numpy>=2, conflicting with numpy<2.
+#   * tensorflow==2.16.2 — deepface declares only loose tensorflow>=1.9.0.
+#   * tf-keras==2.16.0   — keras 3 breaks deepface (app sets TF_USE_LEGACY_KERAS).
+#   * absl-py>=2.3,<3    — mediapipe --no-deps skips it; rPPG wants it present.
+#   * scipy>=1.11,<2     — real rPPG runtime dep.
+#
+# Under uv the LOCK is the single source of truth (no -c constraints.txt
+# needed): uv.lock pins numpy<2 globally, so mediapipe's full dep tree can be
+# resolved normally — no `--no-deps` hack — and numpy still cannot float to 2.x
+# (the lock forbids it). The deep mediapipe Tasks-API import (matplotlib at
+# module load) is therefore satisfied by the lock, not by a post-install
+# matplotlib top-up. A real-import smoke test (tests/test_uv_lock_imports.py)
+# proves the deep symbol loads.
+# ---------------------------------------------------------------------------
+dependencies = [
+    # Core runtime (required)
+    "requests>=2.31,<3",
+    "fal-client>=0.7,<1",
+    "Pillow>=10.0,<12",
+    "rich>=13.0,<14",
+    "questionary>=2.0,<3",
+    # opencv — all three variants capped <4.12 (see invariant above).
+    "opencv-python-headless>=4.8.1.78,<4.12",
+    "opencv-python>=4.5.5.64,<4.12",
+    "opencv-contrib-python<4.12",
+    # mediapipe: full deps resolved by the lock (no --no-deps under uv). Its
+    # Tasks-API (FaceLandmarker, used by rPPG + oldcam) imports matplotlib at
+    # module load, so matplotlib MUST be present — the lock pulls it as a
+    # mediapipe dep, and numpy stays <2 because the lock forbids 2.x.
+    "mediapipe==0.10.35",
+    "deepface==0.0.92",
+    # TensorFlow pinned explicitly (deepface only declares tensorflow>=1.9.0).
+    "tensorflow==2.16.2",
+    "tensorflow-intel==2.16.2; sys_platform == 'win32'",
+    # tensorflow-io-gcs-filesystem: a transitive TF dep with a CROSS-OS + CROSS-
+    # PYTHON-VERSION WHEEL GAP. TF 2.16.2 declares `>=0.23.1` (no upper bound).
+    # uv's universal lock otherwise picks 0.37.1 (newest), which has NO Windows
+    # wheel — a fresh `uv sync` dies on Windows with "no wheel for win_amd64".
+    # pip never hit this because it omits the package on Windows entirely (TF
+    # imports fine without it). The constraints:
+    #   * Last version WITH ANY win wheel = 0.31.0, but it ships ONLY cp310/cp311
+    #     win wheels — there is NO win cp312 wheel for ANY tfgcs version.
+    #   * 0.31.0 has NO Apple-Silicon (macosx arm64) wheel.
+    # So: scope per (platform, python). Windows + py<3.12 pins 0.31.0 (its only
+    # win wheels); Windows + py3.12 OMITS tfgcs entirely (no win cp312 wheel
+    # exists; TF works without it — verified); mac/linux float to >=0.37.1
+    # (darwin-arm64 + manylinux wheels). Without the py<3.12 gate, a Windows
+    # Python 3.12 `uv sync` is unsatisfiable and silently falls back to pip every
+    # launch (Codex P2, PR #71).
+    "tensorflow-io-gcs-filesystem==0.31.0; sys_platform == 'win32' and python_version < '3.12'",
+    "tensorflow-io-gcs-filesystem>=0.37.1; sys_platform != 'win32'",
+    "numpy>=1.26,<2",
+    "tf-keras==2.16.0",
+    "retina-face==0.0.17",
+    "absl-py>=2.3,<3",
+    # scipy — rPPG signal processing (butter/filtfilt/find_peaks/hilbert/...).
+    "scipy>=1.11,<2",
+    # GUI drag-and-drop
+    "tkinterdnd2>=0.3,<1",
+    # Optional balance tracker
+    "selenium>=4.15,<5",
+    "webdriver-manager>=4.0,<5",
+]
+
+# ---------------------------------------------------------------------------
+# TORCH + CuPy EXTRAS — the GPU/OS-aware split, made declarative under uv.
+#
+# torch is required by DeepFace's anti-spoofing classifier (MiniFASNetV2).
+# CuPy accelerates the rPPG injector (rPPG/rppg_injector.py); it is GPU-only.
+# CUDA only affects SPEED, not correctness (production never calls
+# torch.cuda.*), so the CPU wheel is always safe.
+#
+# Why extras instead of one `torch` dep + post-install swap: uv markers are
+# STATIC (platform/arch), they can't express "this Windows box has a working
+# NVIDIA GPU". So we publish three mutually-exclusive extras and let a
+# launch-time selector (scripts/uv_torch_select.py, reusing the proven
+# gpu_bootstrap.detect_nvidia + resolve_torch_mode decision table) pass the
+# right one to `uv sync --extra <X>`:
+#
+#   * Windows + working NVIDIA, CUDA 13.x driver -> --extra cu128
+#   * Windows + working NVIDIA, CUDA 12.x driver -> --extra cu121
+#   * Windows, no/broken NVIDIA                  -> --extra cpu
+#   * macOS                                      -> --extra cpu (resolves to the
+#       default PyPI MPS/CPU wheel; the cpu index is win/linux-gated so darwin
+#       falls through to PyPI — there is no +cpu macOS wheel)
+#
+# The selector ALSO runs torch.cuda.is_available() after a cuda sync and, if a
+# CUDA build is runtime-broken (missing DLLs / driver mismatch / AV quarantine),
+# re-syncs --extra cpu. This mirrors gpu_bootstrap.select_torch_install's probe
+# + CPU-fallback exactly. The cu* tags (cu121 / cu128) match
+# gpu_bootstrap._TORCH_CUDA_INDEX so a drift fails the parity test.
+#
+# CuPy invariant (memory project_cupy_numpy2_conflict): cupy-cuda1Nx must stay
+# >=13.6,<14 — CuPy 14.x requires numpy>=2.0, mutually exclusive with the
+# numpy<2 face stack. CuPy ships per-CUDA-major wheels (cupy-cuda12x for 12.x,
+# cupy-cuda13x for 13.x), so it lives in the cu121/cu128 extras, never in cpu
+# or on macOS.
+#
+# CUDA component DLLs (nvrtc etc.) — the v2.17 `[ctk]` extra is a NO-OP on
+# cupy 13.6.0 (VERIFIED 2026-06-03: cupy-cuda12x/13x 13.6.0 publish only the
+# `all` + `test` extras — there is NO `ctk` extra; both pip and uv silently
+# drop it with a warning and pull only numpy + fastrlock). So the bundled CUDA
+# runtime never landed via `[ctk]`. cupy's import-time kernel compile needs
+# nvrtc + the math libs it dispatches to; without them rPPG falls back to CPU
+# (and on a CUDA-12 box v2.17's `[ctk]` left them ABSENT — a latent GPU-rPPG
+# bug this migration fixes). We therefore pin the CUDA component wheels
+# EXPLICITLY — the un-suffixed `nvidia-*` line for CUDA 13.x, the `-cu12` line
+# for CUDA 12.x. Versions match the set proven working in the live venv
+# (nvrtc 13.3.x, cublas 13.5.x, ...). rPPG/rppg_injector.py registers their
+# site-packages/nvidia/*/bin dirs via os.add_dll_directory() before importing
+# cupy (Windows extension-module DLL search ignores PATH); that runtime code is
+# unchanged and now actually has DLLs to find.
+# ---------------------------------------------------------------------------
+[project.optional-dependencies]
+cpu = [
+    "torch>=2.2,<3",
+    "torchvision",
+]
+cu121 = [
+    "torch>=2.2,<3",
+    "torchvision",
+    # CuPy ships ONLY Windows + Linux wheels — never macOS (Apple Silicon has
+    # no CUDA). Gate it (and its CUDA components) win/linux so the cu* extras
+    # stay resolvable on darwin (where the launch selector picks `cpu` anyway,
+    # and torch falls back to the PyPI MPS wheel). Without this marker, uv's
+    # required-environments (darwin arm64) makes cu121/cu128 unsatisfiable.
+    "cupy-cuda12x>=13.6,<14; sys_platform == 'win32' or sys_platform == 'linux'",
+    # CUDA 12.x component wheels (the real replacement for the no-op [ctk]).
+    "nvidia-cuda-nvrtc-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cuda-runtime-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cublas-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cufft-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-curand-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cusolver-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cusparse-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-nvjitlink-cu12; sys_platform == 'win32' or sys_platform == 'linux'",
+]
+cu128 = [
+    "torch>=2.2,<3",
+    "torchvision",
+    # CuPy is win/linux-only (see cu121 note) — gate it so the darwin arm64
+    # required-environment can still resolve this extra (cupy simply absent).
+    "cupy-cuda13x>=13.6,<14; sys_platform == 'win32' or sys_platform == 'linux'",
+    # CUDA 13.x component wheels (un-suffixed nvidia-* line). nvrtc + runtime +
+    # nvjitlink are pinned to the CUDA-13.3.x line to MATCH CuPy 13.6.0's BUNDLED
+    # CCCL headers (v2.23.3 root cause, friend-log-confirmed 2026-06-05):
+    #   CuPy v13 BUNDLES its own CCCL (Thrust/CUB/libcudacxx) headers in the wheel
+    #   (docs.cupy.dev/en/v13.6.0/upgrade.html "Modernized CCCL support"). CuPy
+    #   13.6.0 ships CCCL 2.8.0, whose `cuda/std/limits` uses a constexpr __half
+    #   return that ONLY compiles under nvrtc >= 13.3. An OLDER nvrtc (e.g. 13.0)
+    #   rejects it with `limits(633): constexpr function return is non-constant` —
+    #   so pinning DOWN to 13.0 (the v2.23.2 mistake) FORCED the failure on the
+    #   friend's box. Pinning the nvrtc compiler to 13.3 (== the bundled CCCL's
+    #   expected toolchain) is what compiles on the dev box and is the real cure.
+    # numpy stays <2 (CuPy 14 would allow newer CUDA but needs numpy>=2, which
+    # breaks the TF-2.16.2 face stack). [[project_cupy_numpy2_conflict]]
+    "nvidia-cuda-nvrtc>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cuda-runtime>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cublas>=13.5,<14; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cufft>=12.3,<13; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-curand>=10.4,<11; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cusolver>=12.2,<13; sys_platform == 'win32' or sys_platform == 'linux'",
+    "nvidia-cusparse>=12.8,<13; sys_platform == 'win32' or sys_platform == 'linux'",
+    # nvjitlink held on the SAME 13.3.x line as nvrtc/runtime (lockstep toolchain).
+    "nvidia-nvjitlink>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
+]
+
+[tool.uv]
+# Not an installable package — the repo is top-level modules + scripts launched
+# from root, not an import package. `uv sync` then only manages the dep env.
+package = false
+# Force the lock to resolve for EVERY OS the app ships on, so a package with a
+# cross-OS wheel gap (e.g. tensorflow-io-gcs-filesystem, which lacks a Windows
+# wheel past 0.31.0) can never lock a version that's uninstallable on one of
+# them. Without this uv resolves "universally" but a `--frozen` install on the
+# missing-wheel platform dies (the bounce trap test_uv_sync_extra_real_import
+# caught for win_amd64). Covers Windows x64, Apple-Silicon mac, Intel mac, and
+# linux x64.
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+# Intel macOS (darwin x86_64) is intentionally OMITTED: mediapipe 0.10.35 ships
+# NO darwin-x86_64 wheel (Apple-Silicon arm64 only), so the face stack is
+# fundamentally uninstallable there. That matches reality — setup_macos.sh and
+# the whole macOS path target Apple Silicon. Forcing it would make the lock
+# unsatisfiable for a platform we don't ship to.
+# The three torch extras are mutually exclusive — uv must never resolve more
+# than one at once (that would pull two torch builds; see uv issue #9640).
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cu121" },
+        { extra = "cu128" },
+    ],
+]
+
+[tool.uv.sources]
+# Route torch/torchvision to the right PyTorch index per selected extra. The
+# win/linux marker keeps the explicit CUDA/CPU index OFF macOS, so a `--extra
+# cpu` sync on a Mac falls back to PyPI's default (MPS/CPU) wheel — PyTorch
+# publishes no +cpu/+cuXXX wheels for darwin.
+torch = [
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+    { index = "pytorch-cu121", extra = "cu121", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+    { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+    { index = "pytorch-cu121", extra = "cu121", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+    { index = "pytorch-cu128", extra = "cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

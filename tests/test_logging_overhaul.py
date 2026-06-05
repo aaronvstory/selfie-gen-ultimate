@@ -258,3 +258,58 @@ def test_extract_failed_modules_returns_empty_when_unnameable():
 
     assert _extract_rppg_failed_modules(["some traceback", "another line"]) == ""
     assert _extract_rppg_failed_modules([]) == ""
+
+
+# --------------------------------------------------------------------------- #
+# v2.22 panel-friendliness: terminal stays data-rich, GUI panel stays friendly
+# --------------------------------------------------------------------------- #
+def test_verbose_rppg_banner_lines_are_panel_noise():
+    """User direction 2026-06-04: the GUI 'processing log' panel should be
+    friendly while the TERMINAL stays data-rich. The rPPG LAUNCHER banner lines
+    (from run_rppg.bat — these never reach the rPPG progress tracker) are
+    classified as panel-noise by queue_manager._is_panel_noise, so _on_rppg_line
+    demotes them to 'debug' — hidden from the PANEL but (with the stdout handler
+    at DEBUG) still flowing to the terminal + file.
+
+    The INJECTOR-emitted noise (MediaPipe-CPU trio, Pipeline:, corrector
+    version, "Using MediaPipe model") is NOT in _is_panel_noise — it's handled
+    by the tracker's _RPPG_SUPPRESS/_RPPG_KEEP patterns (single source of truth;
+    see test_rppg_progress_tracker). Double-filtering here previously let the
+    noise filter override the tracker's KEEP for the corrector line (HIGH PR #73).
+    """
+    from kling_gui.queue_manager import _is_panel_noise
+
+    launcher_noise = [
+        r"Python: shared root venv -- C:\foo\venv\Scripts\python.exe",
+        "Checking GPU acceleration for rPPG (CuPy)...",
+    ]
+    for line in launcher_noise:
+        assert _is_panel_noise(line), f"launcher banner should be panel-noise: {line!r}"
+
+    # Injector lines must NOT be _is_panel_noise (the tracker owns their fate).
+    injector_lines = [
+        "MediaPipe GPU delegate unavailable (NotImplementedError: ...)",
+        "ImageCloneCalculator: GPU processing is disabled in build flags",
+        r"Using MediaPipe Tasks FaceLandmarker model: C:\foo\face_landmarker.task [CPU]",
+        "Pipeline: v5 (deband-first)",
+        "rPPG Corrector v5.10+spectrum (v6 modules active)",
+    ]
+    for line in injector_lines:
+        assert not _is_panel_noise(line), (
+            f"injector line must NOT be _is_panel_noise (tracker handles it): {line!r}"
+        )
+
+
+def test_real_rppg_progress_lines_stay_in_panel():
+    """The user-facing progress + GPU banner + injector device line must NOT be
+    classified as panel-noise — they stay visible in the GUI panel."""
+    from kling_gui.queue_manager import _is_panel_noise
+
+    keep = [
+        "rPPG iter 1/10 frame 72/241 (~25%)",
+        "rPPG backend — CuPy 13.6.0 on 1 device(s)",
+        "rPPG iteration 2/10 starting",
+        "Target heart rate: 81.2 bpm",
+    ]
+    for line in keep:
+        assert not _is_panel_noise(line), f"should stay in panel: {line!r}"

@@ -42,6 +42,37 @@ def _read(rel: str) -> str:
     return (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
 
 
+def _strip_comments(text: str) -> str:
+    """Drop comment lines so the discovery guard scans only EXECUTABLE lines.
+
+    A launcher's COMMENT may legitimately mention "mediapipe --no-deps" while
+    describing what a delegated chain does without actually running that
+    install itself (e.g. run_auto.bat is a thin wrapper post-v2.19 — it only
+    `call`s the CLI chain, but its banner comment described the chain's
+    mediapipe handling, tripping the raw-text scan with a false positive).
+    Stripping comments keys the guard to real install commands, not prose.
+
+    Handles the comment syntaxes used by our launchers:
+      * .bat / .cmd : `rem ...`, the echo-suppressed `@rem ...` (very common),
+        or `:: ...` (gemini PR #72 — @rem was previously missed).
+      * .sh / .command : a line starting with `#` (after leading whitespace).
+        A bare `#!` shebang is a comment too. We do NOT try to strip trailing
+        inline `# ...` on sh lines — install commands here never carry an
+        inline comment that contains both "mediapipe" and "--no-deps".
+    """
+    _bat_comment_prefixes = ("rem ", "rem\t", "@rem ", "@rem\t", "::")
+    kept = []
+    for raw in text.splitlines():
+        stripped = raw.lstrip()
+        low = stripped.lower()
+        if low in ("rem", "@rem") or low.startswith(_bat_comment_prefixes):
+            continue
+        if stripped.startswith("#"):
+            continue
+        kept.append(raw)
+    return "\n".join(kept)
+
+
 # --- Layer 1: source-text guards (always on) --------------------------------
 
 # Every install site that does a mediapipe --no-deps install. If a NEW site is
@@ -118,25 +149,40 @@ def test_no_other_nodeps_mediapipe_site_is_unguarded():
     # Skip any virtualenv dir — bundled launcher scripts inside site-packages
     # are not ours. Match venv/.venv/.venv311/.venv-macos etc. (code-review:
     # the prior "/venv/" check missed the common .venv* names).
+    # Exact virtualenv dir names (dotted + undotted, canonical + version- and
+    # platform-suffixed). An EXACT-match set, NOT a startswith(".venv") prefix:
+    # a repo cloned into e.g. ".venv-kling/" would otherwise make _in_venv() True
+    # for EVERY file and silently skip the whole guard (gemini PR #72). Mirrors
+    # release_prep.EXCLUDED_DIRS' venv variants.
+    _VENV_DIR_NAMES = frozenset({
+        "venv", ".venv", ".venv-macos",
+        ".venv311", ".venv312", ".venv313", ".venv314",
+        "venv311", "venv312", "venv313", "venv314",
+    })
+
     def _in_venv(path: str) -> bool:
-        # Match a path SEGMENT that is a virtualenv dir. Only the canonical
-        # names + the .venv* family — NOT a bare "venv-*" prefix, which could
-        # be the repo root itself if cloned into e.g. "venv-kling" (Gemini
-        # 2026-06-03). A real venv dir is "venv" or ".venv"/".venv311"/etc.
-        norm = path.replace("\\", "/")
-        return any(
-            seg == "venv" or seg == ".venv" or seg.startswith(".venv")
-            for seg in norm.split("/")
-        )
+        # Check segments RELATIVE to REPO_ROOT — otherwise a repo cloned under a
+        # path that itself contains a venv segment (e.g. /home/user/venv/repo/…)
+        # would mark EVERY file as in-venv and silently skip the whole check
+        # (gemini, PR #73).
+        try:
+            rel = Path(path).resolve().relative_to(REPO_ROOT)
+        except (ValueError, OSError):
+            rel = Path(path)  # outside REPO_ROOT — fall back to the raw path
+        norm = str(rel).replace("\\", "/")
+        return any(seg in _VENV_DIR_NAMES for seg in norm.split("/"))
 
     for pat in patterns:
         for f in glob.glob(str(REPO_ROOT / pat), recursive=True):
             if ".launcher_state" in f or _in_venv(f):
                 continue
             try:
-                txt = Path(f).read_text(encoding="utf-8", errors="replace")
+                raw = Path(f).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+            # Scan only executable lines — a comment that merely DESCRIBES a
+            # delegated chain's mediapipe handling is not an install site.
+            txt = _strip_comments(raw)
             if "mediapipe" in txt and nodeps_re.search(txt):
                 rf = str(Path(f).resolve())
                 if rf in covered:
@@ -165,19 +211,36 @@ def test_real_mediapipe_tasks_import():
 
 
 def test_rppg_injector_registers_cuda_dll_dirs_and_force_cpu():
-    """v2.17: the injector must (a) register the pip-installed NVIDIA CUDA DLL
-    dirs before importing cupy (os.add_dll_directory + PATH) so nvrtc loads and
-    the GPU kernel compiles — without this, CuPy imports but the first kernel
-    compile fails 'Could not find nvrtc64_*.dll' and rPPG silently falls to CPU
-    even on a good GPU box (verified RTX 4090 2026-06-03); and (b) honour
-    RPPG_FORCE_CPU=1 as a benchmarking/escape-hatch."""
+    """v2.17 / v2.21: the injector must (a) register the pip/uv-installed NVIDIA
+    CUDA DLL dirs before importing cupy so nvrtc loads and the GPU kernel
+    compiles — without this, CuPy imports but the first kernel compile fails
+    'Could not find nvrtc64_*.dll' and rPPG silently falls to CPU even on a good
+    GPU box (verified RTX 4090 2026-06-03); and (b) honour RPPG_FORCE_CPU=1 as a
+    benchmarking/escape-hatch. The registration logic now lives in the SHARED
+    helper scripts/cuda_dll_paths.py (reused by gpu_bootstrap.probe_cupy so the
+    GUI probe and the injector register the EXACT same dirs)."""
     src = (REPO_ROOT / "rPPG" / "rppg_injector.py").read_text(encoding="utf-8", errors="replace")
     assert "_register_cuda_dll_dirs" in src
-    assert "add_dll_directory" in src
-    assert 'os.environ["PATH"]' in src or "os.environ['PATH']" in src
     assert "RPPG_FORCE_CPU" in src
-    # The helper must run BEFORE `import cupy`.
-    assert src.index("_register_cuda_dll_dirs()") < src.index("import cupy as _cp")
+    # The injector imports the shared helper and runs it BEFORE `import cupy`.
+    # (The import is a parenthesized multi-line form since v2.23 — it now also
+    # pulls clear_cupy_kernel_cache + the nvrtc-error helpers — so match the
+    # module + symbol rather than a single-line literal.)
+    assert "from cuda_dll_paths import" in src
+    assert "register_cuda_dll_dirs as _register_cuda_dll_dirs" in src
+    assert src.index("_register_cuda_dll_dirs()") < src.index("import cupy as cp")
+    # v2.23 GPU fix: the injector recovers from a stale-JIT-cache CompileException
+    # by clearing the cache + retrying the compile once before CPU fallback.
+    assert "clear_cupy_kernel_cache" in src
+    assert "_is_nvrtc_compile_error" in src
+    # The actual add_dll_directory + PATH logic lives in the shared helper.
+    helper = (REPO_ROOT / "scripts" / "cuda_dll_paths.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert "add_dll_directory" in helper
+    assert 'os.environ["PATH"]' in helper or "os.environ['PATH']" in helper
+    # CUDA-major agnostic: must glob the cu13 (bin/x86_64) AND cu12 (bin) layouts.
+    assert "*/bin/x86_64" in helper and "*/bin" in helper
 
 
 @pytest.mark.parametrize("v", ["v9", "v10", "v11"])

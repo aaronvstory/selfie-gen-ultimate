@@ -10,6 +10,7 @@ env/
 .venv/
 .venv-macos/
 .venv311/
+.scratch_*/
 crash_log.txt
 
 # IDE
@@ -117,3 +118,6 @@ rPPG/iteration_history/
 OLDCAM_DECISION_BRIEF.md
 OLDCAM_GUIDE.md
 docs/analysis/
+
+# Friend-shared diagnostic logs (contain real file paths + email-named files = PII).
+_friend_logs/

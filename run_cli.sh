@@ -19,8 +19,25 @@ printf '  ============================================================\n'
 printf '   Ultimate-Selfie-Gen  %s  --  CLI Launcher\n' "${APP_VER}"
 printf '  ============================================================\n\n'
 
-# setup_macos.sh installs deps and writes REQUIREMENTS_STAMP when they change
-"${ROOT_DIR}/setup_macos.sh"
+# --- v2.20 uv fast-path ----------------------------------------------------
+# Try the uv-native dependency sync FIRST (one `uv sync` resolves the whole
+# locked set: full face stack + GPU-aware torch, no subset, no --no-deps gap,
+# no constraints threading). On success we skip setup_macos.sh but STILL run the
+# runtime health probe below (the post-corruption safety net — code-review HIGH
+# #2: an exec straight past the probe would launch a broken uv env opaquely).
+# On any uv problem the helper leaves UV_SYNCED empty and the proven pip path
+# runs (KLING_USE_PIP=1 forces pip).
+UV_SYNCED=""
+if [[ -f "${ROOT_DIR}/scripts/uv_sync.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/scripts/uv_sync.sh"
+  selfiegen_uv_sync "${PYTHON_BIN}" "${ROOT_DIR}" || true
+fi
+
+if [[ -z "${UV_SYNCED}" ]]; then
+  # setup_macos.sh installs deps and writes REQUIREMENTS_STAMP when they change
+  "${ROOT_DIR}/setup_macos.sh"
+fi
 export KLING_SKIP_PY_STARTUP_DEP_CHECK=1
 
 # Run the runtime health probe on EVERY launch (v2.17). The previous

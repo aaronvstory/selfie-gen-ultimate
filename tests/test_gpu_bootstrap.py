@@ -52,10 +52,11 @@ def test_cuda_to_cupy_map_has_only_supported_majors():
     assert set(gpu_bootstrap._CUDA_TO_CUPY) == {12, 13}
     assert gpu_bootstrap._CUDA_TO_CUPY[12].startswith("cupy-cuda12x")
     assert gpu_bootstrap._CUDA_TO_CUPY[13].startswith("cupy-cuda13x")
-    # [ctk] extra pulls CUDA component wheels from PyPI so the install
-    # works on driver-only hosts (no system CUDA toolkit needed).
-    assert "[ctk]" in gpu_bootstrap._CUDA_TO_CUPY[12]
-    assert "[ctk]" in gpu_bootstrap._CUDA_TO_CUPY[13]
+    # The `[ctk]` extra is GONE — it was a no-op on cupy 13.6.0 (pulled NO
+    # nvidia wheels). The CUDA component wheels now ship explicitly via
+    # _CUDA_TO_NVIDIA_WHEELS, asserted below.
+    assert "[ctk]" not in gpu_bootstrap._CUDA_TO_CUPY[12]
+    assert "[ctk]" not in gpu_bootstrap._CUDA_TO_CUPY[13]
 
 
 def test_skip_env_var_short_circuits(monkeypatch):
@@ -137,6 +138,119 @@ def test_resolve_nvidia_smi_finds_windows_system32(monkeypatch, tmp_path):
     monkeypatch.setattr(gpu_bootstrap, "_is_windows", lambda: True)
     monkeypatch.setenv("SystemRoot", str(sysroot))
     assert gpu_bootstrap._resolve_nvidia_smi() == str(smi)
+
+
+# --- detect_nvidia header-format robustness (driver 610+ regression) ---------
+#
+# Real nvidia-smi no-flag headers, captured verbatim. The NEW one (driver 610.x,
+# 2026) DROPPED the legacy "Driver Version:" / "CUDA Version:" strings entirely,
+# replacing them with "NVIDIA-SMI 610.47", "KMD Version:" and "CUDA UMD Version:
+# 13.3". The old regex matched neither -> detect_nvidia returned None -> a real
+# RTX 4090 silently ran rPPG on CPU (verified 2026-06-04). These tests pin BOTH
+# layouts so a future header tweak can't reintroduce the regression.
+
+_SMI_HEADER_LEGACY = (
+    "Tue May 13 10:00:00 2025\n"
+    "+-----------------------------------------------------------------------------+\n"
+    "| NVIDIA-SMI 555.52       Driver Version: 555.52       CUDA Version: 12.6      |\n"
+    "|-------------------------------+----------------------+----------------------+\n"
+)
+
+_SMI_HEADER_NEW_610 = (
+    "Thu Jun  4 02:47:53 2026\n"
+    "+-----------------------------------------------------------------------------------------+\n"
+    "| NVIDIA-SMI 610.47                 KMD Version: 610.47        CUDA UMD Version: 13.3     |\n"
+    "+-----------------------------------------+------------------------+----------------------+\n"
+)
+
+
+_DEFAULT_GPU_NAME = "NVIDIA GeForce RTX 4090 Laptop GPU"
+
+
+def _fake_smi(monkeypatch, *, driver_query, header, gpu_name=_DEFAULT_GPU_NAME):
+    """Monkeypatch subprocess.run so detect_nvidia sees a fixed nvidia-smi.
+
+    ``driver_query`` is the DRIVER VERSION the ``--query-gpu=driver_version,name``
+    probe should report (None = the query fails / returns nothing). The fake
+    builds the real ``"<driver>, <name>"`` CSV row so the name-parse path is
+    exercised. ``header`` is the no-flag header stdout (for the CUDA-major parse).
+    """
+
+    class _Proc:
+        def __init__(self, stdout, rc=0):
+            self.stdout = stdout
+            self.returncode = rc
+
+    def _run(cmd, *a, **k):
+        # cmd[0] is the resolved nvidia-smi exe; a "--query-gpu=..." arg means
+        # the stable driver+name probe, otherwise it's the free-form header call.
+        if any(isinstance(c, str) and c.startswith("--query-gpu") for c in cmd):
+            if driver_query is None:
+                return _Proc("", rc=1)
+            drv = driver_query.strip()
+            row = f"{drv}, {gpu_name}\n" if gpu_name else f"{drv}\n"
+            return _Proc(row, rc=0)
+        return _Proc(header, rc=0)
+
+    monkeypatch.setattr(gpu_bootstrap, "_resolve_nvidia_smi", lambda: "nvidia-smi")
+    monkeypatch.setattr(gpu_bootstrap.subprocess, "run", _run)
+
+
+def test_detect_nvidia_parses_legacy_header(monkeypatch):
+    """Legacy driver header (Driver Version: / CUDA Version:) still parses."""
+    _fake_smi(monkeypatch, driver_query="555.52\n", header=_SMI_HEADER_LEGACY)
+    got = gpu_bootstrap.detect_nvidia()
+    assert got == {"driver_version": "555.52", "cuda_major": 12, "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU"}
+
+
+def test_detect_nvidia_parses_new_610_header(monkeypatch):
+    """Driver 610+ header (CUDA UMD Version:, no legacy strings) — THE bug.
+
+    Before the fix detect_nvidia returned None here and the RTX 4090 ran on CPU.
+    """
+    _fake_smi(monkeypatch, driver_query="610.47\n", header=_SMI_HEADER_NEW_610)
+    got = gpu_bootstrap.detect_nvidia()
+    assert got == {"driver_version": "610.47", "cuda_major": 13, "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU"}
+
+
+def test_detect_nvidia_falls_back_to_driver_branch_when_no_cuda_field(monkeypatch):
+    """GPU present but header has NEITHER CUDA field -> driver-branch fallback
+    picks the CUDA major rather than silently dropping a visible GPU to CPU."""
+    headerless = (
+        "Thu Jun  4 02:47:53 2026\n"
+        "| NVIDIA-SMI 612.00   KMD Version: 612.00   (no cuda field at all) |\n"
+    )
+    _fake_smi(monkeypatch, driver_query="612.00\n", header=headerless)
+    got = gpu_bootstrap.detect_nvidia()
+    # 612 >= 580 -> CUDA 13 by the driver-branch table.
+    assert got == {"driver_version": "612.00", "cuda_major": 13, "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU"}
+
+
+def test_detect_nvidia_none_when_query_driver_fails(monkeypatch):
+    """If the stable --query-gpu driver probe yields nothing, there's no usable
+    GPU -> None (even if a stale header string is somehow present)."""
+    _fake_smi(monkeypatch, driver_query=None, header=_SMI_HEADER_NEW_610)
+    assert gpu_bootstrap.detect_nvidia() is None
+
+
+def test_detect_nvidia_gpu_present_unknown_cuda_returns_none_major(monkeypatch):
+    """GPU present, no CUDA field, and a driver branch BELOW the fallback floor
+    -> cuda_major None (resolve_torch_mode then treats it as CPU). Never None
+    for the whole dict — we still record the driver so the GPU isn't 'lost'."""
+    old_driver = (
+        "Tue May 13 10:00:00 2020\n"
+        "| NVIDIA-SMI 440.33   (ancient driver, no cuda string)            |\n"
+    )
+    _fake_smi(monkeypatch, driver_query="440.33\n", header=old_driver)
+    got = gpu_bootstrap.detect_nvidia()
+    assert got == {"driver_version": "440.33", "cuda_major": None, "gpu_name": "NVIDIA GeForce RTX 4090 Laptop GPU"}
+
+
+def test_parse_smi_header_cuda_major_prefers_umd_over_legacy():
+    """If BOTH fields somehow appear, the NEW 'CUDA UMD Version:' wins (it's the
+    authoritative runtime field on the new layout)."""
+    both = "CUDA Version: 12.4   CUDA UMD Version: 13.3"
+    assert gpu_bootstrap._parse_smi_header_cuda_major(both) == 13
 
 
 def test_install_cupy_surfaces_pip_error_lines(monkeypatch):
@@ -281,7 +395,8 @@ def test_successful_install_writes_gpu_ready_stamp(monkeypatch):
     # our numpy<2 face stack). Assert the package family + the pin, not a bare
     # exact string, so the version cap is locked too.
     assert payload["cupy_package"] == gpu_bootstrap._CUDA_TO_CUPY[12]
-    assert payload["cupy_package"].startswith("cupy-cuda12x[ctk]")
+    assert payload["cupy_package"].startswith("cupy-cuda12x")
+    assert "[ctk]" not in payload["cupy_package"]
     assert ">=13.6,<14" in payload["cupy_package"]
     assert payload["attempts"] == 0
 
@@ -307,6 +422,112 @@ def test_gpu_ready_cache_revalidates_via_probe(monkeypatch):
     assert probe_calls == ["python_used"], (
         "gpu_ready cache must re-probe to catch a wiped venv between launches"
     )
+
+
+def test_stale_gpu_ready_with_broken_nvrtc_re_enters_install(monkeypatch):
+    """THE friend-fix idempotence guard (Plan-agent §1).
+
+    The friend has a STALE ``gpu_ready`` stamp from his broken v2.17 install
+    (his OLD probe passed because it never compiled a kernel — nvrtc was never
+    there). The ONLY thing that dislodges that stale stamp and reinstalls the
+    now-explicit nvidia wheels is the HONEST re-probe returning None. Prove
+    that a gpu_ready stamp + a failing probe re-enters detect_nvidia +
+    install_cupy rather than trusting the stamp. Without this, the fix would
+    NEVER fire for the friend (he'd stay on CPU forever).
+    """
+    gpu_bootstrap._write_stamp({
+        "result": "gpu_ready",
+        "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "driver_version": "576.80", "cuda_major": 12,
+        "cupy_package": "cupy-cuda12x>=13.6,<14", "cupy_version": "13.6.0",
+        "attempts": 0,
+    })
+    # Honest probe FAILS (nvrtc unloadable on his broken install).
+    monkeypatch.setattr(gpu_bootstrap, "probe_cupy", lambda exe: None)
+    monkeypatch.setattr(
+        gpu_bootstrap, "detect_nvidia",
+        lambda: {"driver_version": "576.80", "cuda_major": 12},
+    )
+    install_called = []
+    monkeypatch.setattr(
+        gpu_bootstrap, "install_cupy",
+        lambda exe, major: install_called.append((exe, major)) or (True, "13.6.0"),
+    )
+    result = gpu_bootstrap.bootstrap("python_friend")
+    assert result == "gpu_installed_now", (
+        "stale gpu_ready + failing probe MUST reinstall, not trust the stamp"
+    )
+    assert install_called == [("python_friend", 12)], (
+        "the nvidia-wheel reinstall must actually fire for the friend"
+    )
+
+
+def test_capped_install_failed_from_older_installer_re_attempts(monkeypatch):
+    """Codex P2 PR #72: a user who exhausted the 3-attempt install_failed cap on
+    an OLDER installer (e.g. the broken `[ctk]` one) must get a fresh set of
+    attempts after the installer is fixed — otherwise bootstrap() returns at the
+    capped-stamp check and the fix never runs for the stranded-upgrade case."""
+    # Write the stale stamp DIRECTLY to disk (not via _write_stamp, which now
+    # stamps the CURRENT installer_version) — this is what an old-installer stamp
+    # actually looks like on the friend's box.
+    gpu_bootstrap.STAMP_PATH.write_text(json.dumps({
+        "result": "install_failed",
+        "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "driver_version": "576.80", "cuda_major": 12,
+        "cupy_package": "cupy-cuda12x[ctk]>=13.6,<14", "cupy_version": None,
+        "attempts": 3, "installer_version": "2.17.0",  # the OLD broken installer
+    }), encoding="utf-8")
+    # Current installer is newer (2.17.1) — the cap must be ignored.
+    monkeypatch.setattr(gpu_bootstrap, "INSTALLER_VERSION", "2.17.1")
+    monkeypatch.setattr(
+        gpu_bootstrap, "detect_nvidia",
+        lambda: {"driver_version": "576.80", "cuda_major": 12},
+    )
+    install_called = []
+    monkeypatch.setattr(
+        gpu_bootstrap, "install_cupy",
+        lambda exe, major: install_called.append((exe, major)) or (True, "13.6.0"),
+    )
+    result = gpu_bootstrap.bootstrap("python_friend")
+    assert result == "gpu_installed_now", (
+        "a capped failure from an OLDER installer must re-attempt, not stay capped"
+    )
+    assert install_called == [("python_friend", 12)]
+
+
+def test_capped_install_failed_same_installer_stays_capped(monkeypatch):
+    """The cap MUST still hold when the failures came from the CURRENT installer
+    (don't turn the cap into a no-op — that would re-introduce the 3x-per-launch
+    log spam the cap was added to prevent)."""
+    # Monkeypatch the constant BEFORE _write_stamp — the stamp writer forcibly
+    # overwrites installer_version with the live INSTALLER_VERSION (gpu_bootstrap
+    # ~line 339), so the stamp only ends up "SAME as current" if the constant is
+    # already lowered when the stamp is written. (Reordering this is what keeps
+    # the test robust against future INSTALLER_VERSION bumps.)
+    monkeypatch.setattr(gpu_bootstrap, "INSTALLER_VERSION", "2.17.1")
+    gpu_bootstrap._write_stamp({
+        "result": "install_failed",
+        "checked_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "driver_version": "576.80", "cuda_major": 12,
+        "cupy_package": "cupy-cuda12x>=13.6,<14", "cupy_version": None,
+        "attempts": 3,  # installer_version auto-stamped to the (patched) current
+    })
+    install_called = []
+    monkeypatch.setattr(
+        gpu_bootstrap, "install_cupy",
+        lambda exe, major: install_called.append((exe, major)) or (True, "x"),
+    )
+    result = gpu_bootstrap.bootstrap("python_unused")
+    assert result == "install_failed"
+    assert install_called == [], "cap must hold for same-installer failures"
+
+
+def test_write_stamp_records_installer_version():
+    """Every stamp must carry installer_version so the capped-failure reset
+    (Codex P2 PR #72) can tell which installer produced it."""
+    gpu_bootstrap._write_stamp({"result": "no_nvidia", "cuda_major": None})
+    payload = json.loads(gpu_bootstrap.STAMP_PATH.read_text())
+    assert payload["installer_version"] == gpu_bootstrap.INSTALLER_VERSION
 
 
 def test_unsupported_cuda_major_short_circuits_to_no_nvidia(monkeypatch):
@@ -743,12 +964,87 @@ def test_cupy_pinned_to_numpy1_compatible_line():
         spec = gpu_bootstrap._CUDA_TO_CUPY[major]
         assert "<14" in spec, f"CUDA {major}: CuPy must be pinned <14 (numpy<2): {spec!r}"
         assert ">=13.6" in spec, f"CUDA {major}: expected >=13.6 floor: {spec!r}"
-        assert "[ctk]" in spec, f"CUDA {major}: [ctk] extra needed for CUDA wheels: {spec!r}"
+        # `[ctk]` is GONE (no-op on 13.6.0) — the nvidia component wheels ship
+        # explicitly now (see test_nvidia_component_wheels_*).
+        assert "[ctk]" not in spec, f"CUDA {major}: [ctk] is a no-op, must be dropped: {spec!r}"
 
 
-def test_pip_install_timeout_covers_large_ctk_download():
-    """The cupy[ctk] CUDA-component download is ~2-3GB; the old 900s cap timed
-    out on a real box -> install_failed -> CPU. Timeout must be generous, and
-    LOCK_STALE must still exceed it (so a live install isn't force-broken)."""
-    assert gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS >= 1800, "too short for 2-3GB [ctk]"
+def test_pip_install_timeout_covers_large_cuda_download():
+    """The CuPy + nvidia component download is ~1.5-2.5GB; the old 900s cap
+    timed out on a real box -> install_failed -> CPU. Timeout must be generous,
+    and LOCK_STALE must still exceed it (so a live install isn't force-broken)."""
+    assert gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS >= 1800, "too short for 1.5-2.5GB CUDA set"
     assert gpu_bootstrap.LOCK_STALE_SECONDS > gpu_bootstrap.PIP_INSTALL_TIMEOUT_SECONDS
+
+
+def test_nvidia_component_wheels_present_per_cuda_major():
+    """The explicit nvidia-* component wheels (the REAL replacement for the
+    no-op [ctk]) must exist for both CUDA majors: 12 (-cu12 suffixed) and 13
+    (un-suffixed). Without nvrtc, cupy imports but can't compile a kernel ->
+    rPPG silently runs on CPU (the friend's 20-min/iter bug)."""
+    wheels = gpu_bootstrap._CUDA_TO_NVIDIA_WHEELS
+    assert set(wheels) == {12, 13}
+    # nvrtc is the load-bearing one — assert it's present in both.
+    assert any("nvidia-cuda-nvrtc" in w for w in wheels[12])
+    assert any("nvidia-cuda-nvrtc" in w for w in wheels[13])
+    # cu12 set is ALL -cu12 suffixed; cu13 set is NONE -cu12 suffixed.
+    assert all("-cu12" in w for w in wheels[12]), wheels[12]
+    assert all("-cu12" not in w for w in wheels[13]), wheels[13]
+    # Both sets cover the 8 components cupy dispatches to.
+    for major in (12, 13):
+        names = " ".join(wheels[major])
+        for comp in ("nvrtc", "runtime", "cublas", "cufft",
+                     "curand", "cusolver", "cusparse", "nvjitlink"):
+            assert comp in names, f"CUDA {major} missing nvidia-*{comp}*"
+
+
+def test_nvidia_wheel_specs_parity_with_pyproject_extras():
+    """The pip-path nvidia wheel specs MUST equal the uv pyproject.toml
+    cu121/cu128 extras (modulo the `; sys_platform` marker) so the two install
+    paths can't silently drift. Skips gracefully if pyproject.toml is absent
+    (this test ships on the pip-only main branch where it lives at repo root
+    only on the uv branch)."""
+    import os
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(gpu_bootstrap.__file__)))
+    pyproject = os.path.join(repo_root, "pyproject.toml")
+    if not os.path.isfile(pyproject):
+        import pytest
+        pytest.skip("pyproject.toml absent (pip-only branch) — parity checked on uv branch")
+
+    # Parse with tomllib (stdlib >=3.11, which this project requires) rather than
+    # a hand-rolled regex — the regex form was fragile to formatting/whitespace
+    # drift in the extras block (code-review MEDIUM, PR #73).
+    import tomllib
+    with open(pyproject, "rb") as fh:
+        data = tomllib.load(fh)
+    extras = data.get("project", {}).get("optional-dependencies", {})
+
+    def _extra_nvidia(extra_name):
+        deps = extras.get(extra_name)
+        assert deps, f"extra {extra_name} not found in pyproject.toml [project.optional-dependencies]"
+        specs = set()
+        for dep in deps:
+            s = dep.split(";")[0].strip()  # drop the ; sys_platform marker
+            if s.startswith("nvidia-"):
+                specs.add(s)
+        assert specs, f"no nvidia-* specs in extra {extra_name}"
+        return specs
+
+    # cu121 extra <-> CUDA 12; cu128 extra <-> CUDA 13.
+    assert _extra_nvidia("cu121") == set(gpu_bootstrap._CUDA_TO_NVIDIA_WHEELS[12])
+    assert _extra_nvidia("cu128") == set(gpu_bootstrap._CUDA_TO_NVIDIA_WHEELS[13])
+
+
+def test_log_survives_none_stdout_pythonw(monkeypatch):
+    """Under pythonw.exe (GUI, no console) sys.stdout is None. gpu_bootstrap._log
+    must NOT raise — a bare print() would AttributeError and silently crash the
+    GPU bootstrap daemon thread → no GPU init ever (gemini HIGH, PR #73)."""
+    import io
+    monkeypatch.setattr(sys, "stdout", None)
+    gpu_bootstrap._log("msg under pythonw")  # must not raise
+    # And with a real stdout it still writes.
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    gpu_bootstrap._log("hello")
+    assert "GPU: hello" in buf.getvalue()

@@ -313,6 +313,18 @@ _PANEL_NOISE_PATTERNS = (
     "saved video to:",
     "video processing complete.",
     "finalizing video with ffmpeg codec",
+    # rPPG LAUNCHER banner lines (from run_rppg.bat, NOT the injector) that
+    # wrapped long absolute paths across the panel (user feedback 2026-06-04).
+    # File-only (debug). These must stay HERE because they never reach the rPPG
+    # progress tracker (the tracker only sees the injector's stdout). The
+    # INJECTOR-emitted lines (MediaPipe / Pipeline / "rPPG Corrector v" / "Using
+    # MediaPipe model") are deliberately NOT listed here — the tracker's
+    # _RPPG_KEEP/_RPPG_SUPPRESS patterns are the single source of truth for them,
+    # and double-filtering here let the noise filter (which runs first) override
+    # the tracker's KEEP for the corrector-version line (code-review HIGH PR #73).
+    "python: shared root venv",
+    "python: standalone venv",
+    "checking gpu acceleration for rppg",
 )
 
 
@@ -465,6 +477,14 @@ class QueueItem:
     # widget renders a unicode bar from these two fields.
     stage: str = "queued"
     stage_percent: int = 0
+    # Resume-after-abort state (Codex P2, PR #73). When the user presses Abort
+    # DURING post-generation (rPPG/Loop/Oldcam), the Kling video is already on
+    # disk — regenerating it on Resume would waste a render AND trip the
+    # duplicate-skip ("video already exists"). Instead the abort handler records
+    # the finished Kling output here; on the next process pass the worker SKIPS
+    # Kling generation and resumes straight into post-processing from this file.
+    resume_from_existing: bool = False
+    resume_kling_output: Optional[str] = None
 
     @property
     def filename(self) -> str:
@@ -510,9 +530,30 @@ class QueueManager:
         self.is_running = False
         self.worker_thread: Optional[threading.Thread] = None
         self._stop_flag = False
+        # Abort support: a threading.Event the GUI sets to cancel the IN-FLIGHT
+        # job (rPPG can run 10 iters / 20+ min, so item-boundary stop isn't
+        # enough). The active long-running subprocess handle is published here so
+        # abort_current_job() can .kill() it immediately instead of waiting for
+        # the stage to finish. Both are reset at the start of each new item.
+        self._abort_event = threading.Event()
+        self._active_subprocess: Optional[subprocess.Popen] = None
+        # Optional GUI hook fired whenever the active long-running subprocess is
+        # published or cleared, with a bool "is a job now running". The GUI uses
+        # it to enable the Abort button ONLY while a killable job is in flight
+        # (Codex P1 / CodeRabbit Major, PR #73 — the button was permanently
+        # disabled before). Set after construction; default no-op.
+        self.on_active_subprocess_change = None
         self._oldcam_deps_status_by_version: Dict[str, bool] = {}
         self._last_oldcam_run_summary: Optional[Dict[str, object]] = None
         self._oldcam_rerun_thread: Optional[threading.Thread] = None
+        # Set while the standalone Oldcam/rPPG re-run worker is ACTIVELY running
+        # (sharing self._abort_event). start_processing()'s mutual-exclusion
+        # guard checks THIS, not the thread's is_alive(), so that the brief
+        # teardown/drain phase at the END of the re-run (after all abort-event
+        # use is done) no longer blocks a concurrent GUI enqueue — closing the
+        # stranded-pending race CodeRabbit flagged without nulling the public
+        # _oldcam_rerun_thread sentinel that the tests join() on (PR #73).
+        self._oldcam_rerun_active = threading.Event()
 
     def log_verbose(self, message: str, level: str = "info"):
         """Log a message only if verbose mode is enabled."""
@@ -569,22 +610,85 @@ class QueueManager:
         self.update_queue_display()
         self.log(f"Added to queue: {os.path.basename(file_path)}", "info")
 
-        # Start processing if not already running
-        if not self.is_running and not self.is_paused:
+        # Kick the queue unless it's PAUSED (a paused queue must not auto-start —
+        # start_processing un-pauses). Do NOT also gate on `not is_running` out
+        # here: that unlocked read has a window where the worker decided the
+        # queue was empty but hasn't cleared is_running yet, so the new item
+        # would be stranded. start_processing's OWN lock-guarded is_running check
+        # is authoritative — it no-ops if a worker is genuinely running and
+        # starts one otherwise (CodeRabbit, PR #73).
+        if not self.is_paused:
             self.start_processing()
 
         return True, "Added to queue"
 
     def start_processing(self):
         """Start the worker thread to process queue items."""
-        if self.is_running:
+        # Guard the check-then-act under the lock: add_to_queue() reads
+        # is_running on the GUI thread and the worker clears it on its own
+        # thread, so an unsynchronised `if is_running` + later `is_running=True`
+        # could let two rapid drag-drops (or an abort+resume race) BOTH pass the
+        # check and spawn two concurrent worker threads sharing _abort_event /
+        # _active_subprocess (code-review CRITICAL, PR #73). Also reject if a
+        # prior worker thread is still alive.
+        with self.lock:
+            if self.is_running:
+                return
+            # NOTE: deliberately do NOT also reject on
+            # `worker_thread.is_alive()`. The is_running flag (set False by the
+            # worker exactly when it's logically done — empty queue / pause) is
+            # the authoritative double-worker guard, and it's checked+set under
+            # this lock so two callers can't both pass. An is_alive() check
+            # instead created a window where an item added AFTER the worker set
+            # is_running=False but BEFORE the thread fully exited was rejected
+            # and then never re-kicked → stranded pending forever (Codex P2,
+            # PR #73). With is_running False the old thread is exiting; starting
+            # a fresh worker is correct (the old one returns immediately after).
+            # Mutual exclusion with the standalone Oldcam/rPPG re-run worker:
+            # both share self._abort_event, so a queue run starting while a
+            # re-run is still winding down could race the event's clear/set and
+            # swallow an abort (code-review, PR #73). rerun_oldcam_only already
+            # rejects when is_running is True; this is the reverse guard.
+            # Reject only while the re-run is ACTIVELY running (it shares
+            # self._abort_event, so a queue run starting mid-re-run could race
+            # the event's clear/set and swallow an abort). The guard checks the
+            # _oldcam_rerun_active Event, NOT the thread's is_alive():
+            #   * The re-run clears _oldcam_rerun_active at the TOP of its finally
+            #     — BEFORE its drain sample — so an enqueue arriving during the
+            #     teardown window is no longer rejected (it passes here and
+            #     spawns the worker), closing CodeRabbit's stranded-pending race
+            #     (PR #73) WITHOUT nulling the public _oldcam_rerun_thread the
+            #     tests join() on.
+            #   * The current_thread() exception keeps the re-run's OWN drain
+            #     call from self-rejecting in the (now impossible, but
+            #     belt-and-suspenders) case the flag is still set (Codex P2).
+            rerun_active = getattr(self, "_oldcam_rerun_active", None)
+            if (
+                rerun_active is not None
+                and rerun_active.is_set()
+                and getattr(self, "_oldcam_rerun_thread", None)
+                is not threading.current_thread()
+            ):
+                return
+            self._stop_flag = False
+            self.is_running = True
+            self.is_paused = False
+            self.worker_thread = threading.Thread(
+                target=self._process_queue, daemon=True
+            )
+        try:
+            self.worker_thread.start()
+        except Exception as exc:  # noqa: BLE001
+            # If the OS refuses the thread (resource limits / interpreter
+            # shutdown), is_running would stay True with NO worker running —
+            # permanently wedging the queue (it thinks it's busy forever) until
+            # an app restart (gemini, PR #73). Roll the flag back so a later
+            # add/Resume can retry.
+            with self.lock:
+                self.is_running = False
+                self.worker_thread = None
+            self.log(f"⚠ Could not start queue worker: {exc}", "error")
             return
-
-        self._stop_flag = False
-        self.is_running = True
-        self.is_paused = False
-        self.worker_thread = threading.Thread(target=self._process_queue, daemon=True)
-        self.worker_thread.start()
         self.log("▶ Processing started", "info")
 
     def pause_processing(self):
@@ -605,6 +709,166 @@ class QueueManager:
         self._stop_flag = True
         self.is_paused = True
 
+    def abort_current_job(self):
+        """Abort the IN-FLIGHT job immediately (the GUI 'Abort' button).
+
+        Sets the abort Event (which the rPPG/Oldcam stream loops poll every
+        ≤1s) AND kills the active subprocess right now so the user doesn't wait
+        out the rest of a 20-minute rPPG run. Stops the queue after this item
+        (sets is_paused) but does NOT mark remaining items failed — the user
+        can resume. Safe to call from the GUI thread: Event.set() + Popen.kill()
+        are both thread-safe, and the worker thread observes the Event on its
+        next poll.
+        """
+        self._abort_event.set()
+        # Also pause the queue so it doesn't roll straight into the next item.
+        self.is_paused = True
+        proc = self._active_subprocess
+        if proc is not None:
+            self._kill_process_tree(proc)
+        self.log("⛔ Abort requested — stopping the current job…", "warning")
+
+    @staticmethod
+    def _kill_process_tree(proc):
+        """Kill ``proc`` AND its descendants.
+
+        Codex P1 (PR #73): on Windows the rPPG path runs through
+        ``run_rppg.bat``, which spawns a separate ``python rppg_injector.py``
+        child. ``proc.kill()`` only terminates the cmd/batch wrapper, leaving
+        the long-running injector orphaned — still burning GPU/CPU and writing
+        output AFTER the user pressed Abort. Kill the whole tree:
+        ``taskkill /T /F`` on Windows, the process group on POSIX, with a plain
+        ``proc.kill()`` fallback. Stdlib-only; never raises.
+        """
+        try:
+            if proc.poll() is not None:
+                return  # already exited
+        except Exception:  # noqa: BLE001
+            return
+        pid = getattr(proc, "pid", None)
+        if sys.platform == "win32" and pid is not None:
+            try:
+                # Resolve taskkill via PATH, else the canonical System32 path —
+                # a restricted/cleared PATH must not defeat the tree-kill
+                # (gemini MEDIUM, PR #73).
+                import shutil as _shutil
+                taskkill = _shutil.which("taskkill") or os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"),
+                    "System32", "taskkill.exe",
+                )
+                subprocess.run(
+                    [taskkill, "/T", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except Exception:  # noqa: BLE001 — taskkill missing/raced
+                pass
+        elif pid is not None:
+            # POSIX: kill the child's process group — but ONLY if it's a
+            # DIFFERENT group than ours. The children are spawned with
+            # start_new_session=True so they lead their own group; if for any
+            # reason they didn't (older code path / inherited group), killpg on
+            # OUR group would SIGKILL the GUI + test runner themselves (Gemini
+            # CRITICAL + Codex P1, PR #73). The guard makes that impossible; the
+            # proc.kill() fallback below still stops the direct child.
+            try:
+                import signal as _signal  # POSIX-only path; lazy import
+                pgid = os.getpgid(pid)
+                if pgid != os.getpgrp():
+                    os.killpg(pgid, _signal.SIGKILL)
+            except Exception:  # noqa: BLE001 — no pgid / already gone
+                pass
+        # Belt-and-suspenders: always try the direct handle too.
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _abort_requested(self) -> bool:
+        """True if the user asked to abort the in-flight job."""
+        return self._abort_event.is_set()
+
+    def _handle_item_abort(self, item):
+        """Clean up after a user Abort mid-item (code-review Codex P2).
+
+        Called from the worker loop when ``_abort_requested()`` is observed
+        between post-processing stages. Re-queues the item (so a later Resume
+        re-runs it cleanly rather than leaving a half-finished output marked
+        done), drops the worker out of the run loop (the queue is already
+        paused by abort_current_job), and logs it. Does NOT mark the item
+        failed — an abort is a user choice, not an error.
+        """
+        with self.lock:
+            # Re-queue whether the item is still "processing" OR already
+            # "completed". Codex P2 (PR #73): _process_queue marks the item
+            # "completed" right after Kling generation RETURNS, BEFORE running
+            # the post-generation stages (rPPG / Loop / Oldcam). An Abort during
+            # those stages reaches here with status=="completed", so a
+            # processing-only guard silently no-ops while the log still claims
+            # "re-queued" — the row stays done and Resume won't pick it up.
+            # Treat any non-failed item as re-queueable on user abort.
+            if item.status in ("processing", "completed"):
+                item.status = "pending"
+                item.stage = "queued"
+                item.stage_percent = 0
+                # If Kling already produced its output (abort happened DURING
+                # post-processing), arm a resume that skips re-generating Kling
+                # and continues from the existing file — so Resume neither wastes
+                # a render nor trips the duplicate-skip (Codex P2, PR #73).
+                kling_out = getattr(item, "resume_kling_output", None)
+                if kling_out and os.path.exists(kling_out):
+                    item.resume_from_existing = True
+            # Clear is_running INSIDE the lock so start_processing's
+            # lock-guarded read can never observe a stale True and refuse to
+            # re-kick the queue (code-review, PR #73 — every is_running write
+            # is synchronised through self.lock, matching the locked reader).
+            self.is_running = False
+        if getattr(item, "resume_from_existing", False):
+            msg = (
+                f"⛔ Aborted '{item.filename}' during post-processing; re-queued. "
+                "Press Resume to continue from the existing Kling video "
+                "(post-processing only)."
+            )
+        else:
+            msg = (
+                f"⛔ Aborted '{item.filename}' mid-job; re-queued. "
+                "Press Resume to re-run it."
+            )
+        self.log(msg, "warning")
+        self.update_queue_display()
+        # Notify the GUI on EVERY abort (not just the resume-armed case): every
+        # abort guard `return`s out of the worker right after this call, so the
+        # worker's normal bottom-of-loop on_processing_complete(item) never
+        # fires. Without this, a mid-Kling abort (no resume output) leaves the
+        # carousel + queue row frozen at "kling/0%" with no confirmation the
+        # abort was accepted (code-review CRITICAL, PR #73). Safe to always call
+        # — the worker won't double-fire it.
+        if self.on_processing_complete:
+            try:
+                self.on_processing_complete(item)
+            except Exception:  # noqa: BLE001 — GUI callback must not break abort
+                pass
+
+    def _publish_active_subprocess(self, proc: Optional[subprocess.Popen]):
+        """Record the long-running child so abort_current_job() can kill it.
+
+        Passed as ``on_process_start`` to the rPPG streamer and set directly by
+        the Oldcam loop. A dead handle left here is harmless — abort_current_job
+        only kills it when ``poll() is None`` — but callers clear it (pass None)
+        when the stage ends so the next abort can't target a finished process.
+        """
+        self._active_subprocess = proc
+        # Notify the GUI so the Abort button is enabled only while a killable
+        # job is actually running (PR #73). Best-effort — never let a GUI hook
+        # break the worker.
+        cb = self.on_active_subprocess_change
+        if cb is not None:
+            try:
+                cb(proc is not None)
+            except Exception:  # noqa: BLE001 — GUI hook must not break the queue
+                pass
+
     def retry_failed(self):
         """Re-queue all failed items."""
         count = 0
@@ -618,7 +882,9 @@ class QueueManager:
         if count > 0:
             self.update_queue_display()
             self.log(f"Retrying {count} failed item(s)", "info")
-            if not self.is_running and not self.is_paused:
+            # Only the is_paused gate here; start_processing's locked is_running
+            # check is authoritative (see add_to_queue note, CodeRabbit PR #73).
+            if not self.is_paused:
                 self.start_processing()
         return count
 
@@ -804,6 +1070,13 @@ class QueueManager:
         def _worker():
             nonlocal source_video
             temp_input: Optional[Path] = None
+            # Clear any abort latched by a PRIOR standalone re-run. The normal
+            # queue clears _abort_event at the top of _process_queue, but this
+            # standalone path also calls _rppg_video()/_oldcam_video() which poll
+            # the event — without this, one aborted re-run makes EVERY later
+            # standalone re-run abort instantly until a queue item runs (Codex
+            # P2, PR #73).
+            self._abort_event.clear()
             try:
                 config = self.get_config()
                 versions_to_run = self._get_oldcam_versions_to_run()
@@ -871,6 +1144,20 @@ class QueueManager:
                             "warning",
                         )
 
+                # Abort guard (Codex P2, PR #73): _rppg_video returns None on a
+                # user Abort exactly like a skip/failure. WITHOUT this the
+                # standalone rerun would march on into Loop/Oldcam after the user
+                # pressed Abort — the main queue bails here, so the rerun must
+                # too. Report it via the completion callback (no item to
+                # re-queue on this path) and stop.
+                if self._abort_requested():
+                    self.log("⛔ Re-Run aborted by user.", "warning")
+                    if completion_callback:
+                        completion_callback(
+                            False, str(source_video), None, "Aborted by user"
+                        )
+                    return
+
                 # Loop step: same gating as before — skip if the input
                 # was already a loop (use the pre-rPPG capture above)
                 # to avoid ``..._looped_looped.mp4``. The source may
@@ -916,6 +1203,16 @@ class QueueManager:
                                 "Re-Run: loop step failed; falling back to un-looped source",
                                 "warning",
                             )
+
+                # Abort guard after Loop (Codex P2, PR #73) — same rationale as
+                # the post-rPPG guard: stop before Oldcam if the user aborted.
+                if self._abort_requested():
+                    self.log("⛔ Re-Run aborted by user.", "warning")
+                    if completion_callback:
+                        completion_callback(
+                            False, str(source_video), None, "Aborted by user"
+                        )
+                    return
 
                 # No-Oldcam early-return path:
                 #   - SUCCESS when rPPG and/or Loop actually produced new
@@ -1024,6 +1321,16 @@ class QueueManager:
                     "info",
                 )
                 output_path = self._oldcam_video(str(run_input), QueueItem(str(source_video)))
+                # Abort guard after Oldcam (Codex P2, PR #73): _oldcam_video
+                # returns None on Abort like a failure; bail before the optional
+                # fan-out + completion so an aborted rerun doesn't report done.
+                if self._abort_requested():
+                    self.log("⛔ Re-Run aborted by user.", "warning")
+                    if completion_callback:
+                        completion_callback(
+                            False, str(source_video), None, "Aborted by user"
+                        )
+                    return
                 # OPTIONAL per-Oldcam rPPG fan-out (Phase E of
                 # polish/v2.3, 2026-05-22). The main rPPG pass already
                 # ran on ``source_video`` at the top of this worker
@@ -1042,6 +1349,8 @@ class QueueManager:
                     rerun_oldcam_outputs = list(summary.get("outputs") or [])
                     last_rppg: Optional[str] = None
                     for src in rerun_oldcam_outputs:
+                        if self._abort_requested():
+                            break  # stop fan-out the instant the user aborts
                         rppg_path = self._rppg_video(src, QueueItem(str(source_video)))
                         if rppg_path:
                             last_rppg = rppg_path
@@ -1072,8 +1381,10 @@ class QueueManager:
                         + ",".join(str(v) for v in succeeded_versions)
                         + "; failed/skipped versions="
                         + ",".join(f"{v} ({r})" for v, r in failed_versions)
+                        # basename, not full path (the canonical full output path
+                        # is the "💾 Saved to:" / oldcam "Saved video to:" line)
                         + "; primary output="
-                        + str(primary_output),
+                        + (Path(primary_output).name if primary_output else ""),
                         "debug",
                     )
                 if output_path and Path(output_path).exists():
@@ -1097,18 +1408,53 @@ class QueueManager:
                 if completion_callback:
                     completion_callback(False, str(source_video), None, message)
             finally:
+                # FIRST: drop the active flag. All Oldcam work + abort-event use
+                # is done by now, so start_processing()'s mutual-exclusion guard
+                # can stop rejecting concurrent GUI enqueues. Clearing it BEFORE
+                # the drain sample below closes CodeRabbit's stranded-pending
+                # race: an enqueue that lands AFTER our sample is no longer
+                # rejected — its own start_processing() now passes the guard and
+                # spawns the worker (PR #73).
+                self._oldcam_rerun_active.clear()
                 if temp_input is not None:
                     try:
                         temp_input.unlink(missing_ok=True)
                     except Exception:
                         pass
+                # If the user enqueued/retried items DURING this standalone
+                # re-run, start_processing() rejected them (the mutual-exclusion
+                # guard) and the re-run doesn't otherwise kick the queue — so
+                # they'd sit pending forever (Codex P2, PR #73). Drain them now
+                # that the re-run is finishing. With _oldcam_rerun_active already
+                # cleared, a last-moment enqueue racing this sample self-kicks,
+                # so nothing is stranded. We do NOT null _oldcam_rerun_thread —
+                # the tests join() on it.
+                try:
+                    with self.lock:
+                        has_pending = any(
+                            it.status == "pending" for it in self.items
+                        )
+                    if has_pending and not self.is_running and not self.is_paused:
+                        self.start_processing()
+                except Exception:  # noqa: BLE001 — never let drain break teardown
+                    pass
 
+        # Arm the active flag BEFORE spawning so a GUI enqueue that races the
+        # spawn is correctly held off until the re-run finishes.
+        self._oldcam_rerun_active.set()
         self._oldcam_rerun_thread = threading.Thread(
             target=_worker,
             daemon=True,
             name="oldcam-rerun-worker",
         )
-        self._oldcam_rerun_thread.start()
+        try:
+            self._oldcam_rerun_thread.start()
+        except Exception as exc:  # noqa: BLE001
+            # If the OS refuses the thread, the active flag would otherwise stay
+            # set forever and permanently block the queue. Roll it back.
+            self._oldcam_rerun_active.clear()
+            self.log(f"⚠ Could not start Oldcam re-run worker: {exc}", "error")
+            return False
         return True
 
     def _get_next_pending(self) -> Optional[QueueItem]:
@@ -1127,15 +1473,44 @@ class QueueManager:
         while not self._stop_flag:
             # Check if paused
             if self.is_paused:
-                self.is_running = False
+                # Synchronise the clear through self.lock so start_processing's
+                # locked is_running read can't see a stale True (PR #73).
+                with self.lock:
+                    self.is_running = False
                 return
 
             # Get next item
             item = self._get_next_pending()
             if item is None:
                 # No more items to process
-                self.is_running = False
+                with self.lock:
+                    self.is_running = False
                 self.log("🏁 Queue processing complete", "success")
+                return
+
+            # Fresh abort slate for this item — a prior item's abort (or a
+            # leftover set from a cancelled run) must not cancel this one.
+            self._abort_event.clear()
+            self._active_subprocess = None
+
+            # Re-check pause AFTER clearing the abort slate (code-review
+            # CRITICAL #1): abort_current_job() sets BOTH _abort_event and
+            # is_paused from the GUI thread. If the user clicked Abort in the
+            # window between the top-of-loop is_paused check and the clear()
+            # above, the clear() would have wiped that abort — and the queue
+            # would roll straight into THIS item instead of stopping. Honour
+            # the pause here so an abort landing in that window stops the queue
+            # (the item stays 'processing'→re-queued on resume, not run+killed).
+            if self.is_paused:
+                # Put the item back to pending so resume re-runs it cleanly.
+                with self.lock:
+                    if item.status == "processing":
+                        item.status = "pending"
+                        item.stage = "queued"
+                        item.stage_percent = 0
+                    # Clear inside the lock (PR #73) — see _handle_item_abort.
+                    self.is_running = False
+                self.update_queue_display()
                 return
 
             self.update_queue_display()
@@ -1226,11 +1601,34 @@ class QueueManager:
                     actual_output = output_folder
                     self.log_verbose(f"  Output: {actual_output}", "debug")
 
-                # Check if video already exists (with current model and prompt slot)
-                video_exists, found_video_path = check_video_exists(
-                    item.path, actual_output, self.generator, config
+                # Resume-after-abort fast path (Codex P2, PR #73): if a prior
+                # Abort happened DURING post-processing, the Kling video is
+                # already on disk. Skip BOTH the duplicate check and the
+                # re-generation, and resume straight into post-processing from
+                # the recorded output. Falls back to a normal run if the file
+                # vanished in the meantime.
+                _resuming = (
+                    item.resume_from_existing
+                    and item.resume_kling_output
+                    and os.path.exists(item.resume_kling_output)
                 )
-                custom_output_path = None
+                if _resuming:
+                    self.log(
+                        f"↻ Resuming '{item.filename}' post-processing from "
+                        f"existing Kling video (no re-generation).",
+                        "info",
+                    )
+                    video_exists, found_video_path = False, None
+                    custom_output_path = None
+                    # consume the one-shot flag so a future natural completion
+                    # of this item doesn't accidentally resume again
+                    item.resume_from_existing = False
+                else:
+                    # Check if video already exists (with current model and prompt slot)
+                    video_exists, found_video_path = check_video_exists(
+                        item.path, actual_output, self.generator, config
+                    )
+                    custom_output_path = None
 
                 if video_exists:
                     if not allow_reprocess:
@@ -1307,22 +1705,26 @@ class QueueManager:
                 # Skip duplicate check if we've already handled it (overwrite mode deleted file,
                 # increment mode uses custom path)
                 skip_check = video_exists and reprocess_mode == "overwrite"
-                result = self._generate_video(
-                    item,
-                    actual_output,
-                    prompt,
-                    negative_prompt,
-                    False,  # always False — we already computed gen-images/ path
-                    custom_output_path,
-                    skip_duplicate_check=skip_check,
-                    video_duration=video_duration,
-                    aspect_ratio=aspect_ratio,
-                    resolution=resolution,
-                    seed=seed,
-                    camera_fixed=camera_fixed,
-                    generate_audio=generate_audio,
-                    generation_timestamp=generation_timestamp,
-                )
+                if _resuming:
+                    # Reuse the existing Kling output instead of regenerating.
+                    result = item.resume_kling_output
+                else:
+                    result = self._generate_video(
+                        item,
+                        actual_output,
+                        prompt,
+                        negative_prompt,
+                        False,  # always False — we already computed gen-images/ path
+                        custom_output_path,
+                        skip_duplicate_check=skip_check,
+                        video_duration=video_duration,
+                        aspect_ratio=aspect_ratio,
+                        resolution=resolution,
+                        seed=seed,
+                        camera_fixed=camera_fixed,
+                        generate_audio=generate_audio,
+                        generation_timestamp=generation_timestamp,
+                    )
 
                 if result:
                     item.status = "completed"
@@ -1339,6 +1741,10 @@ class QueueManager:
                     # behind the rppg_per_oldcam_fanout opt-in flag
                     # below (defaults OFF).
                     final_video = result
+                    # Record the finished Kling base so an Abort during the
+                    # post-processing stages below can offer a clean Resume that
+                    # skips re-generating Kling (Codex P2, PR #73).
+                    item.resume_kling_output = result
 
                     # Step 1: rPPG on raw Kling FIRST when enabled.
                     # Produces ``<stem>-rppg.mp4`` if it succeeds. On
@@ -1359,8 +1765,31 @@ class QueueManager:
                         if rppg_base:
                             final_video = rppg_base
                             item.rppg_succeeded = True
-                        else:
+                        elif not self._abort_requested():
+                            # Genuine rPPG SKIP/FAILURE (not an abort): mark the
+                            # Kling output -NORPPG. On a user ABORT, _rppg_video
+                            # ALSO returns None — but renaming here would move the
+                            # file out from under item.resume_kling_output, so
+                            # Resume couldn't continue from the existing render
+                            # AND the run would be mislabeled an rPPG failure
+                            # (Codex P2, PR #73). Skip the rename; the abort guard
+                            # below re-queues the item with its real Kling path.
                             final_video = self._mark_norppg(final_video)
+
+                    # Abort guard (code-review Codex P2): _rppg_video returns
+                    # None on a user Abort exactly like an ordinary skip, so
+                    # WITHOUT this check the worker would march on into Loop /
+                    # Oldcam / final "done" and still produce + mark a completed
+                    # output AFTER the user pressed Abort. Bail the whole item
+                    # the instant an abort is observed (the queue is already
+                    # paused; the item is re-queued so resume re-runs it clean).
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
 
                     # Step 2: Loop on the rPPG'd (or raw if rPPG was
                     # OFF/skipped) base. After this step, ``final_video``
@@ -1373,6 +1802,14 @@ class QueueManager:
                         looped_video = self._loop_video(final_video, item)
                         if looped_video:
                             final_video = looped_video
+
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
 
                     # Step 3: Oldcam runs EVERY selected version.
                     # _oldcam_video returns the highest version's path;
@@ -1390,6 +1827,14 @@ class QueueManager:
                             final_video = oldcam_video
                         summary = self._last_oldcam_run_summary or {}
                         oldcam_outputs = list(summary.get("outputs") or [])
+
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
 
                     # Step 4 (OPTIONAL): legacy per-Oldcam rPPG fan-out.
                     # When ``rppg_per_oldcam_fanout`` is True AND rPPG
@@ -1409,6 +1854,13 @@ class QueueManager:
                     ):
                         last_rppg: Optional[str] = None
                         for src in oldcam_outputs:
+                            # Abort guard (code-review MEDIUM): without this an
+                            # abort fires N spurious launch-and-kill cycles (one
+                            # per remaining oldcam output) + a misleading
+                            # FANOUT-FAILED N/M log. Break on the first observed
+                            # abort; the outer post-stage guard handles the item.
+                            if self._abort_requested():
+                                break
                             fanout_total += 1
                             rppg_video = self._rppg_video(src, item)
                             if rppg_video:
@@ -1444,9 +1896,24 @@ class QueueManager:
                                 else last_rppg
                             )
 
+                    # Final abort guard before marking the item done — an abort
+                    # during the fan-out loop must not fall through to "done".
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        # return (not continue): the queue is already paused by
+                        # abort_current_job, so exit the worker cleanly instead of
+                        # re-fetching the next item only to immediately re-queue it
+                        # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
+
                     item.output_path = final_video
                     item.stage = "done"
                     item.stage_percent = 100
+                    # Item completed cleanly — drop the resume-after-abort
+                    # state so a future natural reprocess of this row never
+                    # resumes from a now-stale Kling path (Codex P2, PR #73).
+                    item.resume_from_existing = False
+                    item.resume_kling_output = None
                     self.log(f"💾 Saved to: {final_video}", "info")
                     # Synthesize a final summary milestone so the user
                     # can see, at a glance, what was applied (and what
@@ -1480,6 +1947,15 @@ class QueueManager:
                         f"{Path(final_video).name}",
                         "milestone",
                     )
+                elif self._abort_requested():
+                    # Abort DURING Kling generation: _generate_video returns
+                    # None (the API poll loop exits) exactly like a genuine
+                    # generation failure. Without this guard the item would be
+                    # marked "failed" — so Resume wouldn't pick it up and the
+                    # user would have to hit "Retry Failed" instead (code-review
+                    # HIGH, PR #73). Re-queue it like the post-gen abort path.
+                    self._handle_item_abort(item)
+                    return
                 else:
                     item.status = "failed"
                     item.stage = "failed"
@@ -1503,7 +1979,10 @@ class QueueManager:
             if self.on_processing_complete:
                 self.on_processing_complete(item)
 
-        self.is_running = False
+        # Worker loop exited (stop flag) — clear inside the lock so the locked
+        # reader in start_processing always sees a synchronised value (PR #73).
+        with self.lock:
+            self.is_running = False
 
     def _generate_video(
         self,
@@ -1597,16 +2076,22 @@ class QueueManager:
         _raw_lock_ef = _parse_bool(_cfg_cfg.get("lock_end_frame", True))
         _lock_end_frame = True if _raw_lock_ef is None else bool(_raw_lock_ef)
 
-        # Set up verbose callback for generator progress
+        # Generator progress callback. progress_update lines (the growing
+        # in-place "Video gen — IN_PROGRESS (Xs)" row) ALWAYS reach the panel so
+        # the user sees a video gen is alive even with Verbose Mode off (user
+        # direction 2026-06-04 — unify all progress reporting). All OTHER
+        # generator chatter stays verbose-gated as before.
         def progress_callback(message: str, level: str = "info"):
-            self.log_verbose(message, level)
+            if level == "progress_update":
+                self.log(message, "progress_update")
+            else:
+                self.log_verbose(message, level)
 
-        # Attach callback to generator if verbose mode
+        # Always attach now (the callback self-gates non-progress lines on
+        # verbose); previously it was attached only in verbose mode, which hid
+        # the new progress_update row.
         config = self.get_config()
-        if config.get("verbose_gui_mode", False):
-            self.generator.set_progress_callback(progress_callback)
-        else:
-            self.generator.set_progress_callback(None)
+        self.generator.set_progress_callback(progress_callback)
 
         # For increment mode, we need to handle the output path ourselves
         if custom_output_path:
@@ -1680,7 +2165,11 @@ class QueueManager:
         try:
             from .video_looper import create_looped_video
 
-            self.log(f"Creating looped video...", "info")
+            # Loop encoding is a blocking ffmpeg call (no live %), so this is a
+            # single in-place status row; the "✅ LOOP DONE"/next milestone line
+            # ends it (progress_update unifies all progress reporting, user
+            # direction 2026-06-04).
+            self.log("Loop — encoding… (ffmpeg, please wait)", "progress_update")
 
             # Create looped version (adds _looped suffix)
             looped_path = create_looped_video(
@@ -1740,15 +2229,19 @@ class QueueManager:
     # enough that a future launcher variant (e.g. omitting the trailing
     # "complete...") still updates the queue widget bar.
     _OLDCAM_PCT_PAT = re.compile(r"\[Oldcam\]\s+Processing:\s+(\d+)%")
-    # Matches the rPPG progress-tracker's synthesized
-    #   "rPPG iter 3/10 frame 144/242 (~50%)"
-    # progress lines. Class-level for parity with _OLDCAM_PCT_PAT and to
-    # survive __new__-constructed test instances that bypass __init__.
-    # (Gemini medium on PR #52 round 2 — was previously compiled
-    # inside _rppg_video; moving to class level removes one re-compile
-    # per queue item and keeps regex catalogue centralized.)
+    # Matches the rPPG progress-tracker's synthesized progress line. v2.22.1
+    # collapsed the per-frame spam into ONE in-place-updating line, changing the
+    # format from "rPPG iter 3/10 frame 144/242 (~50%)" to
+    #   "rPPG iter 3/10 50% (frame 144/242)"
+    # — so the bar parser must accept the new shape. Class-level for parity with
+    # _OLDCAM_PCT_PAT and to survive __new__-constructed test instances.
+    # Matches BOTH the iterative form "rPPG iter 3/10 50% (frame 144/242)" AND
+    # the non-iterative single-pass form "rPPG 47% (frame 114/242)" — the
+    # `iter N/M` group is OPTIONAL (automation/rppg emits an empty iter_label
+    # when _iter_current/_iter_max are unset). Without the optional group the
+    # single-pass progress bar stayed stuck at 0 (code-review MEDIUM, PR #73).
     _RPPG_PCT_PAT = re.compile(
-        r"rPPG iter\s+(\d+)/(\d+)\s+frame\s+\d+/\d+\s+\(~(\d+)%\)"
+        r"rPPG\s+(?:iter\s+(\d+)/(\d+)\s+)?(\d+)%\s+\(frame\s+\d+/\d+\)"
     )
 
     def _run_oldcam_version(
@@ -1789,10 +2282,23 @@ class QueueManager:
                 text=True,
                 errors="replace",  # oldcam launcher stdout may carry non-UTF-8 bytes
                 bufsize=1,
+                # Give the child its OWN process group/session on POSIX so an
+                # Abort/timeout can killpg the whole tree (the .bat/.sh wrapper +
+                # its python child) WITHOUT touching the GUI's own group (PR #73).
+                # Ignored on Windows (taskkill /T handles the tree there).
+                start_new_session=(os.name != "nt"),
             )
             assert process.stdout is not None
+            # Publish for the GUI Abort button (kills it instantly).
+            self._publish_active_subprocess(process)
             deadline = time.monotonic() + _TIMEOUT
             while True:
+                # Abort check (GUI Abort button). Oldcam is a blocking
+                # readline loop, so a kill from abort_current_job() unblocks
+                # readline with EOF; we also raise TimeoutExpired here so a
+                # check between lines fires promptly.
+                if self._abort_requested():
+                    raise subprocess.TimeoutExpired(run_cmd, _TIMEOUT)
                 line = process.stdout.readline()
                 if not line:
                     break
@@ -1801,12 +2307,28 @@ class QueueManager:
                 line_text = line.rstrip()
                 if line_text:
                     output_lines.append(line_text)
+                    m_pct = self._OLDCAM_PCT_PAT.search(line_text)
                     if not _is_tf_noise(line_text):
-                        # Panel-noisy lines (already summarized elsewhere or
-                        # pure path dumps) go to the file log only; everything
-                        # else continues to the user-facing panel.
-                        level = "debug" if _is_panel_noise(line_text) else "info"
-                        self.log(line_text, level)
+                        if m_pct is not None:
+                            # Oldcam "[Oldcam] Processing: N% complete…" lines
+                            # collapse into ONE in-place updating panel line
+                            # (same growing-progress treatment as rPPG frames,
+                            # user direction 2026-06-04) instead of 4 separate
+                            # 25/50/75/100% rows. The raw line still hits the
+                            # file/terminal via the progress_update level map.
+                            try:
+                                pct = int(m_pct.group(1))
+                            except (TypeError, ValueError):
+                                pct = 0
+                            self.log(
+                                f"Oldcam {version} — {pct}%", "progress_update"
+                            )
+                        else:
+                            # Panel-noisy lines (already summarized elsewhere or
+                            # pure path dumps) go to the file log only; everything
+                            # else continues to the user-facing panel.
+                            level = "debug" if _is_panel_noise(line_text) else "info"
+                            self.log(line_text, level)
                     # Update per-item progress bar from the launcher's
                     # native progress lines. Capped at 99 here; the
                     # caller flips to 100/done when the success branch
@@ -1815,21 +2337,20 @@ class QueueManager:
                     # the redraw if the value didn't change — subagent
                     # M3 on PR #52 round 1 (avoids ~40 redundant
                     # listbox repaints per rPPG run).
-                    if item is not None:
-                        m = self._OLDCAM_PCT_PAT.search(line_text)
-                        if m is not None:
-                            try:
-                                pct = max(0, min(99, int(m.group(1))))
-                            except (TypeError, ValueError):
-                                pct = 0
-                            if pct != item.stage_percent:
-                                item.stage_percent = pct
-                                self.update_queue_display()
+                    if item is not None and m_pct is not None:
+                        try:
+                            pct = max(0, min(99, int(m_pct.group(1))))
+                        except (TypeError, ValueError):
+                            pct = 0
+                        if pct != item.stage_percent:
+                            item.stage_percent = pct
+                            self.update_queue_display()
             returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             if process is not None:
-                if process.poll() is None:
-                    process.kill()
+                # Tree-kill: the Oldcam launcher is a .bat wrapper too, so a bare
+                # process.kill() can orphan the python child (Codex P1, PR #73).
+                self._kill_process_tree(process)
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
@@ -1839,12 +2360,15 @@ class QueueManager:
                         process.stdout.close()
                     except Exception:
                         pass
-            self.log(f"Oldcam {version} timed out after 600s", "warning")
+            if self._abort_requested():
+                self.log(f"⛔ Oldcam {version} aborted by user.", "warning")
+            else:
+                self.log(f"Oldcam {version} timed out after 600s", "warning")
             return None
         except Exception as exc:
             if process is not None:
-                if process.poll() is None:
-                    process.kill()
+                # Tree-kill (see above) — don't orphan the launcher's child.
+                self._kill_process_tree(process)
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
@@ -1856,6 +2380,10 @@ class QueueManager:
                         pass
             self.log(f"Oldcam {version} launcher error: {exc}", "warning")
             return None
+        finally:
+            # Clear the published handle so a later Abort can't target this
+            # (now-finished) oldcam process.
+            self._publish_active_subprocess(None)
 
         if returncode == 0:
             input_path = Path(video_path)
@@ -2068,8 +2596,10 @@ class QueueManager:
                     + ",".join(version for version, _ in outputs)
                     + "; failed/skipped versions="
                     + ",".join(f"{version} ({reason})" for version, reason in failures)
+                    # basename, not full path (the canonical full output path is
+                    # the "💾 Saved to:" / oldcam "Saved video to:" line)
                     + "; primary output="
-                    + primary[1],
+                    + (Path(primary[1]).name if primary[1] else ""),
                     "debug",
                 )
                 return primary[1]
@@ -2362,8 +2892,26 @@ class QueueManager:
             # (or its non-prefixed alias) so "more nitty gritty when
             # verbose is checked" works.
             from automation.rppg import _RppgProgressTracker
+            # The rPPG panel firehose follows the GUI's "Verbose Mode" checkbox
+            # (verbose_gui_mode, default FALSE), NOT the CLI/automation
+            # verbose_logging key. THE bug behind "rPPG log is way too noisy"
+            # (user, 2026-06-04, ~30×): this used verbose_logging/
+            # automation_verbose_logging with default TRUE, so the tracker
+            # emitted the full controller/knob/per-ROI/path chatter at INFO
+            # regardless of the GUI Verbose Mode toggle. Now: Verbose OFF
+            # (default) = curated friendly panel (launch+flags, per-iter SNR +
+            # face means, summary, output, milestones); Verbose ON = the full
+            # nitty-gritty. The TERMINAL + file still get everything either way
+            # (the stdout handler is at DEBUG).
+            # Only the GUI "Verbose Mode" key gates the rPPG panel. The
+            # automation_key alias is a non-existent sentinel so it can NEVER
+            # silently re-enable verbose via some other config key (code-review
+            # LOW PR #73: passing "verbose_logging" here was dead + misleading —
+            # verbose_gui_mode is always present in the default config so the
+            # alias was unreachable, but it read as if verbose_logging=True could
+            # turn this on, which it cannot).
             verbose = _cfg_bool(
-                "verbose_logging", "automation_verbose_logging", True,
+                "verbose_gui_mode", "__rppg_panel_verbose_unused__", False,
             )
 
             # The tracker emits synthesized progress lines like
@@ -2384,16 +2932,19 @@ class QueueManager:
                 m = self._RPPG_PCT_PAT.search(message)
                 if m is not None:
                     try:
-                        cur_iter = int(m.group(1))
-                        max_iter = max(1, int(m.group(2)))
-                        frame_pct = int(m.group(3))
+                        # iter N/M is OPTIONAL — single-pass runs omit it, so
+                        # default to iter 1/1 (then within_iter_pct IS the
+                        # overall percent). group(3) is always the percent.
+                        cur_iter = int(m.group(1)) if m.group(1) else 1
+                        max_iter = max(1, int(m.group(2))) if m.group(2) else 1
+                        within_iter_pct = int(m.group(3))
                     except (TypeError, ValueError):
                         return
                     overall = max(
                         0,
                         min(
                             99,
-                            int(((cur_iter - 1) * 100 + frame_pct) / max_iter),
+                            int(((cur_iter - 1) * 100 + within_iter_pct) / max_iter),
                         ),
                     )
                     # Skip the redraw on identical-value re-emissions
@@ -2423,6 +2974,23 @@ class QueueManager:
                 if _is_tf_noise(text):
                     return
                 stripped = text.strip()
+                # The verbose "Launching rppg_injector.py "<full in>" --output
+                # "<full out>" <flags>" banner wraps the PANEL across lines. Show
+                # a short basenames version in the panel (info) but keep the FULL
+                # command in the terminal + file (debug) — the terminal is the
+                # data-rich surface (user direction 2026-06-04).
+                low = stripped.lower()
+                if low.startswith("launching rppg_injector.py"):
+                    self.log(stripped, "debug")  # full command -> terminal + file
+                    quoted = re.findall(r'"([^"]+)"', stripped)
+                    if quoted:
+                        src_name = Path(quoted[0]).name
+                        out_name = Path(quoted[1]).name if len(quoted) > 1 else None
+                        msg = f"Launching rppg_injector.py on {src_name}"
+                        if out_name:
+                            msg += f" → {out_name}"
+                        self.log(msg, "info")  # friendly short -> panel
+                    return
                 # The launcher's own dependency self-heal diagnostics (the
                 # rppg_import_diag.py per-module report + WARN/ERROR status
                 # lines) are kept OUT of the user-facing panel to avoid a
@@ -2510,8 +3078,19 @@ class QueueManager:
                     deadline_extender=tracker_extender,
                     on_heartbeat=_on_rppg_heartbeat,
                     heartbeat_silence_predicate=is_rppg_progress_line,
+                    abort_event=self._abort_event,
+                    on_process_start=self._publish_active_subprocess,
                 )
             except subprocess.TimeoutExpired:
+                # A user Abort raises the same TimeoutExpired as a real
+                # timeout — distinguish them so the log message is honest.
+                if self._abort_requested():
+                    self.log(
+                        "⛔ rPPG aborted by user. Continuing without rPPG; "
+                        "filename will be marked with -NORPPG.",
+                        "warning",
+                    )
+                    return None
                 minutes = max(1, int(_TIMEOUT // 60))
                 self.log(
                     f"❌ RPPG FAILED — took longer than {minutes} min "
@@ -2528,6 +3107,11 @@ class QueueManager:
                     "error_bold",
                 )
                 return None
+            finally:
+                # Clear the published handle so a later Abort can't target this
+                # (now-finished) rPPG process before the next stage publishes
+                # its own (code-review HIGH #3).
+                self._publish_active_subprocess(None)
 
             if returncode == 0:
                 # The injector renames our --output to append a metric

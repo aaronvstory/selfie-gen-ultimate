@@ -92,91 +92,303 @@ except ImportError:
 # with byte-for-byte the same behaviour as before. The xp_of/to_gpu/to_cpu
 # helpers let those methods accept either backend's arrays without branching.
 
-# Module-level list that RETAINS the os.add_dll_directory() handles for the
-# whole process lifetime. CRITICAL (code-review 2026-06-03): on Windows the
-# DLL search-path entry only stays active while the returned handle is alive —
-# if it's GC'd, Python calls RemoveDllDirectory and nvrtc can no longer be
-# found. Discarding the handle made the GPU fix flaky (it only worked because
-# GC hadn't run yet). Keep them here so the entries persist until exit.
-_CUDA_DLL_DIR_HANDLES = []
+# Register the pip/uv-installed NVIDIA CUDA component DLL dirs on the Windows
+# DLL search path BEFORE importing cupy. The logic lives in the shared
+# stdlib-only helper scripts/cuda_dll_paths.py so this injector and the GUI's
+# gpu_bootstrap.probe_cupy register the EXACT same dirs (no drift — the probe
+# false-negatived on a correctly-installed box when it skipped this, stranding
+# the user on CPU; see scripts/cuda_dll_paths.py docstring). Without it, cupy
+# imports but the first GPU kernel compile fails with "Could not find
+# nvrtc64_*.dll", so CuPy reports unavailable and rPPG silently falls back to
+# CPU even on a good GPU box (verified 2026-06-03 on an RTX 4090). The helper
+# is CUDA-major agnostic (cu13 nvidia/cu13/bin/x86_64 + cu12 nvidia/cuda_nvrtc/
+# bin) and a no-op off-Windows. Guarded so a zip missing the helper degrades to
+# CPU instead of crashing the whole rPPG step.
+try:
+    # realpath (not abspath) so a symlinked rppg_injector.py still resolves the
+    # real repo-root scripts/ dir for the shared helper import (gemini PR #72).
+    _scripts_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "scripts"
+    )
+    # Temporarily front of sys.path ONLY for this import, then remove it so we
+    # don't permanently shadow stdlib/3rd-party modules with anything in
+    # scripts/ (gemini MEDIUM PR #72). Once imported, the module is cached in
+    # sys.modules, so the path entry is no longer needed.
+    _added_scripts_dir = _scripts_dir not in sys.path
+    if _added_scripts_dir:
+        sys.path.insert(0, _scripts_dir)
+    try:
+        from cuda_dll_paths import (
+            register_cuda_dll_dirs as _register_cuda_dll_dirs,
+            clear_cupy_kernel_cache as _clear_cupy_kernel_cache,
+            is_nvrtc_compile_error as _is_nvrtc_compile_error,
+            summarize_nvrtc_compile_error as _summarize_nvrtc_compile_error,
+            cuda_include_dirs as _cuda_include_dirs,
+        )
+    finally:
+        if _added_scripts_dir:
+            try:
+                sys.path.remove(_scripts_dir)
+            except ValueError:
+                pass
+except Exception:  # noqa: BLE001 — helper absent/unimportable => CPU fallback
+    def _register_cuda_dll_dirs():
+        return []
 
+    def _clear_cupy_kernel_cache():
+        return None
 
-def _register_cuda_dll_dirs():
-    """Add the pip-installed NVIDIA CUDA component dirs (nvrtc, cudart, cublas,
-    ...) to the Windows DLL search path BEFORE importing cupy.
+    def _is_nvrtc_compile_error(err):
+        name = type(err).__name__.lower()
+        return "compile" in name or "nvrtc" in name
 
-    CuPy's CUDA-component wheels (cupy-cudaNNx[ctk]) drop their DLLs under
-    site-packages/nvidia/<...>/bin. On Python 3.8+ Windows, a bare PATH entry
-    is IGNORED for an extension module's dependent DLLs — only
-    os.add_dll_directory() works. Without this, cupy imports but the first GPU
-    kernel compile fails with "Could not find nvrtc64_*.dll" /
-    "nvrtc-builtins64_*.dll", so CuPy reports unavailable and rPPG silently
-    falls back to CPU even on a perfectly good GPU box (verified 2026-06-03 on
-    an RTX 4090). No-op off-Windows / when the dirs don't exist.
+    def _summarize_nvrtc_compile_error(err, limit=300):
+        detail = str(err).strip().replace("\n", " ")
+        return (detail[:limit] + "…") if len(detail) > limit else detail
+
+    def _cuda_include_dirs():
+        return []
+
+# Guard the RUNTIME call too, not just the import: the helper now wraps its own
+# filesystem touches, but a belt-and-suspenders try/except here guarantees that
+# ANY unexpected failure (a future regression, an exotic FS error) degrades to
+# CPU rather than crashing the whole rPPG step before the CuPy fallback below
+# (external review PR #72).
+try:
+    _register_cuda_dll_dirs()
+except Exception:  # noqa: BLE001 — registration must never break rPPG import
+    pass
+def _init_cupy_backend():
+    """Import CuPy, verify a CUDA device, and force a real nvrtc kernel compile.
+
+    Returns ``(cp_module, gaussian_filter)``; raises on any failure. Factored
+    out so the CompileException recovery path can call it twice — once, then once
+    more after clearing a stale JIT cache (see the recovery block below). Forcing
+    a real COMPILE here (not just ``zeros()``/``getDeviceCount()``) makes a
+    missing-nvrtc / stale-cache failure surface NOW, at import, instead of deep
+    in the first frame op.
     """
-    if not hasattr(os, "add_dll_directory"):
+    import cupy as cp
+    _force_cupy_bundled_cuda_headers()  # MUST run before the first compile
+    from cupyx.scipy.ndimage import gaussian_filter as gf
+    cp.zeros(1, dtype=cp.float32)  # device probe: raises if no CUDA device
+    gf(cp.zeros((4, 4), dtype=cp.float32), 1.0)  # force nvrtc kernel compile
+    return cp, gf
+
+
+def _force_cupy_bundled_cuda_headers():
+    """Make CuPy ignore any SYSTEM CUDA toolkit and use its OWN bundled headers.
+
+    THE friend's CUDA-13 rPPG-on-CPU bug, fully root-caused 2026-06-05 by
+    REPRODUCING it: clearing CUDA_PATH/CUDA_HOME (v2.23.3) was NOT enough.
+    CuPy's ``cupy._environment._get_cuda_path()`` has a SECOND fallback —
+    ``shutil.which('nvcc')`` — so on a box with an OLD system CUDA Toolkit
+    (the friend's CUDA v11.8) whose ``nvcc.exe`` is on PATH, CuPy STILL resolved
+    ``C:\\...\\CUDA\\v11.8`` and JIT-compiled against its 11.8 headers, which
+    break CuPy 13.6's bundled CCCL 2.8.0 (``cuda/std/limits(633): constexpr
+    function return is non-constant``). This is CuPy's own documented mismatch
+    (cupy#9852/#9853). The ONLY authoritative lever is to force CuPy's CUDA-path
+    detection to None so it falls back to its wheel/bundled include dir —
+    immune to BOTH CUDA_PATH and nvcc-on-PATH. VERIFIED by reproducing the
+    hijack with a fake nvcc on PATH and confirming this defeats it.
+    RPPG_KEEP_CUDA_PATH=1 opts out (rare box that NEEDS the system toolkit).
+    """
+    if os.environ.get("RPPG_KEEP_CUDA_PATH") == "1":
         return
-    import glob as _glob
-    import site as _site
-    import sys as _sys
-    sp_dirs = []
-    if hasattr(_site, "getsitepackages"):
+    try:
+        import cupy._environment as _cenv  # noqa: WPS433
+        # Idempotence guard, mirroring the include-dir patch's
+        # _rppg_include_patched flag: _init_cupy_backend() calls this on BOTH the
+        # first attempt and the retry, so without the flag we'd re-patch an
+        # already-patched module — harmless today but a latent regression vector
+        # if CuPy ever treats None differently from its '' uninitialized
+        # sentinel (code-review HIGH, PR #73).
+        if getattr(_cenv, "_rppg_path_patched", False):
+            return
+        # Memoized module globals ('' = uninitialized) + the public getters.
+        _cenv._cuda_path = None
+        _cenv._nvcc_path = None
+        _cenv.get_cuda_path = lambda: None
+        _cenv.get_nvcc_path = lambda: None
+        _cenv._rppg_path_patched = True
+    except Exception:  # noqa: BLE001 — best-effort; never break rPPG init
+        pass
+
+
+def _dump_gpu_error_sidecar(err):
+    """Write the FULL CuPy error + traceback to a discoverable file; return its
+    path (or None).
+
+    The console log shows ONE summarized line (the actual ``error:``); the
+    complete multi-line nvrtc compile log goes here so the exact cause is never
+    lost to truncation again (the friend's CUDA-13 compile failure was hidden
+    behind a 200-char head-truncation that only captured the benign opening
+    remark). Diagnostics must never crash rPPG, so everything is wrapped.
+    """
+    try:
+        import datetime
+        import tempfile
+        import traceback
+
+        def _body():
+            parts = [
+                f"# rPPG GPU backend init failure — {datetime.datetime.now().isoformat()}\n",
+                f"# exception type: {type(err).__name__}\n\n",
+                str(err),
+                "\n\n--- traceback ---\n",
+                "".join(traceback.format_exception(type(err), err, err.__traceback__)),
+            ]
+            return "".join(parts)
+
+        text = _body()
+        # Write NEXT TO THE OUTPUT VIDEO first (most findable — the friend
+        # couldn't locate the temp copy), then a temp copy as a stable fallback.
+        # Resolve the output dir from the injector's own --output arg.
+        out_dir = None
         try:
-            sp_dirs.extend(_site.getsitepackages())
-        except Exception:  # noqa: BLE001 — some embeds raise; fall through
-            pass
-    if hasattr(_site, "getusersitepackages"):
-        try:
-            sp_dirs.append(_site.getusersitepackages())
+            argv = sys.argv
+            if "--output" in argv:
+                out_path = argv[argv.index("--output") + 1]
+                cand = os.path.dirname(os.path.abspath(out_path))
+                if os.path.isdir(cand):
+                    out_dir = cand
         except Exception:  # noqa: BLE001
-            pass
-    # Fallback for a virtualenv on Python < 3.11 where getsitepackages() is
-    # absent: derive from sys.prefix (code-review MEDIUM-4 — the old
-    # os.path.dirname(os.__file__) pointed at the stdlib Lib/ dir, NOT
-    # Lib/site-packages, so the NVIDIA DLL dirs were never registered there and
-    # CuPy's kernel compile failed). Windows venv layout = <prefix>/Lib/site-packages.
-    sp_dirs.append(os.path.join(_sys.prefix, "Lib", "site-packages"))
-    roots = [os.path.join(sp, "nvidia") for sp in sp_dirs if sp]
-    seen = set()
-    for root in roots:
-        if not os.path.isdir(root):
-            continue
-        # Any bin dir under nvidia/* (e.g. nvidia/cu13/bin/x86_64, nvidia/*/bin).
-        for binglob in ("*/bin/x86_64", "*/bin", "*/lib/x64"):
-            for d in _glob.glob(os.path.join(root, binglob)):
-                d = os.path.abspath(d)
-                if d in seen or not os.path.isdir(d):
-                    continue
-                seen.add(d)
-                try:
-                    # RETAIN the handle (module-level list) — the DLL dir entry
-                    # is removed when this object is GC'd, so a discarded handle
-                    # makes the nvrtc fix flaky (code-review CRITICAL).
-                    _CUDA_DLL_DIR_HANDLES.append(os.add_dll_directory(d))
-                except OSError:
-                    pass
-                # add_dll_directory lets cupy load nvrtc64_*.dll, but nvrtc
-                # ITSELF then loads nvrtc-builtins64_*.dll via the plain PATH
-                # env (it's a C lib, not a Python ext), so the dir must ALSO be
-                # on os.environ['PATH'] or the first kernel compile throws
-                # CompileException "failed to open nvrtc-builtins64_*.dll".
-                if d not in os.environ.get("PATH", "").split(os.pathsep):
-                    os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+            out_dir = None
+        written = None
+        for d in (out_dir, tempfile.gettempdir()):
+            if not d:
+                continue
+            try:
+                p = os.path.join(d, "rppg_gpu_compile_error.log")
+                with open(p, "w", encoding="utf-8", errors="replace") as fh:
+                    fh.write(text)
+                if written is None:
+                    written = p  # report the FIRST (next-to-video) location
+            except Exception:  # noqa: BLE001 — try the next dir
+                continue
+        return written
+    except Exception:  # noqa: BLE001 — diagnostics must never crash rPPG
+        return None
 
 
-_register_cuda_dll_dirs()
 try:
     if os.environ.get("RPPG_FORCE_CPU") == "1":
         # Escape hatch: force the CPU path even when a working GPU is present
         # (benchmarking, or a workaround if a specific CuPy/driver combo
         # misbehaves). Raise so the normal CPU-fallback branch below runs.
         raise RuntimeError("RPPG_FORCE_CPU=1")
-    import cupy as _cp
-    from cupyx.scipy.ndimage import gaussian_filter as _cp_gaussian_filter
-    _cp.zeros(1, dtype=_cp.float32)  # probe: raises if no CUDA device
-    # Force a real kernel COMPILE so a missing nvrtc surfaces HERE (at import),
-    # not deep in the first frame op — a bare zeros() doesn't compile a kernel.
-    _cp_gaussian_filter(_cp.zeros((4, 4), dtype=_cp.float32), 1.0)
+    # ROOT CAUSE of the friend's CUDA-13 rPPG-on-CPU failure (v2.23.3,
+    # friend-sidecar-confirmed 2026-06-05): he has an OLD system CUDA Toolkit
+    # (C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8) installed, and
+    # Windows sets CUDA_PATH/CUDA_HOME to point at it. CuPy then JIT-compiles its
+    # kernels using the SYSTEM 11.8 HEADERS (cuda_fp8.hpp etc.) while loading
+    # nvrtc from the WHEEL — a version mismatch that breaks CuPy 13.6's bundled
+    # CCCL 2.8.0 with `cuda/std/limits(633): constexpr function return is
+    # non-constant`. This is CuPy's own documented failure mode (cupy#9852/#9853:
+    # "CuPy loads NVRTC from the wheel but uses headers from the system
+    # installation"). The maintainer's documented workaround: UNSET CUDA_PATH so
+    # CuPy uses the wheel's headers exclusively. We do that here, in-process,
+    # BEFORE importing CuPy — surgical and reversible (only this subprocess's
+    # env), so it can't disturb anything else on the machine. RPPG_KEEP_CUDA_PATH=1
+    # opts out for the rare box that NEEDS the system toolkit headers.
+    if os.environ.get("RPPG_KEEP_CUDA_PATH") != "1":
+        for _cuda_env in ("CUDA_PATH", "CUDA_HOME"):
+            if os.environ.pop(_cuda_env, None):
+                print(f"GPU backend: cleared {_cuda_env} for this run so CuPy "
+                      f"uses its own bundled CUDA headers (avoids a system-CUDA "
+                      f"header/wheel mismatch). Set RPPG_KEEP_CUDA_PATH=1 to keep it.")
+    try:
+        _cp, _cp_gaussian_filter = _init_cupy_backend()
+    except Exception as _first_gpu_err:
+        # CuPy imported and a device exists, but the nvrtc kernel COMPILE failed.
+        # The #1 cause on a box whose nvidia DLLs load correctly is a STALE JIT
+        # kernel cache left by a previous CUDA toolkit/driver: the friend
+        # upgraded CUDA 12.9 -> 13.x (driver 610.47) and the cubins cached under
+        # ~/.cupy no longer compile/load (cpp_dialect.h remark #20200-D was just
+        # the benign head of the log). Clear the cache and retry the compile ONCE
+        # before falling back to CPU. A non-compile failure (no device / missing
+        # module) can't be helped by a cache wipe — re-raise it immediately.
+        if not _is_nvrtc_compile_error(_first_gpu_err):
+            raise
+        # TWO independent causes of an nvrtc compile failure on a box whose
+        # nvidia DLLs load fine, recovered together before the CPU fallback:
+        #
+        # 1. MISSING CUDA RUNTIME HEADERS (the friend's actual bug, root-caused
+        #    2026-06-04). CuPy 13.x compiles kernels by #include-ing the CUDA
+        #    Runtime headers, and auto-detects them ONLY when the
+        #    nvidia-cuda-runtime wheel's version EXACTLY matches the major.minor
+        #    nvrtc reports. Our >=13.3,<14 pins let nvrtc + runtime float to
+        #    DIFFERENT minors independently; when they skew, CuPy finds ZERO
+        #    include dirs → "cannot open cuda_runtime.h" surfaced behind a benign
+        #    cpp_dialect.h remark. FIX: point CUPY_CUDA_INCLUDE_PATH at the real
+        #    on-disk nvidia/<...>/include dir (which always exists regardless of
+        #    the version label) and retry, so a future skew self-heals.
+        # 2. STALE JIT CACHE (a previous CUDA toolkit's cubins after a driver
+        #    upgrade). FIX: clear ~/.cupy/kernel_cache and retry.
+        # Apply BOTH, then retry the compile ONCE.
+        try:
+            _inc_dirs = _cuda_include_dirs()
+        except Exception:  # noqa: BLE001
+            _inc_dirs = []
+        # Force CuPy to use the real on-disk CUDA include dir even when its own
+        # wheel-version-match detector returned [] (the skew case). CuPy builds
+        # the nvrtc -I flags in cupy.cuda.compiler._get_extra_include_dir_opts
+        # (memoized) from _environment._get_include_dir_from_conda_or_wheel. We
+        # WRAP that detector so it appends our discovered include dirs, then
+        # clear the memoize cache so the retry recomputes the -I flags. There is
+        # NO CUPY_CUDA_INCLUDE_PATH env var — this monkeypatch is the only way to
+        # inject the path into an already-imported CuPy (root cause 2026-06-04).
+        _inc_applied = ""
+        if _inc_dirs:
+            try:
+                import cupy._environment as _cenv  # noqa: WPS433
+                import cupy.cuda.compiler as _ccompiler  # noqa: WPS433
+                if not getattr(_cenv, "_rppg_include_patched", False):
+                    _orig_get_inc = _cenv._get_include_dir_from_conda_or_wheel
+
+                    def _patched_get_inc(major, minor, _orig=_orig_get_inc,
+                                         _extra=tuple(_inc_dirs)):
+                        dirs = list(_orig(major, minor))
+                        for d in _extra:
+                            if d not in dirs:
+                                dirs.append(d)
+                        return dirs
+
+                    _cenv._get_include_dir_from_conda_or_wheel = _patched_get_inc
+                    _cenv._rppg_include_patched = True
+                # _get_extra_include_dir_opts is @cupy._util.memoize'd, so its
+                # cached -I tuple won't see the patch. cupy.clear_memo() is
+                # CuPy's official reset for ALL memoized funcs — use it so the
+                # retry recomputes the include flags with our forced dir.
+                import cupy as _cupy_mod  # noqa: WPS433
+                if hasattr(_cupy_mod, "clear_memo"):
+                    _cupy_mod.clear_memo()
+                _ = _ccompiler  # keep the import referenced (module side effects)
+                _inc_applied = os.pathsep.join(_inc_dirs)
+            except Exception:  # noqa: BLE001 — include patch is best-effort
+                pass
+        # NOTE (v2.23.3): a previous build also injected nvrtc
+        # `--expt-relaxed-constexpr` here as a "belt". That was REMOVED — it is
+        # an *nvcc* flag, and nvrtc REJECTS it ("unrecognized option
+        # --expt-relaxed-constexpr"), which turned a possibly-recoverable first
+        # error into a GUARANTEED retry failure on the friend's box. The real
+        # cure for the `cuda/std/limits(633): constexpr function return is
+        # non-constant` error is matching the nvrtc WHEEL to CuPy 13.6.0's
+        # bundled CCCL 2.8.0 (nvrtc >= 13.3) — see the pin in gpu_bootstrap /
+        # pyproject. The include-dir monkeypatch (layer 1) + JIT-cache wipe
+        # (below) remain because they are harmless and fix the OTHER two causes
+        # (header skew + stale cubins).
+        try:
+            _cleared = _clear_cupy_kernel_cache()
+        except Exception:  # noqa: BLE001 — cache wipe must never crash rPPG
+            _cleared = None
+        print(f"GPU backend: nvrtc kernel compile failed "
+              f"({type(_first_gpu_err).__name__}: "
+              f"{_summarize_nvrtc_compile_error(_first_gpu_err)}); "
+              f"forced CUDA include dir ({_inc_applied or 'none found'}); "
+              f"cleared CuPy JIT cache ({_cleared or 'nothing to clear'}); "
+              f"retrying once…")
+        _cp, _cp_gaussian_filter = _init_cupy_backend()
     GPU_AVAILABLE = True
     print(f"GPU backend: CuPy {_cp.__version__} on "
           f"{_cp.cuda.runtime.getDeviceCount()} device(s)")
@@ -184,8 +396,26 @@ except Exception as _cupy_err:
     _cp = None
     _cp_gaussian_filter = None
     GPU_AVAILABLE = False
-    print(f"GPU backend: CuPy unavailable ({type(_cupy_err).__name__}); "
-          f"frame math stays on CPU.")
+    # Surface the actual failure detail, not just the class name. The bare
+    # "(RuntimeError)" log stranded a friend's RTX 4080 on CPU for 20 min/iter
+    # with no clue WHY. For an nvrtc CompileException, pull the real ``error:``
+    # line (NOT the benign opening #pragma-message remark a head-truncate would
+    # capture) and dump the FULL log to a sidecar file; for everything else keep
+    # the short head-truncated message.
+    if _is_nvrtc_compile_error(_cupy_err):
+        _cupy_detail = _summarize_nvrtc_compile_error(_cupy_err)
+        _sidecar = _dump_gpu_error_sidecar(_cupy_err)
+        _sidecar_suffix = f" [full log: {_sidecar}]" if _sidecar else ""
+    else:
+        _cupy_detail = str(_cupy_err).strip().replace("\n", " ")
+        if len(_cupy_detail) > 200:
+            _cupy_detail = _cupy_detail[:200] + "…"
+        _sidecar_suffix = ""
+    # Omit the ": <detail>" entirely when the exception has no message, so the
+    # log reads "(RuntimeError)" not a dangling "(RuntimeError: )" (gemini PR #72).
+    _detail_suffix = f": {_cupy_detail}" if _cupy_detail else ""
+    print(f"GPU backend: CuPy unavailable ({type(_cupy_err).__name__}"
+          f"{_detail_suffix}); frame math stays on CPU.{_sidecar_suffix}")
 
 
 def xp_of(arr):

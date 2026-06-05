@@ -141,12 +141,60 @@ class ProgressTrackerEmissionTests(unittest.TestCase):
         )
 
     def test_suppressed_line_stays_debug_even_when_verbose(self):
-        """PR #48 round 4: per-ROI / MediaPipe / knob-internals lines
-        are in the suppress list and ALWAYS go to debug regardless of
-        verbose. The verbose flag controls the FALLTHROUGH path only."""
+        """PR #48 round 4: MediaPipe / knob-internals lines are in the suppress
+        list and ALWAYS go to debug regardless of verbose. The verbose flag
+        controls the FALLTHROUGH path only. (v2.22.1: per-ROI face means moved
+        OUT of suppress into the KEEP set — see test_face_means_kept_in_panel —
+        so this uses a still-suppressed controller line.)"""
         t, calls = self._tracker(verbose=True)
-        t.on_line("  forehead: mean=117.78, std=9.21, min=94.56, max=128.46")
+        t.on_line("Controller: mayer_amp 0.01 -> 0 (x2 step)  primary=temporal")
         self.assertEqual(calls[-1][0], "debug")
+
+    def test_face_means_kept_in_panel(self):
+        """v2.22.1 (user direction): per-region face means + the per-iter SNR
+        scoreboard are CURATED-KEEP — shown in the panel at info even when
+        Verbose Mode is OFF (the physiological data the user wants)."""
+        t, calls = self._tracker(verbose=False)
+        t.on_line("forehead: mean=118.22, std=2.30, min=113.40, max=123.07")
+        self.assertEqual(calls[-1], ("info", "forehead: mean=118.22, std=2.30, min=113.40, max=123.07"))
+        t.on_line("Baseline  SNR: 4.10 dB  |  Phase: 40.5 deg  |  Temporal: 0.37")
+        self.assertEqual(calls[-1][0], "info")
+
+    def test_controller_internals_dropped_when_not_verbose(self):
+        """The controller/knob-tuning internals are dropped from the panel
+        (debug) in non-verbose mode — they're the noise the user complained
+        about. (They still reach the terminal + file.)"""
+        t, calls = self._tracker(verbose=False)
+        for noise in (
+            "Tuned knobs: strength=0.005679, mayer_amp=0",
+            "PTT phase offsets (radians): {}",
+            "Pulse strength: 0.005679 | Hb model: G",
+            "Strength calibration blocked (motion prediction): strength +0.00162",
+            "Breakthrough mode: PASS_SAFETY_MARGIN expanded 0.15 -> 0.6",
+        ):
+            t.on_line(noise)
+            self.assertEqual(calls[-1][0], "debug", f"should be debug: {noise!r}")
+
+    def test_corrector_version_kept_in_panel(self):
+        """code-review HIGH PR #73: the 'rPPG Corrector v…' line must reach the
+        panel at info (user wants the corrector version). Previously
+        queue_manager._is_panel_noise matched it FIRST and forced it to debug,
+        overriding the tracker's KEEP. The tracker now owns it."""
+        t, calls = self._tracker(verbose=False)
+        t.on_line("rPPG Corrector v5.10+spectrum (v6 modules active)")
+        self.assertEqual(calls[-1][0], "info")
+
+    def test_mediapipe_cpu_and_pipeline_suppressed_when_not_verbose(self):
+        """The MediaPipe-CPU trio + 'Pipeline: v5' banner are suppressed by the
+        tracker (debug) in non-verbose mode — single source of truth (HIGH #73)."""
+        t, calls = self._tracker(verbose=False)
+        for noise in (
+            "MediaPipe GPU delegate unavailable (NotImplementedError: x)",
+            "ImageCloneCalculator: GPU processing is disabled in build flags",
+            "Pipeline: v5 (deband-first)",
+        ):
+            t.on_line(noise)
+            self.assertEqual(calls[-1][0], "debug", f"should be debug: {noise!r}")
 
     def test_ansi_codes_stripped_before_match(self):
         """PR #48 round 4: the v6 spectrum corrector wraps "Iteration

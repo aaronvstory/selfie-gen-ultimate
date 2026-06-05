@@ -1,0 +1,32 @@
+SelfieGen — FIX: rPPG keeps running on the CPU (slow)
+=====================================================
+
+If rPPG is slow (minutes per iteration) and the GPU isn't being used,
+your PC has an OLD CUDA Toolkit that's getting in the way.
+
+HOW TO FIX IT (about 2 minutes + a reboot):
+
+  1. Double-click:   Run CUDA Cleanup.bat
+  2. Type  Y  and press Enter.
+  3. Approve the Windows "Administrator" popup if it appears.
+  4. Read the planned changes, then type  YES  to apply.
+  5. RESTART your PC when it tells you to.
+  6. Open SelfieGen again and run a short rPPG job.
+
+That's it. You don't have to type anything in a terminal.
+
+IS THIS SAFE?
+  - Yes. It backs everything up to your Desktop FIRST (so it's undoable).
+  - It does NOT remove your NVIDIA graphics driver.
+  - It does NOT touch your SelfieGen install or its venv.
+  - It only removes an old CUDA *Toolkit* from your PATH, and clears a
+    GPU compile cache so SelfieGen recompiles cleanly.
+
+WORKED?
+  In SelfieGen's log you should now see something like:
+     rPPG backend — CuPy 13.6.0 on 1 device(s)
+  and each rPPG step should take seconds, not minutes.
+
+STILL BROKEN?
+  Send back the file  rppg_gpu_compile_error.log  — it appears next to
+  your output video. It should no longer mention "CUDA\v11.8".

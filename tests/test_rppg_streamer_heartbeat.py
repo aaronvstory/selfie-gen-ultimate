@@ -325,6 +325,91 @@ def test_tracker_anchor_start_time_aligns_with_subprocess_launch():
     )
 
 
+def test_abort_event_kills_child_and_raises_timeout():
+    """v2.21 (GUI Abort button): setting ``abort_event`` mid-run must kill the
+    child within ≤1s and raise ``subprocess.TimeoutExpired`` so the caller takes
+    the graceful-skip (-NORPPG) path. Without abort the child would run ~10s."""
+    import threading
+
+    abort = threading.Event()
+    # Child runs for 10s with no output, so the ONLY way the streamer returns
+    # quickly is the abort poll (not EOF, not the 30s timeout).
+    code = "import time; time.sleep(10)"
+    cmd = [sys.executable, "-c", code]
+
+    # Fire the abort ~0.5s after launch from a side thread.
+    threading.Timer(0.5, abort.set).start()
+
+    start = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        rppg_module.stream_subprocess_with_timeout(
+            cmd,
+            cwd=os.getcwd(),
+            timeout_seconds=30,
+            abort_event=abort,
+        )
+    elapsed = time.monotonic() - start
+    # The meaningful signal: the abort returned BEFORE the child's natural 10s
+    # end (and long before the 30s timeout) — i.e. the abort poll + kill fired,
+    # not EOF or the timeout. The bound is deliberately loose (<8s, well under
+    # the 10s child) to stay reliable on a loaded box where process reap can lag
+    # — a tight <5s was a flaky wall-clock assertion (code-review HIGH, PR #73).
+    assert elapsed < 8.0, (
+        f"abort took {elapsed:.1f}s; expected well under the child's 10s sleep "
+        f"(the ≤1s poll + kill should fire ~1.5s after launch)"
+    )
+
+
+def test_on_process_start_receives_live_popen():
+    """v2.21: ``on_process_start`` must be called once with the live Popen so
+    the GUI queue can publish it for the Abort button. The handle must be a real
+    process (has a pid) at the moment of the callback."""
+    seen = []
+
+    def _capture(proc):
+        seen.append(proc.pid)
+
+    rc, lines = rppg_module.stream_subprocess_with_timeout(
+        [sys.executable, "-c", "print('done')"],
+        cwd=os.getcwd(),
+        timeout_seconds=30,
+        on_process_start=_capture,
+    )
+    assert rc == 0
+    assert lines == ["done"]
+    assert len(seen) == 1 and isinstance(seen[0], int), (
+        "on_process_start must fire exactly once with a live Popen (pid)"
+    )
+
+
+def test_on_process_start_exception_does_not_break_stream():
+    """A buggy on_process_start callback must NOT crash the stream (same
+    guarantee as the heartbeat/deadline_extender swallows)."""
+    def _broken(_proc):
+        raise RuntimeError("intentional")
+
+    rc, lines = rppg_module.stream_subprocess_with_timeout(
+        [sys.executable, "-c", "print('ok')"],
+        cwd=os.getcwd(),
+        timeout_seconds=30,
+        on_process_start=_broken,
+    )
+    assert rc == 0
+    assert lines == ["ok"]
+
+
+def test_no_abort_event_is_back_compat():
+    """Omitting abort_event (the default None) must not change behaviour —
+    a normal short run still returns (0, [...])."""
+    rc, lines = rppg_module.stream_subprocess_with_timeout(
+        [sys.executable, "-c", "print('hi')"],
+        cwd=os.getcwd(),
+        timeout_seconds=30,
+    )
+    assert rc == 0
+    assert lines == ["hi"]
+
+
 def test_heartbeat_exception_does_not_kill_subprocess(monkeypatch):
     """A buggy heartbeat callback must not bring down the subprocess
     wait — same guarantee as the deadline_extender exception swallow."""
@@ -344,3 +429,24 @@ def test_heartbeat_exception_does_not_kill_subprocess(monkeypatch):
     # heartbeat call raised.
     assert rc == 0
     assert lines == ["ok"]
+
+
+def test_abort_authoritative_when_child_exits_fast():
+    """Codex P2 (PR #73): if abort is set and the child exits FAST (so the
+    reader enqueues the EOF sentinel before the next top-of-loop abort poll),
+    the function must STILL raise TimeoutExpired (the user-aborted path) rather
+    than accept the EOF and return the child's exit code (an ordinary 'failed'
+    path). Pre-set abort + a child that prints then exits non-zero quickly."""
+    import threading
+    abort = threading.Event()
+    abort.set()  # already aborted before we even start consuming
+    # Child prints one line then exits with code 3 almost immediately, so EOF
+    # is queued essentially at once.
+    code = "print('one line'); import sys; sys.exit(3)"
+    with pytest.raises(subprocess.TimeoutExpired):
+        rppg_module.stream_subprocess_with_timeout(
+            [sys.executable, "-c", code],
+            cwd=os.getcwd(),
+            timeout_seconds=30,
+            abort_event=abort,
+        )

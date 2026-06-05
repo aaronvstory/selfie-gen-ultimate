@@ -2611,7 +2611,11 @@ class ConfigPanel(tk.Frame):
         try:
             from model_schema_manager import ModelSchemaManager
 
-            api_key = os.getenv("FAL_KEY") or self.config.get("falai_api_key", "")
+            # Saved config first, then any fal env alias (FAL_KEY / FAL_API_KEY)
+            # — bare os.getenv("FAL_KEY") missed users who store FAL_API_KEY
+            # (code-review Codex P2 #73).
+            from api_keys import resolve_api_key
+            api_key = resolve_api_key(self.config, "falai_api_key")
             if not api_key:
                 logger.warning("No API key available for schema lookup")
                 # Apply conservative default: enable all controls with unknown status

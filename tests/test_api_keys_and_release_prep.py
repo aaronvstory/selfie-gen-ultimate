@@ -2,7 +2,12 @@ import json
 import zipfile
 from pathlib import Path
 
-from api_keys import API_KEY_SPECS, ensure_key_fields, required_missing_specs
+from api_keys import (
+    API_KEY_SPECS,
+    apply_env_key_fallback,
+    ensure_key_fields,
+    required_missing_specs,
+)
 from distribution.build_release import refresh_extracted_bundle
 from distribution.release_prep import (
     LATEST_ALIAS_ZIP_NAME,
@@ -41,11 +46,285 @@ def test_ensure_key_fields_adds_all_keys():
         assert config[spec.config_key] == ""
 
 
-def test_required_missing_specs_flags_falai_only():
-    config = {"falai_api_key": "", "bfl_api_key": "x", "openrouter_api_key": "x", "freeimage_api_key": "x"}
-    missing = required_missing_specs(config)
-    assert len(missing) == 1
-    assert missing[0].config_key == "falai_api_key"
+def test_nothing_is_required_at_start():
+    """User direction 2026-06-04: NO key is required at startup — a user may
+    only want rPPG/Oldcam (no key) or only fal.ai. required_missing_specs (the
+    required_at_start gate) must therefore be empty even with all keys blank."""
+    config = {spec.config_key: "" for spec in API_KEY_SPECS}
+    assert required_missing_specs(config) == []
+    assert all(spec.required_at_start is False for spec in API_KEY_SPECS)
+
+
+def test_every_key_has_an_env_var_mapping():
+    """All four keys must map to a fallback env var so the app can auto-prefill
+    from the environment (FAL_KEY / BFL_API_KEY / OPENROUTER_API_KEY /
+    FREEIMAGE_API_KEY)."""
+    by_key = {spec.config_key: spec.env_var for spec in API_KEY_SPECS}
+    assert by_key["falai_api_key"] == "FAL_KEY"
+    assert by_key["bfl_api_key"] == "BFL_API_KEY"
+    assert by_key["openrouter_api_key"] == "OPENROUTER_API_KEY"
+    assert by_key["freeimage_api_key"] == "FREEIMAGE_API_KEY"
+
+
+def test_resolve_api_key_config_then_env_alias(monkeypatch):
+    """resolve_api_key (used by the CLI + GUI fal inspectors) returns the saved
+    config value first, else any env alias (FAL_KEY / FAL_API_KEY). Fixes the
+    'inspector only checked FAL_KEY' gap (Codex P2 #73)."""
+    from api_keys import resolve_api_key
+
+    for name in ("FAL_KEY", "FAL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    # Saved config wins:
+    assert resolve_api_key({"falai_api_key": "saved"}, "falai_api_key") == "saved"
+    # Empty config + FAL_API_KEY env alias:
+    monkeypatch.setenv("FAL_API_KEY", "from-api-key")
+    assert resolve_api_key({"falai_api_key": ""}, "falai_api_key") == "from-api-key"
+    # FAL_KEY takes precedence over FAL_API_KEY:
+    monkeypatch.setenv("FAL_KEY", "native")
+    assert resolve_api_key({"falai_api_key": ""}, "falai_api_key") == "native"
+    # Nothing anywhere -> "":
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.delenv("FAL_API_KEY", raising=False)
+    assert resolve_api_key({"falai_api_key": ""}, "falai_api_key") == ""
+    # Unknown config_key -> "" (no spec):
+    assert resolve_api_key({}, "not_a_key") == ""
+
+
+def test_falai_accepts_fal_api_key_alias(monkeypatch):
+    """User direction 2026-06-04: the user stores their fal.ai key under
+    FAL_API_KEY, not FAL_KEY — auto-detect must accept BOTH (first non-empty
+    wins). This was the 'fal.ai key still not detected from env' bug."""
+    for name in ("FAL_KEY", "FAL_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("FAL_API_KEY", "fal-from-api-key-alias")
+    config = {"falai_api_key": ""}
+    filled = apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "fal-from-api-key-alias"
+    assert "falai_api_key" in filled
+
+
+def test_falai_prefers_fal_key_over_fal_api_key(monkeypatch):
+    """When BOTH are set, the first alias (FAL_KEY, fal's native name) wins."""
+    monkeypatch.setenv("FAL_KEY", "native")
+    monkeypatch.setenv("FAL_API_KEY", "suffix-form")
+    config = {"falai_api_key": ""}
+    apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "native"
+
+
+def test_every_key_has_at_least_one_env_alias():
+    """Every key must map to >=1 env var alias; fal.ai must accept both names."""
+    by_key = {spec.config_key: spec.env_vars for spec in API_KEY_SPECS}
+    assert "FAL_KEY" in by_key["falai_api_key"]
+    assert "FAL_API_KEY" in by_key["falai_api_key"]
+    assert "BFL_API_KEY" in by_key["bfl_api_key"]
+    assert "OPENROUTER_API_KEY" in by_key["openrouter_api_key"]
+    assert "FREEIMAGE_API_KEY" in by_key["freeimage_api_key"]
+    assert all(spec.env_vars for spec in API_KEY_SPECS)
+
+
+def test_apply_env_key_fallback_fills_empty_keys(monkeypatch):
+    """An empty key is silently prefilled from its env var."""
+    monkeypatch.setenv("FAL_KEY", "fal-from-env")
+    monkeypatch.setenv("BFL_API_KEY", "bfl-from-env")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("FREEIMAGE_API_KEY", raising=False)
+    config = {spec.config_key: "" for spec in API_KEY_SPECS}
+    filled = apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "fal-from-env"
+    assert config["bfl_api_key"] == "bfl-from-env"
+    assert config["openrouter_api_key"] == ""  # no env -> stays empty
+    assert set(filled) == {"falai_api_key", "bfl_api_key"}
+
+
+def test_apply_env_key_fallback_user_value_overrides_env(monkeypatch):
+    """A non-empty saved config value ALWAYS wins over the env var."""
+    monkeypatch.setenv("FAL_KEY", "fal-from-env")
+    config = {"falai_api_key": "user-saved-key"}
+    filled = apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "user-saved-key"
+    assert "falai_api_key" not in filled
+
+
+def test_env_key_optout_list_coerces_corrupt_config():
+    """env_key_optout_list must safely read a hand-edited/corrupt config: only
+    an actual list of strings is honoured; a string/int/dict yields [] rather
+    than iterating characters (set('falai') -> chars) or raising TypeError
+    (set(5)) — code-review, PR #73."""
+    from api_keys import env_key_optout_list
+    assert env_key_optout_list({"_env_key_optout": ["a", "b"]}) == ["a", "b"]
+    assert env_key_optout_list({"_env_key_optout": "falai_api_key"}) == []
+    assert env_key_optout_list({"_env_key_optout": 5}) == []
+    assert env_key_optout_list({"_env_key_optout": {"x": 1}}) == []
+    assert env_key_optout_list({}) == []
+    # Non-string members are filtered out.
+    assert env_key_optout_list({"_env_key_optout": ["ok", 5, None, "y"]}) == ["ok", "y"]
+
+
+def test_apply_env_key_fallback_handles_corrupt_optout(monkeypatch):
+    """A corrupt _env_key_optout (e.g. a string) must NOT crash the fallback
+    and must NOT silently suppress env prefill for character-matched keys."""
+    monkeypatch.setenv("FAL_KEY", "env-secret")
+    # _env_key_optout as a STRING — previously set('falai_api_key') would make a
+    # char-set that could spuriously match; now coerced to [] so prefill works.
+    config = {"falai_api_key": "", "_env_key_optout": "falai_api_key"}
+    apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "env-secret", (
+        "a corrupt (non-list) opt-out must not suppress the env prefill")
+
+
+def test_apply_env_key_fallback_respects_persisted_optout(monkeypatch):
+    """A key the user EXPLICITLY cleared (listed in _env_key_optout) must NOT be
+    re-prefilled from the env var on the next launch — so "leave blank to clear"
+    survives a restart even while the env var is still set (CodeRabbit, PR #73)."""
+    monkeypatch.setenv("FAL_KEY", "fal-from-env")
+    config = {"falai_api_key": "", "_env_key_optout": ["falai_api_key"]}
+    filled = apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "", "opted-out key must stay empty"
+    assert "falai_api_key" not in filled
+    # A DIFFERENT (non-opted-out) key still prefills normally.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-from-env")
+    config2 = {"_env_key_optout": ["falai_api_key"]}
+    apply_env_key_fallback(config2)
+    assert config2.get("openrouter_api_key") == "or-from-env"
+
+
+def test_cli_clear_key_path_manages_optout_like_gui():
+    """The CLI provider-settings clear/set path must manage _env_key_optout the
+    same way the GUI does (Codex P2, PR #73) — clearing adds the key to the
+    persisted opt-out, entering a real value removes it. Without this, the CLI
+    'Clear key' didn't survive restart (env refilled it)."""
+    import inspect
+    import kling_automation_ui as cli
+
+    src = inspect.getsource(cli.KlingAutomationUI)
+    # The clear branch appends to the opt-out; the set branch removes from it.
+    assert "_env_key_optout" in src, "CLI must touch the persisted opt-out list"
+    assert "optout.append(spec.config_key)" in src, (
+        "CLI clear must add the key to _env_key_optout")
+    assert "optout.remove(spec.config_key)" in src, (
+        "CLI set-real-value must remove the key from _env_key_optout")
+
+
+def test_resolve_api_key_honors_optout(monkeypatch):
+    """resolve_api_key (the CLI/GUI inspector accessor) must respect a persisted
+    _env_key_optout too — otherwise a cleared key would still resolve from the
+    env alias in those paths, so "clear key" wouldn't stick for the inspectors
+    (code-review, PR #73)."""
+    from api_keys import resolve_api_key
+    monkeypatch.setenv("FAL_KEY", "env-secret")
+    # No opt-out -> env alias resolves.
+    assert resolve_api_key({"falai_api_key": ""}, "falai_api_key") == "env-secret"
+    # Opted out -> empty, env alias ignored.
+    cfg = {"falai_api_key": "", "_env_key_optout": ["falai_api_key"]}
+    assert resolve_api_key(cfg, "falai_api_key") == ""
+    # A saved value still wins regardless of opt-out.
+    cfg2 = {"falai_api_key": "real", "_env_key_optout": ["falai_api_key"]}
+    assert resolve_api_key(cfg2, "falai_api_key") == "real"
+
+
+def test_cli_optout_survives_save_reload_and_suppresses_env(tmp_path, monkeypatch):
+    """BEHAVIOURAL (not just source-text): a CLI 'clear key' that records the
+    opt-out must (a) persist through save_config + reload from disk, and (b)
+    cause apply_env_key_fallback to leave the key empty even though the env var
+    is set — the actual end-to-end "clear survives restart" contract (PR #73)."""
+    cfg_path = tmp_path / "kling_config.json"
+    # Simulate the CLI clear path: empty key + opt-out recorded, then persist.
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(cfg_path)
+    ui.verbose_logging = False
+    ui.config = {"falai_api_key": "", "_env_key_optout": ["falai_api_key"]}
+    ui.save_config()
+
+    # Reload from disk (next-launch simulation) and run the env fallback with
+    # FAL_KEY set — the opt-out must suppress the prefill.
+    reloaded = json.loads(cfg_path.read_text())
+    assert reloaded.get("_env_key_optout") == ["falai_api_key"], (
+        "opt-out must persist to disk")
+    monkeypatch.setenv("FAL_KEY", "env-secret")
+    apply_env_key_fallback(reloaded)
+    assert reloaded["falai_api_key"] == "", (
+        "a cleared key must STAY empty across restart even with FAL_KEY set")
+
+
+def test_apply_env_key_fallback_strips_whitespace(monkeypatch):
+    """Whitespace-only config is treated as empty; env value is trimmed."""
+    monkeypatch.setenv("FAL_KEY", "  spaced-key  ")
+    config = {"falai_api_key": "   "}
+    apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "spaced-key"
+
+
+def test_apply_env_key_fallback_noop_when_no_env(monkeypatch):
+    """No env vars set -> nothing filled, keys stay empty, returns []."""
+    for spec in API_KEY_SPECS:
+        if spec.env_var:
+            monkeypatch.delenv(spec.env_var, raising=False)
+    config = {spec.config_key: "" for spec in API_KEY_SPECS}
+    assert apply_env_key_fallback(config) == []
+    assert all(config[spec.config_key] == "" for spec in API_KEY_SPECS)
+
+
+def test_cli_save_config_excludes_env_prefilled_keys(tmp_path: Path):
+    """code-review CRITICAL: an env-prefilled key must NEVER be written to disk
+    (env stays the source of truth; a shared config must not carry the secret).
+    save_config strips keys listed in _env_prefilled_keys."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(tmp_path / "kling_config.json")
+    ui.verbose_logging = False
+    ui.config = {"falai_api_key": "fal-from-env", "bfl_api_key": "", "other": "x"}
+    ui._env_prefilled_keys = ["falai_api_key"]
+    ui.save_config()
+    on_disk = json.loads((tmp_path / "kling_config.json").read_text())
+    assert "falai_api_key" not in on_disk, "env-sourced key must not persist"
+    assert on_disk["other"] == "x", "non-key config still persists"
+    # In-memory config is untouched (the app still has the usable key this run).
+    assert ui.config["falai_api_key"] == "fal-from-env"
+
+
+def test_cli_clear_env_prefill_marker_makes_key_persist(tmp_path: Path):
+    """After the user explicitly sets a key, clearing the env-prefill marker
+    makes save_config persist it (their explicit value wins + is durable)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(tmp_path / "kling_config.json")
+    ui.verbose_logging = False
+    ui.config = {"falai_api_key": "fal-from-env"}
+    ui._env_prefilled_keys = ["falai_api_key"]
+    # User explicitly re-enters the key:
+    ui.config["falai_api_key"] = "user-typed-key"
+    ui._clear_env_prefill_marker("falai_api_key")
+    ui.save_config()
+    on_disk = json.loads((tmp_path / "kling_config.json").read_text())
+    assert on_disk["falai_api_key"] == "user-typed-key", (
+        "an explicitly-entered key must persist after clearing the env marker"
+    )
+
+
+def test_cli_save_config_is_atomic_no_tmp_left(tmp_path: Path):
+    """gemini MEDIUM #73: save_config writes a per-process temp then os.replace
+    (atomic) so a concurrent reader never sees a truncated file. After a normal
+    save, no .tmp.* file is left behind and the target is complete JSON."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(tmp_path / "kling_config.json")
+    ui.verbose_logging = False
+    ui.config = {"falai_api_key": "k", "x": 1}
+    ui.save_config()
+    on_disk = json.loads((tmp_path / "kling_config.json").read_text())
+    assert on_disk == {"falai_api_key": "k", "x": 1}
+    leftover = list(tmp_path.glob("kling_config.json.tmp.*"))
+    assert not leftover, f"atomic write left a temp file: {leftover}"
+
+
+def test_cli_save_config_no_env_marker_persists_everything(tmp_path: Path):
+    """Back-compat: with no _env_prefilled_keys attr, save_config writes the
+    whole config unchanged (the common case for a user with saved keys)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(tmp_path / "kling_config.json")
+    ui.verbose_logging = False
+    ui.config = {"falai_api_key": "saved-key", "x": 1}
+    ui.save_config()
+    on_disk = json.loads((tmp_path / "kling_config.json").read_text())
+    assert on_disk == {"falai_api_key": "saved-key", "x": 1}
 
 
 def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
@@ -69,6 +348,10 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
                 "video_inspector_last_folder": (
                     "F:/Downloads/organized/SUBJECT-FULL-NAME"
                 ),
+                # PER-MACHINE state: the building dev had cleared the fal key in
+                # their own GUI, so their config carries this opt-out. It must
+                # NOT ship (it would suppress the env fallback for recipients).
+                "_env_key_optout": ["falai_api_key", "bfl_api_key"],
                 "selfie_prompt_template": "keep me",
                 "outpaint_prompt": "expand bg",
                 "saved_prompts": {"1": "prompt one"},
@@ -85,6 +368,9 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
     # New blank-list members added 2026-05-28 (v2.7 audit).
     assert sanitized["oldcam_last_source_video"] == ""
     assert sanitized["video_inspector_last_folder"] == ""
+    # _env_key_optout is per-machine state and must be reset so a recipient's
+    # env-var fallback isn't silently suppressed (code-review, PR #73).
+    assert sanitized["_env_key_optout"] == []
     # And the non-secret prompt/setting content must still come through
     # untouched (the "ship everything except secrets" contract).
     assert sanitized["selfie_prompt_template"] == "keep me"
@@ -299,6 +585,7 @@ def test_copy_sanitized_tree_excludes_local_only_research_dirs(tmp_path: Path):
         "analysis_frames",
         "test-material",
         "rppg_harness_out",
+        "_friend_logs",  # PII: friend debug logs (Codex P1 PR #72) — must stay excluded
     }
     missing_minimum = EXPECTED_MINIMUM_DIRS - LOCAL_ONLY_RESEARCH_DIRS
     assert not missing_minimum, (
@@ -619,58 +906,68 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
 
     with zipfile.ZipFile(versioned_zip) as zf:
         names = zf.namelist()
-        assert any(name.endswith("selfie-gen-ultimate/Start GUI.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/Start CLI.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/Start GUI.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/Start CLI.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_similarity_gui.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_similarity_cli.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_oldcam_v8.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/windows/run_oldcam_v7.bat") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_similarity_gui.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_similarity_cli.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_oldcam_v8.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/launchers/macos/run_oldcam_v7.command") for name in names)
-        assert any(name.endswith("selfie-gen-ultimate/face_landmarker.task") for name in names)
+        # FLAT layout (user direction 2026-06-04): the app must sit at the ZIP
+        # ROOT, NOT under a nested ``selfie-gen-ultimate/`` folder (that made an
+        # ugly ``…-personal/selfie-gen-ultimate/<app>`` double nest on extract).
+        assert not any(name.startswith("selfie-gen-ultimate/") for name in names), (
+            "release zip must be FLAT — no nested selfie-gen-ultimate/ wrapper dir"
+        )
+        assert "Start GUI.bat" in names, "Start GUI.bat must be at the zip root"
+        assert any(name.startswith("launchers/") for name in names), (
+            "launchers/ must be at the zip root (flat layout)"
+        )
+        assert any(name.endswith("Start GUI.bat") for name in names)
+        assert any(name.endswith("Start CLI.bat") for name in names)
+        assert any(name.endswith("Start GUI.command") for name in names)
+        assert any(name.endswith("Start CLI.command") for name in names)
+        assert any(name.endswith("launchers/windows/run_similarity_gui.bat") for name in names)
+        assert any(name.endswith("launchers/windows/run_similarity_cli.bat") for name in names)
+        assert any(name.endswith("launchers/windows/run_oldcam_v8.bat") for name in names)
+        assert any(name.endswith("launchers/windows/run_oldcam_v7.bat") for name in names)
+        assert any(name.endswith("launchers/macos/run_similarity_gui.command") for name in names)
+        assert any(name.endswith("launchers/macos/run_similarity_cli.command") for name in names)
+        assert any(name.endswith("launchers/macos/run_oldcam_v8.command") for name in names)
+        assert any(name.endswith("launchers/macos/run_oldcam_v7.command") for name in names)
+        assert any(name.endswith("face_landmarker.task") for name in names)
         # v2.11 numpy-2 guard: the project-wide pip constraints file MUST ship —
         # the launchers pass it via `-c` and dependency_health_check reads it
         # during in-app repair. Without it in the zip, a fresh install can pull
         # numpy 2.x and break Face Crop (the v2.10 bug this release fixes).
-        assert any(name.endswith("selfie-gen-ultimate/constraints.txt") for name in names), (
+        assert any(name.endswith("constraints.txt") for name in names), (
             "constraints.txt missing from release zip — numpy<2 cap would not ship"
         )
-        similarity_gui_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_gui.bat"))
+        similarity_gui_name = next(name for name in names if name.endswith("similarity/run_gui.bat"))
         similarity_gui = zf.read(similarity_gui_name).decode("utf-8")
         assert "set PYTHON_BIN=py -3.12" in similarity_gui
         assert ".venv\\Scripts\\python.exe" in similarity_gui
-        similarity_cli_name = next(name for name in names if name.endswith("selfie-gen-ultimate/similarity/run_cli.bat"))
+        similarity_cli_name = next(name for name in names if name.endswith("similarity/run_cli.bat"))
         similarity_cli = zf.read(similarity_cli_name).decode("utf-8")
         assert "set PYTHON_BIN=py -3.12" in similarity_cli
-        oldcam_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/oldcam-v8/oldcam_launcher.bat"))
+        oldcam_launcher_name = next(name for name in names if name.endswith("oldcam-v8/oldcam_launcher.bat"))
         oldcam_launcher = zf.read(oldcam_launcher_name).decode("utf-8")
         assert "set PYTHON_CMD=py -3.12" in oldcam_launcher
-        assert not any(name.endswith("selfie-gen-ultimate/tests/test_x.py") for name in names)
-        assert not any(name.endswith("selfie-gen-ultimate/kling_gui.log") for name in names)
-        assert not any(name.endswith("selfie-gen-ultimate/distribution/build_release.py") for name in names)
+        assert not any(name.endswith("tests/test_x.py") for name in names)
+        assert not any(name.endswith("kling_gui.log") for name in names)
+        assert not any(name.endswith("distribution/build_release.py") for name in names)
         assert not any("/.launcher_state/" in name for name in names)
         assert not any("/.recovery/" in name for name in names)
         assert not any("/.tmp_pytest/" in name for name in names)
         assert not any("/venv/" in name for name in names)
         assert not any("/.venv/" in name for name in names)
-        gui_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start GUI.command"))
+        gui_launcher_name = next(name for name in names if name.endswith("Start GUI.command"))
         gui_launcher = zf.read(gui_launcher_name).decode("utf-8")
         assert "if [[ -f ./run_gui.command ]]; then" in gui_launcher
         assert "exec /bin/bash ./run_gui.command" in gui_launcher
         assert "exec /bin/bash ./run_gui.sh" in gui_launcher
-        windows_gui_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start GUI.bat"))
+        windows_gui_launcher_name = next(name for name in names if name.endswith("Start GUI.bat"))
         windows_gui_launcher = zf.read(windows_gui_launcher_name).decode("utf-8")
         assert "call launchers\\windows\\run_gui.bat" in windows_gui_launcher
-        cli_launcher_name = next(name for name in names if name.endswith("selfie-gen-ultimate/Start CLI.command"))
+        cli_launcher_name = next(name for name in names if name.endswith("Start CLI.command"))
         cli_launcher = zf.read(cli_launcher_name).decode("utf-8")
         assert "if [[ -f ./run_cli.command ]]; then" in cli_launcher
         assert "exec /bin/bash ./run_cli.command" in cli_launcher
         assert "exec /bin/bash ./run_cli.sh" in cli_launcher
-        cfg_name = next(name for name in names if name.endswith("selfie-gen-ultimate/kling_config.json"))
+        cfg_name = next(name for name in names if name.endswith("kling_config.json"))
         cfg = json.loads(zf.read(cfg_name).decode("utf-8"))
         for key in ("falai_api_key", "bfl_api_key", "openrouter_api_key", "freeimage_api_key"):
             assert cfg[key] == ""
@@ -693,8 +990,8 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         assert cfg["outpaint_prompt"] == "outpaint it"
         assert cfg["face_crop_polish_prompt"] == "polish it"
         assert cfg["openrouter_vision_system_prompt"] == "vision system"
-        assert any(name.endswith("selfie-gen-ultimate/run_cli.command") for name in names)
-        readme_name = next(name for name in names if name.endswith("selfie-gen-ultimate/README_FIRST_RUN.txt"))
+        assert any(name.endswith("run_cli.command") for name in names)
+        readme_name = next(name for name in names if name.endswith("README_FIRST_RUN.txt"))
         readme_text = zf.read(readme_name).decode("utf-8")
         assert 'Windows: double-click "Start GUI.bat" or "Start CLI.bat"' in readme_text
         assert 'macOS: double-click "Start GUI.command" or "Start CLI.command"' in readme_text

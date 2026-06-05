@@ -77,6 +77,11 @@ LOCAL_ONLY_RESEARCH_DIRS: Set[str] = {
     "test-material",             # ~35 MB fixture videos
     "rppg_harness_out",          # rPPG harness byproducts (lives nested
                                  # under oldcam-testing/ in practice)
+    "_friend_logs",              # PII: friend debug logs with real emails +
+                                 # machine paths. .gitignore alone does NOT
+                                 # shield it from the working-tree release sweep
+                                 # (Codex P1 PR #72 — same leak class as the
+                                 # PR #51 PII + PR #61 analysis-file leaks).
 }
 # Note: oldcam-testing/ itself is kept (frozen A/B oldcam_v*.py files are
 # tracked + ship). Only the byproduct subdir + the gitignored *.mp4 / reports/
@@ -440,6 +445,12 @@ def build_sanitized_config(
         config[spec.config_key] = ""
     for key in _DIST_BLANKED_PATH_KEYS:
         config[key] = ""
+    # _env_key_optout is PER-MACHINE state: it lists keys the building developer
+    # explicitly "cleared" in their own GUI/CLI. Shipping it would silently
+    # suppress the env-var fallback for a RECIPIENT who has e.g. FAL_KEY set —
+    # defeating the auto-prefill feature for new users (code-review MEDIUM,
+    # PR #73). Reset it like the blanked path keys.
+    config["_env_key_optout"] = []
     return config
 
 
@@ -483,8 +494,8 @@ def write_bundle_readme(bundle_root: Path) -> None:
         '2) Windows: double-click "Start GUI.bat" or "Start CLI.bat".\n'
         '3) macOS: double-click "Start GUI.command" or "Start CLI.command".\n'
         "4) If macOS blocks it, right-click -> Open once.\n"
-        "5) On first launch, enter required API keys.\n"
-        "6) Fal.ai key is required.\n"
+        "5) No API key is required to start. rPPG / Oldcam / Loop re-runs work with no key.\n"
+        "6) Add a Fal.ai key (via the bottom-bar badge or CLI settings) only when you want to GENERATE video/selfies.\n"
         "7) BFL key is optional (only needed if you switch providers to BFL in the GUI).\n"
         "8) First launch creates a local virtual environment.\n"
         "9) All prompts are stored in kling_config.json (editable by GUI/CLI or manual edit).\n"
@@ -601,7 +612,15 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
     staging_root = dist_root / "_staging" / "universal"
     if staging_root.exists():
         shutil.rmtree(staging_root)
-    bundle_dir = staging_root / "selfie-gen-ultimate"
+    # FLAT layout (user direction 2026-06-04): the app files live at the ZIP
+    # ROOT, not under a nested ``selfie-gen-ultimate/`` folder. Windows Explorer
+    # already extracts ``SelfieGenUltimate-vX.Y.zip`` into a
+    # ``SelfieGenUltimate-vX.Y/`` folder, so the old inner folder produced an
+    # ugly double nest (``…-personal/selfie-gen-ultimate/<app>``). Zipping the
+    # bundle CONTENTS at the root means one clean level: ``…-personal/<app>``.
+    # Nothing depends on the inner dir name at runtime — the top-level
+    # ``Start GUI.bat`` does ``cd /d "%~dp0"`` and calls launchers relatively.
+    bundle_dir = staging_root
     bundle_dir.mkdir(parents=True, exist_ok=True)
     copy_sanitized_tree(repo_root, bundle_dir)
     config = build_sanitized_config(
@@ -616,7 +635,7 @@ def bundle_release(repo_root: Path, dist_root: Path) -> Iterable[Path]:
     for path in (versioned_zip_path, latest_alias_zip_path):
         if path.exists():
             path.unlink()
-    _make_zip_preserving_exec_bits(staging_root, versioned_zip_path)
+    _make_zip_preserving_exec_bits(bundle_dir, versioned_zip_path)
     shutil.copy2(versioned_zip_path, latest_alias_zip_path)
     created = [versioned_zip_path, latest_alias_zip_path]
     shutil.rmtree(dist_root / "_staging", ignore_errors=True)

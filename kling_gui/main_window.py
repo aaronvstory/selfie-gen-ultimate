@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 
-from api_keys import API_KEY_SPECS, ensure_key_fields, key_status, non_required_missing_specs
+from api_keys import API_KEY_SPECS, apply_env_key_fallback, ensure_key_fields, env_key_optout_list, key_status, non_required_missing_specs
 from app_version import RELEASE_VERSION
 from automation.config import get_outpaint_fal_timeout_seconds
 from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
@@ -55,6 +55,21 @@ def _dnd_live() -> bool:
     to load; the module-level `HAS_DND` imported above is a stale by-value copy,
     so status chips / button fallbacks must read the live module attribute."""
     return bool(getattr(_drop_zone, "HAS_DND", HAS_DND))
+
+
+def _safe_print(msg: str) -> None:
+    """print() that never crashes under pythonw.exe (sys.stdout is None there).
+    Used for the EARLY config-migration notices in _load_config(), which run
+    BEFORE the GUI logger exists — a bare print() would raise AttributeError and
+    abort GUI STARTUP for a frozen/pythonw launch (Codex P2, PR #73)."""
+    out = sys.stdout
+    if out is None:
+        return
+    try:
+        out.write(f"{msg}\n")
+        out.flush()
+    except Exception:  # noqa: BLE001 — a migration notice must not break startup
+        pass
 from .log_display import LogDisplay
 from .config_panel import ConfigPanel
 from .queue_manager import QueueManager, QueueItem
@@ -881,6 +896,14 @@ class KlingGUIWindow:
         self.config = self._load_config()
         if ensure_key_fields(self.config):
             self._save_config()
+        # Silently prefill any still-empty API key from its env var (FAL_KEY,
+        # BFL_API_KEY, OPENROUTER_API_KEY, FREEIMAGE_API_KEY). In-memory only —
+        # NOT saved, so the env stays the source of truth and the config file
+        # never gains the secret. A user-saved key always overrides. This is
+        # what suppresses the first-launch nag when the keys live in the env.
+        env_filled = apply_env_key_fallback(self.config)
+        if env_filled:
+            self._env_prefilled_keys = list(env_filled)
         self.ui_config_path = (
             get_config_path("ui_config.json")
             if sys.platform == "darwin"
@@ -1177,6 +1200,41 @@ class KlingGUIWindow:
             handler.setFormatter(fmt)
             logger.addHandler(handler)
 
+        # Also mirror EVERYTHING (DEBUG+) to stdout so the launcher terminal
+        # shows the full app runtime log AS YOU USE THE APP. User direction
+        # 2026-06-04: the TERMINAL should be as data-rich as possible (noisy is
+        # fine there), while the GUI "processing log" PANEL stays friendly. That
+        # split works because lines we demote to "debug" (verbose rPPG/oldcam
+        # banners, wrapping path dumps) are dropped from the PANEL (see _log) but
+        # — with this handler at DEBUG — still flow to the terminal + file. So
+        # "demote to debug" == "keep in terminal, hide from panel", exactly the
+        # behaviour we want. Guarded: a frozen pythonw build has no real stdout
+        # (sys.stdout is None) — skip then.
+        #
+        # Dedup via an explicit marker attribute (not an isinstance check):
+        # RotatingFileHandler IS a StreamHandler subclass, and the "kling_gui"
+        # logger is process-global, so a second KlingGUIWindow (concurrent
+        # launches, PR #49) re-running _setup_logging must not add a 2nd stdout
+        # handler. A marker is exact + immune to handler-subclass confusion
+        # (gemini MEDIUM / subagent M1 PR #73).
+        already_has_stdout = any(
+            getattr(h, "_kling_stdout_mirror", False) for h in logger.handlers
+        )
+        if getattr(sys, "stdout", None) is not None and not already_has_stdout:
+            try:
+                stream = logging.StreamHandler(sys.stdout)
+                # DEBUG so the terminal mirrors EVERYTHING (incl. panel-hidden
+                # debug lines) — the terminal is the data-rich surface; the panel
+                # is the friendly one (user direction 2026-06-04).
+                stream.setLevel(logging.DEBUG)
+                stream.setFormatter(
+                    logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+                )
+                stream._kling_stdout_mirror = True  # type: ignore[attr-defined]
+                logger.addHandler(stream)
+            except Exception:  # noqa: BLE001 — stdout mirroring is best-effort
+                pass
+
         return logger
 
     def _load_config(self) -> dict:
@@ -1292,7 +1350,7 @@ class KlingGUIWindow:
                     if isinstance(loaded, dict):
                         self._deep_merge_dict(default_config, loaded)
         except Exception as e:
-            print(f"Warning: Could not load config: {e}")
+            _safe_print(f"Warning: Could not load config: {e}")
 
         # Layer 3: sanitize prompt slot dicts — ensure all 10 slots exist as
         # strings, not None.  Shallow .update() above replaces the entire nested
@@ -1349,7 +1407,7 @@ class KlingGUIWindow:
         current = config.get("current_model", "")
         if current in _ENDPOINT_MIGRATIONS:
             config["current_model"] = _ENDPOINT_MIGRATIONS[current]
-            print(f"Migrated endpoint: {current} -> {config['current_model']}")
+            _safe_print(f"Migrated endpoint: {current} -> {config['current_model']}")
 
     @staticmethod
     def _migrate_legacy_defaults(config: dict) -> None:
@@ -1372,11 +1430,28 @@ class KlingGUIWindow:
             # flag below so we won't touch their preference again.
             if config.get("verbose_gui_mode") is True:
                 config["verbose_gui_mode"] = False
-                print(
+                _safe_print(
                     "Migrated verbose_gui_mode: True -> False (v1.7 default)."
                     " Use the 'Verbose Mode' checkbox in Settings to re-enable."
                 )
             config["verbose_gui_mode_migrated_v17"] = True
+
+        # v2.22.1 ONE-TIME reset: the curated friendly rPPG panel only kicks in
+        # when Verbose Mode is OFF, but many existing configs still carry
+        # verbose_gui_mode=True (turned back on after the v1.7 migration, or
+        # never migrated). The user repeatedly asked for the panel to default
+        # CLEAN. Force it OFF exactly once here, then mark migrated so a user
+        # who deliberately re-enables verbose afterwards is never overridden
+        # again. (Separate flag from v17 so it fires for configs already
+        # past the v17 migration.)
+        if not config.get("verbose_gui_mode_reset_v222"):
+            if config.get("verbose_gui_mode") is True:
+                config["verbose_gui_mode"] = False
+                _safe_print(
+                    "Reset verbose_gui_mode -> False (v2.22.1 clean-panel "
+                    "default). Re-enable via the 'Verbose Mode' checkbox."
+                )
+            config["verbose_gui_mode_reset_v222"] = True
 
         # Slot 3 defaults backfill (2026-05-21): older saved configs
         # carry empty slot 3 prompt + negative because the template
@@ -1416,17 +1491,17 @@ class KlingGUIWindow:
             if not str(saved.get("3", "")).strip():
                 saved["3"] = canonical_slot3_pos
                 config["saved_prompts"] = saved
-                print("Backfilled saved_prompts slot 3 (was empty)")
+                _safe_print("Backfilled saved_prompts slot 3 (was empty)")
             if not str(neg.get("3", "")).strip():
                 neg["3"] = canonical_neg
                 config["negative_prompts"] = neg
-                print("Backfilled negative_prompts slot 3 (was empty)")
+                _safe_print("Backfilled negative_prompts slot 3 (was empty)")
             # Same backfill for slot 4 (which the user uses as the
             # "macOS-30" slot) — match canonical negative if empty.
             if not str(neg.get("4", "")).strip():
                 neg["4"] = canonical_neg
                 config["negative_prompts"] = neg
-                print("Backfilled negative_prompts slot 4 (was empty)")
+                _safe_print("Backfilled negative_prompts slot 4 (was empty)")
             # If current_model drifted off the canonical Kling 2.5 Pro
             # Turbo AND the user hasn't explicitly set model_display_name,
             # leave it alone — user may have switched intentionally.
@@ -1436,7 +1511,7 @@ class KlingGUIWindow:
                     "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
                 )
                 config["model_display_name"] = "Kling 2.5 Turbo Pro"
-                print("Backfilled current_model: Kling 2.5 Turbo Pro")
+                _safe_print("Backfilled current_model: Kling 2.5 Turbo Pro")
             config["slot3_defaults_backfilled_v21"] = True
 
         # Force-update slot 3 positive if it matches a known stale
@@ -1479,7 +1554,7 @@ class KlingGUIWindow:
                 titles = config.get("prompt_titles") or {}
                 titles["3"] = "head-turn 3/4 view (40° each side, kling 2.5 pro)"
                 config["prompt_titles"] = titles
-                print(
+                _safe_print(
                     "Force-updated slot 3 positive to canonical "
                     "head-turn 3/4 view (was stale template default)."
                 )
@@ -1513,16 +1588,56 @@ class KlingGUIWindow:
                     if isinstance(loaded, dict):
                         self._merge_ui_config(config, loaded)
         except Exception as e:
-            print(f"Warning: Could not load UI config: {e}")
+            _safe_print(f"Warning: Could not load UI config: {e}")
         return config
 
     def _save_config(self):
-        """Save configuration to JSON file."""
+        """Save configuration to JSON file.
+
+        Env-sourced API keys are NEVER written to disk (code-review CRITICAL):
+        apply_env_key_fallback fills them in MEMORY only, but _save_config runs
+        on routine events (window resize, any setting change, close), so without
+        this exclusion the env key would leak into kling_config.json on the first
+        session — defeating "env stays the source of truth" and risking a shared
+        config carrying the secret. We write a shallow copy with the env-filled
+        keys dropped. A user who explicitly re-enters such a key clears it from
+        _env_prefilled_keys first (see _prompt_key / onboarding), so their saved
+        override DOES persist.
+        """
         try:
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, indent=2)
+            data = self.config
+            env_filled = getattr(self, "_env_prefilled_keys", None)
+            if env_filled:
+                data = dict(self.config)
+                for k in env_filled:
+                    data.pop(k, None)
+            # ATOMIC write (gemini MEDIUM #73): concurrent GUI launches share
+            # kling_config.json, and _save_config fires on routine events (resize,
+            # any setting change, close). A direct open("w") truncates then
+            # writes, so another process reading mid-write sees a truncated/empty
+            # file. Write to a per-process temp then os.replace (atomic rename on
+            # both Windows + POSIX) so a reader always sees a complete file.
+            tmp_path = f"{self.config_path}.tmp.{os.getpid()}"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_path, self.config_path)
         except Exception as e:
             self._log(f"Error saving config: {e}", "error")
+            try:
+                if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+
+    def _clear_env_prefill_marker(self, config_key: str):
+        """Stop treating a key as env-sourced (the user explicitly set it).
+
+        Once removed from _env_prefilled_keys, _save_config no longer strips it,
+        so the user's explicit value persists to kling_config.json as expected.
+        """
+        env_filled = getattr(self, "_env_prefilled_keys", None)
+        if env_filled and config_key in env_filled:
+            env_filled.remove(config_key)
 
     def _save_ui_config(self):
         """Save ui_config.json."""
@@ -3426,6 +3541,20 @@ class KlingGUIWindow:
         new_key = new_key.strip()
 
         self.config[config_key] = new_key
+        # The user explicitly entered/cleared this key — it is no longer
+        # env-sourced, so it MUST persist (drop it from the env-prefill marker
+        # before saving, else _save_config would strip it back out).
+        self._clear_env_prefill_marker(config_key)
+        # Persist a clear so it survives restart even when the env var is still
+        # set: opt OUT of the env fallback when cleared to empty; opt back IN
+        # (remove from the list) when a real value is entered (CodeRabbit, PR #73).
+        optout = env_key_optout_list(self.config)
+        if new_key:
+            if config_key in optout:
+                optout.remove(config_key)
+        elif config_key not in optout:
+            optout.append(config_key)
+        self.config["_env_key_optout"] = optout
         self._save_config()
         self._update_api_badge(config_key)
 
@@ -3622,12 +3751,38 @@ class KlingGUIWindow:
             style=TTK_BTN_TAB_NAV,
         )
         self.pause_btn.pack(side=tk.RIGHT, padx=4)
-        self._set_queue_controls_enabled(False)
+
+        # Abort: kill the in-flight job's subprocess (rPPG can run 10 iters /
+        # 20+ min) without quitting the whole app. Danger styling + leftmost so
+        # it reads as the "stop this now" control next to Pause.
+        self.abort_btn = create_action_button(
+            control_frame,
+            text="Abort",
+            command=self._dbcmd("controls_abort", self._abort_current_job),
+            style=TTK_BTN_DANGER,
+        )
+        self.abort_btn.pack(side=tk.RIGHT, padx=4)
+        # Enable the queue controls now that the queue manager exists
+        # (_init_generator runs before _setup_controls). Every handler
+        # (_toggle_pause / _abort_current_job / _retry_failed / _clear_queue)
+        # is idle-safe — they early-return / no-op when nothing is running — so
+        # there is no state where these must be disabled. Disabling them at
+        # setup with no matching enable left the whole control row (incl. the
+        # new Abort button) permanently greyed out and unusable (Codex P1 +
+        # CodeRabbit Major, PR #73). Abort starts disabled and is enabled per
+        # active job by the queue-start hook below.
+        self._set_queue_controls_enabled(True)
+        # Abort is only meaningful while a job is actually running; start it
+        # disabled and let the active-subprocess hook flip it on/off.
+        try:
+            self.abort_btn.config(state=tk.DISABLED)
+        except Exception:
+            pass
 
     def _set_queue_controls_enabled(self, enabled: bool):
         """Enable or disable queue control buttons without removing them from UI."""
         state = tk.NORMAL if enabled else tk.DISABLED
-        for btn_name in ("pause_btn", "retry_btn", "clear_btn"):
+        for btn_name in ("pause_btn", "abort_btn", "retry_btn", "clear_btn"):
             btn = getattr(self, btn_name, None)
             if btn is not None:
                 try:
@@ -3689,6 +3844,11 @@ class KlingGUIWindow:
                 queue_update_callback=self._update_queue_display_thread_safe,
                 processing_complete_callback=self._on_item_complete,
             )
+            # Enable/disable the Abort button as jobs start/stop (PR #73). The
+            # button is only meaningful while a killable subprocess is in flight.
+            self.queue_manager.on_active_subprocess_change = (
+                self._on_active_subprocess_change
+            )
             if self.generator is not None:
                 self._log("Generator initialized successfully", "success")
             else:
@@ -3706,6 +3866,34 @@ class KlingGUIWindow:
         # thread, never blocks the GUI) makes "NVIDIA -> GPU" truly automatic.
         self._start_gpu_bootstrap_async()
 
+    def _format_gpu_ready_banner(self, gpu_bootstrap) -> str:
+        """Build the green '✅ NVIDIA GPU DETECTED' banner from gpu_status.json.
+
+        Reads the stamp (gpu_name + cupy_version + cuda_major) the bootstrap
+        just wrote. Each piece is optional — degrades to a still-useful line if
+        a field is absent (e.g. an older stamp without gpu_name). Never raises.
+        """
+        name = ver = major = None
+        try:
+            stamp = gpu_bootstrap._load_stamp() or {}
+            name = stamp.get("gpu_name")
+            ver = stamp.get("cupy_version")
+            major = stamp.get("cuda_major")
+        except Exception:  # noqa: BLE001 — banner is cosmetic; never crash
+            pass
+        parts = []
+        if name:
+            parts.append(str(name))
+        bits = []
+        if ver:
+            bits.append(f"CuPy {ver}")
+        if major:
+            bits.append(f"CUDA {major}.x")
+        if bits:
+            parts.append(" / ".join(bits))
+        detail = " — ".join(parts) if parts else "rPPG uses GPU acceleration"
+        return f"✅ NVIDIA GPU DETECTED — {detail}"
+
     def _start_gpu_bootstrap_async(self):
         """Run the CuPy GPU bootstrap in a daemon thread (best-effort).
 
@@ -3717,6 +3905,15 @@ class KlingGUIWindow:
         import os as _os
         if _os.environ.get("KLING_SKIP_GPU_BOOTSTRAP") == "1":
             return
+        # Run ONCE per session. _init_generator() also re-runs whenever the
+        # Fal.ai key is saved (to rebuild the generator), which would otherwise
+        # re-fire this bootstrap + re-print the "✅ NVIDIA GPU DETECTED" banner
+        # every time a key is entered (the friend saw it twice). The probe is
+        # idempotent, so the extra run is harmless — but the duplicate banner
+        # is confusing. Guard it.
+        if getattr(self, "_gpu_bootstrap_started", False):
+            return
+        self._gpu_bootstrap_started = True
 
         def _worker():
             try:
@@ -3728,15 +3925,12 @@ class KlingGUIWindow:
                 import gpu_bootstrap  # noqa: WPS433 (local import: optional component)
 
                 result = gpu_bootstrap.bootstrap(_sys.executable, quiet_if_cached=True)
-                if result in ("gpu_installed_now",):
-                    self._log_thread_safe(
-                        "GPU: CuPy installed — rPPG will use GPU acceleration.",
-                        "success",
-                    )
-                elif result == "gpu_ready":
-                    self._log_thread_safe(
-                        "GPU: CuPy ready — rPPG uses GPU acceleration.", "info"
-                    )
+                if result in ("gpu_installed_now", "gpu_ready"):
+                    # Build a green "✅ NVIDIA GPU DETECTED — <name> / CuPy <ver>
+                    # / CUDA <major>.x" banner from the gpu_status.json stamp so
+                    # it's crystal-clear detection worked + GPU is in use.
+                    banner = self._format_gpu_ready_banner(gpu_bootstrap)
+                    self._log_thread_safe(banner, "success")
                 elif result in ("no_nvidia", "cached_no_nvidia"):
                     self._log_thread_safe(
                         "GPU: no NVIDIA GPU detected — rPPG runs on CPU.", "info"
@@ -3775,30 +3969,27 @@ class KlingGUIWindow:
             "First Launch: API Key Setup",
             "Key status:\n"
             f"{status_text}\n\n"
-            "Fal.ai and BFL keys can be added now or later.\n"
-            "If skipped, key-required features will show targeted errors when used.\n\n"
+            "The Fal.ai key powers generation and can be added now or later.\n"
+            "Nothing is required — rPPG / Oldcam re-runs work with no key. If a\n"
+            "key-required feature is used without its key, it shows a targeted\n"
+            "error. Add any key anytime via the badges at the bottom bar.\n\n"
             "Where to get keys:\n"
             f"{links_text}",
             parent=self.root,
         )
 
+        # First launch is PURELY INFORMATIONAL (Codex P2, PR #73 + user
+        # direction 2026-06-04: "nothing is required at startup"). Do NOT pop a
+        # blocking askstring per missing key — the info box above already tells
+        # the user to add keys anytime via the bottom-bar badges. The old prompt
+        # loop contradicted the "nothing required" contract and made a no-key
+        # launch nag for a Fal.ai key it then said was optional.
         for spec in missing:
-            new_key = simpledialog.askstring(
-                f"{spec.label} API Key",
-                f"Enter your {spec.label} API key:\n{spec.url}\n\nCancel or leave blank to skip for now.",
-                parent=self.root,
+            self._log(
+                f"{spec.label} API key not set — add it via the bottom-bar "
+                f"badge when you need {spec.label}.",
+                "info",
             )
-            if new_key is None:
-                self._log(f"{spec.label} API key setup skipped.", "warning")
-                continue
-            new_key = new_key.strip()
-            if not new_key:
-                self._log(f"{spec.label} API key setup skipped.", "warning")
-                continue
-            self.config[spec.config_key] = new_key
-            self._save_config()
-            self._update_api_badge(spec.config_key)
-            self._log(f"{spec.label} API key saved.", "success")
 
         optional_missing = list(non_required_missing_specs(self.config))
         if optional_missing:
@@ -3825,6 +4016,17 @@ class KlingGUIWindow:
         stream (raw FFmpeg stderr, subprocess path dumps, demoted summary
         duplicates) without having to open kling_gui.log.
         """
+        # "progress_update": a single IN-PLACE updating line (live rPPG frame
+        # progress grows 0→100% on one row instead of spamming the panel). The
+        # panel renders it via update_line; the FILE/terminal get it as a normal
+        # info line (no in-place trick there). Always panel-visible (it IS the
+        # friendly progress, not debug).
+        if level == "progress_update":
+            if hasattr(self, "log_display"):
+                self.log_display.update_line(message, "progress")
+            if self.logger:
+                self.logger.info(message)
+            return
         show_in_panel = level != "debug" or bool(self.config.get("verbose_gui_mode", False))
         if show_in_panel and hasattr(self, "log_display"):
             # Render debug lines with the "info" tag in the panel so they
@@ -3848,6 +4050,11 @@ class KlingGUIWindow:
                 # intent obvious vs. relying on the .get(level, info)
                 # fallback.
                 "milestone": self.logger.info,
+                # progress_update is normally handled by the early-return
+                # above (routed to log_display.update_line). Mapped here too
+                # so a future refactor that drops that early-return doesn't
+                # silently mis-level it (code-review MEDIUM).
+                "progress_update": self.logger.info,
             }
             level_map.get(level, self.logger.info)(message)
 
@@ -4168,7 +4375,8 @@ class KlingGUIWindow:
         if success and output_path:
             self._set_persisted_oldcam_source(source_video)
             self._log(
-                f"Re-run complete: {os.path.basename(source_video)} → {output_path}",
+                "Re-run complete: "
+                f"{os.path.basename(source_video)} → {os.path.basename(output_path)}",
                 "success",
             )
         else:
@@ -4806,9 +5014,33 @@ class KlingGUIWindow:
                     str(self.config.get("freeimage_api_key", ""))
                 )
 
-        # Log the specific change if description provided
+        # Log the specific change if description provided. "Oldcam versions set
+        # to …" fires on EVERY checkbox toggle, so ticking 4 boxes spammed 4
+        # near-identical lines (user feedback 2026-06-04). Debounce that one
+        # message: coalesce rapid toggles into a SINGLE log line ~600ms after
+        # the last change (the config save above still happens immediately).
         if change_description:
-            self._log(change_description, "info")
+            if change_description.startswith("Oldcam versions set to"):
+                self._debounced_log(change_description, "info")
+            else:
+                self._log(change_description, "info")
+
+    def _debounced_log(self, message: str, level: str = "info", delay_ms: int = 600):
+        """Log ``message`` only after ``delay_ms`` of no further debounced calls.
+
+        Coalesces a burst of rapid identical-category log lines (e.g. toggling
+        several Oldcam-version checkboxes) into one. Cancels any pending timer
+        and schedules a fresh one; the last message in the burst wins.
+        """
+        pending = getattr(self, "_debounced_log_after_id", None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except Exception:  # noqa: BLE001 — stale id; ignore
+                pass
+        self._debounced_log_after_id = self.root.after(
+            delay_ms, lambda: self._log(message, level)
+        )
 
     def _scan_folders_for_new_media(self, folders) -> tuple:
         """Walk ``folders`` for images + videos not yet in the session
@@ -4928,8 +5160,11 @@ class KlingGUIWindow:
             source_video = self._resolve_oldcam_rerun_source(item.output_path)
             if source_video and os.path.isfile(source_video):
                 self._set_persisted_oldcam_source(source_video)
+            out_name = (
+                os.path.basename(item.output_path) if item.output_path else "(no output)"
+            )
             self._log(
-                f"Finished {os.path.basename(item.path)} → {item.output_path}",
+                f"Finished {os.path.basename(item.path)} → {out_name}",
                 "success",
             )
 
@@ -4997,6 +5232,48 @@ class KlingGUIWindow:
         else:
             self.queue_manager.pause_processing()
             self.pause_btn.config(text="Resume")
+
+    def _on_active_subprocess_change(self, running: bool):
+        """Enable the Abort button only while a killable job is in flight.
+
+        Called from the QueueManager worker thread, so marshal the Tk widget
+        update onto the GUI thread via root.after (PR #73).
+        """
+        def _apply():
+            try:
+                self.abort_btn.config(
+                    state=tk.NORMAL if running else tk.DISABLED
+                )
+            except Exception:
+                pass
+        try:
+            self.root.after(0, _apply)
+        except Exception:
+            # root.after only raises when the Tk interpreter is gone (teardown).
+            # Do NOT fall back to calling _apply() directly here — that would
+            # touch a Tk widget from the QueueManager WORKER thread, which is
+            # undefined behaviour in Tkinter and can corrupt the event queue
+            # (code-review MEDIUM, PR #73). At teardown the button is being
+            # destroyed anyway, so dropping the update is correct.
+            pass
+
+    def _abort_current_job(self):
+        """Abort the in-flight job (the Abort button).
+
+        Signals the QueueManager to kill the active subprocess (rPPG / Oldcam)
+        immediately and pause the queue, so the user can stop a long run without
+        force-quitting the app. Safe to call when nothing is running (no-op).
+        """
+        if not self.queue_manager:
+            return
+        self.queue_manager.abort_current_job()
+        # Reflect the paused state in the Pause button + disable Abort until the
+        # next job starts (re-enabled by _set_queue_controls_enabled).
+        try:
+            self.pause_btn.config(text="Resume")
+            self.abort_btn.config(state=tk.DISABLED)
+        except Exception:
+            pass
 
     def _retry_failed(self):
         """Retry all failed items."""
@@ -5610,6 +5887,16 @@ class KlingGUIWindow:
     def run(self):
         """Run the GUI main loop."""
         self._log("GUI started - drag images to process", "info")
+        # Quiet, informational note (NOT a dialog) when keys were auto-loaded
+        # from environment variables — so the user knows where they came from.
+        env_keys = getattr(self, "_env_prefilled_keys", None)
+        if env_keys:
+            labels = {spec.config_key: spec.label for spec in API_KEY_SPECS}
+            names = ", ".join(labels.get(k, k) for k in env_keys)
+            self._log(
+                f"Loaded {names} key(s) from environment variables.",
+                "info",
+            )
         self.root.mainloop()
 
 
@@ -5658,9 +5945,9 @@ Full Traceback:
         # Append to crash log (keep history)
         with open(crash_log_path, "a", encoding="utf-8") as f:
             f.write(crash_info)
-        print(f"\n[Crash log saved to: {crash_log_path}]")
+        _safe_print(f"\n[Crash log saved to: {crash_log_path}]")
     except Exception as log_error:
-        print(f"[Could not write crash log: {log_error}]")
+        _safe_print(f"[Could not write crash log: {log_error}]")
 
 
 def launch_gui(config_path: Optional[str] = None):
@@ -5674,14 +5961,17 @@ def launch_gui(config_path: Optional[str] = None):
     except Exception as e:
         tb_str = traceback.format_exc()
 
-        # Print full error to console
-        print("\n" + "=" * 60)
-        print("  FATAL ERROR - GUI Crashed")
-        print("=" * 60)
-        print(f"\nError: {type(e).__name__}: {e}")
-        print("\nFull traceback:")
-        print(tb_str)
-        print("=" * 60)
+        # Print full error to console. Use _safe_print: under pythonw.exe a
+        # STARTUP/import crash here would otherwise re-raise (sys.stdout None)
+        # inside this handler BEFORE write_crash_log runs, masking the original
+        # error + dropping the crash log (CodeRabbit, PR #73).
+        _safe_print("\n" + "=" * 60)
+        _safe_print("  FATAL ERROR - GUI Crashed")
+        _safe_print("=" * 60)
+        _safe_print(f"\nError: {type(e).__name__}: {e}")
+        _safe_print("\nFull traceback:")
+        _safe_print(tb_str)
+        _safe_print("=" * 60)
 
         # Write to crash log file
         write_crash_log(type(e).__name__, str(e), tb_str)

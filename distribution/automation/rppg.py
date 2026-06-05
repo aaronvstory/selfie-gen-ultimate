@@ -700,9 +700,27 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # heart-rate injection making progress?". Kept in the file log via the
 # raw-line "debug" path. Matched against the ANSI-stripped, leading-
 # whitespace-stripped form.
-_RPPG_SUPPRESS_PATTERNS = (
+# Curated lines KEPT in the GUI panel even when Verbose Mode is OFF — the
+# physiological data the user explicitly wants to see (per-region face means +
+# the per-iteration SNR/Phase/Temporal scoreboard). Checked BEFORE the suppress
+# list so these survive non-verbose curation (user, 2026-06-04: "the cheek /
+# facial results is cool", "we do like to see the SNR data"). Everything NOT in
+# this keep-set and NOT a structural progress line (iter header, frame %, etc.)
+# is dropped from the panel in non-verbose mode.
+_RPPG_KEEP_PATTERNS = (
     re.compile(r"^(forehead|left_cheek|right_cheek|chin|nose):\s+mean="),
     re.compile(r"^(Baseline|Iter\s+\d+)\s+SNR:"),
+    # Final "ITERATIVE ENHANCEMENT SUMMARY" rows + its Targets line — the
+    # at-a-glance before/after the user wants to keep.
+    re.compile(r"^ITERATIVE ENHANCEMENT SUMMARY"),
+    re.compile(r"^rPPG (Baseline|Iter\s+\d+)"),
+    re.compile(r"^Targets:\s+SNR\b"),
+    # One-time run header bits the user likes (target HR + corrector version).
+    re.compile(r"^Target heart rate:"),
+    re.compile(r"^rPPG Corrector v"),
+)
+
+_RPPG_SUPPRESS_PATTERNS = (
     re.compile(r"^PTT phase offsets"),
     re.compile(r"^Pulse strength:"),
     re.compile(r"^Tuned knobs:"),
@@ -711,7 +729,7 @@ _RPPG_SUPPRESS_PATTERNS = (
     re.compile(r"^Strength calibration blocked"),
     re.compile(r"^Breakthrough mode:"),
     re.compile(r"^Dynamic strength bounds:"),
-    re.compile(r"^Targets:\s+SNR\b"),
+    # NOTE: "Targets: SNR …" moved to _RPPG_KEEP_PATTERNS (user wants the goals).
     re.compile(r"^Stage\s+SNR\b"),
     re.compile(r"^-+\s*$"),
     re.compile(r"^=+\s*$"),
@@ -719,6 +737,15 @@ _RPPG_SUPPRESS_PATTERNS = (
     re.compile(r"^Fiber init:"),
     re.compile(r"^Using MediaPipe Tasks"),
     re.compile(r"^MediaPipe:"),
+    # MediaPipe GPU-delegate-unavailable / "GPU processing is disabled" trio
+    # (expected on every box — public wheel is CPU-only; rPPG math still runs on
+    # GPU via CuPy) + the "Pipeline: v5" banner. Suppressed via the tracker (the
+    # single source of truth) instead of queue_manager._is_panel_noise so they
+    # don't fight the keep-list (code-review HIGH PR #73).
+    re.compile(r"^MediaPipe GPU delegate unavailable"),
+    re.compile(r"^ImageCloneCalculator:"),
+    re.compile(r"GPU processing is disabled in build flags"),
+    re.compile(r"^Pipeline:\s+v\d"),
     re.compile(r"^Extracting facial ROIs"),
     re.compile(r"^Using cached RGB signals"),
     re.compile(r"^Final knob diff:"),
@@ -972,9 +999,20 @@ class _RppgProgressTracker:
                 )
             return
 
-        # Suppress patterns: per-ROI stats, MediaPipe boot, knob
-        # internals, summary table borders, etc. These go to debug
-        # (kept in file log, dropped by GUI).
+        # Curated KEEP lines (per-region face means + per-iter SNR scoreboard):
+        # always shown in the panel at info, even in non-verbose mode — the
+        # physiological data the user wants. Checked BEFORE suppress.
+        for pat in _RPPG_KEEP_PATTERNS:
+            if pat.match(stripped):
+                _report(self._report_cb, stripped, "info")
+                return
+
+        # Suppress patterns: MediaPipe boot, knob internals, summary table
+        # borders, etc. These go to debug (kept in file log, dropped by GUI in
+        # non-verbose; shown in verbose via the fallthrough below... no —
+        # suppress is ALWAYS debug regardless of verbose, since these are the
+        # controller/knob internals even a verbose user rarely needs. The
+        # fallthrough at the end handles the "verbose shows everything else").
         for pat in _RPPG_SUPPRESS_PATTERNS:
             if pat.match(stripped):
                 _report(self._report_cb, stripped, "debug")
@@ -1000,24 +1038,25 @@ class _RppgProgressTracker:
                         self._iter_frame_iter_marker = self._iter_current
                         self._iter_frame_milestone = 0
                     pct = int((cur / total) * 100)
-                    # Snap DOWN to the most recent 25% milestone the
-                    # current pct has crossed.
-                    milestone = (pct // 25) * 25
-                    if milestone > self._iter_frame_milestone and milestone >= 25:
-                        self._iter_frame_milestone = milestone
-                        iter_label = (
-                            f"iter {self._iter_current}/{self._iter_max} "
-                            if self._iter_current and self._iter_max
-                            else ""
-                        )
-                        _report(
-                            self._report_cb,
-                            f"rPPG {iter_label}frame {cur}/{total} (~{milestone}%)",
-                            "info",
-                        )
-            # Frame matches always fall through to debug for the raw
-            # line — never to info. The synthesized "rPPG frame X/N
-            # (~25%)" above is the user-facing line.
+                    iter_label = (
+                        f"iter {self._iter_current}/{self._iter_max} "
+                        if self._iter_current and self._iter_max
+                        else ""
+                    )
+                    # Emit on EVERY frame line at the "progress_update" level,
+                    # which the GUI renders as ONE in-place-updating line (it
+                    # grows 0%→100% on a single row instead of spamming ~10
+                    # 'Processing frame N' lines per iteration). User direction
+                    # 2026-06-04. Non-GUI callers (the CLI) treat
+                    # progress_update like info — still one short line per frame,
+                    # which the terminal naturally scrolls.
+                    _report(
+                        self._report_cb,
+                        f"rPPG {iter_label}{pct}% (frame {cur}/{total})",
+                        "progress_update",
+                    )
+            # The raw "Processing frame N/M" line is file-only (debug); the
+            # synthesized progress_update line above is the user-facing one.
             _report(self._report_cb, stripped, "debug")
             return
 
@@ -1066,6 +1105,57 @@ class _RppgProgressTracker:
         return self._iter_current
 
 
+def _kill_process_tree(process) -> None:
+    """Kill ``process`` AND its descendants. Stdlib-only; never raises.
+
+    Codex P1 (PR #73): the GUI rPPG path runs through ``run_rppg.bat``, which
+    spawns a separate ``python rppg_injector.py`` child. ``process.kill()`` only
+    terminates the cmd/batch wrapper, leaving the long-running injector orphaned
+    — still burning GPU/CPU and writing output AFTER the user pressed Abort (or
+    after a timeout). Kill the whole tree: ``taskkill /T /F`` on Windows, the
+    process group on POSIX, plus a direct ``kill()`` fallback.
+    """
+    try:
+        if process.poll() is not None:
+            return
+    except Exception:  # noqa: BLE001
+        return
+    pid = getattr(process, "pid", None)
+    if sys.platform == "win32" and pid is not None:
+        try:
+            # Resolve taskkill via PATH, else canonical System32 (gemini MEDIUM).
+            import shutil as _shutil
+            taskkill = _shutil.which("taskkill") or os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                "System32", "taskkill.exe",
+            )
+            subprocess.run(
+                [taskkill, "/T", "/F", "/PID", str(pid)],
+                capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    elif pid is not None:
+        # POSIX: kill the child's process group ONLY if it differs from ours.
+        # The child is spawned with start_new_session=True so it leads its own
+        # group; the guard guarantees we never SIGKILL our OWN group (the GUI /
+        # test runner) if it somehow shares it (Gemini CRITICAL + Codex P1,
+        # PR #73). proc.kill() below still stops the direct child.
+        try:
+            import signal as _signal
+            pgid = os.getpgid(pid)
+            if pgid != os.getpgrp():
+                os.killpg(pgid, _signal.SIGKILL)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        if process.poll() is None:
+            process.kill()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def stream_subprocess_with_timeout(
     cmd: List[str],
     *,
@@ -1076,6 +1166,8 @@ def stream_subprocess_with_timeout(
     on_heartbeat: Optional[Callable[[float], None]] = None,
     heartbeat_interval_seconds: float = 60.0,
     heartbeat_silence_predicate: Optional[Callable[[str], bool]] = None,
+    abort_event: Optional["threading.Event"] = None,
+    on_process_start: Optional[Callable[["subprocess.Popen"], None]] = None,
 ) -> Tuple[int, List[str]]:
     """Run *cmd*, stream stdout line-by-line, and enforce a wall-clock
     timeout that fires even if the child stalls mid-line with no newline
@@ -1122,6 +1214,19 @@ def stream_subprocess_with_timeout(
     silence the heartbeat. ``None`` preserves the original
     silence-on-any-line behaviour for callers that launch the child
     directly.
+
+    *abort_event* (v2.21, GUI Abort button): an optional ``threading.Event``
+    the GUI sets to cancel an in-flight run. The main wall-clock loop polls it
+    every ≤1s; when set, the child is killed and ``subprocess.TimeoutExpired``
+    is raised so the caller takes the same graceful-skip path as a timeout
+    (filename marked ``-NORPPG``). Lets the user stop a 10-iteration / 20-minute
+    rPPG run without force-quitting the whole GUI.
+
+    *on_process_start* (v2.21): optional callback invoked once with the live
+    ``Popen`` handle just after launch, so the GUI queue can publish it as the
+    "active subprocess" and ``.kill()`` it instantly from the Abort button
+    (rather than waiting up to 1s for the abort_event poll). Called inside a
+    try/except so a misbehaving callback can never crash the stream.
 
     Returns ``(returncode, output_lines)``. Raises
     ``subprocess.TimeoutExpired`` on timeout (caller treats that as a
@@ -1170,8 +1275,25 @@ def stream_subprocess_with_timeout(
         errors="replace",  # injector stdout may carry non-UTF-8 bytes
         bufsize=1,
         env=env,
+        # Own process group/session on POSIX so an Abort/timeout killpg's the
+        # whole rppg tree (run_rppg.sh wrapper + injector child) without
+        # touching the GUI's group (PR #73). No-op on Windows (taskkill /T).
+        start_new_session=(os.name != "nt"),
+        # CREATE_NO_WINDOW: the Windows rPPG path runs run_rppg.bat, which would
+        # FLASH a console window on EVERY GUI rPPG run under pythonw.exe
+        # (code-review HIGH, PR #73 — the streamer Popen was the one spawn site
+        # the round-8 sweep missed). No-op off Windows.
+        creationflags=(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        ),
     )
     assert process.stdout is not None
+    # Publish the live handle so the GUI Abort button can kill it instantly.
+    if on_process_start is not None:
+        try:
+            on_process_start(process)
+        except Exception:
+            pass
     line_q: "_queue.Queue[Optional[str]]" = _queue.Queue()
 
     def _drain() -> None:
@@ -1185,6 +1307,20 @@ def stream_subprocess_with_timeout(
 
     reader = threading.Thread(target=_drain, daemon=True)
     reader.start()
+
+    def _close_reader(proc, rdr) -> None:
+        """Close the child's stdout (unblocking _drain's readline) and briefly
+        join the reader so it doesn't outlive this call holding the pipe open.
+        Best-effort; never raises (PR #73 fd/thread-leak fix)."""
+        try:
+            if proc.stdout is not None:
+                proc.stdout.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            rdr.join(timeout=2)
+        except Exception:  # noqa: BLE001
+            pass
 
     output_lines: List[str] = []
     start_time = time.monotonic()
@@ -1207,10 +1343,29 @@ def stream_subprocess_with_timeout(
     max_deadline = start_time + max(timeout_seconds * 8, 600.0)
     eof = False
     while not eof:
+        # Abort check (GUI Abort button): kill the child and surface the same
+        # TimeoutExpired the timeout path raises, so the caller treats it as a
+        # graceful skip (-NORPPG) rather than a crash. Polled here so it fires
+        # within ≤1s even when the child is mid-iteration with no new output.
+        if abort_event is not None and abort_event.is_set():
+            if process.poll() is None:
+                # Tree-kill so the run_rppg.bat wrapper's injector child can't
+                # keep running after Abort (Codex P1, PR #73).
+                _kill_process_tree(process)
+                try:
+                    process.wait(timeout=5)
+                except (subprocess.TimeoutExpired, OSError):
+                    # OSError: handle already reaped/closed by a racing kill —
+                    # must not crash the stream on the abort path (gemini MEDIUM).
+                    pass
+            _close_reader(process, reader)
+            raise subprocess.TimeoutExpired(cmd, timeout_seconds)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             if process.poll() is None:
-                process.kill()
+                # Tree-kill (see abort path) so a timeout can't orphan the
+                # injector child either.
+                _kill_process_tree(process)
                 # Reap the SIGKILL'd child so it does not linger as a
                 # zombie (kill() terminates but does not wait()). Bounded
                 # so a wedged kill can't itself hang the caller.
@@ -1218,6 +1373,7 @@ def stream_subprocess_with_timeout(
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
+            _close_reader(process, reader)
             raise subprocess.TimeoutExpired(cmd, timeout_seconds)
         try:
             item = line_q.get(timeout=min(remaining, 1.0))
@@ -1245,6 +1401,22 @@ def stream_subprocess_with_timeout(
                 )
             continue  # re-check the wall clock; child may be silent
         if item is None:
+            # Abort stays authoritative even when the killed child exits FAST:
+            # the reader can enqueue the EOF sentinel (None) before the next
+            # top-of-loop abort poll, in which case accepting it as a clean EOF
+            # would return the child's (non-zero) exit code → the caller reports
+            # an ordinary "RPPG FAILED" instead of the user-aborted -NORPPG path.
+            # Re-check the event here so an abort always raises TimeoutExpired
+            # (Codex P2, PR #73).
+            if abort_event is not None and abort_event.is_set():
+                if process.poll() is None:
+                    _kill_process_tree(process)
+                    try:
+                        process.wait(timeout=5)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                _close_reader(process, reader)
+                raise subprocess.TimeoutExpired(cmd, timeout_seconds)
             eof = True
             break
         text = item.rstrip()
@@ -1307,6 +1479,13 @@ def stream_subprocess_with_timeout(
             except subprocess.TimeoutExpired:
                 pass
         raise
+    finally:
+        # Always close stdout + reap the reader thread. On the abort/timeout
+        # paths where _kill_process_tree fails silently (e.g. taskkill missing),
+        # the _drain reader would otherwise stay blocked on readline() holding
+        # the pipe open — a fd leak + a lingering thread for the session
+        # (code-review MEDIUM, PR #73). Closing the pipe unblocks it.
+        _close_reader(process, reader)
     return returncode, output_lines
 
 

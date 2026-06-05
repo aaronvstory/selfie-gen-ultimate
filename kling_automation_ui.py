@@ -18,7 +18,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-from api_keys import API_KEY_SPECS, ApiKeySpec, ensure_key_fields, key_status, non_required_missing_specs, status_lines
+from api_keys import API_KEY_SPECS, ApiKeySpec, apply_env_key_fallback, ensure_key_fields, env_key_optout_list, key_is_set, key_status, non_required_missing_specs, resolve_api_key, status_lines
 from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 
 try:
@@ -184,6 +184,10 @@ class KlingAutomationUI:
         self.config = merge_automation_defaults(self.load_config())
         if ensure_key_fields(self.config):
             self.save_config()
+        # Silently prefill any still-empty API key from its env var (FAL_KEY,
+        # BFL_API_KEY, OPENROUTER_API_KEY, FREEIMAGE_API_KEY). In-memory only —
+        # NOT saved, so the env stays the source of truth. User-saved keys win.
+        self._env_prefilled_keys = apply_env_key_fallback(self.config)
         self.automation_root_folder = self.config.get("automation_root_folder", "")
         self.verbose_logging = self.config.get("verbose_logging", False)
         self.legacy_pauses = legacy_pauses
@@ -477,14 +481,43 @@ class KlingAutomationUI:
             pass
         return prices
 
+    def _clear_env_prefill_marker(self, config_key: str):
+        """Stop treating a key as env-sourced (the user explicitly set it), so
+        save_config persists their value instead of stripping it."""
+        env_filled = getattr(self, "_env_prefilled_keys", None)
+        if env_filled and config_key in env_filled:
+            env_filled.remove(config_key)
+
     def save_config(self):
-        """Save current configuration to file"""
+        """Save current configuration to file.
+
+        Env-sourced API keys are never written to disk (code-review CRITICAL):
+        apply_env_key_fallback prefills them in MEMORY only, so we drop them from
+        the serialized copy. A user who explicitly sets a key via the settings
+        editor clears it from _env_prefilled_keys first, so their value persists.
+        """
         try:
-            with open(self.config_file, "w") as f:
-                json.dump(self.config, f, indent=2)
+            data = self.config
+            env_filled = getattr(self, "_env_prefilled_keys", None)
+            if env_filled:
+                data = dict(self.config)
+                for k in env_filled:
+                    data.pop(k, None)
+            # ATOMIC write (gemini MEDIUM #73): shared config across concurrent
+            # launches — write a per-process temp then os.replace so a concurrent
+            # reader never sees a truncated file (atomic on Windows + POSIX).
+            tmp_path = f"{self.config_file}.tmp.{os.getpid()}"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_path, self.config_file)
         except Exception as e:
             if self.verbose_logging:
                 print(f"Error saving config: {e}")
+            try:
+                if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
 
     def setup_logging(self):
         """Setup logging based on verbose setting"""
@@ -548,11 +581,28 @@ class KlingAutomationUI:
             value = input(f"Enter {spec.label} API key: ").strip()
             if value:
                 self.config[spec.config_key] = value
+                self._clear_env_prefill_marker(spec.config_key)
+                # A real value was entered — opt this key BACK IN to the env
+                # fallback (drop it from the persisted opt-out list). Mirrors the
+                # GUI clear/set logic (Codex P2, PR #73).
+                optout = env_key_optout_list(self.config)
+                if spec.config_key in optout:
+                    optout.remove(spec.config_key)
+                    self.config["_env_key_optout"] = optout
                 self.save_config()
                 print(f"Saved {spec.config_key}.")
         elif len(API_KEY_SPECS) < selected <= len(API_KEY_SPECS) * 2:
             spec = API_KEY_SPECS[selected - len(API_KEY_SPECS) - 1]
             self.config[spec.config_key] = ""
+            self._clear_env_prefill_marker(spec.config_key)
+            # Persist the clear so it survives restart even when the env var is
+            # still set — otherwise apply_env_key_fallback() refills it from the
+            # env on the next launch and "Clear key" does nothing (Codex P2,
+            # PR #73). Same persisted opt-out the GUI uses.
+            optout = env_key_optout_list(self.config)
+            if spec.config_key not in optout:
+                optout.append(spec.config_key)
+                self.config["_env_key_optout"] = optout
             self.save_config()
             print(f"Cleared {spec.config_key}.")
         self.pause_continue("\nPress Enter to continue...")
@@ -563,10 +613,19 @@ class KlingAutomationUI:
         self._startup_key_onboarding_done = True
         prompt_specs = startup_prompt_specs()
         if not sys.stdin.isatty():
-            missing_any = missing_startup_specs(self.config)
-            if missing_any:
+            # Warn about the keys the ACTIVE automation config actually needs
+            # (config-aware: fal for core gen + BFL only when a stage selects the
+            # BFL provider), not a generic fal/BFL pair — so the non-interactive
+            # warning stays accurate after BFL was dropped from the generic
+            # first-launch prompt (it's still flagged here when truly required).
+            required = [
+                spec
+                for spec, _reason in self._startup_required_key_specs()
+                if not key_is_set(self.config, spec.config_key)
+            ]
+            if required:
                 print("\nStartup API keys missing in non-interactive mode (continuing).")
-                for spec in missing_any:
+                for spec in required:
                     print(f"  - {spec.label}: {spec.url}")
                 print("Key-required features will show an error when used until keys are configured.")
             return
@@ -587,6 +646,18 @@ class KlingAutomationUI:
                 continue
             if value:
                 self.config[spec.config_key] = value
+                # The user EXPLICITLY entered this key — it is no longer
+                # env-sourced, so drop it from the env-prefill marker BEFORE
+                # saving. Without this, save_config() strips the just-entered
+                # key back out (it excludes _env_prefilled_keys), silently
+                # discarding it so the user is nagged again next launch
+                # (code-review CRITICAL, PR #73 — matches configure_api_provider_settings).
+                self._clear_env_prefill_marker(spec.config_key)
+                # A real value also opts the key BACK IN to the env fallback.
+                optout = env_key_optout_list(self.config)
+                if spec.config_key in optout:
+                    optout.remove(spec.config_key)
+                    self.config["_env_key_optout"] = optout
                 self.save_config()
 
         missing_optional = list(non_required_missing_specs(self.config))
@@ -1015,9 +1086,16 @@ class KlingAutomationUI:
         print("\033[96m" + "═" * 79 + "\033[0m")
         print()
 
-        api_key = os.getenv("FAL_KEY")
+        # Resolve via the saved config + any fal env alias (FAL_KEY OR
+        # FAL_API_KEY), not a bare os.getenv("FAL_KEY") — otherwise a user who
+        # stores their key as FAL_API_KEY hits "key not set" here even though the
+        # rest of the app works (code-review Codex P2 #73).
+        api_key = resolve_api_key(self.config, "falai_api_key")
         if not api_key:
-            self.print_red("FAL_KEY environment variable not set")
+            self.print_red(
+                "No fal.ai key found (set falai_api_key in config, or the "
+                "FAL_KEY / FAL_API_KEY environment variable)."
+            )
             self.pause_continue("\nPress Enter to continue...")
             return
 
