@@ -389,6 +389,7 @@ class SessionManagerDialog(tk.Toplevel):
         self._selected_path = None
         self._selected_record = None
         self._loaded_session_data = None
+        self._loaded_session_path = None
 
         self._build_ui()
         self._refresh_list()
@@ -749,6 +750,9 @@ class SessionManagerDialog(tk.Toplevel):
         try:
             data = load_session(self._selected_path)
             self._loaded_session_data = data
+            # Remember the source file so the restore path can persist a rename
+            # re-link back to it (Codex P2 #1, PR #75).
+            self._loaded_session_path = self._selected_path
             self._log_fn(f"Session loaded: {data.get('name', '?')}", "success")
             self.destroy()
         except Exception as e:
@@ -5621,10 +5625,30 @@ class KlingGUIWindow:
         )
         self.root.wait_window(dialog)
         if dialog._loaded_session_data:
-            self._on_session_loaded(dialog._loaded_session_data)
+            self._on_session_loaded(
+                dialog._loaded_session_data,
+                record_path=getattr(dialog, "_loaded_session_path", None),
+            )
 
-    def _on_session_loaded(self, data: dict):
+    def _on_session_loaded(self, data: dict, record_path: Optional[str] = None):
         """Restore session from loaded data."""
+        # Rename rescue on the DEFAULT load path (Codex P2 #1): if this session's
+        # working folder was renamed, re-anchor its in-project image paths to the
+        # folder's current location BEFORE the isfile-skip loop below — otherwise
+        # every saved absolute path reads as missing and the row loads 0 images,
+        # even with auto-prune off. Best-effort + in place; persists when a source
+        # record_path is known.
+        try:
+            from .session_manager import relink_session_data
+
+            new_root = relink_session_data(data, record_path)
+            if new_root:
+                self._log(
+                    f"Re-linked session to renamed folder: {os.path.basename(new_root)}",
+                    "info",
+                )
+        except Exception:
+            self.logger.debug("relink-on-load skipped", exc_info=True)
         session_data = data.get("session", {})
         images = session_data.get("images", [])
         if not images:

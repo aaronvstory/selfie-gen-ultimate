@@ -9,8 +9,9 @@ from kling_gui import session_manager as sm
 
 
 class _DummyEntry:
-    def __init__(self, path: str):
+    def __init__(self, path: str, source_type: str = "input"):
         self.path = path
+        self.source_type = source_type
 
 
 class _DummySession:
@@ -494,6 +495,57 @@ class SessionManagerTests(unittest.TestCase):
             # ...and the external reference is untouched + still exists.
             self.assertIn(ext_ref, paths)
             self.assertTrue(os.path.isfile(ext_ref))
+
+    def test_identity_anchors_to_generated_not_external_reference(self):
+        # Codex P2 #2: a dragged-in external portrait can become reference_entry;
+        # identity must anchor to the in-project GENERATED artifact's root, not
+        # the external reference's folder.
+        with self._workspace() as root:
+            proj = os.path.join(root, "RealProject")
+            gen = os.path.join(proj, "gen-images")
+            os.makedirs(gen, exist_ok=True)
+            selfie = os.path.join(gen, "out_selfie.png")
+            open(selfie, "wb").write(b"x")
+            ext_ref = os.path.join(root, "Downloads", "portrait.png")
+            os.makedirs(os.path.dirname(ext_ref), exist_ok=True)
+            open(ext_ref, "wb").write(b"x")
+
+            class _Sess:
+                # reference_entry is the EXTERNAL portrait (worst case).
+                reference_entry = _DummyEntry(ext_ref, "input")
+                input_images = [(0, _DummyEntry(ext_ref, "input"))]
+                images = [
+                    _DummyEntry(ext_ref, "input"),
+                    _DummyEntry(selfie, "selfie"),
+                ]
+
+            resolved = sm._resolve_session_folder_path(_Sess())
+            self.assertEqual(
+                os.path.normcase(os.path.abspath(resolved)),
+                os.path.normcase(os.path.abspath(proj)))
+
+    def test_relink_session_data_default_flow(self):
+        # Codex P2 #1: re-link must work with auto-prune OFF — relink_session_data
+        # rewrites a loaded record in place so a renamed folder loads its images.
+        with self._workspace() as root:
+            work = os.path.join(root, "work")
+            os.makedirs(work, exist_ok=True)
+            proj, img, fid = self._make_folder_with_marker(work, "ShootC")
+            data = {
+                "folder_id": fid,
+                "project_root": proj,
+                "session": {"images": [{"path": img, "source_type": "selfie"}]},
+            }
+            # Rename the folder; data still points at the old paths.
+            proj2 = os.path.join(work, "ShootC_FINAL")
+            os.rename(proj, proj2)
+            new_root = sm.relink_session_data(data)
+            self.assertEqual(
+                os.path.normcase(os.path.abspath(new_root)),
+                os.path.normcase(os.path.abspath(proj2)))
+            self.assertTrue(os.path.isfile(data["session"]["images"][0]["path"]))
+            # Already-correct record → no-op (returns None, no needless rewrite).
+            self.assertIsNone(sm.relink_session_data(data))
 
     def test_is_near_root_detects_depth_one(self):
         # A project directly under a drive/FS root can't be probed for a rename

@@ -111,28 +111,56 @@ def _sanitize_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]", "_", name).strip("_")[:80] or "session"
 
 
+#: Source types produced by the app — these artifacts ALWAYS live under the
+#: true project root (in gen-images/ or gen-videos/), so walking one up past the
+#: gen-* folders yields the real project root. An "input" image, by contrast,
+#: can be an external file dragged in from anywhere (Downloads, another project)
+#: and must NOT anchor the project identity (Codex P2 #2, PR #75).
+_GENERATED_SOURCE_TYPES = {"selfie", "outpaint", "polish", "upscale", "video"}
+
+
 def _resolve_session_folder_path(image_session) -> Optional[str]:
     """Return the real project folder *path* for a session (past gen-* nesting).
 
-    Walks up from the session's reference / first-input / first image path past
-    any ``gen-images``/``gen-videos`` nesting. Returns ``None`` when the session
-    has no usable path yet (empty session). Side-effect-free — does NOT stamp a
+    Identity must anchor to the PROJECT folder, not to an arbitrary external
+    reference. ``ImageSession.add_image`` makes the most-recently-added input the
+    ``reference_entry``, so a portrait dragged in from Downloads can become the
+    reference — anchoring on it would persist that external dir as the project
+    root and break rename re-linking (Codex P2 #2, PR #75).
+
+    Resolution order, most-trustworthy first:
+      1. A **generated** artifact (selfie/outpaint/polish/upscale/video) — these
+         always live under the true project root.
+      2. An **input** that lives under the same root as a generated artifact, or
+         (if no generated artifacts) the first input — preserves prior behavior
+         for input-only sessions (e.g. a freshly cropped face before any gen).
+      3. Any image, as a last resort.
+
+    Returns ``None`` for an empty session. Side-effect-free — does NOT stamp a
     marker (stamping happens at the gen-folder write chokepoints and on explicit
     folder load; identity *reads* here must not mutate folders).
     """
-    ref = image_session.reference_entry
-    if ref:
-        path = ref.path
-    else:
-        inputs = image_session.input_images
-        if inputs:
-            path = inputs[0][1].path
-        else:
-            images = image_session.images
-            path = images[0].path if images else None
-    if not path:
+    images = list(getattr(image_session, "images", []) or [])
+    if not images:
         return None
-    return _walk_up_past_gen_folders(path)
+
+    # 1. Prefer a generated artifact — its root is unambiguously the project.
+    for entry in images:
+        if getattr(entry, "source_type", "") in _GENERATED_SOURCE_TYPES:
+            path = getattr(entry, "path", "")
+            if path:
+                return _walk_up_past_gen_folders(path)
+
+    # 2. Fall back to the reference / first input / first image (legacy order),
+    #    which is correct for input-only sessions that have no generated output.
+    ref = image_session.reference_entry
+    if ref and getattr(ref, "path", ""):
+        return _walk_up_past_gen_folders(ref.path)
+    inputs = image_session.input_images
+    if inputs:
+        return _walk_up_past_gen_folders(inputs[0][1].path)
+    first_path = getattr(images[0], "path", "")
+    return _walk_up_past_gen_folders(first_path) if first_path else None
 
 
 def _resolve_session_folder(image_session) -> str:
@@ -1126,6 +1154,52 @@ def relink_renamed_sessions(app_dir: str) -> List[tuple]:
         relinked.append((rec.path, old_root, new_root))
         logger.info("Re-linked session %s: %s -> %s", rec.path, old_root, new_root)
     return relinked
+
+
+def relink_session_data(data: dict, record_path: Optional[str] = None) -> Optional[str]:
+    """Re-link a single loaded session dict in place if its folder was renamed.
+
+    This is the DEFAULT-flow rescue (Codex P2 #1, PR #75): re-linking must work
+    even with auto-prune OFF, otherwise a renamed folder shows as a loadable row
+    that restores zero images (every saved absolute path is dead). Call this at
+    load time, BEFORE restoring images, so the in-project paths are re-anchored
+    to the folder's current location (found via its embedded marker id).
+
+    Mutates ``data`` in place (rewrites ``project_root`` + in-project image
+    paths) and, when ``record_path`` is given, atomically persists the rewrite
+    so the fix sticks across launches. Returns the new root path if a re-link
+    happened, else ``None``. Best-effort: never raises.
+    """
+    try:
+        folder_id = data.get("folder_id")
+        project_root = data.get("project_root")
+        if not folder_id:
+            return None
+        # Only re-link when the stored root is actually gone (renamed/moved).
+        if project_root and os.path.isdir(project_root):
+            return None
+        folders = {
+            os.path.dirname(img.get("path", ""))
+            for img in data.get("session", {}).get("images", [])
+            if img.get("path")
+        }
+        new_root = _probe_relink(data, folders)
+        if not new_root or os.path.normcase(os.path.abspath(new_root)) == os.path.normcase(
+            os.path.abspath(project_root or "")
+        ):
+            return None
+        if not _rewrite_record_root(data, new_root):
+            return None
+        if record_path:
+            try:
+                _atomic_write_json(record_path, data)
+            except Exception as exc:
+                logger.warning("relink-on-load: persist failed %s: %s", record_path, exc)
+        logger.info("Re-linked on load: %s -> %s", project_root, new_root)
+        return new_root
+    except Exception:
+        logger.debug("relink_session_data failed", exc_info=True)
+        return None
 
 
 def _rewrite_record_root(data: dict, new_root: str) -> bool:
