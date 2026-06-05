@@ -5881,11 +5881,17 @@ class KlingGUIWindow:
         ).start()
 
     def _post_to_ui(self, fn):
-        """Run ``fn`` on the Tk main thread; no-op if the root is gone."""
+        """Schedule ``fn`` on the Tk main thread from any thread.
+
+        ``root.after`` is the one Tk call safe to invoke cross-thread; do NOT
+        call widget methods like ``winfo_exists`` from a worker thread — Tcl/Tk
+        is not thread-safe and that can segfault/hang (Gemini HIGH, PR #75). If
+        the root is already torn down, ``after`` raises TclError, which we
+        swallow.
+        """
         try:
-            if self.root.winfo_exists():
-                self.root.after(0, fn)
-        except tk.TclError:
+            self.root.after(0, fn)
+        except (tk.TclError, RuntimeError):
             pass
 
     def _on_close(self):

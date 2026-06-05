@@ -547,6 +547,14 @@ class SessionManagerTests(unittest.TestCase):
             # Already-correct record → no-op (returns None, no needless rewrite).
             self.assertIsNone(sm.relink_session_data(data))
 
+    def test_relink_helpers_tolerate_non_dict_data(self):
+        # Gemini HIGH/MED: corrupt/hand-edited session JSON (a list or scalar)
+        # must not crash the relink helpers with AttributeError.
+        for bad in ([], "oops", 42, None):
+            self.assertIsNone(sm._probe_relink(bad, set()))
+            self.assertFalse(sm._rewrite_record_root(bad, "/tmp/x"))
+            self.assertIsNone(sm.relink_session_data(bad))
+
     def test_is_near_root_detects_depth_one(self):
         # A project directly under a drive/FS root can't be probed for a rename
         # without scanning the whole volume (code-review MEDIUM, round 2).

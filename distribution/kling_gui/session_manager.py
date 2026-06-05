@@ -1081,6 +1081,8 @@ def _probe_relink(data: dict, folders: set) -> Optional[str]:
     the stored ``project_root`` for a folder whose ``.selfie_session_id.json``
     marker equals the session's ``folder_id``. Best-effort and read-only.
     """
+    if not isinstance(data, dict):
+        return None
     folder_id = data.get("folder_id")
     if not folder_id:
         return None
@@ -1143,6 +1145,8 @@ def relink_renamed_sessions(app_dir: str) -> List[tuple]:
         except Exception as exc:
             logger.debug("relink: could not read %s: %s", rec.path, exc)
             continue
+        if not isinstance(data, dict):
+            continue  # corrupt/hand-edited file (list, scalar) — skip safely
         old_root = data.get("project_root")
         if not _rewrite_record_root(data, new_root):
             continue
@@ -1171,6 +1175,8 @@ def relink_session_data(data: dict, record_path: Optional[str] = None) -> Option
     happened, else ``None``. Best-effort: never raises.
     """
     try:
+        if not isinstance(data, dict):
+            return None
         folder_id = data.get("folder_id")
         project_root = data.get("project_root")
         if not folder_id:
@@ -1178,10 +1184,12 @@ def relink_session_data(data: dict, record_path: Optional[str] = None) -> Option
         # Only re-link when the stored root is actually gone (renamed/moved).
         if project_root and os.path.isdir(project_root):
             return None
+        session = data.get("session")
+        images = session.get("images", []) if isinstance(session, dict) else []
         folders = {
             os.path.dirname(img.get("path", ""))
-            for img in data.get("session", {}).get("images", [])
-            if img.get("path")
+            for img in images
+            if isinstance(img, dict) and img.get("path")
         }
         new_root = _probe_relink(data, folders)
         if not new_root or os.path.normcase(os.path.abspath(new_root)) == os.path.normcase(
@@ -1219,13 +1227,16 @@ def _rewrite_record_root(data: dict, new_root: str) -> bool:
     future renames have an anchor. The function always sets ``project_root`` to
     the confirmed ``new_root`` and returns whether anything changed.
     """
+    if not isinstance(data, dict):
+        return False
     changed = False
     new_root_abs = os.path.abspath(new_root)
     old_root = data.get("project_root")
     old_root_norm = (
         os.path.normcase(os.path.abspath(old_root)) + os.sep if old_root else ""
     )
-    images = data.get("session", {}).get("images", [])
+    session = data.get("session")
+    images = session.get("images", []) if isinstance(session, dict) else []
     for img in images:
         path = img.get("path", "")
         if not path:

@@ -145,9 +145,12 @@ def index_live_folder_ids(roots: Iterable[str]) -> Dict[str, str]:
             index[fid] = folder
 
     for root in roots:
-        if not root or not os.path.isdir(root):
+        if not root:
             continue
         _consider(root)
+        # EAFP (Gemini MED, PR #75): scandir is already guarded, so skip the
+        # redundant isdir() pre-stat — a non-dir/missing root just raises here
+        # and is logged + skipped.
         try:
             entries = list(os.scandir(root))
         except OSError as exc:
