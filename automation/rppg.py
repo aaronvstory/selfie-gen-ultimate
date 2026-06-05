@@ -1279,6 +1279,13 @@ def stream_subprocess_with_timeout(
         # whole rppg tree (run_rppg.sh wrapper + injector child) without
         # touching the GUI's group (PR #73). No-op on Windows (taskkill /T).
         start_new_session=(os.name != "nt"),
+        # CREATE_NO_WINDOW: the Windows rPPG path runs run_rppg.bat, which would
+        # FLASH a console window on EVERY GUI rPPG run under pythonw.exe
+        # (code-review HIGH, PR #73 — the streamer Popen was the one spawn site
+        # the round-8 sweep missed). No-op off Windows.
+        creationflags=(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        ),
     )
     assert process.stdout is not None
     # Publish the live handle so the GUI Abort button can kill it instantly.

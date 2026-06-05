@@ -18,7 +18,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-from api_keys import API_KEY_SPECS, ApiKeySpec, apply_env_key_fallback, ensure_key_fields, key_is_set, key_status, non_required_missing_specs, resolve_api_key, status_lines
+from api_keys import API_KEY_SPECS, ApiKeySpec, apply_env_key_fallback, ensure_key_fields, env_key_optout_list, key_is_set, key_status, non_required_missing_specs, resolve_api_key, status_lines
 from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
 
 try:
@@ -585,7 +585,7 @@ class KlingAutomationUI:
                 # A real value was entered — opt this key BACK IN to the env
                 # fallback (drop it from the persisted opt-out list). Mirrors the
                 # GUI clear/set logic (Codex P2, PR #73).
-                optout = list(self.config.get("_env_key_optout") or [])
+                optout = env_key_optout_list(self.config)
                 if spec.config_key in optout:
                     optout.remove(spec.config_key)
                     self.config["_env_key_optout"] = optout
@@ -599,7 +599,7 @@ class KlingAutomationUI:
             # still set — otherwise apply_env_key_fallback() refills it from the
             # env on the next launch and "Clear key" does nothing (Codex P2,
             # PR #73). Same persisted opt-out the GUI uses.
-            optout = list(self.config.get("_env_key_optout") or [])
+            optout = env_key_optout_list(self.config)
             if spec.config_key not in optout:
                 optout.append(spec.config_key)
                 self.config["_env_key_optout"] = optout
@@ -654,7 +654,7 @@ class KlingAutomationUI:
                 # (code-review CRITICAL, PR #73 — matches configure_api_provider_settings).
                 self._clear_env_prefill_marker(spec.config_key)
                 # A real value also opts the key BACK IN to the env fallback.
-                optout = list(self.config.get("_env_key_optout") or [])
+                optout = env_key_optout_list(self.config)
                 if spec.config_key in optout:
                     optout.remove(spec.config_key)
                     self.config["_env_key_optout"] = optout

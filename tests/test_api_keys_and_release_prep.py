@@ -146,6 +146,33 @@ def test_apply_env_key_fallback_user_value_overrides_env(monkeypatch):
     assert "falai_api_key" not in filled
 
 
+def test_env_key_optout_list_coerces_corrupt_config():
+    """env_key_optout_list must safely read a hand-edited/corrupt config: only
+    an actual list of strings is honoured; a string/int/dict yields [] rather
+    than iterating characters (set('falai') -> chars) or raising TypeError
+    (set(5)) — code-review, PR #73."""
+    from api_keys import env_key_optout_list
+    assert env_key_optout_list({"_env_key_optout": ["a", "b"]}) == ["a", "b"]
+    assert env_key_optout_list({"_env_key_optout": "falai_api_key"}) == []
+    assert env_key_optout_list({"_env_key_optout": 5}) == []
+    assert env_key_optout_list({"_env_key_optout": {"x": 1}}) == []
+    assert env_key_optout_list({}) == []
+    # Non-string members are filtered out.
+    assert env_key_optout_list({"_env_key_optout": ["ok", 5, None, "y"]}) == ["ok", "y"]
+
+
+def test_apply_env_key_fallback_handles_corrupt_optout(monkeypatch):
+    """A corrupt _env_key_optout (e.g. a string) must NOT crash the fallback
+    and must NOT silently suppress env prefill for character-matched keys."""
+    monkeypatch.setenv("FAL_KEY", "env-secret")
+    # _env_key_optout as a STRING — previously set('falai_api_key') would make a
+    # char-set that could spuriously match; now coerced to [] so prefill works.
+    config = {"falai_api_key": "", "_env_key_optout": "falai_api_key"}
+    apply_env_key_fallback(config)
+    assert config["falai_api_key"] == "env-secret", (
+        "a corrupt (non-list) opt-out must not suppress the env prefill")
+
+
 def test_apply_env_key_fallback_respects_persisted_optout(monkeypatch):
     """A key the user EXPLICITLY cleared (listed in _env_key_optout) must NOT be
     re-prefilled from the env var on the next launch — so "leave blank to clear"

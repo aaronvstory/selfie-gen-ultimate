@@ -86,6 +86,22 @@ def ensure_key_fields(config: Dict[str, Any]) -> bool:
     return changed
 
 
+def env_key_optout_list(config: Dict[str, Any]) -> List[str]:
+    """Safely read the persisted ``_env_key_optout`` list from a config dict.
+
+    Returns a plain list of config_key strings the user explicitly cleared.
+    A hand-edited / corrupted config could store this as a string, dict, int,
+    etc.; coercing those via ``list()``/``set()`` would silently iterate
+    characters or raise TypeError (gemini, PR #73). Only an actual list of
+    strings is honoured; anything else yields [] (the safe default = env
+    fallback active). The single accessor every read site should use.
+    """
+    val = config.get("_env_key_optout")
+    if not isinstance(val, list):
+        return []
+    return [k for k in val if isinstance(k, str)]
+
+
 def apply_env_key_fallback(config: Dict[str, Any]) -> List[str]:
     """In-memory prefill of empty API keys from their environment variables.
 
@@ -112,7 +128,7 @@ def apply_env_key_fallback(config: Dict[str, Any]) -> List[str]:
     # still set would silently re-prefill on the next launch, so "leave blank to
     # clear" wouldn't survive a restart (CodeRabbit, PR #73). The opt-out list
     # IS persisted (it's a plain config key, not an env-prefill marker).
-    optout = set(config.get("_env_key_optout") or [])
+    optout = set(env_key_optout_list(config))
     filled: List[str] = []
     for spec in API_KEY_SPECS:
         if not spec.env_vars:
@@ -156,7 +172,7 @@ def resolve_api_key(config: Dict[str, Any], config_key: str) -> str:
     # apply_env_key_fallback does — otherwise the CLI/GUI key inspectors would
     # bypass the clear and resolve the env alias anyway, so "clear key" wouldn't
     # stick for the inspector paths (code-review, PR #73).
-    if config_key in set(config.get("_env_key_optout") or []):
+    if config_key in set(env_key_optout_list(config)):
         return ""
     spec = _spec_for(config_key)
     if spec:

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional, List, TYPE_CHECKING
 from datetime import datetime
 
-from api_keys import API_KEY_SPECS, apply_env_key_fallback, ensure_key_fields, key_status, non_required_missing_specs
+from api_keys import API_KEY_SPECS, apply_env_key_fallback, ensure_key_fields, env_key_optout_list, key_status, non_required_missing_specs
 from app_version import RELEASE_VERSION
 from automation.config import get_outpaint_fal_timeout_seconds
 from startup_key_onboarding import missing_startup_specs, startup_prompt_specs, startup_status_lines
@@ -3533,7 +3533,7 @@ class KlingGUIWindow:
         # Persist a clear so it survives restart even when the env var is still
         # set: opt OUT of the env fallback when cleared to empty; opt back IN
         # (remove from the list) when a real value is entered (CodeRabbit, PR #73).
-        optout = list(self.config.get("_env_key_optout") or [])
+        optout = env_key_optout_list(self.config)
         if new_key:
             if config_key in optout:
                 optout.remove(config_key)
