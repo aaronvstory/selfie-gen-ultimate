@@ -349,8 +349,12 @@ def collapse_legacy_autosaves(app_dir: str) -> int:
                     data = json.load(f)
                 data["project_key"] = _sanitize_name(project_key)
                 data["session_kind"] = SESSION_KIND_AUTOSAVE
-                with open(rolling_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
+                # Atomic write (consistent with save_session): a crash mid-write
+                # must not leave the rolling file truncated — the source is read
+                # but not yet purged, so the data isn't lost, but a corrupt
+                # rolling file would read as live-but-broken next launch
+                # (code-review MEDIUM #4, PR #75).
+                _atomic_write_json(rolling_path, data)
             except Exception as exc:
                 logger.warning("Failed collapsing autosave for %s: %s", project_key, exc)
                 continue
@@ -997,14 +1001,21 @@ def session_liveness(record_path: str) -> dict:
         any_saved_alive or result["rescan_imgs"] > 0 or result["rescan_vids"] > 0
     )
 
-    # Rename rescue: if nothing on the saved paths survived but the session
-    # carries an embedded folder id, the folder may simply have been renamed.
-    # Search the parents of the session's known folders (plus the stored
-    # project_root's parent) for a folder whose marker matches — if found, the
-    # session is live and we report the new path so a caller can re-link it.
-    if not result["live"]:
+    # Rename rescue. Fire the marker probe whenever the session carries a
+    # folder_id AND its stored project_root no longer exists — i.e. the working
+    # folder was renamed. This is INDEPENDENT of overall liveness: a session can
+    # read "live" because an EXTERNAL reference image (dragged in from elsewhere)
+    # still exists, yet its in-project images are all broken by the rename and
+    # must still be re-anchored. Reporting relinked_to lets the caller fix those
+    # in-project paths even on an otherwise-live record. Skipped when the stored
+    # root still exists (no rename happened — nothing to rescue).
+    project_root = data.get("project_root")
+    root_missing = bool(project_root) and not os.path.isdir(project_root)
+    if data.get("folder_id") and (not result["live"] or root_missing):
         relinked = _probe_relink(data, folders)
-        if relinked:
+        if relinked and os.path.normcase(os.path.abspath(relinked)) != os.path.normcase(
+            os.path.abspath(project_root or "")
+        ):
             result["live"] = True
             result["relinked_to"] = relinked
     return result
@@ -1021,9 +1032,20 @@ def _probe_relink(data: dict, folders: set) -> Optional[str]:
     if not folder_id:
         return None
     candidate_parents: set = set()
+
+    def _add_parent(parent: str) -> None:
+        # Skip a drive/filesystem root (e.g. "C:\\" or "/"): scanning it would
+        # walk every top-level dir on the volume for markers, and no user keeps
+        # a working folder one level below the root (code-review MEDIUM #3).
+        if not parent:
+            return
+        if os.path.dirname(parent) == parent:  # parent is its own parent → root
+            return
+        candidate_parents.add(parent)
+
     project_root = data.get("project_root")
     if project_root:
-        candidate_parents.add(os.path.dirname(os.path.abspath(project_root)))
+        _add_parent(os.path.dirname(os.path.abspath(project_root)))
     for folder in folders:
         if not folder:
             continue
@@ -1031,7 +1053,7 @@ def _probe_relink(data: dict, folders: set) -> Optional[str]:
         # search parent is the project root's parent, where a renamed sibling
         # would live.
         root = _walk_up_past_gen_folders(os.path.join(folder, "_"))
-        candidate_parents.add(os.path.dirname(os.path.abspath(root)))
+        _add_parent(os.path.dirname(os.path.abspath(root)))
     if not candidate_parents:
         return None
     try:
@@ -1084,31 +1106,48 @@ def relink_renamed_sessions(app_dir: str) -> List[tuple]:
 def _rewrite_record_root(data: dict, new_root: str) -> bool:
     """Rewrite a session dict in place to point at ``new_root``. Returns changed.
 
-    Re-anchors every image path onto ``new_root``, preserving each file's path
-    *below* its own resolved project root so a nested ``gen-images/...`` layout
-    is kept intact. Computing the relative tail per-image (rather than diffing
-    against a single stored old root) is robust even when ``project_root`` was
-    missing or stale on the record.
+    Re-anchors ONLY the image paths that lived **under the old project root**
+    (so a nested ``gen-images/...`` layout is preserved) onto ``new_root``.
+    Images stored outside the old root — e.g. a reference portrait dragged in
+    from Downloads or another project — are LEFT UNTOUCHED; relocating them into
+    the renamed folder would point at a non-existent file and silently lose the
+    reference (code-review HIGH #1, PR #75).
+
+    Requires ``project_root`` on the record to anchor the prefix test; every
+    session written by this feature has it. For a legacy record with no
+    ``project_root``, no image rewrite is attempted (we can't safely tell which
+    images belong to the folder) — only the ``project_root`` field is stamped so
+    future renames have an anchor. The function always sets ``project_root`` to
+    the confirmed ``new_root`` and returns whether anything changed.
     """
     changed = False
     new_root_abs = os.path.abspath(new_root)
+    old_root = data.get("project_root")
+    old_root_norm = (
+        os.path.normcase(os.path.abspath(old_root)) + os.sep if old_root else ""
+    )
     images = data.get("session", {}).get("images", [])
     for img in images:
         path = img.get("path", "")
         if not path:
             continue
-        # The portion of the path below its project root (e.g. gen-images/x.png).
-        img_root = _walk_up_past_gen_folders(path)
+        # Only re-anchor images that actually live under the OLD project root.
+        # Without a known old root we can't make that call safely, so skip.
+        if not old_root_norm:
+            continue
+        path_norm = os.path.normcase(os.path.abspath(path))
+        if not path_norm.startswith(old_root_norm):
+            continue  # external reference — leave it alone
         try:
-            rel = os.path.relpath(path, img_root)
+            rel = os.path.relpath(path, old_root)
         except ValueError:
             rel = os.path.basename(path)
         new_path = os.path.join(new_root_abs, rel)
         if os.path.normcase(new_path) != os.path.normcase(path):
             img["path"] = new_path
             changed = True
-    if data.get("project_root") and os.path.normcase(
-        os.path.abspath(data["project_root"])
+    if old_root and os.path.normcase(
+        os.path.abspath(old_root)
     ) != os.path.normcase(new_root_abs):
         changed = True
     if changed or not data.get("project_root"):

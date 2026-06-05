@@ -62,7 +62,7 @@ def read_folder_id(folder: str) -> Optional[str]:
         logger.debug("read_folder_id: unreadable marker %s: %s", path, exc)
         return None
     fid = data.get("id") if isinstance(data, dict) else None
-    if isinstance(fid, str) and fid.strip():
+    if isinstance(fid, str) and fid.strip().startswith(_ID_PREFIX):
         return fid.strip()
     return None
 

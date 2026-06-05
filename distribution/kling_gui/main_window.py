@@ -5820,25 +5820,49 @@ class KlingGUIWindow:
     def _run_launch_autoprune(self):
         """Run opt-in startup session cleanup (folder-identity auto-prune).
 
-        Deferred from __init__ via after(0). No-op + silent when the feature is
-        off. When it runs and changes anything, emits one info log line. The
-        backend helper never raises, so this stays a thin wrapper.
+        Deferred from __init__ via after(0), then runs the disk-I/O on a daemon
+        thread so a large or network-mounted sessions dir can't freeze the
+        window paint (code-review MEDIUM #2, PR #75). No-op + silent when the
+        feature is off (the helper short-circuits before any I/O). All Tk
+        updates are marshalled back to the main thread via root.after(0).
         """
-        try:
-            from .session_manager import maybe_autoprune_on_launch
-
-            result = maybe_autoprune_on_launch(self.data_dir, self.config)
-        except Exception as exc:  # pragma: no cover - defensive
-            self.logger.warning("Launch auto-prune failed: %s", exc)
+        # Cheap, thread-safe pre-check so we don't spawn a thread when off.
+        if not self.config.get("session_autoprune_enabled", False):
             return
-        if result.get("ran") and (
-            result.get("relinked") or result.get("pruned") or result.get("collapsed")
-        ):
-            self._log(
-                "Auto-prune: re-linked {relinked}, removed {pruned} dead, "
-                "collapsed {collapsed} autosave file(s)".format(**result),
-                "info",
-            )
+
+        def _worker():
+            try:
+                from .session_manager import maybe_autoprune_on_launch
+
+                result = maybe_autoprune_on_launch(self.data_dir, self.config)
+            except Exception as exc:  # pragma: no cover - defensive
+                self._post_to_ui(
+                    lambda: self.logger.warning("Launch auto-prune failed: %s", exc)
+                )
+                return
+            if result.get("ran") and (
+                result.get("relinked") or result.get("pruned")
+                or result.get("collapsed")
+            ):
+                msg = (
+                    "Auto-prune: re-linked {relinked}, removed {pruned} dead, "
+                    "collapsed {collapsed} autosave file(s)".format(**result)
+                )
+                self._post_to_ui(lambda: self._log(msg, "info"))
+
+        import threading as _threading
+
+        _threading.Thread(
+            target=_worker, name="launch-autoprune", daemon=True
+        ).start()
+
+    def _post_to_ui(self, fn):
+        """Run ``fn`` on the Tk main thread; no-op if the root is gone."""
+        try:
+            if self.root.winfo_exists():
+                self.root.after(0, fn)
+        except tk.TclError:
+            pass
 
     def _on_close(self):
         """Handle window close."""

@@ -462,6 +462,39 @@ class SessionManagerTests(unittest.TestCase):
                 os.path.normcase(os.path.abspath(proj2)))
             self.assertTrue(os.path.isfile(data["session"]["images"][0]["path"]))
 
+    def test_relink_leaves_external_reference_untouched(self):
+        # Regression (code-review HIGH #1): a reference image stored OUTSIDE the
+        # project root (e.g. a portrait dragged in from Downloads) must NOT be
+        # relocated into the renamed folder — that would point at a missing file.
+        with self._workspace() as root:
+            app_dir = os.path.join(root, "app")
+            work = os.path.join(root, "work")
+            os.makedirs(work, exist_ok=True)
+            proj, img, fid = self._make_folder_with_marker(work, "ShootB")
+            # An external reference living elsewhere on disk.
+            ext_dir = os.path.join(root, "Downloads")
+            os.makedirs(ext_dir, exist_ok=True)
+            ext_ref = os.path.join(ext_dir, "portrait.png")
+            with open(ext_ref, "wb") as fh:
+                fh.write(b"x")
+            rec = self._write_record(
+                app_dir, "shootb.json",
+                images=[img, ext_ref], folder_id=fid, project_root=proj)
+            # Rename the project folder; the external ref does NOT move.
+            proj2 = os.path.join(work, "ShootB_DONE")
+            os.rename(proj, proj2)
+            sm.relink_renamed_sessions(app_dir)
+            with open(rec, encoding="utf-8") as fh:
+                data = json.load(fh)
+            paths = [i["path"] for i in data["session"]["images"]]
+            # The in-project image re-anchored to the new root...
+            self.assertTrue(any(
+                os.path.normcase(os.path.abspath(proj2)) in os.path.normcase(p)
+                for p in paths))
+            # ...and the external reference is untouched + still exists.
+            self.assertIn(ext_ref, paths)
+            self.assertTrue(os.path.isfile(ext_ref))
+
     def test_same_folder_one_entry_across_keying(self):
         # Two saves resolving the SAME marker'd folder share one project_key
         # (the embedded id) → one rolling autosave file.
