@@ -191,7 +191,7 @@ foreach ($scope in @('User', 'Machine')) {
 $searchDirs += 'C:\Program Files\NVIDIA Corporation\NVSMI'
 foreach ($d in $searchDirs) {
     $d = $d.Trim()
-    if ($d -and (Test-Path (Join-Path $d 'nvidia-smi.exe')) -and (-not $nvSmiDirs.Contains($d))) {
+    if ($d -and (Test-Path -LiteralPath (Join-Path $d 'nvidia-smi.exe')) -and (-not $nvSmiDirs.Contains($d))) {
         $nvSmiDirs.Add($d)
     }
 }
@@ -208,9 +208,9 @@ foreach ($d in $nvSmiDirs) {
 
 # --- 5. Clear the CuPy kernel cache (stale cubins from the old toolkit) -----
 $cupyCache = Join-Path $env:USERPROFILE '.cupy\kernel_cache'
-if (Test-Path $cupyCache) {
+if (Test-Path -LiteralPath $cupyCache) {
     try {
-        Remove-Item -Path $cupyCache -Recurse -Force -ErrorAction Stop
+        Remove-Item -LiteralPath $cupyCache -Recurse -Force -ErrorAction Stop
         Write-Host "Cleared CuPy kernel cache: $cupyCache"
     } catch {
         Write-Host "Could not fully clear CuPy cache (harmless): $cupyCache" -ForegroundColor DarkGray

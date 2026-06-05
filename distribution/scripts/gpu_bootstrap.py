@@ -655,9 +655,15 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             "if os.environ.get('RPPG_KEEP_CUDA_PATH') != '1':",
             "    try:",
             "        import cupy._environment as _ce0",
-            "        _ce0._cuda_path = None; _ce0._nvcc_path = None",
-            "        _ce0.get_cuda_path = lambda: None",
-            "        _ce0.get_nvcc_path = lambda: None",
+            # Idempotence guard (_rppg_path_patched) — kept in true lockstep with
+            # the injector's _force_cupy_bundled_cuda_headers() so a future
+            # refactor that calls this more than once can't double-patch
+            # (code-review MEDIUM, PR #73).
+            "        if not getattr(_ce0, '_rppg_path_patched', False):",
+            "            _ce0._cuda_path = None; _ce0._nvcc_path = None",
+            "            _ce0.get_cuda_path = lambda: None",
+            "            _ce0.get_nvcc_path = lambda: None",
+            "            _ce0._rppg_path_patched = True",
             "    except Exception:",
             "        pass",
             "from cupyx.scipy.ndimage import gaussian_filter as _g",
