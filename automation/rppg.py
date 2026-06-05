@@ -1301,6 +1301,20 @@ def stream_subprocess_with_timeout(
     reader = threading.Thread(target=_drain, daemon=True)
     reader.start()
 
+    def _close_reader(proc, rdr) -> None:
+        """Close the child's stdout (unblocking _drain's readline) and briefly
+        join the reader so it doesn't outlive this call holding the pipe open.
+        Best-effort; never raises (PR #73 fd/thread-leak fix)."""
+        try:
+            if proc.stdout is not None:
+                proc.stdout.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            rdr.join(timeout=2)
+        except Exception:  # noqa: BLE001
+            pass
+
     output_lines: List[str] = []
     start_time = time.monotonic()
     deadline = start_time + timeout_seconds
@@ -1337,6 +1351,7 @@ def stream_subprocess_with_timeout(
                     # OSError: handle already reaped/closed by a racing kill —
                     # must not crash the stream on the abort path (gemini MEDIUM).
                     pass
+            _close_reader(process, reader)
             raise subprocess.TimeoutExpired(cmd, timeout_seconds)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -1351,6 +1366,7 @@ def stream_subprocess_with_timeout(
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
+            _close_reader(process, reader)
             raise subprocess.TimeoutExpired(cmd, timeout_seconds)
         try:
             item = line_q.get(timeout=min(remaining, 1.0))
@@ -1378,6 +1394,22 @@ def stream_subprocess_with_timeout(
                 )
             continue  # re-check the wall clock; child may be silent
         if item is None:
+            # Abort stays authoritative even when the killed child exits FAST:
+            # the reader can enqueue the EOF sentinel (None) before the next
+            # top-of-loop abort poll, in which case accepting it as a clean EOF
+            # would return the child's (non-zero) exit code → the caller reports
+            # an ordinary "RPPG FAILED" instead of the user-aborted -NORPPG path.
+            # Re-check the event here so an abort always raises TimeoutExpired
+            # (Codex P2, PR #73).
+            if abort_event is not None and abort_event.is_set():
+                if process.poll() is None:
+                    _kill_process_tree(process)
+                    try:
+                        process.wait(timeout=5)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                _close_reader(process, reader)
+                raise subprocess.TimeoutExpired(cmd, timeout_seconds)
             eof = True
             break
         text = item.rstrip()
@@ -1440,6 +1472,13 @@ def stream_subprocess_with_timeout(
             except subprocess.TimeoutExpired:
                 pass
         raise
+    finally:
+        # Always close stdout + reap the reader thread. On the abort/timeout
+        # paths where _kill_process_tree fails silently (e.g. taskkill missing),
+        # the _drain reader would otherwise stay blocked on readline() holding
+        # the pipe open — a fd leak + a lingering thread for the session
+        # (code-review MEDIUM, PR #73). Closing the pipe unblocks it.
+        _close_reader(process, reader)
     return returncode, output_lines
 
 

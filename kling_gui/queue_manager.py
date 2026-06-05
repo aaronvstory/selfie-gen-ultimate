@@ -610,13 +610,32 @@ class QueueManager:
 
     def start_processing(self):
         """Start the worker thread to process queue items."""
-        if self.is_running:
-            return
-
-        self._stop_flag = False
-        self.is_running = True
-        self.is_paused = False
-        self.worker_thread = threading.Thread(target=self._process_queue, daemon=True)
+        # Guard the check-then-act under the lock: add_to_queue() reads
+        # is_running on the GUI thread and the worker clears it on its own
+        # thread, so an unsynchronised `if is_running` + later `is_running=True`
+        # could let two rapid drag-drops (or an abort+resume race) BOTH pass the
+        # check and spawn two concurrent worker threads sharing _abort_event /
+        # _active_subprocess (code-review CRITICAL, PR #73). Also reject if a
+        # prior worker thread is still alive.
+        with self.lock:
+            if self.is_running:
+                return
+            if self.worker_thread is not None and self.worker_thread.is_alive():
+                return
+            # Mutual exclusion with the standalone Oldcam/rPPG re-run worker:
+            # both share self._abort_event, so a queue run starting while a
+            # re-run is still winding down could race the event's clear/set and
+            # swallow an abort (code-review, PR #73). rerun_oldcam_only already
+            # rejects when is_running is True; this is the reverse guard.
+            rerun = getattr(self, "_oldcam_rerun_thread", None)
+            if rerun is not None and rerun.is_alive():
+                return
+            self._stop_flag = False
+            self.is_running = True
+            self.is_paused = False
+            self.worker_thread = threading.Thread(
+                target=self._process_queue, daemon=True
+            )
         self.worker_thread.start()
         self.log("▶ Processing started", "info")
 

@@ -429,3 +429,24 @@ def test_heartbeat_exception_does_not_kill_subprocess(monkeypatch):
     # heartbeat call raised.
     assert rc == 0
     assert lines == ["ok"]
+
+
+def test_abort_authoritative_when_child_exits_fast():
+    """Codex P2 (PR #73): if abort is set and the child exits FAST (so the
+    reader enqueues the EOF sentinel before the next top-of-loop abort poll),
+    the function must STILL raise TimeoutExpired (the user-aborted path) rather
+    than accept the EOF and return the child's exit code (an ordinary 'failed'
+    path). Pre-set abort + a child that prints then exits non-zero quickly."""
+    import threading
+    abort = threading.Event()
+    abort.set()  # already aborted before we even start consuming
+    # Child prints one line then exits with code 3 almost immediately, so EOF
+    # is queued essentially at once.
+    code = "print('one line'); import sys; sys.exit(3)"
+    with pytest.raises(subprocess.TimeoutExpired):
+        rppg_module.stream_subprocess_with_timeout(
+            [sys.executable, "-c", code],
+            cwd=os.getcwd(),
+            timeout_seconds=30,
+            abort_event=abort,
+        )
