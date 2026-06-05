@@ -215,6 +215,118 @@ def sanitize_sash_layout(
     )
 
 
+class AddModelsDialog(tk.Toplevel):
+    """Modal for adding custom fal.ai selfie models by endpoint.
+
+    The user pastes one fal.ai endpoint per line, optionally followed by
+    ``| Friendly Label``. On OK, lines are parsed (via
+    ``SelfieTab.parse_model_lines`` — the single source of truth for the
+    format), endpoints already present are skipped, and the result list of
+    ``{endpoint,label,slug,provider,api_url}`` dicts is exposed on ``self.result``
+    (``None`` on cancel).
+    """
+
+    def __init__(self, parent, existing_endpoints=None):
+        super().__init__(parent)
+        self.title("Add fal.ai Models")
+        self.result = None
+        self._existing = {str(e) for e in (existing_endpoints or set())}
+
+        self.transient(parent)
+        self.grab_set()
+        self.configure(bg=COLORS["bg_panel"])
+        self.geometry("560x420")
+        self.minsize(460, 360)
+
+        tk.Label(
+            self,
+            text="Add fal.ai models",
+            font=(FONT_FAMILY, 14, "bold"),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+        ).pack(pady=(15, 4), padx=18, anchor="w")
+
+        tk.Label(
+            self,
+            text=(
+                "One fal.ai endpoint per line. Optionally add a friendly label "
+                "after a pipe:\n"
+                "    fal-ai/flux-pro/kontext | Kontext Pro\n"
+                "The endpoint is the path from the fal.ai model page (vendor/name)."
+            ),
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+            justify="left",
+            anchor="w",
+        ).pack(fill=tk.X, padx=18, pady=(0, 8))
+
+        text_frame = tk.Frame(self, bg=COLORS["bg_panel"])
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 8))
+        self._text = tk.Text(
+            text_frame,
+            height=8,
+            bg=COLORS["bg_input"],
+            fg=COLORS["text_light"],
+            insertbackground=COLORS["text_light"],
+            font=(FONT_MONO, 10),
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=COLORS["bg_panel"],
+            wrap="none",
+        )
+        self._text.pack(fill=tk.BOTH, expand=True)
+        self._text.insert("1.0", "fal-ai/flux-pro/kontext | Kontext Pro\n")
+        self._text.focus_set()
+
+        self._error_label = tk.Label(
+            self, text="", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"], fg=COLORS["accent_red"]
+            if "accent_red" in COLORS else "#e06c75",
+            anchor="w", justify="left",
+        )
+        self._error_label.pack(fill=tk.X, padx=18)
+
+        btn_row = tk.Frame(self, bg=COLORS["bg_panel"])
+        btn_row.pack(fill=tk.X, padx=18, pady=(6, 14))
+        create_action_button(
+            btn_row, text="Cancel", command=self._cancel, style=TTK_BTN_SECONDARY
+        ).pack(side=tk.RIGHT)
+        create_action_button(
+            btn_row, text="Add", command=self._ok, style=TTK_BTN_PRIMARY
+        ).pack(side=tk.RIGHT, padx=(0, 6))
+
+        self.bind("<Escape>", lambda _e: self._cancel())
+
+        self.update_idletasks()
+        try:
+            pw, ph = parent.winfo_width(), parent.winfo_height()
+            x = parent.winfo_rootx() + (pw - 560) // 2
+            y = parent.winfo_rooty() + (ph - 420) // 2
+            self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+    def _ok(self):
+        from kling_gui.tabs.selfie_tab import SelfieTab
+
+        raw = self._text.get("1.0", tk.END)
+        parsed = SelfieTab.parse_model_lines(raw)
+        # Drop endpoints already present in the picker.
+        fresh = [m for m in parsed if m["endpoint"] not in self._existing]
+        if not fresh:
+            self._error_label.config(
+                text="No new valid endpoints found (need 'vendor/name'; dupes skipped)."
+            )
+            return
+        self.result = fresh
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+
 class FolderPreviewDialog(tk.Toplevel):
     """Dialog showing matched files before adding to queue."""
 

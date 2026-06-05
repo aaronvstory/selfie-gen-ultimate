@@ -39,6 +39,13 @@
       "slug": "nano-banana-2-edit",
       "provider": "fal",
       "api_url": "https://fal.ai/models/fal-ai/nano-banana-2/edit/api"
+    },
+    {
+      "endpoint": "fal-ai/flux-pro/kontext",
+      "label": "Kontext Pro",
+      "slug": "kontext-pro",
+      "provider": "fal",
+      "api_url": "https://fal.ai/models/fal-ai/flux-pro/kontext/api"
     }
   ]
 }
