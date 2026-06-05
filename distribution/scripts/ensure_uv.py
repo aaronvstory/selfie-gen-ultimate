@@ -65,8 +65,19 @@ def find_uv() -> str | None:
 
 
 def _log(msg: str, *, quiet: bool) -> None:
-    if not quiet:
-        print(f"  ensure-uv: {msg}", file=sys.stderr, flush=True)
+    if quiet:
+        return
+    # Under pythonw.exe (GUI, no console) sys.stderr can be None — a bare
+    # print(file=sys.stderr) then raises AttributeError and crashes the stdlib
+    # uv bootstrap (gemini HIGH, PR #73). Guard it.
+    err = sys.stderr
+    if err is None:
+        return
+    try:
+        err.write(f"  ensure-uv: {msg}\n")
+        err.flush()
+    except Exception:  # noqa: BLE001 — logging must never break the bootstrap
+        pass
 
 
 def _run(cmd: list[str], *, timeout: int = 600) -> bool:

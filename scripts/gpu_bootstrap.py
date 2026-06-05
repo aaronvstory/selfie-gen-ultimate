@@ -236,7 +236,17 @@ def _log(msg: str, *, quiet: bool = False) -> None:
     detection, install, install_failed) always print."""
     if quiet:
         return
-    print(f"  GPU: {msg}", flush=True)
+    # Under pythonw.exe (the GUI launches with no console) sys.stdout is None,
+    # so a bare print() raises AttributeError and silently CRASHES the GPU
+    # bootstrap daemon thread → no GPU init ever (gemini HIGH, PR #73). Guard it.
+    out = sys.stdout
+    if out is None:
+        return
+    try:
+        out.write(f"  GPU: {msg}\n")
+        out.flush()
+    except Exception:  # noqa: BLE001 — logging must never crash the bootstrap
+        pass
 
 
 class _PipResult:

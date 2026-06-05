@@ -112,14 +112,22 @@ def _uv_exe() -> str | None:
         return found
     candidates = []
     home = Path.home()
+    userprofile = Path(os.environ.get("USERPROFILE", str(home)))
     if sys.platform == "win32":
         candidates += [
             home / ".local" / "bin" / "uv.exe",
-            Path(os.environ.get("USERPROFILE", str(home))) / ".local" / "bin" / "uv.exe",
+            userprofile / ".local" / "bin" / "uv.exe",
+            # The standalone installer can drop uv in ~/.cargo/bin too —
+            # ensure_uv.find_uv() accepts that location, so this re-resolver MUST
+            # check it as well or uv_sync gets skipped when uv isn't on PATH
+            # (Codex P2, PR #73 — keep in lockstep with ensure_uv.find_uv).
+            home / ".cargo" / "bin" / "uv.exe",
+            userprofile / ".cargo" / "bin" / "uv.exe",
         ]
     else:
         candidates += [
             home / ".local" / "bin" / "uv",
+            home / ".cargo" / "bin" / "uv",
             Path("/opt/homebrew/bin/uv"),
             Path("/usr/local/bin/uv"),
         ]

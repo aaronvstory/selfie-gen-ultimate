@@ -1034,3 +1034,17 @@ def test_nvidia_wheel_specs_parity_with_pyproject_extras():
     # cu121 extra <-> CUDA 12; cu128 extra <-> CUDA 13.
     assert _extra_nvidia("cu121") == set(gpu_bootstrap._CUDA_TO_NVIDIA_WHEELS[12])
     assert _extra_nvidia("cu128") == set(gpu_bootstrap._CUDA_TO_NVIDIA_WHEELS[13])
+
+
+def test_log_survives_none_stdout_pythonw(monkeypatch):
+    """Under pythonw.exe (GUI, no console) sys.stdout is None. gpu_bootstrap._log
+    must NOT raise — a bare print() would AttributeError and silently crash the
+    GPU bootstrap daemon thread → no GPU init ever (gemini HIGH, PR #73)."""
+    import io
+    monkeypatch.setattr(sys, "stdout", None)
+    gpu_bootstrap._log("msg under pythonw")  # must not raise
+    # And with a real stdout it still writes.
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    gpu_bootstrap._log("hello")
+    assert "GPU: hello" in buf.getvalue()
