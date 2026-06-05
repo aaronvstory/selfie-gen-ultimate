@@ -661,8 +661,14 @@ def probe_cupy(python_exe: str) -> Optional[str]:
             "_clear = None",
             "_incdirs = None",
             "try:",
-            "    from cuda_dll_paths import register_cuda_dll_dirs, "
-            "clear_cupy_kernel_cache as _clear, cuda_include_dirs as _incdirs",
+            # NOTE: this is ONE import line. Kept as a single string literal on
+            # purpose — the previous adjacent-string-literal split (two quoted
+            # fragments) is valid Python (they concatenate at parse time) but it
+            # reads like a line break with a dangling comma, which a code-review
+            # bot mis-flagged as a SyntaxError (Codex P1, PR #73 — FALSE
+            # POSITIVE, verified by AST-parsing the generated probe). Single
+            # literal removes the ambiguity.
+            "    from cuda_dll_paths import register_cuda_dll_dirs, clear_cupy_kernel_cache as _clear, cuda_include_dirs as _incdirs",  # noqa: E501
             "    register_cuda_dll_dirs()",
             "except Exception:",
             "    pass",

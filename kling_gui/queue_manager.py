@@ -546,6 +546,14 @@ class QueueManager:
         self._oldcam_deps_status_by_version: Dict[str, bool] = {}
         self._last_oldcam_run_summary: Optional[Dict[str, object]] = None
         self._oldcam_rerun_thread: Optional[threading.Thread] = None
+        # Set while the standalone Oldcam/rPPG re-run worker is ACTIVELY running
+        # (sharing self._abort_event). start_processing()'s mutual-exclusion
+        # guard checks THIS, not the thread's is_alive(), so that the brief
+        # teardown/drain phase at the END of the re-run (after all abort-event
+        # use is done) no longer blocks a concurrent GUI enqueue — closing the
+        # stranded-pending race CodeRabbit flagged without nulling the public
+        # _oldcam_rerun_thread sentinel that the tests join() on (PR #73).
+        self._oldcam_rerun_active = threading.Event()
 
     def log_verbose(self, message: str, level: str = "info"):
         """Log a message only if verbose mode is enabled."""
@@ -641,15 +649,25 @@ class QueueManager:
             # re-run is still winding down could race the event's clear/set and
             # swallow an abort (code-review, PR #73). rerun_oldcam_only already
             # rejects when is_running is True; this is the reverse guard.
-            # EXCEPTION: the re-run worker itself may start the queue from its
-            # OWN finally (to drain items enqueued DURING the re-run) — at that
-            # point the re-run is finished so the abort-event race is gone, and
-            # rejecting it would strand that work forever (Codex P2, PR #73).
-            rerun = getattr(self, "_oldcam_rerun_thread", None)
+            # Reject only while the re-run is ACTIVELY running (it shares
+            # self._abort_event, so a queue run starting mid-re-run could race
+            # the event's clear/set and swallow an abort). The guard checks the
+            # _oldcam_rerun_active Event, NOT the thread's is_alive():
+            #   * The re-run clears _oldcam_rerun_active at the TOP of its finally
+            #     — BEFORE its drain sample — so an enqueue arriving during the
+            #     teardown window is no longer rejected (it passes here and
+            #     spawns the worker), closing CodeRabbit's stranded-pending race
+            #     (PR #73) WITHOUT nulling the public _oldcam_rerun_thread the
+            #     tests join() on.
+            #   * The current_thread() exception keeps the re-run's OWN drain
+            #     call from self-rejecting in the (now impossible, but
+            #     belt-and-suspenders) case the flag is still set (Codex P2).
+            rerun_active = getattr(self, "_oldcam_rerun_active", None)
             if (
-                rerun is not None
-                and rerun.is_alive()
-                and rerun is not threading.current_thread()
+                rerun_active is not None
+                and rerun_active.is_set()
+                and getattr(self, "_oldcam_rerun_thread", None)
+                is not threading.current_thread()
             ):
                 return
             self._stop_flag = False
@@ -1390,6 +1408,14 @@ class QueueManager:
                 if completion_callback:
                     completion_callback(False, str(source_video), None, message)
             finally:
+                # FIRST: drop the active flag. All Oldcam work + abort-event use
+                # is done by now, so start_processing()'s mutual-exclusion guard
+                # can stop rejecting concurrent GUI enqueues. Clearing it BEFORE
+                # the drain sample below closes CodeRabbit's stranded-pending
+                # race: an enqueue that lands AFTER our sample is no longer
+                # rejected — its own start_processing() now passes the guard and
+                # spawns the worker (PR #73).
+                self._oldcam_rerun_active.clear()
                 if temp_input is not None:
                     try:
                         temp_input.unlink(missing_ok=True)
@@ -1399,17 +1425,10 @@ class QueueManager:
                 # re-run, start_processing() rejected them (the mutual-exclusion
                 # guard) and the re-run doesn't otherwise kick the queue — so
                 # they'd sit pending forever (Codex P2, PR #73). Drain them now
-                # that the re-run is finishing.
-                #
-                # Sample pending + kick. CodeRabbit (PR #73) noted a microsecond
-                # residual window (a file added AFTER this sample but BEFORE
-                # _worker() returns is rejected by its own start_processing —
-                # this thread is still .is_alive() — and missed here). We do NOT
-                # null _oldcam_rerun_thread (the tests + the is_alive guard read
-                # it) or busy-wait (that would delay every rerun completion to
-                # close a microsecond gap). The residual window is recovered by
-                # the user's NEXT enqueue/Resume — an acceptable trade vs. adding
-                # latency to the happy path.
+                # that the re-run is finishing. With _oldcam_rerun_active already
+                # cleared, a last-moment enqueue racing this sample self-kicks,
+                # so nothing is stranded. We do NOT null _oldcam_rerun_thread —
+                # the tests join() on it.
                 try:
                     with self.lock:
                         has_pending = any(
@@ -1420,12 +1439,22 @@ class QueueManager:
                 except Exception:  # noqa: BLE001 — never let drain break teardown
                     pass
 
+        # Arm the active flag BEFORE spawning so a GUI enqueue that races the
+        # spawn is correctly held off until the re-run finishes.
+        self._oldcam_rerun_active.set()
         self._oldcam_rerun_thread = threading.Thread(
             target=_worker,
             daemon=True,
             name="oldcam-rerun-worker",
         )
-        self._oldcam_rerun_thread.start()
+        try:
+            self._oldcam_rerun_thread.start()
+        except Exception as exc:  # noqa: BLE001
+            # If the OS refuses the thread, the active flag would otherwise stay
+            # set forever and permanently block the queue. Roll it back.
+            self._oldcam_rerun_active.clear()
+            self.log(f"⚠ Could not start Oldcam re-run worker: {exc}", "error")
+            return False
         return True
 
     def _get_next_pending(self) -> Optional[QueueItem]:

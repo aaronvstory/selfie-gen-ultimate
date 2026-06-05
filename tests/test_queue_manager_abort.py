@@ -495,3 +495,84 @@ def test_start_processing_resets_is_running_if_thread_start_fails(monkeypatch):
     assert qm.is_running is False, "is_running must reset after a failed start"
     assert qm.worker_thread is None
     assert any(lvl == "error" for lvl, _m in logs), "the failure should be logged"
+
+
+def test_start_processing_not_rejected_during_rerun_teardown_window():
+    """CodeRabbit Major (PR #73): a queue item enqueued in the re-run's TEARDOWN
+    window — after the re-run cleared _oldcam_rerun_active but while its thread is
+    still is_alive() (draining) — must NOT be rejected by start_processing's
+    mutual-exclusion guard. The guard keys off the _oldcam_rerun_active Event
+    (cleared at the top of the re-run's finally), not the thread's is_alive(),
+    so the late enqueue's own start_processing() passes and self-kicks the queue
+    instead of stranding the item pending forever."""
+    qm, _ = _make_qm()
+
+    # Simulate the teardown window: the re-run THREAD is still alive (draining)
+    # but the active flag has already been cleared.
+    class _StillAlive:
+        def is_alive(self):
+            return True
+
+    qm._oldcam_rerun_thread = _StillAlive()
+    qm._oldcam_rerun_active.clear()  # re-run no longer actively using abort_event
+    qm.is_running = False
+    qm.is_paused = False
+
+    started = {"n": 0}
+    import threading as _t
+
+    class _InlineThread:
+        def __init__(self, target=None, daemon=None, **k):
+            started["n"] += 1
+
+        def start(self):
+            pass
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(_t, "Thread", _InlineThread):
+        qm.start_processing()
+
+    assert started["n"] == 1, (
+        "start_processing must spawn a worker during the re-run teardown window "
+        "(active flag cleared) even though the re-run thread is still is_alive()"
+    )
+    assert qm.is_running is True
+
+
+def test_start_processing_rejected_while_rerun_active():
+    """The flip side: while the re-run is ACTIVELY running (_oldcam_rerun_active
+    set) and the caller is a DIFFERENT thread (the GUI), start_processing must
+    reject — both share _abort_event, so a queue run mid-re-run could swallow an
+    abort. (The re-run's OWN drain call is exempted via current_thread.)"""
+    qm, _ = _make_qm()
+
+    class _StillAlive:
+        def is_alive(self):
+            return True
+
+    qm._oldcam_rerun_thread = _StillAlive()  # NOT the current thread
+    qm._oldcam_rerun_active.set()
+    qm.is_running = False
+    qm.is_paused = False
+
+    started = {"n": 0}
+    import threading as _t
+
+    class _InlineThread:
+        def __init__(self, target=None, daemon=None, **k):
+            started["n"] += 1
+
+        def start(self):
+            pass
+
+    import unittest.mock as _mock
+
+    with _mock.patch.object(_t, "Thread", _InlineThread):
+        qm.start_processing()
+
+    assert started["n"] == 0, (
+        "start_processing must reject while the re-run is actively running and "
+        "the caller is a different (GUI) thread"
+    )
+    assert qm.is_running is False
