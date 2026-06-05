@@ -5945,9 +5945,9 @@ Full Traceback:
         # Append to crash log (keep history)
         with open(crash_log_path, "a", encoding="utf-8") as f:
             f.write(crash_info)
-        print(f"\n[Crash log saved to: {crash_log_path}]")
+        _safe_print(f"\n[Crash log saved to: {crash_log_path}]")
     except Exception as log_error:
-        print(f"[Could not write crash log: {log_error}]")
+        _safe_print(f"[Could not write crash log: {log_error}]")
 
 
 def launch_gui(config_path: Optional[str] = None):
@@ -5961,14 +5961,17 @@ def launch_gui(config_path: Optional[str] = None):
     except Exception as e:
         tb_str = traceback.format_exc()
 
-        # Print full error to console
-        print("\n" + "=" * 60)
-        print("  FATAL ERROR - GUI Crashed")
-        print("=" * 60)
-        print(f"\nError: {type(e).__name__}: {e}")
-        print("\nFull traceback:")
-        print(tb_str)
-        print("=" * 60)
+        # Print full error to console. Use _safe_print: under pythonw.exe a
+        # STARTUP/import crash here would otherwise re-raise (sys.stdout None)
+        # inside this handler BEFORE write_crash_log runs, masking the original
+        # error + dropping the crash log (CodeRabbit, PR #73).
+        _safe_print("\n" + "=" * 60)
+        _safe_print("  FATAL ERROR - GUI Crashed")
+        _safe_print("=" * 60)
+        _safe_print(f"\nError: {type(e).__name__}: {e}")
+        _safe_print("\nFull traceback:")
+        _safe_print(tb_str)
+        _safe_print("=" * 60)
 
         # Write to crash log file
         write_crash_log(type(e).__name__, str(e), tb_str)

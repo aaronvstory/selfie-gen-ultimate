@@ -602,8 +602,14 @@ class QueueManager:
         self.update_queue_display()
         self.log(f"Added to queue: {os.path.basename(file_path)}", "info")
 
-        # Start processing if not already running
-        if not self.is_running and not self.is_paused:
+        # Kick the queue unless it's PAUSED (a paused queue must not auto-start —
+        # start_processing un-pauses). Do NOT also gate on `not is_running` out
+        # here: that unlocked read has a window where the worker decided the
+        # queue was empty but hasn't cleared is_running yet, so the new item
+        # would be stranded. start_processing's OWN lock-guarded is_running check
+        # is authoritative — it no-ops if a worker is genuinely running and
+        # starts one otherwise (CodeRabbit, PR #73).
+        if not self.is_paused:
             self.start_processing()
 
         return True, "Added to queue"
@@ -842,7 +848,9 @@ class QueueManager:
         if count > 0:
             self.update_queue_display()
             self.log(f"Retrying {count} failed item(s)", "info")
-            if not self.is_running and not self.is_paused:
+            # Only the is_paused gate here; start_processing's locked is_running
+            # check is authoritative (see add_to_queue note, CodeRabbit PR #73).
+            if not self.is_paused:
                 self.start_processing()
         return count
 
@@ -1375,9 +1383,17 @@ class QueueManager:
                 # re-run, start_processing() rejected them (the mutual-exclusion
                 # guard) and the re-run doesn't otherwise kick the queue — so
                 # they'd sit pending forever (Codex P2, PR #73). Drain them now
-                # that the re-run is finishing. The guard lets THIS thread
-                # through (rerun is current_thread), and start_processing no-ops
-                # if there's nothing pending or a queue worker is already up.
+                # that the re-run is finishing.
+                #
+                # Sample pending + kick. CodeRabbit (PR #73) noted a microsecond
+                # residual window (a file added AFTER this sample but BEFORE
+                # _worker() returns is rejected by its own start_processing —
+                # this thread is still .is_alive() — and missed here). We do NOT
+                # null _oldcam_rerun_thread (the tests + the is_alive guard read
+                # it) or busy-wait (that would delay every rerun completion to
+                # close a microsecond gap). The residual window is recovered by
+                # the user's NEXT enqueue/Resume — an acceptable trade vs. adding
+                # latency to the happy path.
                 try:
                     with self.lock:
                         has_pending = any(
