@@ -190,3 +190,18 @@ def test_ensure_uv_main_print_path(monkeypatch, capsys):
 def test_ensure_uv_main_failure_exit_1(monkeypatch):
     monkeypatch.setattr(ensure_uv, "ensure_uv", lambda *, quiet=False: None)
     assert ensure_uv.main(["--quiet"]) == 1
+
+
+def test_bootstrap_logs_survive_none_stdout_pythonw(monkeypatch):
+    """Under pythonw.exe (GUI, no console) sys.stdout/stderr is None. EVERY
+    stdlib-bootstrap _log must NOT raise — a bare print() would AttributeError
+    and crash the dep-bootstrap chain mid-provision (CodeRabbit + the round-6
+    gpu_bootstrap/ensure_uv fixes; uv_sync_deps + uv_torch_select were the
+    remaining gaps — PR #73)."""
+    uv_torch_select = importlib.import_module("uv_torch_select")
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    # None of these may raise.
+    uv_sync_deps._log("x", quiet=False)
+    ensure_uv._log("x", quiet=False)
+    uv_torch_select._log("x")

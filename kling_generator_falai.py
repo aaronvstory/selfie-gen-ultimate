@@ -930,6 +930,12 @@ class FalAIKlingGenerator:
                     consecutive_errors = 0
 
                     status_result = status_response.json()
+                    if not isinstance(status_result, dict):
+                        # A 200 with a non-dict body (list/string/null from a
+                        # corrupted/unexpected fal.ai response) would otherwise
+                        # AttributeError on the .get() calls below (gemini, PR #73).
+                        # Treat it as a transient poll glitch and retry.
+                        status_result = {}
                     status = status_result.get("status")
                     if isinstance(status, str) and status:
                         # Remember the most recent status so the heartbeat's

@@ -71,8 +71,20 @@ _CUDA_MAJOR_TO_EXTRA = {12: "cu121", 13: "cu128"}
 
 
 def _log(msg: str, *, quiet: bool = False) -> None:
-    if not quiet:
-        print(f"  uv-torch: {msg}", flush=True)
+    if quiet:
+        return
+    # Under pythonw.exe (GUI, no console) sys.stdout is None — a bare print()
+    # raises AttributeError and crashes the stdlib torch-select bootstrap (same
+    # class as the gpu_bootstrap/ensure_uv _log fixes; this one was missed —
+    # CodeRabbit, PR #73). Guard it.
+    out = sys.stdout
+    if out is None:
+        return
+    try:
+        out.write(f"  uv-torch: {msg}\n")
+        out.flush()
+    except Exception:  # noqa: BLE001 — logging must never break the bootstrap
+        pass
 
 
 def resolve_extra() -> tuple[str, str]:

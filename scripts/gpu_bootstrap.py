@@ -379,9 +379,10 @@ def _write_stamp(payload: dict) -> None:
             os.replace(tmp_path, STAMP_PATH)
         finally:
             # If os.replace succeeded the temp is already gone; this only
-            # cleans up a temp orphaned by a write/replace failure.
+            # cleans up a temp orphaned by a write/replace failure. missing_ok
+            # avoids the FileNotFoundError on the happy path (gemini, PR #73).
             try:
-                tmp_path.unlink()
+                tmp_path.unlink(missing_ok=True)
             except OSError:
                 pass
     except OSError as exc:

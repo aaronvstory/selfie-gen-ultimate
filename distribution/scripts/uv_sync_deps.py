@@ -47,8 +47,20 @@ FALLBACK_TO_PIP = 3
 
 
 def _log(msg: str, *, quiet: bool) -> None:
-    if not quiet:
-        print(f"  uv-sync: {msg}", flush=True)
+    if quiet:
+        return
+    # Under pythonw.exe (GUI, no console) sys.stdout is None — a bare print()
+    # raises AttributeError and crashes the stdlib uv-sync orchestrator (same
+    # class as the gpu_bootstrap/ensure_uv/uv_torch_select _log fixes — folded in
+    # the whole pattern, not just the bot-flagged one; PR #73). Guard it.
+    out = sys.stdout
+    if out is None:
+        return
+    try:
+        out.write(f"  uv-sync: {msg}\n")
+        out.flush()
+    except Exception:  # noqa: BLE001 — logging must never break the bootstrap
+        pass
 
 
 def venv_dir_for_python(python_exe: str | None) -> Path | None:
