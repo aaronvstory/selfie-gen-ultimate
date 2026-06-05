@@ -1711,8 +1711,16 @@ class SelfieTab(tk.Frame):
 
     @staticmethod
     def _derive_slug(endpoint: str) -> str:
-        """URL-safe slug from a fal.ai endpoint's last path segment."""
-        tail = endpoint.rstrip("/").split("/")[-1] if endpoint else ""
+        """URL-safe slug from a fal.ai endpoint's last TWO path segments.
+
+        Using the last two segments (e.g. ``flux-pro/kontext`` → ``flux-pro-kontext``)
+        instead of just the last keeps slugs distinct for endpoints that share a
+        final segment (``vendor/model`` vs ``vendor2/model``) — the slug feeds
+        output filename suffixes, so a collision would overwrite files
+        (code-review LOW, PR #77).
+        """
+        parts = [p for p in endpoint.rstrip("/").split("/") if p] if endpoint else []
+        tail = "-".join(parts[-2:]) if parts else ""
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", tail).strip("-").lower()
         return slug or "model"
 
@@ -1745,8 +1753,16 @@ class SelfieTab(tk.Frame):
                 label = label.strip()
             else:
                 endpoint, label = line, ""
-            # Must look like a fal.ai endpoint: at least vendor/name.
-            if "/" not in endpoint or endpoint.startswith("/") or endpoint.endswith("/"):
+            # Must look like a fal.ai endpoint path: vendor/name with no URL
+            # query/fragment (a pasted model-page URL with ?…/#… would 404 at
+            # generation — code-review MEDIUM, PR #77).
+            if (
+                "/" not in endpoint
+                or endpoint.startswith("/")
+                or endpoint.endswith("/")
+                or "?" in endpoint
+                or "#" in endpoint
+            ):
                 continue
             if endpoint in seen:
                 continue

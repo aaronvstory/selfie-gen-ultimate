@@ -276,13 +276,17 @@ class AddModelsDialog(tk.Toplevel):
             wrap="none",
         )
         self._text.pack(fill=tk.BOTH, expand=True)
-        self._text.insert("1.0", "fal-ai/flux-pro/kontext | Kontext Pro\n")
+        # Placeholder shows the FORMAT with a non-built-in example so pressing
+        # Add on the prefill doesn't immediately error (code-review LOW, PR #77).
+        self._text.insert("1.0", "# example:  fal-ai/some-vendor/some-model | My Label\n")
         self._text.focus_set()
 
         self._error_label = tk.Label(
             self, text="", font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_panel"], fg=COLORS["accent_red"]
-            if "accent_red" in COLORS else "#e06c75",
+            # btn_red is the theme's canonical error red (accent_red isn't a
+            # COLORS key — code-review HIGH, PR #77).
+            bg=COLORS["bg_panel"],
+            fg=COLORS.get("btn_red", COLORS.get("error", "#e06c75")),
             anchor="w", justify="left",
         )
         self._error_label.pack(fill=tk.X, padx=18)

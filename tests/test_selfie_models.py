@@ -15,9 +15,21 @@ class SelfieModelParsingTests(unittest.TestCase):
         self.assertEqual(kontext["provider"], "fal")
 
     def test_derive_slug(self):
-        self.assertEqual(SelfieTab._derive_slug("fal-ai/flux-pro/kontext"), "kontext")
-        self.assertEqual(SelfieTab._derive_slug("vendor/Some_Model.v2"), "some-model-v2")
+        # Last TWO path segments, to avoid collisions on a shared final segment.
+        self.assertEqual(SelfieTab._derive_slug("fal-ai/flux-pro/kontext"), "flux-pro-kontext")
+        self.assertEqual(SelfieTab._derive_slug("vendor/Some_Model.v2"), "vendor-some-model-v2")
         self.assertEqual(SelfieTab._derive_slug(""), "model")
+
+    def test_derive_slug_avoids_collision(self):
+        # Different vendors, same final segment → distinct slugs.
+        self.assertNotEqual(
+            SelfieTab._derive_slug("vendor/model"),
+            SelfieTab._derive_slug("vendor2/model"),
+        )
+
+    def test_parse_rejects_query_string_endpoints(self):
+        out = SelfieTab.parse_model_lines("vendor/model?key=val\nvendor/ok\nvendor/frag#x")
+        self.assertEqual([m["endpoint"] for m in out], ["vendor/ok"])
 
     def test_prettify_label(self):
         self.assertEqual(SelfieTab._prettify_label("fal-ai/nano-banana-2/edit"), "Edit")
@@ -34,7 +46,7 @@ class SelfieModelParsingTests(unittest.TestCase):
         endpoints = [m["endpoint"] for m in out]
         self.assertEqual(endpoints, ["fal-ai/flux-pro/kontext", "vendor/plain-model"])
         self.assertEqual(out[0]["label"], "Kontext Pro")
-        self.assertEqual(out[0]["slug"], "kontext")
+        self.assertEqual(out[0]["slug"], "flux-pro-kontext")
         self.assertEqual(out[0]["provider"], "fal")
         self.assertEqual(out[0]["api_url"], "https://fal.ai/models/fal-ai/flux-pro/kontext/api")
         # Derived label when none supplied.
@@ -60,7 +72,7 @@ class SelfieModelParsingTests(unittest.TestCase):
         loaded = SelfieTab._load_custom_models(stub)
         self.assertEqual([m["endpoint"] for m in loaded], ["vendor/good"])
         self.assertEqual(loaded[0]["provider"], "fal")
-        self.assertEqual(loaded[0]["slug"], "good")
+        self.assertEqual(loaded[0]["slug"], "vendor-good")
 
     def test_load_custom_models_handles_bad_config(self):
         stub = types.SimpleNamespace(config={"selfie_custom_models": "not-a-list"})
