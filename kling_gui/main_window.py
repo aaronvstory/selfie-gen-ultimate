@@ -389,6 +389,7 @@ class SessionManagerDialog(tk.Toplevel):
         self._selected_path = None
         self._selected_record = None
         self._loaded_session_data = None
+        self._loaded_session_path = None
 
         self._build_ui()
         self._refresh_list()
@@ -491,6 +492,21 @@ class SessionManagerDialog(tk.Toplevel):
         )
         interval_menu.pack(side=tk.LEFT)
         interval_menu.bind("<<ComboboxSelected>>", lambda e: self._on_autosave_changed())
+
+        # Auto-Prune: when on, the app cleans up dead sessions at every launch
+        # (re-links renamed folders first so they're never swept, then prunes
+        # sessions whose folder is genuinely gone, then collapses duplicate
+        # autosaves). Opt-in, default off; state persists across launches on
+        # both OSes via kling_config.json.
+        self._autoprune_var = tk.BooleanVar(
+            value=self._config.get("session_autoprune_enabled", False)
+        )
+        autoprune_cb = ttk.Checkbutton(
+            autosave_frame, text="Auto-Prune", variable=self._autoprune_var,
+            style="SessionManager.TCheckbutton",
+            command=self._on_autoprune_changed,
+        )
+        autoprune_cb.pack(side=tk.LEFT, padx=(16, 0))
 
         # Hint clarifying the two save buttons (they look similar but differ).
         tk.Label(
@@ -734,6 +750,9 @@ class SessionManagerDialog(tk.Toplevel):
         try:
             data = load_session(self._selected_path)
             self._loaded_session_data = data
+            # Remember the source file so the restore path can persist a rename
+            # re-link back to it (Codex P2 #1, PR #75).
+            self._loaded_session_path = self._selected_path
             self._log_fn(f"Session loaded: {data.get('name', '?')}", "success")
             self.destroy()
         except Exception as e:
@@ -861,6 +880,12 @@ class SessionManagerDialog(tk.Toplevel):
         self._config["session_autosave_interval"] = self._interval_var.get()
         self._save_config_fn()
 
+    def _on_autoprune_changed(self):
+        # Dedicated handler (not folded into _on_autosave_changed) so the
+        # interval combobox's binding can't co-mingle the autoprune key.
+        self._config["session_autoprune_enabled"] = self._autoprune_var.get()
+        self._save_config_fn()
+
 
 class KlingGUIWindow:
     """Main GUI window for Kling video generation."""
@@ -960,6 +985,14 @@ class KlingGUIWindow:
             sessions_dir=self.sessions_dir,
         )
         self.image_session.add_on_change(self._on_image_session_changed)
+
+        # Opt-in auto-prune (folder-identity feature). Deferred via after(0) so
+        # the window paints before the (potentially I/O-heavy) liveness scan
+        # runs on the first idle cycle. No-op when the feature is off.
+        try:
+            self.root.after(0, self._run_launch_autoprune)
+        except tk.TclError:
+            pass
 
         # PR #49: workspace liveness marker. Best-effort; failure is non-fatal.
         # cleanup_stale_markers + register_instance themselves swallow OS errors
@@ -5592,10 +5625,30 @@ class KlingGUIWindow:
         )
         self.root.wait_window(dialog)
         if dialog._loaded_session_data:
-            self._on_session_loaded(dialog._loaded_session_data)
+            self._on_session_loaded(
+                dialog._loaded_session_data,
+                record_path=getattr(dialog, "_loaded_session_path", None),
+            )
 
-    def _on_session_loaded(self, data: dict):
+    def _on_session_loaded(self, data: dict, record_path: Optional[str] = None):
         """Restore session from loaded data."""
+        # Rename rescue on the DEFAULT load path (Codex P2 #1): if this session's
+        # working folder was renamed, re-anchor its in-project image paths to the
+        # folder's current location BEFORE the isfile-skip loop below — otherwise
+        # every saved absolute path reads as missing and the row loads 0 images,
+        # even with auto-prune off. Best-effort + in place; persists when a source
+        # record_path is known.
+        try:
+            from .session_manager import relink_session_data
+
+            new_root = relink_session_data(data, record_path)
+            if new_root:
+                self._log(
+                    f"Re-linked session to renamed folder: {os.path.basename(new_root)}",
+                    "info",
+                )
+        except Exception:
+            self.logger.debug("relink-on-load skipped", exc_info=True)
         session_data = data.get("session", {})
         images = session_data.get("images", [])
         if not images:
@@ -5787,6 +5840,59 @@ class KlingGUIWindow:
     def _maybe_autosave(self, reason: str = "manual"):
         """Persist a versioned autosave snapshot for the current project."""
         self.session_controller.maybe_autosave(reason=reason)
+
+    def _run_launch_autoprune(self):
+        """Run opt-in startup session cleanup (folder-identity auto-prune).
+
+        Deferred from __init__ via after(0), then runs the disk-I/O on a daemon
+        thread so a large or network-mounted sessions dir can't freeze the
+        window paint (code-review MEDIUM #2, PR #75). No-op + silent when the
+        feature is off (the helper short-circuits before any I/O). All Tk
+        updates are marshalled back to the main thread via root.after(0).
+        """
+        # Cheap, thread-safe pre-check so we don't spawn a thread when off.
+        if not self.config.get("session_autoprune_enabled", False):
+            return
+
+        def _worker():
+            try:
+                from .session_manager import maybe_autoprune_on_launch
+
+                result = maybe_autoprune_on_launch(self.data_dir, self.config)
+            except Exception as exc:  # pragma: no cover - defensive
+                self._post_to_ui(
+                    lambda: self.logger.warning("Launch auto-prune failed: %s", exc)
+                )
+                return
+            if result.get("ran") and (
+                result.get("relinked") or result.get("pruned")
+                or result.get("collapsed")
+            ):
+                msg = (
+                    "Auto-prune: re-linked {relinked}, removed {pruned} dead, "
+                    "collapsed {collapsed} autosave file(s)".format(**result)
+                )
+                self._post_to_ui(lambda: self._log(msg, "info"))
+
+        import threading as _threading
+
+        _threading.Thread(
+            target=_worker, name="launch-autoprune", daemon=True
+        ).start()
+
+    def _post_to_ui(self, fn):
+        """Schedule ``fn`` on the Tk main thread from any thread.
+
+        ``root.after`` is the one Tk call safe to invoke cross-thread; do NOT
+        call widget methods like ``winfo_exists`` from a worker thread — Tcl/Tk
+        is not thread-safe and that can segfault/hang (Gemini HIGH, PR #75). If
+        the root is already torn down, ``after`` raises TclError, which we
+        swallow.
+        """
+        try:
+            self.root.after(0, fn)
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _on_close(self):
         """Handle window close."""
