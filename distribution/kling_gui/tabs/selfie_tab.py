@@ -1718,11 +1718,13 @@ class SelfieTab(tk.Frame):
     def _derive_slug(endpoint: str) -> str:
         """URL-safe slug from a fal.ai endpoint's last TWO path segments.
 
-        Using the last two segments (e.g. ``flux-pro/kontext`` → ``flux-pro-kontext``)
-        instead of just the last keeps slugs distinct for endpoints that share a
-        final segment (``vendor/model`` vs ``vendor2/model``) — the slug feeds
-        output filename suffixes, so a collision would overwrite files
-        (code-review LOW, PR #77).
+        Stored on a custom model (``selfie_custom_models[].slug``) for display /
+        identification. Uses the last two segments (e.g. ``flux-pro/kontext`` →
+        ``flux-pro-kontext``) so endpoints sharing a final segment
+        (``vendor/model`` vs ``vendor2/model``) stay distinct. Output filenames
+        are derived separately by ``SelfieGenerator._model_short_name``, which
+        applies the same last-two-segments rule for unknown endpoints — so the
+        two stay consistent and collision-resistant (code-review, PR #77).
         """
         parts = [p for p in endpoint.rstrip("/").split("/") if p] if endpoint else []
         tail = "-".join(parts[-2:]) if parts else ""

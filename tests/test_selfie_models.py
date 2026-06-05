@@ -22,6 +22,17 @@ class SelfieModelParsingTests(unittest.TestCase):
             "openai/gpt-image-2/edit", "p", "http://x/y.png", 1.0, 1024, 1024, 7)
         self.assertEqual(gpt["image_urls"], ["http://x/y.png"])
 
+    def test_model_short_name_collision_resistant_for_custom(self):
+        # Output filenames for custom (unregistered) endpoints must not collide
+        # when they share a final segment (code-review MEDIUM round 2, PR #77).
+        from selfie_generator import SelfieGenerator
+        a = SelfieGenerator._model_short_name("vendor-a/edit")
+        b = SelfieGenerator._model_short_name("vendor-b/edit")
+        self.assertNotEqual(a, b)
+        # Built-ins still resolve via their models.json slug.
+        self.assertEqual(
+            SelfieGenerator._model_short_name("fal-ai/flux-pro/kontext"), "kontext-pro")
+
     def test_kontext_pro_is_available(self):
         from selfie_generator import SelfieGenerator
         models = SelfieGenerator.get_available_models()

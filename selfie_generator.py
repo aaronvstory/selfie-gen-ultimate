@@ -154,7 +154,13 @@ class SelfieGenerator:
                 slug = model.get("slug", "")
                 if slug:
                     return re.sub(r"[^a-z0-9\-]+", "-", slug.lower()).strip("-")
-        fallback = endpoint.split("/")[-1].lower()
+        # Unknown endpoint (e.g. a custom model added via the GUI Add-Models
+        # modal, which isn't registered in AVAILABLE_MODELS): use the last TWO
+        # path segments so two custom endpoints sharing a final segment
+        # (vendor-a/edit vs vendor-b/edit) don't collide in output filenames
+        # (code-review MEDIUM, PR #77).
+        parts = [p for p in endpoint.split("/") if p]
+        fallback = "-".join(parts[-2:]).lower() if parts else endpoint.lower()
         return re.sub(r"[^a-z0-9\-]+", "-", fallback).strip("-")
 
     @staticmethod
