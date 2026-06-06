@@ -46,6 +46,10 @@ class ComparePanel(tk.Frame):
         self._hover_photo_left = None
         self._hover_photo_right = None
         self._hover_job: Optional[str] = None
+        # Subagent M3 round 2 on PR #83: track the cursor-off-popup
+        # polling chain so `_cancel_hover` can cancel it. Without
+        # this an old poll outlives a fresh popup.
+        self._hover_poll_job: Optional[str] = None
 
         # Re-entrancy guard
         self._updating: bool = False
@@ -398,12 +402,112 @@ class ComparePanel(tk.Frame):
 
     def _cancel_hover(self):
         if self._hover_job:
-            self.after_cancel(self._hover_job)
+            try:
+                self.after_cancel(self._hover_job)
+            except tk.TclError:
+                pass
             self._hover_job = None
+        if self._hover_poll_job:
+            try:
+                self.after_cancel(self._hover_poll_job)
+            except tk.TclError:
+                pass
+            self._hover_poll_job = None
 
-    def _on_hover_leave(self, _event=None):
+    def _force_destroy_hover(self, _event=None):
+        """Force-destroy bypasses the cursor-over-popup guard. Bound to
+        `<Button-1>` on the popup so the user can click-to-dismiss
+        without having to move the cursor off the popup first
+        (subagent H2 round 2 — the round-1 patch wired Button-1 to
+        `_on_hover_leave`, which always re-checks `_cursor_over_popup`
+        and so refused to destroy on the same widget the click landed
+        on)."""
         self._cancel_hover()
         self._destroy_hover()
+
+    def _cursor_over_popup(self) -> bool:
+        """True when the cursor's screen coords are inside the hover popup.
+
+        The hover popup is positioned at the centre of the parent window,
+        which usually overlaps the canvas. When the popup appears, the
+        cursor is instantly INSIDE the popup → the canvas fires `<Leave>`
+        → without this guard, _on_hover_leave would destroy the popup → on
+        the next refresh the canvas fires `<Enter>` again → 500ms later
+        the popup re-appears → loop = flashing.
+
+        This helper queries Tk's `winfo_pointerxy()` (screen coords) and
+        compares against the popup's bbox so we can keep the popup alive
+        when the cursor is INSIDE it even though it's outside the canvas.
+        """
+        popup = self._hover_popup
+        if not popup:
+            return False
+        try:
+            px, py = popup.winfo_pointerxy()
+            x1 = popup.winfo_rootx()
+            y1 = popup.winfo_rooty()
+            # PR #83 HIGH-1 (Gemini round 2): when the popup is first
+            # mapped, winfo_width() / winfo_height() can return 1 (the
+            # widget exists but the WM hasn't finished geometry
+            # negotiation). With w=h=1, x2≈x1 and y2≈y1, the bbox
+            # check fails, we return False, and the cursor-just-entered-
+            # popup case gets misclassified as "cursor outside" → the
+            # popup destroys, the canvas re-enters, and the flash loop
+            # comes back. Fall back to winfo_reqwidth/reqheight (the
+            # requested size, available before the WM maps the widget)
+            # so we have a usable bbox from the very first call.
+            w = popup.winfo_width()
+            if w <= 1:
+                w = popup.winfo_reqwidth()
+            h = popup.winfo_height()
+            if h <= 1:
+                h = popup.winfo_reqheight()
+            x2 = x1 + w
+            y2 = y1 + h
+            return x1 <= px <= x2 and y1 <= py <= y2
+        except tk.TclError:
+            return False
+
+    def _on_hover_leave(self, _event=None):
+        # Anti-flash (PR fix/gpt-content-policy-and-hover-flash):
+        # if the cursor is INSIDE the popup, the canvas's `<Leave>` is
+        # just an artefact of the cursor crossing into the borderless
+        # Toplevel. Keep the popup alive and poll until the cursor
+        # really leaves both the canvas AND the popup.
+        if self._cursor_over_popup():
+            self._poll_cursor_off_popup()
+            return
+        self._cancel_hover()
+        self._destroy_hover()
+
+    def _poll_cursor_off_popup(self):
+        """Poll until the cursor exits the popup bbox; then destroy."""
+        if not self._hover_popup:
+            self._hover_poll_job = None
+            return
+        # M2 round 2: bail when the top-level window loses focus
+        # (alt-tab to another app). Tk fires no `<Leave>` in that
+        # case so the polling loop would otherwise keep a borderless
+        # topmost popup floating over the foreground application.
+        try:
+            top = self.winfo_toplevel()
+            focus_win = top.focus_displayof()
+            if focus_win is None:
+                self._cancel_hover()
+                self._destroy_hover()
+                return
+        except tk.TclError:
+            pass
+        if not self._cursor_over_popup():
+            self._cancel_hover()
+            self._destroy_hover()
+            return
+        try:
+            self._hover_poll_job = self.after(120, self._poll_cursor_off_popup)
+        except tk.TclError:
+            # Widget gone (e.g. tab destroyed); abandon the poll.
+            self._hover_poll_job = None
+            self._destroy_hover()
 
     def _destroy_hover(self):
         if self._hover_popup:
@@ -519,7 +623,12 @@ class ComparePanel(tk.Frame):
 
             popup.geometry(f"+{x}+{y}")
             popup.bind("<Leave>", self._on_hover_leave)
-            popup.bind("<Button-1>", self._on_hover_leave)
+            # Click on the popup is an explicit user intent to dismiss —
+            # use the force-destroy bypass instead of `_on_hover_leave`
+            # which would re-check `_cursor_over_popup` and refuse to
+            # destroy on the very widget the click landed on (subagent
+            # H2 round 2 on PR #83).
+            popup.bind("<Button-1>", self._force_destroy_hover)
             self._hover_popup = popup
         except Exception as e:
             logger.debug("Compare hover preview error: %s", e)

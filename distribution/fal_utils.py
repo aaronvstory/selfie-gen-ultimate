@@ -36,9 +36,40 @@ _BALANCE_LOCK_MARKERS = (
 
 
 def _extract_http_error_detail(resp: requests.Response, limit: int = 500) -> str:
-    """Return a readable error detail from an HTTP response."""
+    """Return a readable error detail from an HTTP response.
+
+    Detects fal.ai's `content_policy_violation` 422 and replaces the
+    verbose dump with a one-line actionable message. Detection is
+    generic: any model whose content checker returns a
+    `type == "content_policy_violation"` entry triggers it (GPT Image 2
+    Edit is the typical hit; other models that adopt the same checker
+    payload will work too).
+    """
     try:
         data = resp.json()
+        if isinstance(data, dict) and isinstance(data.get("detail"), list):
+            for entry in data["detail"]:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("type") != "content_policy_violation":
+                    continue
+                field = ""
+                loc = entry.get("loc")
+                if isinstance(loc, list) and loc:
+                    last = loc[-1]
+                    if isinstance(last, (str, int)):
+                        field = str(last)
+                target = f" in `{field}`" if field else ""
+                return (
+                    f"Content policy violation{target}: the model's "
+                    "content checker flagged the request. Edit the "
+                    "Selfie prompt (or the input image) to remove the "
+                    "language it objected to -- common triggers are "
+                    "explicit identity / forensic-imaging keywords "
+                    "(e.g. 'PRNU', 'noiseprint', 'demosaicing'). Other "
+                    "selfie models with softer checkers may still "
+                    "accept the same prompt."
+                )[:limit]
         if isinstance(data, dict):
             if "detail" in data:
                 return str(data["detail"])[:limit]

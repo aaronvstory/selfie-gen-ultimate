@@ -1584,6 +1584,32 @@ class QueueManager:
                     prompt_preview = prompt[:60] + "..." if len(prompt) > 60 else prompt
                     self.log_verbose(f"  Prompt: {prompt_preview}", "debug")
 
+                # (user verification ask 2026-06-07): always log which
+                # prompt slot is feeding Step 3 (Video). Visible without
+                # verbose mode so the user can confirm at a glance.
+                #
+                # Subagent M4 round 2 on PR #83: dedup in batch mode —
+                # only log when the slot CHANGES from the previous
+                # queue item. A 20-video batch otherwise floods 20
+                # identical lines. ASCII quoting (LOW-3) — the curly
+                # quote / arrow round-1 used could UnicodeEncodeError
+                # on cp1252 Windows console.
+                _slot_titles = config.get("prompt_titles") or {}
+                _slot_title = str(_slot_titles.get(str(prompt_slot), "") or "").strip()
+                _last_logged_slot = getattr(self, "_last_logged_prompt_slot", None)
+                if _last_logged_slot != prompt_slot:
+                    _slot_label = f"slot {prompt_slot}"
+                    if _slot_title:
+                        _slot_label += f' -- "{_slot_title}"'
+                    _prompt_preview = (prompt or "")[:80].replace("\n", " / ")
+                    if len(prompt or "") > 80:
+                        _prompt_preview += "..."
+                    self.log(
+                        f"Step 3 using prompt {_slot_label}: {_prompt_preview}",
+                        "info",
+                    )
+                    self._last_logged_prompt_slot = prompt_slot
+
                 # Determine output folder
                 if use_source_folder:
                     actual_output = get_gen_images_folder(item.path)
