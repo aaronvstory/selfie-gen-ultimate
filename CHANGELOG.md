@@ -2,6 +2,174 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-06 (v2.24) — macOS Apple-Silicon polish: tkdnd cap + pytest dev extra
+
+After v2.21 landed the uv migration on Windows, the macOS round-trip surfaced
+three darwin-specific regressions the Windows author couldn't see locally.
+PR #79 (`feat/macos-polish-post-v2.21`) fixed all three with TDD coverage and
+ran the autonomous review loop for 7 rounds; the 14-rule
+[`docs/macos-portability.md`](docs/macos-portability.md) gained 3 new rules to
+prevent re-occurrence, and a new
+[`docs/macos-readiness-for-windows-authors.md`](docs/macos-readiness-for-windows-authors.md)
+captures the proactive author-side checklist.
+
+### Fixed
+
+- **tkinterdnd2 0.4.4 / 0.4.4.1 silently broke DnD on Apple Silicon.** Upstream
+  switched the bundled `osx-arm64/` binary from `libtkdnd2.9.3.dylib` (Tcl 8.6
+  compatible) to `libtcl9tkdnd2.9.5.dylib` (Tcl 9.x), incompatible with the
+  Tcl 8.6.12 that python.org Python 3.11 ships on macOS. `TkinterDnD.Tk()` then
+  raised `RuntimeError: Unable to load tkdnd library`, which the PR #61
+  graceful-fail layer silently swallowed — DnD was dead across the whole GUI
+  (carousel, drop zones, model picker) with only a `[selfie-gen] drag-and-drop
+  unavailable` line in the log. Capped `tkinterdnd2 < 0.4.4` across
+  `requirements.txt`, `pyproject.toml`, `distribution/pyproject.toml`,
+  `uv.lock`, and the `pip_name=` strings in both `dependency_checker.py` and
+  `distribution/dependency_checker.py`. Regression guard
+  `tests/test_macos_tkdnd_loads.py` checks the dep declarations AND
+  instantiates `TkinterDnD.Tk()` for real on darwin-arm64.
+- **`test_compute_stamp_token_*` (2 tests) false-failed on darwin.** They
+  monkeypatched `detect_nvidia` to return a CUDA dict, then asserted the stamp
+  token differs; but `resolve_torch_mode` hard-returns `mac_default` on darwin
+  before looking at nvidia. Pinned `sys.platform = "win32"` via the dotted-path
+  form inside each test so they validate Windows semantics portably. Added
+  `test_compute_stamp_token_on_darwin_always_mac_default` as the matching
+  darwin invariant (shape-anchored assertion on parsed token positions, not
+  substring search).
+
+### Added
+
+- **`[project.optional-dependencies].dev`** in both root and
+  `distribution/pyproject.toml`, declaring `pytest>=8,<10`. Pre-v2.24 pytest
+  was undeclared anywhere, so every `uv sync` (the v2.20 primary path)
+  actively UNINSTALLED pytest from `.venv-macos`, breaking the CLAUDE.md
+  pre-commit invariant `pytest tests/ similarity/tests/ -q` for any
+  fresh-clone contributor on macOS. Contributors opt-in via
+  `uv sync --extra cpu --extra dev` (macOS) or `--extra cu128 --extra dev`
+  (Windows + CUDA 13.x); end-user launchers continue to skip `dev` for lean
+  deployed envs. See
+  [`docs/uv-migration.md`](docs/uv-migration.md#the-dev-extra-contract--installing-pytest-added-v224)
+  for the contract.
+- **`docs/macos-readiness-for-windows-authors.md`** — 7-row proactive
+  checklist + PR-description template for Windows-side authors to run BEFORE
+  pushing, so the macOS round-trip bounces less.
+- **3 new rules in `docs/macos-portability.md`** (now 14 total): rule 12 (Tk
+  dep bumps verify `osx-arm64` binary's Tcl ABI), rule 13 (CUDA-mock tests
+  pin `sys.platform`), rule 14 (`dependency_checker.py` `pip_name` carries
+  the spec from requirements).
+- **`docs/pr-review-loop.md`** — full 9-step autonomous PR + review loop
+  contract, relocated from CLAUDE.md. CLAUDE.md keeps a 25-line summary
+  block.
+- **Portability gate in `scripts/git-hooks/pre-commit`** — catches CRLF /
+  exec-bit regressions at commit time, not pre-push.
+
+### Changed
+
+- **CLAUDE.md trimmed from 885 → ~660 lines (−25%).** The 257-line "Default
+  Workflow After Feature Work" section moved to `docs/pr-review-loop.md`,
+  leaving a summary block with a pointer.
+- **Tests using `monkeypatch.setattr(some_module.sys, "platform", ...)`
+  rewritten to use the dotted-path form `monkeypatch.setattr("sys.platform",
+  ...)`.** The dotted form is decoupled from the test-target module's
+  internal `import sys` style.
+- **uv.lock complexity grew** — re-resolution after the dep cap + dev extra
+  brought in pytest + iniconfig + pluggy + tomli + tomllib backport under
+  marker tables. Verified resolve-time stayed similar (~12s vs ~17s).
+
+### Workflow notes
+
+- 8-round autonomous review loop on PR #79 with the code-reviewer subagent
+  (round 1) + 4 review bots (Codex, Gemini, CodeRabbit, Sourcery rate-limited
+  this PR). 9 fix commits, 1 chore, 10 files changed, +695/-15. Final state:
+  1709 pytest pass / 12 skip / 0 fail on macOS Apple Silicon.
+
+---
+
+## 2026-06-03 (v2.22.1 → v2.23.4) — uv migration + GPU bootstrap (Windows-side)
+
+A marathon Windows session shipped four interlocking changes: the uv
+dependency-management primary path (with pip fallback), GPU-aware torch wheel
+selection, unified per-platform installer machinery, and the Kontext Pro selfie
+model. The handoff/discovery docs in
+[`docs/v2.20-uv-migration-kickoff.md`](docs/v2.20-uv-migration-kickoff.md) and
+[`docs/v2.21-gpu-rppg-and-uv-finish-handoff.md`](docs/v2.21-gpu-rppg-and-uv-finish-handoff.md)
+cover the design + reasoning in depth. Key permanent surfaces:
+
+### Added
+
+- **`uv.lock` + `[project.optional-dependencies]` extras** in
+  `pyproject.toml` for CPU / CUDA 12.x / CUDA 13.x torch selection. uv
+  markers are static (per-platform/arch), so a runtime selector
+  (`scripts/uv_torch_select.py` — reuses the proven
+  `gpu_bootstrap.detect_nvidia` + `resolve_torch_mode` decision table)
+  passes the right one to `uv sync --extra <X>` at launch. macOS always
+  selects `cpu` (no CUDA path).
+- **`scripts/gpu_bootstrap.py`** — single decision table for nvidia
+  detection + CuPy install + nvrtc DLL registration + torch mode
+  selection. The launcher folds its `INSTALLER_VERSION` + GPU-mode token
+  into the dep stamp so a GPU swap or installer logic bump invalidates
+  the venv automatically.
+- **`scripts/uv_sync_deps.py` + `scripts/uv_sync.sh`** — canonical uv
+  sync orchestrator that every launcher sources. Exit code 3 falls back
+  to the pip path; `KLING_USE_PIP=1` forces it.
+- **CuPy CUDA component wheels pinned explicitly** in cu121 / cu128
+  extras (`nvidia-cuda-nvrtc-cu12`, `nvidia-cublas`, …). The previous
+  `cupy-cuda1Nx[ctk]` was a silent no-op — the `[ctk]` extra didn't
+  exist on cupy 13.6.0 so the CUDA runtime DLLs never landed, leaving
+  CUDA-rPPG broken on fresh installs.
+- **Per-launch GPU-bootstrap stamp** (`gpu_status.json`) so the per-launch
+  hot path doesn't re-run `nvidia-smi`.
+- **rPPG self-heal + granular failure logging** (v2.15 → v2.17): every
+  module reported as OK / MISSING / BROKEN with the actual ImportError
+  text, mirrored to `rppg.log` AND the GUI panel.
+- **Folder-identity session tracking** + opt-in auto-prune
+  (`kling_gui/folder_identity.py`) — cross-machine session continuity.
+- **Kontext Pro selfie model** + Add-Models modal + 2-row column model
+  picker (PR #77).
+- **`constraints.txt`** as the single source of truth for the
+  `-c constraints.txt` thread through every pip install site in the
+  pip-fallback path. Numpy<2 cap moved here from individual REQS files.
+
+### Fixed
+
+- **Windows nvidia-smi header 610+ regression** — driver 610 dropped the
+  legacy `"Driver Version:" / "CUDA Version:"` strings entirely. The old
+  regex matched neither, so a real RTX 4090 silently ran rPPG on CPU.
+  `_parse_smi_header_cuda_major` now handles both layouts.
+- **Mediapipe `--no-deps` install silently dropped matplotlib + opencv-contrib
+  + sounddevice** — the rPPG `-NORPPG` killer. Every install site that does
+  `mediapipe --no-deps` now also explicit-installs the runtime deps. The
+  v2.20 uv path resolves the full mediapipe dep tree in one shot, so the gap
+  closes by construction there.
+- **Headless `--batch` CLI mode** (v2.17) — `run_auto.command` / `run_auto.bat`
+  drive the automation pipeline without prompts for unattended cron/launchd
+  runs. `KLING_NONINTERACTIVE=1` env gates every `pause`/`read` in the chain.
+- **Concurrent-launch runtime isolation** (PR #49) — multiple GUI windows
+  no longer leak carousel state / video history / crash logs between
+  instances. Each gets `<workspace>/runtime/instances/<timestamp>-<pid>/`.
+
+### Changed
+
+- **CLI banner + 4 launchers surface `RELEASE_VERSION` from `app_version.py`**
+  — `python -c "from app_version import RELEASE_VERSION; print(RELEASE_VERSION)"`
+  is the canonical version probe. Bump `app_version.py` BEFORE any
+  `dist/SelfieGenUltimate-vX.Y.zip` build to avoid silent version drift.
+- **TensorFlow pinned `==2.16.2`** + numpy `<2` cap in all install sites. The
+  pre-v2.11 numpy 2.x fresh-install crash is now blocked at the constraint
+  layer rather than at the dependency_health_check repair layer.
+- **rPPG launcher path** (`automation/rppg.py`) — platform-gated `.sh` /
+  `.bat` resolution; degrades to graceful skip with `-NORPPG` marker if the
+  tool fails or is missing.
+
+### Workflow notes
+
+- v2.17 → v2.21 shipped via the autonomous PR + review loop documented in
+  [`docs/pr-review-loop.md`](docs/pr-review-loop.md). v2.21 specifically
+  had ~5 review rounds; the deferred-then-caught GPU-rPPG fix demonstrated
+  the loop's value for cross-cutting bugs.
+
+---
+
 ## 2026-06-02 (v2.16) — granular failure logging across the app
 
 A friend's v2.13 rPPG failure log read only:
