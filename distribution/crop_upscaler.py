@@ -128,6 +128,18 @@ class CropUpscaler:
             self._report("Upscale failed or timed out", "error")
             return None
 
+        # v2.28: defensive guard for the selfie-side aspect-ratio
+        # self-heal sentinel. Upscale paths don't send aspect_ratio
+        # today; future model swaps could.
+        if isinstance(final, dict) and final.get("__aspect_ratio_rejected__"):
+            allowed = final.get("allowed") or []
+            self._report(
+                f"Upscale model rejected aspect_ratio "
+                f"(accepted: {', '.join(allowed) or '<empty>'})",
+                "error",
+            )
+            return None
+
         # Extract image URL — different models return different structures
         image_url_result = None
         if "image" in final and isinstance(final["image"], dict):

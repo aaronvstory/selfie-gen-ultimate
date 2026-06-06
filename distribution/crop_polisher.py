@@ -121,6 +121,19 @@ class CropPolisher:
             self._report("Edit failed or timed out", "error")
             return False
 
+        # v2.28: defensive guard for the selfie-side aspect-ratio
+        # self-heal sentinel. Crop polishing doesn't send aspect_ratio
+        # today, but a future model swap could — surface a clear
+        # error instead of "No images in result".
+        if isinstance(final, dict) and final.get("__aspect_ratio_rejected__"):
+            allowed = final.get("allowed") or []
+            self._report(
+                f"Edit model rejected aspect_ratio "
+                f"(accepted: {', '.join(allowed) or '<empty>'})",
+                "error",
+            )
+            return False
+
         # Extract image URL from result
         images = final.get("images", [])
         if not images:
