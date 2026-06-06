@@ -199,7 +199,9 @@ cu128 = [
 ]
 # Dev extra mirror — keep in lockstep with root pyproject.toml's `dev` so the
 # distribution tree is a faithful packaging copy. See the root pyproject's
-# `dev` block for the full rationale + floor/ceiling reasoning. Guarded by
+# `dev` block for the full rationale + floor/ceiling reasoning + the
+# contributor-opt-in workflow (`uv sync --extra <cpu/cu*> --extra dev` —
+# end-user launchers DO NOT auto-install this extra). Guarded by
 # tests/test_macos_dev_extra_provides_pytest.py.
 dev = [
     "pytest>=8,<10",

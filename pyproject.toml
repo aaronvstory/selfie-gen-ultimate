@@ -197,17 +197,32 @@ cu128 = [
     # nvjitlink held on the SAME 13.3.x line as nvrtc/runtime (lockstep toolchain).
     "nvidia-nvjitlink>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
-# Dev extra — the test suite. Lifts pytest into the resolved lockfile so
-# every launcher's `uv sync` provides it (the pre-commit invariant in
-# CLAUDE.md is `pytest tests/ similarity/tests/ -q`, but pre-v2.24 pytest
-# was undeclared, so `uv sync` REMOVED it whenever a venv was re-synced —
-# a contributor on a fresh macOS box couldn't run the test suite without
-# manually `pip install pytest`. v2.24 closes the gap.
-# Floor pytest>=8: the conftest uses ``import pytest`` features (subtests,
-# `monkeypatch.setattr` on nested attributes) that pytest 7.x does not
-# support cleanly.
-# Ceiling pytest<10: the next major (10) may rename APIs the conftest
-# relies on; lift after a passing run on the new major.
+# Dev extra — the test suite. Pre-v2.24, pytest was undeclared anywhere,
+# so a `uv sync` of any kind REMOVED it from the venv (the run_gui /
+# run_cli / run_auto launchers run `uv sync --no-default-groups
+# --extra <cpu/cu*>`, which actively prunes anything not in that extra).
+# A contributor on a fresh macOS box therefore couldn't satisfy the
+# CLAUDE.md pre-commit invariant `pytest tests/ similarity/tests/ -q`
+# without out-of-band `pip install pytest`. Declaring `dev` here is the
+# floor of the fix — pytest is now lock-resolved.
+#
+# IMPORTANT — launchers do NOT auto-install this extra. End-user paths
+# (run_gui.command, run_cli.command, run_auto.command) intentionally
+# omit `--extra dev` so the deployed env stays lean. CONTRIBUTORS opt
+# in explicitly:
+#
+#     uv sync --extra cpu --extra dev      # macOS / CPU-only
+#     uv sync --extra cu128 --extra dev    # Windows + CUDA 13.x
+#
+# This is the documented workflow surface — Codex P2 round 6 (2026-06-06)
+# flagged the original "every launcher's uv sync provides it" comment as
+# misleading. It does NOT; only the contributor's explicit sync does.
+# Guarded by tests/test_macos_dev_extra_provides_pytest.py.
+#
+# Floor pytest>=8: this repo's conftest already depends on pytest-8-style
+# behaviour (autouse fixtures, monkeypatch.setattr semantics).
+# Ceiling pytest<10: defensive — the next major may rename APIs the
+# conftest relies on; lift after a passing run on the new major.
 dev = [
     "pytest>=8,<10",
 ]
