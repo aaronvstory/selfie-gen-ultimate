@@ -156,21 +156,23 @@ class ExtractResultSurfacesValidationErrorTests(unittest.TestCase):
     error).
     """
 
-    def test_extract_result_surfaces_422_validation_detail(self):
-        """422 from the response_url must reach the progress callback
-        intact — not get masked by a Bearer retry that returns 'bearer:
-        unable to decode issuer'.
-        """
+    def test_extract_result_surfaces_non_aspect_422_validation_detail(self):
+        """v2.26 contract: a 422 from response_url must NOT trigger a
+        Bearer retry AND the user-facing error must carry the 422
+        detail (not the misleading bearer-decode message).
+
+        v2.28 amended this contract for ``aspect_ratio`` 422s
+        specifically — those return a SENTINEL dict the caller uses
+        to self-heal (see test_aspect_ratio_self_heal.py). So this
+        test uses a DIFFERENT validation field (``prompt``) to keep
+        coverage of the non-self-heal path."""
         validation_body = {
             "detail": [
                 {
-                    "type": "literal_error",
-                    "loc": ["body", "aspect_ratio"],
-                    "msg": (
-                        "Input should be '21:9', '16:9', '4:3', '3:2', "
-                        "'1:1', '2:3', '3:4', '9:16' or '9:21'"
-                    ),
-                    "input": "4:5",
+                    "type": "string_too_short",
+                    "loc": ["body", "prompt"],
+                    "msg": "Input must be at least 1 character",
+                    "input": "",
                 },
             ]
         }
@@ -182,8 +184,6 @@ class ExtractResultSurfacesValidationErrorTests(unittest.TestCase):
         }
         status_headers = {"Authorization": "Key abc"}
 
-        # Capture progress callback messages so we can assert on the
-        # human-readable text.
         messages: list[tuple[str, str]] = []
 
         def progress_cb(msg: str, level: str) -> None:
@@ -200,15 +200,11 @@ class ExtractResultSurfacesValidationErrorTests(unittest.TestCase):
                 status_result, status_headers, progress_cb
             )
 
-        # Must NOT retry with Bearer (the v2.26 fix).
         self.assertEqual(
             calls, ["Key abc"],
             "422 must not trigger a Bearer retry; the v2.26 root cause",
         )
-        # Result is None (no image; the request failed).
         self.assertIsNone(result)
-        # The validation detail must appear in at least one error-level
-        # progress message — that's what the user reads in the GUI.
         error_msgs = [m for m, lvl in messages if lvl == "error"]
         self.assertTrue(error_msgs, "expected at least one error message")
         joined = " | ".join(error_msgs)
@@ -216,8 +212,6 @@ class ExtractResultSurfacesValidationErrorTests(unittest.TestCase):
             "422", joined,
             f"422 status code must appear in user-facing error; got: {joined}",
         )
-        # And the bearer-decode error MUST NOT appear (that's the
-        # masking we fixed).
         self.assertNotIn(
             "bearer: unable to decode issuer", joined,
             f"misleading bearer error leaked; got: {joined}",

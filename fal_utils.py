@@ -1,6 +1,7 @@
 """Shared fal.ai utilities: upload, queue submit, poll, download."""
 
 import os
+import re
 import time
 import threading
 import requests
@@ -703,6 +704,20 @@ def _extract_result(
                     "response_url returned HTTP %s: %s",
                     r.status_code, detail,
                 )
+                # v2.28: self-heal hook for the future-model aspect-ratio
+                # rejection case. When 422 carries an aspect_ratio
+                # validation error, attach the accepted set to a
+                # sentinel dict the caller (selfie_generator) can
+                # inspect — and DO NOT emit the noisy "response_url
+                # failed" error message; the caller will log the
+                # retry attempt instead.
+                aspect_allowed = parse_aspect_ratio_validation_error(r)
+                if aspect_allowed:
+                    return {
+                        "__aspect_ratio_rejected__": True,
+                        "allowed": sorted(aspect_allowed),
+                        "detail": detail,
+                    }
                 if progress_cb:
                     progress_cb(
                         f"response_url failed: HTTP {r.status_code} — {detail}",
@@ -730,6 +745,55 @@ def _extract_result(
 # issuer" from the Bearer attempt. Real symptoms surface only when the
 # fallback list excludes 422.
 _AUTH_FALLBACK_STATUS = (401, 403)
+
+
+# v2.28 PR (future-model self-heal): parse the accepted aspect-ratio
+# set out of a fal.ai 422 validation message so the caller can retry
+# with a corrected label. fal.ai's validation errors come in two
+# shapes seen in production:
+#   1. literal_error: {"detail":[{"loc":["body","aspect_ratio"],
+#                                  "msg":"Input should be '21:9', '16:9'..."}]}
+#   2. enum_error:    {"detail":[{"loc":["body","aspect_ratio"],
+#                                  "msg":"value is not a valid enumeration member;
+#                                         permitted: '21:9', '16:9', ..."}]}
+# Both put the accepted labels as quoted strings in the message body.
+# We return the parsed labels (or None when the response isn't an
+# aspect_ratio validation error). Callers can then snap to the
+# closest accepted label and re-submit.
+_ASPECT_RATIO_LABEL_PATTERN = re.compile(r"'([0-9]+:[0-9]+)'")
+
+
+def parse_aspect_ratio_validation_error(
+    response: requests.Response,
+) -> Optional[set]:
+    """Return the accepted aspect-ratio label set when ``response`` is
+    a 422 validation error pointing at ``aspect_ratio``, else None.
+
+    Safe to call on any response: a non-422, or a 422 that's about a
+    different field, returns None.
+    """
+    if response is None or response.status_code != 422:
+        return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if not isinstance(detail, list):
+        return None
+    for err in detail:
+        if not isinstance(err, dict):
+            continue
+        loc = err.get("loc") or []
+        if "aspect_ratio" not in loc:
+            continue
+        msg = err.get("msg", "")
+        if not isinstance(msg, str):
+            continue
+        labels = set(_ASPECT_RATIO_LABEL_PATTERN.findall(msg))
+        if labels:
+            return labels
+    return None
 
 
 def _get_with_auth_fallback(url: str, headers: dict, timeout: int = 30) -> requests.Response:
