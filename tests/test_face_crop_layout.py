@@ -131,7 +131,16 @@ class FaceCropLayoutTests(unittest.TestCase):
         tab._detect_face_with_opencv_fallback.assert_called_once_with(fake_img)
         tab._after_detect.assert_called_once_with(fake_img, (1, 2, 30, 40), None)
 
-    def test_get_config_updates_includes_outpaint_double_expand(self):
+    def test_get_config_updates_excludes_outpaint_double_expand(self):
+        """v2.25 PR #81: Run 2x is session-only state, never persisted.
+        Even if the user has toggled the BooleanVar ON during a session,
+        ``get_config_updates`` MUST NOT include ``outpaint_double_expand``
+        in the persisted dict — otherwise the next launch would read it
+        back and the "always default OFF" contract breaks.
+
+        Also asserts the v4 marker IS stamped so the one-time strip of
+        stale `outpaint_double_expand` only fires once across migrations.
+        """
         tab = FaceCropTab.__new__(FaceCropTab)
         tab._multiplier_var = _FakeGetVar(1.5)
         tab._auto_switch_var = _FakeGetVar(True)
@@ -150,13 +159,17 @@ class FaceCropLayoutTests(unittest.TestCase):
         tab._outpaint_format_var = _FakeGetVar("png")
         tab._outpaint_composite_var = _FakeGetVar("feathered")
         tab._outpaint_provider_var = _FakeGetVar("bfl")
+        # User toggled Run 2x ON during the session.
         tab._outpaint_double_expand_var = _FakeGetVar(True)
         tab._expanded_sections = []
         tab._outpaint_prompt_str = "prompt"
         tab.config = {"face_crop_polish_prompt": "x"}
 
         updates = tab.get_config_updates()
-        self.assertTrue(updates["outpaint_double_expand"])
+        # The key MUST be absent — Run 2x doesn't persist.
+        self.assertNotIn("outpaint_double_expand", updates)
+        # v4 marker stamped so the one-time strip doesn't keep re-firing.
+        self.assertTrue(updates.get("outpaint_2x_session_only_v4"))
 
 
 if __name__ == "__main__":

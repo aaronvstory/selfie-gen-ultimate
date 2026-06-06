@@ -81,13 +81,22 @@ def test_template_pre_stamps_migration_markers():
     repo_root = Path(__file__).resolve().parent.parent
     template_path = repo_root / "default_config_template.json"
     template = json.loads(template_path.read_text(encoding="utf-8"))
-    # v2 (PR fix/step0-composite-and-rppg-v2.5) and v3 (round 10)
-    # must both be True so a fresh install doesn't trigger either
-    # migration on first launch.
+    # v2 (PR fix/step0-composite-and-rppg-v2.5), v3 (round 10), and v4
+    # (PR #81, "session-only" contract) must all be True so a fresh
+    # install doesn't trigger any migration on first launch.
     assert template.get("outpaint_2x_default_reset_v2") is True
     assert template.get("outpaint_2x_default_reset_v3") is True
-    # And the default value of the controlled key must be False.
-    assert template.get("outpaint_double_expand") is False
+    assert template.get("outpaint_2x_session_only_v4") is True
+    # v4 contract: outpaint_double_expand must NOT appear in the template
+    # — Run 2x is session-only state now, never persisted. The user
+    # explicitly asked: "for all versions all future dists never should
+    # 'run 2x' be checked by default" (2026-06-06). Stripping the key
+    # from the template removes the on-disk surface where a stale value
+    # could ever set Run 2x checked at launch.
+    assert "outpaint_double_expand" not in template, (
+        "Run 2x is session-only as of PR #81 (v4 contract); "
+        "the template MUST NOT carry outpaint_double_expand."
+    )
 
 
 def test_release_prep_pre_stamps_migration_markers():
@@ -102,13 +111,23 @@ def test_release_prep_pre_stamps_migration_markers():
     release_prep_src = (repo_root / "distribution" / "release_prep.py").read_text(
         encoding="utf-8"
     )
-    # Both keys are named here AND both overrides are unconditional.
+    # All three migration markers (v2, v3, v4) are named here AND all
+    # overrides are unconditional.
     assert "outpaint_2x_default_reset_v2" in release_prep_src
     assert "outpaint_2x_default_reset_v3" in release_prep_src
+    assert "outpaint_2x_session_only_v4" in release_prep_src
     # The override lines should use template.get(...) with True default,
     # mirroring the template-driven contract.
     assert "template.get(\"outpaint_2x_default_reset_v2\", True)" in release_prep_src
     assert "template.get(\"outpaint_2x_default_reset_v3\", True)" in release_prep_src
+    assert "template.get(\"outpaint_2x_session_only_v4\", True)" in release_prep_src
+    # v4 contract: the bundle config MUST NOT carry outpaint_double_expand
+    # (Run 2x is session-only). Verify release_prep STRIPS it via
+    # `config.pop(...)`.
+    assert 'config.pop("outpaint_double_expand"' in release_prep_src, (
+        "PR #81 v4 contract: release_prep must strip outpaint_double_expand "
+        "from the bundle config so Run 2x is never persisted."
+    )
 
 
 def test_v3_migration_logic_fires_when_only_v2_present():

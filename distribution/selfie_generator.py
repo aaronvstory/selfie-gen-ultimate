@@ -52,11 +52,11 @@ class SelfieGenerator:
             "api_url": "https://fal.ai/models/fal-ai/nano-banana-2/edit/api",
         },
         {
-            "endpoint": "fal-ai/flux-pro/kontext",
-            "label": "Kontext Pro",
-            "slug": "kontext-pro",
+            "endpoint": "fal-ai/flux-pro/kontext/max",
+            "label": "Flux Pro Kontext Max",
+            "slug": "kontext-max",
             "provider": "fal",
-            "api_url": "https://fal.ai/models/fal-ai/flux-pro/kontext/api",
+            "api_url": "https://fal.ai/models/fal-ai/flux-pro/kontext/max/api",
         },
     ]
     _SELFIE_MODELS_FILE = Path(__file__).resolve().parent / "models.json"
