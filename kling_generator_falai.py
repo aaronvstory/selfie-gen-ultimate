@@ -872,12 +872,19 @@ class FalAIKlingGenerator:
                 if attempt % (60 // base_delay) == 0:
                     elapsed_s = attempt * base_delay
                     elapsed_mins = elapsed_s // 60
+                    # v2.28 (user feedback 2026-06-07): mirror the
+                    # selfie poll's ``(Ns / Ms)`` countdown so Step 3
+                    # also shows how close we are to the timeout
+                    # instead of an open-ended counter. ``max_attempts
+                    # * base_delay`` is the effective cap.
+                    cap_s = max_attempts * base_delay
                     if self.verbose:
                         logger.info(
                             f"⏳ Still waiting... {elapsed_mins} min elapsed (attempt {attempt}/{max_attempts})"
                         )
                     self._report_progress(
-                        f"Video gen — {last_status or 'IN_PROGRESS'} ({elapsed_s}s)",
+                        f"Video gen — {last_status or 'IN_PROGRESS'} "
+                        f"({elapsed_s}s / {cap_s}s)",
                         "progress_update",
                     )
 

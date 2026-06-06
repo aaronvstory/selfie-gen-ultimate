@@ -512,6 +512,22 @@ class OutpaintGenerator:
             self._report(f"Outpaint failed or timed out ({detail})", "error")
             return None
 
+        # v2.28: SelfieGenerator's aspect-ratio self-heal sentinel
+        # propagates through ``fal_queue_poll``. Outpaint doesn't
+        # currently send aspect_ratio, but a future strict outpaint
+        # model could 422 on it — surface a clear error instead of
+        # the misleading "No images in result".
+        if isinstance(final, dict) and final.get("__aspect_ratio_rejected__"):
+            allowed = final.get("allowed") or []
+            msg = (
+                f"Outpaint model rejected aspect_ratio "
+                f"(accepted: {', '.join(allowed) or '<empty>'}); "
+                "try a different expansion size."
+            )
+            self._set_last_outpaint_error_detail(msg)
+            self._report(msg, "error")
+            return None
+
         # Extract image URL from result
         images = final.get("images", [])
         if not images:
