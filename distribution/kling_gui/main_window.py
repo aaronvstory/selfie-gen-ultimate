@@ -1621,7 +1621,10 @@ class KlingGUIWindow:
             "openrouter_vision_system_prompt": "",
             "selfie_output_mode": "source",
             "selfie_output_folder": "",
-            "selfie_poll_timeout_seconds": 300,
+            # v2.26: was 300; new bounds are DEFAULT=120 MAX=180. Stamp
+            # the new value into fresh configs so what users see in their
+            # config matches what they actually run with.
+            "selfie_poll_timeout_seconds": 120,
             "selfie_current_prompt_slot": 3,
             "outpaint_fal_timeout_seconds": 150,
             # Phase G of polish/v2.3 (2026-05-22): per-section expand

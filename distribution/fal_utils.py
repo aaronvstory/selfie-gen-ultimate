@@ -529,11 +529,14 @@ def fal_queue_poll(
                     ),
                     "debug",
                 )
-                # Short growing line in the panel (one in-place row that counts
-                # up), at the progress_update level the GUI overwrites in place.
+                # v2.26 (user feedback 2026-06-07): show countdown
+                # `elapsed/total` so the user can see how close we are to
+                # the timeout instead of an open-ended counter. Same
+                # progress_update level — the GUI still overwrites in
+                # place.
                 progress_cb(
                     f"{operation_name} — {last_status or 'IN_PROGRESS'} "
-                    f"({elapsed_s_full}s)",
+                    f"({elapsed_s_full}s / {int(max_wait_seconds)}s)",
                     "progress_update",
                 )
 
@@ -718,16 +721,33 @@ def _extract_result(
     return None
 
 
+# Auth-fallback STATUS CODES: 401 (unauthorized) + 403 (forbidden) are
+# bona-fide auth failures where retrying with a different scheme makes
+# sense. 422 was included in the v2.24 list, but v2.26 evidence (Kontext
+# Max submit on 2026-06-07) showed 422 is a VALIDATION error (e.g.
+# unsupported aspect_ratio value) — retrying with Bearer doesn't fix it,
+# just masks the real error message with "bearer: unable to decode
+# issuer" from the Bearer attempt. Real symptoms surface only when the
+# fallback list excludes 422.
+_AUTH_FALLBACK_STATUS = (401, 403)
+
+
 def _get_with_auth_fallback(url: str, headers: dict, timeout: int = 30) -> requests.Response:
     """GET with auth fallback for fal queue endpoints.
 
     Some fal queue/result URLs may reject `Key` auth while accepting `Bearer`.
-    We keep `Key` as primary and retry once with `Bearer` on auth/validation codes.
+    We keep `Key` as primary and retry once with `Bearer` on AUTH failures
+    only (401 / 403). 422 validation errors pass through unmasked — see
+    `_AUTH_FALLBACK_STATUS` comment for the v2.26 rationale.
     """
     resp = requests.get(url, headers=headers, timeout=timeout)
     auth_value = headers.get("Authorization", "")
+    # Gemini PR #82 MED-1: a caller passing
+    # ``headers={"Authorization": None}`` (or any non-string sentinel)
+    # would AttributeError on ``.startswith``. Guard explicitly.
     if (
-        resp.status_code in (401, 403, 422)
+        resp.status_code in _AUTH_FALLBACK_STATUS
+        and isinstance(auth_value, str)
         and auth_value.startswith("Key ")
     ):
         bearer_headers = dict(headers)
@@ -739,13 +759,17 @@ def _get_with_auth_fallback(url: str, headers: dict, timeout: int = 30) -> reque
 def _post_with_auth_fallback(url: str, headers: dict, payload: dict, timeout: int = 30) -> requests.Response:
     """POST with auth fallback for fal queue submit endpoints.
 
-    Some queue endpoints can reject `Key` auth while accepting `Bearer`.
-    Keep `Key` as primary and retry once with `Bearer` on auth-like failures.
+    Same contract as `_get_with_auth_fallback` — retry only on 401 / 403
+    (auth failures), never on 422 (validation).
     """
     resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
     auth_value = headers.get("Authorization", "")
+    # Gemini PR #82 MED-1: a caller passing
+    # ``headers={"Authorization": None}`` (or any non-string sentinel)
+    # would AttributeError on ``.startswith``. Guard explicitly.
     if (
-        resp.status_code in (401, 403, 422)
+        resp.status_code in _AUTH_FALLBACK_STATUS
+        and isinstance(auth_value, str)
         and auth_value.startswith("Key ")
     ):
         bearer_headers = dict(headers)

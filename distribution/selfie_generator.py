@@ -25,9 +25,19 @@ class SelfieGenerator:
         "clothing",
         "expression",
     )
-    DEFAULT_POLL_TIMEOUT_SECONDS = 300
+    # v2.26 (user mandate 2026-06-07): "300s is too much for one selfie...
+    # should be 120 seconds max". Drop the DEFAULT from 300 → 120 so the
+    # typical path surfaces stuck queues fast — the user's primary ask.
+    # MAX stays a bit higher (180) because subagent code-review CRITICAL
+    # on PR #82 noted the user's OWN log showed GPT Image 2 Edit taking
+    # 137s on a SUCCESSFUL run — a hard 120s cap would silently break the
+    # model the user already had working. 180s gives slow models ~40s of
+    # tail room above the typical default while still cutting the
+    # pre-v2.26 default in half. Anyone needing >180s on this app's
+    # surface is hitting a stuck queue and should know.
+    DEFAULT_POLL_TIMEOUT_SECONDS = 120
     MIN_POLL_TIMEOUT_SECONDS = 60
-    MAX_POLL_TIMEOUT_SECONDS = 1800
+    MAX_POLL_TIMEOUT_SECONDS = 180
     @staticmethod
     def resolve_wildcards(template: str) -> str:
         """Resolve {opt1|opt2|opt3} blocks by randomly picking one option per block."""
@@ -163,22 +173,45 @@ class SelfieGenerator:
         fallback = "-".join(parts[-2:]).lower() if parts else endpoint.lower()
         return re.sub(r"[^a-z0-9\-]+", "-", fallback).strip("-")
 
-    @staticmethod
-    def _closest_aspect_ratio(width: int, height: int) -> str:
-        target = width / max(1, height)
-        options = {
+    # PR #82 HIGH-2 (Codex P2, QC subagent 2026-06-07): the v2.26 fix
+    # dropped `4:5` / `5:4` because Kontext Max rejects them, then added
+    # `9:21` because Kontext Max ACCEPTS it. That broke the
+    # universal-intersection contract: Nano Banana 2's schema lists
+    # `auto, 21:9, 16:9, 3:2, 4:3, 5:4, 1:1, 4:5, 3:4, 2:3, 9:16,
+    # 4:1, 1:4, 8:1, 1:8` — no `9:21`. So a saved ultra-tall 900x2100
+    # snapped to `9:21` and Nano Banana 2 (the DEFAULT model) 422'd.
+    #
+    # Conservative fix: drop `9:21` from the universal set. Ultra-tall
+    # sizes now snap to `9:16` instead — a small fidelity loss in
+    # extreme cases, but every current built-in (Nano Banana 2,
+    # Kontext Max, GPT Image 2) accepts every label in this set.
+    # Source error from fal.ai's 422 (Kontext Max): "Input should be
+    # '21:9', '16:9', '4:3', '3:2', '1:1', '2:3', '3:4', '9:16' or
+    # '9:21'" — we keep the first 8, drop the last.
+    _UNIVERSAL_ASPECT_RATIOS = {
             "21:9": 21 / 9,
             "16:9": 16 / 9,
             "3:2": 3 / 2,
             "4:3": 4 / 3,
-            "5:4": 5 / 4,
             "1:1": 1.0,
-            "4:5": 4 / 5,
             "3:4": 3 / 4,
             "2:3": 2 / 3,
             "9:16": 9 / 16,
         }
-        return min(options.items(), key=lambda kv: abs(kv[1] - target))[0]
+
+    @staticmethod
+    def _closest_aspect_ratio(width: int, height: int) -> str:
+        """Snap (width, height) to the nearest aspect-ratio LABEL accepted
+        by every current built-in model — the intersection of Nano
+        Banana 2 and Kontext Max. Excludes `4:5` / `5:4` (Kontext Max
+        rejects them) AND `9:21` (Nano Banana 2 rejects it). Ultra-tall
+        sizes that would have preferred `9:21` now snap to `9:16`.
+        """
+        target = width / max(1, height)
+        return min(
+            SelfieGenerator._UNIVERSAL_ASPECT_RATIOS.items(),
+            key=lambda kv: abs(kv[1] - target),
+        )[0]
 
     @staticmethod
     def _next_indexed_output_path(output_folder: str, prefix: str) -> str:
