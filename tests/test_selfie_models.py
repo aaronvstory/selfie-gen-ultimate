@@ -580,5 +580,86 @@ class EditModelsDialogDefaultPickerTests(unittest.TestCase):
         self.assertIs(AddModelsDialog, EditModelsDialog)
 
 
+class SelfieTabMigrationHonoursPersistedDefaultTests(unittest.TestCase):
+    """v2.27 PR #85 round 1 subagent MEDIUM: when
+    ``_migrate_selected_models_config`` repopulates the
+    selected-models map (stale-old-default OR empty config), it must
+    honor the user's persisted CONFIG_KEY_DEFAULT_MODEL choice. The
+    pre-fix path force-flipped to the hardcoded ``DEFAULT_MODEL_ENDPOINT``,
+    silently reverting the user's picker choice on every stale-config
+    upgrade.
+    """
+
+    def _stub(self, config, model_endpoints):
+        stub = types.SimpleNamespace(
+            config=config,
+            _model_options=[{"endpoint": e, "label": e} for e in model_endpoints],
+            _supported_model_endpoints=set(model_endpoints),
+            DEFAULT_MODEL_ENDPOINT=SelfieTab.DEFAULT_MODEL_ENDPOINT,
+            CONFIG_KEY_DEFAULT_MODEL=SelfieTab.CONFIG_KEY_DEFAULT_MODEL,
+        )
+        stub._effective_default_model_endpoint = (
+            SelfieTab._effective_default_model_endpoint.__get__(stub)
+        )
+        return stub
+
+    def test_migration_honours_persisted_default_on_stale_old_default(self):
+        endpoints = ["openai/gpt-image-2/edit", SelfieTab.DEFAULT_MODEL_ENDPOINT, "vendor/x"]
+        stub = self._stub(
+            config={
+                "selfie_selected_models": {"openai/gpt-image-2/edit": True},
+                SelfieTab.CONFIG_KEY_DEFAULT_MODEL: "vendor/x",
+            },
+            model_endpoints=endpoints,
+        )
+        SelfieTab._migrate_selected_models_config(stub)
+        migrated = stub.config["selfie_selected_models"]
+        self.assertTrue(migrated["vendor/x"])
+        self.assertFalse(migrated["openai/gpt-image-2/edit"])
+        self.assertFalse(migrated[SelfieTab.DEFAULT_MODEL_ENDPOINT])
+
+    def test_migration_honours_persisted_default_on_empty_config(self):
+        endpoints = [SelfieTab.DEFAULT_MODEL_ENDPOINT, "vendor/x"]
+        stub = self._stub(
+            config={SelfieTab.CONFIG_KEY_DEFAULT_MODEL: "vendor/x"},
+            model_endpoints=endpoints,
+        )
+        SelfieTab._migrate_selected_models_config(stub)
+        migrated = stub.config["selfie_selected_models"]
+        self.assertTrue(migrated["vendor/x"])
+        self.assertFalse(migrated[SelfieTab.DEFAULT_MODEL_ENDPOINT])
+
+    def test_migration_falls_back_to_hardcoded_when_no_persistence(self):
+        endpoints = ["openai/gpt-image-2/edit", SelfieTab.DEFAULT_MODEL_ENDPOINT]
+        stub = self._stub(
+            config={"selfie_selected_models": {"openai/gpt-image-2/edit": True}},
+            model_endpoints=endpoints,
+        )
+        SelfieTab._migrate_selected_models_config(stub)
+        migrated = stub.config["selfie_selected_models"]
+        self.assertTrue(migrated[SelfieTab.DEFAULT_MODEL_ENDPOINT])
+        self.assertFalse(migrated["openai/gpt-image-2/edit"])
+
+    def test_migration_preserves_non_seed_user_selection(self):
+        """Active non-seed config — migration MUST NOT touch user choices."""
+        endpoints = [SelfieTab.DEFAULT_MODEL_ENDPOINT, "vendor/x", "vendor/y"]
+        stub = self._stub(
+            config={
+                "selfie_selected_models": {
+                    SelfieTab.DEFAULT_MODEL_ENDPOINT: True,
+                    "vendor/x": True,
+                    "vendor/y": False,
+                },
+                SelfieTab.CONFIG_KEY_DEFAULT_MODEL: "vendor/y",
+            },
+            model_endpoints=endpoints,
+        )
+        SelfieTab._migrate_selected_models_config(stub)
+        migrated = stub.config["selfie_selected_models"]
+        self.assertTrue(migrated[SelfieTab.DEFAULT_MODEL_ENDPOINT])
+        self.assertTrue(migrated["vendor/x"])
+        self.assertFalse(migrated["vendor/y"])
+
+
 if __name__ == "__main__":
     unittest.main()

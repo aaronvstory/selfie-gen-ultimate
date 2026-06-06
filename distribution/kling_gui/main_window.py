@@ -413,11 +413,25 @@ class EditModelsDialog(tk.Toplevel):
             display_values.append(display)
             self._default_display_to_endpoint[display] = endpoint
         # Pre-select the currently-effective default if it's in the list.
+        # Subagent MEDIUM round 1 on PR #85: when the caller passes a
+        # non-empty endpoint that doesn't appear in ``_picker_entries``
+        # (shouldn't happen via the normal _open_edit_models_dialog
+        # flow, since _effective_default_model_endpoint already
+        # validates — but possible via external callers), log a warning
+        # so a future debugger doesn't waste time wondering why the
+        # combobox rendered blank.
         current_display = ""
         for endpoint, label in self._picker_entries:
             if endpoint == self._current_default_endpoint:
                 current_display = f"{label} ({endpoint})"
                 break
+        if self._current_default_endpoint and not current_display:
+            import logging
+            logging.getLogger(__name__).warning(
+                "EditModelsDialog: current_default_endpoint %r is not "
+                "in picker_entries — combobox will render blank.",
+                self._current_default_endpoint,
+            )
         self._default_endpoint_var = tk.StringVar(value=current_display)
         self._default_endpoint_combo = ttk.Combobox(
             row,

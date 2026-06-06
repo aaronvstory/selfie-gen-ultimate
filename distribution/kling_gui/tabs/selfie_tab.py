@@ -185,8 +185,18 @@ class SelfieTab(tk.Frame):
 
         migrated = {endpoint: bool(saved_models.get(endpoint, False)) for endpoint in self._supported_model_endpoints}
         if stale_old_default or not any(migrated.values()):
+            # v2.27 PR #85 round 1 subagent MEDIUM: when the migration
+            # repopulates the selected-models map (stale-old-default
+            # or first run / empty config), honor the user's PERSISTED
+            # default choice if any. Falling back to the hardcoded
+            # ``DEFAULT_MODEL_ENDPOINT`` silently reverted the user's
+            # picker choice on the next launch after a stale-config
+            # upgrade. ``_effective_default_model_endpoint()`` is safe
+            # to call here — ``_model_options`` was populated at the
+            # top of __init__ before this method runs.
+            effective_default = self._effective_default_model_endpoint()
             for endpoint in migrated.keys():
-                migrated[endpoint] = endpoint == self.DEFAULT_MODEL_ENDPOINT
+                migrated[endpoint] = endpoint == effective_default
 
         self.config["selfie_selected_models"] = migrated
 
@@ -2066,7 +2076,9 @@ class SelfieTab(tk.Frame):
             var = self._model_vars.get(endpoint)
             if var is None:
                 # New endpoint: custom models default ON; built-ins follow the
-                # saved map / DEFAULT_MODEL_ENDPOINT rule.
+                # saved map / _effective_default_model_endpoint() rule
+                # (resolves user-persisted default with fall-back to the
+                # hardcoded DEFAULT_MODEL_ENDPOINT).
                 effective_default = self._effective_default_model_endpoint()
                 default_checked = endpoint in custom_endpoints or (
                     endpoint == effective_default
