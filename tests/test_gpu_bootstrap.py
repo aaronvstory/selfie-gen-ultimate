@@ -949,9 +949,18 @@ def test_compute_stamp_token_prefers_cached_gpu_status(monkeypatch, tmp_path):
 
 def test_compute_stamp_token_on_darwin_always_mac_default(monkeypatch, tmp_path):
     """Darwin-specific token guard: on macOS the token must ALWAYS encode
-    ``mac_default`` regardless of cached gpu_status or live detect_nvidia,
-    so a Mac dev box that touched a Windows venv's gpu_status.json can't
-    accidentally pick a CUDA dep stamp.
+    ``mac_default`` and ``None`` for cuda_major in its fixed-shape positions,
+    regardless of cached gpu_status or live detect_nvidia. So a Mac dev box
+    that touched a Windows venv's gpu_status.json can't accidentally pick
+    up a CUDA dep stamp.
+
+    The token shape is ``INSTALLER_VERSION-sys.platform-mode-cuda_major-sha12``
+    (see scripts/gpu_bootstrap.py::compute_stamp_token). We assert on the
+    PARSED parts (positions 2 and 3) rather than substring search — a naive
+    ``"cuda" not in token`` check was too broad (an installer version of
+    13.x or a constraints sha containing "13" would fail it spuriously
+    even though production behaviour is correct — code review M3,
+    2026-06-06).
 
     Mirrors the existing ``test_resolve_torch_mode_macos_never_cuda`` rule
     one layer up the call stack.
@@ -971,9 +980,18 @@ def test_compute_stamp_token_on_darwin_always_mac_default(monkeypatch, tmp_path)
         lambda: {"cuda_major": 13, "driver_version": "555"},
     )
     token = gpu_bootstrap.compute_stamp_token(str(constraints))
-    assert "mac_default" in token, f"darwin token missing mac_default: {token!r}"
-    assert "cuda" not in token, f"darwin token leaked CUDA: {token!r}"
-    assert "13" not in token, f"darwin token leaked cuda_major: {token!r}"
+    parts = token.split("-")
+    # Shape: [INSTALLER_VERSION, sys.platform, mode, cuda_major, sha12]
+    assert len(parts) == 5, (
+        f"darwin token has unexpected shape (expected 5 dash-parts): {token!r}"
+    )
+    assert parts[1] == "darwin", f"darwin token sys.platform wrong: {token!r}"
+    assert parts[2] == "mac_default", (
+        f"darwin token mode is {parts[2]!r}, expected 'mac_default': {token!r}"
+    )
+    assert parts[3] == "None", (
+        f"darwin token cuda_major is {parts[3]!r}, expected 'None': {token!r}"
+    )
 
 
 def test_run_pip_with_heartbeat_returns_pipresult_and_no_early_beat(capsys):

@@ -31,6 +31,9 @@ import re
 from pathlib import Path
 
 import pytest
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -39,66 +42,68 @@ ROOT = Path(__file__).resolve().parent.parent
 # Layer 1 — source-text guard. Always runs (any OS).
 # ---------------------------------------------------------------------------
 
+# Match a tkinterdnd2 requirement and capture everything from the package
+# name up to a real list terminator (semicolon = environment marker, quote
+# = TOML/Python literal close, `]` = TOML list close, end-of-line). We
+# intentionally allow whitespace, commas, `~=`, and PEP-440 wildcards in
+# the spec — those are forwarded as-is to `packaging.requirements.Requirement`
+# which is the canonical parser. This replaces a hand-rolled split that
+# silently mishandled spaces around operators and `~=` (code review M1/M2,
+# 2026-06-06).
 _TKDND_REQ_RE = re.compile(
     r"""
-    (^|[^A-Za-z0-9_-])     # word boundary
-    tkinterdnd2            # the package
-    \s*                    # optional spaces
-    (?P<spec>[^;\s'"\]]+)  # the FULL version spec — comma-separated parts
-                           #   are part of one spec (e.g. ">=0.3,<0.4.4"),
-                           #   so we don't break on commas. Stop only at
-                           #   real list-terminators: whitespace, quotes,
-                           #   semicolon, or `]`.
+    (?:^|[^A-Za-z0-9_-])    # word boundary (start-of-line or non-id char)
+    (?P<req>tkinterdnd2     # the package name itself, captured WITH the
+                            #   trailing spec so we can hand it to packaging
+        [^;'"\]\n]*         # spec body: stop at marker / quote / ] / EOL
+    )
     """,
     re.VERBOSE,
 )
 
 
-def _find_specs(path: Path) -> list[str]:
+def _find_requirements(path: Path) -> list[Requirement]:
+    """Return parsed Requirement objects for every tkinterdnd2 mention.
+
+    Skips full-line comments (lines starting with `#` after strip). Uses
+    ``packaging.requirements.Requirement`` so we benefit from a PEP-440
+    parser — tolerant of whitespace, `~=`, `==X.*` wildcards, etc.
+    """
     if not path.exists():
         return []
-    out: list[str] = []
+    out: list[Requirement] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
         for match in _TKDND_REQ_RE.finditer(line):
-            spec = match.group("spec").strip()
-            if spec:
-                out.append(spec)
+            req_text = match.group("req").strip().rstrip(",")
+            try:
+                out.append(Requirement(req_text))
+            except InvalidRequirement:
+                # Comment fragment / accidental match; skip silently. The
+                # downstream assertion will still fail if no valid spec is
+                # found in a file that declares tkinterdnd2.
+                continue
     return out
 
 
-def _spec_caps_to_below_044(spec: str) -> bool:
-    """True if ``spec`` forbids tkinterdnd2 >= 0.4.4 (i.e. caps at 0.4.3 or older).
+def _specifier_forbids_044(spec: SpecifierSet) -> bool:
+    """True iff the SpecifierSet rejects every tkinterdnd2 version >= 0.4.4.
 
-    Accepts the forms we actually use in this repo:
-      "<0.4.4"   "<=0.4.3"   "==0.4.3"   ">=0.3,<0.4.4"   etc.
+    Probes a handful of broken versions — if even one is allowed, the spec
+    doesn't fully cap. We don't enumerate the full version space because
+    pre-release versions and yanked builds make a closed-form check
+    awkward; sampling is correct for the practical set.
     """
-    parts = [p.strip() for p in spec.split(",") if p.strip()]
-    if not parts:
-        return False
-    has_upper_cap = False
-    for p in parts:
-        if p.startswith("<="):
-            ver = p[2:].strip()
-            if ver in {"0.4.3", "0.4.2", "0.4.1", "0.4.0", "0.3.0"}:
-                has_upper_cap = True
-        elif p.startswith("<"):
-            ver = p[1:].strip()
-            # "<0.4.4" or "<0.4.3" -> capped
-            if ver in {"0.4.4", "0.4.3", "0.4.2", "0.4.1", "0.4.0"}:
-                has_upper_cap = True
-        elif p.startswith("=="):
-            ver = p[2:].strip()
-            if ver in {"0.4.3", "0.4.2", "0.4.1", "0.4.0", "0.3.0"}:
-                has_upper_cap = True
-    return has_upper_cap
+    bad_versions = ["0.4.4", "0.4.4.1", "0.4.5", "0.5.0", "0.9.0", "1.0.0"]
+    return all(Version(v) not in spec for v in bad_versions)
 
 
 _REQUIREMENT_FILES = [
     ROOT / "requirements.txt",
     ROOT / "pyproject.toml",
+    ROOT / "distribution" / "pyproject.toml",     # H2: dist mirror — was missing.
     ROOT / "similarity" / "requirements.txt",
     ROOT / "resemble-score" / "requirements.txt",
 ]
@@ -113,22 +118,67 @@ def test_every_tkinterdnd2_declaration_caps_below_044():
     """
     seen_any = False
     for path in _REQUIREMENT_FILES:
-        specs = _find_specs(path)
-        if not specs:
+        reqs = _find_requirements(path)
+        if not reqs:
             continue
         seen_any = True
-        for spec in specs:
-            assert _spec_caps_to_below_044(spec), (
-                f"{path.relative_to(ROOT)}: tkinterdnd2 spec {spec!r} does NOT "
-                "cap below 0.4.4. Latest tkinterdnd2 (0.4.4+) ships only a "
-                "Tcl 9.x osx-arm64 binary, which is incompatible with the "
-                "Tcl 8.6 that macOS python.org Python 3.11 uses — DnD will "
-                "silently fail on Apple Silicon. Cap with `<0.4.4` until "
-                "upstream restores a Tcl 8.6 binary."
+        for req in reqs:
+            assert _specifier_forbids_044(req.specifier), (
+                f"{path.relative_to(ROOT)}: tkinterdnd2 spec {str(req.specifier)!r} "
+                "does NOT cap below 0.4.4. Latest tkinterdnd2 (0.4.4+) ships "
+                "only a Tcl 9.x osx-arm64 binary, which is incompatible with "
+                "the Tcl 8.6 that macOS python.org Python 3.11 uses — DnD "
+                "will silently fail on Apple Silicon. Cap with `<0.4.4` "
+                "until upstream restores a Tcl 8.6 binary."
             )
     assert seen_any, (
         "No tkinterdnd2 declaration found in any of: "
         + ", ".join(str(p.relative_to(ROOT)) for p in _REQUIREMENT_FILES)
+    )
+
+
+def test_dependency_checker_pins_tkinterdnd2():
+    """``dependency_checker.py`` is a documented entry point — it runs pip
+    install for each declared Dependency on a fresh clone. If its ``pip_name``
+    is the bare ``tkinterdnd2`` (no spec), a fresh macOS run pulls 0.4.4.1
+    and silently breaks DnD — bypassing every other cap in this PR.
+
+    This test is the second layer of the source-text guard above: it scans
+    ``dependency_checker.py``'s ``pip_name`` strings (since they're Python
+    literals, not requirements-file syntax) for an upper bound.
+    """
+    text = (ROOT / "dependency_checker.py").read_text(encoding="utf-8")
+    # Match Dependency(...) blocks that name tkinterdnd2 as the import,
+    # then locate the adjacent pip_name=... literal.
+    m = re.search(
+        r"""import_name=["']tkinterdnd2["']""", text
+    )
+    assert m, "dependency_checker.py no longer declares tkinterdnd2"
+
+    # Find the pip_name in the same Dependency(...) block. Walk forward
+    # from the import_name match to the next pip_name=... within a window.
+    window = text[m.start(): m.start() + 600]
+    pip_m = re.search(r"""pip_name=["'](?P<spec>[^"']+)["']""", window)
+    assert pip_m, (
+        "Could not locate pip_name= in the Dependency(...) block for "
+        "tkinterdnd2 in dependency_checker.py"
+    )
+
+    spec_text = pip_m.group("spec")
+    # Wrap as a Requirement to reuse the same parser as the file-based guard.
+    try:
+        req = Requirement(spec_text)
+    except InvalidRequirement:
+        pytest.fail(
+            f"dependency_checker.py pip_name={spec_text!r} is not a valid "
+            "PEP-440 requirement; the dep-check pip install will be brittle."
+        )
+    assert _specifier_forbids_044(req.specifier), (
+        f"dependency_checker.py pip_name={spec_text!r} does NOT cap below "
+        "0.4.4. The documented `python dependency_checker.py` flow will "
+        "pip-install the latest tkinterdnd2 on a fresh macOS clone, "
+        "re-triggering the Tcl 9.x osx-arm64 silent-DnD-fail. Add the "
+        "`<0.4.4` cap to the pip_name string."
     )
 
 
