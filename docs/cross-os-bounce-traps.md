@@ -117,3 +117,13 @@ deeply nested blocks into `:label` subroutines (the `:check_py` pattern in
 Add it as a new trap entry with the specific symptom + check. The list
 grows; the bounce frequency drops. The memory file
 `feedback_macos_windows_bounce_traps.md` has the agent-private version.
+
+## Related — the proactive author-side complement
+
+This doc is the **runtime / pre-PR sweep matrix** — what to check on the
+diff once it's authored. The author-side complement that catches the same
+class of bugs at writing-time (wheel-inspection recipes, test-author
+patterns, PR-description templates) lives in
+[`macos-readiness-for-windows-authors.md`](macos-readiness-for-windows-authors.md).
+Together they cover both directions: prevent at authoring time, catch at
+PR time.

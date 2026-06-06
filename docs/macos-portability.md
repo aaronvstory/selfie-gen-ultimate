@@ -115,15 +115,28 @@ run_gui.command (root)
 
 If you touch any link in that chain: chain-test it via `bash run_gui.command` once before pushing. Same chain exists for `run_cli.command` and the eight `run_oldcam_v*.command` variants.
 
-## 8. Pre-push macOS portability check
+## 8. Portability check — runs automatically at commit time (v2.24+)
 
-Run before pushing any change that touches `*.sh`, `*.command`, `tk_dialogs.py`, or anything under `launchers/`, `similarity/src/`, or `kling_gui/main_window.py` picker code:
+Wired into `scripts/git-hooks/pre-commit` since v2.24 — runs automatically
+when a commit touches `*.sh`, `*.command`, `.gitattributes`, anything under
+`launchers/`, or any tracked file in `scripts/git-hooks/`. Override:
+`SKIP_MACOS_PORTABILITY_GATE=1`.
+
+You can still run it manually (recommended before pushing a large diff that
+also wants the test suite green):
 
 ```bash
 bash scripts/check_macos_portability.sh
 ```
 
-Exits non-zero on CRLF in shell scripts, or `.command`/`.sh` files committed without the exec bit. Source: `scripts/check_macos_portability.sh`.
+Exits non-zero on:
+- CRLF line endings in `*.sh` / `*.command` / extensionless `scripts/git-hooks/*`
+- `*.command` / `*.sh` / extensionless hooks committed without the exec bit
+  (`100755` in the git index)
+
+Source: `scripts/check_macos_portability.sh` (Rules 1, 2, and 3 — the third
+covers the extensionless hooks added in v2.24, see Codex/Gemini round-4 of
+PR #80 for the rationale).
 
 **The portability gate does NOT catch:** Python resolver bugs (rule 9), set-flag parity mismatches (rule 10), `/dev/null` in `.bat` files, or `sys.path` import bugs in subprojects. Those are caught only by code review + the static-text test `tests/test_similarity_launcher_resolver.py`.
 
@@ -214,3 +227,118 @@ level. Remove the wiring before commit — the helper is opt-in for a reason.
 
 The `mac_padding` / `macos_widget_pad` / `CLICK_DEBUG` contract is covered
 by `tests/test_theme_mac_padding.py`.
+
+## 12. Tk-related dep bumps — verify the bundled `osx-arm64` binary's Tcl ABI
+
+Some Python deps bundle native Tk extensions per platform. The bundled
+`osx-arm64/` binary can be linked against either Tcl 8.6 (compatible
+with macOS python.org Python 3.11's bundled Tcl/Tk) or Tcl 9.x
+(incompatible — stubs mismatch). A version bump that switches the
+bundled binary silently breaks Apple Silicon while the Windows + Linux
+builds keep working.
+
+This repo currently ships **only `tkinterdnd2`** in this category — it's
+the dep that hit the v2.24 incident. If a future PR introduces another
+Tk-bundling dep (e.g. `customtkinter` for theming, `tksvg` for SVG
+support, or anything else that ships per-platform native binaries
+under its `tkdnd/`, `tcl/`, or similar subdirectory), the rule applies
+to that dep too.
+
+The v2.24 incident: `tkinterdnd2` 0.4.3 → 0.4.4 / 0.4.4.1 switched the
+`osx-arm64/` binary from `libtkdnd2.9.3.dylib` (Tcl 8.6) to
+`libtcl9tkdnd2.9.5.dylib` (Tcl 9.x). Apple Silicon launches then raised
+`RuntimeError: Unable to load tkdnd library (interpreter uses an
+incompatible stubs mechanism)`. The PR #61 graceful-fail layer swallowed
+it so users only saw `[selfie-gen] drag-and-drop unavailable` in the log
+— DnD was silently dead.
+
+**Before bumping** any Tk-related dep, inspect the new wheel's
+`osx-arm64/` contents:
+
+```bash
+pip download --no-deps "tkinterdnd2==0.4.4.1" -d /tmp/check
+unzip -q /tmp/check/tkinterdnd2-0.4.4.1-py3-none-any.whl -d /tmp/check/extract
+ls /tmp/check/extract/tkinterdnd2/tkdnd/osx-arm64/*.dylib
+file /tmp/check/extract/tkinterdnd2/tkdnd/osx-arm64/*.dylib
+# Filename starts with libtcl9... → Tcl 9.x → BREAKS macOS Tk 8.6. STOP, CAP.
+```
+
+Cap the dep in `requirements.txt` + `pyproject.toml` +
+`distribution/pyproject.toml` + `dependency_checker.py` `pip_name=`. Add a
+regression test that asserts (a) every declaration carries the cap and
+(b) a darwin-arm64-gated real-import probe instantiates the runtime
+symbol without the stubs error. Pattern:
+`tests/test_macos_tkdnd_loads.py`.
+
+## 13. Tests mocking platform / CUDA / Windows state — pin `sys.platform` inside the test
+
+Any test that monkeypatches `detect_nvidia`, fakes `nvidia-smi` output,
+or otherwise simulates Windows-CUDA behavior must pin `sys.platform`
+inside the test body. On darwin, `scripts/gpu_bootstrap.py::resolve_torch_mode`
+hard-returns `mac_default` before looking at the `nvidia` argument — by
+design, Apple Silicon has no CUDA path. A CUDA-presence assertion that
+passes on Windows therefore false-fails on darwin without the pin.
+
+```python
+# WRONG — passes on Windows, false-fails on darwin
+def test_cuda_appears_changes_stamp(monkeypatch):
+    monkeypatch.setattr(gpu_bootstrap, "detect_nvidia",
+                        lambda: {"cuda_major": 12})
+    assert "cuda" in gpu_bootstrap.compute_stamp_token()
+
+# RIGHT — runs portably as a Windows-semantics invariant
+def test_cuda_appears_changes_stamp(monkeypatch):
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr(gpu_bootstrap, "detect_nvidia",
+                        lambda: {"cuda_major": 12})
+    assert "cuda" in gpu_bootstrap.compute_stamp_token()
+```
+
+Use the **dotted-path** form `monkeypatch.setattr("sys.platform", ...)`,
+not `monkeypatch.setattr(some_module.sys, "platform", ...)`. The dotted
+form is decoupled from how the module-under-test imported sys; pytest
+restores it via the standard finalizer regardless of import style.
+
+Mirror with a darwin invariant where it matters: when the production
+behaviour DIFFERS between Windows and darwin, a separate test pinned to
+`sys.platform = "darwin"` should assert the darwin shape. See
+`tests/test_gpu_bootstrap.py::test_compute_stamp_token_on_darwin_always_mac_default`.
+
+Also: assert on **parsed token positions** rather than substring search.
+A token like `"2.13.4-darwin-mac_default-None-3c64eb208e97"` will fail a
+naive `"13" not in token` check even though it correctly encodes the
+darwin decision. Split on `-` and assert positions explicitly.
+
+## 14. `dependency_checker.py` — `pip_name` must always carry the spec
+
+`python dependency_checker.py` is a documented repair-path entry point:
+it pip-installs every `Dependency.pip_name` that's missing. A bare
+`pip_name="tkinterdnd2"` (no spec) tells pip to resolve the LATEST
+version, bypassing every cap in `requirements.txt` / `pyproject.toml` /
+`uv.lock`. On a fresh macOS clone using the documented repair flow,
+this silently re-triggers the bug those caps are there to prevent.
+
+```python
+# WRONG — repair pulls 0.4.4.1 and re-breaks DnD on Apple Silicon
+Dependency(name="TkinterDnD2", import_name="tkinterdnd2",
+           pip_name="tkinterdnd2", required=False,
+           description="Drag-and-drop support for GUI mode")
+
+# RIGHT — mirrors the cap in requirements.txt
+Dependency(name="TkinterDnD2", import_name="tkinterdnd2",
+           pip_name="tkinterdnd2<0.4.4", required=False,
+           description="Drag-and-drop support for GUI mode")
+```
+
+This rule applies to **BOTH** copies — root `dependency_checker.py` AND
+`distribution/dependency_checker.py` (the dist-bundled mirror that
+release users hit when they unpack the zip and run `python
+dependency_checker.py`). PR #79 round-4 caught the dist copy after
+round-2 only fixed the root one — don't repeat the bounce.
+
+Regression coverage:
+`tests/test_macos_tkdnd_loads.py::test_dependency_checker_pins_tkinterdnd2`
+is parametrized over both checkers. When you add a new Tk-related
+Dependency entry, the parametrize list `_DEPENDENCY_CHECKER_FILES`
+already covers it; you only need to ensure your new entry's `pip_name`
+includes the cap from `requirements.txt`.

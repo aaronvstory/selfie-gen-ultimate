@@ -188,3 +188,15 @@ log_drop_default = int(right_section_w * 0.71)
 > to comfortably show its slot picker + title + positive/negative prompt
 > previews. If the table above shows a different value than `layout_utils.py`,
 > trust the code; this table is a documentation mirror.
+
+
+## Related — the macOS-author mirror
+
+This doc is the **Windows-side** binding rules — what to check when
+editing `.bat` / `.cmd` and sash-layout code from a Windows box. The
+macOS mirror — what to check when authoring on Windows for changes that
+will land on macOS — lives in
+[`macos-readiness-for-windows-authors.md`](macos-readiness-for-windows-authors.md)
+and the runtime rules it points at
+([`macos-portability.md`](macos-portability.md),
+[`cross-os-bounce-traps.md`](cross-os-bounce-traps.md)).

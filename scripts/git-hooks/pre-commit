@@ -31,7 +31,42 @@ RESET='\033[0m'
 
 FAILED=0
 
-# --- Skip scan when no dep-related files in this commit ---
+# --- macOS portability gate (v2.24) — runs FIRST so it isn't masked by the ---
+# supply-chain audit's early-exit-when-no-dep-changes. Codex P2 (round 3 on
+# PR #80): the previous placement put the gate AFTER the supply-chain block's
+# `exit 0` so commits touching ONLY `.sh` / `.command` / launcher files (the
+# exact files the gate is for) silently skipped it.
+#
+# Activates ONLY when the commit touches .sh / .command / .gitattributes / a
+# launcher directory. Override: SKIP_MACOS_PORTABILITY_GATE=1.
+PORTABILITY_PATTERN='(\.sh$|\.command$|^\.gitattributes$|^launchers/|^scripts/(check_macos_portability\.sh|gpu_bootstrap\.py|uv_sync.*\.(sh|py)|ensure_uv\.py|git-hooks/.+))'
+if [[ "${SKIP_MACOS_PORTABILITY_GATE:-0}" != "1" ]]; then
+    if git diff --cached --name-only | grep -Eq "$PORTABILITY_PATTERN"; then
+        # Gemini HIGH (round 3 on PR #80): test with `-f`, not `-x`. The
+        # script is explicitly invoked via `bash ...` so it doesn't need the
+        # executable bit set locally — and on Windows hosts (`core.filemode
+        # false`) the bit isn't preserved in the working tree, so `-x` would
+        # silently skip the gate exactly when a Windows author drops a CRLF
+        # file. `-f` runs reliably on every host.
+        if [[ -f "$REPO_ROOT/scripts/check_macos_portability.sh" ]]; then
+            echo -e "${YELLOW}[pre-commit] running macOS portability gate...${RESET}" >&2
+            if ! bash "$REPO_ROOT/scripts/check_macos_portability.sh"; then
+                echo "" >&2
+                echo -e "${RED}Commit blocked by macOS portability gate.${RESET}" >&2
+                echo "  - .sh / .command files must be LF + mode 100755" >&2
+                echo "  - See docs/macos-portability.md (rules 1 & 2) for fixes" >&2
+                echo "  - Use 'git commit --no-verify' to bypass (only if you've confirmed safe)" >&2
+                echo "  - Or set SKIP_MACOS_PORTABILITY_GATE=1 to skip just this gate" >&2
+                exit 1
+            fi
+            echo -e "${GREEN}[pre-commit] macOS portability gate clean${RESET}" >&2
+        else
+            echo -e "${YELLOW}[pre-commit] portability gate script missing — skipping${RESET}" >&2
+        fi
+    fi
+fi
+
+# --- Skip supply-chain scan when no dep-related files in this commit ---
 # Supply chain risk only materializes when dep manifests change. If this commit
 # touches only source code, the scan adds no signal and ~45s of latency.
 # Override: SHAI_HULUD_FORCE=1 to always scan.
@@ -145,4 +180,10 @@ if [[ $FAILED -ne 0 ]]; then
 fi
 
 echo -e "${GREEN}[pre-commit] supply chain audit clean${RESET}" >&2
+
+# (macOS portability gate moved to the TOP of this script — see the block
+# right after the color/state setup. Round-3 Codex P2: it was unreachable
+# down here for commits touching only .sh / .command files because the
+# DEP_PATTERN early-exit skipped past it.)
+
 exit 0

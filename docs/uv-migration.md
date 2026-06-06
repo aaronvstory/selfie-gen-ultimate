@@ -127,3 +127,70 @@ are kept in-tree as
 the pip fallback; the launchers degrade to them automatically when uv is absent
 or fails (`KLING_USE_PIP=1` forces it). They'll be retired only once uv is
 proven on both OSes in production.
+
+---
+
+## The `dev` extra contract — installing pytest (added v2.24)
+
+> **Source of the code change:** the `dev` extra landed via
+> [PR #79](https://github.com/aaronvstory/selfie-gen-ultimate/pull/79)
+> (`feat/macos-polish-post-v2.21`), commit `de161c04`, in the v2.24
+> release round. This section is the matching contract doc.
+
+CLAUDE.md's pre-commit invariant is `pytest tests/ similarity/tests/ -q`.
+But pytest is NOT installed by the end-user launcher path — `run_gui` /
+`run_cli` / `run_auto` all run `uv sync --no-default-groups --extra
+<cpu/cu*>`, which intentionally keeps end-user envs lean.
+
+Contributors opt-in to pytest explicitly via the `dev` extra:
+
+```bash
+# macOS / CPU-only
+uv sync --extra cpu --extra dev
+
+# Windows + CUDA 13.x
+uv sync --extra cu128 --extra dev
+
+# Windows + CUDA 12.x
+uv sync --extra cu121 --extra dev
+```
+
+The `dev` extra lives in `[project.optional-dependencies]` of both
+`pyproject.toml` (source of truth) and `distribution/pyproject.toml`
+(packaging mirror — kept in spec-equality lockstep by
+`tests/test_macos_dev_extra_provides_pytest.py`).
+
+**When you add a tool to the pre-commit invariant** — pytest plugins,
+linters, type checkers, anything CLAUDE.md or
+[`pr-review-loop.md`](pr-review-loop.md) (where the full invariant list
+lives post-v2.24) tells a contributor to run — declare it in the `dev`
+extra in BOTH pyproject
+files and re-resolve the lock. Otherwise the next `uv sync` actively
+UNINSTALLS the tool from the venv (uv's `--no-default-groups --extra X`
+prunes anything not in extra X), and a fresh-clone contributor on
+macOS hits the gap immediately.
+
+The pre-v2.24 state: pytest was undeclared in pyproject / requirements
+/ uv.lock. Every macOS `uv sync` removed pytest from `.venv-macos`. The
+Windows author had pytest ambient via system Python so the gap was
+invisible. v2.24 closed it via the `dev` extra above. See
+`tests/test_macos_dev_extra_provides_pytest.py` for the regression
+guard.
+
+### Why not `[dependency-groups]` instead?
+
+uv 0.5+ supports a `[dependency-groups]` table that holds dev/test
+dependencies separately from `optional-dependencies`. We use the
+`dev` *extra* (under `optional-dependencies`) instead because:
+
+- The launchers already pass `--no-default-groups` to skip groups, and
+  changing them would mean threading `--group dev` through every
+  launcher path and the CI matrix. Extras already work with the
+  existing flag set.
+- `dependency-groups` is uv-specific; sticking to extras keeps the
+  pyproject pip-installable (`pip install .[dev]`) without uv. The
+  pip fallback path is still load-bearing per the rollback section
+  above.
+
+If/when the dev/optional separation matters more (a new `test`
+extra that depends on `dev`, for instance), revisit.
