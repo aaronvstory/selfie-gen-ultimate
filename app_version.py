@@ -1,4 +1,4 @@
 """Canonical application/release version constants."""
 
-RELEASE_VERSION = "v2.24"
+RELEASE_VERSION = "v2.28"
 

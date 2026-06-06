@@ -199,19 +199,57 @@ class SelfieGenerator:
             "9:16": 9 / 16,
         }
 
+    # v2.28: per-endpoint cache of the accepted aspect-ratio set,
+    # populated dynamically when a 422 self-heal retry succeeds.
+    # Lives at class-level so it persists across SelfieGenerator
+    # instances for the lifetime of the process. Keys are endpoints;
+    # values are sorted lists of accepted labels (e.g.
+    # ``["1:1", "16:9", ...]``). The closest-aspect-ratio resolver
+    # consults this map first, falling back to the universal
+    # 8-element set for endpoints we haven't probed yet.
+    _ENDPOINT_ASPECT_OVERRIDES: Dict[str, List[str]] = {}
+
     @staticmethod
-    def _closest_aspect_ratio(width: int, height: int) -> str:
-        """Snap (width, height) to the nearest aspect-ratio LABEL accepted
-        by every current built-in model — the intersection of Nano
-        Banana 2 and Kontext Max. Excludes `4:5` / `5:4` (Kontext Max
-        rejects them) AND `9:21` (Nano Banana 2 rejects it). Ultra-tall
-        sizes that would have preferred `9:21` now snap to `9:16`.
+    def _closest_aspect_ratio(width: int, height: int, endpoint: str = "") -> str:
+        """Snap (width, height) to the nearest aspect-ratio LABEL
+        accepted by ``endpoint``.
+
+        If we've observed a 422 from this endpoint and self-healed,
+        ``_ENDPOINT_ASPECT_OVERRIDES`` carries that endpoint's
+        accepted set and we snap inside it. Otherwise we fall back to
+        the universal 8-element intersection (Nano Banana 2 ∩
+        Kontext Max ∩ GPT Image 2), which currently excludes ``4:5``
+        / ``5:4`` (Kontext Max rejects) and ``9:21`` (Nano Banana 2
+        rejects). The override map is what makes this future-proof
+        for any new image-to-image model — the FIRST submit may
+        bounce, the second succeeds and CACHES the accepted set, all
+        subsequent gens skip the bounce.
         """
         target = width / max(1, height)
+        override = SelfieGenerator._ENDPOINT_ASPECT_OVERRIDES.get(endpoint)
+        if override:
+            label_to_ratio = {
+                label: SelfieGenerator._parse_aspect_label(label)
+                for label in override
+            }
+            return min(
+                label_to_ratio.items(), key=lambda kv: abs(kv[1] - target)
+            )[0]
         return min(
             SelfieGenerator._UNIVERSAL_ASPECT_RATIOS.items(),
             key=lambda kv: abs(kv[1] - target),
         )[0]
+
+    @staticmethod
+    def _parse_aspect_label(label: str) -> float:
+        """Parse ``'9:16'`` → 0.5625. Defensive: bad input returns
+        1.0 (square) rather than crashing — the override-map fallback
+        path should never crash a generation."""
+        try:
+            num, den = label.split(":", 1)
+            return float(num) / max(1.0, float(den))
+        except (ValueError, ZeroDivisionError):
+            return 1.0
 
     @staticmethod
     def _next_indexed_output_path(output_folder: str, prefix: str) -> str:
@@ -301,7 +339,7 @@ class SelfieGenerator:
                 "prompt": prompt,
                 "image_urls": [image_url],
                 "num_images": 1,
-                "aspect_ratio": cls._closest_aspect_ratio(width, height),
+                "aspect_ratio": cls._closest_aspect_ratio(width, height, model_endpoint),
                 "resolution": "1K",
                 "output_format": "png",
                 "seed": seed,
@@ -314,7 +352,7 @@ class SelfieGenerator:
                 "image_url": image_url,
                 "num_images": 1,
                 "guidance_scale": 3.5,
-                "aspect_ratio": cls._closest_aspect_ratio(width, height),
+                "aspect_ratio": cls._closest_aspect_ratio(width, height, model_endpoint),
                 "output_format": "png",
                 "seed": seed,
             }
@@ -397,32 +435,67 @@ class SelfieGenerator:
             "task",
         )
 
-        result = fal_queue_submit(
-            self.api_key, resolved_endpoint, payload, self._progress_callback
-        )
-        if not result:
-            self._report("Failed to submit job", "error")
-            return False
+        # v2.28: aspect-ratio self-heal — on a 422 from the
+        # response_url with an aspect_ratio validation error, the poll
+        # returns a SENTINEL dict carrying the accepted set. We snap
+        # to the closest accepted label, cache the accepted set for
+        # this endpoint (so the very NEXT generation skips the
+        # bounce), and re-submit ONCE. Single retry: a second 422
+        # means the cached set is itself wrong or the model has
+        # OTHER validation issues — bail and surface the error.
+        retry_attempted = False
+        while True:
+            result = fal_queue_submit(
+                self.api_key, resolved_endpoint, payload, self._progress_callback
+            )
+            if not result:
+                self._report("Failed to submit job", "error")
+                return False
+            status_url = result.get("status_url")
+            if not status_url:
+                self._report("No status URL in response", "error")
+                return False
+            self._report(
+                f"Selfie — submitted (timeout {poll_timeout_seconds}s)",
+                "progress_update",
+            )
+            final = fal_queue_poll(
+                self.api_key, status_url, self._progress_callback,
+                max_wait_seconds=poll_timeout_seconds,
+                cancel_event=self._cancel_event,
+                operation_name="Selfie",
+            )
+            if not final:
+                self._report("Generation failed or timed out", "error")
+                return False
 
-        status_url = result.get("status_url")
-        if not status_url:
-            self._report("No status URL in response", "error")
-            return False
-
-        # Start the in-place progress row (the poll loop's heartbeat updates it).
-        self._report(
-            f"Selfie — submitted (timeout {poll_timeout_seconds}s)",
-            "progress_update",
-        )
-        final = fal_queue_poll(
-            self.api_key, status_url, self._progress_callback,
-            max_wait_seconds=poll_timeout_seconds,
-            cancel_event=self._cancel_event,
-            operation_name="Selfie",
-        )
-        if not final:
-            self._report("Generation failed or timed out", "error")
-            return False
+            # Sentinel from _extract_result: 422 + aspect_ratio
+            # rejection. Snap + retry once.
+            if isinstance(final, dict) and final.get("__aspect_ratio_rejected__"):
+                allowed = final.get("allowed") or []
+                if retry_attempted or not allowed:
+                    detail = final.get("detail", "validation error")
+                    self._report(
+                        f"Aspect-ratio retry exhausted: {detail}", "error",
+                    )
+                    return False
+                # Cache the endpoint's accepted set so future gens
+                # don't re-bounce.
+                type(self)._ENDPOINT_ASPECT_OVERRIDES[resolved_endpoint] = list(allowed)
+                old = payload.get("aspect_ratio", "?")
+                new_aspect = self._closest_aspect_ratio(
+                    width, height, resolved_endpoint,
+                )
+                self._report(
+                    f"Model rejected aspect_ratio='{old}' "
+                    f"(accepted: {', '.join(allowed)}); "
+                    f"retrying with '{new_aspect}'",
+                    "warning",
+                )
+                payload["aspect_ratio"] = new_aspect
+                retry_attempted = True
+                continue
+            break
 
         images = final.get("images", [])
         if not images:
