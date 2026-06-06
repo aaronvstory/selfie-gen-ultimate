@@ -1584,6 +1584,24 @@ class QueueManager:
                     prompt_preview = prompt[:60] + "..." if len(prompt) > 60 else prompt
                     self.log_verbose(f"  Prompt: {prompt_preview}", "debug")
 
+                # v2.27 (user verification ask 2026-06-07): always log
+                # which prompt slot is feeding Step 3 (Video) — mirror of
+                # the selfie tab's "Using prompt slot N" log. Visible
+                # without verbose mode so the user can confirm the slot
+                # at a glance.
+                _slot_titles = config.get("prompt_titles") or {}
+                _slot_title = str(_slot_titles.get(str(prompt_slot), "") or "").strip()
+                _slot_label = f"slot {prompt_slot}"
+                if _slot_title:
+                    _slot_label += f" — “{_slot_title}”"
+                _prompt_preview = (prompt or "")[:80].replace("\n", " ⏎ ")
+                if len(prompt or "") > 80:
+                    _prompt_preview += "…"
+                self.log(
+                    f"Step 3 using prompt {_slot_label}: {_prompt_preview}",
+                    "info",
+                )
+
                 # Determine output folder
                 if use_source_folder:
                     actual_output = get_gen_images_folder(item.path)

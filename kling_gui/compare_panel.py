@@ -401,9 +401,58 @@ class ComparePanel(tk.Frame):
             self.after_cancel(self._hover_job)
             self._hover_job = None
 
+    def _cursor_over_popup(self) -> bool:
+        """True when the cursor's screen coords are inside the hover popup.
+
+        The hover popup is positioned at the centre of the parent window,
+        which usually overlaps the canvas. When the popup appears, the
+        cursor is instantly INSIDE the popup → the canvas fires `<Leave>`
+        → without this guard, _on_hover_leave would destroy the popup → on
+        the next refresh the canvas fires `<Enter>` again → 500ms later
+        the popup re-appears → loop = flashing.
+
+        This helper queries Tk's `winfo_pointerxy()` (screen coords) and
+        compares against the popup's bbox so we can keep the popup alive
+        when the cursor is INSIDE it even though it's outside the canvas.
+        """
+        popup = self._hover_popup
+        if not popup:
+            return False
+        try:
+            px, py = popup.winfo_pointerxy()
+            x1 = popup.winfo_rootx()
+            y1 = popup.winfo_rooty()
+            x2 = x1 + popup.winfo_width()
+            y2 = y1 + popup.winfo_height()
+            return x1 <= px <= x2 and y1 <= py <= y2
+        except tk.TclError:
+            return False
+
     def _on_hover_leave(self, _event=None):
+        # Anti-flash (PR fix/gpt-content-policy-and-hover-flash, v2.27):
+        # if the cursor is INSIDE the popup, the canvas's `<Leave>` is
+        # just an artefact of the cursor crossing into the borderless
+        # Toplevel. Keep the popup alive and poll until the cursor
+        # really leaves both the canvas AND the popup.
+        if self._cursor_over_popup():
+            self._poll_cursor_off_popup()
+            return
         self._cancel_hover()
         self._destroy_hover()
+
+    def _poll_cursor_off_popup(self):
+        """Poll until the cursor exits the popup bbox; then destroy."""
+        if not self._hover_popup:
+            return
+        if not self._cursor_over_popup():
+            self._cancel_hover()
+            self._destroy_hover()
+            return
+        try:
+            self.after(120, self._poll_cursor_off_popup)
+        except tk.TclError:
+            # Widget gone (e.g. tab destroyed); abandon the poll.
+            self._destroy_hover()
 
     def _destroy_hover(self):
         if self._hover_popup:

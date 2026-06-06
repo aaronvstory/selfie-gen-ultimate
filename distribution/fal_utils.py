@@ -36,9 +36,40 @@ _BALANCE_LOCK_MARKERS = (
 
 
 def _extract_http_error_detail(resp: requests.Response, limit: int = 500) -> str:
-    """Return a readable error detail from an HTTP response."""
+    """Return a readable error detail from an HTTP response.
+
+    Detects fal.ai's `content_policy_violation` 422 (the GPT Image 2 Edit
+    content-checker hit) and replaces the verbose detail with a one-line
+    actionable message — without it, the user sees a 500-char dump of
+    their own prompt followed by a fal docs URL, which is hard to act on.
+    See PR fix/gpt-content-policy-and-hover-flash, v2.27.
+    """
     try:
         data = resp.json()
+        # Fal validation errors are a LIST of dicts under `detail`; we
+        # check every entry's `type` so we surface the policy hit even
+        # when other validation errors precede it.
+        if isinstance(data, dict) and isinstance(data.get("detail"), list):
+            for entry in data["detail"]:
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("type") == "content_policy_violation"
+                ):
+                    field = ""
+                    loc = entry.get("loc")
+                    if isinstance(loc, list) and len(loc) >= 2:
+                        field = str(loc[-1])  # e.g. "prompt"
+                    target = f" in `{field}`" if field else ""
+                    return (
+                        f"Content policy violation{target}: the model's "
+                        "content checker flagged the request. Edit the "
+                        "Selfie prompt (or the input image) to remove the "
+                        "language it objected to — common triggers are "
+                        "explicit identity / forensic-imaging keywords "
+                        "(e.g. 'PRNU', 'noiseprint', 'demosaicing'). "
+                        "Other selfie models with softer checkers may "
+                        "still accept the same prompt."
+                    )
         if isinstance(data, dict):
             if "detail" in data:
                 return str(data["detail"])[:limit]

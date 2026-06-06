@@ -1724,9 +1724,51 @@ class ImageCarousel(tk.Frame):
             self.after_cancel(self._hover_job)
             self._hover_job = None
 
+    def _cursor_over_popup(self) -> bool:
+        """True when the cursor's screen coords are inside the hover popup.
+
+        Mirrors the same anti-flash logic added to ``compare_panel.py``.
+        The hover popup centres on the parent window, which usually
+        overlaps the carousel canvas. When the popup appears the cursor
+        is instantly INSIDE the popup → the canvas fires `<Leave>` →
+        without this guard, `_on_hover_leave` would destroy the popup →
+        canvas re-fires `<Enter>` next refresh → 500ms later popup
+        re-appears → loop = flashing (user-reported, v2.27).
+        """
+        popup = self._hover_popup
+        if not popup:
+            return False
+        try:
+            px, py = popup.winfo_pointerxy()
+            x1 = popup.winfo_rootx()
+            y1 = popup.winfo_rooty()
+            x2 = x1 + popup.winfo_width()
+            y2 = y1 + popup.winfo_height()
+            return x1 <= px <= x2 and y1 <= py <= y2
+        except tk.TclError:
+            return False
+
     def _on_hover_leave(self, _event=None):
+        # Anti-flash: if the cursor is inside the popup, treat the canvas
+        # `<Leave>` as an artefact of the cursor crossing into the
+        # borderless Toplevel. Keep the popup; poll for real exit.
+        if self._cursor_over_popup():
+            self._poll_cursor_off_popup()
+            return
         self._cancel_hover()
         self._destroy_hover()
+
+    def _poll_cursor_off_popup(self):
+        if not self._hover_popup:
+            return
+        if not self._cursor_over_popup():
+            self._cancel_hover()
+            self._destroy_hover()
+            return
+        try:
+            self.after(120, self._poll_cursor_off_popup)
+        except tk.TclError:
+            self._destroy_hover()
 
     def _destroy_hover(self):
         if self._hover_popup:

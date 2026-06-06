@@ -1292,6 +1292,29 @@ class SelfieTab(tk.Frame):
             self.log("Select at least one Step 2 model", "warning")
             return
 
+        # v2.27 (user verification ask 2026-06-07): make the prompt-slot
+        # provenance explicit in the log so the user can see EXACTLY which
+        # slot's content is being sent. The flow is slot → widget →
+        # generator (no path bypasses the widget), but a clear top-of-run
+        # log line proves it instead of requiring the user to read the
+        # source.
+        try:
+            active_slot = int(self._selfie_slot_var.get())
+        except Exception:
+            active_slot = self.DEFAULT_SELFIE_PROMPT_SLOT
+        slot_titles = self.config.get("selfie_prompt_titles") or {}
+        slot_title = str(slot_titles.get(str(active_slot), "") or "").strip()
+        slot_label = f"slot {active_slot}"
+        if slot_title:
+            slot_label += f" — “{slot_title}”"
+        prompt_preview = (prompt or "")[:80].replace("\n", " ⏎ ")
+        if len(prompt or "") > 80:
+            prompt_preview += "…"
+        self.log(
+            f"Using prompt {slot_label} (mode={mode}): {prompt_preview}",
+            "info",
+        )
+
         # Validate API keys per provider
         needs_fal = any(m.get("provider", "fal") == "fal" for m in selected_models)
         needs_bfl = any(m.get("provider") == "bfl" for m in selected_models)
@@ -1365,13 +1388,20 @@ class SelfieTab(tk.Frame):
                         ),
                     )
 
-                    # Resolve wildcards per-model for variety
+                    # Resolve wildcards per-model for variety. v2.27 bumps
+                    # the resolved-prompt log from debug → info so the
+                    # user can verify the actual per-model prompt without
+                    # turning on verbose mode (user verification ask
+                    # 2026-06-07).
                     if wildcard_template:
                         model_prompt = SelfieGenerator.resolve_wildcards(wildcard_template)
+                        _prev = model_prompt[:100].replace("\n", " ⏎ ")
+                        if len(model_prompt) > 100:
+                            _prev += "…"
                         self.winfo_toplevel().after(
                             0,
-                            lambda l=label, p=model_prompt: self.log(
-                                f"[{l}] Resolved prompt: {p[:120]}...", "debug"
+                            lambda l=label, p=_prev: self.log(
+                                f"[{l}] Resolved prompt: {p}", "info"
                             ),
                         )
                     else:
