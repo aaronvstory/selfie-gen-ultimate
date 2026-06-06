@@ -361,24 +361,52 @@ class EditModelsDialog(tk.Toplevel):
 
         raw = self._text.get("1.0", tk.END)
         parsed = SelfieTab.parse_model_lines(raw)
-        # Empty result is LEGITIMATE (user wants to clear customizations) —
-        # only block on invalid input where they tried to enter something
-        # but every line was rejected. We can't perfectly tell those apart
-        # from "user deleted everything intentionally", but a non-comment
-        # non-blank input that produced zero parsed entries is suspicious.
-        non_blank_non_comment_input = any(
-            line.strip() and not line.strip().startswith("#")
-            for line in raw.splitlines()
-        )
-        if non_blank_non_comment_input and not parsed:
+
+        # CodeRabbit Major round-3 on PR #81: STRICT-PARSE. Reject the
+        # save if ANY non-comment, non-blank input line failed to parse.
+        # Without this, save would proceed with the valid lines and
+        # silently DROP the invalid ones — because the save semantics
+        # REPLACE the custom-model list, that's silent data loss the
+        # user has no way to recover.
+        #
+        # An "attempt line" is any non-blank line that doesn't start
+        # with `#`. We list every attempt by its first ~40 chars and
+        # compare to the parsed set by endpoint to find the failures;
+        # if even one failed, surface them in the error label and
+        # block the save so the user can fix the typo.
+        parsed_endpoints = {m["endpoint"] for m in parsed}
+        bad_lines: list[str] = []
+        for raw_line in raw.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Extract the endpoint part for matching against parsed.
+            endpoint_part = line.split("|", 1)[0].strip()
+            if endpoint_part not in parsed_endpoints:
+                # Truncate for display so a giant pasted blob doesn't
+                # blow out the modal layout.
+                display = line if len(line) <= 60 else (line[:57] + "...")
+                bad_lines.append(display)
+
+        if bad_lines:
+            # Pluralize the message + show the first few offending lines
+            # so the user knows exactly what to fix.
+            n = len(bad_lines)
+            preview = "\n  ".join(bad_lines[:3])
+            more = f"\n  (+ {n - 3} more)" if n > 3 else ""
             self._error_label.config(
                 text=(
-                    "No valid endpoints found. Format: vendor/name "
-                    "(optionally followed by '| Friendly Label'). "
-                    "Delete everything to clear all custom models."
+                    f"{n} line(s) couldn't be parsed — fix or delete "
+                    "them before saving (format: vendor/name "
+                    "[| Friendly Label]):\n  "
+                    f"{preview}{more}"
                 )
             )
             return
+
+        # Empty result with NO attempt lines is LEGITIMATE — the user
+        # wants to clear all customizations. The selfie tab's
+        # _open_edit_models_dialog handles the confirm dialog.
         self.result = parsed
         self.destroy()
 

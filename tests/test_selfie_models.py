@@ -270,6 +270,44 @@ class EditModelsDialogTextFormatTests(unittest.TestCase):
         ])
         self.assertEqual(out, "vendor/real | Real")
 
+    def test_parse_lets_caller_detect_partial_failures(self):
+        """v2.25 PR #81 round-3 CodeRabbit Major: parse_model_lines must
+        return ONLY the valid entries — but the caller (the dialog's
+        _ok handler) needs to be able to detect partial-failure cases
+        (some lines parsed, some didn't) so it can reject the save and
+        surface the bad lines. Verify by counting attempts vs parsed
+        endpoints.
+
+        This test pins the CONTRACT parse_model_lines exposes: every
+        rejected line is dropped silently from the return value; it's
+        the caller's job to count vs the attempts. The dialog's _ok
+        does that via endpoint-set difference (see main_window.py).
+        """
+        text = (
+            "fal-ai/flux-pro/kontext/max | Flux Pro Kontext Max\n"  # valid
+            "no-slash-here\n"                                       # invalid
+            "vendor/another | Another\n"                            # valid
+            "/leading-slash\n"                                      # invalid
+            "# fal-ai/comment-line | Built-in reference\n"          # comment
+        )
+        parsed = SelfieTab.parse_model_lines(text)
+        self.assertEqual(
+            [m["endpoint"] for m in parsed],
+            ["fal-ai/flux-pro/kontext/max", "vendor/another"],
+        )
+        # Caller-side detection: count the non-comment non-blank lines
+        # in the original text, compare to len(parsed). When they don't
+        # match, surface a partial-failure error.
+        attempt_lines = [
+            ln for ln in text.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        self.assertEqual(len(attempt_lines), 4)
+        self.assertEqual(len(parsed), 2)
+        # The dialog reads `len(attempt_lines) > len(parsed)` as
+        # "block save; show user what failed".
+        self.assertGreater(len(attempt_lines), len(parsed))
+
     def test_parse_skips_comment_lines(self):
         """Lines starting with `#` are reference / comment lines (used to
         annotate built-ins in the modal). They must NOT be parsed as

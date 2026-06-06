@@ -336,27 +336,44 @@ class FaceCropTab(tk.Frame):
         # crash, etc.) still has the v2 marker after this method
         # returns. Subagent L4 round 11 — the prior `setdefault` was
         # inside the migration branch and only ran when v3 was absent.
+        # v2.25 PR #81 — Run 2x is now SESSION-ONLY state, never persisted.
+        # The v2 + v3 migrations couldn't keep the user's config clean (PR
+        # #53 round 10 already bumped the marker once because v2 missed
+        # some configs); the v3 marker + outpaint_double_expand=true would
+        # then stick again as soon as the user toggled it once.
+        # User mandate 2026-06-06 (verbatim): "in step 0, '[generative
+        # expand] the default is still Run 2x checked... I want that to
+        # be OFF... for all versions all future dists never should 'run
+        # 2x' be checked by default'". So Run 2x:
+        #   • ALWAYS initializes to False at launch (no read from config)
+        #   • is NOT written back to config in get_config_updates (the
+        #     entry was removed; this paragraph is the breadcrumb)
+        #   • One-time v4 migration STRIPS the stale key + the v2/v3
+        #     markers from any existing config so the on-disk state
+        #     matches the new contract on the next save
+        # The user can still toggle Run 2x during a session — the
+        # BooleanVar still drives `do_2x` in the pipeline — but the
+        # value evaporates at launch every time.
         config.setdefault("outpaint_2x_default_reset_v2", True)
-        _marker_v3_raw = config.get("outpaint_2x_default_reset_v3", False)
-        _marker_v3_parsed = _pb(_marker_v3_raw)
-        _migration_already_done = (
-            _marker_v3_parsed is True
-            or _marker_v3_parsed is None  # uncoercible -> treat as done
-        )
-        if not _migration_already_done:
+        config.setdefault("outpaint_2x_default_reset_v3", True)
+        _marker_v4 = _pb(config.get("outpaint_2x_session_only_v4", False))
+        _v4_already_done = _marker_v4 is True or _marker_v4 is None
+        if not _v4_already_done:
             prior = config.get("outpaint_double_expand", False)
-            config["outpaint_double_expand"] = False
-            config["outpaint_2x_default_reset_v3"] = True
+            # Strip the now-obsolete persisted Run 2x value entirely. The
+            # v2/v3 markers stay (harmless) so a downgrade to a pre-v4
+            # client doesn't re-fire those.
+            config.pop("outpaint_double_expand", None)
+            config["outpaint_2x_session_only_v4"] = True
             self._outpaint_2x_migration_fired = True
             self._outpaint_2x_migration_prior = prior
         else:
             self._outpaint_2x_migration_fired = False
             self._outpaint_2x_migration_prior = None
 
-        _persisted_2x = _pb(config.get("outpaint_double_expand", False))
-        self._outpaint_double_expand_var = tk.BooleanVar(
-            value=bool(_persisted_2x) if _persisted_2x is not None else False
-        )
+        # Always default to False — no read from config, ever. (See the
+        # block above for the rationale.)
+        self._outpaint_double_expand_var = tk.BooleanVar(value=False)
 
         # PhotoImage references (prevent GC)
         self._source_photo = None
@@ -2933,14 +2950,18 @@ class FaceCropTab(tk.Frame):
             "outpaint_format": self._outpaint_format_var.get(),
             "outpaint_composite_mode": self._outpaint_composite_var.get(),
             "outpaint_provider": self._outpaint_provider_var.get(),
-            "outpaint_double_expand": self._outpaint_double_expand_var.get(),
-            # One-time reset markers — persisted as True so subsequent
-            # launches honor the user's sticky choice. v3 was added in
-            # PR #53 round 10 after v2 alone failed to reset some users
-            # whose config carried v2=true AND outpaint_double_expand=
-            # true simultaneously.
+            # `outpaint_double_expand` is INTENTIONALLY NOT persisted
+            # anymore (v2.25 PR #81 — see the long comment above the
+            # BooleanVar init in __init__). Run 2x is session-only state;
+            # writing it here would resurrect the bug the v4 migration
+            # was built to kill.
+            #
+            # One-time reset markers — kept so a future client knows the
+            # v2/v3/v4 migrations have run. v2/v3 are historical; v4 is
+            # the active "session-only" contract.
             "outpaint_2x_default_reset_v2": True,
             "outpaint_2x_default_reset_v3": True,
+            "outpaint_2x_session_only_v4": True,
             "accordion_expanded": self._expanded_sections,
         }
         # Persist Step 0 face-crop expand prompt (Phase G of
