@@ -870,5 +870,171 @@ def test_scan_folders_for_new_media_picks_up_new_video(tmp_path, monkeypatch):
     assert (str(vid_path), "video") in paths
 
 
+def test_scan_folders_descends_into_gen_images_subfolder(tmp_path):
+    """v2.27 user-reported regression: a session opened on a case folder
+    with one source image AND a populated ``gen-images/`` subfolder
+    used to load only the source — the rescan never descended into the
+    gen-images subfolder. Symptom: carousel says "1/1" right after
+    load even though the gen-images dir on disk has 5 finished
+    selfies.
+
+    Fix: ``_scan_folders_for_new_media`` now expands each input
+    folder to ALSO include any ``gen-images/`` and ``gen-videos/``
+    subfolders that exist on disk.
+    """
+    from kling_gui.image_state import ImageSession
+    from kling_gui import main_window as mw
+
+    # Case folder with one source image
+    src_img = tmp_path / "front.png"
+    src_img.write_bytes(_TINY_PNG)
+
+    # gen-images subfolder with three finished selfies
+    gen = tmp_path / "gen-images"
+    gen.mkdir()
+    for stem in ("front_crop_gpt-image-2-edit_sim96_001",
+                 "front_crop_nano-banana-2-edit_sim86_001",
+                 "front_crop_kontext-max_sim90_001"):
+        (gen / f"{stem}.png").write_bytes(_TINY_PNG)
+
+    # gen-videos subfolder with one video
+    vids = tmp_path / "gen-videos"
+    vids.mkdir()
+    (vids / "front_crop_k30std.mp4").write_bytes(b"\x00" * 1024)
+
+    session = ImageSession()
+    session.add_image(str(src_img), "input", make_active=True)
+
+    class Stub:
+        pass
+    stub = Stub()
+    stub.image_session = session
+    helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
+    added_imgs, added_vids = helper({str(tmp_path)})
+    # 3 selfies from gen-images, 1 video from gen-videos.
+    assert added_imgs == 3, (
+        f"expected 3 new images from gen-images/, got {added_imgs}"
+    )
+    assert added_vids == 1, (
+        f"expected 1 new video from gen-videos/, got {added_vids}"
+    )
+    # And no double-add: the rescan must dedup the parent folder vs
+    # itself plus the subfolders.
+    paths = {e.path for e in session.images}
+    assert str(src_img) in paths
+    for stem in ("front_crop_gpt-image-2-edit_sim96_001",
+                 "front_crop_nano-banana-2-edit_sim86_001",
+                 "front_crop_kontext-max_sim90_001"):
+        assert str(gen / f"{stem}.png") in paths
+
+
+# Tiny valid 1x1 PNG, factored out so the new test reuses the same
+# byte sequence the existing video test built inline.
+_TINY_PNG = (
+    b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR"
+    + struct.pack(">II", 1, 1) + b"\x08\x06\x00\x00\x00"
+    + struct.pack(">I", zlib.crc32(
+        b"IHDR" + struct.pack(">II", 1, 1) + b"\x08\x06\x00\x00\x00"
+    ))
+    + struct.pack(">I", 10)
+    + b"IDAT" + b"\x78\x9c\x62\x00\x00\x00\x00\x05\x00\x01"
+    + struct.pack(">I", 0)
+    + struct.pack(">I", 0) + b"IEND" + struct.pack(">I", 0xae426082)
+)
+
+
+def test_scan_folders_classifies_gen_images_as_selfie(tmp_path):
+    """PR #84 CRIT-1 (QC subagent 2026-06-07): files added from a
+    ``gen-images/`` subfolder were being tagged ``source_type="input"``,
+    which:
+
+    1. Made ``ImageSession.get_effective_similarity_ref()`` (which
+       picks references from entries with ``source_type == "input"``)
+       silently pick a GENERATED selfie as the reference. The
+       similarity score for every other selfie then dropped to
+       garbage because they were being compared to a generated face,
+       not the source crop.
+    2. Made ``recalc_all_similarity_now()`` SKIP gen-images entries
+       as recalc targets (its filter is
+       ``source_type != "input"``), so the rescanned selfies never
+       got a score.
+
+    Fix: classify by parent-folder basename. Files inside
+    ``gen-images/`` → ``"selfie"``; files inside ``gen-videos/``
+    → ``"video"`` (already handled by the video pass); everything
+    else (including the source folder) → ``"input"``.
+    """
+    from kling_gui.image_state import ImageSession
+    from kling_gui import main_window as mw
+
+    src_img = tmp_path / "front.png"
+    src_img.write_bytes(_TINY_PNG)
+    gen = tmp_path / "gen-images"
+    gen.mkdir()
+    (gen / "selfie_001.png").write_bytes(_TINY_PNG)
+    (gen / "selfie_002.png").write_bytes(_TINY_PNG)
+
+    session = ImageSession()
+    session.add_image(str(src_img), "input", make_active=True)
+
+    class Stub:
+        pass
+    stub = Stub()
+    stub.image_session = session
+    helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
+    added_imgs, added_vids = helper({str(tmp_path)})
+    assert added_imgs == 2
+
+    by_path = {e.path: e for e in session.images}
+    # Source image stays "input".
+    assert by_path[str(src_img)].source_type == "input"
+    # Gen-images entries become "selfie".
+    assert by_path[str(gen / "selfie_001.png")].source_type == "selfie"
+    assert by_path[str(gen / "selfie_002.png")].source_type == "selfie"
+
+
+def test_scan_folders_handles_none_and_empty_input():
+    """PR #84 MED-3 (Gemini): defensive guards on the entry point —
+    a None / "" / [] folders argument must short-circuit to (0, 0)
+    instead of crashing or doing useless I/O.
+    """
+    from kling_gui.image_state import ImageSession
+    from kling_gui import main_window as mw
+
+    session = ImageSession()
+
+    class Stub:
+        pass
+    stub = Stub()
+    stub.image_session = session
+    helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
+
+    assert helper(None) == (0, 0)
+    assert helper([]) == (0, 0)
+    assert helper(set()) == (0, 0)
+    assert helper("") == (0, 0)
+
+
+def test_scan_folders_tolerates_bare_string_folder(tmp_path):
+    """PR #84 MED-3 (Gemini): a caller passing a bare ``str`` instead
+    of a list/set must NOT loop character-by-character. The defensive
+    normalization wraps it in a single-element list."""
+    from kling_gui.image_state import ImageSession
+    from kling_gui import main_window as mw
+
+    src_img = tmp_path / "front.png"
+    src_img.write_bytes(_TINY_PNG)
+
+    session = ImageSession()
+
+    class Stub:
+        pass
+    stub = Stub()
+    stub.image_session = session
+    helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
+    added_imgs, added_vids = helper(str(tmp_path))
+    assert added_imgs == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -5293,12 +5293,46 @@ class KlingGUIWindow:
         ``find_video_groups`` for the full 5-extension video set.
         Duplicates are filtered by ``os.path.realpath`` against the
         current session.
+
+        v2.27 (user-reported 2026-06-07): the previous version only
+        scanned the EXACT directories in ``folders``. A session opened
+        on a case folder with one source image (``front.jpg``)
+        would scan only the case folder — NOT the ``gen-images/``
+        subfolder where generated outputs land. Result: a user opens
+        a session with 1 source image and N previously-generated
+        selfies/oldcams sitting in ``gen-images/``, but the carousel
+        shows only the source. Fix: expand each input folder to also
+        include its ``gen-images/`` AND ``gen-videos/`` subfolders if
+        they exist on disk. Matches the convention enforced by
+        ``path_utils.get_gen_images_folder`` (every generator writes
+        there).
         """
         try:
             from kling_gui.video_discovery import find_video_groups as _find_video_groups
             from pathlib import Path as _Path
         except ImportError:
             return (0, 0)
+        # Defensive normalization (Gemini PR #84 MED-3): tolerate
+        # None / "" / a bare string passed in lieu of a list. Iterating
+        # a string would loop character-by-character; an empty/None
+        # folder list short-circuits to (0, 0) with no I/O.
+        if not folders:
+            return (0, 0)
+        if isinstance(folders, (str, bytes)):
+            folders = [folders]
+        # Expand input folders to ALSO include any gen-images/gen-videos
+        # subfolders next to them. Then dedup the expanded set so a folder
+        # passed in alongside its own gen-images doesn't get double-scanned.
+        expanded: set = set()
+        for folder in folders:
+            if not folder:
+                continue
+            expanded.add(folder)
+            for sub in ("gen-images", "gen-videos"):
+                candidate = os.path.join(folder, sub)
+                if os.path.isdir(candidate):
+                    expanded.add(candidate)
+        folders = expanded
         loaded_real = {
             os.path.realpath(e.path) for e in self.image_session.images
         }
@@ -5307,6 +5341,20 @@ class KlingGUIWindow:
         for folder in sorted(set(folders)):
             if not folder or not os.path.isdir(folder):
                 continue
+            # PR #84 CRIT-1 fix: classify files by their parent folder
+            # convention. Files inside ``gen-images/`` are generated
+            # selfies (source_type="selfie") — labeling them "input"
+            # would (a) make ``get_effective_similarity_ref`` pick a
+            # generated selfie as the similarity reference, and
+            # (b) make ``recalc_all_similarity_now`` skip them as
+            # targets (the recalc filters source_type != "input").
+            # ``gen-videos/`` doesn't carry images so the image-loop
+            # below never adds video files; the video loop further
+            # down always uses source_type="video".
+            folder_basename = os.path.basename(
+                os.path.normpath(folder)
+            ).lower()
+            image_kind = "selfie" if folder_basename == "gen-images" else "input"
             try:
                 with os.scandir(folder) as it:
                     entries = sorted(
@@ -5323,7 +5371,7 @@ class KlingGUIWindow:
                 real = os.path.realpath(full)
                 if real in loaded_real:
                     continue
-                self.image_session.add_image(full, "input", make_active=False)
+                self.image_session.add_image(full, image_kind, make_active=False)
                 loaded_real.add(real)
                 rescan_imgs += 1
             try:
