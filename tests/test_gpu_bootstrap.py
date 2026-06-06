@@ -953,23 +953,39 @@ def test_compute_stamp_token_prefers_cached_gpu_status(monkeypatch, tmp_path):
     assert "cuda" in token and "13" in token
 
 
-def test_compute_stamp_token_on_darwin_always_mac_default(monkeypatch, tmp_path):
-    """Darwin-specific token guard: on macOS the token must ALWAYS encode
-    ``mac_default`` and ``None`` for cuda_major in its fixed-shape positions,
-    regardless of cached gpu_status or live detect_nvidia. So a Mac dev box
-    that touched a Windows venv's gpu_status.json can't accidentally pick
-    up a CUDA dep stamp.
+def test_compute_stamp_token_on_darwin_always_mac_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Darwin-specific token guard.
+
+    On macOS the token must ALWAYS encode ``mac_default`` and ``None`` for
+    cuda_major in its fixed-shape positions, regardless of cached
+    gpu_status or live detect_nvidia. So a Mac dev box that touched a
+    Windows venv's ``gpu_status.json`` can't accidentally pick up a CUDA
+    dep stamp.
 
     The token shape is ``INSTALLER_VERSION-sys.platform-mode-cuda_major-sha12``
-    (see scripts/gpu_bootstrap.py::compute_stamp_token). We assert on the
-    PARSED parts (positions 2 and 3) rather than substring search — a naive
-    ``"cuda" not in token`` check was too broad (an installer version of
-    13.x or a constraints sha containing "13" would fail it spuriously
-    even though production behaviour is correct — code review M3,
-    2026-06-06).
+    (see ``scripts/gpu_bootstrap.py::compute_stamp_token``). We assert on
+    the PARSED parts (positions 2 and 3) rather than substring search — a
+    naive ``"cuda" not in token`` check was too broad (an installer
+    version of 13.x or a constraints sha containing "13" would fail it
+    spuriously even though production behaviour is correct — code review
+    M3, 2026-06-06).
 
-    Mirrors the existing ``test_resolve_torch_mode_macos_never_cuda`` rule
-    one layer up the call stack.
+    Mirrors the existing ``test_resolve_torch_mode_macos_never_cuda``
+    rule one layer up the call stack.
+
+    Args:
+        monkeypatch: Pytest fixture used to pin ``sys.platform`` to
+            ``"darwin"`` and to fake a CUDA-13 ``gpu_status.json`` cache
+            + a CUDA-13 ``detect_nvidia()`` response — neither of which
+            should leak into the resolved token.
+        tmp_path: Pytest fixture providing an isolated tempdir for the
+            constraints file the token reads to compute its sha-12 part.
+
+    Returns:
+        None. Asserts the parsed token parts encode the darwin-pinned
+        decision (``mac_default`` / ``None``).
     """
     constraints = tmp_path / "constraints.txt"
     constraints.write_text("numpy>=1.26,<2\n", encoding="utf-8")
