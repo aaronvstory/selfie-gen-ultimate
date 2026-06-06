@@ -446,8 +446,24 @@ class ComparePanel(tk.Frame):
             px, py = popup.winfo_pointerxy()
             x1 = popup.winfo_rootx()
             y1 = popup.winfo_rooty()
-            x2 = x1 + popup.winfo_width()
-            y2 = y1 + popup.winfo_height()
+            # PR #83 HIGH-1 (Gemini round 2): when the popup is first
+            # mapped, winfo_width() / winfo_height() can return 1 (the
+            # widget exists but the WM hasn't finished geometry
+            # negotiation). With w=h=1, x2≈x1 and y2≈y1, the bbox
+            # check fails, we return False, and the cursor-just-entered-
+            # popup case gets misclassified as "cursor outside" → the
+            # popup destroys, the canvas re-enters, and the flash loop
+            # comes back. Fall back to winfo_reqwidth/reqheight (the
+            # requested size, available before the WM maps the widget)
+            # so we have a usable bbox from the very first call.
+            w = popup.winfo_width()
+            if w <= 1:
+                w = popup.winfo_reqwidth()
+            h = popup.winfo_height()
+            if h <= 1:
+                h = popup.winfo_reqheight()
+            x2 = x1 + w
+            y2 = y1 + h
             return x1 <= px <= x2 and y1 <= py <= y2
         except tk.TclError:
             return False
