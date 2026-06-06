@@ -943,5 +943,98 @@ _TINY_PNG = (
 )
 
 
+def test_scan_folders_classifies_gen_images_as_selfie(tmp_path):
+    """PR #84 CRIT-1 (QC subagent 2026-06-07): files added from a
+    ``gen-images/`` subfolder were being tagged ``source_type="input"``,
+    which:
+
+    1. Made ``ImageSession.get_effective_similarity_ref()`` (which
+       picks references from entries with ``source_type == "input"``)
+       silently pick a GENERATED selfie as the reference. The
+       similarity score for every other selfie then dropped to
+       garbage because they were being compared to a generated face,
+       not the source crop.
+    2. Made ``recalc_all_similarity_now()`` SKIP gen-images entries
+       as recalc targets (its filter is
+       ``source_type != "input"``), so the rescanned selfies never
+       got a score.
+
+    Fix: classify by parent-folder basename. Files inside
+    ``gen-images/`` → ``"selfie"``; files inside ``gen-videos/``
+    → ``"video"`` (already handled by the video pass); everything
+    else (including the source folder) → ``"input"``.
+    """
+    from kling_gui.image_state import ImageSession
+    from kling_gui import main_window as mw
+
+    src_img = tmp_path / "front.png"
+    src_img.write_bytes(_TINY_PNG)
+    gen = tmp_path / "gen-images"
+    gen.mkdir()
+    (gen / "selfie_001.png").write_bytes(_TINY_PNG)
+    (gen / "selfie_002.png").write_bytes(_TINY_PNG)
+
+    session = ImageSession()
+    session.add_image(str(src_img), "input", make_active=True)
+
+    class Stub:
+        pass
+    stub = Stub()
+    stub.image_session = session
+    helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
+    added_imgs, added_vids = helper({str(tmp_path)})
+    assert added_imgs == 2
+
+    by_path = {e.path: e for e in session.images}
+    # Source image stays "input".
+    assert by_path[str(src_img)].source_type == "input"
+    # Gen-images entries become "selfie".
+    assert by_path[str(gen / "selfie_001.png")].source_type == "selfie"
+    assert by_path[str(gen / "selfie_002.png")].source_type == "selfie"
+
+
+def test_scan_folders_handles_none_and_empty_input():
+    """PR #84 MED-3 (Gemini): defensive guards on the entry point —
+    a None / "" / [] folders argument must short-circuit to (0, 0)
+    instead of crashing or doing useless I/O.
+    """
+    from kling_gui.image_state import ImageSession
+    from kling_gui import main_window as mw
+
+    session = ImageSession()
+
+    class Stub:
+        pass
+    stub = Stub()
+    stub.image_session = session
+    helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
+
+    assert helper(None) == (0, 0)
+    assert helper([]) == (0, 0)
+    assert helper(set()) == (0, 0)
+    assert helper("") == (0, 0)
+
+
+def test_scan_folders_tolerates_bare_string_folder(tmp_path):
+    """PR #84 MED-3 (Gemini): a caller passing a bare ``str`` instead
+    of a list/set must NOT loop character-by-character. The defensive
+    normalization wraps it in a single-element list."""
+    from kling_gui.image_state import ImageSession
+    from kling_gui import main_window as mw
+
+    src_img = tmp_path / "front.png"
+    src_img.write_bytes(_TINY_PNG)
+
+    session = ImageSession()
+
+    class Stub:
+        pass
+    stub = Stub()
+    stub.image_session = session
+    helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
+    added_imgs, added_vids = helper(str(tmp_path))
+    assert added_imgs == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
