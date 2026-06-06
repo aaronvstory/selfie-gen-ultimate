@@ -132,6 +132,12 @@ proven on both OSes in production.
 
 ## The `dev` extra contract — installing pytest (added v2.24)
 
+> **Source of the code change:** the `dev` extra ships in
+> [PR #79](https://github.com/aaronvstory/selfie-gen-ultimate/pull/79)
+> (`feat/macos-polish-post-v2.21`), commit `de161c04`. This section is
+> the matching contract doc. If you're reading on a branch where PR #79
+> has not yet merged, the extra exists only in PR #79's tree.
+
 CLAUDE.md's pre-commit invariant is `pytest tests/ similarity/tests/ -q`.
 But pytest is NOT installed by the end-user launcher path — `run_gui` /
 `run_cli` / `run_auto` all run `uv sync --no-default-groups --extra

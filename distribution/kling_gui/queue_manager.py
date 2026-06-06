@@ -3207,7 +3207,7 @@ class QueueManager:
         it emits no ``[rppg-diag]`` lines — ``modules`` is empty by design on
         macOS and only the ``📄`` log pointer shows (the rppg.log path is still
         correct + current). Per-module naming parity on macOS is the v2.17
-        unified-deps work (see docs/v2.17-unified-gpu-deps-handoff.md).
+        unified-deps work (see docs/archive/v2.17-unified-gpu-deps-handoff.md).
         """
         modules = ""
         try:

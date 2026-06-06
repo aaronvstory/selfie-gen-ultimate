@@ -6,9 +6,9 @@
 > minute checklist** that prevents the bounce-back loop. Run the relevant
 > rows BEFORE pushing, not after the macOS dev pulls and finds the bug.
 >
-> Pairs with [`docs/macos-portability.md`](macos-portability.md) (the
+> Pairs with [`macos-portability.md`](macos-portability.md) (the
 > 14 binding rules the runtime enforces) and
-> [`docs/cross-os-bounce-traps.md`](cross-os-bounce-traps.md) (the 7-trap
+> [`cross-os-bounce-traps.md`](cross-os-bounce-traps.md) (the 7-trap
 > pre-PR matrix). This doc is the **author-side** complement — what the
 > Windows author should think about while writing the diff, not just
 > what to check after.
@@ -107,7 +107,11 @@ ever switches to `from sys import platform`.
 CLAUDE.md's pre-commit invariant is `pytest tests/ similarity/tests/ -q`.
 If you add a test that requires a new dep (pytest-asyncio, hypothesis,
 freezegun, …), put it in **`[project.optional-dependencies].dev`** in
-`pyproject.toml` AND in `distribution/pyproject.toml`. Then re-resolve
+`pyproject.toml` AND in `distribution/pyproject.toml`. (The `dev` extra
+itself ships in
+[PR #79](https://github.com/aaronvstory/selfie-gen-ultimate/pull/79)
+— if you're working on a branch where it hasn't merged yet, declare
+the extra alongside your new dep in the same PR.) Then re-resolve
 the lock:
 
 ```bash
@@ -176,10 +180,11 @@ Three traps:
   ```bash
   git ls-files --stage <file>   # leading number must be 100755
   ```
-- **Use `Write`/`Edit` tools are safe for `.sh`/`.command`** (they
-  emit LF). Do NOT use them for `.bat`/`.cmd` — that's CRLF territory
-  and the tools emit LF, corrupting the file. For `.bat`/`.cmd`, write
-  via PowerShell `WriteAllText` with explicit `` `r`n ``.
+- **The `Write` / `Edit` tools are safe for `.sh` / `.command`** (they
+  emit LF, which matches what `.gitattributes` pins for these
+  extensions). Do NOT use them for `.bat` / `.cmd` — those need CRLF
+  and the tools emit LF, corrupting the file. For `.bat` / `.cmd`,
+  write via PowerShell `WriteAllText` with explicit `` `r`n ``.
 
 After ANY edit:
 
@@ -249,12 +254,12 @@ the new regression test together prevent the next round-trip.
 
 ## Related docs
 
-- [`docs/macos-portability.md`](macos-portability.md) — 14 binding
+- [`macos-portability.md`](macos-portability.md) — 14 binding
   runtime rules
-- [`docs/cross-os-bounce-traps.md`](cross-os-bounce-traps.md) — 7-trap
+- [`cross-os-bounce-traps.md`](cross-os-bounce-traps.md) — 7-trap
   pre-PR matrix
-- [`docs/windows-launcher-and-sash-rules.md`](windows-launcher-and-sash-rules.md)
+- [`windows-launcher-and-sash-rules.md`](windows-launcher-and-sash-rules.md)
   — Windows-side mirror of this doc
-- [`docs/uv-migration.md`](uv-migration.md) — dev extra contract
-- [`docs/pr-review-loop.md`](pr-review-loop.md) — the autonomous bot +
+- [`uv-migration.md`](uv-migration.md) — dev extra contract
+- [`pr-review-loop.md`](pr-review-loop.md) — the autonomous bot +
   subagent workflow this branch should run through

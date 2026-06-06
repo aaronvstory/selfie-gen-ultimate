@@ -81,7 +81,7 @@ invisible. Commit-message contract:
 * Type prefix: `feat:` / `fix:` / `perf:` / `chore:` / `refactor:` / `docs:`
 * One-line subject explaining the user-visible outcome
 * Body explains the WHY + cites the finding/bot/issue source if any
-* Last line: `Co-Authored-By: Claude Opus ... <noreply@anthropic.com>`
+* Last line: `Co-Authored-By: Claude Opus <noreply@anthropic.com>`
 
 Pre-commit invariants — fail-fast if any violated:
 
@@ -235,7 +235,7 @@ post-merge refresh: `git pull` on the SSD source repo, refresh the
 `_user_state/app_support/` snapshot from the live Application Support
 dir, build a fresh `dist/SelfieGenUltimate-{vX.Y}.zip` and drop it on
 the SSD root. Full playbook + verification commands in
-[`docs/ssd-and-distributables.md`](ssd-and-distributables.md).
+[`ssd-and-distributables.md`](ssd-and-distributables.md).
 
 Skip the SSD refresh when `/Volumes/st7Private/` isn't mounted; in
 that case, explicitly tell the user the SSD copy is now stale instead
@@ -245,7 +245,10 @@ the merged PR touched `requirements.txt` or `requirements-hashed.txt`.
 ## Skip conditions (don't run the full loop)
 
 - The user explicitly says "skip review" / "just push" / "WIP"
-- The commit is purely a typo / docs fix
+- The commit is purely typo / whitespace / single-word fix (NOT
+  workflow / contract / instruction doc changes — those still get the
+  subagent per step 2's carve-out, even when they touch only
+  `*.md` files)
 - The branch is mid-experiment and not ready for review (push without
   trigger; resume the loop when work stabilizes)
 - The user says "don't engage the bots yet"

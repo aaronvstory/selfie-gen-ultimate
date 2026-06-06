@@ -217,13 +217,19 @@ by `tests/test_theme_mac_padding.py`.
 
 ## 12. Tk-related dep bumps — verify the bundled `osx-arm64` binary's Tcl ABI
 
-Several Python deps bundle native Tk extensions per platform (`tkinterdnd2`,
-`customtkinter` for some widgets, `tksvg`, …). The bundled `osx-arm64/`
-binary can be linked against either Tcl 8.6 (compatible with macOS
-python.org Python 3.11's bundled Tcl/Tk) or Tcl 9.x (incompatible —
-stubs mismatch). A version bump that switches the bundled binary
-silently breaks Apple Silicon while the Windows + Linux builds keep
-working.
+Some Python deps bundle native Tk extensions per platform. The bundled
+`osx-arm64/` binary can be linked against either Tcl 8.6 (compatible
+with macOS python.org Python 3.11's bundled Tcl/Tk) or Tcl 9.x
+(incompatible — stubs mismatch). A version bump that switches the
+bundled binary silently breaks Apple Silicon while the Windows + Linux
+builds keep working.
+
+This repo currently ships **only `tkinterdnd2`** in this category — it's
+the dep that hit the v2.24 incident. If a future PR introduces another
+Tk-bundling dep (e.g. `customtkinter` for theming, `tksvg` for SVG
+support, or anything else that ships per-platform native binaries
+under its `tkdnd/`, `tcl/`, or similar subdirectory), the rule applies
+to that dep too.
 
 The v2.24 incident: `tkinterdnd2` 0.4.3 → 0.4.4 / 0.4.4.1 switched the
 `osx-arm64/` binary from `libtkdnd2.9.3.dylib` (Tcl 8.6) to
@@ -302,11 +308,13 @@ this silently re-triggers the bug those caps are there to prevent.
 ```python
 # WRONG — repair pulls 0.4.4.1 and re-breaks DnD on Apple Silicon
 Dependency(name="TkinterDnD2", import_name="tkinterdnd2",
-           pip_name="tkinterdnd2", required=False, ...)
+           pip_name="tkinterdnd2", required=False,
+           description="Drag-and-drop support for GUI mode")
 
 # RIGHT — mirrors the cap in requirements.txt
 Dependency(name="TkinterDnD2", import_name="tkinterdnd2",
-           pip_name="tkinterdnd2<0.4.4", required=False, ...)
+           pip_name="tkinterdnd2<0.4.4", required=False,
+           description="Drag-and-drop support for GUI mode")
 ```
 
 This rule applies to **BOTH** copies — root `dependency_checker.py` AND

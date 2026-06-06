@@ -37,17 +37,22 @@ captures the proactive author-side checklist.
   darwin invariant (shape-anchored assertion on parsed token positions, not
   substring search).
 
-### Added
+### Added (code changes land in PR #79)
+
+> The three code changes below ship in PR #79
+> ([`feat/macos-polish-post-v2.21`](https://github.com/aaronvstory/selfie-gen-ultimate/pull/79)).
+> This PR (#80) carries the matching docs + prevention rails.
 
 - **`[project.optional-dependencies].dev`** in both root and
-  `distribution/pyproject.toml`, declaring `pytest>=8,<10`. Pre-v2.24 pytest
-  was undeclared anywhere, so every `uv sync` (the v2.20 primary path)
-  actively UNINSTALLED pytest from `.venv-macos`, breaking the CLAUDE.md
-  pre-commit invariant `pytest tests/ similarity/tests/ -q` for any
-  fresh-clone contributor on macOS. Contributors opt-in via
-  `uv sync --extra cpu --extra dev` (macOS) or `--extra cu128 --extra dev`
-  (Windows + CUDA 13.x); end-user launchers continue to skip `dev` for lean
-  deployed envs. See
+  `distribution/pyproject.toml`, declaring `pytest>=8,<10` (PR #79
+  commit `de161c04`). Pre-v2.24 pytest was undeclared anywhere, so
+  every `uv sync` (the v2.20 primary path) actively UNINSTALLED pytest
+  from `.venv-macos`, breaking the CLAUDE.md pre-commit invariant
+  `pytest tests/ similarity/tests/ -q` for any fresh-clone contributor
+  on macOS. Contributors opt-in via `uv sync --extra cpu --extra dev`
+  (macOS) or `--extra cu128 --extra dev` (Windows + CUDA 13.x);
+  end-user launchers continue to skip `dev` for lean deployed envs.
+  See
   [`docs/uv-migration.md`](docs/uv-migration.md#the-dev-extra-contract--installing-pytest-added-v224)
   for the contract.
 - **`docs/macos-readiness-for-windows-authors.md`** — 7-row proactive
@@ -78,10 +83,13 @@ captures the proactive author-side checklist.
 
 ### Workflow notes
 
-- 8-round autonomous review loop on PR #79 with the code-reviewer subagent
-  (round 1) + 4 review bots (Codex, Gemini, CodeRabbit, Sourcery rate-limited
-  this PR). 9 fix commits, 1 chore, 10 files changed, +695/-15. Final state:
-  1709 pytest pass / 12 skip / 0 fail on macOS Apple Silicon.
+- 7-round autonomous review loop on PR #79 with the code-reviewer subagent
+  (round 1) + 4 review bots (Codex, Gemini, CodeRabbit; Sourcery rate-limited
+  for this PR). 9 commits across rounds (fix + chore + docs + style),
+  10 files changed, +711/-15 (live PR snapshot at head `374a0a03`). Final
+  state: pytest 1709 pass / 12 skip / 0 fail on macOS Apple Silicon at
+  commit `374a0a03`; portability gate exit 0. The PR is `mergeable_state:
+  clean`.
 
 ---
 
@@ -91,8 +99,8 @@ A marathon Windows session shipped four interlocking changes: the uv
 dependency-management primary path (with pip fallback), GPU-aware torch wheel
 selection, unified per-platform installer machinery, and the Kontext Pro selfie
 model. The handoff/discovery docs in
-[`docs/v2.20-uv-migration-kickoff.md`](docs/v2.20-uv-migration-kickoff.md) and
-[`docs/v2.21-gpu-rppg-and-uv-finish-handoff.md`](docs/v2.21-gpu-rppg-and-uv-finish-handoff.md)
+[`docs/archive/v2.20-uv-migration-kickoff.md`](docs/archive/v2.20-uv-migration-kickoff.md) and
+[`docs/archive/v2.21-gpu-rppg-and-uv-finish-handoff.md`](docs/archive/v2.21-gpu-rppg-and-uv-finish-handoff.md)
 cover the design + reasoning in depth. Key permanent surfaces:
 
 ### Added
