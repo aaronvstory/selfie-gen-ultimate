@@ -217,7 +217,13 @@ def test_uv_lock_pins_compatible_tkinterdnd2():
     and a future uv format tweak (e.g. inline package tables) would silently
     miss the entry instead of asserting against it.
     """
-    import tomllib
+    # Same Python-3.10 fallback as test_macos_dev_extra_provides_pytest:
+    # the import is inside the test so other tests can still collect on
+    # 3.10 even if this one would fail.
+    try:
+        import tomllib
+    except ImportError:  # pragma: no cover — Python < 3.11
+        import tomli as tomllib  # type: ignore[no-redef]
 
     lock = ROOT / "uv.lock"
     if not lock.exists():
@@ -261,6 +267,8 @@ def test_tkdnd_loads_on_apple_silicon():
     if a venv was provisioned before the cap landed, or if the wheel cache
     held a stale download. Catching it here keeps the rule honest.
     """
+    import tkinter
+
     try:
         import tkinterdnd2
     except ImportError as exc:
@@ -270,6 +278,17 @@ def test_tkdnd_loads_on_apple_silicon():
         )
     try:
         root = tkinterdnd2.TkinterDnD.Tk()
+    except tkinter.TclError as exc:
+        # No display / window server (some macOS CI runners, or a Tk
+        # build with missing libs). Skip rather than fail — the test
+        # speaks to whether tkdnd LOADS, which requires a working Tk
+        # instance to attempt; without that, we can't observe the
+        # condition we're testing for. Gemini MED round 5.
+        pytest.skip(
+            f"Tk could not initialize (headless / no display): {exc!r}. "
+            "Re-run interactively (or under a virtual display) to exercise "
+            "the tkdnd load probe."
+        )
     except RuntimeError as exc:
         msg = str(exc)
         if "Unable to load tkdnd library" in msg:

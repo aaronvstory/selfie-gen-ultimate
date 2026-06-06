@@ -20,11 +20,22 @@ imports cleanly post-sync).
 from __future__ import annotations
 
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
 from packaging.requirements import InvalidRequirement, Requirement
+
+# tomllib is stdlib from Python 3.11+. pyproject.toml already requires 3.11,
+# but a contributor running tests in a stray 3.10 venv would otherwise hit
+# `ModuleNotFoundError: tomllib` during pytest COLLECTION — before
+# test_tomllib_available_in_test_runtime can even run to give a clean
+# message. Fall back to ``tomli`` (already in uv.lock as a backport
+# dependency) so collection succeeds and the floor-guard test reports the
+# version mismatch instead. Gemini MED round 5, 2026-06-06.
+try:
+    import tomllib
+except ImportError:  # pragma: no cover — Python < 3.11
+    import tomli as tomllib  # type: ignore[no-redef]
 
 ROOT = Path(__file__).resolve().parent.parent
 
