@@ -299,6 +299,13 @@ class ImageCarousel(tk.Frame):
         self._hover_popup: Optional[tk.Toplevel] = None
         self._hover_photo = None
         self._hover_job: Optional[str] = None
+        # Subagent M3 round 2 on PR #83: track the polling chain's
+        # `after` ID so `_cancel_hover` can cancel it. Without this, a
+        # user who briefly leaves the canvas (popup destroy poll
+        # starts) then re-enters before the cursor moves off the popup
+        # leaves the OLD poll chain running on the NEW popup —
+        # eventually destroying it from under the user.
+        self._hover_poll_job: Optional[str] = None
 
         # Compare callback (set by main_window)
         self._on_compare_callback: Optional[Callable[[], None]] = None
@@ -355,6 +362,19 @@ class ImageCarousel(tk.Frame):
 
         # Listen for session changes
         self.image_session.set_on_change(self._on_session_change)
+
+    def destroy(self):
+        """Clean up hover state before super().destroy().
+
+        Subagent M1 round 2 on PR #83 — parity with `ComparePanel.destroy`
+        which already cancels its hover job and destroys its popup.
+        Without this, a tab teardown while a hover popup is alive
+        leaves an orphan Toplevel + a queued `after()` callback that
+        will fire on a destroyed widget.
+        """
+        self._cancel_hover()
+        self._destroy_hover()
+        super().destroy()
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -1721,8 +1741,29 @@ class ImageCarousel(tk.Frame):
 
     def _cancel_hover(self):
         if self._hover_job:
-            self.after_cancel(self._hover_job)
+            try:
+                self.after_cancel(self._hover_job)
+            except tk.TclError:
+                pass
             self._hover_job = None
+        # M3 round 2: cancel any in-flight poll chain too. Without this
+        # an old poll outlives a fresh popup.
+        if self._hover_poll_job:
+            try:
+                self.after_cancel(self._hover_poll_job)
+            except tk.TclError:
+                pass
+            self._hover_poll_job = None
+
+    def _force_destroy_hover(self, _event=None):
+        """Force-destroy bypasses the cursor-over-popup guard. Bound to
+        `<Button-1>` so the user can click-to-dismiss without having
+        to move the cursor off the popup first (subagent H2 round 2
+        on PR #83 — round-1 wired Button-1 to `_on_hover_leave`, which
+        re-checks `_cursor_over_popup` and refuses to destroy on the
+        same widget the click landed on)."""
+        self._cancel_hover()
+        self._destroy_hover()
 
     def _cursor_over_popup(self) -> bool:
         """True when the cursor's screen coords are inside the hover popup.
@@ -1733,7 +1774,7 @@ class ImageCarousel(tk.Frame):
         is instantly INSIDE the popup → the canvas fires `<Leave>` →
         without this guard, `_on_hover_leave` would destroy the popup →
         canvas re-fires `<Enter>` next refresh → 500ms later popup
-        re-appears → loop = flashing (user-reported, v2.27).
+        re-appears → loop = flashing (user-reported, PR #83).
         """
         popup = self._hover_popup
         if not popup:
@@ -1760,14 +1801,30 @@ class ImageCarousel(tk.Frame):
 
     def _poll_cursor_off_popup(self):
         if not self._hover_popup:
+            self._hover_poll_job = None
             return
+        # M2 round 2: also bail when our top-level window loses focus
+        # (alt-tab to another OS app). Tk fires no `<Leave>` on the
+        # canvas in that case so the polling loop would otherwise keep
+        # a topmost popup floating over the foreground application.
+        try:
+            top = self.winfo_toplevel()
+            focus_win = top.focus_displayof()
+            if focus_win is None:
+                # Our window has lost focus entirely.
+                self._cancel_hover()
+                self._destroy_hover()
+                return
+        except tk.TclError:
+            pass
         if not self._cursor_over_popup():
             self._cancel_hover()
             self._destroy_hover()
             return
         try:
-            self.after(120, self._poll_cursor_off_popup)
+            self._hover_poll_job = self.after(120, self._poll_cursor_off_popup)
         except tk.TclError:
+            self._hover_poll_job = None
             self._destroy_hover()
 
     def _destroy_hover(self):
@@ -1838,7 +1895,12 @@ class ImageCarousel(tk.Frame):
             popup.geometry(f"+{x}+{y}")
 
             popup.bind("<Leave>", self._on_hover_leave)
-            popup.bind("<Button-1>", self._on_hover_leave)
+            # Click on the popup is an explicit user intent to dismiss —
+            # use the force-destroy bypass instead of `_on_hover_leave`
+            # which would re-check `_cursor_over_popup` and refuse to
+            # destroy on the very widget the click landed on (subagent
+            # H2 round 2 on PR #83).
+            popup.bind("<Button-1>", self._force_destroy_hover)
 
             self._hover_popup = popup
         except Exception as e:
