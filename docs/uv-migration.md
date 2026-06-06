@@ -132,11 +132,10 @@ proven on both OSes in production.
 
 ## The `dev` extra contract — installing pytest (added v2.24)
 
-> **Source of the code change:** the `dev` extra ships in
+> **Source of the code change:** the `dev` extra landed via
 > [PR #79](https://github.com/aaronvstory/selfie-gen-ultimate/pull/79)
-> (`feat/macos-polish-post-v2.21`), commit `de161c04`. This section is
-> the matching contract doc. If you're reading on a branch where PR #79
-> has not yet merged, the extra exists only in PR #79's tree.
+> (`feat/macos-polish-post-v2.21`), commit `de161c04`, in the v2.24
+> release round. This section is the matching contract doc.
 
 CLAUDE.md's pre-commit invariant is `pytest tests/ similarity/tests/ -q`.
 But pytest is NOT installed by the end-user launcher path — `run_gui` /
@@ -162,8 +161,10 @@ The `dev` extra lives in `[project.optional-dependencies]` of both
 `tests/test_macos_dev_extra_provides_pytest.py`).
 
 **When you add a tool to the pre-commit invariant** — pytest plugins,
-linters, type checkers, anything CLAUDE.md or the docs tell a
-contributor to run — declare it in the `dev` extra in BOTH pyproject
+linters, type checkers, anything CLAUDE.md or
+[`pr-review-loop.md`](pr-review-loop.md) (where the full invariant list
+lives post-v2.24) tells a contributor to run — declare it in the `dev`
+extra in BOTH pyproject
 files and re-resolve the lock. Otherwise the next `uv sync` actively
 UNINSTALLS the tool from the venv (uv's `--no-default-groups --extra X`
 prunes anything not in extra X), and a fresh-clone contributor on

@@ -124,11 +124,9 @@ CLAUDE.md's pre-commit invariant is `pytest tests/ similarity/tests/ -q`.
 If you add a test that requires a new dep (pytest-asyncio, hypothesis,
 freezegun, …), put it in **`[project.optional-dependencies].dev`** in
 `pyproject.toml` AND in `distribution/pyproject.toml`. (The `dev` extra
-itself ships in
+itself landed in
 [PR #79](https://github.com/aaronvstory/selfie-gen-ultimate/pull/79)
-— if you're working on a branch where it hasn't merged yet, declare
-the extra alongside your new dep in the same PR.) Then re-resolve
-the lock:
+during the v2.24 round.) Then re-resolve the lock:
 
 ```bash
 uv lock
@@ -154,9 +152,10 @@ Dependency(name="TkinterDnD2", import_name="tkinterdnd2", pip_name="tkinterdnd2"
 Dependency(name="TkinterDnD2", import_name="tkinterdnd2", pip_name="tkinterdnd2<0.4.4", ...)
 ```
 
-Both copies (root + `distribution/`) must agree. Round-2 of PR #79 fixed
-the root copy and missed the dist mirror; round-4 caught it. Don't
-repeat the bounce — fix both at once.
+Both copies (root + `distribution/`) must agree. PR #79 had to fix both
+copies separately — first the root in commit `23433031` (round 2),
+then the dist mirror in `b941d2a6` (round 4) after Codex caught the
+gap. Fix both at once in your branch to avoid that bounce.
 
 ### 5. Adding a new `pip install` site
 

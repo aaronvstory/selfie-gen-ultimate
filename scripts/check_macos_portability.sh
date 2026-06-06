@@ -68,6 +68,12 @@ fi
 # The candidate list is `git ls-files scripts/git-hooks/*` minus anything
 # already covered above (defensive — no glob overlap today). Add new
 # extensionless-script dirs here as they appear.
+# NOTE: post-commit and pre-push are FORWARD-DECLARED — they're not tracked
+# in the index today (pre-commit is the only hook this repo ships). They're
+# listed here so the gate already covers them the moment someone commits a
+# new hook with the same shape (extensionless bash). The `continue` on the
+# untracked branch below makes the entries no-op until they exist. Subagent
+# M3 round 5 of PR #80 asked for the explicit note.
 EXTLESS_PATHS=(
   scripts/git-hooks/pre-commit
   scripts/git-hooks/post-commit

@@ -37,11 +37,12 @@ captures the proactive author-side checklist.
   darwin invariant (shape-anchored assertion on parsed token positions, not
   substring search).
 
-### Added (code changes land in PR #79)
+### Added (PR #79 — code)
 
-> The three code changes below ship in PR #79
+> Code changes ship in PR #79
 > ([`feat/macos-polish-post-v2.21`](https://github.com/aaronvstory/selfie-gen-ultimate/pull/79)).
-> This PR (#80) carries the matching docs + prevention rails.
+> The matching docs + prevention rails ship in PR #80 (see the next
+> subsection).
 
 - **`[project.optional-dependencies].dev`** in both root and
   `distribution/pyproject.toml`, declaring `pytest>=8,<10` (PR #79
@@ -55,6 +56,13 @@ captures the proactive author-side checklist.
   See
   [`docs/uv-migration.md`](docs/uv-migration.md#the-dev-extra-contract--installing-pytest-added-v224)
   for the contract.
+
+### Added (PR #80 — docs + tooling)
+
+> The docs and tooling that codify the v2.24 lessons learned, so
+> Windows-side authors hit fewer macOS bounces next time. Ship in PR #80
+> ([`docs/macos-readiness-and-claude-md-audit`](https://github.com/aaronvstory/selfie-gen-ultimate/pull/80)).
+
 - **`docs/macos-readiness-for-windows-authors.md`** — 7-row proactive
   checklist + PR-description template for Windows-side authors to run BEFORE
   pushing, so the macOS round-trip bounces less.
@@ -66,7 +74,9 @@ captures the proactive author-side checklist.
   contract, relocated from CLAUDE.md. CLAUDE.md keeps a 25-line summary
   block.
 - **Portability gate in `scripts/git-hooks/pre-commit`** — catches CRLF /
-  exec-bit regressions at commit time, not pre-push.
+  exec-bit regressions at commit time, not pre-push. Now also scans
+  extensionless executable scripts (`scripts/git-hooks/*`) via Rule 3 in
+  `scripts/check_macos_portability.sh`.
 
 ### Changed
 
@@ -84,12 +94,12 @@ captures the proactive author-side checklist.
 ### Workflow notes
 
 - 7-round autonomous review loop on PR #79 with the code-reviewer subagent
-  (round 1) + 4 review bots (Codex, Gemini, CodeRabbit; Sourcery rate-limited
-  for this PR). 9 commits across rounds (fix + chore + docs + style),
-  10 files changed, +711/-15 (live PR snapshot at head `374a0a03`). Final
-  state: pytest 1709 pass / 12 skip / 0 fail on macOS Apple Silicon at
-  commit `374a0a03`; portability gate exit 0. The PR is `mergeable_state:
-  clean`.
+  (round 1) + 3 active review bots (Codex, Gemini, CodeRabbit); Sourcery
+  was rate-limited for this PR and did not respond. 9 commits across rounds
+  (fix + chore + docs + style), 10 files changed, +711/-15 (live PR
+  snapshot at head `374a0a03`). Final state: pytest 1709 pass / 12 skip /
+  0 fail on macOS Apple Silicon at commit `374a0a03`; portability gate
+  exit 0. The PR is `mergeable_state: clean`.
 
 ---
 

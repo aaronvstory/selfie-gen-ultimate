@@ -115,15 +115,28 @@ run_gui.command (root)
 
 If you touch any link in that chain: chain-test it via `bash run_gui.command` once before pushing. Same chain exists for `run_cli.command` and the eight `run_oldcam_v*.command` variants.
 
-## 8. Pre-push macOS portability check
+## 8. Portability check — runs automatically at commit time (v2.24+)
 
-Run before pushing any change that touches `*.sh`, `*.command`, `tk_dialogs.py`, or anything under `launchers/`, `similarity/src/`, or `kling_gui/main_window.py` picker code:
+Wired into `scripts/git-hooks/pre-commit` since v2.24 — runs automatically
+when a commit touches `*.sh`, `*.command`, `.gitattributes`, anything under
+`launchers/`, or any tracked file in `scripts/git-hooks/`. Override:
+`SKIP_MACOS_PORTABILITY_GATE=1`.
+
+You can still run it manually (recommended before pushing a large diff that
+also wants the test suite green):
 
 ```bash
 bash scripts/check_macos_portability.sh
 ```
 
-Exits non-zero on CRLF in shell scripts, or `.command`/`.sh` files committed without the exec bit. Source: `scripts/check_macos_portability.sh`.
+Exits non-zero on:
+- CRLF line endings in `*.sh` / `*.command` / extensionless `scripts/git-hooks/*`
+- `*.command` / `*.sh` / extensionless hooks committed without the exec bit
+  (`100755` in the git index)
+
+Source: `scripts/check_macos_portability.sh` (Rules 1, 2, and 3 — the third
+covers the extensionless hooks added in v2.24, see Codex/Gemini round-4 of
+PR #80 for the rationale).
 
 **The portability gate does NOT catch:** Python resolver bugs (rule 9), set-flag parity mismatches (rule 10), `/dev/null` in `.bat` files, or `sys.path` import bugs in subprojects. Those are caught only by code review + the static-text test `tests/test_similarity_launcher_resolver.py`.
 

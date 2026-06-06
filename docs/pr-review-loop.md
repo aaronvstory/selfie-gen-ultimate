@@ -242,6 +242,48 @@ that case, explicitly tell the user the SSD copy is now stale instead
 of silently ignoring it. Only rebuild the SSD's `venv-macos.tar` if
 the merged PR touched `requirements.txt` or `requirements-hashed.txt`.
 
+## Documenting cross-PR work (added v2.24)
+
+When the diff in your branch documents, follows up on, or depends on a
+code change that lives in a SIBLING PR (e.g. a docs PR that explains a
+feature whose code shipped in a feature PR), **cite the source PR + the
+specific commit SHA explicitly** in every doc / CHANGELOG entry that
+touches the cross-PR surface. Use language like:
+
+> **Source of the code change:** the `dev` extra landed via
+> [PR #79](https://github.com/.../pull/79) (`feat/macos-polish-post-v2.21`),
+> commit `de161c04`, in the v2.24 release round.
+
+Why this rule exists: PR #80 round 2 of the v2.24 audit shipped three docs
+describing the `dev` extra contract — but the extra itself was in the
+sibling PR #79. A reader checking out PR #80 alone would have read a
+contract pointing at code that wasn't in their tree. Without the
+explicit "Source of the code change" callout pointing at PR #79 + the
+SHA, the doc becomes a checklist failure the next time someone runs it.
+
+Three places this rule applies in practice:
+- **CHANGELOG entries** that span multiple PRs in the same release
+  round: split the `Added` / `Changed` / `Fixed` sub-sections per PR
+  with explicit headers like `### Added (PR #79 — code)` /
+  `### Added (PR #80 — docs)` so a future reader can attribute each
+  line correctly.
+- **Doc cross-references** (e.g. `docs/uv-migration.md` describing a
+  contract whose implementation lives elsewhere): open the section
+  with a blockquote citing the source PR + commit SHA, and use
+  past-tense "landed via PR #X" rather than in-flight "ships in
+  PR #X" so the wording stays accurate after merge.
+- **Code comments** referring to a fix from another branch (e.g. a
+  comment in `kling_gui/queue_manager.py` pointing at a docs entry
+  for a related fix in a different PR): cite both the doc path AND
+  the originating PR/commit so the breadcrumb survives a doc
+  relocation.
+
+The corollary: **never write a doc that depends on uncited sibling-PR
+code.** If your docs PR can't merge cleanly without a sibling PR
+landing first, say so in the PR description AND in every doc that
+touches the dependency. The reviewer + the future-you reading the
+merged main both need that pointer.
+
 ## Skip conditions (don't run the full loop)
 
 - The user explicitly says "skip review" / "just push" / "WIP"
