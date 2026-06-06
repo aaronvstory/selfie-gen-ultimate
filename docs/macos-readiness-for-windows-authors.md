@@ -54,15 +54,31 @@ Tcl 8.6.12 — a wheel bundling Tcl 9.x silently breaks Apple Silicon.
 **Check before pushing:**
 
 ```powershell
-# Windows PowerShell — download the new wheel and inspect its osx-arm64 contents
+# Windows PowerShell — download the new wheel and inspect its osx-arm64 contents.
+# PowerShell 5.1's Expand-Archive only accepts `.zip`, so we rename the .whl
+# first. Adjust $TEMP_DIR to wherever you scratch files (default C:\temp\check).
 $pkg = "tkinterdnd2"
 $ver = "0.4.4.1"          # the version you're bumping TO
-pip download --no-deps "$pkg==$ver" -d C:\temp\check
-Expand-Archive C:\temp\check\${pkg}-*.whl -DestinationPath C:\temp\check\extracted -Force
-Get-ChildItem -Recurse C:\temp\check\extracted -Filter "*.dylib" | Select FullName, Length
+$TEMP_DIR = "C:\temp\check"
+New-Item -ItemType Directory -Force -Path $TEMP_DIR | Out-Null
+pip download --no-deps "$pkg==$ver" -d $TEMP_DIR
+Get-ChildItem $TEMP_DIR\*.whl | ForEach-Object {
+    Copy-Item $_.FullName ($_.FullName -replace '\.whl$', '.zip')
+}
+Expand-Archive $TEMP_DIR\*.zip -DestinationPath $TEMP_DIR\extracted -Force
+Get-ChildItem -Recurse $TEMP_DIR\extracted -Filter "*.dylib" | Select FullName, Length
 # If the dylib filename starts with libtcl9... → Tcl 9.x → BREAKS macOS Tk 8.6.
 # Cap to the last known Tcl-8.6-bundled version (for tkinterdnd2, that's <0.4.4).
 ```
+
+> **bash / zsh equivalent** (macOS or git-bash on Windows):
+> ```bash
+> pkg=tkinterdnd2 ; ver=0.4.4.1
+> pip download --no-deps "$pkg==$ver" -d /tmp/check
+> unzip -q /tmp/check/${pkg}-${ver}-*.whl -d /tmp/check/extracted
+> ls /tmp/check/extracted/${pkg}/tkdnd/osx-arm64/
+> file /tmp/check/extracted/${pkg}/tkdnd/osx-arm64/*.dylib
+> ```
 
 **Add a regression test** for any new cap, mirroring
 `tests/test_macos_tkdnd_loads.py`:
