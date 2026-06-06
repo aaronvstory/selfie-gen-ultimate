@@ -688,14 +688,21 @@ class SelfieTab(tk.Frame):
         )
         models_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
 
-        # Left: fixed Add-Models button (does not scroll).
-        add_btn = create_action_button(
+        # Left: fixed Edit-Models button (does not scroll). Uses the standard
+        # SECONDARY style — NOT compact — so the proportions match the 2-row
+        # checkbox grid to its right instead of squishing into a stubby box.
+        # Vertical centering (no anchor="n") aligns it with the middle of the
+        # checkbox rows. Renamed from "➕ Add" to "Edit Models" in v2.25 — the
+        # modal now opens with current custom models pre-filled so the user
+        # can edit labels, fix typos, or remove entries (the old flow could
+        # only append, never edit).
+        edit_btn = create_action_button(
             models_frame,
-            text="➕ Add",
-            command=self._open_add_models_dialog,
-            style=TTK_BTN_COMPACT,
+            text="✎ Edit Models",
+            command=self._open_edit_models_dialog,
+            style=TTK_BTN_SECONDARY,
         )
-        add_btn.pack(side=tk.LEFT, anchor="n", padx=(6, 4), pady=4)
+        edit_btn.pack(side=tk.LEFT, padx=(8, 6), pady=4)
 
         # Right: horizontally-scrolling 2-row checkbox table. Use GRID (not pack)
         # for the canvas + scrollbar so hiding/showing the scrollbar via
@@ -1731,13 +1738,84 @@ class SelfieTab(tk.Frame):
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", tail).strip("-").lower()
         return slug or "model"
 
+    # Generic action suffixes that get stripped when deriving a label —
+    # they describe what the endpoint DOES, not what model it IS. (PR
+    # #v2.25 — "names have to be intelligently derived from the api
+    # endpoint" per user feedback on the v2.24 Add-Models flow.)
+    _ACTION_SUFFIXES = frozenset({
+        "edit", "generate", "inpaint", "outpaint",
+        "text-to-image", "image-to-image", "image-to-video",
+        "video-to-video", "text-to-video", "text-to-audio",
+    })
+    # Vendor prefixes that add no signal when stripped (the app is fal.ai-
+    # focused, so the `fal-ai/` namespace is implicit). Other vendors
+    # (`openai/`, `anthropic/`, ...) STAY because they disambiguate when
+    # the same model name exists on multiple platforms.
+    _IMPLICIT_VENDOR_PREFIXES = frozenset({"fal-ai"})
+    # Brand fix-ups for tokens title-case alone gets wrong. Lower-case
+    # key → canonical display.
+    _BRAND_FIXUPS = {
+        "openai": "OpenAI",
+        "gpt": "GPT",
+        "pulid": "PuLID",
+        "minimax": "MiniMax",
+        "ai": "AI",
+        "hd": "HD",
+        "uhd": "UHD",
+    }
+
     @staticmethod
     def _prettify_label(endpoint: str) -> str:
-        """Human-ish label from an endpoint when the user gives none."""
-        tail = endpoint.rstrip("/").split("/")[-1] if endpoint else ""
-        words = re.split(r"[^a-zA-Z0-9]+", tail)
-        pretty = " ".join(w.capitalize() for w in words if w)
-        return pretty or endpoint or "Model"
+        """Human-readable label derived intelligently from an endpoint.
+
+        Algorithm:
+        1. Drop trailing action segments (``/edit``, ``/text-to-image``, …) —
+           those describe behavior, not identity. ``fal-ai/nano-banana-2/edit``
+           → ``fal-ai/nano-banana-2``.
+        2. Drop the leading ``fal-ai/`` vendor prefix when ≥1 segment remains.
+           The app is fal.ai-focused; the prefix is redundant in the picker.
+           Other vendors (``openai/``, ``anthropic/`` …) STAY — they
+           disambiguate when the same model name exists across platforms.
+        3. Split each surviving segment on non-alphanumeric, title-case, and
+           apply ``_BRAND_FIXUPS`` for tokens title-case gets wrong (OpenAI,
+           GPT, PuLID, MiniMax, …). Version tokens like ``v3`` keep the
+           lower-case ``v``.
+
+        Examples (also covered by ``test_prettify_label_intelligent_derivation``)::
+
+            fal-ai/nano-banana-2/edit          → Nano Banana 2
+            fal-ai/flux-pro/kontext            → Flux Pro Kontext
+            openai/gpt-image-2/edit            → OpenAI GPT Image 2
+            fal-ai/flux-pulid/text-to-image    → Flux PuLID
+            fal-ai/kling-video/v3/pro/image-to-video → Kling Video v3 Pro
+            vendor/cool_model                  → Vendor Cool Model
+        """
+        if not endpoint:
+            return "Model"
+        parts = [p for p in endpoint.strip("/").split("/") if p]
+        if not parts:
+            return "Model"
+        # Drop trailing action suffix(es); keep at least one segment to label.
+        while len(parts) > 1 and parts[-1].lower() in SelfieTab._ACTION_SUFFIXES:
+            parts = parts[:-1]
+        # Drop implicit vendor prefix when something distinctive remains.
+        if len(parts) > 1 and parts[0].lower() in SelfieTab._IMPLICIT_VENDOR_PREFIXES:
+            parts = parts[1:]
+        # Title-case + brand fix-ups token by token.
+        out_words: List[str] = []
+        for segment in parts:
+            for word in re.split(r"[^a-zA-Z0-9]+", segment):
+                if not word:
+                    continue
+                lower = word.lower()
+                if lower in SelfieTab._BRAND_FIXUPS:
+                    out_words.append(SelfieTab._BRAND_FIXUPS[lower])
+                elif re.match(r"^v\d", lower):
+                    # Version token: keep lowercase `v`, title-case the rest.
+                    out_words.append(lower)
+                else:
+                    out_words.append(word.title())
+        return " ".join(out_words) or "Model"
 
     @staticmethod
     def parse_model_lines(text: str) -> List[dict]:
@@ -1814,6 +1892,75 @@ class SelfieTab(tk.Frame):
                 self._model_options.append(model)
                 existing.add(model["endpoint"])
 
+    @staticmethod
+    def _format_models_for_editing(models: List[dict]) -> str:
+        """Serialize a model list to ``endpoint | label`` lines for the
+        Edit-Models textbox. Empty-label entries become bare endpoints (so
+        the next save re-derives the label intelligently via
+        ``_prettify_label``). Entries with no endpoint are skipped.
+
+        Caller is responsible for passing CUSTOM-only models — built-ins
+        leaking into ``selfie_custom_models`` would write a divergent
+        copy that confuses the merge step. The dialog handles this
+        filtering at the call site.
+        """
+        lines: List[str] = []
+        for model in models:
+            endpoint = str(model.get("endpoint", "")).strip()
+            if not endpoint:
+                continue
+            label = str(model.get("label") or "").strip()
+            if label:
+                lines.append(f"{endpoint} | {label}")
+            else:
+                lines.append(endpoint)
+        return "\n".join(lines)
+
+    def _apply_edited_custom_models(
+        self, new_custom_models: List[dict], builtin_endpoints
+    ) -> None:
+        """Replace ``self._custom_models`` with the edited list and update
+        derived state (model_options, supported endpoints, selected map).
+
+        Built-in endpoints (passed as a set) are preserved at the FRONT of
+        ``_model_options`` in their original order. Custom models follow
+        in the order the user wrote them — useful because editing the list
+        is the only way to re-order the picker grid.
+
+        The selected-state map (``config["selfie_selected_models"]``) is
+        pruned of endpoints that no longer exist; entries for endpoints
+        the user added or kept stay untouched (so an unchecked-then-edited
+        model stays unchecked).
+        """
+        builtin_endpoints = set(builtin_endpoints or ())
+        # Preserve built-ins in their original order; drop only the old
+        # custom entries.
+        preserved_builtins = [
+            m for m in self._model_options
+            if m.get("endpoint") in builtin_endpoints
+        ]
+        self._custom_models = list(new_custom_models)
+        self._model_options = preserved_builtins + list(new_custom_models)
+        # Re-derive supported endpoints (the picker only renders these).
+        self._supported_model_endpoints = {
+            m.get("endpoint", "") for m in self._model_options
+            if m.get("endpoint")
+        }
+        # Prune the selected-state map. Keep entries for endpoints still
+        # present (preserves "I unchecked this one" state across an edit).
+        saved = self.config.get("selfie_selected_models")
+        if isinstance(saved, dict):
+            self.config["selfie_selected_models"] = {
+                ep: v for ep, v in saved.items()
+                if ep in self._supported_model_endpoints
+            }
+        # Drop tk.BooleanVars for removed endpoints so a future save doesn't
+        # write stale state. (No-op when called from tests with empty
+        # _model_vars.)
+        for ep in list(self._model_vars.keys()):
+            if ep not in self._supported_model_endpoints:
+                self._model_vars.pop(ep, None)
+
     # Max checkbox rows before the table grows into new columns (vertical space
     # is tight — the user asked for strictly 2 rows, columns + horizontal scroll).
     MODEL_TABLE_ROWS = 2
@@ -1864,31 +2011,68 @@ class SelfieTab(tk.Frame):
                 anchor="w",
             ).grid(row=row, column=col, sticky="w", padx=(8, 10), pady=1)
 
-    def _open_add_models_dialog(self) -> None:
-        """Open the Add-Models modal; merge any returned custom endpoints."""
+    def _open_edit_models_dialog(self) -> None:
+        """Open the Edit-Models modal; REPLACE custom models with the result.
+
+        v2.25 redesign of the v2.24 Add-Models flow. The modal now opens
+        pre-filled with the user's existing custom models (one per line,
+        ``endpoint | label`` format) so the user can edit labels, fix
+        typos, re-order entries, or remove them by deleting the line.
+        Built-in models stay untouched — they're filtered out of the
+        editable list and the merge step is handled by
+        ``_apply_edited_custom_models``.
+        """
         try:
-            from kling_gui.main_window import AddModelsDialog
+            from kling_gui.main_window import EditModelsDialog
         except Exception as exc:  # pragma: no cover - degraded import
-            self.log(f"Add Models unavailable: {exc}", "error")
+            self.log(f"Edit Models unavailable: {exc}", "error")
             return
-        existing = {m.get("endpoint", "") for m in self._model_options}
-        dialog = AddModelsDialog(self.winfo_toplevel(), existing_endpoints=existing)
+        # Snapshot built-in endpoints BEFORE the edit so the apply step
+        # knows which entries to preserve in _model_options.
+        custom_eps = {m.get("endpoint", "") for m in self._custom_models}
+        builtin_endpoints = {
+            m.get("endpoint", "")
+            for m in self._model_options
+            if m.get("endpoint") and m.get("endpoint") not in custom_eps
+        }
+        initial_text = SelfieTab._format_models_for_editing(self._custom_models)
+        # Built-in summary shown read-only at the top of the modal so the
+        # user knows what's already in the picker without seeing them as
+        # editable lines.
+        builtin_summary_lines = [
+            f"#   {m.get('endpoint', '')}  →  {m.get('label', '')}"
+            for m in self._model_options
+            if m.get("endpoint") in builtin_endpoints
+        ]
+        builtin_summary = "\n".join(builtin_summary_lines)
+        dialog = EditModelsDialog(
+            self.winfo_toplevel(),
+            initial_text=initial_text,
+            builtin_summary=builtin_summary,
+        )
         self.wait_window(dialog)
-        new_models = getattr(dialog, "result", None) or []
-        added = 0
-        for model in new_models:
-            endpoint = model.get("endpoint", "")
-            if not endpoint or endpoint in existing:
-                continue
-            self._custom_models.append(model)
-            self._model_options.append(model)
-            self._supported_model_endpoints.add(endpoint)
-            existing.add(endpoint)
-            added += 1
-        if added:
-            self._render_model_checkboxes()
-            self._save_config_now()
-            self.log(f"Added {added} custom model(s)", "success")
+        result = getattr(dialog, "result", None)
+        if result is None:
+            # Cancelled — leave everything alone.
+            return
+        before_count = len(self._custom_models)
+        self._apply_edited_custom_models(result, builtin_endpoints)
+        self._render_model_checkboxes()
+        self._save_config_now()
+        after_count = len(self._custom_models)
+        delta = after_count - before_count
+        if delta > 0:
+            self.log(f"Custom models updated (+{delta})", "success")
+        elif delta < 0:
+            self.log(f"Custom models updated ({delta})", "success")
+        elif after_count > 0:
+            self.log(f"Custom models updated ({after_count} total)", "info")
+        else:
+            self.log("Custom models cleared", "info")
+
+    # Back-compat alias — kept for one release in case anything (tests,
+    # external scripts) reaches in by the old name.
+    _open_add_models_dialog = _open_edit_models_dialog
 
     def _get_selected_models(self) -> List[dict]:
         selected = []

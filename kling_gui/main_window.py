@@ -215,32 +215,48 @@ def sanitize_sash_layout(
     )
 
 
-class AddModelsDialog(tk.Toplevel):
-    """Modal for adding custom fal.ai selfie models by endpoint.
+class EditModelsDialog(tk.Toplevel):
+    """Modal for EDITING the user's custom fal.ai selfie models.
 
-    The user pastes one fal.ai endpoint per line, optionally followed by
-    ``| Friendly Label``. On OK, lines are parsed (via
-    ``SelfieTab.parse_model_lines`` — the single source of truth for the
-    format), endpoints already present are skipped, and the result list of
-    ``{endpoint,label,slug,provider,api_url}`` dicts is exposed on ``self.result``
-    (``None`` on cancel).
+    v2.25 redesign of the v2.24 ``AddModelsDialog``. The textbox is pre-
+    filled with the user's existing custom models in
+    ``endpoint | label`` form so they can edit labels, fix typos,
+    re-order entries, or delete lines to remove models. The optional
+    ``builtin_summary`` is rendered as commented reference at the top
+    of the textbox so the user sees what built-ins are already in the
+    picker (built-ins themselves stay non-editable — comment lines are
+    skipped by ``SelfieTab.parse_model_lines``).
+
+    The user paste-format is unchanged: ``vendor/path/endpoint`` per
+    line with an optional ``| Friendly Label`` suffix. When no label
+    is supplied, the new ``SelfieTab._prettify_label`` derives one
+    intelligently from the endpoint (e.g. ``fal-ai/nano-banana-2/edit``
+    → ``Nano Banana 2``).
+
+    On Save, every parsed entry is returned in ``self.result`` (full
+    list — REPLACES the existing custom-models list at the caller).
+    ``self.result`` is ``None`` on Cancel so the caller can tell the
+    difference between "user cleared everything" (empty list) and
+    "user cancelled" (None).
+
+    The old class name ``AddModelsDialog`` remains as a back-compat
+    alias at module scope.
     """
 
-    def __init__(self, parent, existing_endpoints=None):
+    def __init__(self, parent, initial_text="", builtin_summary=""):
         super().__init__(parent)
-        self.title("Add fal.ai Models")
+        self.title("Edit Selfie Models")
         self.result = None
-        self._existing = {str(e) for e in (existing_endpoints or set())}
 
         self.transient(parent)
         self.grab_set()
         self.configure(bg=COLORS["bg_panel"])
-        self.geometry("560x420")
-        self.minsize(460, 360)
+        self.geometry("620x460")
+        self.minsize(520, 380)
 
         tk.Label(
             self,
-            text="Add fal.ai models",
+            text="Edit selfie models",
             font=(FONT_FAMILY, 14, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
@@ -252,7 +268,10 @@ class AddModelsDialog(tk.Toplevel):
                 "One fal.ai endpoint per line. Optionally add a friendly label "
                 "after a pipe:\n"
                 "    fal-ai/flux-pro/kontext | Kontext Pro\n"
-                "The endpoint is the path from the fal.ai model page (vendor/name)."
+                "Delete a line to remove that model. Edit a label or endpoint "
+                "to update it.\n"
+                "When no label is given, a smart name is derived from the "
+                "endpoint."
             ),
             font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
@@ -265,7 +284,7 @@ class AddModelsDialog(tk.Toplevel):
         text_frame.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 8))
         self._text = tk.Text(
             text_frame,
-            height=8,
+            height=10,
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
             insertbackground=COLORS["text_light"],
@@ -276,15 +295,33 @@ class AddModelsDialog(tk.Toplevel):
             wrap="none",
         )
         self._text.pack(fill=tk.BOTH, expand=True)
-        # Placeholder shows the FORMAT with a non-built-in example so pressing
-        # Add on the prefill doesn't immediately error (code-review LOW, PR #77).
-        self._text.insert("1.0", "# example:  fal-ai/some-vendor/some-model | My Label\n")
+
+        # Compose the textbox content: a small read-only header showing
+        # built-ins for context, a separator, then the user's editable
+        # custom-model lines (or an example placeholder if there are none).
+        prefill_chunks = []
+        if builtin_summary:
+            prefill_chunks.append(
+                "# Built-in models (not editable — listed for context):\n"
+                f"{builtin_summary}\n"
+                "#\n"
+                "# Your custom models — edit, add, or remove below:\n"
+            )
+        if initial_text:
+            prefill_chunks.append(initial_text)
+            # Trailing newline so the cursor lands on a fresh line for adds.
+            if not initial_text.endswith("\n"):
+                prefill_chunks.append("\n")
+        else:
+            prefill_chunks.append(
+                "# Example (uncomment + edit):\n"
+                "# fal-ai/some-vendor/some-model | My Label\n"
+            )
+        self._text.insert("1.0", "".join(prefill_chunks))
         self._text.focus_set()
 
         self._error_label = tk.Label(
             self, text="", font=(FONT_FAMILY, 9),
-            # btn_red is the theme's canonical error red (accent_red isn't a
-            # COLORS key — code-review HIGH, PR #77).
             bg=COLORS["bg_panel"],
             fg=COLORS.get("btn_red", COLORS.get("error", "#e06c75")),
             anchor="w", justify="left",
@@ -297,7 +334,7 @@ class AddModelsDialog(tk.Toplevel):
             btn_row, text="Cancel", command=self._cancel, style=TTK_BTN_SECONDARY
         ).pack(side=tk.RIGHT)
         create_action_button(
-            btn_row, text="Add", command=self._ok, style=TTK_BTN_PRIMARY
+            btn_row, text="Save", command=self._ok, style=TTK_BTN_PRIMARY
         ).pack(side=tk.RIGHT, padx=(0, 6))
 
         self.bind("<Escape>", lambda _e: self._cancel())
@@ -305,8 +342,8 @@ class AddModelsDialog(tk.Toplevel):
         self.update_idletasks()
         try:
             pw, ph = parent.winfo_width(), parent.winfo_height()
-            x = parent.winfo_rootx() + (pw - 560) // 2
-            y = parent.winfo_rooty() + (ph - 420) // 2
+            x = parent.winfo_rootx() + (pw - 620) // 2
+            y = parent.winfo_rooty() + (ph - 460) // 2
             self.geometry(f"+{max(0, x)}+{max(0, y)}")
         except Exception:
             pass
@@ -316,19 +353,36 @@ class AddModelsDialog(tk.Toplevel):
 
         raw = self._text.get("1.0", tk.END)
         parsed = SelfieTab.parse_model_lines(raw)
-        # Drop endpoints already present in the picker.
-        fresh = [m for m in parsed if m["endpoint"] not in self._existing]
-        if not fresh:
+        # Empty result is LEGITIMATE (user wants to clear customizations) —
+        # only block on invalid input where they tried to enter something
+        # but every line was rejected. We can't perfectly tell those apart
+        # from "user deleted everything intentionally", but a non-comment
+        # non-blank input that produced zero parsed entries is suspicious.
+        non_blank_non_comment_input = any(
+            line.strip() and not line.strip().startswith("#")
+            for line in raw.splitlines()
+        )
+        if non_blank_non_comment_input and not parsed:
             self._error_label.config(
-                text="No new valid endpoints found (need 'vendor/name'; dupes skipped)."
+                text=(
+                    "No valid endpoints found. Format: vendor/name "
+                    "(optionally followed by '| Friendly Label'). "
+                    "Delete everything to clear all custom models."
+                )
             )
             return
-        self.result = fresh
+        self.result = parsed
         self.destroy()
 
     def _cancel(self):
         self.result = None
         self.destroy()
+
+
+# Back-compat alias: the v2.24 class name. Kept so any external import path
+# (tests, ad-hoc scripts) that reaches in by the old name keeps working
+# for one release. Remove once any external callers are migrated.
+AddModelsDialog = EditModelsDialog
 
 
 class FolderPreviewDialog(tk.Toplevel):
