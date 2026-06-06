@@ -121,3 +121,4 @@ docs/analysis/
 
 # Friend-shared diagnostic logs (contain real file paths + email-named files = PII).
 _friend_logs/
+polish-evidence
