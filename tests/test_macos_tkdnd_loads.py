@@ -188,23 +188,34 @@ def test_uv_lock_pins_compatible_tkinterdnd2():
     The lock is the source of truth for ``uv sync`` — if it carries 0.4.4+
     the launcher's uv fast-path silently breaks DnD on macOS Apple Silicon
     even when requirements.txt + pyproject.toml are properly capped.
+
+    Round-2 review (Gemini): parse uv.lock with ``tomllib`` rather than a
+    bespoke ``re.search`` over ``name = "..."`` + ``version = "..."``. uv's
+    lock format is stable TOML; the regex was brittle to whitespace changes
+    and a future uv format tweak (e.g. inline package tables) would silently
+    miss the entry instead of asserting against it.
     """
+    import tomllib
+
     lock = ROOT / "uv.lock"
     if not lock.exists():
         pytest.skip("uv.lock not present")
-    text = lock.read_text(encoding="utf-8")
-    # Find the version line under [[package]] name = "tkinterdnd2"
-    match = re.search(
-        r'name = "tkinterdnd2"\s*\nversion = "([^"]+)"', text
+    with lock.open("rb") as fp:
+        data = tomllib.load(fp)
+    # uv lock layout: [[package]] entries under the `package` array-of-tables.
+    packages = data.get("package", [])
+    matches = [pkg for pkg in packages if pkg.get("name") == "tkinterdnd2"]
+    assert matches, "uv.lock does not declare a tkinterdnd2 package entry"
+    assert len(matches) == 1, (
+        f"uv.lock has {len(matches)} tkinterdnd2 entries; expected exactly 1"
     )
-    assert match, "uv.lock does not declare a tkinterdnd2 version"
-    version = match.group(1)
-    parts = version.split(".")
-    # Reject 0.4.4 and 0.4.4.1 (Tcl 9.x binaries); allow 0.4.3 / 0.4.2 / 0.4.1 / 0.4.0 / 0.3.0
-    major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
-    is_bad = (major, minor, patch) >= (0, 4, 4)
-    assert not is_bad, (
-        f"uv.lock pins tkinterdnd2=={version}, which ships a Tcl 9.x "
+    version_str = matches[0].get("version", "")
+    assert version_str, (
+        f"uv.lock tkinterdnd2 entry has no version field: {matches[0]!r}"
+    )
+    version = Version(version_str)
+    assert version < Version("0.4.4"), (
+        f"uv.lock pins tkinterdnd2=={version_str}, which ships a Tcl 9.x "
         "osx-arm64 binary incompatible with macOS Tk 8.6. Re-resolve the "
         "lock after capping in pyproject.toml. See "
         "tests/test_macos_tkdnd_loads.py for the root cause."
