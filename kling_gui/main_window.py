@@ -251,10 +251,34 @@ class EditModelsDialog(tk.Toplevel):
     alias at module scope.
     """
 
-    def __init__(self, parent, initial_text="", builtin_summary=""):
+    def __init__(
+        self,
+        parent,
+        initial_text="",
+        builtin_summary="",
+        picker_entries=None,
+        current_default_endpoint="",
+    ):
         super().__init__(parent)
         self.title("Edit Selfie Models")
         self.result = None
+        # v2.27 default-model picker: the selfie tab passes the full
+        # list of (endpoint, label) pairs currently visible in the
+        # picker (built-ins + custom) and the currently-effective
+        # default endpoint. On Save we expose the user's choice via
+        # ``result_default_endpoint`` so the caller can persist it.
+        # When the caller did not supply ``picker_entries`` (e.g. older
+        # tests instantiating the dialog directly), the combobox is
+        # omitted and ``result_default_endpoint`` stays None — fully
+        # backward-compatible with the previous signature.
+        self._picker_entries: list[tuple[str, str]] = list(picker_entries or [])
+        self._current_default_endpoint: str = current_default_endpoint or ""
+        self.result_default_endpoint: str | None = None
+        self._default_endpoint_var: tk.StringVar | None = None
+        self._default_endpoint_combo: ttk.Combobox | None = None
+        # Map "Label (endpoint)" display string ↔ endpoint, populated
+        # in _build_default_picker_row when picker_entries is non-empty.
+        self._default_display_to_endpoint: dict[str, str] = {}
 
         self.transient(parent)
         self.grab_set()
@@ -287,6 +311,12 @@ class EditModelsDialog(tk.Toplevel):
             justify="left",
             anchor="w",
         ).pack(fill=tk.X, padx=18, pady=(0, 8))
+
+        # v2.27 default-model picker row — only rendered when the
+        # caller supplied entries. Placed BEFORE the textbox so the
+        # user sees the default-model choice as a first-class option,
+        # not buried under the editable text.
+        self._build_default_picker_row()
 
         text_frame = tk.Frame(self, bg=COLORS["bg_panel"])
         text_frame.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 8))
@@ -356,6 +386,55 @@ class EditModelsDialog(tk.Toplevel):
         except Exception:
             pass
 
+    def _build_default_picker_row(self):
+        """Render the default-model Combobox row above the textbox.
+
+        Skipped when the caller did not supply ``picker_entries`` —
+        keeps tests/scripts that instantiate the dialog directly
+        working without the new behavior.
+        """
+        if not self._picker_entries:
+            return
+        row = tk.Frame(self, bg=COLORS["bg_panel"])
+        row.pack(fill=tk.X, padx=18, pady=(0, 8))
+        tk.Label(
+            row,
+            text="Default model:",
+            font=(FONT_FAMILY, 10, "bold"),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            anchor="w",
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        # Build display strings "Label (endpoint)" so users can see
+        # both pieces; map back to endpoint on Save.
+        display_values: list[str] = []
+        for endpoint, label in self._picker_entries:
+            display = f"{label} ({endpoint})"
+            display_values.append(display)
+            self._default_display_to_endpoint[display] = endpoint
+        # Pre-select the currently-effective default if it's in the list.
+        current_display = ""
+        for endpoint, label in self._picker_entries:
+            if endpoint == self._current_default_endpoint:
+                current_display = f"{label} ({endpoint})"
+                break
+        self._default_endpoint_var = tk.StringVar(value=current_display)
+        self._default_endpoint_combo = ttk.Combobox(
+            row,
+            textvariable=self._default_endpoint_var,
+            values=display_values,
+            state="readonly",
+            width=58,
+        )
+        self._default_endpoint_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Label(
+            row,
+            text="(persists between launches)",
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
     def _ok(self):
         from kling_gui.tabs.selfie_tab import SelfieTab
 
@@ -408,6 +487,16 @@ class EditModelsDialog(tk.Toplevel):
         # wants to clear all customizations. The selfie tab's
         # _open_edit_models_dialog handles the confirm dialog.
         self.result = parsed
+        # v2.27 default-model picker: resolve the displayed string back
+        # to an endpoint. Empty string (combobox not rendered or never
+        # touched and current default not in list) → None, leaves the
+        # caller's persisted default untouched.
+        if self._default_endpoint_var is not None:
+            chosen_display = self._default_endpoint_var.get().strip()
+            if chosen_display:
+                self.result_default_endpoint = (
+                    self._default_display_to_endpoint.get(chosen_display)
+                )
         self.destroy()
 
     def _cancel(self):

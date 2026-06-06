@@ -473,5 +473,112 @@ class SelfieTabReplaceCustomModelsTests(unittest.TestCase):
         )
 
 
+class SelfieTabDefaultModelPickerTests(unittest.TestCase):
+    """v2.27 PR #85: the Edit Models modal got a default-model picker
+    that persists the user's choice between launches. These tests pin
+    the helper that resolves the effective default at runtime
+    (``_effective_default_model_endpoint``) without spinning up Tk.
+    """
+
+    def _stub(self, config, model_endpoints):
+        return types.SimpleNamespace(
+            config=config,
+            _model_options=[{"endpoint": e, "label": e} for e in model_endpoints],
+            DEFAULT_MODEL_ENDPOINT=SelfieTab.DEFAULT_MODEL_ENDPOINT,
+            CONFIG_KEY_DEFAULT_MODEL=SelfieTab.CONFIG_KEY_DEFAULT_MODEL,
+        )
+
+    def test_returns_hardcoded_default_when_no_persisted_value(self):
+        stub = self._stub(
+            config={},
+            model_endpoints=[SelfieTab.DEFAULT_MODEL_ENDPOINT, "vendor/x"],
+        )
+        self.assertEqual(
+            SelfieTab._effective_default_model_endpoint(stub),
+            SelfieTab.DEFAULT_MODEL_ENDPOINT,
+        )
+
+    def test_returns_persisted_value_when_present_in_picker(self):
+        stub = self._stub(
+            config={SelfieTab.CONFIG_KEY_DEFAULT_MODEL: "vendor/x"},
+            model_endpoints=[SelfieTab.DEFAULT_MODEL_ENDPOINT, "vendor/x"],
+        )
+        self.assertEqual(
+            SelfieTab._effective_default_model_endpoint(stub),
+            "vendor/x",
+        )
+
+    def test_falls_back_when_persisted_endpoint_no_longer_listed(self):
+        """User picked vendor/x as default, then deleted vendor/x via
+        Edit Models. The stale persisted value MUST fall back to the
+        hard-coded default — never check-by-default an endpoint that's
+        no longer in the picker (otherwise _render_model_checkboxes
+        crashes when looking up its var)."""
+        stub = self._stub(
+            config={SelfieTab.CONFIG_KEY_DEFAULT_MODEL: "vendor/removed"},
+            model_endpoints=[SelfieTab.DEFAULT_MODEL_ENDPOINT, "vendor/still-here"],
+        )
+        self.assertEqual(
+            SelfieTab._effective_default_model_endpoint(stub),
+            SelfieTab.DEFAULT_MODEL_ENDPOINT,
+        )
+
+    def test_handles_non_string_persisted_value(self):
+        """Corrupt config (e.g. someone hand-edited the JSON and put a
+        number where the endpoint string belongs) MUST NOT crash."""
+        stub = self._stub(
+            config={SelfieTab.CONFIG_KEY_DEFAULT_MODEL: 42},
+            model_endpoints=[SelfieTab.DEFAULT_MODEL_ENDPOINT],
+        )
+        self.assertEqual(
+            SelfieTab._effective_default_model_endpoint(stub),
+            SelfieTab.DEFAULT_MODEL_ENDPOINT,
+        )
+
+    def test_handles_empty_string_persisted_value(self):
+        stub = self._stub(
+            config={SelfieTab.CONFIG_KEY_DEFAULT_MODEL: ""},
+            model_endpoints=[SelfieTab.DEFAULT_MODEL_ENDPOINT],
+        )
+        self.assertEqual(
+            SelfieTab._effective_default_model_endpoint(stub),
+            SelfieTab.DEFAULT_MODEL_ENDPOINT,
+        )
+
+
+class EditModelsDialogDefaultPickerTests(unittest.TestCase):
+    """v2.27 PR #85: the EditModelsDialog grew a picker_entries kwarg.
+    Skipping Tk by inspecting the signature + the post-construction
+    state of a dialog instance is hard — but we CAN pin the signature
+    contract (backward-compat: old positional / kw-only callers still
+    work) and the back-compat alias.
+    """
+
+    def test_dialog_signature_accepts_new_kwargs(self):
+        """The new kwargs MUST be optional — older test fixtures and
+        ad-hoc scripts that build the dialog without them keep working."""
+        import inspect
+        from kling_gui.main_window import EditModelsDialog
+        sig = inspect.signature(EditModelsDialog.__init__)
+        params = sig.parameters
+        # Old kwargs still present.
+        self.assertIn("initial_text", params)
+        self.assertIn("builtin_summary", params)
+        # New kwargs present and OPTIONAL (have defaults). The
+        # picker_entries default is None (the dialog treats it as
+        # "skip the combobox") — assert it's NOT inspect.Parameter.empty.
+        self.assertIn("picker_entries", params)
+        self.assertIn("current_default_endpoint", params)
+        self.assertIsNot(params["picker_entries"].default, inspect.Parameter.empty)
+        self.assertIsNot(
+            params["current_default_endpoint"].default, inspect.Parameter.empty
+        )
+        self.assertEqual(params["current_default_endpoint"].default, "")
+
+    def test_back_compat_alias_still_resolves(self):
+        from kling_gui.main_window import AddModelsDialog, EditModelsDialog
+        self.assertIs(AddModelsDialog, EditModelsDialog)
+
+
 if __name__ == "__main__":
     unittest.main()

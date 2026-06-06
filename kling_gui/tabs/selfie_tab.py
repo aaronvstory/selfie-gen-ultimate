@@ -43,6 +43,12 @@ class SelfieTab(tk.Frame):
     """Tab 2: Generate selfie from identity reference."""
 
     DEFAULT_MODEL_ENDPOINT = "fal-ai/nano-banana-2/edit"
+    # v2.27 default-model picker: the user can override the default
+    # model from the Edit Models modal; we persist their choice
+    # under this config key. Effective default at runtime is the
+    # persisted value if still present in the picker, else the
+    # hard-coded fall-back above.
+    CONFIG_KEY_DEFAULT_MODEL = "selfie_default_model_endpoint"
     DEFAULT_PROMPT_TEMPLATE = (
         "Transform this passport photo into a natural selfie: A {json.gender} with "
         "{json.hair}, {json.skin}, {json.eyes}, and a {json.face_shape}, wearing "
@@ -2016,6 +2022,25 @@ class SelfieTab(tk.Frame):
     # is tight — the user asked for strictly 2 rows, columns + horizontal scroll).
     MODEL_TABLE_ROWS = 2
 
+    def _effective_default_model_endpoint(self) -> str:
+        """Resolve the effective default-model endpoint at runtime.
+
+        Returns the user-persisted endpoint (from
+        ``CONFIG_KEY_DEFAULT_MODEL``) when it still exists in the
+        current picker (built-ins + custom). Falls back to the
+        hard-coded ``DEFAULT_MODEL_ENDPOINT`` when the persisted value
+        is unset, blank, or points at an endpoint the user has since
+        removed (so we never check-by-default a model that's no longer
+        listed). Stale persisted values are left in config — they
+        revive if the user re-adds that endpoint.
+        """
+        persisted = self.config.get(self.CONFIG_KEY_DEFAULT_MODEL, "")
+        if isinstance(persisted, str) and persisted:
+            known = {m.get("endpoint", "") for m in self._model_options}
+            if persisted in known:
+                return persisted
+        return self.DEFAULT_MODEL_ENDPOINT
+
     def _render_model_checkboxes(self) -> None:
         """(Re)build the 2-row × N-column checkbox table.
 
@@ -2042,8 +2067,9 @@ class SelfieTab(tk.Frame):
             if var is None:
                 # New endpoint: custom models default ON; built-ins follow the
                 # saved map / DEFAULT_MODEL_ENDPOINT rule.
+                effective_default = self._effective_default_model_endpoint()
                 default_checked = endpoint in custom_endpoints or (
-                    endpoint == self.DEFAULT_MODEL_ENDPOINT
+                    endpoint == effective_default
                     and endpoint not in self.DISABLED_BY_DEFAULT_ENDPOINTS
                 )
                 var = tk.BooleanVar(value=bool(saved_models.get(endpoint, default_checked)))
@@ -2096,10 +2122,21 @@ class SelfieTab(tk.Frame):
             if m.get("endpoint") in builtin_endpoints
         ]
         builtin_summary = "\n".join(builtin_summary_lines)
+        # v2.27 default-model picker: hand the dialog the FULL current
+        # picker (built-ins + custom) plus the effective default so the
+        # combobox can render with the current choice pre-selected.
+        picker_entries: list[tuple[str, str]] = [
+            (m.get("endpoint", ""), m.get("label", m.get("endpoint", "")))
+            for m in self._model_options
+            if m.get("endpoint")
+        ]
+        current_default = self._effective_default_model_endpoint()
         dialog = EditModelsDialog(
             self.winfo_toplevel(),
             initial_text=initial_text,
             builtin_summary=builtin_summary,
+            picker_entries=picker_entries,
+            current_default_endpoint=current_default,
         )
         self.wait_window(dialog)
         result = getattr(dialog, "result", None)
@@ -2129,6 +2166,31 @@ class SelfieTab(tk.Frame):
                 self.log("Edit Models — clear cancelled", "info")
                 return
         self._apply_edited_custom_models(result, builtin_endpoints)
+
+        # v2.27 default-model picker: apply the user's choice (only if
+        # the chosen endpoint still exists after applying the edits —
+        # they may have deleted the line they picked from). Persisted
+        # under CONFIG_KEY_DEFAULT_MODEL; _save_config_now() below
+        # writes to disk.
+        chosen_default = getattr(dialog, "result_default_endpoint", None)
+        if chosen_default:
+            known_after = {m.get("endpoint", "") for m in self._model_options}
+            if chosen_default in known_after:
+                prior = self.config.get(self.CONFIG_KEY_DEFAULT_MODEL, "")
+                self.config[self.CONFIG_KEY_DEFAULT_MODEL] = chosen_default
+                if prior != chosen_default:
+                    label = next(
+                        (m.get("label", chosen_default)
+                         for m in self._model_options
+                         if m.get("endpoint") == chosen_default),
+                        chosen_default,
+                    )
+                    self.log(
+                        f'Default selfie model set to "{label}" '
+                        f"({chosen_default})",
+                        "success",
+                    )
+
         self._render_model_checkboxes()
         self._save_config_now()
         after_count = len(self._custom_models)
