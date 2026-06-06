@@ -39,7 +39,7 @@ FAILED=0
 #
 # Activates ONLY when the commit touches .sh / .command / .gitattributes / a
 # launcher directory. Override: SKIP_MACOS_PORTABILITY_GATE=1.
-PORTABILITY_PATTERN='(\.sh$|\.command$|^\.gitattributes$|^launchers/|^scripts/(check_macos_portability\.sh|gpu_bootstrap\.py|uv_sync.*\.(sh|py)|ensure_uv\.py))'
+PORTABILITY_PATTERN='(\.sh$|\.command$|^\.gitattributes$|^launchers/|^scripts/(check_macos_portability\.sh|gpu_bootstrap\.py|uv_sync.*\.(sh|py)|ensure_uv\.py|git-hooks/.+))'
 if [[ "${SKIP_MACOS_PORTABILITY_GATE:-0}" != "1" ]]; then
     if git diff --cached --name-only | grep -Eq "$PORTABILITY_PATTERN"; then
         # Gemini HIGH (round 3 on PR #80): test with `-f`, not `-x`. The

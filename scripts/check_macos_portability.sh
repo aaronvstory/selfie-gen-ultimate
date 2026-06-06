@@ -56,8 +56,49 @@ if [[ -n "${mode_offenders}" ]]; then
   ((failures+=1))
 fi
 
+# Rule 3 — extensionless executable scripts (scripts/git-hooks/*, etc.) ALSO
+# need LF + mode 100755. Rules 1-2 glob on `.sh` / `.command` so they miss
+# files with no extension — the project's git hooks live in scripts/git-hooks/
+# with no suffix, are bash scripts, and are corruptible by the same Windows-
+# editor CRLF + core.filemode-false combo. Gemini MED round 4 on PR #80:
+# without this rule, a contributor editing the pre-commit hook on Windows
+# could silently introduce CRLF (which breaks the shebang on macOS, exactly
+# as for any other .sh) and the gate would pass.
+#
+# The candidate list is `git ls-files scripts/git-hooks/*` minus anything
+# already covered above (defensive — no glob overlap today). Add new
+# extensionless-script dirs here as they appear.
+EXTLESS_PATHS=(
+  scripts/git-hooks/pre-commit
+  scripts/git-hooks/post-commit
+  scripts/git-hooks/pre-push
+)
+extless_crlf_offenders=""
+extless_mode_offenders=""
+for path in "${EXTLESS_PATHS[@]}"; do
+  if ! git ls-files --error-unmatch -- "${path}" >/dev/null 2>&1; then
+    continue   # not tracked; skip silently
+  fi
+  if file "${path}" 2>/dev/null | grep -q 'CRLF'; then
+    extless_crlf_offenders+="${path}"$'\n'
+  fi
+  if [[ "$(git ls-files --stage -- "${path}" | awk '{print $1}')" != "100755" ]]; then
+    extless_mode_offenders+="${path}"$'\n'
+  fi
+done
+if [[ -n "${extless_crlf_offenders}" ]]; then
+  printf 'CRLF line terminators in extensionless executable scripts (must be LF):\n%s\n' "${extless_crlf_offenders}" >&2
+  printf 'Fix: tr -d "\\r" < <file> > <file>.tmp && mv <file>.tmp <file> && git add --renormalize <file>\n\n' >&2
+  ((failures+=1))
+fi
+if [[ -n "${extless_mode_offenders}" ]]; then
+  printf 'Extensionless executable scripts NOT marked 100755 in git index:\n%s\n' "${extless_mode_offenders}" >&2
+  printf 'Fix: chmod +x <file> && git update-index --chmod=+x <file>\n\n' >&2
+  ((failures+=1))
+fi
+
 if [[ ${failures} -eq 0 ]]; then
-  printf 'macOS portability check: PASS (no CRLF, all .command/.sh are 100755 LF)\n'
+  printf 'macOS portability check: PASS (no CRLF, all shell scripts are 100755 LF)\n'
   exit 0
 fi
 
