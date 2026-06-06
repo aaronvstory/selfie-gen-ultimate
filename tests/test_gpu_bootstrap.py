@@ -890,10 +890,26 @@ def test_torch_cuda_index_urls_are_well_formed_pytorch_tags():
 def test_compute_stamp_token_deterministic_and_mode_sensitive(monkeypatch, tmp_path):
     """The stamp token must be deterministic for a fixed env and must change
     when the resolved torch mode changes (so adding/removing a GPU invalidates
-    the dep stamp)."""
+    the dep stamp).
+
+    Pinned to ``sys.platform = "win32"`` so the test runs identically on every
+    OS. On darwin, ``resolve_torch_mode`` short-circuits to ``mac_default``
+    before looking at ``nvidia`` (Apple Silicon has no CUDA path), so without
+    the pin the t1==t3 case would equal on a Mac dev box — the assertion
+    `t3 != t1` would fail spuriously even though the production-Windows
+    behaviour is correct. The pin keeps this a Windows-semantics test that
+    runs everywhere.
+    """
     constraints = tmp_path / "constraints.txt"
     constraints.write_text("numpy>=1.26,<2\n", encoding="utf-8")
 
+    # Patch sys.platform via its dotted path rather than via the module's
+    # `gpu_bootstrap.sys` attribute — the former is decoupled from the
+    # module's internal import style. If gpu_bootstrap.py is ever
+    # refactored to `from sys import platform`, the attribute-based form
+    # silently fails or AttributeErrors; the dotted-path form keeps working.
+    # (Gemini round-3 review on PR #79.)
+    monkeypatch.setattr("sys.platform", "win32")
     # Force a no-cache path so it uses detect_nvidia, then monkeypatch that.
     monkeypatch.setattr(gpu_bootstrap, "_load_stamp", lambda: None)
     monkeypatch.setattr(gpu_bootstrap, "detect_nvidia", lambda: None)
@@ -912,10 +928,18 @@ def test_compute_stamp_token_deterministic_and_mode_sensitive(monkeypatch, tmp_p
 
 def test_compute_stamp_token_prefers_cached_gpu_status(monkeypatch, tmp_path):
     """On the hot path the token reads cuda_major from the cached gpu_status
-    stamp (cheap) instead of running nvidia-smi every launch."""
+    stamp (cheap) instead of running nvidia-smi every launch.
+
+    Pinned to ``sys.platform = "win32"`` — same reasoning as the test above:
+    on darwin ``resolve_torch_mode`` short-circuits to ``mac_default`` and
+    drops the cached cuda_major, so the "cuda" / "13" tokens would never
+    appear on a Mac dev box. The pin keeps the test a Windows-semantics
+    invariant that runs portably.
+    """
     constraints = tmp_path / "constraints.txt"
     constraints.write_text("x\n", encoding="utf-8")
 
+    monkeypatch.setattr("sys.platform", "win32")  # dotted-path: see test above.
     monkeypatch.setattr(
         gpu_bootstrap, "_load_stamp",
         lambda: {"result": "gpu_ready", "cuda_major": 13},
@@ -927,6 +951,69 @@ def test_compute_stamp_token_prefers_cached_gpu_status(monkeypatch, tmp_path):
     monkeypatch.setattr(gpu_bootstrap, "detect_nvidia", _boom)
     token = gpu_bootstrap.compute_stamp_token(str(constraints))
     assert "cuda" in token and "13" in token
+
+
+def test_compute_stamp_token_on_darwin_always_mac_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Darwin-specific token guard.
+
+    On macOS the token must ALWAYS encode ``mac_default`` and ``None`` for
+    cuda_major in its fixed-shape positions, regardless of cached
+    gpu_status or live detect_nvidia. So a Mac dev box that touched a
+    Windows venv's ``gpu_status.json`` can't accidentally pick up a CUDA
+    dep stamp.
+
+    The token shape is ``INSTALLER_VERSION-sys.platform-mode-cuda_major-sha12``
+    (see ``scripts/gpu_bootstrap.py::compute_stamp_token``). We assert on
+    the PARSED parts (positions 2 and 3) rather than substring search — a
+    naive ``"cuda" not in token`` check was too broad (an installer
+    version of 13.x or a constraints sha containing "13" would fail it
+    spuriously even though production behaviour is correct — code review
+    M3, 2026-06-06).
+
+    Mirrors the existing ``test_resolve_torch_mode_macos_never_cuda``
+    rule one layer up the call stack.
+
+    Args:
+        monkeypatch: Pytest fixture used to pin ``sys.platform`` to
+            ``"darwin"`` and to fake a CUDA-13 ``gpu_status.json`` cache
+            + a CUDA-13 ``detect_nvidia()`` response — neither of which
+            should leak into the resolved token.
+        tmp_path: Pytest fixture providing an isolated tempdir for the
+            constraints file the token reads to compute its sha-12 part.
+
+    Returns:
+        None. Asserts the parsed token parts encode the darwin-pinned
+        decision (``mac_default`` / ``None``).
+    """
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("numpy>=1.26,<2\n", encoding="utf-8")
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    # Even if a CUDA-13 cache exists (e.g. from a synced .venv on a Windows
+    # box), darwin must never roll it into the token.
+    monkeypatch.setattr(
+        gpu_bootstrap, "_load_stamp",
+        lambda: {"result": "gpu_ready", "cuda_major": 13},
+    )
+    monkeypatch.setattr(
+        gpu_bootstrap, "detect_nvidia",
+        lambda: {"cuda_major": 13, "driver_version": "555"},
+    )
+    token = gpu_bootstrap.compute_stamp_token(str(constraints))
+    parts = token.split("-")
+    # Shape: [INSTALLER_VERSION, sys.platform, mode, cuda_major, sha12]
+    assert len(parts) == 5, (
+        f"darwin token has unexpected shape (expected 5 dash-parts): {token!r}"
+    )
+    assert parts[1] == "darwin", f"darwin token sys.platform wrong: {token!r}"
+    assert parts[2] == "mac_default", (
+        f"darwin token mode is {parts[2]!r}, expected 'mac_default': {token!r}"
+    )
+    assert parts[3] == "None", (
+        f"darwin token cuda_major is {parts[3]!r}, expected 'None': {token!r}"
+    )
 
 
 def test_run_pip_with_heartbeat_returns_pipresult_and_no_early_beat(capsys):

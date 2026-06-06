@@ -53,7 +53,13 @@ PYTHON_DEPENDENCIES = [
     Dependency(
         name="TkinterDnD2",
         import_name="tkinterdnd2",
-        pip_name="tkinterdnd2",
+        # Capped <0.4.4 to mirror requirements.txt / pyproject.toml — see the
+        # full rationale there. Without the cap, the `python dependency_checker.py`
+        # entry point would `pip install tkinterdnd2` and resolve to 0.4.4.1
+        # (Tcl 9.x osx-arm64 binary) on a fresh macOS clone, re-triggering the
+        # exact bug the v2.24 polish closed. Guard: tests/test_macos_tkdnd_loads.py
+        # (the source-text guard now scans this file's `pip_name` too).
+        pip_name="tkinterdnd2<0.4.4",
         required=False,
         description="Drag-and-drop support for GUI mode"
     ),

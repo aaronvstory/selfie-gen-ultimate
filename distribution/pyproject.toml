@@ -80,8 +80,16 @@ dependencies = [
     "absl-py>=2.3,<3",
     # scipy — rPPG signal processing (butter/filtfilt/find_peaks/hilbert/...).
     "scipy>=1.11,<2",
-    # GUI drag-and-drop
-    "tkinterdnd2>=0.3,<1",
+    # GUI drag-and-drop.
+    # Capped <0.4.4: 0.4.4 + 0.4.4.1 bundle a Tcl 9.x libtkdnd for osx-arm64,
+    # incompatible with the Tcl 8.6 that python.org Python 3.11 ships on
+    # macOS — Apple Silicon hits "RuntimeError: Unable to load tkdnd library
+    # (interpreter uses an incompatible stubs mechanism)" and the whole GUI
+    # loses DnD silently (the launcher swallows the error per PR #61).
+    # 0.4.3 ships libtkdnd2.9.3 (Tcl 8.6 build) and loads cleanly. Restore
+    # the upper bound to <1 once upstream re-ships a Tcl 8.6 arm64 build.
+    # Guard: tests/test_macos_tkdnd_loads.py.
+    "tkinterdnd2>=0.3,<0.4.4",
     # Optional balance tracker
     "selenium>=4.15,<5",
     "webdriver-manager>=4.0,<5",
@@ -188,6 +196,15 @@ cu128 = [
     "nvidia-cusparse>=12.8,<13; sys_platform == 'win32' or sys_platform == 'linux'",
     # nvjitlink held on the SAME 13.3.x line as nvrtc/runtime (lockstep toolchain).
     "nvidia-nvjitlink>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
+]
+# Dev extra mirror — keep in lockstep with root pyproject.toml's `dev` so the
+# distribution tree is a faithful packaging copy. See the root pyproject's
+# `dev` block for the full rationale + floor/ceiling reasoning + the
+# contributor-opt-in workflow (`uv sync --extra <cpu/cu*> --extra dev` —
+# end-user launchers DO NOT auto-install this extra). Guarded by
+# tests/test_macos_dev_extra_provides_pytest.py.
+dev = [
+    "pytest>=8,<10",
 ]
 
 [tool.uv]
