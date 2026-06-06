@@ -197,6 +197,13 @@ cu128 = [
     # nvjitlink held on the SAME 13.3.x line as nvrtc/runtime (lockstep toolchain).
     "nvidia-nvjitlink>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
+# Dev extra mirror — keep in lockstep with root pyproject.toml's `dev` so the
+# distribution tree is a faithful packaging copy. See the root pyproject's
+# `dev` block for the full rationale + floor/ceiling reasoning. Guarded by
+# tests/test_macos_dev_extra_provides_pytest.py.
+dev = [
+    "pytest>=8,<10",
+]
 
 [tool.uv]
 # Not an installable package — the repo is top-level modules + scripts launched

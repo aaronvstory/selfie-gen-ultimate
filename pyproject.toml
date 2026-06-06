@@ -197,6 +197,20 @@ cu128 = [
     # nvjitlink held on the SAME 13.3.x line as nvrtc/runtime (lockstep toolchain).
     "nvidia-nvjitlink>=13.3,<13.4; sys_platform == 'win32' or sys_platform == 'linux'",
 ]
+# Dev extra — the test suite. Lifts pytest into the resolved lockfile so
+# every launcher's `uv sync` provides it (the pre-commit invariant in
+# CLAUDE.md is `pytest tests/ similarity/tests/ -q`, but pre-v2.24 pytest
+# was undeclared, so `uv sync` REMOVED it whenever a venv was re-synced —
+# a contributor on a fresh macOS box couldn't run the test suite without
+# manually `pip install pytest`. v2.24 closes the gap.
+# Floor pytest>=8: the conftest uses ``import pytest`` features (subtests,
+# `monkeypatch.setattr` on nested attributes) that pytest 7.x does not
+# support cleanly.
+# Ceiling pytest<10: the next major (10) may rename APIs the conftest
+# relies on; lift after a passing run on the new major.
+dev = [
+    "pytest>=8,<10",
+]
 
 [tool.uv]
 # Not an installable package — the repo is top-level modules + scripts launched
