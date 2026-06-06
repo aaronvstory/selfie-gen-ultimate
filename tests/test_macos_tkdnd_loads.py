@@ -137,23 +137,44 @@ def test_every_tkinterdnd2_declaration_caps_below_044():
     )
 
 
-def test_dependency_checker_pins_tkinterdnd2():
+_DEPENDENCY_CHECKER_FILES = [
+    ROOT / "dependency_checker.py",
+    # Round-3 review (Codex P2 on 6329c1a9): distribution/dependency_checker.py
+    # is the dist-bundled mirror — release users running `python
+    # dependency_checker.py` from the unpacked zip hit THIS file. Capping
+    # only the root copy ships a broken dist; cover both.
+    ROOT / "distribution" / "dependency_checker.py",
+]
+
+
+@pytest.mark.parametrize(
+    "checker_path",
+    _DEPENDENCY_CHECKER_FILES,
+    ids=[str(p.relative_to(ROOT)) for p in _DEPENDENCY_CHECKER_FILES],
+)
+def test_dependency_checker_pins_tkinterdnd2(checker_path):
     """``dependency_checker.py`` is a documented entry point — it runs pip
     install for each declared Dependency on a fresh clone. If its ``pip_name``
     is the bare ``tkinterdnd2`` (no spec), a fresh macOS run pulls 0.4.4.1
     and silently breaks DnD — bypassing every other cap in this PR.
 
     This test is the second layer of the source-text guard above: it scans
-    ``dependency_checker.py``'s ``pip_name`` strings (since they're Python
-    literals, not requirements-file syntax) for an upper bound.
+    each `dependency_checker.py`'s ``pip_name`` strings (Python literals,
+    not requirements-file syntax) for an upper bound. Parametrized to cover
+    BOTH the root copy and the distribution mirror — Codex caught that
+    round 2 only fixed the root one.
     """
-    text = (ROOT / "dependency_checker.py").read_text(encoding="utf-8")
+    if not checker_path.exists():
+        pytest.skip(f"{checker_path.relative_to(ROOT)} not present")
+    text = checker_path.read_text(encoding="utf-8")
     # Match Dependency(...) blocks that name tkinterdnd2 as the import,
     # then locate the adjacent pip_name=... literal.
     m = re.search(
         r"""import_name=["']tkinterdnd2["']""", text
     )
-    assert m, "dependency_checker.py no longer declares tkinterdnd2"
+    assert m, (
+        f"{checker_path.relative_to(ROOT)} no longer declares tkinterdnd2"
+    )
 
     # Find the pip_name in the same Dependency(...) block. Walk forward
     # from the import_name match to the next pip_name=... within a window.
@@ -161,7 +182,7 @@ def test_dependency_checker_pins_tkinterdnd2():
     pip_m = re.search(r"""pip_name=["'](?P<spec>[^"']+)["']""", window)
     assert pip_m, (
         "Could not locate pip_name= in the Dependency(...) block for "
-        "tkinterdnd2 in dependency_checker.py"
+        f"tkinterdnd2 in {checker_path.relative_to(ROOT)}"
     )
 
     spec_text = pip_m.group("spec")
@@ -170,15 +191,16 @@ def test_dependency_checker_pins_tkinterdnd2():
         req = Requirement(spec_text)
     except InvalidRequirement:
         pytest.fail(
-            f"dependency_checker.py pip_name={spec_text!r} is not a valid "
-            "PEP-440 requirement; the dep-check pip install will be brittle."
+            f"{checker_path.relative_to(ROOT)} pip_name={spec_text!r} is "
+            "not a valid PEP-440 requirement; the dep-check pip install "
+            "will be brittle."
         )
     assert _specifier_forbids_044(req.specifier), (
-        f"dependency_checker.py pip_name={spec_text!r} does NOT cap below "
-        "0.4.4. The documented `python dependency_checker.py` flow will "
-        "pip-install the latest tkinterdnd2 on a fresh macOS clone, "
-        "re-triggering the Tcl 9.x osx-arm64 silent-DnD-fail. Add the "
-        "`<0.4.4` cap to the pip_name string."
+        f"{checker_path.relative_to(ROOT)} pip_name={spec_text!r} does NOT "
+        "cap below 0.4.4. The documented `python dependency_checker.py` "
+        "flow will pip-install the latest tkinterdnd2 on a fresh macOS "
+        "clone, re-triggering the Tcl 9.x osx-arm64 silent-DnD-fail. Add "
+        "the `<0.4.4` cap to the pip_name string."
     )
 
 

@@ -903,7 +903,13 @@ def test_compute_stamp_token_deterministic_and_mode_sensitive(monkeypatch, tmp_p
     constraints = tmp_path / "constraints.txt"
     constraints.write_text("numpy>=1.26,<2\n", encoding="utf-8")
 
-    monkeypatch.setattr(gpu_bootstrap.sys, "platform", "win32")
+    # Patch sys.platform via its dotted path rather than via the module's
+    # `gpu_bootstrap.sys` attribute — the former is decoupled from the
+    # module's internal import style. If gpu_bootstrap.py is ever
+    # refactored to `from sys import platform`, the attribute-based form
+    # silently fails or AttributeErrors; the dotted-path form keeps working.
+    # (Gemini round-3 review on PR #79.)
+    monkeypatch.setattr("sys.platform", "win32")
     # Force a no-cache path so it uses detect_nvidia, then monkeypatch that.
     monkeypatch.setattr(gpu_bootstrap, "_load_stamp", lambda: None)
     monkeypatch.setattr(gpu_bootstrap, "detect_nvidia", lambda: None)
@@ -933,7 +939,7 @@ def test_compute_stamp_token_prefers_cached_gpu_status(monkeypatch, tmp_path):
     constraints = tmp_path / "constraints.txt"
     constraints.write_text("x\n", encoding="utf-8")
 
-    monkeypatch.setattr(gpu_bootstrap.sys, "platform", "win32")
+    monkeypatch.setattr("sys.platform", "win32")  # dotted-path: see test above.
     monkeypatch.setattr(
         gpu_bootstrap, "_load_stamp",
         lambda: {"result": "gpu_ready", "cuda_major": 13},
@@ -968,7 +974,7 @@ def test_compute_stamp_token_on_darwin_always_mac_default(monkeypatch, tmp_path)
     constraints = tmp_path / "constraints.txt"
     constraints.write_text("numpy>=1.26,<2\n", encoding="utf-8")
 
-    monkeypatch.setattr(gpu_bootstrap.sys, "platform", "darwin")
+    monkeypatch.setattr("sys.platform", "darwin")
     # Even if a CUDA-13 cache exists (e.g. from a synced .venv on a Windows
     # box), darwin must never roll it into the token.
     monkeypatch.setattr(

@@ -53,7 +53,13 @@ PYTHON_DEPENDENCIES = [
     Dependency(
         name="TkinterDnD2",
         import_name="tkinterdnd2",
-        pip_name="tkinterdnd2",
+        # Capped <0.4.4 mirroring root dependency_checker.py — see that file
+        # for the full rationale. Without the cap, the dist-bundled
+        # `python dependency_checker.py` entry point would pip-install the
+        # latest tkinterdnd2 on a fresh macOS clone (release user path) and
+        # re-trigger the Tcl 9.x osx-arm64 silent-DnD-fail. Codex P2 round
+        # 3 caught the dist mirror was missed.
+        pip_name="tkinterdnd2<0.4.4",
         required=False,
         description="Drag-and-drop support for GUI mode"
     ),
