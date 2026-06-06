@@ -363,24 +363,24 @@ def build_sanitized_config(
     config["outpaint_composite_mode"] = template.get(
         "outpaint_composite_mode", "preserve_seamless"
     )
-    # Step 0 Generative Expand "Run 2x" checkbox MUST ship unchecked
-    # — a dev-machine kling_config.json with the old default True
-    # would otherwise leak into the bundle and double every new
-    # user's API spend silently on first run (user request 2026-05-21).
-    # OVERRIDE (not setdefault) for the same reason cfg_scale + the
-    # composite modes are forced.
-    config["outpaint_double_expand"] = bool(
-        template.get("outpaint_double_expand", False)
-    )
-    # Pre-stamp the one-time migration markers so a fresh-bundle
-    # launch does not re-fire any migration (it's a no-op anyway, but
-    # this keeps the "first launch is silent" promise).
-    # PR fix/step0-composite-and-rppg-v2.5 (v2) + round 10 (v3).
+    # Step 0 Generative Expand "Run 2x" — as of PR #81 (v2.25) this is
+    # SESSION-ONLY state, never persisted. The user mandate 2026-06-06:
+    # "for all versions all future dists never should 'run 2x' be checked
+    # by default". The key is STRIPPED from the bundle config so the
+    # GUI's BooleanVar always defaults to False at launch.
+    config.pop("outpaint_double_expand", None)
+    # Pre-stamp the one-time migration markers so a fresh-bundle launch
+    # does not re-fire any migration (it's a no-op anyway, but this keeps
+    # the "first launch is silent" promise).
+    # PR fix/step0-composite-and-rppg-v2.5 (v2), round 10 (v3), PR #81 (v4).
     config["outpaint_2x_default_reset_v2"] = bool(
         template.get("outpaint_2x_default_reset_v2", True)
     )
     config["outpaint_2x_default_reset_v3"] = bool(
         template.get("outpaint_2x_default_reset_v3", True)
+    )
+    config["outpaint_2x_session_only_v4"] = bool(
+        template.get("outpaint_2x_session_only_v4", True)
     )
     # v2.3 ship defaults (user request 2026-05-22): loop OFF.
     # Dev kling_config.json typically still carries ``loop_videos: True``

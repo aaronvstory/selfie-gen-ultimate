@@ -216,6 +216,14 @@ def sanitize_sash_layout(
 
 
 class EditModelsDialog(tk.Toplevel):
+    # H2 round 2 subagent on PR #81: geometry constants, used in BOTH
+    # `self.geometry(...)` and the centering math so a future bump only
+    # has to touch one place. M3 round 2: minsize H bumped 380 → 420 so
+    # the Save button can't slip below the visible area on macOS Tk Retina.
+    _DIALOG_W = 620
+    _DIALOG_H = 460
+    _DIALOG_MIN_W = 520
+    _DIALOG_MIN_H = 420
     """Modal for EDITING the user's custom fal.ai selfie models.
 
     v2.25 redesign of the v2.24 ``AddModelsDialog``. The textbox is pre-
@@ -251,8 +259,8 @@ class EditModelsDialog(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
         self.configure(bg=COLORS["bg_panel"])
-        self.geometry("620x460")
-        self.minsize(520, 380)
+        self.geometry(f"{self._DIALOG_W}x{self._DIALOG_H}")
+        self.minsize(self._DIALOG_MIN_W, self._DIALOG_MIN_H)
 
         tk.Label(
             self,
@@ -342,8 +350,8 @@ class EditModelsDialog(tk.Toplevel):
         self.update_idletasks()
         try:
             pw, ph = parent.winfo_width(), parent.winfo_height()
-            x = parent.winfo_rootx() + (pw - 620) // 2
-            y = parent.winfo_rooty() + (ph - 460) // 2
+            x = parent.winfo_rootx() + (pw - self._DIALOG_W) // 2
+            y = parent.winfo_rooty() + (ph - self._DIALOG_H) // 2
             self.geometry(f"+{max(0, x)}+{max(0, y)}")
         except Exception:
             pass

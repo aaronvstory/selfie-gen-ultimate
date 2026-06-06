@@ -1753,7 +1753,11 @@ class SelfieTab(tk.Frame):
     # the same model name exists on multiple platforms.
     _IMPLICIT_VENDOR_PREFIXES = frozenset({"fal-ai"})
     # Brand fix-ups for tokens title-case alone gets wrong. Lower-case
-    # key → canonical display.
+    # key → canonical display. Round-2 subagent on PR #81 added the AI
+    # acronyms: LoRA, LCM, LLaVA, SD, SDXL, XL — without them the picker
+    # showed "Lcm Lora" / "Sdxl" which the user explicitly called out as
+    # "AI slop guessed at the brand name." Add new entries here as
+    # endpoints land them — the cost is one line per acronym.
     _BRAND_FIXUPS = {
         "openai": "OpenAI",
         "gpt": "GPT",
@@ -1762,7 +1766,19 @@ class SelfieTab(tk.Frame):
         "ai": "AI",
         "hd": "HD",
         "uhd": "UHD",
+        "lora": "LoRA",
+        "lcm": "LCM",
+        "llava": "LLaVA",
+        "sd": "SD",
+        "sdxl": "SDXL",
+        "xl": "XL",
     }
+    # Token-split regex that PRESERVES digit.digit version markers
+    # (`3.5`, `1.1`, `2.0`) so they don't shatter into `3 5` etc. Round-2
+    # subagent on PR #81: SD 3.5 / FLUX 1.1 / Imagen 3.0 all hit this.
+    # Match a digit-dot-digit group as a single token; anything else
+    # splits on non-alphanumeric.
+    _LABEL_TOKEN_RE = re.compile(r"\d+\.\d+|[a-zA-Z0-9]+")
 
     @staticmethod
     def _prettify_label(endpoint: str) -> str:
@@ -1801,10 +1817,12 @@ class SelfieTab(tk.Frame):
         # Drop implicit vendor prefix when something distinctive remains.
         if len(parts) > 1 and parts[0].lower() in SelfieTab._IMPLICIT_VENDOR_PREFIXES:
             parts = parts[1:]
-        # Title-case + brand fix-ups token by token.
+        # Title-case + brand fix-ups token by token. Uses _LABEL_TOKEN_RE
+        # which PRESERVES digit.digit version markers (3.5 / 1.1 / 2.0) as
+        # single tokens so SD 3.5 / FLUX 1.1 / Imagen 3.0 don't shatter.
         out_words: List[str] = []
         for segment in parts:
-            for word in re.split(r"[^a-zA-Z0-9]+", segment):
+            for word in SelfieTab._LABEL_TOKEN_RE.findall(segment):
                 if not word:
                     continue
                 lower = word.lower()
@@ -1813,6 +1831,9 @@ class SelfieTab(tk.Frame):
                 elif re.match(r"^v\d", lower):
                     # Version token: keep lowercase `v`, title-case the rest.
                     out_words.append(lower)
+                elif re.match(r"^\d+\.\d+$", word):
+                    # Pure digit.digit version: keep as-is (3.5 stays 3.5).
+                    out_words.append(word)
                 else:
                     out_words.append(word.title())
         return " ".join(out_words) or "Model"
@@ -1831,6 +1852,13 @@ class SelfieTab(tk.Frame):
         for raw in (text or "").splitlines():
             line = raw.strip()
             if not line:
+                continue
+            # L1 subagent round 2 on PR #81: explicit comment skip so the
+            # contract is visible to the next reader. Previously these
+            # lines were rejected only as a side effect of the
+            # "# in endpoint → URL fragment" guard further down — fine
+            # accidentally, but invisible if you grep for "comment".
+            if line.startswith("#"):
                 continue
             if "|" in line:
                 endpoint, _, label = line.partition("|")
@@ -1939,8 +1967,31 @@ class SelfieTab(tk.Frame):
             m for m in self._model_options
             if m.get("endpoint") in builtin_endpoints
         ]
-        self._custom_models = list(new_custom_models)
-        self._model_options = preserved_builtins + list(new_custom_models)
+        # H1 (PR #81 subagent round 2): drop any incoming custom entry
+        # whose endpoint COLLIDES with a built-in. The modal renders
+        # built-ins as `# … → …` reference lines at the top — a user
+        # copy-pasting one and stripping the `#` (a natural rename
+        # attempt) would otherwise create a second picker row whose
+        # BooleanVar is SHARED with the built-in's row (keyed by
+        # endpoint in _model_vars). Toggling either then flips both.
+        # Silently filter the dup and log a friendly warning so the
+        # user isn't surprised when their "rename" doesn't take.
+        filtered_custom: List[dict] = []
+        for model in new_custom_models:
+            ep = model.get("endpoint", "")
+            if ep in builtin_endpoints:
+                # Log only if log() exists (test stubs may not have it).
+                log = getattr(self, "log", None)
+                if callable(log):
+                    log(
+                        f"Built-in models cannot be renamed via Edit Models — "
+                        f"skipped {ep!r} (use a custom endpoint instead).",
+                        "warn",
+                    )
+                continue
+            filtered_custom.append(model)
+        self._custom_models = list(filtered_custom)
+        self._model_options = preserved_builtins + list(filtered_custom)
         # Re-derive supported endpoints (the picker only renders these).
         self._supported_model_endpoints = {
             m.get("endpoint", "") for m in self._model_options
@@ -2056,6 +2107,27 @@ class SelfieTab(tk.Frame):
             # Cancelled — leave everything alone.
             return
         before_count = len(self._custom_models)
+        # M4 subagent round 2 on PR #81: an accidental select-all + Save
+        # in the textbox would silently nuke every custom model with no
+        # undo. Confirm before applying a CLEAR (empty result against a
+        # non-empty current list). Uses tkinter.messagebox.askyesno
+        # directly — tk_dialogs.py wraps only the file pickers, no
+        # confirm helper. Empty-result when there was nothing to begin
+        # with is allowed silently — no harm done.
+        if before_count > 0 and not result:
+            from tkinter import messagebox
+            confirmed = messagebox.askyesno(
+                "Clear all custom models?",
+                (
+                    f"This will remove all {before_count} of your "
+                    "custom selfie models. Built-in models are not "
+                    "affected.\n\nContinue?"
+                ),
+                parent=self.winfo_toplevel(),
+            )
+            if not confirmed:
+                self.log("Edit Models — clear cancelled", "info")
+                return
         self._apply_edited_custom_models(result, builtin_endpoints)
         self._render_model_checkboxes()
         self._save_config_now()
@@ -2070,8 +2142,10 @@ class SelfieTab(tk.Frame):
         else:
             self.log("Custom models cleared", "info")
 
-    # Back-compat alias — kept for one release in case anything (tests,
-    # external scripts) reaches in by the old name.
+    # Back-compat alias — TODO(v2.27): remove once any external callers
+    # (tests, ad-hoc scripts) have migrated to the new name. Round-2
+    # subagent L2 — was previously documented as "one release" with no
+    # concrete version; pin the deprecation to v2.27.
     _open_add_models_dialog = _open_edit_models_dialog
 
     def _get_selected_models(self) -> List[dict]:

@@ -10,8 +10,9 @@ class SelfieModelParsingTests(unittest.TestCase):
         # _build_payload. Kontext gets a flux-kontext payload; an arbitrary
         # custom endpoint gets a generic fal edit payload (no ValueError).
         from selfie_generator import SelfieGenerator
+        # Substring match in _build_payload covers both kontext and kontext/max.
         kontext = SelfieGenerator._build_payload(
-            "fal-ai/flux-pro/kontext", "p", "http://x/y.png", 1.0, 1024, 1024, 7)
+            "fal-ai/flux-pro/kontext/max", "p", "http://x/y.png", 1.0, 1024, 1024, 7)
         self.assertEqual(kontext["image_url"], "http://x/y.png")
         self.assertIn("guidance_scale", kontext)
         custom = SelfieGenerator._build_payload(
@@ -29,17 +30,30 @@ class SelfieModelParsingTests(unittest.TestCase):
         a = SelfieGenerator._model_short_name("vendor-a/edit")
         b = SelfieGenerator._model_short_name("vendor-b/edit")
         self.assertNotEqual(a, b)
-        # Built-ins still resolve via their models.json slug.
+        # Built-ins still resolve via their models.json slug. v2.25 PR #81:
+        # Kontext Pro swapped to Kontext Max per user request — slug
+        # follows.
         self.assertEqual(
-            SelfieGenerator._model_short_name("fal-ai/flux-pro/kontext"), "kontext-pro")
+            SelfieGenerator._model_short_name("fal-ai/flux-pro/kontext/max"),
+            "kontext-max")
 
-    def test_kontext_pro_is_available(self):
+    def test_kontext_max_is_available(self):
+        """v2.25 PR #81: built-in Kontext Pro replaced by Kontext Max
+        (user request: "change the kontext pro model instead to this
+        kontext max model: fal-ai/flux-pro/kontext/max | Flux Pro
+        Kontext Max"). The old Kontext Pro entry MUST be gone — leaving
+        it would clutter the picker with a deprecated endpoint.
+        """
         from selfie_generator import SelfieGenerator
         models = SelfieGenerator.get_available_models()
         endpoints = {m["endpoint"] for m in models}
-        self.assertIn("fal-ai/flux-pro/kontext", endpoints)
-        kontext = next(m for m in models if m["endpoint"] == "fal-ai/flux-pro/kontext")
-        self.assertEqual(kontext["label"], "Kontext Pro")
+        self.assertIn("fal-ai/flux-pro/kontext/max", endpoints)
+        self.assertNotIn("fal-ai/flux-pro/kontext", endpoints)
+        kontext = next(
+            m for m in models if m["endpoint"] == "fal-ai/flux-pro/kontext/max"
+        )
+        self.assertEqual(kontext["label"], "Flux Pro Kontext Max")
+        self.assertEqual(kontext["slug"], "kontext-max")
         self.assertEqual(kontext["provider"], "fal")
 
     def test_derive_slug(self):
@@ -58,6 +72,35 @@ class SelfieModelParsingTests(unittest.TestCase):
     def test_parse_rejects_query_string_endpoints(self):
         out = SelfieTab.parse_model_lines("vendor/model?key=val\nvendor/ok\nvendor/frag#x")
         self.assertEqual([m["endpoint"] for m in out], ["vendor/ok"])
+
+    def test_prettify_label_handles_acronyms_and_dot_versions(self):
+        """v2.25 round 2: brand fix-ups extended for common AI acronyms
+        (LoRA, LCM, LLaVA, SD, SDXL) and the splitter preserves
+        ``digit.digit`` version segments (3.5, 1.1) instead of shattering
+        them. Subagent M1 on PR #81 — without these fixes,
+        ``stable-diffusion-3.5-large/text-to-image`` rendered as ``Sd3 5
+        Large`` which the user explicitly called out as AI-slop label
+        derivation.
+        """
+        # Acronym brand fix-ups (case-insensitive).
+        self.assertEqual(SelfieTab._prettify_label("fal-ai/lcm-lora"), "LCM LoRA")
+        self.assertEqual(SelfieTab._prettify_label("fal-ai/lora/text-to-image"), "LoRA")
+        self.assertEqual(SelfieTab._prettify_label("fal-ai/llava-next"), "LLaVA Next")
+        # Dot versions stay intact: SD 3.5 should NOT become SD 3 5.
+        self.assertEqual(
+            SelfieTab._prettify_label("fal-ai/stable-diffusion-3.5-large/text-to-image"),
+            "Stable Diffusion 3.5 Large",
+        )
+        # FLUX 1.1 family.
+        self.assertEqual(
+            SelfieTab._prettify_label("fal-ai/flux-1.1-pro/text-to-image"),
+            "Flux 1.1 Pro",
+        )
+        # SDXL stays uppercase (was Sdxl previously).
+        self.assertEqual(
+            SelfieTab._prettify_label("fal-ai/sdxl-turbo/text-to-image"),
+            "SDXL Turbo",
+        )
 
     def test_prettify_label_intelligent_derivation(self):
         """v2.25: label derivation must use the MODEL name, not the trailing
@@ -297,6 +340,75 @@ class SelfieTabReplaceCustomModelsTests(unittest.TestCase):
         # selected-state map drops the now-removed endpoint.
         self.assertNotIn("vendor/b", stub.config["selfie_selected_models"])
         self.assertIn("builtin/one", stub.config["selfie_selected_models"])
+
+    def test_apply_skips_builtin_endpoints_typed_as_custom(self):
+        """v2.25 round 2 subagent H1: the modal renders built-ins as
+        ``# … → …`` reference lines at the top. A user copying one and
+        stripping the ``#`` would otherwise land in ``_custom_models``,
+        get appended after the existing built-in, and create a second
+        picker row whose BooleanVar is SHARED with the built-in's row
+        (``_model_vars`` is keyed by endpoint — two checkboxes, one var,
+        toggling either flips both).
+
+        ``_apply_edited_custom_models`` must skip any incoming custom
+        entry whose endpoint matches a built-in. The built-in row stays
+        unchanged; no duplicate enters the picker.
+        """
+        stub = types.SimpleNamespace(
+            _model_options=[
+                {"endpoint": "openai/gpt-image-2/edit", "label": "GPT Image 2 Edit"},
+            ],
+            _custom_models=[],
+            _supported_model_endpoints={"openai/gpt-image-2/edit"},
+            _model_vars={},
+            config={"selfie_selected_models": {"openai/gpt-image-2/edit": True}},
+        )
+        builtin_endpoints = {"openai/gpt-image-2/edit"}
+        # User typed a built-in endpoint (e.g. copy-paste from the # reference
+        # block, with the # stripped) PLUS a real custom model.
+        new_custom = SelfieTab.parse_model_lines(
+            "openai/gpt-image-2/edit | My Renamed GPT\n"
+            "vendor/real | Real\n"
+        )
+        SelfieTab._apply_edited_custom_models(stub, new_custom, builtin_endpoints)
+        # The built-in dup MUST NOT appear in _custom_models.
+        self.assertEqual(
+            [m["endpoint"] for m in stub._custom_models], ["vendor/real"]
+        )
+        # _model_options has the built-in (untouched, original label) +
+        # vendor/real — no duplicate row.
+        self.assertEqual(
+            [m["endpoint"] for m in stub._model_options],
+            ["openai/gpt-image-2/edit", "vendor/real"],
+        )
+        builtin = stub._model_options[0]
+        self.assertEqual(builtin["label"], "GPT Image 2 Edit")  # not renamed
+
+    def test_apply_drops_model_vars_for_removed_endpoints(self):
+        """Subagent test-gap on PR #81: ``_apply_edited_custom_models`` claims
+        to drop the BooleanVar for an endpoint that disappears from the
+        picker, but no existing test asserted it. Without this, the var
+        leaks and a save-after-rename would emit stale state.
+        """
+        stub = types.SimpleNamespace(
+            _model_options=[
+                {"endpoint": "vendor/a", "label": "A"},
+                {"endpoint": "vendor/b", "label": "B"},
+            ],
+            _custom_models=[
+                {"endpoint": "vendor/a", "label": "A"},
+                {"endpoint": "vendor/b", "label": "B"},
+            ],
+            _supported_model_endpoints={"vendor/a", "vendor/b"},
+            # Stand-in BooleanVars — just need .get to work.
+            _model_vars={"vendor/a": object(), "vendor/b": object()},
+            config={"selfie_selected_models": {"vendor/a": True, "vendor/b": True}},
+        )
+        # Keep A, drop B.
+        new_custom = SelfieTab.parse_model_lines("vendor/a | A\n")
+        SelfieTab._apply_edited_custom_models(stub, new_custom, set())
+        self.assertIn("vendor/a", stub._model_vars)
+        self.assertNotIn("vendor/b", stub._model_vars)
 
     def test_apply_with_empty_list_clears_custom(self):
         """Saving an empty modal removes ALL custom models (legitimate
