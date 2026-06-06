@@ -37,6 +37,75 @@ class SelfieModelParsingTests(unittest.TestCase):
             SelfieGenerator._model_short_name("fal-ai/flux-pro/kontext/max"),
             "kontext-max")
 
+    def test_closest_aspect_ratio_only_uses_kontext_max_accepted_list(self):
+        """v2.26 PR (Kontext Max 401 root cause): fal.ai's Kontext Max
+        endpoint rejects `4:5` / `5:4` with a 422 validation error. The
+        v2.24/v2.25 `_closest_aspect_ratio` included those — so a selfie
+        sized 896×1152 (ratio 0.78) snapped to `4:5` and the request
+        failed. Our auth-fallback misread the 422 as auth and retried
+        with Bearer, returning the misleading 'bearer: unable to decode
+        issuer' error.
+
+        Fix: the universal set is now exactly Kontext Max's accepted
+        list (strictest of our current built-ins), so every model
+        accepts whatever we send.
+        """
+        from selfie_generator import SelfieGenerator
+
+        # The fal.ai 422 response listed exactly these values for
+        # Kontext Max. Our universal set must be a SUBSET of these.
+        kontext_max_accepted = {
+            "21:9", "16:9", "4:3", "3:2", "1:1",
+            "2:3", "3:4", "9:16", "9:21",
+        }
+        # Every label we might emit must be in Kontext Max's list.
+        for label in SelfieGenerator._UNIVERSAL_ASPECT_RATIOS:
+            self.assertIn(
+                label, kontext_max_accepted,
+                f"_closest_aspect_ratio could emit {label!r}, which "
+                "Kontext Max would reject with a 422.",
+            )
+        # The specific regression: 896×1152 must NO LONGER map to 4:5.
+        self.assertNotEqual(
+            SelfieGenerator._closest_aspect_ratio(896, 1152), "4:5"
+        )
+        # And it must map to a Kontext-Max-accepted value.
+        self.assertIn(
+            SelfieGenerator._closest_aspect_ratio(896, 1152),
+            kontext_max_accepted,
+        )
+        # PR #82 round 2 (QC subagent): 9:21 was REMOVED from the
+        # universal set because Nano Banana 2 (the DEFAULT model)
+        # rejects it. Ultra-tall 1080x2520 now snaps to 9:16 — a small
+        # fidelity loss in extreme cases, accepted in exchange for
+        # never 422'ing on the default model. See
+        # tests/test_selfie_generator_aspect_ratio.py for the new
+        # behaviour pins.
+        self.assertNotIn("9:21", SelfieGenerator._UNIVERSAL_ASPECT_RATIOS)
+        self.assertEqual(
+            SelfieGenerator._closest_aspect_ratio(1080, 2520), "9:16"
+        )
+
+    def test_poll_timeout_default_120_max_180(self):
+        """v2.26 (user mandate 2026-06-07): "300s is too much for one
+        selfie... should be 120 seconds max". DEFAULT drops 300 → 120
+        (the user's primary ask — fast surface stuck queues). MAX
+        stays a bit higher (180) so observed slow-but-valid runs
+        complete: subagent CRITICAL on PR #82 round 1 caught that the
+        user's OWN log showed GPT Image 2 Edit running 137s on a
+        SUCCESSFUL completion — a hard 120s cap would have silently
+        killed the model the user already had working.
+        """
+        from selfie_generator import SelfieGenerator
+        self.assertEqual(SelfieGenerator.DEFAULT_POLL_TIMEOUT_SECONDS, 120)
+        self.assertEqual(SelfieGenerator.MAX_POLL_TIMEOUT_SECONDS, 180)
+        # The 137s GPT Image 2 Edit observation MUST still be allowed.
+        self.assertEqual(SelfieGenerator.sanitize_poll_timeout_seconds(137), 137)
+        # The OLD default 300s clamps to the new MAX 180s.
+        self.assertEqual(SelfieGenerator.sanitize_poll_timeout_seconds(300), 180)
+        # A stupid 5 input clamps UP to MIN (60) — unchanged.
+        self.assertEqual(SelfieGenerator.sanitize_poll_timeout_seconds(5), 60)
+
     def test_kontext_max_is_available(self):
         """v2.25 PR #81: built-in Kontext Pro replaced by Kontext Max
         (user request: "change the kontext pro model instead to this

@@ -1252,7 +1252,12 @@ class SelfieTab(tk.Frame):
         config = self.get_config()
         api_key = config.get("falai_api_key", "")
         bfl_api_key = config.get("bfl_api_key", "")
-        poll_timeout_seconds = config.get("selfie_poll_timeout_seconds", 300)
+        # v2.26: was 300; new default 120 matches selfie_generator's
+        # DEFAULT_POLL_TIMEOUT_SECONDS so a user with no key in config
+        # gets the same timeout as a fresh install. SelfieGenerator's
+        # `sanitize_poll_timeout_seconds` will still clamp to [60, 180]
+        # if anything inside that band is configured.
+        poll_timeout_seconds = config.get("selfie_poll_timeout_seconds", 120)
 
         # Snapshot run baseline once so all selected models use the same identity reference.
         sim_ref, sim_ref_source = self.image_session.get_effective_similarity_ref()
