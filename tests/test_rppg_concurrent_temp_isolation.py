@@ -122,3 +122,29 @@ def test_recovered_iter_metrics_are_adopted_unconditionally():
         "the recovered-iter metric adoption must be unconditional; the "
         "None-or-baseline guard missed the committed-then-vanished case"
     )
+
+
+def test_iteration_history_json_is_namespaced_by_run_token():
+    """v2.29 follow-up to PR #89: PR #89 namespaced the temp mp4s + snapshot
+    by ``_run_token`` but left the iteration-history JSON keyed on only
+    ``{stem}_{stamp}`` (output stem + wall-clock SECOND). Two concurrent
+    injectors processing the same input within the same second wrote to an
+    IDENTICAL history path and silently overwrote each other's JSON. The
+    history filename must carry ``_run_token`` like the temps do; the paired
+    ``_metrics_summary.tsv`` (derived via ``.replace``) then inherits it."""
+    src = _injector_src()
+    assert (
+        "f'{stem}_{stamp}_{_run_token}_iteration_history.json'" in src
+        or 'f"{stem}_{stamp}_{_run_token}_iteration_history.json"' in src
+    ), "the iteration-history JSON path must include _run_token"
+    # Guard against the bare, collision-prone name creeping back.
+    bad = []
+    for ln in src.splitlines():
+        stripped = ln.lstrip()
+        if stripped.startswith("#"):
+            continue
+        if "_iteration_history.json" in ln and "history_dir" in ln:
+            # This is the path-construction line; it MUST carry _run_token.
+            if "_run_token" not in ln:
+                bad.append(ln.strip())
+    assert not bad, f"bare iteration-history path (no _run_token): {bad}"

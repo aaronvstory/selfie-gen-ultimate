@@ -993,6 +993,42 @@ def test_scan_folders_classifies_gen_images_as_selfie(tmp_path):
     assert by_path[str(gen / "selfie_002.png")].source_type == "selfie"
 
 
+def test_scan_folders_classifies_outpaint_expanded_in_gen_images(tmp_path):
+    """v2.29 fix: ``gen-images/`` holds BOTH generated selfies AND outpaint
+    outputs (outpaint_generator writes ``{stem}-expanded{ext}`` there with
+    source_type="outpaint"). The PR #84 rescan classified the WHOLE folder
+    as "selfie", so on session reload an outpaint file came back tagged
+    "selfie", silently dropping its semantics. The fix disambiguates per-file
+    by the ``-expanded`` suffix.
+    """
+    from kling_gui.image_state import ImageSession
+    from kling_gui import main_window as mw
+
+    gen = tmp_path / "gen-images"
+    gen.mkdir()
+    (gen / "selfie_001.png").write_bytes(_TINY_PNG)
+    (gen / "front-expanded.png").write_bytes(_TINY_PNG)
+    # collision-suffixed variant the generator emits on re-runs
+    (gen / "front-expanded_v2.png").write_bytes(_TINY_PNG)
+
+    session = ImageSession()
+
+    class Stub:
+        pass
+    stub = Stub()
+    stub.image_session = session
+    helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
+    added_imgs, _ = helper({str(tmp_path)})
+    assert added_imgs == 3
+
+    by_path = {e.path: e for e in session.images}
+    # Plain generated image → "selfie".
+    assert by_path[str(gen / "selfie_001.png")].source_type == "selfie"
+    # ``-expanded`` outpaint outputs → "outpaint", not "selfie".
+    assert by_path[str(gen / "front-expanded.png")].source_type == "outpaint"
+    assert by_path[str(gen / "front-expanded_v2.png")].source_type == "outpaint"
+
+
 def test_scan_folders_handles_none_and_empty_input():
     """PR #84 MED-3 (Gemini): defensive guards on the entry point —
     a None / "" / [] folders argument must short-circuit to (0, 0)

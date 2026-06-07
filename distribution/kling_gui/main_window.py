@@ -5449,7 +5449,7 @@ class KlingGUIWindow:
                 continue
             # PR #84 CRIT-1 fix: classify files by their parent folder
             # convention. Files inside ``gen-images/`` are generated
-            # selfies (source_type="selfie") — labeling them "input"
+            # images (source_type="selfie") — labeling them "input"
             # would (a) make ``get_effective_similarity_ref`` pick a
             # generated selfie as the similarity reference, and
             # (b) make ``recalc_all_similarity_now`` skip them as
@@ -5457,10 +5457,17 @@ class KlingGUIWindow:
             # ``gen-videos/`` doesn't carry images so the image-loop
             # below never adds video files; the video loop further
             # down always uses source_type="video".
+            #
+            # v2.29 fix: ``gen-images/`` holds BOTH selfies AND outpaint
+            # outputs (outpaint_generator writes ``{stem}-expanded{ext}``
+            # there with source_type="outpaint"). Classifying the whole
+            # folder as "selfie" re-tagged reloaded outpaint files as
+            # selfies, silently dropping their semantics. Disambiguate
+            # per-file by the outpaint ``-expanded`` suffix.
             folder_basename = os.path.basename(
                 os.path.normpath(folder)
             ).lower()
-            image_kind = "selfie" if folder_basename == "gen-images" else "input"
+            is_gen_images = folder_basename == "gen-images"
             try:
                 with os.scandir(folder) as it:
                     entries = sorted(
@@ -5477,6 +5484,12 @@ class KlingGUIWindow:
                 real = os.path.realpath(full)
                 if real in loaded_real:
                     continue
+                if is_gen_images:
+                    image_kind = (
+                        "outpaint" if "-expanded" in entry.name else "selfie"
+                    )
+                else:
+                    image_kind = "input"
                 self.image_session.add_image(full, image_kind, make_active=False)
                 loaded_real.add(real)
                 rescan_imgs += 1

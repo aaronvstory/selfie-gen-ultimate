@@ -29,6 +29,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Poll backoff schedule — single source of truth for the in-loop delay tiers.
+# The polling loop sleeps 5s for the first 24 attempts, 10s for the next 36,
+# then 15s thereafter. ``_cumulative_poll_seconds`` converts an attempt count
+# into real wall-clock seconds so the progress row, the success-time log, and
+# the timeout message all agree. Using a flat ``attempt * base_delay`` (the old
+# v2.28 code) under-counts elapsed time and over-states the cap as 20 min when
+# the true budget at max_attempts=240 is ~53 min — which made the Step 3 row
+# render ``(1205s / 1200s)`` (ratio > 1, reads as "stuck") for any long job.
+_POLL_TIER_FAST_LIMIT = 24   # attempts 0..23  -> 5s each
+_POLL_TIER_MID_LIMIT = 60    # attempts 24..59 -> 10s each; 60+ -> 15s
+
+
+def _cumulative_poll_seconds(attempt: int) -> int:
+    """Real wall-clock seconds elapsed after ``attempt`` completed polls."""
+    if attempt <= 0:
+        return 0
+    fast = min(attempt, _POLL_TIER_FAST_LIMIT)
+    mid = min(max(attempt - _POLL_TIER_FAST_LIMIT, 0),
+              _POLL_TIER_MID_LIMIT - _POLL_TIER_FAST_LIMIT)
+    slow = max(attempt - _POLL_TIER_MID_LIMIT, 0)
+    return fast * 5 + mid * 10 + slow * 15
+
+
 class FalAIKlingGenerator:
     def __init__(
         self,
@@ -870,14 +893,14 @@ class FalAIKlingGenerator:
                 # verbose) so the user sees the video gen is alive. fal.ai gives
                 # no percent, so we show elapsed time.
                 if attempt % (60 // base_delay) == 0:
-                    elapsed_s = attempt * base_delay
+                    # Backoff-aware elapsed/cap (v2.29): the poll loop is NOT a
+                    # flat 5s/attempt, so ``attempt * base_delay`` under-counts
+                    # elapsed and caps at a false 20 min. Use the cumulative
+                    # schedule so the row stays a truthful ``(Ns / Ms)`` and the
+                    # ratio never exceeds 1.
+                    elapsed_s = _cumulative_poll_seconds(attempt)
                     elapsed_mins = elapsed_s // 60
-                    # v2.28 (user feedback 2026-06-07): mirror the
-                    # selfie poll's ``(Ns / Ms)`` countdown so Step 3
-                    # also shows how close we are to the timeout
-                    # instead of an open-ended counter. ``max_attempts
-                    # * base_delay`` is the effective cap.
-                    cap_s = max_attempts * base_delay
+                    cap_s = _cumulative_poll_seconds(max_attempts)
                     if self.verbose:
                         logger.info(
                             f"⏳ Still waiting... {elapsed_mins} min elapsed (attempt {attempt}/{max_attempts})"
@@ -1139,7 +1162,7 @@ class FalAIKlingGenerator:
                                     f.write(video_response.content)
 
                                 file_size = output_path.stat().st_size / (1024 * 1024)
-                                total_time = attempt * base_delay
+                                total_time = _cumulative_poll_seconds(attempt)
                                 if self.verbose:
                                     logger.info(f"✓ Video saved: {output_path}")
                                     logger.info(f"✓ File size: {file_size:.2f} MB")
@@ -1238,7 +1261,7 @@ class FalAIKlingGenerator:
                     continue
 
             # Timeout reached
-            error_msg = f"Timeout after {max_attempts * base_delay // 60} minutes"
+            error_msg = f"Timeout after {_cumulative_poll_seconds(max_attempts) // 60} minutes"
             self._set_last_error(error_msg)
             logger.error(f"✗ {error_msg}")
             logger.error("💡 Possible causes:")

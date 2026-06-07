@@ -5171,7 +5171,13 @@ class PhaseAlignedRPPGManipulator:
         os.makedirs(history_dir, exist_ok=True)
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         stem = os.path.splitext(os.path.basename(output_path))[0]
-        history_path = os.path.join(history_dir, f'{stem}_{stamp}_iteration_history.json')
+        # v2.29 fix: include the per-run token (PID + per-input hash, defined
+        # above) so two concurrent injectors processing the same input within
+        # the same wall-clock second don't write to an identical history path
+        # and silently overwrite each other's JSON. Mirrors the temp/snapshot
+        # namespacing PR #89 added; the paired ``_metrics_summary.tsv`` below
+        # inherits the token via the ``.replace`` derivation.
+        history_path = os.path.join(history_dir, f'{stem}_{stamp}_{_run_token}_iteration_history.json')
         try:
             history.export_json(history_path)
             print(c(f"Iteration history saved: {history_path}", 'G'))

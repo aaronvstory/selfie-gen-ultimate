@@ -1944,7 +1944,16 @@ class FaceCropTab(tk.Frame):
             # instances cropping same-stemmed images must not collide on
             # one shared ``<tmp>/<stem>_crop.jpg`` (same bleed class as
             # the EXIF temp above).
-            out_path = Path(get_runtime_scratch_dir()) / f"{origin.stem}_crop.jpg"
+            #
+            # Windows MAX_PATH guard (v2.29): the scratch dir nests deep
+            # under AppData (``runtime/instances/<id>/scratch/``), so a
+            # very long stem could push past the 260-char limit. Mirror
+            # the cap in ``_load_source`` above — keep the tail, leave
+            # room for the ``_crop.jpg`` suffix.
+            fallback_stem = origin.stem
+            if len(fallback_stem) > 76:
+                fallback_stem = fallback_stem[-76:]
+            out_path = Path(get_runtime_scratch_dir()) / f"{fallback_stem}_crop.jpg"
             try:
                 cv2.imwrite(str(out_path), self._crop_result)
             except Exception as exc:

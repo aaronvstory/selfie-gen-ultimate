@@ -201,6 +201,44 @@ def test_face_crop_tab_uses_scratch_not_gettempdir():
     )
 
 
+def test_save_crop_fallback_truncates_stem_for_max_path():
+    """v2.29: the ``_save_crop`` OSError-fallback writes into the deeply
+    nested per-instance scratch dir (``runtime/instances/<id>/scratch/``).
+    ``_load_source`` already caps its basename to avoid blowing Windows'
+    260-char MAX_PATH there, but the ``_save_crop`` fallback originally used
+    a bare ``{origin.stem}_crop.jpg``. A pathologically long stem could push
+    the path past the limit and silently lose the crop. Source-pin: the
+    fallback must truncate the stem before building the scratch path."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    try:
+        src = (root / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+    except OSError:
+        src = (root / "distribution" / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+
+    # The fallback must NOT write a bare un-truncated stem straight into the
+    # scratch dir. Find the scratch-fallback out_path construction and assert
+    # it does not use ``origin.stem`` directly.
+    bad = [
+        ln.strip()
+        for ln in src.splitlines()
+        if "get_runtime_scratch_dir()" in ln
+        and "_crop.jpg" in ln
+        and "origin.stem" in ln
+    ]
+    assert not bad, (
+        "the _save_crop scratch fallback uses an un-truncated origin.stem — "
+        f"MAX_PATH risk on a long basename: {bad}"
+    )
+    # And a truncation guard (mirroring _load_source's cap) must be present.
+    assert re.search(r"fallback_stem\s*=\s*fallback_stem\[-\d+:\]", src), (
+        "the _save_crop fallback must cap the stem length before building "
+        "the deep scratch path (mirror _load_source's MAX_PATH guard)"
+    )
+
+
 def test_get_workspace_dir_sanitizes_explicit_arg(monkeypatch):
     """PR #49 round-2 (CodeRabbit): a direct call to ``get_workspace_dir``
     with a malformed ``workspace`` arg must NOT compose a traversal path.
