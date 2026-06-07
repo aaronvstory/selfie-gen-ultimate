@@ -3979,6 +3979,10 @@ class PhaseAlignedRPPGManipulator:
         )
 
         current_path = video_path
+        # Set True only if the end-of-loop self-heal exhausts every on-disk
+        # iteration and has to fall back to the un-pulsed source. Drives the
+        # honest ``-NORPPG`` stem stamp at finalize (Codex PR #91).
+        delivered_unpulsed = False
         deband_temp = None
         if legacy_pipeline:
             debanded = apply_deband_preprocess(video_path, source_settings_video_path or video_path)
@@ -5150,17 +5154,23 @@ class PhaseAlignedRPPGManipulator:
                 # current_path IS the source, so this is effectively a
                 # no-op (un-pulsed) output.
                 #
-                # NOTE (code-review on PR #89): the playability gate
-                # (automation/rppg.py) checks DECODABILITY only, NOT pulse
-                # presence — so an un-pulsed-but-playable file finalizes,
-                # the injector exits 0, and the GUI ships it WITHOUT a
-                # -NORPPG marker (silent no-pulse delivery). This is a
-                # PRE-EXISTING behavior (the old ``if best_path is None``
-                # already fell to current_path); this PR only NARROWS the
-                # window by trying every on-disk iter first. A true
-                # pulse-presence gate is tracked as a separate follow-up.
+                # HONEST NO-PULSE DELIVERY (Codex PR #91, replacing the prior
+                # silent fallback): the downstream playability gate
+                # (automation/rppg.resolve_produced_output) checks DECODABILITY
+                # only, not pulse presence. If we wrote this un-pulsed file to
+                # the resolver-matchable ``{stem} - <metrics>{ext}`` name it
+                # would finalize and ship WITHOUT a -NORPPG marker — the user
+                # couldn't tell the pulse never landed. Instead we set
+                # ``delivered_unpulsed`` and, at finalize, stamp ``-NORPPG``
+                # INTO the output stem. The resolver globs ``{stem} - *`` so
+                # the ``{stem}-NORPPG - <metrics>`` file deliberately does NOT
+                # match -> resolve_produced_output returns None -> the caller's
+                # graceful-skip path marks the pre-rPPG video -NORPPG. The
+                # un-pulsed file still lands on disk (inspectable), it's just
+                # not selected as the deliverable.
                 best_path = current_path
                 best_iter = max_iterations
+                delivered_unpulsed = True
 
         # --- Export iteration history as JSON ---
         # Saved to <script_dir>/iteration_history/ so the bot can reference
@@ -5242,7 +5252,25 @@ class PhaseAlignedRPPGManipulator:
 
         # Rename best output with the metric suffix.
         # 'output/kling_dm1.mp4' -> 'output/kling_dm1 - 11.19-3.3-0.57-0.00-0.85.mp4'
-        final_output_path = add_metric_suffix(output_path, best_metrics)
+        #
+        # Honest no-pulse delivery (Codex PR #91): if the self-heal had to fall
+        # back to the un-pulsed source, stamp ``-NORPPG`` INTO the stem first.
+        # ``resolve_produced_output`` globs ``{stem} - *`` so the resulting
+        # ``{stem}-NORPPG - <metrics>{ext}`` deliberately won't be selected as
+        # the deliverable -> the caller marks the pre-rPPG video -NORPPG. The
+        # un-pulsed file still lands on disk for inspection.
+        metric_source_path = output_path
+        if delivered_unpulsed:
+            _base, _ext = os.path.splitext(output_path)
+            if not _base.endswith("-NORPPG"):
+                metric_source_path = f"{_base}-NORPPG{_ext}"
+            print(c(
+                "  No pulse could be recovered from any iteration — delivering "
+                "the UN-PULSED source, stamped -NORPPG so it is not selected as "
+                "the rPPG deliverable (caller marks the pre-rPPG video).",
+                'Y',
+            ))
+        final_output_path = add_metric_suffix(metric_source_path, best_metrics)
         if final_output_path != output_path and os.path.exists(output_path):
             os.replace(output_path, final_output_path)
 
