@@ -1364,8 +1364,21 @@ class FaceCropTab(tk.Frame):
             # bleeds through on detect-and-crop". get_runtime_scratch_dir
             # namespaces by instance id (<timestamp>-<PID>), eliminating
             # the collision.
+            #
+            # Windows MAX_PATH guard (code-review M1): the scratch dir
+            # nests deeper than the old short gettempdir()
+            # (``runtime/instances/<id>/scratch/``), so a very long source
+            # basename could push the total past Windows' 260-char limit
+            # where the old path wouldn't. Cap the basename — the name is
+            # only for human-debuggability (the file is tracked via
+            # ``self._source_path``), so truncation is harmless. Keep the
+            # tail (extension + trailing chars) since that's the
+            # recognizable part.
+            base = os.path.basename(path)
+            if len(base) > 80:
+                base = base[-80:]
             corrected_path = os.path.join(
-                get_runtime_scratch_dir(), f"kling_facecrop_{os.path.basename(path)}"
+                get_runtime_scratch_dir(), f"kling_facecrop_{base}"
             )
             save_img = pil_img.convert("RGB") if pil_img.mode not in ("RGB", "L") else pil_img
             save_img.save(corrected_path, format="JPEG", quality=95)

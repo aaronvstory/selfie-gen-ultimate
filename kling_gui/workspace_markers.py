@@ -230,6 +230,14 @@ _ORPHAN_EXPECTED_NAMES = {
     "crash_log.txt",
     "kling_history.json",
     "sessions",
+    "scratch",        # per-instance working-temp (EXIF-corrected source
+                      # copies, crop-save fallbacks). Added in
+                      # fix/multi-instance-state-bleed — WITHOUT it, any
+                      # instance that ran Face Crop leaves a scratch/ dir
+                      # that this allowlist would treat as "unexpected
+                      # manual data", aborting the rmtree and leaking the
+                      # WHOLE orphan runtime dir permanently (the marker
+                      # is removed first, so cleanup never reattempts).
     ".DS_Store",      # macOS Finder
     "Thumbs.db",      # Windows Explorer thumbnail cache
     "desktop.ini",    # Windows folder metadata
