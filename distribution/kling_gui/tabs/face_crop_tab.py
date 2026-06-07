@@ -1928,6 +1928,21 @@ class FaceCropTab(tk.Frame):
         gen_dir = Path(get_gen_images_folder(str(origin)))
         gen_dir.mkdir(parents=True, exist_ok=True)
 
+        # cv2.imwrite signals failure by RETURNING False, not by raising
+        # (Codex PR #91 MEDIUM): a MAX_PATH / full-disk / bad-codec write
+        # returns False with no exception. The old ``try/except`` around it
+        # therefore (a) never triggered the scratch fallback below on the
+        # most common failure modes, and (b) fell through to log "saved ✓"
+        # and add a NONEXISTENT path to the session. ``_try_write`` treats a
+        # falsy return AND a missing file as failure, matching the
+        # established ``face_crop_service.extract_portrait_crop`` convention.
+        def _try_write(target: Path) -> bool:
+            try:
+                ok = bool(cv2.imwrite(str(target), self._crop_result))
+            except Exception:
+                return False
+            return ok and target.exists()
+
         # Collision-safe naming
         out_path = gen_dir / f"{origin.stem}_crop.jpg"
         counter = 2
@@ -1935,12 +1950,10 @@ class FaceCropTab(tk.Frame):
             out_path = gen_dir / f"{origin.stem}_crop_{counter}.jpg"
             counter += 1
 
-        try:
-            cv2.imwrite(str(out_path), self._crop_result)
-        except Exception:
+        if not _try_write(out_path):
             # Fallback when the gen-images/ write fails (full disk,
-            # permission, race). MULTI-INSTANCE ISOLATION: route to the
-            # per-instance scratch dir, NOT tempfile.gettempdir() — two
+            # permission, race, MAX_PATH). MULTI-INSTANCE ISOLATION: route to
+            # the per-instance scratch dir, NOT tempfile.gettempdir() — two
             # instances cropping same-stemmed images must not collide on
             # one shared ``<tmp>/<stem>_crop.jpg`` (same bleed class as
             # the EXIF temp above).
@@ -1954,16 +1967,16 @@ class FaceCropTab(tk.Frame):
             if len(fallback_stem) > 76:
                 fallback_stem = fallback_stem[-76:]
             out_path = Path(get_runtime_scratch_dir()) / f"{fallback_stem}_crop.jpg"
-            try:
-                cv2.imwrite(str(out_path), self._crop_result)
-            except Exception as exc:
+            if not _try_write(out_path):
                 # Both the gen-images dir AND the scratch dir are
-                # unwritable (full disk / locked-down profile). Don't let
-                # the unhandled exception crash the GUI worker thread
-                # (Gemini PR #88 MEDIUM) — log and bail so the user sees
-                # an actionable error instead of a silent thread death.
+                # unwritable (full disk / locked-down profile / MAX_PATH).
+                # Log and bail so the user sees an actionable error instead
+                # of a silently-missing "saved" crop (Gemini PR #88 MEDIUM +
+                # Codex PR #91).
                 self.log(
-                    f"Face Crop: could not save crop ({exc})", "error"
+                    "Face Crop: could not save crop (write failed for both "
+                    "gen-images and scratch fallback)",
+                    "error",
                 )
                 return None
 
