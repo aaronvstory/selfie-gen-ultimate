@@ -308,6 +308,48 @@ def test_orphan_ds_store_does_not_block_rmtree(monkeypatch, tmp_path):
     )
 
 
+def test_orphan_scratch_dir_does_not_block_rmtree(monkeypatch, tmp_path):
+    """fix/multi-instance-state-bleed C1: an orphan runtime dir that
+    contains a ``scratch/`` subdir (left by a Face-Crop session — the
+    per-instance EXIF-corrected source copies) must STILL be rmtree'd.
+
+    Before ``scratch`` was added to ``_ORPHAN_EXPECTED_NAMES``, the
+    sweep treated it as "unexpected manual data" and aborted, leaking
+    the ENTIRE orphan dir permanently (the marker is removed first, so
+    cleanup never reattempts). Every instance that ran Face Crop would
+    leak. This is the exact failure the cross-instance fix would have
+    introduced without the allowlist update."""
+    _setup_tmp_root(monkeypatch, tmp_path)
+    markers_dir = path_utils.get_workspace_markers_dir("default")
+    os.makedirs(markers_dir, exist_ok=True)
+
+    orphan = tmp_path / "runtime" / "instances" / "20260101-120000-5678"
+    orphan.mkdir(parents=True)
+    (orphan / "crash_log.txt").write_text("crash", encoding="utf-8")
+    # A scratch dir with a leftover EXIF-corrected source copy — exactly
+    # what Face Crop leaves behind.
+    scratch = orphan / "scratch"
+    scratch.mkdir()
+    (scratch / "kling_facecrop_photo.jpg").write_bytes(b"fake-jpeg-bytes")
+
+    dead_marker = os.path.join(markers_dir, "facecrop-session.json")
+    with open(dead_marker, "w", encoding="utf-8") as f:
+        json.dump({
+            "instance_id": "20260101-120000-5678",
+            "workspace": "default",
+            "pid": 999999999,
+            "started_at": "2020-01-01T00:00:00",
+            "cwd": "/",
+            "runtime_dir": str(orphan),
+        }, f)
+
+    wm.cleanup_stale_markers("default")
+    assert not orphan.exists(), (
+        "C1 regression: a scratch/ subdir blocked orphan rmtree — every "
+        "Face-Crop session would leak its runtime dir permanently"
+    )
+
+
 def test_cleanup_preserves_runtime_dir_with_unexpected_content(monkeypatch, tmp_path):
     """Safety check: if a runtime dir contains anything BEYOND the expected
     ephemerals (e.g. user dropped a manual save in there), the rmtree is

@@ -2,7 +2,6 @@
 
 import os
 import platform
-import tempfile
 import tkinter as tk
 from tkinter import ttk
 import threading
@@ -24,7 +23,7 @@ from ..theme import (
 )
 from ..image_state import ImageSession
 from ..ml_backend_env import ensure_ml_backend_env
-from path_utils import get_gen_images_folder
+from path_utils import get_gen_images_folder, get_runtime_scratch_dir
 from tk_dialogs import select_open_file
 from automation.config import get_outpaint_fal_timeout_seconds
 
@@ -1351,8 +1350,35 @@ class FaceCropTab(tk.Frame):
 
             # Save orientation-corrected image so cv2.imread and RetinaFace
             # see the same upright pixels as the Tkinter preview.
+            #
+            # MULTI-INSTANCE ISOLATION (fix/multi-instance-state-bleed):
+            # this MUST go to the per-instance runtime scratch dir, NOT
+            # tempfile.gettempdir(). The old path
+            # ``<tmp>/kling_facecrop_<basename>`` was keyed only on the
+            # image basename, so two concurrently-launched GUIs loading
+            # same-named files (e.g. both "photo.jpg" from different
+            # folders) collided on ONE shared temp file — instance B's
+            # EXIF-corrected pixels overwrote instance A's, and A's
+            # subsequent cv2.imread/RetinaFace detect read B's image.
+            # That was the user-reported "image from the other instance
+            # bleeds through on detect-and-crop". get_runtime_scratch_dir
+            # namespaces by instance id (<timestamp>-<PID>), eliminating
+            # the collision.
+            #
+            # Windows MAX_PATH guard (code-review M1): the scratch dir
+            # nests deeper than the old short gettempdir()
+            # (``runtime/instances/<id>/scratch/``), so a very long source
+            # basename could push the total past Windows' 260-char limit
+            # where the old path wouldn't. Cap the basename — the name is
+            # only for human-debuggability (the file is tracked via
+            # ``self._source_path``), so truncation is harmless. Keep the
+            # tail (extension + trailing chars) since that's the
+            # recognizable part.
+            base = os.path.basename(path)
+            if len(base) > 80:
+                base = base[-80:]
             corrected_path = os.path.join(
-                tempfile.gettempdir(), f"kling_facecrop_{os.path.basename(path)}"
+                get_runtime_scratch_dir(), f"kling_facecrop_{base}"
             )
             save_img = pil_img.convert("RGB") if pil_img.mode not in ("RGB", "L") else pil_img
             save_img.save(corrected_path, format="JPEG", quality=95)
@@ -1912,8 +1938,25 @@ class FaceCropTab(tk.Frame):
         try:
             cv2.imwrite(str(out_path), self._crop_result)
         except Exception:
-            out_path = Path(tempfile.gettempdir()) / f"{origin.stem}_crop.jpg"
-            cv2.imwrite(str(out_path), self._crop_result)
+            # Fallback when the gen-images/ write fails (full disk,
+            # permission, race). MULTI-INSTANCE ISOLATION: route to the
+            # per-instance scratch dir, NOT tempfile.gettempdir() — two
+            # instances cropping same-stemmed images must not collide on
+            # one shared ``<tmp>/<stem>_crop.jpg`` (same bleed class as
+            # the EXIF temp above).
+            out_path = Path(get_runtime_scratch_dir()) / f"{origin.stem}_crop.jpg"
+            try:
+                cv2.imwrite(str(out_path), self._crop_result)
+            except Exception as exc:
+                # Both the gen-images dir AND the scratch dir are
+                # unwritable (full disk / locked-down profile). Don't let
+                # the unhandled exception crash the GUI worker thread
+                # (Gemini PR #88 MEDIUM) — log and bail so the user sees
+                # an actionable error instead of a silent thread death.
+                self.log(
+                    f"Face Crop: could not save crop ({exc})", "error"
+                )
+                return None
 
         self.log(
             f"Face Crop: saved {out_path.name} "

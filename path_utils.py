@@ -216,6 +216,52 @@ def get_runtime_history_path(
     return os.path.join(get_runtime_dir(workspace, instance_id), "kling_history.json")
 
 
+def get_runtime_scratch_dir(
+    workspace: Optional[str] = None,
+    instance_id: Optional[str] = None,
+) -> str:
+    """Return ``<runtime_dir>/scratch/`` — per-instance working-temp home.
+
+    Use this for *working* temp files the GUI writes mid-operation and
+    reads back in the SAME process — EXIF-corrected source copies,
+    crop-save fallbacks, any intermediate scratch. The critical property
+    is per-instance isolation: ``tempfile.gettempdir()`` with a
+    constant/basename-derived filename is SHARED across concurrent
+    launches, so two instances loading same-named files collide on disk
+    and one instance reads the other's pixels (the multi-instance
+    face-crop "image bleed" bug). Routing through the per-instance
+    runtime tree gives each launch its own namespace.
+
+    The directory is created (idempotent) before the path is returned,
+    so call sites can write immediately. It lives under
+    ``get_runtime_dir()`` so it is auto-swept by the stale-instance
+    cleanup on the next launch — no separate teardown needed.
+    """
+    iid = instance_id or get_instance_id()
+    scratch = os.path.join(get_runtime_dir(workspace, iid), "scratch")
+    try:
+        os.makedirs(scratch, exist_ok=True)
+        return scratch
+    except OSError:
+        # Runtime dir unwritable (locked-down AppData / read-only
+        # Application Support). Returning the dead path would guarantee
+        # the caller's write fails. Fall back to the system temp dir —
+        # but STILL per-instance-namespaced (``kling_scratch_<iid>``,
+        # iid carries the PID), so the cross-instance bleed the primary
+        # path fixes does NOT reopen on the fallback (Gemini PR #88
+        # MEDIUM). These fallback files aren't covered by the orphan
+        # sweep, but this only triggers when the runtime tree itself is
+        # unwritable — a rare degraded mode where leaking a few temp
+        # files beats crashing.
+        import tempfile
+        fallback = os.path.join(tempfile.gettempdir(), f"kling_scratch_{iid}")
+        try:
+            os.makedirs(fallback, exist_ok=True)
+        except OSError:
+            pass
+        return fallback
+
+
 def get_workspace_markers_dir(workspace: Optional[str] = None) -> str:
     """Return ``<workspace_dir>/runtime/.markers/`` — liveness markers root.
 
