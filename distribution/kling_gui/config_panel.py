@@ -613,9 +613,14 @@ class ConfigPanel(tk.Frame):
         # Loop widgets built now (keep attr names + callback) but packed
         # later into the reprocessing row (rB), not here.
         self.loop_video_var = tk.BooleanVar(value=False)
-        # vertical stack: oldcam (top) over rPPG (below), equal width
+        # vertical stack: oldcam (top) over rPPG (below), equal width.
+        # Packed WITHOUT fill/expand (constrained-resolution polish): the
+        # stack shrink-wraps to its widest child instead of eating all of
+        # rA's horizontal slack. That stops the tinted borders running far
+        # right over empty space AND leaves the Re-Run column its natural
+        # width so both its buttons render on narrow windows (Mac).
         _pp_stack = tk.Frame(rA, bg=COLORS["bg_input"])
-        _pp_stack.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        _pp_stack.pack(side=tk.LEFT, anchor="n", padx=(8, 0))
         self.oldcam_controls_frame = tk.Frame(
             _pp_stack,
             bg="#2A1F34",
@@ -625,7 +630,11 @@ class ConfigPanel(tk.Frame):
             padx=6,
             pady=2,
         )
-        self.oldcam_controls_frame.pack(fill=tk.X, expand=True, pady=(0, 4))
+        # fill=tk.X (no expand): stretches to the stack's width so the
+        # oldcam + rPPG frames stay equal-width as a stacked pair, but the
+        # stack width is now content-driven (see _pp_stack above), not the
+        # whole row — so the border no longer trails empty purple space.
+        self.oldcam_controls_frame.pack(fill=tk.X, pady=(0, 4))
         # "Oldcam: ⓘ" inline on top of the controls frame — top-anchored
         _oldcam_label_row = tk.Frame(self.oldcam_controls_frame, bg="#2A1F34")
         _oldcam_label_row.pack(side=tk.LEFT, anchor="n", padx=(0, 6))
@@ -707,9 +716,14 @@ class ConfigPanel(tk.Frame):
             padx=6,
             pady=2,
         )
-        self.rppg_controls_frame.pack(fill=tk.X, expand=True)
+        # fill=tk.X (no expand) — equal width with the oldcam frame above,
+        # content-driven width (matches the stack). The controls inside are
+        # now stacked VERTICALLY (rPPG: / inject / fanout) so this frame is
+        # much narrower than the old single-line layout.
+        self.rppg_controls_frame.pack(fill=tk.X)
+        # Line 1: "rPPG:" + ⓘ — anchor="w" so it stacks above the checkboxes.
         _rppg_label_row = tk.Frame(self.rppg_controls_frame, bg="#3A2A1F")
-        _rppg_label_row.pack(side=tk.LEFT, anchor="n", padx=(0, 6))
+        _rppg_label_row.pack(anchor="w")
         tk.Label(
             _rppg_label_row,
             text="rPPG:",
@@ -740,9 +754,13 @@ class ConfigPanel(tk.Frame):
                 "crashes the run)."
             ),
         )
+        # Line 2: "Inject rPPG pulse" checkbox + its inline desc, wrapped in
+        # a row frame so the two sit together on one line BELOW the label.
         self.rppg_var = tk.BooleanVar(value=False)
+        _rppg_inject_row = tk.Frame(self.rppg_controls_frame, bg="#3A2A1F")
+        _rppg_inject_row.pack(anchor="w")
         self.rppg_checkbox = tk.Checkbutton(
-            self.rppg_controls_frame,
+            _rppg_inject_row,
             text="Inject rPPG pulse",
             variable=self.rppg_var,
             font=(FONT_FAMILY, 9),
@@ -753,20 +771,21 @@ class ConfigPanel(tk.Frame):
             activeforeground=COLORS["text_light"],
             command=self._on_rppg_changed,
         )
-        self.rppg_checkbox.pack(side=tk.LEFT, anchor="n", padx=(2, 8))
+        self.rppg_checkbox.pack(side=tk.LEFT, padx=(2, 8))
         tk.Label(
-            self.rppg_controls_frame,
+            _rppg_inject_row,
             text="(sub-perceptual · runs FIRST · default OFF)",
             font=(FONT_FAMILY, 9),
             bg="#3A2A1F",
             fg=COLORS["text_dim"],
-        ).pack(side=tk.LEFT, anchor="n", padx=(0, 4))
+        ).pack(side=tk.LEFT, padx=(0, 4))
 
         # Phase E of polish/v2.3 (2026-05-22): legacy per-Oldcam
         # fan-out as opt-in. Default OFF — when ON, rPPG ALSO runs
         # on each Oldcam output (slower but lets a careful workflow
-        # get a fresh-pulse Oldcam variant). Sits to the right of
-        # the main rPPG checkbox so the relationship is visible.
+        # get a fresh-pulse Oldcam variant). Sits on its own line
+        # directly under the main rPPG inject checkbox (vertical
+        # layout) so the relationship is visible.
         self.rppg_per_oldcam_fanout_var = tk.BooleanVar(value=False)
         self.rppg_per_oldcam_fanout_checkbox = tk.Checkbutton(
             self.rppg_controls_frame,
@@ -780,7 +799,8 @@ class ConfigPanel(tk.Frame):
             activeforeground=COLORS["text_light"],
             command=self._on_rppg_per_oldcam_fanout_changed,
         )
-        self.rppg_per_oldcam_fanout_checkbox.pack(side=tk.LEFT, anchor="n", padx=(8, 4))
+        # Line 3: fanout checkbox on its own line under the inject row.
+        self.rppg_per_oldcam_fanout_checkbox.pack(anchor="w", padx=(2, 0))
 
         # ONE shared Re-Run column, packed into the band (rA) to the
         # RIGHT of the Oldcam/rPPG stack — applies to whatever is
