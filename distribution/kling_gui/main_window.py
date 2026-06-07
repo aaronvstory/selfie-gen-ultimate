@@ -159,6 +159,15 @@ COLORS = {
 
 # Valid image extensions for folder scanning
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif"}
+
+# Outpaint output stems, as produced by ``path_utils.build_expand_filenames``
+# + ``outpaint_generator``: ``-expanded``, ``-expanded_v<N>``, ``-expanded-2x``,
+# ``-expanded-2x_v<N>`` (always lowercase on write). Anchored to the stem END so
+# a session rescan classifies these as ``outpaint`` while an unrelated file that
+# merely CONTAINS ``-expanded`` mid-name (e.g. ``my-expanded-notes.png``) stays a
+# selfie. Matched against ``stem.lower()`` for rename/case tolerance. (PR #91.)
+_OUTPAINT_STEM_RE = re.compile(r"-expanded(?:-2x)?(?:_v\d+)?$")
+
 IS_MACOS = sys.platform == "darwin"
 FONT_FAMILY = "Helvetica" if IS_MACOS else "Segoe UI"
 EMOJI_FONT_FAMILY = "Apple Color Emoji" if IS_MACOS else "Segoe UI Emoji"
@@ -5449,7 +5458,7 @@ class KlingGUIWindow:
                 continue
             # PR #84 CRIT-1 fix: classify files by their parent folder
             # convention. Files inside ``gen-images/`` are generated
-            # selfies (source_type="selfie") — labeling them "input"
+            # images (source_type="selfie") — labeling them "input"
             # would (a) make ``get_effective_similarity_ref`` pick a
             # generated selfie as the similarity reference, and
             # (b) make ``recalc_all_similarity_now`` skip them as
@@ -5457,10 +5466,17 @@ class KlingGUIWindow:
             # ``gen-videos/`` doesn't carry images so the image-loop
             # below never adds video files; the video loop further
             # down always uses source_type="video".
+            #
+            # v2.29 fix: ``gen-images/`` holds BOTH selfies AND outpaint
+            # outputs (outpaint_generator writes ``{stem}-expanded{ext}``
+            # there with source_type="outpaint"). Classifying the whole
+            # folder as "selfie" re-tagged reloaded outpaint files as
+            # selfies, silently dropping their semantics. Disambiguate
+            # per-file by the outpaint ``-expanded`` suffix.
             folder_basename = os.path.basename(
                 os.path.normpath(folder)
             ).lower()
-            image_kind = "selfie" if folder_basename == "gen-images" else "input"
+            is_gen_images = folder_basename == "gen-images"
             try:
                 with os.scandir(folder) as it:
                     entries = sorted(
@@ -5477,6 +5493,22 @@ class KlingGUIWindow:
                 real = os.path.realpath(full)
                 if real in loaded_real:
                     continue
+                if is_gen_images:
+                    # Suffix-anchored outpaint detection (CodeRabbit + Gemini
+                    # PR #91). ``build_expand_filenames`` / outpaint_generator
+                    # produce exactly four stem shapes: ``-expanded``,
+                    # ``-expanded_v<N>``, ``-expanded-2x``, ``-expanded-2x_v<N>``.
+                    # A raw ``"-expanded" in name`` substring match would also
+                    # tag an unrelated ``my-expanded-notes.png`` as outpaint;
+                    # anchoring to the stem END fixes that. Case-insensitive so
+                    # a renamed/upper-cased file still classifies correctly.
+                    stem_lower = os.path.splitext(entry.name)[0].lower()
+                    is_outpaint = bool(
+                        _OUTPAINT_STEM_RE.search(stem_lower)
+                    )
+                    image_kind = "outpaint" if is_outpaint else "selfie"
+                else:
+                    image_kind = "input"
                 self.image_session.add_image(full, image_kind, make_active=False)
                 loaded_real.add(real)
                 rescan_imgs += 1

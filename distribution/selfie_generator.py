@@ -379,6 +379,16 @@ class SelfieGenerator:
             timeout = int(value)
         except (TypeError, ValueError):
             timeout = cls.DEFAULT_POLL_TIMEOUT_SECONDS
+        # v2.29: warn when a user-set value is silently clamped above the cap
+        # so a manual ``selfie_poll_timeout_seconds`` higher than the ceiling
+        # (e.g. 300 on a slow link) isn't ignored without a trace. GPT Image 2
+        # already runs ~137s; the 180s cap leaves thin tail room, so a clamp
+        # the user can't see is a real "why did it time out?" footgun.
+        if timeout > cls.MAX_POLL_TIMEOUT_SECONDS:
+            logger.warning(
+                "selfie_poll_timeout_seconds %ds exceeds the %ds cap — clamping",
+                timeout, cls.MAX_POLL_TIMEOUT_SECONDS,
+            )
         timeout = max(cls.MIN_POLL_TIMEOUT_SECONDS, timeout)
         timeout = min(cls.MAX_POLL_TIMEOUT_SECONDS, timeout)
         return timeout

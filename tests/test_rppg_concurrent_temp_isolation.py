@@ -122,3 +122,79 @@ def test_recovered_iter_metrics_are_adopted_unconditionally():
         "the recovered-iter metric adoption must be unconditional; the "
         "None-or-baseline guard missed the committed-then-vanished case"
     )
+
+
+def test_unpulsed_fallback_stamps_norppg_into_stem():
+    """Codex PR #91 HIGH: when the end-of-loop self-heal exhausts every
+    on-disk iteration and falls back to the UN-PULSED source, the delivered
+    file must NOT be selected as the rPPG deliverable — otherwise it ships a
+    pulse-free video that passes the decode-only gate with no -NORPPG marker
+    (silent no-pulse delivery). The fix sets ``delivered_unpulsed`` and stamps
+    ``-NORPPG`` INTO the output stem before ``add_metric_suffix``. Because
+    ``automation.rppg.resolve_produced_output`` globs ``{stem} - *``, the
+    resulting ``{stem}-NORPPG - <metrics>{ext}`` deliberately won't match ->
+    the resolver returns None -> the caller marks the pre-rPPG video -NORPPG."""
+    src = _injector_src()
+    # The flag is initialised, set on the un-pulsed fallback, and consumed.
+    assert "delivered_unpulsed = False" in src
+    assert "delivered_unpulsed = True" in src
+    assert "if delivered_unpulsed:" in src
+    # The stem stamp uses the same terminal-token idempotency as the queue's
+    # _mark_norppg, and feeds add_metric_suffix via metric_source_path.
+    assert 'f"{_base}-NORPPG{_ext}"' in src, (
+        "the un-pulsed deliverable must carry a -NORPPG stem stamp"
+    )
+    assert "add_metric_suffix(metric_source_path" in src, (
+        "the metric suffix must be built from the (possibly -NORPPG-stamped) "
+        "stem, not the raw output_path"
+    )
+
+
+def test_norppg_stamped_stem_is_missed_by_resolver_glob():
+    """Behavioral guard for the contract the fix relies on: a
+    ``{stem}-NORPPG - <metrics>{ext}`` file must NOT match the
+    ``{stem} - *{ext}`` glob that ``resolve_produced_output`` uses to find the
+    deliverable. If a future refactor made the glob looser, the un-pulsed file
+    would be re-selected and the silent-no-pulse bug would reopen."""
+    import fnmatch
+
+    stem = "clip-rppg"
+    ext = ".mp4"
+    resolver_pattern = f"{stem} - *{ext}"  # mirrors automation/rppg.py
+
+    pulsed = f"{stem} - 11.19-3.3-0.57-0.00-0.85{ext}"
+    unpulsed = f"{stem}-NORPPG - 0.00-0.00-0.00-0.00-0.00{ext}"
+
+    assert fnmatch.fnmatch(pulsed, resolver_pattern), (
+        "a normal pulsed deliverable must still match the resolver glob"
+    )
+    assert not fnmatch.fnmatch(unpulsed, resolver_pattern), (
+        "the -NORPPG-stamped un-pulsed file must NOT match -> resolver returns "
+        "None -> caller marks the pre-rPPG video -NORPPG"
+    )
+
+
+def test_iteration_history_json_is_namespaced_by_run_token():
+    """v2.29 follow-up to PR #89: PR #89 namespaced the temp mp4s + snapshot
+    by ``_run_token`` but left the iteration-history JSON keyed on only
+    ``{stem}_{stamp}`` (output stem + wall-clock SECOND). Two concurrent
+    injectors processing the same input within the same second wrote to an
+    IDENTICAL history path and silently overwrote each other's JSON. The
+    history filename must carry ``_run_token`` like the temps do; the paired
+    ``_metrics_summary.tsv`` (derived via ``.replace``) then inherits it."""
+    src = _injector_src()
+    assert (
+        "f'{stem}_{stamp}_{_run_token}_iteration_history.json'" in src
+        or 'f"{stem}_{stamp}_{_run_token}_iteration_history.json"' in src
+    ), "the iteration-history JSON path must include _run_token"
+    # Guard against the bare, collision-prone name creeping back.
+    bad = []
+    for ln in src.splitlines():
+        stripped = ln.lstrip()
+        if stripped.startswith("#"):
+            continue
+        if "_iteration_history.json" in ln and "history_dir" in ln:
+            # This is the path-construction line; it MUST carry _run_token.
+            if "_run_token" not in ln:
+                bad.append(ln.strip())
+    assert not bad, f"bare iteration-history path (no _run_token): {bad}"
