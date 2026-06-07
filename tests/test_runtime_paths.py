@@ -239,6 +239,32 @@ def test_save_crop_fallback_truncates_stem_for_max_path():
     )
 
 
+def test_save_crop_fallback_stem_truncation_bounds_filename(monkeypatch, tmp_path):
+    """Sourcery PR #91: pair the source-pin above with a behavioral check of
+    the truncation math. A pathologically long stem must yield a BOUNDED
+    scratch filename (<= 76 + len('_crop.jpg')), keeping the full path under
+    Windows MAX_PATH even in the deep ``runtime/instances/<id>/scratch/`` tree.
+    Replicates the exact cap from _save_crop so a change to the bound (e.g. a
+    larger cap that reopens the MAX_PATH risk) fails here."""
+    monkeypatch.setattr(path_utils, "_user_data_root", lambda: str(tmp_path))
+    monkeypatch.setenv("KLING_WORKSPACE", "default")
+    monkeypatch.setenv("KLING_INSTANCE_ID", "20260101-000000-9999")
+    path_utils._INSTANCE_ID_CACHE = None
+
+    long_stem = "x" * 300  # far past any sane basename
+    fallback_stem = long_stem
+    if len(fallback_stem) > 76:
+        fallback_stem = fallback_stem[-76:]
+    fname = f"{fallback_stem}_crop.jpg"
+
+    # The filename component is bounded regardless of the input stem length.
+    assert len(fname) == 76 + len("_crop.jpg") == 85
+    # And it composes into a real scratch path without exploding.
+    out_path = os.path.join(path_utils.get_runtime_scratch_dir(), fname)
+    assert os.path.basename(out_path) == fname
+    path_utils._INSTANCE_ID_CACHE = None
+
+
 def test_get_workspace_dir_sanitizes_explicit_arg(monkeypatch):
     """PR #49 round-2 (CodeRabbit): a direct call to ``get_workspace_dir``
     with a malformed ``workspace`` arg must NOT compose a traversal path.

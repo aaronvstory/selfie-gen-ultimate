@@ -5485,8 +5485,13 @@ class KlingGUIWindow:
                 if real in loaded_real:
                     continue
                 if is_gen_images:
+                    # Case-insensitive (Gemini PR #91): outpaint writes a
+                    # lowercase ``-expanded`` suffix, but a user-renamed or
+                    # case-variant file shouldn't slip back in as a selfie.
                     image_kind = (
-                        "outpaint" if "-expanded" in entry.name else "selfie"
+                        "outpaint"
+                        if "-expanded" in entry.name.lower()
+                        else "selfie"
                     )
                 else:
                     image_kind = "input"
