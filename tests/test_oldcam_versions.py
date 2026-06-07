@@ -573,6 +573,36 @@ def test_rppg_ui_section_present_and_wired():
     assert '"rppg_var",' in panel_source
 
 
+def test_rppg_controls_vertical_and_frames_hug_content():
+    """Constrained-resolution polish (fix/step3-controls-constrained-layout):
+    the Step 3 rPPG controls are stacked VERTICALLY (rPPG: / inject row /
+    fanout row) and the Oldcam + rPPG tinted frames HUG their content
+    (no expand=True), so the purple/orange borders stop trailing empty
+    space AND the Re-Run column keeps its natural width — both Re-Run
+    buttons render on narrow windows (Mac). Source-pin so a refactor that
+    re-introduces the single-line layout / expand=True is caught."""
+    panel_source = (ROOT / "kling_gui" / "config_panel.py").read_text(encoding="utf-8")
+    # rPPG restructured vertically via a dedicated inject row + fanout on
+    # its own line (anchor="w" instead of the old side=LEFT one-liner).
+    assert "_rppg_inject_row = tk.Frame(self.rppg_controls_frame" in panel_source
+    assert 'self.rppg_per_oldcam_fanout_checkbox.pack(anchor="w"' in panel_source
+    # The stack + both tinted frames hug content (no expand → no clipped
+    # Re-Run column).
+    assert '_pp_stack.pack(side=tk.LEFT, anchor="n", padx=(8, 0))' in panel_source
+    assert "self.oldcam_controls_frame.pack(fill=tk.X, pady=(0, 4))" in panel_source
+    assert "self.rppg_controls_frame.pack(fill=tk.X)" in panel_source
+    # The old expanding layout must be gone.
+    assert "expand=True, pady=(0, 4)" not in panel_source
+    assert "self.rppg_controls_frame.pack(fill=tk.X, expand=True)" not in panel_source
+    # Distribution mirror carries the same layout (text-identical).
+    dist_source = (
+        ROOT / "distribution" / "kling_gui" / "config_panel.py"
+    ).read_text(encoding="utf-8")
+    assert "_rppg_inject_row = tk.Frame(self.rppg_controls_frame" in dist_source
+    assert "self.rppg_controls_frame.pack(fill=tk.X)" in dist_source
+    assert "self.rppg_controls_frame.pack(fill=tk.X, expand=True)" not in dist_source
+
+
 def test_oldcam_dependency_preflight_requires_mediapipe_for_v10(tmp_path):
     manager, _ = make_queue_manager({})
     oldcam_dir = tmp_path / "oldcam-v10"
