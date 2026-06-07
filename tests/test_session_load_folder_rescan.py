@@ -1010,9 +1010,17 @@ def test_scan_folders_classifies_outpaint_expanded_in_gen_images(tmp_path):
     (gen / "front-expanded.png").write_bytes(_TINY_PNG)
     # collision-suffixed variant the generator emits on re-runs
     (gen / "front-expanded_v2.png").write_bytes(_TINY_PNG)
+    # 2x expand variants the face-crop pipeline emits.
+    (gen / "front-expanded-2x.png").write_bytes(_TINY_PNG)
+    (gen / "front-expanded-2x_v2.png").write_bytes(_TINY_PNG)
     # case-variant (Gemini PR #91): a renamed/uppercased suffix must still
     # classify as outpaint, not slip back in as a selfie.
     (gen / "PORTRAIT-EXPANDED.png").write_bytes(_TINY_PNG)
+    # substring false-positive (CodeRabbit PR #91): a file that merely
+    # CONTAINS "-expanded" mid-name is NOT an outpaint output — it must
+    # stay a "selfie". This is exactly what the suffix-anchored regex fixes
+    # vs the old raw substring check.
+    (gen / "my-expanded-notes.png").write_bytes(_TINY_PNG)
 
     session = ImageSession()
 
@@ -1022,16 +1030,20 @@ def test_scan_folders_classifies_outpaint_expanded_in_gen_images(tmp_path):
     stub.image_session = session
     helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
     added_imgs, _ = helper({str(tmp_path)})
-    assert added_imgs == 4
+    assert added_imgs == 7
 
     by_path = {e.path: e for e in session.images}
     # Plain generated image → "selfie".
     assert by_path[str(gen / "selfie_001.png")].source_type == "selfie"
-    # ``-expanded`` outpaint outputs → "outpaint", not "selfie".
+    # ``-expanded`` outpaint outputs (all four stem shapes) → "outpaint".
     assert by_path[str(gen / "front-expanded.png")].source_type == "outpaint"
     assert by_path[str(gen / "front-expanded_v2.png")].source_type == "outpaint"
+    assert by_path[str(gen / "front-expanded-2x.png")].source_type == "outpaint"
+    assert by_path[str(gen / "front-expanded-2x_v2.png")].source_type == "outpaint"
     # Case-insensitive match.
     assert by_path[str(gen / "PORTRAIT-EXPANDED.png")].source_type == "outpaint"
+    # Mid-name substring is NOT outpaint — stays a selfie.
+    assert by_path[str(gen / "my-expanded-notes.png")].source_type == "selfie"
 
 
 def test_scan_folders_handles_none_and_empty_input():
