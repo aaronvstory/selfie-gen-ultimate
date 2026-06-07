@@ -3969,8 +3969,13 @@ class PhaseAlignedRPPGManipulator:
         # (it's a 5-10 min iterative process) so this is mostly
         # defense-in-depth, but the cost is one extra string format.
         _video_id = hash(os.path.abspath(video_path)) & 0xFFFFFF
+        # Per-run token: PID + per-input hash. Used to namespace BOTH the
+        # best-iteration snapshot AND the numbered temp_iteration files
+        # below so concurrent injectors in the shared cwd (rPPG/) never
+        # collide.
+        _run_token = f"{os.getpid()}_{_video_id:06x}"
         _BEST_SNAPSHOT_NAME = (
-            f"best_iteration_snapshot_{os.getpid()}_{_video_id:06x}.mp4"
+            f"best_iteration_snapshot_{_run_token}.mp4"
         )
 
         current_path = video_path
@@ -4712,7 +4717,23 @@ class PhaseAlignedRPPGManipulator:
                 print(f"  Tuned knobs: {c(tuned_str, 'DIM')}")
 
             # --- Apply params to video ---
-            temp_output = f"temp_iteration_{iteration}.mp4"
+            # SELF-HEAL (fix/rppg-self-heal-baseline-and-encode): namespace
+            # the numbered temp files by the per-run token (PID + input
+            # hash), NOT a bare ``temp_iteration_<N>.mp4``. The bare name
+            # was SHARED across every concurrent rPPG injector — they all
+            # run with cwd=rPPG/ (PR #49 workspace isolation does not
+            # extend to subprocess cwd). Two concurrent runs both wrote
+            # ``temp_iteration_0.mp4`` etc., and whichever finished FIRST
+            # deleted the other's in-flight files in its end-of-run
+            # cleanup. The victim then crashed with
+            # ``FileNotFoundError: ... temp_iteration_0.mp4`` mid-loop
+            # (→ NORPPG), or finalized a half-clobbered temp into a
+            # structurally-broken ``-rppg.mp4`` that failed ffprobe and
+            # got quarantined (→ NORPPG). Both user-reported failure modes
+            # share this one root cause. The snapshot name was already
+            # namespaced this way (see _run_token above); the numbered
+            # temps were the remaining hole.
+            temp_output = f"temp_iteration_{_run_token}_{iteration}.mp4"
             pulse_result = self.apply_phase_aligned_pulses(
                 current_path,
                 temp_output,
@@ -4952,22 +4973,34 @@ class PhaseAlignedRPPGManipulator:
                             ))
                             # _adopted_this_iter stays False.
                         else:
-                            # No prior snapshot AND no source file —
-                            # there is no recoverable best at this
-                            # point. Raising is the loud, correct
-                            # signal (vs silently committing a path
-                            # that points at nothing).
-                            # CodeRabbit PR #53 round 13: restore the
-                            # narrowed registry value before re-raising
-                            # so a subsequent run in the same process
-                            # (GUI worker) doesn't inherit the dynamic
-                            # bound from this aborted run.
-                            KNOB_REGISTRY['strength']['max'] = original_strength_max
-                            raise FileNotFoundError(
-                                f"Best iteration output missing and no "
-                                f"prior snapshot exists: "
-                                f"{iter_output_path!r} (iter {iteration})"
-                            )
+                            # No prior snapshot AND no source file.
+                            # SELF-HEAL (fix/rppg-self-heal-baseline-and-
+                            # encode): this used to ``raise
+                            # FileNotFoundError``, which ABORTED the entire
+                            # injection — the GUI then marked the delivered
+                            # file ``-NORPPG`` (the user-reported failure).
+                            # The root cause (concurrent injectors deleting
+                            # each other's bare-named temp_iteration files)
+                            # is fixed by the per-run token above, so this
+                            # branch should now be unreachable in the
+                            # multi-instance case. But for genuinely
+                            # unexpected misses (disk full mid-write, a
+                            # write that silently produced no file), DEGRADE
+                            # instead of crash: simply DON'T promote this
+                            # iteration (leave the prior best_* untouched,
+                            # _adopted_this_iter stays False) and let the
+                            # loop continue. A later iteration may still
+                            # produce a valid best; if none ever does, the
+                            # end-of-loop ``best_path is None`` fallback
+                            # picks the most recent on-disk iter file. One
+                            # skipped iteration beats aborting the whole run.
+                            print(c(
+                                f"  Warning: best-iter {iteration} source "
+                                f"file missing and no prior snapshot; "
+                                f"skipping promotion for this iter and "
+                                f"continuing (self-heal).",
+                                'Y',
+                            ))
                 except OSError as exc:
                     print(c(
                         f"  Warning: could not snapshot best iter "
@@ -4993,18 +5026,22 @@ class PhaseAlignedRPPGManipulator:
                         # but at least it points at a real file).
                         _commit_best(iter_output_path)
                     else:
-                        # Same as the inner else above: no prior
-                        # snapshot AND no source file. Hard-fail.
-                        # CodeRabbit PR #53 round 13: restore the
-                        # narrowed registry value before re-raising
-                        # (see twin restore-before-raise at the inner
-                        # FileNotFoundError site ~30 lines above).
-                        KNOB_REGISTRY['strength']['max'] = original_strength_max
-                        raise FileNotFoundError(
-                            f"Best iteration output missing after copy "
-                            f"failure and no prior snapshot exists: "
-                            f"{iter_output_path!r} (iter {iteration})"
-                        ) from exc
+                        # Same as the inner else above: no prior snapshot
+                        # AND no source file after a copy OSError.
+                        # SELF-HEAL: degrade instead of crashing the whole
+                        # injection (was a hard ``raise`` → -NORPPG). Skip
+                        # promoting this iter; the loop continues and the
+                        # end-of-loop fallback recovers the best on-disk
+                        # iter. See the twin self-heal at the inner
+                        # missing-file site ~40 lines above for the full
+                        # rationale.
+                        print(c(
+                            f"  Warning: best-iter {iteration} copy failed "
+                            f"({type(exc).__name__}) and no prior snapshot; "
+                            f"skipping promotion for this iter and "
+                            f"continuing (self-heal).",
+                            'Y',
+                        ))
 
             # v5.10d: update revert high-water mark.
             # PR #53 round 8: use _adopted_this_iter, NOT _is_new_best.
@@ -5069,15 +5106,59 @@ class PhaseAlignedRPPGManipulator:
                 plateau_counter = 0
             prev_best_score = best_score
 
-        if best_path is None:
-            # Fall back to the last iteration's modulated output rather than
-            # current_path — in iterate-from-baseline mode current_path is the
-            # source video, which would silently save a no-op output.
+        # SELF-HEAL: best_path can be None when no iteration was promoted
+        # (e.g. every would-be-best hit the graceful skip-promotion paths
+        # above). It can ALSO point at a file that no longer exists if the
+        # committed snapshot/iter file went away. In both cases pick the
+        # most recent iter file that ACTUALLY EXISTS on disk, walking back
+        # from the highest iter number, so the finalize copy at the end
+        # never operates on a missing path. Only when nothing on disk is
+        # usable do we fall back to current_path (un-pulsed source).
+        if best_path is None or not os.path.exists(best_path):
+            recovered = None
             if iter_files:
-                last_iter = max(iter_files.keys())
-                best_path = iter_files[last_iter]['path']
-                best_iter = last_iter
+                for it_num in sorted(iter_files.keys(), reverse=True):
+                    cand = iter_files[it_num]['path']
+                    if cand and os.path.exists(cand):
+                        recovered = (cand, it_num)
+                        break
+            if recovered is not None:
+                if best_path is not None and not os.path.exists(best_path):
+                    print(c(
+                        f"  Self-heal: committed best_path missing on disk; "
+                        f"recovered to iter {recovered[1]} ({recovered[0]}).",
+                        'Y',
+                    ))
+                best_path = recovered[0]
+                best_iter = recovered[1]
+                # ALWAYS adopt the recovered iter's metrics (code-review +
+                # Gemini HIGH on PR #89). The recovered file IS the
+                # delivered video, so best_metrics MUST match it — both
+                # for the ``add_metric_suffix`` filename stamp and the
+                # returned metadata. The previous guard
+                # (``best_metrics is None or == baseline``) MISSED the
+                # exact case the ``not os.path.exists`` trigger fires for:
+                # a real best (iter K, non-baseline metrics) was committed,
+                # its file later vanished, and we recover a DIFFERENT iter
+                # J — leaving best_metrics stamped with K's numbers on J's
+                # file. Unconditional assignment keeps file and metrics in
+                # lockstep.
+                best_metrics = dict(iter_files[recovered[1]]['metrics'])
             else:
+                # Nothing on disk to deliver a pulse from — last resort is
+                # the (un-pulsed) source. In iterate-from-baseline mode
+                # current_path IS the source, so this is effectively a
+                # no-op (un-pulsed) output.
+                #
+                # NOTE (code-review on PR #89): the playability gate
+                # (automation/rppg.py) checks DECODABILITY only, NOT pulse
+                # presence — so an un-pulsed-but-playable file finalizes,
+                # the injector exits 0, and the GUI ships it WITHOUT a
+                # -NORPPG marker (silent no-pulse delivery). This is a
+                # PRE-EXISTING behavior (the old ``if best_path is None``
+                # already fell to current_path); this PR only NARROWS the
+                # window by trying every on-disk iter first. A true
+                # pulse-presence gate is tracked as a separate follow-up.
                 best_path = current_path
                 best_iter = max_iterations
 
