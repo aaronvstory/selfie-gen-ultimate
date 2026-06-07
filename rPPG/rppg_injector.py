@@ -5131,14 +5131,34 @@ class PhaseAlignedRPPGManipulator:
                     ))
                 best_path = recovered[0]
                 best_iter = recovered[1]
-                if best_metrics is None or best_metrics == dict(baseline):
-                    best_metrics = dict(iter_files[recovered[1]]['metrics'])
+                # ALWAYS adopt the recovered iter's metrics (code-review +
+                # Gemini HIGH on PR #89). The recovered file IS the
+                # delivered video, so best_metrics MUST match it — both
+                # for the ``add_metric_suffix`` filename stamp and the
+                # returned metadata. The previous guard
+                # (``best_metrics is None or == baseline``) MISSED the
+                # exact case the ``not os.path.exists`` trigger fires for:
+                # a real best (iter K, non-baseline metrics) was committed,
+                # its file later vanished, and we recover a DIFFERENT iter
+                # J — leaving best_metrics stamped with K's numbers on J's
+                # file. Unconditional assignment keeps file and metrics in
+                # lockstep.
+                best_metrics = dict(iter_files[recovered[1]]['metrics'])
             else:
                 # Nothing on disk to deliver a pulse from — last resort is
                 # the (un-pulsed) source. In iterate-from-baseline mode
-                # current_path IS the source, so this is a no-op output;
-                # the downstream playability gate + the GUI's -NORPPG
-                # marker correctly signal that no pulse landed.
+                # current_path IS the source, so this is effectively a
+                # no-op (un-pulsed) output.
+                #
+                # NOTE (code-review on PR #89): the playability gate
+                # (automation/rppg.py) checks DECODABILITY only, NOT pulse
+                # presence — so an un-pulsed-but-playable file finalizes,
+                # the injector exits 0, and the GUI ships it WITHOUT a
+                # -NORPPG marker (silent no-pulse delivery). This is a
+                # PRE-EXISTING behavior (the old ``if best_path is None``
+                # already fell to current_path); this PR only NARROWS the
+                # window by trying every on-disk iter first. A true
+                # pulse-presence gate is tracked as a separate follow-up.
                 best_path = current_path
                 best_iter = max_iterations
 

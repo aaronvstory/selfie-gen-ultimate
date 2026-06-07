@@ -105,3 +105,20 @@ def test_end_of_loop_fallback_checks_file_exists():
         "end-of-loop fallback must handle BOTH None and a committed "
         "best_path that no longer exists on disk"
     )
+
+
+def test_recovered_iter_metrics_are_adopted_unconditionally():
+    """code-review + Gemini HIGH on PR #89: when the fallback recovers a
+    DIFFERENT iter than the (now-missing) committed best, best_metrics
+    must be set to the recovered iter's metrics UNCONDITIONALLY — not
+    gated on ``best_metrics is None or == baseline``. Otherwise the
+    delivered file gets the wrong metric suffix + wrong returned
+    metadata. Guard against the buggy conditional creeping back."""
+    src = _injector_src()
+    # The unconditional assignment must be present right after best_iter.
+    assert "best_metrics = dict(iter_files[recovered[1]]['metrics'])" in src
+    # And the buggy guard must NOT gate that assignment anymore.
+    assert "if best_metrics is None or best_metrics == dict(baseline):" not in src, (
+        "the recovered-iter metric adoption must be unconditional; the "
+        "None-or-baseline guard missed the committed-then-vanished case"
+    )
