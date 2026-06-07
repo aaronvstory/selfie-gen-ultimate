@@ -62,13 +62,103 @@ def test_runtime_dir_named_workspace_template(monkeypatch):
 
 
 def test_get_runtime_subpaths_align(monkeypatch):
-    """The four runtime accessors must produce paths rooted at runtime_dir."""
+    """The runtime accessors must produce paths rooted at runtime_dir."""
     monkeypatch.setenv("KLING_WORKSPACE", "default")
     monkeypatch.setenv("KLING_INSTANCE_ID", "20260101-000000-1234")
     runtime = path_utils.get_runtime_dir()
     assert path_utils.get_runtime_sessions_dir() == os.path.join(runtime, "sessions")
     assert path_utils.get_runtime_crash_log_path() == os.path.join(runtime, "crash_log.txt")
     assert path_utils.get_runtime_history_path() == os.path.join(runtime, "kling_history.json")
+    assert path_utils.get_runtime_scratch_dir() == os.path.join(runtime, "scratch")
+
+
+# ── Multi-instance scratch isolation (fix/multi-instance-state-bleed) ──
+# Root cause of the user-reported "image from the other instance bleeds
+# through on detect-and-crop": face_crop_tab wrote the EXIF-corrected
+# source copy to ``tempfile.gettempdir()/kling_facecrop_<basename>`` —
+# a path keyed ONLY on the image basename, SHARED across processes. Two
+# concurrent launches loading same-named files collided on one temp
+# file. get_runtime_scratch_dir() namespaces by instance id.
+
+
+def test_scratch_dir_is_under_runtime_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(path_utils, "_user_data_root", lambda: str(tmp_path))
+    monkeypatch.setenv("KLING_WORKSPACE", "default")
+    monkeypatch.setenv("KLING_INSTANCE_ID", "20260101-000000-1234")
+    path_utils._INSTANCE_ID_CACHE = None
+    scratch = path_utils.get_runtime_scratch_dir()
+    assert scratch == os.path.join(path_utils.get_runtime_dir(), "scratch")
+    path_utils._INSTANCE_ID_CACHE = None
+
+
+def test_scratch_dir_is_created_eagerly(monkeypatch, tmp_path):
+    """Call sites write immediately, so the dir must exist on return."""
+    monkeypatch.setattr(path_utils, "_user_data_root", lambda: str(tmp_path))
+    monkeypatch.setenv("KLING_WORKSPACE", "default")
+    monkeypatch.setenv("KLING_INSTANCE_ID", "20260101-000000-9999")
+    path_utils._INSTANCE_ID_CACHE = None
+    scratch = path_utils.get_runtime_scratch_dir()
+    assert os.path.isdir(scratch)
+    path_utils._INSTANCE_ID_CACHE = None
+
+
+def test_two_instances_get_isolated_scratch_dirs(monkeypatch, tmp_path):
+    """THE regression guard. Two different instance ids loading a file
+    with the SAME basename must resolve to DIFFERENT scratch paths, so
+    instance B's EXIF-corrected pixels can never overwrite instance A's
+    on disk. This is the exact collision that caused the face-crop image
+    bleed across concurrent GUI launches."""
+    monkeypatch.setattr(path_utils, "_user_data_root", lambda: str(tmp_path))
+    monkeypatch.setenv("KLING_WORKSPACE", "default")
+
+    basename = "photo.jpg"  # same filename, different source folders
+
+    monkeypatch.setenv("KLING_INSTANCE_ID", "20260101-000000-1111")
+    path_utils._INSTANCE_ID_CACHE = None
+    scratch_a = path_utils.get_runtime_scratch_dir()
+    corrected_a = os.path.join(scratch_a, f"kling_facecrop_{basename}")
+
+    monkeypatch.setenv("KLING_INSTANCE_ID", "20260101-000000-2222")
+    path_utils._INSTANCE_ID_CACHE = None
+    scratch_b = path_utils.get_runtime_scratch_dir()
+    corrected_b = os.path.join(scratch_b, f"kling_facecrop_{basename}")
+
+    assert scratch_a != scratch_b, "two instances share a scratch dir — BLEED"
+    assert corrected_a != corrected_b, (
+        "same-basename images in two instances resolve to the same temp "
+        "file — this is the multi-instance face-crop bleed bug"
+    )
+    # And writing into one must not be visible in the other.
+    with open(corrected_a, "wb") as f:
+        f.write(b"instance-A-pixels")
+    assert not os.path.exists(corrected_b), (
+        "instance A's scratch write leaked into instance B's namespace"
+    )
+    path_utils._INSTANCE_ID_CACHE = None
+
+
+def test_face_crop_tab_uses_scratch_not_gettempdir():
+    """Source-pin: face_crop_tab must NOT route working temp files
+    through the shared ``tempfile.gettempdir()``. A refactor that
+    reintroduces it reopens the multi-instance bleed."""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+    # The two former bleed sites must now go through the scratch helper.
+    assert "get_runtime_scratch_dir()" in src, (
+        "face_crop_tab must use get_runtime_scratch_dir() for working "
+        "temp files (EXIF-corrected source + crop-save fallback)"
+    )
+    # No live call to gettempdir() should remain (comments referencing it
+    # for documentation are fine; an actual call is not).
+    import re
+    code_lines = [
+        ln for ln in src.splitlines()
+        if "gettempdir(" in ln and not ln.lstrip().startswith("#")
+    ]
+    assert not code_lines, (
+        f"face_crop_tab still calls tempfile.gettempdir(): {code_lines}"
+    )
 
 
 def test_get_workspace_dir_sanitizes_explicit_arg(monkeypatch):

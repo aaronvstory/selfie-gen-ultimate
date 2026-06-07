@@ -216,6 +216,39 @@ def get_runtime_history_path(
     return os.path.join(get_runtime_dir(workspace, instance_id), "kling_history.json")
 
 
+def get_runtime_scratch_dir(
+    workspace: Optional[str] = None,
+    instance_id: Optional[str] = None,
+) -> str:
+    """Return ``<runtime_dir>/scratch/`` — per-instance working-temp home.
+
+    Use this for *working* temp files the GUI writes mid-operation and
+    reads back in the SAME process — EXIF-corrected source copies,
+    crop-save fallbacks, any intermediate scratch. The critical property
+    is per-instance isolation: ``tempfile.gettempdir()`` with a
+    constant/basename-derived filename is SHARED across concurrent
+    launches, so two instances loading same-named files collide on disk
+    and one instance reads the other's pixels (the multi-instance
+    face-crop "image bleed" bug). Routing through the per-instance
+    runtime tree gives each launch its own namespace.
+
+    The directory is created (idempotent) before the path is returned,
+    so call sites can write immediately. It lives under
+    ``get_runtime_dir()`` so it is auto-swept by the stale-instance
+    cleanup on the next launch — no separate teardown needed.
+    """
+    scratch = os.path.join(get_runtime_dir(workspace, instance_id), "scratch")
+    try:
+        os.makedirs(scratch, exist_ok=True)
+    except OSError:
+        # Best-effort: if the per-instance tree can't be created (rare
+        # write-permission edge), the caller's own error handling for a
+        # failed write takes over. Returning the path keeps behavior
+        # predictable rather than raising from a path helper.
+        pass
+    return scratch
+
+
 def get_workspace_markers_dir(workspace: Optional[str] = None) -> str:
     """Return ``<workspace_dir>/runtime/.markers/`` — liveness markers root.
 
