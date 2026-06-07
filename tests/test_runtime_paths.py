@@ -137,13 +137,53 @@ def test_two_instances_get_isolated_scratch_dirs(monkeypatch, tmp_path):
     path_utils._INSTANCE_ID_CACHE = None
 
 
+def test_scratch_dir_falls_back_when_runtime_unwritable(monkeypatch, tmp_path):
+    """Gemini PR #88 MEDIUM: if the per-instance runtime dir can't be
+    created (locked-down AppData / read-only Application Support),
+    get_runtime_scratch_dir must NOT return a dead path that guarantees
+    write failures. It falls back to the system temp dir — but STILL
+    per-instance-namespaced (``kling_scratch_<iid>``) so the
+    cross-instance bleed does NOT reopen on the fallback."""
+    import tempfile as _tf
+    monkeypatch.setattr(path_utils, "_user_data_root", lambda: str(tmp_path))
+    monkeypatch.setenv("KLING_WORKSPACE", "default")
+    monkeypatch.setenv("KLING_INSTANCE_ID", "20260101-000000-7777")
+    path_utils._INSTANCE_ID_CACHE = None
+
+    real_makedirs = os.makedirs
+
+    def _fail_under_runtime(p, *a, **k):
+        # Simulate the runtime subtree being unwritable, but let the
+        # system-temp fallback succeed.
+        if "runtime" in str(p) and "instances" in str(p):
+            raise OSError("read-only runtime tree")
+        return real_makedirs(p, *a, **k)
+
+    monkeypatch.setattr(os, "makedirs", _fail_under_runtime)
+    scratch = path_utils.get_runtime_scratch_dir()
+    # Fell back to system temp, still namespaced by the instance id.
+    assert scratch == os.path.join(_tf.gettempdir(), "kling_scratch_20260101-000000-7777")
+    # And it's per-instance: a different id yields a different fallback dir.
+    monkeypatch.setenv("KLING_INSTANCE_ID", "20260101-000000-8888")
+    path_utils._INSTANCE_ID_CACHE = None
+    scratch2 = path_utils.get_runtime_scratch_dir()
+    assert scratch2 != scratch
+    path_utils._INSTANCE_ID_CACHE = None
+
+
 def test_face_crop_tab_uses_scratch_not_gettempdir():
     """Source-pin: face_crop_tab must NOT route working temp files
     through the shared ``tempfile.gettempdir()``. A refactor that
     reintroduces it reopens the multi-instance bleed."""
     import pathlib
-    src = (pathlib.Path(__file__).resolve().parent.parent
-           / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+    # Read from the source tree; fall back to the distribution mirror so
+    # the test still runs in a distribution-only checkout / packaged CI
+    # (Gemini PR #88: EAFP — attempt the read, fall back on OSError).
+    root = pathlib.Path(__file__).resolve().parent.parent
+    try:
+        src = (root / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
+    except OSError:
+        src = (root / "distribution" / "kling_gui" / "tabs" / "face_crop_tab.py").read_text(encoding="utf-8")
     # The two former bleed sites must now go through the scratch helper.
     assert "get_runtime_scratch_dir()" in src, (
         "face_crop_tab must use get_runtime_scratch_dir() for working "

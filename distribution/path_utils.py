@@ -237,16 +237,29 @@ def get_runtime_scratch_dir(
     ``get_runtime_dir()`` so it is auto-swept by the stale-instance
     cleanup on the next launch — no separate teardown needed.
     """
-    scratch = os.path.join(get_runtime_dir(workspace, instance_id), "scratch")
+    iid = instance_id or get_instance_id()
+    scratch = os.path.join(get_runtime_dir(workspace, iid), "scratch")
     try:
         os.makedirs(scratch, exist_ok=True)
+        return scratch
     except OSError:
-        # Best-effort: if the per-instance tree can't be created (rare
-        # write-permission edge), the caller's own error handling for a
-        # failed write takes over. Returning the path keeps behavior
-        # predictable rather than raising from a path helper.
-        pass
-    return scratch
+        # Runtime dir unwritable (locked-down AppData / read-only
+        # Application Support). Returning the dead path would guarantee
+        # the caller's write fails. Fall back to the system temp dir —
+        # but STILL per-instance-namespaced (``kling_scratch_<iid>``,
+        # iid carries the PID), so the cross-instance bleed the primary
+        # path fixes does NOT reopen on the fallback (Gemini PR #88
+        # MEDIUM). These fallback files aren't covered by the orphan
+        # sweep, but this only triggers when the runtime tree itself is
+        # unwritable — a rare degraded mode where leaking a few temp
+        # files beats crashing.
+        import tempfile
+        fallback = os.path.join(tempfile.gettempdir(), f"kling_scratch_{iid}")
+        try:
+            os.makedirs(fallback, exist_ok=True)
+        except OSError:
+            pass
+        return fallback
 
 
 def get_workspace_markers_dir(workspace: Optional[str] = None) -> str:

@@ -1945,7 +1945,18 @@ class FaceCropTab(tk.Frame):
             # one shared ``<tmp>/<stem>_crop.jpg`` (same bleed class as
             # the EXIF temp above).
             out_path = Path(get_runtime_scratch_dir()) / f"{origin.stem}_crop.jpg"
-            cv2.imwrite(str(out_path), self._crop_result)
+            try:
+                cv2.imwrite(str(out_path), self._crop_result)
+            except Exception as exc:
+                # Both the gen-images dir AND the scratch dir are
+                # unwritable (full disk / locked-down profile). Don't let
+                # the unhandled exception crash the GUI worker thread
+                # (Gemini PR #88 MEDIUM) — log and bail so the user sees
+                # an actionable error instead of a silent thread death.
+                self.log(
+                    f"Face Crop: could not save crop ({exc})", "error"
+                )
+                return None
 
         self.log(
             f"Face Crop: saved {out_path.name} "
