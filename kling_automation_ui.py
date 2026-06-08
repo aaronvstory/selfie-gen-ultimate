@@ -45,6 +45,18 @@ class _QuestionarySectionAbort(Exception):
     """
 
 
+def _qs_or_abort(value):
+    """Convert a None questionary result (Esc/Ctrl-C) into a section abort.
+
+    Wrap any ad-hoc ``questionary.select()/.text().ask()`` result through this so
+    a cancellation unwinds back to the section picker instead of silently
+    falling through to the next field. Returns the value unchanged otherwise.
+    """
+    if value is None:
+        raise _QuestionarySectionAbort()
+    return value
+
+
 try:
     # questionary is declared required=True in dependency_checker.py and is
     # installed via requirements.txt by every launcher (setup_macos.sh,
@@ -667,7 +679,7 @@ class KlingAutomationUI:
             spec = API_KEY_SPECS[selected - 1]
             print(f"\n{spec.label}: {spec.instruction}")
             print(f"Get key: {spec.url}")
-            value = input(f"Enter {spec.label} API key: ").strip()
+            value = self._safe_input(f"Enter {spec.label} API key: ").strip()
             if value:
                 self.config[spec.config_key] = value
                 self._set_api_key(spec)
@@ -717,7 +729,13 @@ class KlingAutomationUI:
             return
         self._startup_key_onboarding_done = True
         prompt_specs = startup_prompt_specs()
-        if not sys.stdin.isatty():
+        # Guard isatty the same way _use_legacy_prompt_ui does: sys.stdin can be
+        # None (Windows background service) or a custom stream lacking isatty()
+        # (IDE/GUI wrappers, test runners). A bare sys.stdin.isatty() would
+        # AttributeError there (C1). Treat "no interactive TTY" as non-interactive.
+        _stdin = getattr(sys, "stdin", None)
+        _is_tty = bool(_stdin) and hasattr(_stdin, "isatty") and _stdin.isatty()
+        if not _is_tty:
             # Warn about the keys the ACTIVE automation config actually needs
             # (config-aware: fal for core gen + BFL only when a stage selects the
             # BFL provider), not a generic fal/BFL pair — so the non-interactive
@@ -746,7 +764,7 @@ class KlingAutomationUI:
         print("\nPress Enter to skip any key for now.")
         for spec in missing_startup_specs(self.config):
             print(f"\n{spec.label}: {spec.instruction}")
-            value = input("Enter key now (or q to skip): ").strip()
+            value = self._safe_input("Enter key now (or q to skip): ").strip()
             if value.lower() == "q":
                 continue
             if value:
@@ -995,23 +1013,37 @@ class KlingAutomationUI:
                 self.print_green("✓ Output mode: same folder as source images")
                 time.sleep(0.8)
                 return
-            # pick == "2": custom folder
-            self.config["use_source_folder"] = False
+            # pick == "2": custom folder. Resolve the target path FIRST and only
+            # flip use_source_folder + save once we have a valid folder — an
+            # Esc/empty path must NOT persist use_source_folder=False with an
+            # empty/stale output_folder (that breaks automation output). (A1)
+            existing = str(self.config.get("output_folder", "") or "")
             new_path = self._q_text(
                 "Custom output folder path:",
-                default=str(self.config.get("output_folder", "")),
+                default=existing,
             )
-            if new_path and new_path.strip():
-                np = new_path.strip().strip('"').strip("'")
-                try:
-                    Path(np).mkdir(parents=True, exist_ok=True)
-                    self.config["output_folder"] = np
-                except OSError as e:
-                    self.print_red(f"Error creating folder: {e}")
-                    time.sleep(1.0)
-                    return
+            if new_path is None or not new_path.strip():
+                # Cancelled / empty: keep an existing valid folder if there is
+                # one, otherwise leave the mode untouched entirely.
+                if existing:
+                    self.config["use_source_folder"] = False
+                    self.save_config()
+                    self.print_green(f"✓ Output mode: custom folder -> {existing}")
+                else:
+                    self.print_yellow("Output mode unchanged (no folder provided).")
+                time.sleep(0.8)
+                return
+            np = new_path.strip().strip('"').strip("'")
+            try:
+                Path(np).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                self.print_red(f"Error creating folder: {e}")
+                time.sleep(1.0)
+                return
+            self.config["use_source_folder"] = False
+            self.config["output_folder"] = np
             self.save_config()
-            self.print_green(f"✓ Output mode: custom folder -> {self.config.get('output_folder')}")
+            self.print_green(f"✓ Output mode: custom folder -> {np}")
             time.sleep(0.8)
             return
 
@@ -1046,11 +1078,9 @@ class KlingAutomationUI:
             print("  Videos will be saved alongside each input image")
             time.sleep(1.5)
         elif choice == "2":
-            self.config["use_source_folder"] = False
-            print(
-                f"\n\033[93mCurrent custom folder:\033[0m {self.config['output_folder']}"
-            )
-            new_path = input(
+            existing = str(self.config.get("output_folder", "") or "")
+            print(f"\n\033[93mCurrent custom folder:\033[0m {existing or '(none)'}")
+            new_path = self._safe_input(
                 "\033[92mEnter new folder path (or Enter to keep current):\033[0m "
             ).strip()
 
@@ -1060,19 +1090,29 @@ class KlingAutomationUI:
             ):
                 new_path = new_path[1:-1]
 
-            if new_path:
-                try:
-                    Path(new_path).mkdir(parents=True, exist_ok=True)
-                    self.config["output_folder"] = new_path
-                    print(f"\033[92m✓ Custom folder set to: {new_path}\033[0m")
-                except Exception as e:
-                    self.print_red(f"Error creating folder: {e}")
-                    time.sleep(1.5)
-                    return
-
+            # Resolve the target FIRST; only flip use_source_folder + save once a
+            # valid folder is in hand. An empty answer must not persist
+            # use_source_folder=False with an empty output_folder (A1).
+            if not new_path:
+                if existing:
+                    self.config["use_source_folder"] = False
+                    self.save_config()
+                    print(f"\n\033[92m✓ Output mode: CUSTOM FOLDER -> {existing}\033[0m")
+                else:
+                    print("\033[93mOutput mode unchanged (no folder provided).\033[0m")
+                time.sleep(1.0)
+                return
+            try:
+                Path(new_path).mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                self.print_red(f"Error creating folder: {e}")
+                time.sleep(1.5)
+                return
+            self.config["use_source_folder"] = False
+            self.config["output_folder"] = new_path
             self.save_config()
             print(f"\n\033[92m✓ Output mode: CUSTOM FOLDER\033[0m")
-            print(f"  All videos will go to: {self.config['output_folder']}")
+            print(f"  All videos will go to: {new_path}")
             time.sleep(1.5)
         else:
             print("\033[90mCancelled\033[0m")
@@ -3262,6 +3302,7 @@ class KlingAutomationUI:
             default="_keep",
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
+        preset = _qs_or_abort(preset)  # B1: Esc aborts the section, not silent fall-through
         if preset == "nano":
             self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
         elif preset == "gpt":
@@ -3274,6 +3315,7 @@ class KlingAutomationUI:
                 qmark="◆",
                 style=KLING_QUESTIONARY_STYLE,
             ).ask()
+            raw = _qs_or_abort(raw)  # B2: Esc aborts rather than falling through
             if raw:
                 models = [m.strip() for m in raw.split(",") if m.strip()]
                 if models:
@@ -3310,6 +3352,7 @@ class KlingAutomationUI:
             default="_keep",
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
+        prompt_action = _qs_or_abort(prompt_action)  # B3: Esc aborts the section
         if prompt_action == "switch":
             slot_raw = questionary.text(
                 "New slot (1-10, or Enter to keep current):",
