@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fnmatch
 from pathlib import Path
 import re
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Callable, Dict, Iterable, List, Optional, Set
 
 
 IGNORED_DIR_NAMES: Set[str] = {
@@ -45,11 +46,39 @@ def _find_first_existing(paths: Iterable[Path]) -> Optional[Path]:
     return None
 
 
-def discover_case_folders(root_dir: Path, front_names: Iterable[str]) -> List[CaseRecord]:
+def discover_case_folders(
+    root_dir: Path,
+    front_names: Iterable[str],
+    front_globs: Optional[Iterable[str]] = None,
+    warn_cb: Optional[Callable[[str], None]] = None,
+) -> List[CaseRecord]:
+    """Recursively find case folders that contain a front image.
+
+    A folder qualifies when it directly contains a file whose lowercased name
+    EITHER matches one of ``front_names`` exactly (e.g. ``front.jpg``) OR matches
+    one of the optional ``front_globs`` patterns (e.g. ``*id_photo*.jpg``).
+
+    ``front_globs`` exists because real-world batch input is not always literally
+    named ``front.jpg`` — production folders often carry their own naming
+    (``...id_photo-....jpg``). Globs are matched with :func:`fnmatch.fnmatch` on
+    the lowercased filename (stdlib, no new dependency). When BOTH lists are
+    empty the function returns no cases.
+
+    Within a single folder the children are scanned in sorted order, so the
+    first matching file wins deterministically. If more than one file in the same
+    folder matches (only possible via a loose glob), ``warn_cb`` — when provided —
+    is invoked once for that folder so the operator can tighten the pattern.
+    """
     root = root_dir.resolve()
     canonical_front_names = {name.lower() for name in front_names}
+    canonical_front_globs = [str(pat).lower() for pat in (front_globs or []) if str(pat).strip()]
     cases: List[CaseRecord] = []
     pending: List[Path] = [root]
+
+    def _matches(name_lower: str) -> bool:
+        if name_lower in canonical_front_names:
+            return True
+        return any(fnmatch.fnmatch(name_lower, pat) for pat in canonical_front_globs)
 
     while pending:
         current = pending.pop()
@@ -59,12 +88,20 @@ def discover_case_folders(root_dir: Path, front_names: Iterable[str]) -> List[Ca
             continue
 
         front_match: Optional[Path] = None
+        match_count = 0
         for child in children:
-            if child.is_file() and child.name.lower() in canonical_front_names:
-                front_match = child
-                break
+            if child.is_file() and _matches(child.name.lower()):
+                match_count += 1
+                if front_match is None:
+                    front_match = child
 
         if front_match is not None:
+            if match_count > 1 and warn_cb is not None:
+                warn_cb(
+                    f"{match_count} files match the front pattern in "
+                    f"{front_match.parent}; using '{front_match.name}' (first sorted). "
+                    "Tighten --front-glob if this is the wrong file."
+                )
             rel = front_match.parent.relative_to(root)
             rel_key = "." if str(rel) == "." else str(rel).replace("\\", "/")
             cases.append(CaseRecord(case_dir=front_match.parent, front_path=front_match, relative_key=rel_key))
@@ -150,8 +187,14 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
     )
 
 
-def summarize_cases(root_dir: Path, front_names: Iterable[str]) -> List[Dict[str, str]]:
-    records = discover_case_folders(root_dir=root_dir, front_names=front_names)
+def summarize_cases(
+    root_dir: Path,
+    front_names: Iterable[str],
+    front_globs: Optional[Iterable[str]] = None,
+) -> List[Dict[str, str]]:
+    records = discover_case_folders(
+        root_dir=root_dir, front_names=front_names, front_globs=front_globs
+    )
     summary: List[Dict[str, str]] = []
     for record in records:
         outputs = detect_existing_outputs(record.case_dir)

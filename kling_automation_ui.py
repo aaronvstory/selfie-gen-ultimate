@@ -87,7 +87,11 @@ from path_utils import (
 
 # Import the fal.ai KlingBatchGenerator
 from kling_generator_falai import FalAIKlingGenerator
-from automation.config import merge_automation_defaults, from_app_config
+from automation.config import (
+    merge_automation_defaults,
+    from_app_config,
+    get_outpaint_fal_timeout_seconds,
+)
 from automation.discovery import discover_case_folders, detect_existing_outputs
 from automation.logger import resolve_automation_log_path
 from automation.manifest import AutomationManifest
@@ -145,6 +149,39 @@ RECOMMENDED_KLING_NEGATIVE_SLOT_1 = (
 )
 
 _CRASH_CAPTURE_FILE: Optional[io.TextIOWrapper] = None
+
+
+def _derive_model_display_name(endpoint: str) -> str:
+    """Best-effort friendly name for a fal video model endpoint.
+
+    Used by the headless ``--model`` override when no explicit ``--model-name``
+    is supplied. Prefers the canonical name from models.json when the endpoint
+    is a known model; otherwise prettifies the endpoint path tail (e.g.
+    ``fal-ai/kling-video/v2.5-turbo/standard/image-to-video`` ->
+    ``Kling Video V2.5 Turbo Standard``).
+    """
+    endpoint = (endpoint or "").strip()
+    if not endpoint:
+        return ""
+    try:
+        from model_metadata import get_model_by_endpoint, get_model_display_name
+
+        known = get_model_by_endpoint(endpoint)
+        if known:
+            name = get_model_display_name(known)
+            if name:
+                return name
+    except Exception:
+        pass
+    # Fallback: prettify the path, dropping the trailing verb segment
+    # (image-to-video / text-to-video) and the vendor prefix.
+    parts = [p for p in endpoint.split("/") if p]
+    if parts and parts[0] in {"fal-ai", "fal"}:
+        parts = parts[1:]
+    if parts and parts[-1] in {"image-to-video", "text-to-video", "edit"}:
+        parts = parts[:-1]
+    pretty = " ".join(seg.replace("-", " ").title() for seg in parts if seg)
+    return pretty or endpoint
 
 
 def _enable_cli_crash_capture() -> Optional[str]:
@@ -2104,7 +2141,11 @@ class KlingAutomationUI:
             self.print_red("Automation root path does not exist.")
             self.pause_review("Press Enter to continue...")
             return
-        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        records = discover_case_folders(
+            root,
+            self.config.get("automation_front_names", []),
+            front_globs=self.config.get("automation_front_globs", []),
+        )
         manifest = AutomationManifest.load_if_exists(self._automation_manifest_path())
         rows, counts, _ = self._collect_case_snapshot(records, manifest)
         table = Table(title="Automation Scan Preview")
@@ -2988,7 +3029,11 @@ class KlingAutomationUI:
             self.print_red("Automation root path does not exist.")
             self.pause_review("Press Enter to continue...")
             return
-        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        records = discover_case_folders(
+            root,
+            self.config.get("automation_front_names", []),
+            front_globs=self.config.get("automation_front_globs", []),
+        )
         manifest_path = self._automation_manifest_path()
         had_manifest = manifest_path.exists()
         manifest = AutomationManifest.load_if_exists(manifest_path)
@@ -3021,6 +3066,13 @@ class KlingAutomationUI:
         auto_approve: bool = True,
         max_cases_override: Optional[str] = None,
         reprocess_override: Optional[str] = None,
+        model_override: Optional[str] = None,
+        model_name_override: Optional[str] = None,
+        oldcam_version_override: Optional[str] = None,
+        rppg_override: Optional[bool] = None,
+        front_globs_override: Optional[List[str]] = None,
+        outpaint_timeout_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
     ) -> int:
         """Non-interactive batch runner for the automation pipeline.
 
@@ -3119,10 +3171,66 @@ class KlingAutomationUI:
             _err(f"[batch] Automation root is not a directory: {root}")
             return 1
 
+        # --- FINGERPRINTED overrides: apply BEFORE discovery + create_or_load ---
+        # automation_* keys are baked into the manifest fingerprint
+        # (manifest.py). Applying them AFTER create_or_load would load a stale
+        # manifest under the OLD settings and the new behavior would silently
+        # no-op (the documented bug class at manifest.py:119-128). So these MUST
+        # land on self.config before discover_case_folders and create_or_load.
+        if oldcam_version_override is not None:
+            ver = str(oldcam_version_override).strip().lower()
+            if not ver:
+                _err("[batch] --oldcam-version must not be empty.")
+                return 1
+            self.config["automation_oldcam_version"] = ver
+        if rppg_override is not None:
+            self.config["automation_rppg_enabled"] = bool(rppg_override)
+        if front_globs_override is not None:
+            globs = [str(p).strip() for p in front_globs_override if str(p).strip()]
+            if globs:
+                self.config["automation_front_globs"] = globs
+        if provider_override is not None:
+            prov = str(provider_override).strip().lower()
+            if prov not in {"fal", "bfl", "auto"}:
+                _err(f"[batch] Invalid --provider '{provider_override}'; use fal, bfl, or auto.")
+                return 1
+            # Force BOTH expand stages onto the chosen provider. This overrides
+            # the saved automation_*_expand_provider keys (a personal config can
+            # carry bfl while the user wants the run wholly on fal.ai).
+            self.config["automation_front_expand_provider"] = prov
+            self.config["automation_selfie_expand_provider"] = prov
+
+        # --- NON-fingerprinted overrides: model + outpaint timeout. These are
+        # NOT automation_* keys, so they do not affect the manifest fingerprint
+        # and can be applied here (read lazily by the video factory /
+        # get_outpaint_fal_timeout_seconds when the runner is built).
+        if model_override is not None:
+            endpoint = str(model_override).strip()
+            if not endpoint:
+                _err("[batch] --model must not be empty.")
+                return 1
+            self.config["current_model"] = endpoint
+            self.config["model_display_name"] = (
+                str(model_name_override).strip()
+                if model_name_override and str(model_name_override).strip()
+                else _derive_model_display_name(endpoint)
+            )
+        if outpaint_timeout_override is not None:
+            try:
+                self.config["outpaint_fal_timeout_seconds"] = int(str(outpaint_timeout_override).strip())
+            except (TypeError, ValueError):
+                _err(f"[batch] Invalid --outpaint-timeout '{outpaint_timeout_override}'; use an integer.")
+                return 1
+
         # EAFP: directly attempt discovery and catch OSError (restricted FS /
         # permission errors) rather than pre-flighting (code-review Gemini, PR #69).
         try:
-            records = discover_case_folders(root_path, self.config.get("automation_front_names", []))
+            records = discover_case_folders(
+                root_path,
+                self.config.get("automation_front_names", []),
+                front_globs=self.config.get("automation_front_globs", []),
+                warn_cb=_warn,
+            )
         except OSError as exc:
             _err(f"[batch] Failed to scan automation root: {exc}")
             return 1
@@ -3199,6 +3307,23 @@ class KlingAutomationUI:
         print(f"  cases discovered: {len(records)}")
         print(f"  running this batch: {len(runnable_cases)}")
         print(f"  reprocess mode: {self.config.get('automation_reprocess_mode', 'skip')}")
+        # Echo the EFFECTIVE run config so the overnight/unattended log records
+        # exactly which model / oldcam version / rppg state actually ran
+        # (especially the headless --model/--oldcam-version/--rppg overrides).
+        print(
+            f"  video model: {self.config.get('current_model', '')} "
+            f"({self.config.get('model_display_name', '')})"
+        )
+        print(f"  expand provider: front={self.config.get('automation_front_expand_provider', 'fal')} "
+              f"selfie={self.config.get('automation_selfie_expand_provider', 'fal')}")
+        print(f"  oldcam: enabled={self.config.get('automation_oldcam_enabled', True)} "
+              f"version={self.config.get('automation_oldcam_version', 'v24')}")
+        print(f"  rppg enabled: {self.config.get('automation_rppg_enabled', False)}")
+        _eff_globs = self.config.get('automation_front_globs', []) or []
+        if _eff_globs:
+            print(f"  front globs: {_eff_globs}")
+        print(f"  outpaint timeout (s): "
+              f"{get_outpaint_fal_timeout_seconds(self.config)}")
         for line in self._automation_status_lines():
             print(f"  {line}")
         selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
@@ -3259,7 +3384,11 @@ class KlingAutomationUI:
             self.print_red("Automation root path does not exist.")
             self.pause_review("Press Enter to continue...")
             return
-        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        records = discover_case_folders(
+            root,
+            self.config.get("automation_front_names", []),
+            front_globs=self.config.get("automation_front_globs", []),
+        )
         if not records:
             self.print_yellow("No case folders found.")
             self.pause_review("Press Enter to continue...")
@@ -4053,6 +4182,77 @@ def main(argv=None):
             action="store_true",
             help="Headless --batch only: auto-approve the run (default in --batch).",
         )
+        # Headless --batch operational overrides. These let a batch run differ
+        # from the saved kling_config.json / distributable defaults WITHOUT
+        # editing config on disk (e.g. test on the cheaper STANDARD model, pin a
+        # specific oldcam version, force rPPG on/off). Threaded into
+        # run_automation_headless and applied at the correct point relative to
+        # the manifest fingerprint (fingerprinted automation_* keys BEFORE
+        # create_or_load; current_model / timeout AFTER, they are not fingerprinted).
+        parser.add_argument(
+            "--model",
+            metavar="ENDPOINT",
+            default=None,
+            help="Headless --batch only: override the video model endpoint "
+            "(e.g. fal-ai/kling-video/v2.5-turbo/standard/image-to-video). "
+            "Overrides current_model. Not part of the manifest fingerprint.",
+        )
+        parser.add_argument(
+            "--model-name",
+            metavar="NAME",
+            default=None,
+            help="Headless --batch only: friendly display name for --model "
+            "(e.g. 'Kling 2.5 Turbo Standard'). Defaults to a name derived "
+            "from the endpoint when omitted.",
+        )
+        parser.add_argument(
+            "--oldcam-version",
+            metavar="VER",
+            default=None,
+            help="Headless --batch only: override the oldcam version (e.g. v13, "
+            "v24, or 'all'). Overrides automation_oldcam_version. Changing this "
+            "is part of the run identity, so it forces a fresh manifest.",
+        )
+        parser.add_argument(
+            "--rppg",
+            dest="rppg",
+            action="store_true",
+            default=None,
+            help="Headless --batch only: force rPPG injection ON for this run "
+            "(overrides automation_rppg_enabled). Forces a fresh manifest.",
+        )
+        parser.add_argument(
+            "--no-rppg",
+            dest="rppg",
+            action="store_false",
+            default=None,
+            help="Headless --batch only: force rPPG injection OFF for this run.",
+        )
+        parser.add_argument(
+            "--front-glob",
+            metavar="GLOB",
+            action="append",
+            default=None,
+            help="Headless --batch only: extra fnmatch pattern(s) for the per-folder "
+            "front image, matched in addition to front.jpg/png/jpeg (e.g. "
+            "'*id_photo*.jpg'). Repeatable. Forces a fresh manifest.",
+        )
+        parser.add_argument(
+            "--outpaint-timeout",
+            metavar="SECONDS",
+            default=None,
+            help="Headless --batch only: override the fal outpaint poll timeout in "
+            "seconds (clamped 30-300). Default 150; bump for unattended runs.",
+        )
+        parser.add_argument(
+            "--provider",
+            metavar="PROVIDER",
+            default=None,
+            help="Headless --batch only: force the outpaint provider (fal|bfl|auto) "
+            "for BOTH front-expand and selfie-expand, overriding the saved "
+            "automation_*_expand_provider keys. Use 'fal' to keep everything on "
+            "fal.ai. Forces a fresh manifest.",
+        )
         parser.add_argument("--manual-video", action="store_true", help="Launch legacy manual Kling tools")
         parser.add_argument("--gui", action="store_true", help="Launch GUI manual lab directly")
         parser.add_argument("--verbose-startup", action="store_true", help="Show full startup dependency diagnostics")
@@ -4107,6 +4307,13 @@ def main(argv=None):
                 auto_approve=True,
                 max_cases_override=args.limit,
                 reprocess_override=args.reprocess,
+                model_override=args.model,
+                model_name_override=args.model_name,
+                oldcam_version_override=args.oldcam_version,
+                rppg_override=args.rppg,
+                front_globs_override=args.front_glob,
+                outpaint_timeout_override=args.outpaint_timeout,
+                provider_override=args.provider,
             )
             sys.exit(int(rc))
         if args.gui:

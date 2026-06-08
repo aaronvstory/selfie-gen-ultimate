@@ -31,6 +31,12 @@ DEFAULT_SELFIE_PROMPT = (
 AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_manifest_name": "automation_manifest.json",
     "automation_front_names": ["front.png", "front.jpg", "front.jpeg"],
+    # Optional fnmatch glob patterns for the per-folder front image, matched on
+    # the lowercased filename IN ADDITION to automation_front_names. Empty by
+    # default = exact-name behavior unchanged. Lets real-world batches whose
+    # input is not literally "front.jpg" (e.g. "*id_photo*.jpg") be discovered
+    # without renaming source files. See discovery.discover_case_folders.
+    "automation_front_globs": [],
     "automation_skip_completed": True,
     "automation_skip_if_selfie_exists": True,
     "automation_skip_if_video_exists": True,
@@ -206,6 +212,11 @@ class AutomationConfig:
     def front_names(self) -> List[str]:
         raw = self.values.get("automation_front_names", [])
         return [str(name).lower() for name in raw]
+
+    @property
+    def front_globs(self) -> List[str]:
+        raw = self.values.get("automation_front_globs", []) or []
+        return [str(pat).lower() for pat in raw if str(pat).strip()]
 
 
 def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
