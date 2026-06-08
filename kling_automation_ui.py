@@ -3232,9 +3232,12 @@ class KlingAutomationUI:
         if rppg_override is not None:
             self.config["automation_rppg_enabled"] = bool(rppg_override)
         if front_globs_override is not None:
-            globs = [str(p).strip() for p in front_globs_override if str(p).strip()]
-            if globs:
-                self.config["automation_front_globs"] = globs
+            # Explicit override wins even when empty: passing an empty list (or
+            # only-whitespace patterns) clears any saved globs for this run,
+            # rather than silently leaving them active.
+            self.config["automation_front_globs"] = [
+                str(p).strip() for p in front_globs_override if str(p).strip()
+            ]
         if provider_override is not None:
             prov = str(provider_override).strip().lower()
             if prov not in {"fal", "bfl", "auto"}:
@@ -3263,10 +3266,18 @@ class KlingAutomationUI:
             )
         if outpaint_timeout_override is not None:
             try:
-                self.config["outpaint_fal_timeout_seconds"] = int(str(outpaint_timeout_override).strip())
+                raw_t = int(str(outpaint_timeout_override).strip())
             except (TypeError, ValueError):
                 _err(f"[batch] Invalid --outpaint-timeout '{outpaint_timeout_override}'; use an integer.")
                 return 1
+            # Clamp to the documented [30, 300] envelope at write time + warn so
+            # the stored value matches the effective behavior (the help text
+            # promises a clamp; don't silently store an out-of-range value that
+            # get_outpaint_fal_timeout_seconds quietly clamps on read).
+            clamped_t = max(30, min(300, raw_t))
+            if clamped_t != raw_t:
+                _warn(f"[batch] --outpaint-timeout {raw_t} out of range [30, 300]; using {clamped_t}.")
+            self.config["outpaint_fal_timeout_seconds"] = clamped_t
 
         # EAFP: directly attempt discovery and catch OSError (restricted FS /
         # permission errors) rather than pre-flighting (code-review Gemini, PR #69).

@@ -225,6 +225,34 @@ def test_headless_invalid_outpaint_timeout_exits_1(tmp_path, monkeypatch):
     assert rc == 1
 
 
+def test_headless_outpaint_timeout_out_of_range_is_clamped(tmp_path, monkeypatch):
+    _seed_two_cases(tmp_path)
+    app, captured = _build_app(tmp_path, monkeypatch)
+    rc = app.run_automation_headless(
+        str(tmp_path),
+        outpaint_timeout_override="5",  # below the [30, 300] floor
+        max_cases_override="all",
+        reprocess_override="overwrite",
+    )
+    assert rc == 0
+    # Clamped at WRITE time so the stored value matches the effective behavior.
+    assert captured["config"]["outpaint_fal_timeout_seconds"] == 30
+
+
+def test_headless_empty_front_globs_override_clears_saved(tmp_path, monkeypatch):
+    _seed_two_cases(tmp_path)
+    app, captured = _build_app(tmp_path, monkeypatch)
+    app.config["automation_front_globs"] = ["*old*.jpg"]
+    rc = app.run_automation_headless(
+        str(tmp_path),
+        front_globs_override=[],  # explicit empty = clear
+        max_cases_override="all",
+        reprocess_override="overwrite",
+    )
+    assert rc == 0
+    assert captured["config"]["automation_front_globs"] == []
+
+
 def test_headless_front_glob_discovers_nonstandard_names(tmp_path, monkeypatch):
     _make_case(tmp_path, "u1", "scan-id_photo-1.jpg")
     _make_case(tmp_path, "u2", "scan-id_photo-2.jpg")
