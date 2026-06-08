@@ -1,0 +1,273 @@
+"""Tests for the headless --batch override flags, glob-based front discovery,
+and the questionary non-TTY fallbacks added in feat/cli-batch-pipeline-questionary.
+
+These complement the existing mocked automation suites — no real fal.ai calls.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from automation.config import AUTOMATION_DEFAULTS, AutomationConfig
+from automation.discovery import discover_case_folders
+from kling_automation_ui import KlingAutomationUI, _derive_model_display_name
+
+
+# --------------------------------------------------------------------------
+# discover_case_folders: glob support
+# --------------------------------------------------------------------------
+
+def _make_case(root: Path, name: str, front_name: str) -> Path:
+    case = root / name
+    case.mkdir(parents=True)
+    (case / front_name).write_bytes(b"x")
+    return case
+
+
+def test_discovery_exact_names_unchanged_when_no_globs(tmp_path):
+    _make_case(tmp_path, "a", "front.jpg")
+    _make_case(tmp_path, "b", "other.jpg")  # not a front name -> not a case
+    cases = discover_case_folders(tmp_path, ["front.jpg"])
+    keys = sorted(c.relative_key for c in cases)
+    assert keys == ["a"]
+
+
+def test_discovery_glob_matches_nonstandard_front(tmp_path):
+    _make_case(tmp_path, "a", "menopausequestionnaire-12016-id_photo-x.jpg")
+    cases = discover_case_folders(tmp_path, ["front.jpg"], front_globs=["*id_photo*.jpg"])
+    keys = sorted(c.relative_key for c in cases)
+    assert keys == ["a"]
+    # The matched file is the non-standard one.
+    assert "id_photo" in cases[0].front_path.name
+
+
+def test_discovery_glob_is_additive_to_exact_names(tmp_path):
+    _make_case(tmp_path, "a", "front.jpg")
+    _make_case(tmp_path, "b", "scan-id_photo-1.jpg")
+    cases = discover_case_folders(tmp_path, ["front.jpg"], front_globs=["*id_photo*.jpg"])
+    assert sorted(c.relative_key for c in cases) == ["a", "b"]
+
+
+def test_discovery_glob_case_insensitive(tmp_path):
+    _make_case(tmp_path, "a", "PHOTO-ID_PHOTO.JPG")
+    cases = discover_case_folders(tmp_path, [], front_globs=["*id_photo*.jpg"])
+    assert [c.relative_key for c in cases] == ["a"]
+
+
+def test_discovery_warns_on_multiple_matches(tmp_path):
+    case = tmp_path / "a"
+    case.mkdir()
+    (case / "a-id_photo.jpg").write_bytes(b"x")
+    (case / "b-id_photo.jpg").write_bytes(b"x")
+    warnings: list[str] = []
+    cases = discover_case_folders(
+        tmp_path, [], front_globs=["*id_photo*.jpg"], warn_cb=warnings.append
+    )
+    assert len(cases) == 1  # first sorted wins
+    assert cases[0].front_path.name == "a-id_photo.jpg"
+    assert warnings and "match" in warnings[0].lower()
+
+
+def test_discovery_empty_names_and_globs_finds_nothing(tmp_path):
+    _make_case(tmp_path, "a", "front.jpg")
+    assert discover_case_folders(tmp_path, [], front_globs=[]) == []
+
+
+# --------------------------------------------------------------------------
+# config: automation_front_globs default + property
+# --------------------------------------------------------------------------
+
+def test_front_globs_default_is_empty_list():
+    assert AUTOMATION_DEFAULTS["automation_front_globs"] == []
+
+
+def test_automation_config_front_globs_property_normalizes():
+    ac = AutomationConfig({"automation_front_globs": ["*ID*.JPG", "", "  ", "*x*"]})
+    assert ac.front_globs == ["*id*.jpg", "*x*"]
+
+
+# --------------------------------------------------------------------------
+# _derive_model_display_name
+# --------------------------------------------------------------------------
+
+def test_derive_model_display_name_known_endpoint():
+    name = _derive_model_display_name(
+        "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+    )
+    # Resolves via models.json to a friendly Kling 2.5 standard name.
+    assert "Kling" in name and "Standard" in name
+
+
+def test_derive_model_display_name_unknown_endpoint_prettifies():
+    name = _derive_model_display_name("fal-ai/some-new-model/v9/image-to-video")
+    assert name == "Some New Model V9"
+
+
+def test_derive_model_display_name_empty():
+    assert _derive_model_display_name("") == ""
+    assert _derive_model_display_name("   ") == ""
+
+
+# --------------------------------------------------------------------------
+# run_automation_headless: override threading + fingerprint sequencing
+# --------------------------------------------------------------------------
+
+def _build_app(tmp_path, monkeypatch):
+    """A KlingAutomationUI wired with a clean config + a captured runner so no
+    real fal.ai work happens. Returns (app, captured) where captured records the
+    effective config the runner saw."""
+    app = KlingAutomationUI.__new__(KlingAutomationUI)
+    app.config = dict(AUTOMATION_DEFAULTS)
+    app.config["falai_api_key"] = "test-fal-key"
+    app.config["current_model"] = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+    app.config["model_display_name"] = "Kling 2.5 Turbo Pro"
+    app.config["automation_front_expand_provider"] = "bfl"
+    app.config["automation_selfie_expand_provider"] = "bfl"
+    app.automation_root_folder = ""
+    app.print_red = lambda *_a, **_k: None
+    app.print_yellow = lambda *_a, **_k: None
+    app._automation_status_lines = lambda: []
+    app._get_selected_selfie_prompt = lambda: ("1", "prompt", "slot:1")
+    app._write_automation_summary = lambda *a, **k: None
+    app._automation_manifest_path = lambda: tmp_path / "automation_manifest.json"
+
+    captured: dict = {}
+
+    import kling_automation_ui as kmod
+
+    class FakeRunner:
+        last_case_results = []
+
+        def __init__(self, config, automation_config, manifest, progress_cb=None):
+            captured["config"] = dict(config)
+            self.progress_cb = progress_cb
+
+        def validate_configuration(self):
+            return []
+
+        def run(self, cases):
+            captured["n_cases"] = len(cases)
+            return {"completed": len(cases), "failed": 0, "manual_review": 0, "skipped": 0}
+
+    monkeypatch.setattr(kmod, "AutoPipelineRunner", FakeRunner)
+    return app, captured
+
+
+def _seed_two_cases(tmp_path):
+    _make_case(tmp_path, "u1", "front.jpg")
+    _make_case(tmp_path, "u2", "front.jpg")
+
+
+def test_headless_overrides_land_in_runner_config(tmp_path, monkeypatch):
+    _seed_two_cases(tmp_path)
+    app, captured = _build_app(tmp_path, monkeypatch)
+    rc = app.run_automation_headless(
+        str(tmp_path),
+        model_override="fal-ai/kling-video/v2.5-turbo/standard/image-to-video",
+        model_name_override="Kling 2.5 Turbo Standard",
+        oldcam_version_override="v13",
+        rppg_override=True,
+        provider_override="fal",
+        outpaint_timeout_override="240",
+        max_cases_override="all",
+        reprocess_override="overwrite",
+    )
+    assert rc == 0
+    cfg = captured["config"]
+    assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+    assert cfg["model_display_name"] == "Kling 2.5 Turbo Standard"
+    assert cfg["automation_oldcam_version"] == "v13"
+    assert cfg["automation_rppg_enabled"] is True
+    assert cfg["automation_front_expand_provider"] == "fal"
+    assert cfg["automation_selfie_expand_provider"] == "fal"
+    assert cfg["outpaint_fal_timeout_seconds"] == 240
+    assert captured["n_cases"] == 2
+
+
+def test_headless_fingerprinted_overrides_applied_before_manifest(tmp_path, monkeypatch):
+    """oldcam-version / rppg / provider are automation_* keys -> they must be on
+    the manifest fingerprint, NOT applied after load. Verify the persisted
+    manifest fingerprint reflects the overridden values."""
+    _seed_two_cases(tmp_path)
+    app, _captured = _build_app(tmp_path, monkeypatch)
+    rc = app.run_automation_headless(
+        str(tmp_path),
+        oldcam_version_override="v13",
+        rppg_override=True,
+        provider_override="fal",
+        max_cases_override="all",
+        reprocess_override="overwrite",
+    )
+    assert rc == 0
+    import json
+
+    manifest = json.loads((tmp_path / "automation_manifest.json").read_text(encoding="utf-8"))
+    # The manifest persists the full automation_* config_snapshot, which is what
+    # the fingerprint is computed from on load. Overrides applied BEFORE
+    # create_or_load are baked into this snapshot; applied after, they would be
+    # absent here and silently no-op on a stale manifest.
+    snap = manifest.get("config_snapshot", {})
+    assert snap.get("automation_oldcam_version") == "v13"
+    assert snap.get("automation_rppg_enabled") is True
+    assert snap.get("automation_front_expand_provider") == "fal"
+
+
+def test_headless_invalid_provider_exits_1(tmp_path, monkeypatch):
+    _seed_two_cases(tmp_path)
+    app, _ = _build_app(tmp_path, monkeypatch)
+    rc = app.run_automation_headless(str(tmp_path), provider_override="banana")
+    assert rc == 1
+
+
+def test_headless_invalid_outpaint_timeout_exits_1(tmp_path, monkeypatch):
+    _seed_two_cases(tmp_path)
+    app, _ = _build_app(tmp_path, monkeypatch)
+    rc = app.run_automation_headless(str(tmp_path), outpaint_timeout_override="abc")
+    assert rc == 1
+
+
+def test_headless_front_glob_discovers_nonstandard_names(tmp_path, monkeypatch):
+    _make_case(tmp_path, "u1", "scan-id_photo-1.jpg")
+    _make_case(tmp_path, "u2", "scan-id_photo-2.jpg")
+    app, captured = _build_app(tmp_path, monkeypatch)
+    rc = app.run_automation_headless(
+        str(tmp_path),
+        front_globs_override=["*id_photo*.jpg"],
+        max_cases_override="all",
+        reprocess_override="overwrite",
+    )
+    assert rc == 0
+    assert captured["n_cases"] == 2
+
+
+# --------------------------------------------------------------------------
+# questionary non-TTY fallbacks
+# --------------------------------------------------------------------------
+
+def test_confirm_non_tty_uses_input_fallback(monkeypatch):
+    app = KlingAutomationUI.__new__(KlingAutomationUI)
+    app.config = {}
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "y")
+    assert app._confirm("Proceed?", default=False) is True
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "")
+    assert app._confirm("Proceed?", default=True) is True
+    assert app._confirm("Proceed?", default=False) is False
+
+
+def test_confirm_non_tty_eof_returns_default(monkeypatch):
+    app = KlingAutomationUI.__new__(KlingAutomationUI)
+    app.config = {}
+
+    def _raise(*_a, **_k):
+        raise EOFError()
+
+    monkeypatch.setattr("builtins.input", _raise)
+    assert app._confirm("Proceed?", default=True) is True
+    assert app._confirm("Proceed?", default=False) is False
+
+
+def test_automation_menu_choice_non_tty_uses_numeric_input(monkeypatch):
+    app = KlingAutomationUI.__new__(KlingAutomationUI)
+    app.config = {}
+    app._display_automation_menu = lambda: None
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "6")
+    assert app._automation_menu_choice() == "6"
