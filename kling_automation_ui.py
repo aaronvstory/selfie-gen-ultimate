@@ -1655,53 +1655,113 @@ class KlingAutomationUI:
     def run_configuration_menu(self):
         """Main top-level menu loop."""
         while True:
-            self.display_header()
-            self.display_configuration_menu()
-            choice = input().strip()
-            if choice.startswith('"') and choice.endswith('"'):
-                choice = choice[1:-1]
-            elif choice.startswith("'") and choice.endswith("'"):
-                choice = choice[1:-1]
-            choice_lower = choice.lower()
-            if choice_lower == "q":
-                print("\nGoodbye!")
-                sys.exit(0)
-            if choice_lower == "1":
-                self.run_automation_menu()
-            elif choice_lower == "2":
-                self._scan_automation_cases()
-            elif choice_lower == "3":
-                self._run_resume_automation()
-            elif choice_lower == "4":
-                self._edit_automation_settings()
-            elif choice_lower == "5":
-                selected_path = self._run_manual_kling_menu()
-                if selected_path:
-                    return selected_path
-            elif choice_lower == "6":
-                self.launch_gui()
-            elif choice_lower == "7":
-                self.configure_api_provider_settings()
-            elif choice_lower == "8":
-                self.check_dependencies()
-            elif choice_lower == "9":
-                self.configure_advanced_video_settings()
-            elif choice and Path(choice).exists():
-                selected_root = Path(choice)
-                if selected_root.is_dir():
-                    self.automation_root_folder = str(selected_root)
-                    self.config["automation_root_folder"] = self.automation_root_folder
-                    self.save_config()
-                    self._scan_automation_cases()
-                else:
-                    self.print_red(f"Path is not a folder: {choice}")
-                    self.pause_continue("Press Enter to continue...")
-            elif choice:
-                self.print_red(f"Path not found: {choice}")
-                self.pause_continue("Press Enter to continue...")
+            if self._use_legacy_prompt_ui():
+                result = self._run_configuration_menu_legacy_iteration()
             else:
-                self.print_yellow("Please enter a valid path or select an option")
-                time.sleep(1)
+                result = self._run_configuration_menu_questionary_iteration()
+            if result is not None:
+                # A non-None return is a selected manual-input path (from the
+                # manual Kling menu) that the caller wants to act on.
+                return result
+
+    def _dispatch_configuration_choice(self, choice_lower: str) -> "Optional[str]":
+        """Run the action for a top-level menu choice ("1".."9").
+
+        Returns a manual-input path string when the manual Kling menu yields one
+        (so the outer loop can return it), else None to keep looping.
+        """
+        if choice_lower == "1":
+            self.run_automation_menu()
+        elif choice_lower == "2":
+            self._scan_automation_cases()
+        elif choice_lower == "3":
+            self._run_resume_automation()
+        elif choice_lower == "4":
+            self._edit_automation_settings()
+        elif choice_lower == "5":
+            selected_path = self._run_manual_kling_menu()
+            if selected_path:
+                return selected_path
+        elif choice_lower == "6":
+            self.launch_gui()
+        elif choice_lower == "7":
+            self.configure_api_provider_settings()
+        elif choice_lower == "8":
+            self.check_dependencies()
+        elif choice_lower == "9":
+            self.configure_advanced_video_settings()
+        return None
+
+    def _run_configuration_menu_questionary_iteration(self) -> "Optional[str]":
+        """One iteration of the branded arrow-key top-level menu."""
+        status = [f"Automation root: {self.automation_root_folder or '(not set)'}"]
+        status.extend(self._automation_status_lines())
+        choice = self._q_menu(
+            f"Selfie Gen Ultimate  {RELEASE_VERSION}",
+            [
+                ("🚀  End-to-End Auto Pipeline", "1"),
+                ("🔍  Scan automation root / preview cases", "2"),
+                ("▶️   Run / resume automation batch", "3"),
+                ("⚙️   Automation settings", "4"),
+                ("🎬  Manual Kling video tools", "5"),
+                ("🖥️   Launch GUI manual lab", "6"),
+                ("🔑  API keys / provider settings", "7"),
+                ("📦  Dependency check", "8"),
+                ("🎛️   Advanced video/model settings", "9"),
+                ("📂  Set automation root by path…", "path"),
+                ("🚪  Quit", "q"),
+            ],
+            status_lines=status,
+        )
+        if choice in (None, "q"):
+            print("\nGoodbye!")
+            sys.exit(0)
+        if choice == "path":
+            raw = self._q_text(
+                "Automation root folder path (case folders need front.jpg/png/jpeg):",
+                default=self.automation_root_folder or "",
+            )
+            if raw and raw.strip():
+                self._commit_automation_root(raw.strip().strip('"').strip("'"))
+            return None
+        return self._dispatch_configuration_choice(choice)
+
+    def _run_configuration_menu_legacy_iteration(self) -> "Optional[str]":
+        """One iteration of the legacy numbered top-level menu (non-TTY / pipe).
+
+        Preserves the paste-a-path shortcut: any non-option input that resolves
+        to a directory sets the automation root.
+        """
+        self.display_header()
+        self.display_configuration_menu()
+        choice = input().strip()
+        if choice.startswith('"') and choice.endswith('"'):
+            choice = choice[1:-1]
+        elif choice.startswith("'") and choice.endswith("'"):
+            choice = choice[1:-1]
+        choice_lower = choice.lower()
+        if choice_lower == "q":
+            print("\nGoodbye!")
+            sys.exit(0)
+        if choice_lower in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
+            return self._dispatch_configuration_choice(choice_lower)
+        if choice and Path(choice).exists():
+            selected_root = Path(choice)
+            if selected_root.is_dir():
+                self.automation_root_folder = str(selected_root)
+                self.config["automation_root_folder"] = self.automation_root_folder
+                self.save_config()
+                self._scan_automation_cases()
+            else:
+                self.print_red(f"Path is not a folder: {choice}")
+                self.pause_continue("Press Enter to continue...")
+        elif choice:
+            self.print_red(f"Path not found: {choice}")
+            self.pause_continue("Press Enter to continue...")
+        else:
+            self.print_yellow("Please enter a valid path or select an option")
+            time.sleep(1)
+        return None
 
     def _automation_manifest_path(self) -> Optional[Path]:
         if not self.automation_root_folder:
@@ -3723,6 +3783,111 @@ class KlingAutomationUI:
             return default
         return raw in {"y", "yes", "1", "true"}
 
+    # ------------------------------------------------------------------
+    # Shared questionary toolkit
+    #
+    # A small, consistent set of helpers so every interactive menu looks and
+    # behaves the same: arrow-key selection, branded ◆ marker + cyan/green
+    # style, graceful Esc/Ctrl-C handling. Each helper is paired with an
+    # input()-based fallback the CALLER provides, gated on _use_legacy_prompt_ui()
+    # so non-TTY / piped-stdin / questionary-unavailable contexts keep working.
+    # ------------------------------------------------------------------
+
+    def _q_menu(
+        self,
+        title: str,
+        choices: "List[Any]",
+        *,
+        status_lines: "Optional[List[str]]" = None,
+        instruction: str = "↑/↓ to move · Enter to select · Esc to go back",
+        show_header: bool = True,
+    ) -> "Optional[str]":
+        """Render a branded arrow-key menu and return the selected value.
+
+        ``choices`` is a list of ``questionary.Choice`` (or (label, value) tuples
+        / plain strings). Returns the selected value, or ``None`` if the user
+        pressed Esc / Ctrl-C (callers treat that as "back/cancel"). Only call on
+        the questionary path — guard with ``self._use_legacy_prompt_ui()`` first.
+        """
+        if show_header:
+            self.display_header()
+        self.print_magenta("═" * 79)
+        _t = title.upper()
+        self.print_magenta(f"{' ' * max(0, (79 - len(_t)) // 2)}{_t}")
+        self.print_magenta("═" * 79)
+        print()
+        if status_lines:
+            for line in status_lines:
+                print(f"  {line}")
+            print()
+        normalized: "List[Any]" = []
+        for ch in choices:
+            if isinstance(ch, tuple) and len(ch) == 2:
+                normalized.append(questionary.Choice(ch[0], ch[1]))
+            else:
+                normalized.append(ch)
+        try:
+            answer = questionary.select(
+                title,
+                qmark="◆",
+                instruction=instruction,
+                choices=normalized,
+                style=KLING_QUESTIONARY_STYLE,
+            ).ask()
+        except (KeyboardInterrupt, EOFError):
+            return None
+        return answer
+
+    def _q_select(
+        self,
+        message: str,
+        choices: "List[Any]",
+        *,
+        default: "Optional[str]" = None,
+        instruction: str = "",
+    ) -> "Optional[str]":
+        """A simple inline single-select (no header). Returns value or None."""
+        normalized: "List[Any]" = []
+        for ch in choices:
+            if isinstance(ch, tuple) and len(ch) == 2:
+                normalized.append(questionary.Choice(ch[0], ch[1]))
+            else:
+                normalized.append(ch)
+        try:
+            return questionary.select(
+                message,
+                qmark="◆",
+                instruction=instruction,
+                choices=normalized,
+                default=default,
+                style=KLING_QUESTIONARY_STYLE,
+            ).ask()
+        except (KeyboardInterrupt, EOFError):
+            return None
+
+    def _q_text(
+        self,
+        message: str,
+        *,
+        default: str = "",
+        validate: "Optional[Any]" = None,
+        instruction: str = "",
+    ) -> "Optional[str]":
+        """Free-text input. Returns the string, or None on Esc/Ctrl-C."""
+        try:
+            kwargs: "Dict[str, Any]" = {
+                "qmark": "◆",
+                "default": default,
+                "style": KLING_QUESTIONARY_STYLE,
+            }
+            if instruction:
+                kwargs["instruction"] = instruction
+            if validate is not None:
+                kwargs["validate"] = validate
+            return questionary.text(message, **kwargs).ask()
+        except (KeyboardInterrupt, EOFError):
+            return None
+
     def _automation_menu_choice(self) -> str:
         """Top-level automation menu picker.
 
@@ -3774,22 +3939,31 @@ class KlingAutomationUI:
         return answer if answer is not None else "0"
 
     def _run_manual_kling_menu(self) -> Optional[str]:
-        """Legacy Kling-first tools grouped under a manual menu."""
+        """Manual Kling-first tools grouped under a menu.
+
+        Returns a selected input path (folder/file) when the user picks one, so
+        the caller can act on it; otherwise loops until "Back" / Esc.
+        """
         while True:
-            self.display_header()
-            print("Manual Kling Video Tools")
-            print("  1) Change output mode")
-            print("  2) Edit/view Kling prompt")
-            print("  3) Toggle verbose logging")
-            print("  4) Select input folder (GUI)")
-            print("  5) Select single image (GUI)")
-            print("  6) Inspect model capabilities")
-            print("  7) Change model")
-            print("  8) Swap prompt slot")
-            print("  e) Quick edit prompt")
-            print("  0) Back")
-            choice = input("\nSelect option: ").strip().lower()
-            if choice == "0":
+            if self._use_legacy_prompt_ui():
+                choice = self._manual_kling_menu_choice_legacy()
+            else:
+                choice = self._q_menu(
+                    "Manual Kling Video Tools",
+                    [
+                        ("🎞️   Change output mode", "1"),
+                        ("✏️   Edit / view Kling prompt", "2"),
+                        ("🔊  Toggle verbose logging", "3"),
+                        ("📁  Select input folder (GUI)", "4"),
+                        ("🖼️   Select single image (GUI)", "5"),
+                        ("🔬  Inspect model capabilities", "6"),
+                        ("🔀  Change model", "7"),
+                        ("🎚️   Swap prompt slot", "8"),
+                        ("⚡  Quick edit prompt", "e"),
+                        ("↩️   Back", "0"),
+                    ],
+                )
+            if choice in (None, "0"):
                 return None
             if choice == "1":
                 self.change_output_mode()
@@ -3816,6 +3990,25 @@ class KlingAutomationUI:
             else:
                 self.print_red("Unknown option.")
                 time.sleep(1)
+
+    def _manual_kling_menu_choice_legacy(self) -> str:
+        """Legacy numbered manual-tools menu (non-TTY / piped stdin)."""
+        self.display_header()
+        print("Manual Kling Video Tools")
+        print("  1) Change output mode")
+        print("  2) Edit/view Kling prompt")
+        print("  3) Toggle verbose logging")
+        print("  4) Select input folder (GUI)")
+        print("  5) Select single image (GUI)")
+        print("  6) Inspect model capabilities")
+        print("  7) Change model")
+        print("  8) Swap prompt slot")
+        print("  e) Quick edit prompt")
+        print("  0) Back")
+        try:
+            return input("\nSelect option: ").strip().lower()
+        except EOFError:
+            return "0"
 
     def count_genx_files(self, root_directory: str) -> int:
         """Count total genx files to process"""
