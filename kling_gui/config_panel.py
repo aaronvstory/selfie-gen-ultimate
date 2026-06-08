@@ -1645,8 +1645,9 @@ class ConfigPanel(tk.Frame):
         self.folder_pattern_var.set(self.config.get("folder_filter_pattern", ""))
         self.folder_match_mode_var.set(self.config.get("folder_match_mode", "partial"))
 
-        # Advanced video settings
-        self.aspect_ratio_var.set(self.config.get("aspect_ratio", "9:16"))
+        # Advanced video settings (3:4 is the canonical portrait default — the
+        # selfie chain generates 864x1152 = 3:4 and this keeps video to match).
+        self.aspect_ratio_var.set(self.config.get("aspect_ratio", "3:4"))
         self.resolution_var.set(self.config.get("resolution", "720p"))
 
         # Seed settings

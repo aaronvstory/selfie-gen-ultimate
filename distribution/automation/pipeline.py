@@ -801,6 +801,13 @@ class AutoPipelineRunner:
             }
             self._report(f"[{case_key}] Reused existing selfie: {Path(best_path).name}", "info")
         else:
+            # 3:4 selfie dimensions (864x1152 default). Passing these keeps the
+            # whole chain 3:4: SelfieGenerator snaps to its nearest supported
+            # aspect label (3:4), the ratio-preserving percent expand maintains
+            # it, and Kling (which follows the input image's ratio) then yields
+            # a 3:4 video. Without them the generator defaults to 720x1280 (9:16).
+            selfie_w = self._read_int("automation_selfie_width", 864)
+            selfie_h = self._read_int("automation_selfie_height", 1152)
             for endpoint in model_endpoints:
                 for _attempt in range(max_attempts):
                     generated = selfie.generate(
@@ -808,6 +815,8 @@ class AutoPipelineRunner:
                         prompt=selfie_prompt_ctx["prompt"],
                         output_folder=str(selfie_folder),
                         model_endpoint=endpoint,
+                        width=selfie_w,
+                        height=selfie_h,
                     )
                     if not generated:
                         continue
