@@ -299,3 +299,31 @@ def test_automation_menu_choice_non_tty_uses_numeric_input(monkeypatch):
     app._display_automation_menu = lambda: None
     monkeypatch.setattr("builtins.input", lambda *_a, **_k: "6")
     assert app._automation_menu_choice() == "6"
+
+
+def test_use_legacy_prompt_ui_handles_stdin_without_isatty(monkeypatch):
+    """The shared gate must not crash when sys.stdin is None or a custom stream
+    lacking isatty() (Windows background service / GUI wrappers / test runners)."""
+    import kling_automation_ui as kmod
+
+    monkeypatch.setattr(kmod.sys, "stdin", None, raising=False)
+    assert KlingAutomationUI._use_legacy_prompt_ui() is True  # None -> legacy
+
+    class _NoIsatty:
+        pass
+
+    monkeypatch.setattr(kmod.sys, "stdin", _NoIsatty(), raising=False)
+    # Must not raise AttributeError; absence of isatty -> not a TTY -> legacy.
+    assert KlingAutomationUI._use_legacy_prompt_ui() is True
+
+
+def test_discovery_glob_does_not_match_path_separators(tmp_path):
+    """fnmatchcase keeps '*' from matching across path-like names predictably;
+    a folder-name-shaped pattern shouldn't accidentally match via os.normcase
+    slash rewriting (the reason we use fnmatchcase, not fnmatch)."""
+    case = tmp_path / "a"
+    case.mkdir()
+    (case / "front.jpg").write_bytes(b"x")
+    # A pattern with a backslash must not match a plain filename on any OS.
+    cases = discover_case_folders(tmp_path, [], front_globs=[r"*\front.jpg"])
+    assert cases == []

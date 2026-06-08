@@ -78,7 +78,11 @@ def discover_case_folders(
     def _matches(name_lower: str) -> bool:
         if name_lower in canonical_front_names:
             return True
-        return any(fnmatch.fnmatch(name_lower, pat) for pat in canonical_front_globs)
+        # fnmatchcase (not fnmatch): name + patterns are already lowercased, so
+        # we don't want fnmatch's OS-specific os.path.normcase, which on Windows
+        # also rewrites slashes and would make matching non-deterministic across
+        # platforms (Gemini review, PR #94).
+        return any(fnmatch.fnmatchcase(name_lower, pat) for pat in canonical_front_globs)
 
     while pending:
         current = pending.pop()

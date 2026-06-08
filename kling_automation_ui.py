@@ -171,7 +171,10 @@ def _derive_model_display_name(endpoint: str) -> str:
             name = get_model_display_name(known)
             if name:
                 return name
-    except Exception:
+    except (ImportError, AttributeError, KeyError, TypeError):
+        # model_metadata missing / models.json shape unexpected -> fall through
+        # to the path-prettify fallback. Narrow catch so genuine bugs in the
+        # lookup surface instead of being masked (Sourcery review, PR #94).
         pass
     # Fallback: prettify the path, dropping the trailing verb segment
     # (image-to-video / text-to-video) and the vendor prefix.
@@ -1986,12 +1989,7 @@ class KlingAutomationUI:
         # picker, which already offers native folder-picker / type / keep. The
         # legacy numbered browse/type walker stays as the non-TTY fallback so
         # CI / piped stdin keep working.
-        use_legacy = (
-            not _QUESTIONARY_AVAILABLE
-            or not (getattr(sys, "stdin", None) and sys.stdin.isatty())
-            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
-        )
-        if not use_legacy:
+        if not self._use_legacy_prompt_ui():
             try:
                 picked = self._qs_directory(
                     "Select automation root folder:",
@@ -2219,12 +2217,7 @@ class KlingAutomationUI:
         """Dispatch: questionary-based UX when available + interactive TTY,
         otherwise fall back to the legacy linear input() walker so tests and
         non-TTY callers (CI, piped stdin) keep working."""
-        use_legacy = (
-            not _QUESTIONARY_AVAILABLE
-            or not sys.stdin.isatty()
-            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
-        )
-        if use_legacy:
+        if self._use_legacy_prompt_ui():
             return self._edit_automation_settings_legacy()
         try:
             return self._edit_automation_settings_questionary()
@@ -3677,6 +3670,27 @@ class KlingAutomationUI:
                 self.print_red("Unknown option.")
                 time.sleep(1)
 
+    @staticmethod
+    def _use_legacy_prompt_ui() -> bool:
+        """True when interactive questionary prompts must fall back to input().
+
+        Single source of truth for the questionary gate used by every
+        interactive helper (_confirm, _automation_menu_choice,
+        _select_automation_root, the settings editor). Legacy/input() is used
+        when questionary is unavailable, stdin is not an interactive TTY, or the
+        KLING_LEGACY_SETTINGS_UI escape hatch is set. The stdin check is fully
+        guarded: sys.stdin can be None (Windows background service) OR a custom
+        stream without isatty() (IDE/GUI wrappers, some test runners), so we
+        getattr + hasattr before calling it (Gemini review, PR #94).
+        """
+        stdin = getattr(sys, "stdin", None)
+        is_tty = bool(stdin) and hasattr(stdin, "isatty") and stdin.isatty()
+        return (
+            not _QUESTIONARY_AVAILABLE
+            or not is_tty
+            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
+        )
+
     def _confirm(self, message: str, default: bool = False) -> bool:
         """Yes/no confirm, questionary when interactive else input() fallback.
 
@@ -3684,12 +3698,7 @@ class KlingAutomationUI:
         get the legacy ``[y/N]`` input() prompt; an empty answer or EOF returns
         ``default`` so an unattended pipe never hangs.
         """
-        use_legacy = (
-            not _QUESTIONARY_AVAILABLE
-            or not (getattr(sys, "stdin", None) and sys.stdin.isatty())
-            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
-        )
-        if not use_legacy:
+        if not self._use_legacy_prompt_ui():
             try:
                 answer = questionary.confirm(
                     message,
@@ -3717,12 +3726,7 @@ class KlingAutomationUI:
         and reads a numeric choice via input() so CI / piped-stdin / non-TTY
         callers keep working. Returns the numeric choice string ("0".."7").
         """
-        use_legacy = (
-            not _QUESTIONARY_AVAILABLE
-            or not (getattr(sys, "stdin", None) and sys.stdin.isatty())
-            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
-        )
-        if use_legacy:
+        if self._use_legacy_prompt_ui():
             self._display_automation_menu()
             return input().strip().lower()
         # Questionary path: show context (header + status) then an arrow menu.
