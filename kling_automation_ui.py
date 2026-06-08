@@ -244,6 +244,16 @@ class KlingAutomationUI:
         """Pause for explicit review screens or actionable error surfaces."""
         input(message)
 
+    @staticmethod
+    def _safe_input(prompt: str = "", default: str = "") -> str:
+        """input() that returns ``default`` on EOF/closed stdin instead of
+        raising. Used by legacy sub-menus so a piped/closed stdin cancels the
+        action cleanly rather than crashing the menu loop."""
+        try:
+            return input(prompt)
+        except EOFError:
+            return default
+
     def load_config(self) -> Dict[str, Any]:
         """Load configuration from file or create default"""
         # Default prompt slot 1 - basic head turn
@@ -1143,7 +1153,7 @@ class KlingAutomationUI:
             print(f"  \033[96m{i}\033[0m   {ratio}{mark}")
         print(f"  \033[91m0\033[0m   Cancel")
         print()
-        choice = input("\033[92mSelect: \033[0m").strip()
+        choice = self._safe_input("\033[92mSelect: \033[0m").strip()
         if choice in ["1", "2", "3", "4", "5", "6"]:
             selected = ratios[int(choice) - 1]
             self.config["aspect_ratio"] = selected
@@ -1176,7 +1186,7 @@ class KlingAutomationUI:
             print(f"  \033[96m{i}\033[0m   {res}{mark}")
         print(f"  \033[91m0\033[0m   Cancel")
         print()
-        choice = input("\033[92mSelect: \033[0m").strip()
+        choice = self._safe_input("\033[92mSelect: \033[0m").strip()
         if choice == "1":
             self.config["resolution"] = "480p"
             self.save_config()
@@ -1223,7 +1233,7 @@ class KlingAutomationUI:
         print()
         print(f"\033[95mCurrent seed:\033[0m {seed_display}")
         print("\nEnter a seed number (integer) or 'r' for random\n")
-        choice = input("\033[92mSeed: \033[0m").strip().lower()
+        choice = self._safe_input("\033[92mSeed: \033[0m").strip().lower()
         if choice:
             _apply(choice)
 
@@ -1756,22 +1766,10 @@ class KlingAutomationUI:
         print(f"\033[90m  Endpoint: {current_model}\033[0m")
         print()
 
-        # Preset models
-        presets = [
-            (
-                "Kling 2.1 Professional",
-                "fal-ai/kling-video/v2.1/pro/image-to-video",
-                10,
-            ),
-            (
-                "Kling 2.5 Turbo Pro",
-                "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
-                10,
-            ),
-            ("Wan 2.5", "fal-ai/wan-25-preview/image-to-video", 5),
-            ("Veo 3", "fal-ai/veo3/image-to-video", 8),
-            ("Ovi", "fal-ai/ovi/image-to-video", 5),
-        ]
+        # Preset models — SAME source as the questionary path (the whole point
+        # of _MODEL_PRESETS is that both pickers stay in lockstep, including the
+        # default Kling 2.5 Turbo Standard at position 1).
+        presets = self._MODEL_PRESETS
 
         print("\033[93mPreset Models:\033[0m")
         for idx, (name, endpoint, duration) in enumerate(presets, 1):
@@ -2017,7 +2015,13 @@ class KlingAutomationUI:
         """
         self.display_header()
         self.display_configuration_menu()
-        choice = input().strip()
+        try:
+            choice = input().strip()
+        except EOFError:
+            # Closed / exhausted stdin (pipe) at the top-level menu: exit cleanly
+            # instead of letting EOFError crash out of the while-True loop.
+            print("\nGoodbye!")
+            sys.exit(0)
         if choice.startswith('"') and choice.endswith('"'):
             choice = choice[1:-1]
         elif choice.startswith("'") and choice.endswith("'"):

@@ -300,6 +300,26 @@ def test_automation_menu_choice_non_tty_uses_numeric_input(monkeypatch):
     assert app._automation_menu_choice() == "6"
 
 
+def test_model_presets_shared_constant_includes_default():
+    """Both the questionary and legacy model pickers must read _MODEL_PRESETS
+    so the default Kling 2.5 Turbo Standard is selectable from either."""
+    endpoints = [e for _name, e, _dur in KlingAutomationUI._MODEL_PRESETS]
+    assert "fal-ai/kling-video/v2.5-turbo/standard/image-to-video" in endpoints
+    # Default is first so it maps to legacy numbered choice "1".
+    assert KlingAutomationUI._MODEL_PRESETS[0][1] == (
+        "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+    )
+
+
+def test_safe_input_returns_default_on_eof(monkeypatch):
+    def _raise(*_a, **_k):
+        raise EOFError()
+
+    monkeypatch.setattr("builtins.input", _raise)
+    assert KlingAutomationUI._safe_input("x", default="fallback") == "fallback"
+    assert KlingAutomationUI._safe_input("x") == ""
+
+
 def test_automation_menu_choice_eof_returns_back(monkeypatch):
     """A closed/piped stdin (EOFError on input) must return '0' (Back), not
     crash the menu loop."""
