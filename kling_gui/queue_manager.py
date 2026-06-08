@@ -1553,8 +1553,9 @@ class QueueManager:
                 model_endpoint = config.get("current_model", "")
                 prompt_slot = config.get("current_prompt_slot", 1)
 
-                # Advanced video settings
-                aspect_ratio = config.get("aspect_ratio", "9:16")
+                # Advanced video settings (3:4 = canonical portrait default to
+                # match the 864x1152 selfie chain)
+                aspect_ratio = config.get("aspect_ratio", "3:4")
                 resolution = config.get("resolution", "720p")
                 seed = config.get("seed", -1)
                 camera_fixed = config.get("camera_fixed", False)

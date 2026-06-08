@@ -67,6 +67,11 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_selfie_model_policy": "first_pass",  # first_pass | all
     "automation_selfie_prompt_mode": "wildcards",
     "automation_selfie_max_attempts_per_model": 1,
+    # Selfie generation dimensions. 864x1152 is EXACT 3:4 (864/1152 = 0.75) so
+    # the whole chain stays 3:4 (the pipeline passes these to selfie.generate();
+    # without them it falls back to 720x1280 / 9:16). Mirror of root config.
+    "automation_selfie_width": 864,
+    "automation_selfie_height": 1152,
     "automation_similarity_threshold": 80,
     "automation_selfie_expand_enabled": True,
     "automation_selfie_expand_provider": "fal",  # auto | bfl | fal (fal default per user direction 2026-05-22)

@@ -58,7 +58,10 @@ COLORS = {
     "text_dim": "#B4B4B4",
     "accent_blue": "#6496FF",
     "border": "#5A5A5E",
-    "warning": "#FFB347",
+    # Reconciled with theme.py's single source of truth (#FFA500) — this local
+    # copy had drifted to #FFB347, rendering a visibly different warning color
+    # than the rest of the app (G1).
+    "warning": "#FFA500",
     "success": "#64FF64",
     "error": "#FF6464",
     "text_unsupported": "#666666",
@@ -1645,8 +1648,9 @@ class ConfigPanel(tk.Frame):
         self.folder_pattern_var.set(self.config.get("folder_filter_pattern", ""))
         self.folder_match_mode_var.set(self.config.get("folder_match_mode", "partial"))
 
-        # Advanced video settings
-        self.aspect_ratio_var.set(self.config.get("aspect_ratio", "9:16"))
+        # Advanced video settings (3:4 is the canonical portrait default — the
+        # selfie chain generates 864x1152 = 3:4 and this keeps video to match).
+        self.aspect_ratio_var.set(self.config.get("aspect_ratio", "3:4"))
         self.resolution_var.set(self.config.get("resolution", "720p"))
 
         # Seed settings

@@ -156,6 +156,28 @@ class AutomationManifest:
         inst.save_atomic()
         return inst
 
+    @classmethod
+    def create_fresh(cls, manifest_path: Path, root_dir: Path, config_snapshot: Dict[str, Any]) -> "AutomationManifest":
+        """Force-create a new manifest, backing up any existing one.
+
+        Used when the caller has INTENTIONALLY changed the run identity (an
+        explicit fingerprinted override like --oldcam-version) and a stale
+        manifest would otherwise fail create_or_load with a fingerprint
+        mismatch. The old manifest is renamed aside (``.superseded.<ts>``) so it
+        is recoverable, then a fresh manifest is written with the requested
+        snapshot.
+        """
+        if manifest_path.exists():
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_path = manifest_path.with_suffix(
+                manifest_path.suffix + f".superseded.{timestamp}"
+            )
+            os.replace(manifest_path, backup_path)
+        created = _new_manifest_payload(root_dir, config_snapshot)
+        inst = cls(manifest_path=manifest_path, data=created)
+        inst.save_atomic()
+        return inst
+
     @staticmethod
     def _backup_invalid_manifest(manifest_path: Path, reason: str) -> None:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

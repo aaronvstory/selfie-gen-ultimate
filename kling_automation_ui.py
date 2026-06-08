@@ -3,6 +3,7 @@ import contextlib
 import faulthandler
 import io
 import os
+import re
 import signal
 import sys
 import json
@@ -43,6 +44,18 @@ class _QuestionarySectionAbort(Exception):
     to the section picker (rather than silently continuing to the next field
     and forcing the user to abort every prompt in the section).
     """
+
+
+def _qs_or_abort(value):
+    """Convert a None questionary result (Esc/Ctrl-C) into a section abort.
+
+    Wrap any ad-hoc ``questionary.select()/.text().ask()`` result through this so
+    a cancellation unwinds back to the section picker instead of silently
+    falling through to the next field. Returns the value unchanged otherwise.
+    """
+    if value is None:
+        raise _QuestionarySectionAbort()
+    return value
 
 
 try:
@@ -87,7 +100,11 @@ from path_utils import (
 
 # Import the fal.ai KlingBatchGenerator
 from kling_generator_falai import FalAIKlingGenerator
-from automation.config import merge_automation_defaults, from_app_config
+from automation.config import (
+    merge_automation_defaults,
+    from_app_config,
+    get_outpaint_fal_timeout_seconds,
+)
 from automation.discovery import discover_case_folders, detect_existing_outputs
 from automation.logger import resolve_automation_log_path
 from automation.manifest import AutomationManifest
@@ -120,6 +137,24 @@ from app_version import RELEASE_VERSION
 RECOMMENDED_DEFAULTS_VERSION = 6
 DEFAULT_KLING_PROMPT_SLOT = 4
 DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT = 3
+
+# Single-source option lists shared by the questionary AND legacy settings
+# editors so the two paths can never drift (review theme D). Edit here only.
+_OLDCAM_VERSION_OPTIONS = ["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"]
+_EXPAND_PROVIDER_OPTIONS = ["auto", "bfl", "fal"]
+_EXPAND_MODE_OPTIONS = ["document_3x4", "percent"]
+_SELFIE_EXPAND_MODE_OPTIONS = ["percent", "centered_3x4"]
+_COMPOSITE_MODE_OPTIONS = ["preserve_seamless", "feathered", "hard", "none"]
+_REPROCESS_MODE_OPTIONS = ["skip", "overwrite", "increment"]
+_VIDEO_RESOLUTION_OPTIONS = ["480p", "720p"]
+_VIDEO_ASPECT_RATIO_OPTIONS = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+# Common video durations (seconds) most fal video models accept. Used to warn
+# on uncommon values without rejecting them (D6).
+_COMMON_VIDEO_DURATIONS = [2, 3, 4, 5, 6, 7, 8, 10, 15]
+_PROMPT_SLOT_COUNT = 10  # selfie + kling video prompt slots are both 1.._PROMPT_SLOT_COUNT
+# Matches ANSI SGR color/style escape sequences (ESC [ ... m). Used to keep
+# non-TTY / cron logs clean of color codes forwarded from subprocess output.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
     "Image-to-video: the subject performs a very subtle, slow head movement while "
     "the body and background remain completely motionless. The head turns slightly "
@@ -145,6 +180,42 @@ RECOMMENDED_KLING_NEGATIVE_SLOT_1 = (
 )
 
 _CRASH_CAPTURE_FILE: Optional[io.TextIOWrapper] = None
+
+
+def _derive_model_display_name(endpoint: str) -> str:
+    """Best-effort friendly name for a fal video model endpoint.
+
+    Used by the headless ``--model`` override when no explicit ``--model-name``
+    is supplied. Prefers the canonical name from models.json when the endpoint
+    is a known model; otherwise prettifies the endpoint path tail (e.g.
+    ``fal-ai/kling-video/v2.5-turbo/standard/image-to-video`` ->
+    ``Kling Video V2.5 Turbo Standard``).
+    """
+    endpoint = (endpoint or "").strip()
+    if not endpoint:
+        return ""
+    try:
+        from model_metadata import get_model_by_endpoint, get_model_display_name
+
+        known = get_model_by_endpoint(endpoint)
+        if known:
+            name = get_model_display_name(known)
+            if name:
+                return name
+    except (ImportError, AttributeError, KeyError, TypeError):
+        # model_metadata missing / models.json shape unexpected -> fall through
+        # to the path-prettify fallback. Narrow catch so genuine bugs in the
+        # lookup surface instead of being masked (Sourcery review, PR #94).
+        pass
+    # Fallback: prettify the path, dropping the trailing verb segment
+    # (image-to-video / text-to-video) and the vendor prefix.
+    parts = [p for p in endpoint.split("/") if p]
+    if parts and parts[0] in {"fal-ai", "fal"}:
+        parts = parts[1:]
+    if parts and parts[-1] in {"image-to-video", "text-to-video", "edit"}:
+        parts = parts[:-1]
+    pretty = " ".join(seg.replace("-", " ").title() for seg in parts if seg)
+    return pretty or endpoint
 
 
 def _enable_cli_crash_capture() -> Optional[str]:
@@ -204,6 +275,16 @@ class KlingAutomationUI:
         """Pause for explicit review screens or actionable error surfaces."""
         input(message)
 
+    @staticmethod
+    def _safe_input(prompt: str = "", default: str = "") -> str:
+        """input() that returns ``default`` on EOF/closed stdin instead of
+        raising. Used by legacy sub-menus so a piped/closed stdin cancels the
+        action cleanly rather than crashing the menu loop."""
+        try:
+            return input(prompt)
+        except EOFError:
+            return default
+
     def load_config(self) -> Dict[str, Any]:
         """Load configuration from file or create default"""
         # Default prompt slot 1 - basic head turn
@@ -259,7 +340,12 @@ class KlingAutomationUI:
             "model_display_name": "Kling 2.5 Turbo Standard",
             # Generation parameters
             "video_duration": 10,
-            "aspect_ratio": "9:16",
+            # 3:4 is the canonical portrait ratio for this pipeline (the selfie
+            # generates at 864x1152 = exact 3:4 and the chain preserves it). Some
+            # Kling endpoints (e.g. 2.5 turbo) ignore aspect_ratio and follow the
+            # input image's ratio anyway, but for endpoints that DO honor it, the
+            # default must match the 3:4 stills so the video isn't reframed.
+            "aspect_ratio": "3:4",
             "resolution": "720p",
             "seed": -1,  # -1 = random
             "camera_fixed": False,
@@ -284,7 +370,7 @@ class KlingAutomationUI:
                     if "saved_prompts" not in merged:
                         merged["saved_prompts"] = default_config["saved_prompts"]
                     else:
-                        for slot in [str(i) for i in range(1, 11)]:
+                        for slot in [str(i) for i in range(1, _PROMPT_SLOT_COUNT + 1)]:
                             if slot not in merged["saved_prompts"] or merged["saved_prompts"][slot] is None:
                                 merged["saved_prompts"][slot] = ""
 
@@ -292,7 +378,7 @@ class KlingAutomationUI:
                     if "negative_prompts" not in merged:
                         merged["negative_prompts"] = default_config["negative_prompts"]
                     else:
-                        for slot in [str(i) for i in range(1, 11)]:
+                        for slot in [str(i) for i in range(1, _PROMPT_SLOT_COUNT + 1)]:
                             if slot not in merged["negative_prompts"] or merged["negative_prompts"][slot] is None:
                                 merged["negative_prompts"][slot] = ""
 
@@ -353,11 +439,22 @@ class KlingAutomationUI:
         return RECOMMENDED_KLING_PROMPT_SLOT_1
 
     def fetch_model_pricing(self, model_endpoint: str) -> Optional[float]:
-        """Fetch pricing for a model from fal.ai API"""
+        """Fetch pricing for a model from fal.ai API (memoized per endpoint).
+
+        The model picker renders pricing for every preset on each redraw, so
+        without a cache a single menu render fires N network calls (each up to a
+        10s timeout). Memoizing per endpoint — including the None/failure result
+        — keeps the menu snappy on repeat renders within a session.
+        """
+        if not hasattr(self, "_pricing_cache"):
+            self._pricing_cache = {}
+        if model_endpoint in self._pricing_cache:
+            return self._pricing_cache[model_endpoint]
+        price: Optional[float] = None
         try:
             import requests
 
-            headers = {"Authorization": f"Key {self.config['falai_api_key']}"}
+            headers = {"Authorization": f"Key {resolve_api_key(self.config, 'falai_api_key')}"}
             response = requests.get(
                 f"https://api.fal.ai/v1/models/pricing?endpoint_id={model_endpoint}",
                 headers=headers,
@@ -367,17 +464,18 @@ class KlingAutomationUI:
                 data = response.json()
                 prices = data.get("prices", [])
                 if prices:
-                    return prices[0].get("unit_price")
+                    price = prices[0].get("unit_price")
         except Exception:
-            pass
-        return None
+            price = None
+        self._pricing_cache[model_endpoint] = price
+        return price
 
     def fetch_available_models(self) -> list:
         """Fetch available video models from fal.ai Platform API with pagination"""
         try:
             import requests
 
-            headers = {"Authorization": f"Key {self.config['falai_api_key']}"}
+            headers = {"Authorization": f"Key {resolve_api_key(self.config, 'falai_api_key')}"}
             all_models = []
             cursor = None
 
@@ -459,7 +557,7 @@ class KlingAutomationUI:
         try:
             import requests
 
-            headers = {"Authorization": f"Key {self.config['falai_api_key']}"}
+            headers = {"Authorization": f"Key {resolve_api_key(self.config, 'falai_api_key')}"}
 
             # Process in batches of 50
             for i in range(0, len(endpoint_ids), 50):
@@ -538,8 +636,30 @@ class KlingAutomationUI:
             )
             logging.getLogger().setLevel(logging.CRITICAL)
 
+    def _set_api_key(self, spec) -> None:
+        """Persist a new value for one API key spec + re-opt-in to env fallback."""
+        self._clear_env_prefill_marker(spec.config_key)
+        optout = env_key_optout_list(self.config)
+        if spec.config_key in optout:
+            optout.remove(spec.config_key)
+            self.config["_env_key_optout"] = optout
+        self.save_config()
+
+    def _clear_api_key(self, spec) -> None:
+        """Clear one API key + persist a env-fallback opt-out so it stays clear."""
+        self.config[spec.config_key] = ""
+        self._clear_env_prefill_marker(spec.config_key)
+        optout = env_key_optout_list(self.config)
+        if spec.config_key not in optout:
+            optout.append(spec.config_key)
+            self.config["_env_key_optout"] = optout
+        self.save_config()
+
     def configure_api_provider_settings(self):
         """Provider-aware API key/editor for automation and manual tools."""
+        if not self._use_legacy_prompt_ui():
+            self._configure_api_provider_settings_questionary()
+            return
         self.clear_screen_simple()
         print("\n" + "=" * 72)
         print("  API SETUP / PROVIDER SETTINGS")
@@ -564,7 +684,7 @@ class KlingAutomationUI:
             print(f"  - {spec.config_key}: {key_status(self.config, spec.config_key)}")
         print("  0) Back")
         print()
-        choice = input("Select option: ").strip()
+        choice = self._safe_input("Select option: ").strip()
         if choice == "0":
             self.pause_continue("\nPress Enter to continue...")
             return
@@ -578,41 +698,63 @@ class KlingAutomationUI:
             spec = API_KEY_SPECS[selected - 1]
             print(f"\n{spec.label}: {spec.instruction}")
             print(f"Get key: {spec.url}")
-            value = input(f"Enter {spec.label} API key: ").strip()
+            value = self._safe_input(f"Enter {spec.label} API key: ").strip()
             if value:
                 self.config[spec.config_key] = value
-                self._clear_env_prefill_marker(spec.config_key)
-                # A real value was entered — opt this key BACK IN to the env
-                # fallback (drop it from the persisted opt-out list). Mirrors the
-                # GUI clear/set logic (Codex P2, PR #73).
-                optout = env_key_optout_list(self.config)
-                if spec.config_key in optout:
-                    optout.remove(spec.config_key)
-                    self.config["_env_key_optout"] = optout
-                self.save_config()
+                self._set_api_key(spec)
                 print(f"Saved {spec.config_key}.")
         elif len(API_KEY_SPECS) < selected <= len(API_KEY_SPECS) * 2:
             spec = API_KEY_SPECS[selected - len(API_KEY_SPECS) - 1]
-            self.config[spec.config_key] = ""
-            self._clear_env_prefill_marker(spec.config_key)
-            # Persist the clear so it survives restart even when the env var is
-            # still set — otherwise apply_env_key_fallback() refills it from the
-            # env on the next launch and "Clear key" does nothing (Codex P2,
-            # PR #73). Same persisted opt-out the GUI uses.
-            optout = env_key_optout_list(self.config)
-            if spec.config_key not in optout:
-                optout.append(spec.config_key)
-                self.config["_env_key_optout"] = optout
-            self.save_config()
+            self._clear_api_key(spec)
             print(f"Cleared {spec.config_key}.")
         self.pause_continue("\nPress Enter to continue...")
+
+    def _configure_api_provider_settings_questionary(self):
+        """Branded API-key manager (questionary): per-provider set / clear."""
+        while True:
+            status = ["Provider key status:"]
+            for spec in API_KEY_SPECS:
+                status.append(f"  {spec.label}: {key_status(self.config, spec.config_key)}")
+            choices = []
+            for spec in API_KEY_SPECS:
+                choices.append((f"🔑  Set / update {spec.label} key", f"set:{spec.config_key}"))
+            for spec in API_KEY_SPECS:
+                choices.append((f"🧹  Clear {spec.label} key", f"clear:{spec.config_key}"))
+            choices.append(("↩️   Back", "back"))
+            pick = self._q_menu("API Keys / Provider Settings", choices, status_lines=status)
+            if pick in (None, "back"):
+                return
+            action, _, ckey = pick.partition(":")
+            spec = next((s for s in API_KEY_SPECS if s.config_key == ckey), None)
+            if spec is None:
+                continue
+            if action == "set":
+                print(f"\n{spec.label}: {spec.instruction}")
+                print(f"Get key: {spec.url}")
+                value = self._q_text(f"{spec.label} API key (Esc to cancel):")
+                if value and value.strip():
+                    self.config[spec.config_key] = value.strip()
+                    self._set_api_key(spec)
+                    self.print_green(f"✓ Saved {spec.label} key")
+                    time.sleep(0.7)
+            elif action == "clear":
+                if self._confirm(f"Clear the {spec.label} key?", default=False):
+                    self._clear_api_key(spec)
+                    self.print_yellow(f"Cleared {spec.label} key")
+                    time.sleep(0.7)
 
     def _run_startup_key_onboarding(self) -> None:
         if self._startup_key_onboarding_done:
             return
         self._startup_key_onboarding_done = True
         prompt_specs = startup_prompt_specs()
-        if not sys.stdin.isatty():
+        # Guard isatty the same way _use_legacy_prompt_ui does: sys.stdin can be
+        # None (Windows background service) or a custom stream lacking isatty()
+        # (IDE/GUI wrappers, test runners). A bare sys.stdin.isatty() would
+        # AttributeError there (C1). Treat "no interactive TTY" as non-interactive.
+        _stdin = getattr(sys, "stdin", None)
+        _is_tty = bool(_stdin) and hasattr(_stdin, "isatty") and _stdin.isatty()
+        if not _is_tty:
             # Warn about the keys the ACTIVE automation config actually needs
             # (config-aware: fal for core gen + BFL only when a stage selects the
             # BFL provider), not a generic fal/BFL pair — so the non-interactive
@@ -641,7 +783,7 @@ class KlingAutomationUI:
         print("\nPress Enter to skip any key for now.")
         for spec in missing_startup_specs(self.config):
             print(f"\n{spec.label}: {spec.instruction}")
-            value = input("Enter key now (or q to skip): ").strip()
+            value = self._safe_input("Enter key now (or q to skip): ").strip()
             if value.lower() == "q":
                 continue
             if value:
@@ -734,11 +876,14 @@ class KlingAutomationUI:
         """Display the primary Selfie Gen Ultimate header."""
         self.clear_screen()
 
-        model_name = self.config.get("model_display_name", "Kling 2.1 Professional")
+        model_name = self.config.get("model_display_name", "Kling 2.5 Turbo Standard")
         duration = self.config.get("video_duration", 10)
 
-        # Fetch pricing (cached after first call)
-        if not hasattr(self, "_cached_price"):
+        # Fetch pricing (cached after first call). Value-aware guard: model
+        # switches reset _cached_price to None (not delattr), so a hasattr-only
+        # check would keep the stale/None price forever — the header would show
+        # the old model's price or "Check fal.ai" after every change (A2).
+        if getattr(self, "_cached_price", None) is None:
             self._cached_price = self.fetch_model_pricing(
                 self.config.get("current_model", "")
             )
@@ -867,9 +1012,64 @@ class KlingAutomationUI:
 
     def change_output_mode(self):
         """Change output mode between source folder and custom folder"""
-        print()
         use_source = self.config.get("use_source_folder", True)
+        current_label = (
+            "Same folder as source images" if use_source
+            else f"Custom folder ({self.config.get('output_folder', '?')})"
+        )
+        if not self._use_legacy_prompt_ui():
+            pick = self._q_select(
+                "Where should generated videos be saved?",
+                [
+                    ("📁  Same folder as source images (next to each input)", "1"),
+                    ("🗂️   Custom folder (all videos to one location)", "2"),
+                    ("↩️   Back", "0"),
+                ],
+                instruction=f"(current: {current_label})",
+            )
+            if pick in (None, "0"):
+                return
+            if pick == "1":
+                self.config["use_source_folder"] = True
+                self.save_config()
+                self.print_green("✓ Output mode: same folder as source images")
+                time.sleep(0.8)
+                return
+            # pick == "2": custom folder. Resolve the target path FIRST and only
+            # flip use_source_folder + save once we have a valid folder — an
+            # Esc/empty path must NOT persist use_source_folder=False with an
+            # empty/stale output_folder (that breaks automation output). (A1)
+            existing = str(self.config.get("output_folder", "") or "")
+            new_path = self._q_text(
+                "Custom output folder path:",
+                default=existing,
+            )
+            if new_path is None or not new_path.strip():
+                # Cancelled / empty: keep an existing valid folder if there is
+                # one, otherwise leave the mode untouched entirely.
+                if existing:
+                    self.config["use_source_folder"] = False
+                    self.save_config()
+                    self.print_green(f"✓ Output mode: custom folder -> {existing}")
+                else:
+                    self.print_yellow("Output mode unchanged (no folder provided).")
+                time.sleep(0.8)
+                return
+            np = new_path.strip().strip('"').strip("'")
+            try:
+                Path(np).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                self.print_red(f"Error creating folder: {e}")
+                time.sleep(1.0)
+                return
+            self.config["use_source_folder"] = False
+            self.config["output_folder"] = np
+            self.save_config()
+            self.print_green(f"✓ Output mode: custom folder -> {np}")
+            time.sleep(0.8)
+            return
 
+        print()
         print("\033[96m" + "─" * 60 + "\033[0m")
         print("\033[95m OUTPUT MODE SETTINGS\033[0m")
         print("\033[96m" + "─" * 60 + "\033[0m")
@@ -891,7 +1091,7 @@ class KlingAutomationUI:
         print(f"  \033[91m0\033[0m   Cancel")
         print()
 
-        choice = input("\033[92mSelect option: \033[0m").strip()
+        choice = self._safe_input("\033[92mSelect option: \033[0m").strip()
 
         if choice == "1":
             self.config["use_source_folder"] = True
@@ -900,11 +1100,9 @@ class KlingAutomationUI:
             print("  Videos will be saved alongside each input image")
             time.sleep(1.5)
         elif choice == "2":
-            self.config["use_source_folder"] = False
-            print(
-                f"\n\033[93mCurrent custom folder:\033[0m {self.config['output_folder']}"
-            )
-            new_path = input(
+            existing = str(self.config.get("output_folder", "") or "")
+            print(f"\n\033[93mCurrent custom folder:\033[0m {existing or '(none)'}")
+            new_path = self._safe_input(
                 "\033[92mEnter new folder path (or Enter to keep current):\033[0m "
             ).strip()
 
@@ -914,19 +1112,29 @@ class KlingAutomationUI:
             ):
                 new_path = new_path[1:-1]
 
-            if new_path:
-                try:
-                    Path(new_path).mkdir(parents=True, exist_ok=True)
-                    self.config["output_folder"] = new_path
-                    print(f"\033[92m✓ Custom folder set to: {new_path}\033[0m")
-                except Exception as e:
-                    self.print_red(f"Error creating folder: {e}")
-                    time.sleep(1.5)
-                    return
-
+            # Resolve the target FIRST; only flip use_source_folder + save once a
+            # valid folder is in hand. An empty answer must not persist
+            # use_source_folder=False with an empty output_folder (A1).
+            if not new_path:
+                if existing:
+                    self.config["use_source_folder"] = False
+                    self.save_config()
+                    print(f"\n\033[92m✓ Output mode: CUSTOM FOLDER -> {existing}\033[0m")
+                else:
+                    print("\033[93mOutput mode unchanged (no folder provided).\033[0m")
+                time.sleep(1.0)
+                return
+            try:
+                Path(new_path).mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                self.print_red(f"Error creating folder: {e}")
+                time.sleep(1.5)
+                return
+            self.config["use_source_folder"] = False
+            self.config["output_folder"] = new_path
             self.save_config()
             print(f"\n\033[92m✓ Output mode: CUSTOM FOLDER\033[0m")
-            print(f"  All videos will go to: {self.config['output_folder']}")
+            print(f"  All videos will go to: {new_path}")
             time.sleep(1.5)
         else:
             print("\033[90mCancelled\033[0m")
@@ -935,43 +1143,47 @@ class KlingAutomationUI:
     def configure_advanced_video_settings(self):
         """Configure advanced video generation settings"""
         while True:
-            print()
-            print("\033[96m" + "─" * 60 + "\033[0m")
-            print("\033[95m ADVANCED VIDEO SETTINGS\033[0m")
-            print("\033[96m" + "─" * 60 + "\033[0m")
-            print()
-
-            # Show current settings
-            aspect_ratio = self.config.get("aspect_ratio", "9:16")
+            aspect_ratio = self.config.get("aspect_ratio", "3:4")
             resolution = self.config.get("resolution", "720p")
             seed = self.config.get("seed", -1)
             camera_fixed = self.config.get("camera_fixed", False)
             generate_audio = self.config.get("generate_audio", False)
-
             seed_display = "Random" if seed == -1 else str(seed)
-            camera_status = (
-                "\033[92mON\033[0m" if camera_fixed else "\033[91mOFF\033[0m"
-            )
-            audio_status = (
-                "\033[92mON\033[0m" if generate_audio else "\033[91mOFF\033[0m"
-            )
 
-            print(
-                f"  \033[93m1\033[0m   Aspect Ratio    : \033[97m{aspect_ratio}\033[0m"
-            )
-            print(f"  \033[93m2\033[0m   Resolution      : \033[97m{resolution}\033[0m")
-            print(
-                f"  \033[93m3\033[0m   Seed            : \033[97m{seed_display}\033[0m"
-            )
-            print(f"  \033[93m4\033[0m   Camera Fixed    : {camera_status}")
-            print(f"  \033[93m5\033[0m   Generate Audio  : {audio_status}")
-            print()
-            print(f"  \033[91m0\033[0m   Back to main menu")
-            print()
+            if not self._use_legacy_prompt_ui():
+                choice = self._q_menu(
+                    "Advanced Video Settings",
+                    [
+                        (f"📐  Aspect ratio    : {aspect_ratio}", "1"),
+                        (f"🖥️   Resolution      : {resolution}", "2"),
+                        (f"🎲  Seed            : {seed_display}", "3"),
+                        (f"📷  Camera fixed    : {'ON' if camera_fixed else 'OFF'}", "4"),
+                        (f"🔊  Generate audio  : {'ON' if generate_audio else 'OFF'}", "5"),
+                        ("↩️   Back to main menu", "0"),
+                    ],
+                )
+            else:
+                print()
+                print("\033[96m" + "─" * 60 + "\033[0m")
+                print("\033[95m ADVANCED VIDEO SETTINGS\033[0m")
+                print("\033[96m" + "─" * 60 + "\033[0m")
+                print()
+                camera_status = "\033[92mON\033[0m" if camera_fixed else "\033[91mOFF\033[0m"
+                audio_status = "\033[92mON\033[0m" if generate_audio else "\033[91mOFF\033[0m"
+                print(f"  \033[93m1\033[0m   Aspect Ratio    : \033[97m{aspect_ratio}\033[0m")
+                print(f"  \033[93m2\033[0m   Resolution      : \033[97m{resolution}\033[0m")
+                print(f"  \033[93m3\033[0m   Seed            : \033[97m{seed_display}\033[0m")
+                print(f"  \033[93m4\033[0m   Camera Fixed    : {camera_status}")
+                print(f"  \033[93m5\033[0m   Generate Audio  : {audio_status}")
+                print()
+                print(f"  \033[91m0\033[0m   Back to main menu")
+                print()
+                try:
+                    choice = self._safe_input("\033[92mSelect option: \033[0m").strip().lower()
+                except EOFError:
+                    choice = "0"
 
-            choice = input("\033[92mSelect option: \033[0m").strip()
-
-            if choice == "0" or choice.lower() == "q":
+            if choice in (None, "0", "q"):
                 break
             elif choice == "1":
                 self._set_aspect_ratio()
@@ -982,68 +1194,63 @@ class KlingAutomationUI:
             elif choice == "4":
                 self.config["camera_fixed"] = not self.config.get("camera_fixed", False)
                 self.save_config()
-                status = "enabled" if self.config["camera_fixed"] else "disabled"
-                print(f"\n\033[92m✓ Camera fixed {status}\033[0m")
-                time.sleep(0.8)
+                self.print_green(f"✓ Camera fixed {'enabled' if self.config['camera_fixed'] else 'disabled'}")
+                time.sleep(0.6)
             elif choice == "5":
-                self.config["generate_audio"] = not self.config.get(
-                    "generate_audio", False
-                )
+                self.config["generate_audio"] = not self.config.get("generate_audio", False)
                 self.save_config()
-                status = "enabled" if self.config["generate_audio"] else "disabled"
-                print(f"\n\033[92m✓ Generate audio {status}\033[0m")
-                time.sleep(0.8)
+                self.print_green(f"✓ Generate audio {'enabled' if self.config['generate_audio'] else 'disabled'}")
+                time.sleep(0.6)
             else:
-                print("\033[91mInvalid option\033[0m")
-                time.sleep(0.5)
+                self.print_red("Invalid option")
+                time.sleep(0.4)
 
     def _set_aspect_ratio(self):
         """Set video aspect ratio"""
-        print()
-        print("\033[95mSelect Aspect Ratio:\033[0m")
-        ratios = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
-        for i, ratio in enumerate(ratios, 1):
-            current = (
-                " (current)" if ratio == self.config.get("aspect_ratio", "9:16") else ""
-            )
-            print(f"  \033[96m{i}\033[0m   {ratio}{current}")
-        print(f"  \033[91m0\033[0m   Cancel")
-        print()
-
-        choice = input("\033[92mSelect: \033[0m").strip()
-        if choice in ["1", "2", "3", "4", "5", "6"]:
-            selected = ratios[int(choice) - 1]
-            self.config["aspect_ratio"] = selected
-            self.save_config()
-            print(f"\n\033[92m✓ Aspect ratio set to {selected}\033[0m")
-            time.sleep(0.8)
-        elif choice != "0":
-            print("\033[91mInvalid option\033[0m")
-            time.sleep(0.5)
+        self._edit_indexed_choice_setting(
+            "aspect_ratio", "Video aspect ratio",
+            _VIDEO_ASPECT_RATIO_OPTIONS, default="3:4",
+        )
 
     def _set_resolution(self):
         """Set video resolution"""
-        print()
-        print("\033[95mSelect Resolution:\033[0m")
-        resolutions = ["480p", "720p"]
-        for i, res in enumerate(resolutions, 1):
-            current = (
-                " (current)" if res == self.config.get("resolution", "720p") else ""
+        self._edit_indexed_choice_setting(
+            "resolution", "Video resolution",
+            _VIDEO_RESOLUTION_OPTIONS, default="720p",
+        )
+
+    def _edit_indexed_choice_setting(self, key, label, options, default):
+        """Set a config value from a fixed option list (questionary + legacy).
+
+        The legacy path is index-based against ``options`` so it scales when an
+        option is added — no per-option hardcoded branch to forget to update
+        (D3/D4/G3). Cancel ("0"/Esc) leaves the value untouched.
+        """
+        current = self.config.get(key, default)
+        if not self._use_legacy_prompt_ui():
+            selected = self._q_select(
+                f"{label}:", list(options), default=current,
+                instruction=f"(current: {current})",
             )
-            print(f"  \033[96m{i}\033[0m   {res}{current}")
+            if selected:
+                self.config[key] = selected
+                self.save_config()
+                self.print_green(f"✓ {label} set to {selected}")
+                time.sleep(0.6)
+            return
+        print()
+        print(f"\033[95mSelect {label}:\033[0m")
+        for i, opt in enumerate(options, 1):
+            mark = " (current)" if opt == current else ""
+            print(f"  \033[96m{i}\033[0m   {opt}{mark}")
         print(f"  \033[91m0\033[0m   Cancel")
         print()
-
-        choice = input("\033[92mSelect: \033[0m").strip()
-        if choice == "1":
-            self.config["resolution"] = "480p"
+        choice = self._safe_input("\033[92mSelect: \033[0m").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            selected = options[int(choice) - 1]
+            self.config[key] = selected
             self.save_config()
-            print(f"\n\033[92m✓ Resolution set to 480p\033[0m")
-            time.sleep(0.8)
-        elif choice == "2":
-            self.config["resolution"] = "720p"
-            self.save_config()
-            print(f"\n\033[92m✓ Resolution set to 720p\033[0m")
+            print(f"\n\033[92m✓ {label} set to {selected}\033[0m")
             time.sleep(0.8)
         elif choice != "0":
             print("\033[91mInvalid option\033[0m")
@@ -1051,30 +1258,39 @@ class KlingAutomationUI:
 
     def _set_seed(self):
         """Set generation seed"""
-        print()
         current_seed = self.config.get("seed", -1)
         seed_display = "Random" if current_seed == -1 else str(current_seed)
-        print(f"\033[95mCurrent seed:\033[0m {seed_display}")
-        print()
-        print("Enter a seed number (integer) or 'r' for random")
-        print()
 
-        choice = input("\033[92mSeed: \033[0m").strip().lower()
-        if choice == "r" or choice == "random" or choice == "-1":
-            self.config["seed"] = -1
-            self.save_config()
-            print(f"\n\033[92m✓ Seed set to random\033[0m")
-            time.sleep(0.8)
-        elif choice:
-            try:
-                seed_val = int(choice)
-                self.config["seed"] = seed_val
+        def _apply(raw: str) -> None:
+            low = raw.strip().lower()
+            if low in {"r", "random", "-1", ""}:
+                self.config["seed"] = -1
                 self.save_config()
-                print(f"\n\033[92m✓ Seed set to {seed_val}\033[0m")
-                time.sleep(0.8)
-            except ValueError:
-                print("\033[91mInvalid seed value (must be integer)\033[0m")
-                time.sleep(1)
+                self.print_green("✓ Seed set to random")
+            else:
+                try:
+                    self.config["seed"] = int(low)
+                    self.save_config()
+                    self.print_green(f"✓ Seed set to {int(low)}")
+                except ValueError:
+                    self.print_red("Invalid seed value (must be an integer or 'r')")
+            time.sleep(0.7)
+
+        if not self._use_legacy_prompt_ui():
+            raw = self._q_text(
+                "Seed (integer, or 'r' for random):",
+                default=seed_display if seed_display != "Random" else "r",
+                instruction=f"(current: {seed_display})",
+            )
+            if raw is not None:
+                _apply(raw)
+            return
+        print()
+        print(f"\033[95mCurrent seed:\033[0m {seed_display}")
+        print("\nEnter a seed number (integer) or 'r' for random\n")
+        choice = self._safe_input("\033[92mSeed: \033[0m").strip().lower()
+        if choice:
+            _apply(choice)
 
     def inspect_model_capabilities(self):
         """Show detailed capabilities of a model via OpenAPI schema inspection"""
@@ -1099,43 +1315,46 @@ class KlingAutomationUI:
             self.pause_continue("\nPress Enter to continue...")
             return
 
-        # Available models to inspect
+        # Available models to inspect — derived from the shared _MODEL_PRESETS so
+        # a model added to the picker is automatically inspectable (D3, no second
+        # hand-maintained list to drift).
         models = {
-            "1": ("fal-ai/kling-video/v2.1/pro/image-to-video", "Kling 2.1 Pro"),
-            "2": ("fal-ai/kling-video/v2.5/pro/image-to-video", "Kling 2.5 Pro"),
-            "3": (
-                "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
-                "Kling 2.5 Turbo Pro",
-            ),
-            "4": ("fal-ai/wan/v2.1/image-to-video", "Wan 2.1"),
-            "5": ("fal-ai/veo3", "Veo 3"),
-            "6": (
-                "fal-ai/bytedance/seedance/v1.5/pro/image-to-video",
-                "Seedance 1.5 Pro",
-            ),
+            str(i): (endpoint, name)
+            for i, (name, endpoint, _dur) in enumerate(self._MODEL_PRESETS, 1)
         }
 
         # Add current model if not in list
         current_model = self.config.get(
-            "current_model", "fal-ai/kling-video/v2.1/pro/image-to-video"
+            "current_model", "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
         )
         if current_model not in [m[0] for m in models.values()]:
             models["c"] = (current_model, f"Current: {current_model.split('/')[-1]}")
 
-        print("\033[93mSelect a model to inspect:\033[0m")
-        print()
-        for key, (model_id, name) in models.items():
-            marker = " \033[92m(current)\033[0m" if model_id == current_model else ""
-            print(f"  \033[93m{key}\033[0m  {name}{marker}")
-            print(f"      \033[90m{model_id}\033[0m")
-        print()
-        print(f"  \033[91mq\033[0m  Back to menu")
-        print()
-
-        choice = input("\033[92m➤ Select model: \033[0m").strip().lower()
-
-        if choice == "q" or choice not in models:
-            return
+        if not self._use_legacy_prompt_ui():
+            choices = []
+            for key, (model_id, name) in models.items():
+                marker = "  (current)" if model_id == current_model else ""
+                choices.append((f"{name}{marker}  —  {model_id}", key))
+            choices.append(("↩️   Back", "q"))
+            choice = self._q_menu("Model Capability Inspector", choices, show_header=False)
+            if choice in (None, "q") or choice not in models:
+                return
+        else:
+            print("\033[93mSelect a model to inspect:\033[0m")
+            print()
+            for key, (model_id, name) in models.items():
+                marker = " \033[92m(current)\033[0m" if model_id == current_model else ""
+                print(f"  \033[93m{key}\033[0m  {name}{marker}")
+                print(f"      \033[90m{model_id}\033[0m")
+            print()
+            print(f"  \033[91mq\033[0m  Back to menu")
+            print()
+            try:
+                choice = self._safe_input("\033[92m➤ Select model: \033[0m").strip().lower()
+            except EOFError:
+                return
+            if choice == "q" or choice not in models:
+                return
 
         model_id, model_name = models[choice]
 
@@ -1231,14 +1450,85 @@ class KlingAutomationUI:
 
         self.pause_continue("\nPress Enter to continue...")
 
+    def _edit_prompt_questionary(self, current_slot, current_prompt, default_prompt):
+        """Branded prompt editor (questionary). Slot previews in the status
+        panel; reset / edit positive / edit negative / clear actions."""
+        saved_prompts = self.config.get("saved_prompts", {})
+        status = ["Saved prompt slots:"]
+        for i in range(1, _PROMPT_SLOT_COUNT + 1):
+            key = str(i)
+            p = saved_prompts.get(key) or ""
+            preview = (p[:46] + "…") if len(p) > 46 else (p or "(empty)")
+            active = "  (ACTIVE)" if key == current_slot else ""
+            status.append(f"  [{i}] {preview}{active}")
+        preview_cur = current_prompt if len(current_prompt) <= 200 else current_prompt[:200] + "…"
+        status.append("")
+        status.append(f"Active slot {current_slot}: {preview_cur}")
+        pick = self._q_menu(
+            "Kling Prompt Editor",
+            [
+                ("↺  Reset active slot to default (head movement)", "1"),
+                ("✏️   Edit positive prompt for active slot", "2"),
+                ("🚫  Edit negative prompt for active slot", "3"),
+                ("🧹  Clear active slot", "4"),
+                ("↩️   Return without changes", "5"),
+            ],
+            status_lines=status,
+        )
+        if pick in (None, "5"):
+            return
+        if pick == "1":
+            if current_prompt.strip() and not self._confirm(
+                f"Overwrite slot {current_slot} with the default prompt?", default=False
+            ):
+                return
+            self.config["saved_prompts"][current_slot] = default_prompt
+            self.save_config()
+            self.print_green("✓ Reset to default head-movement prompt")
+            time.sleep(0.8)
+        elif pick == "2":
+            new_prompt = self._q_text(
+                f"Positive prompt for slot {current_slot}:",
+                default=current_prompt,
+            )
+            if new_prompt and new_prompt.strip():
+                self.config["saved_prompts"][current_slot] = new_prompt.strip()
+                self.save_config()
+                self.print_green(f"✓ Prompt saved to slot {current_slot}")
+                time.sleep(0.8)
+        elif pick == "3":
+            existing_neg = str(self.config.get("negative_prompts", {}).get(current_slot, ""))
+            neg = self._q_text(
+                f"Negative prompt for slot {current_slot} (what to avoid):",
+                default=existing_neg,
+            )
+            if neg is not None:
+                self.config.setdefault("negative_prompts", {})[current_slot] = neg.strip()
+                self.save_config()
+                self.print_green(f"✓ Negative prompt saved to slot {current_slot}")
+                time.sleep(0.8)
+        elif pick == "4":
+            if (current_prompt.strip() or self.config.get("negative_prompts", {}).get(current_slot)) and not self._confirm(
+                f"Clear slot {current_slot} (positive + negative prompt)?", default=False
+            ):
+                return
+            self.config["saved_prompts"][current_slot] = ""
+            self.config.setdefault("negative_prompts", {})[current_slot] = ""
+            self.save_config()
+            self.print_yellow(f"Slot {current_slot} cleared")
+            time.sleep(0.8)
+
     def edit_prompt(self):
         """Edit or view the Kling generation prompt (full editor with slot support)"""
-        self.clear_screen()
-
         current_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
         current_prompt = self.get_current_prompt()
         default_prompt = self.get_default_prompt()
 
+        if not self._use_legacy_prompt_ui():
+            self._edit_prompt_questionary(current_slot, current_prompt, default_prompt)
+            return
+
+        self.clear_screen()
         print("\033[96m" + "═" * 79 + "\033[0m")
         self.print_magenta("                           KLING PROMPT EDITOR")
         print("\033[96m" + "═" * 79 + "\033[0m")
@@ -1247,7 +1537,7 @@ class KlingAutomationUI:
         # Show all slots
         print("\033[93mSaved Prompts:\033[0m")
         saved_prompts = self.config.get("saved_prompts", {})
-        for i in range(1, 11):
+        for i in range(1, _PROMPT_SLOT_COUNT + 1):
             slot_key = str(i)
             prompt = saved_prompts.get(slot_key)
             active = " \033[92m(ACTIVE)\033[0m" if slot_key == current_slot else ""
@@ -1288,7 +1578,7 @@ class KlingAutomationUI:
         print("  \033[93m5\033[0m - Return without changes")
         print()
 
-        choice = input("\033[92mSelect option (1-5): \033[0m").strip()
+        choice = self._safe_input("\033[92mSelect option (1-5): \033[0m").strip()
 
         if choice == "1":
             self.config["saved_prompts"][current_slot] = default_prompt
@@ -1336,7 +1626,7 @@ class KlingAutomationUI:
             print(
                 "\033[93mEnter NEGATIVE prompt (what to avoid - e.g. 'blur, bokeh'):\033[0m"
             )
-            neg_prompt = input("\033[92m➤ \033[0m").strip()
+            neg_prompt = self._safe_input("\033[92m➤ \033[0m").strip()
 
             if neg_prompt:
                 self.config["negative_prompts"][current_slot] = neg_prompt
@@ -1359,14 +1649,25 @@ class KlingAutomationUI:
 
     def quick_edit_prompt(self):
         """Quick inline prompt editor - single line input"""
+        current_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
+        existing = str(self.config.get("saved_prompts", {}).get(current_slot, ""))
+        if not self._use_legacy_prompt_ui():
+            new_prompt = self._q_text(
+                f"Kling prompt for slot {current_slot} (Esc to cancel):",
+                default=existing,
+            )
+            if new_prompt and new_prompt.strip():
+                self.config["saved_prompts"][current_slot] = new_prompt.strip()
+                self.save_config()
+                self.print_green(f"✓ Prompt saved to slot {current_slot}")
+                time.sleep(0.8)
+            return
         print()
         print(
             "\033[93mQuick Edit - Enter new prompt (single line, or press Enter to cancel):\033[0m"
         )
-        new_prompt = input("\033[92m➤ \033[0m").strip()
-
+        new_prompt = self._safe_input("\033[92m➤ \033[0m").strip()
         if new_prompt:
-            current_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
             self.config["saved_prompts"][current_slot] = new_prompt
             self.save_config()
             print("\033[92m✓ Prompt saved to Slot {}\033[0m".format(current_slot))
@@ -1380,12 +1681,38 @@ class KlingAutomationUI:
 
         Invalid or missing slot values fall back to slot 4 defaults.
         """
-        print()
         saved_prompts = self.config.get("saved_prompts", {})
         current_slot = self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT)
 
+        def _apply(choice: str) -> None:
+            self.config["current_prompt_slot"] = int(choice)
+            self.save_config()
+            if saved_prompts.get(choice):
+                self.print_green(f"✓ Switched to slot {choice}")
+            else:
+                self.print_yellow(f"⚠ Switched to slot {choice} (empty - will use default)")
+            time.sleep(0.8)
+
+        if not self._use_legacy_prompt_ui():
+            slot_choices = []
+            for i in range(1, _PROMPT_SLOT_COUNT + 1):
+                key = str(i)
+                prompt = saved_prompts.get(key) or ""
+                preview = (prompt[:48] + "…") if len(prompt) > 48 else (prompt or "(empty)")
+                active = "  ◄ ACTIVE" if key == str(current_slot) else ""
+                slot_choices.append((f"[{i}] {preview}{active}", key))
+            slot_choices.append(("↩️   Back", "cancel"))
+            pick = self._q_select(
+                "Active Kling prompt slot:", slot_choices,
+                instruction=f"(current: slot {current_slot})",
+            )
+            if pick and pick != "cancel":
+                _apply(pick)
+            return
+
+        print()
         print("\033[93mSaved Prompts:\033[0m")
-        for i in range(1, 11):
+        for i in range(1, _PROMPT_SLOT_COUNT + 1):
             slot_key = str(i)
             prompt = saved_prompts.get(slot_key)
             active = " \033[92m◄ ACTIVE\033[0m" if slot_key == str(current_slot) else ""
@@ -1396,7 +1723,7 @@ class KlingAutomationUI:
                 print(f"  [\033[90m{i}\033[0m] \033[90m(empty)\033[0m{active}")
         print()
 
-        choice = input("\033[92mSelect slot (1-10) or Enter to cancel: \033[0m").strip()
+        choice = self._safe_input("\033[92mSelect slot (1-10) or Enter to cancel: \033[0m").strip()
         if choice.isdigit() and 1 <= int(choice) <= 10:
             self.config["current_prompt_slot"] = int(choice)
             self.save_config()
@@ -1412,8 +1739,77 @@ class KlingAutomationUI:
             print("\033[90mCancelled\033[0m")
             time.sleep(0.5)
 
+    # Preset video models offered by the model picker (name, endpoint, default
+    # duration). Shared by the questionary + legacy paths so they never drift.
+    _MODEL_PRESETS = [
+        ("Kling 2.5 Turbo Standard", "fal-ai/kling-video/v2.5-turbo/standard/image-to-video", 10),
+        ("Kling 2.5 Turbo Pro", "fal-ai/kling-video/v2.5-turbo/pro/image-to-video", 10),
+        ("Kling 2.1 Professional", "fal-ai/kling-video/v2.1/pro/image-to-video", 10),
+        ("Wan 2.5", "fal-ai/wan-25-preview/image-to-video", 5),
+        ("Veo 3", "fal-ai/veo3/image-to-video", 8),
+        ("Ovi", "fal-ai/ovi/image-to-video", 5),
+    ]
+
+    def _apply_model_choice(self, name: str, endpoint: str, duration: int) -> None:
+        self.config["current_model"] = endpoint
+        self.config["model_display_name"] = name
+        self.config["video_duration"] = duration
+        self._cached_price = None
+        self.save_config()
+        self.print_green(f"✓ Model set to: {name}")
+        time.sleep(0.9)
+
     def select_model(self):
-        """Select AI model from presets or enter custom endpoint"""
+        """Select AI model from presets or enter custom endpoint."""
+        if not self._use_legacy_prompt_ui():
+            current_model = self.config.get("current_model", "")
+            choices = []
+            for name, endpoint, duration in self._MODEL_PRESETS:
+                price = self.fetch_model_pricing(endpoint)
+                price_str = f"${price:.2f}/sec" if price else "check fal.ai"
+                active = "  ◄" if endpoint == current_model else ""
+                choices.append((f"{name}  ({price_str}){active}", endpoint))
+            choices.append(("➕  Enter custom endpoint…", "__custom__"))
+            choices.append(("🌐  Fetch all models from fal.ai", "__fetch__"))
+            choices.append(("↩️   Back", "__cancel__"))
+            pick = self._q_menu(
+                "Model Selection",
+                choices,
+                status_lines=[
+                    f"Current: {self.config.get('model_display_name', 'Unknown')}",
+                    f"Endpoint: {current_model}",
+                ],
+            )
+            if pick in (None, "__cancel__"):
+                return
+            if pick == "__custom__":
+                endpoint = self._q_text(
+                    "fal.ai endpoint id (e.g. fal-ai/kling-video/v2.5-turbo/standard/image-to-video):"
+                )
+                if not endpoint or not endpoint.strip():
+                    return
+                endpoint = endpoint.strip()
+                name = self._q_text("Display name:", default=endpoint) or endpoint
+                dur_raw = self._q_text("Video duration seconds (5/10/15):", default="10")
+                duration = int(dur_raw) if dur_raw and dur_raw.strip().isdigit() else 10
+                if duration not in _COMMON_VIDEO_DURATIONS:
+                    self.print_yellow(f"⚠ Uncommon duration {duration}s — verify the model supports it.")
+                self._apply_model_choice(name.strip(), endpoint, duration)
+                return
+            if pick == "__fetch__":
+                # Delegate the paginated "all models" browser to the legacy flow
+                # (its number-paged input() UX is fine for this advanced path).
+                return self._select_model_fetch_all_legacy()
+            # A preset endpoint was chosen.
+            for name, endpoint, duration in self._MODEL_PRESETS:
+                if endpoint == pick:
+                    self._apply_model_choice(name, endpoint, duration)
+                    return
+            return
+        return self._select_model_legacy()
+
+    def _select_model_legacy(self):
+        """Legacy numbered model picker (non-TTY / piped stdin)."""
         self.clear_screen()
 
         print("\033[96m" + "═" * 79 + "\033[0m")
@@ -1427,22 +1823,10 @@ class KlingAutomationUI:
         print(f"\033[90m  Endpoint: {current_model}\033[0m")
         print()
 
-        # Preset models
-        presets = [
-            (
-                "Kling 2.1 Professional",
-                "fal-ai/kling-video/v2.1/pro/image-to-video",
-                10,
-            ),
-            (
-                "Kling 2.5 Turbo Pro",
-                "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
-                10,
-            ),
-            ("Wan 2.5", "fal-ai/wan-25-preview/image-to-video", 5),
-            ("Veo 3", "fal-ai/veo3/image-to-video", 8),
-            ("Ovi", "fal-ai/ovi/image-to-video", 5),
-        ]
+        # Preset models — SAME source as the questionary path (the whole point
+        # of _MODEL_PRESETS is that both pickers stay in lockstep, including the
+        # default Kling 2.5 Turbo Standard at position 1).
+        presets = self._MODEL_PRESETS
 
         print("\033[93mPreset Models:\033[0m")
         for idx, (name, endpoint, duration) in enumerate(presets, 1):
@@ -1460,7 +1844,7 @@ class KlingAutomationUI:
         print(f"  \033[90mSee all: https://fal.ai/models?category=video\033[0m")
         print()
 
-        choice = input("\033[92mSelect option: \033[0m").strip()
+        choice = self._safe_input("\033[92mSelect option: \033[0m").strip()
 
         if choice == "0":
             return
@@ -1470,15 +1854,15 @@ class KlingAutomationUI:
             print(
                 "\033[93mEnter fal.ai endpoint ID (e.g., fal-ai/kling-video/v2.1/pro/image-to-video):\033[0m"
             )
-            endpoint = input("\033[92m➤ \033[0m").strip()
+            endpoint = self._safe_input("\033[92m➤ \033[0m").strip()
             if endpoint:
                 name = (
-                    input("\033[92mDisplay name for this model: \033[0m").strip()
+                    self._safe_input("\033[92mDisplay name for this model: \033[0m").strip()
                     or endpoint
                 )
                 # Duration prompt with common options
                 print("\033[93mCommon durations: 5s (most models), 10s (most models), 15s (some models)\033[0m")
-                duration_input = input(
+                duration_input = self._safe_input(
                     "\033[92mVideo duration in seconds (5, 10, 15, default 10): \033[0m"
                 ).strip()
 
@@ -1486,7 +1870,7 @@ class KlingAutomationUI:
                 if duration_input.isdigit():
                     duration = int(duration_input)
                     # Warn about uncommon durations but allow them
-                    if duration not in [2, 3, 4, 5, 6, 7, 8, 10, 15]:
+                    if duration not in _COMMON_VIDEO_DURATIONS:
                         print(f"\033[93m⚠ Uncommon duration {duration}s - verify model supports this\033[0m")
                 else:
                     duration = 10
@@ -1499,104 +1883,7 @@ class KlingAutomationUI:
                 print(f"\033[92m✓ Model set to: {name}\033[0m")
                 time.sleep(1.5)
         elif choice == "7":
-            # Show all available models with pagination
-            print("\n\033[93mFetching all image-to-video models from fal.ai...\033[0m")
-            models = self.fetch_available_models()
-            current_model = self.config.get("current_model", "")
-            page_size = 40  # Show up to 40 per page
-            page = 0
-            total_pages = (len(models) + page_size - 1) // page_size
-
-            print(f"\033[92mFound {len(models)} models total\033[0m")
-
-            while True:
-                start_idx = page * page_size
-                end_idx = min(start_idx + page_size, len(models))
-                page_models = models[start_idx:end_idx]
-
-                print(f"\n\033[92m{'═' * 60}\033[0m")
-                print(
-                    f"\033[92m  Image-to-Video Models  ·  Page {page + 1}/{total_pages}  ·  Showing {start_idx + 1}-{end_idx} of {len(models)}\033[0m"
-                )
-                print(f"\033[92m{'═' * 60}\033[0m\n")
-                for idx, m in enumerate(page_models, start_idx + 1):
-                    endpoint = m.get("endpoint_id", "")
-                    name = m.get("name", endpoint)
-                    duration = m.get("duration", 10)
-                    description = m.get("description", "")
-                    price_info = m.get("price")
-                    if price_info:
-                        price_str = f"${price_info['price']:.3f}/{price_info['unit']}"
-                    else:
-                        price_str = "pricing unavailable"
-                    active = (
-                        "  \033[92m◄ CURRENT\033[0m"
-                        if endpoint == current_model
-                        else ""
-                    )
-
-                    print(f"  \033[96m{idx:2d}\033[0m  \033[1;97m{name}\033[0m{active}")
-                    print(f"       Price: \033[93m{price_str}\033[0m")
-                    if description:
-                        # Wrap description to ~65 chars per line, max 3 lines
-                        words = description.split()
-                        lines = []
-                        current_line = ""
-                        for word in words:
-                            if len(current_line) + len(word) + 1 <= 65:
-                                current_line += (" " if current_line else "") + word
-                            else:
-                                if current_line:
-                                    lines.append(current_line)
-                                current_line = word
-                            if len(lines) >= 3:
-                                break
-                        if current_line and len(lines) < 3:
-                            lines.append(current_line)
-                        for line in lines[:3]:
-                            print(f"       \033[90m{line}\033[0m")
-                    print(f"       \033[36m{endpoint}\033[0m")
-                    print()  # Blank line between entries
-
-                print()
-                nav_hint = []
-                if page > 0:
-                    nav_hint.append("p=prev")
-                if page < total_pages - 1:
-                    nav_hint.append("n=next")
-                nav_str = f" ({', '.join(nav_hint)})" if nav_hint else ""
-
-                sel = (
-                    input(
-                        f"\033[92mEnter number to select{nav_str}, or Enter to cancel: \033[0m"
-                    )
-                    .strip()
-                    .lower()
-                )
-
-                if sel == "n" and page < total_pages - 1:
-                    page += 1
-                    continue
-                elif sel == "p" and page > 0:
-                    page -= 1
-                    continue
-                elif sel == "" or sel == "q":
-                    break
-                elif sel.isdigit() and 1 <= int(sel) <= len(models):
-                    selected = models[int(sel) - 1]
-                    self.config["current_model"] = selected.get("endpoint_id")
-                    self.config["model_display_name"] = selected.get(
-                        "name", selected.get("endpoint_id")
-                    )
-                    self.config["video_duration"] = selected.get("duration", 10)
-                    self._cached_price = None
-                    self.save_config()
-                    print(f"\033[92m✓ Model set to: {selected.get('name')}\033[0m")
-                    time.sleep(1.5)
-                    break
-                else:
-                    print("\033[91mInvalid selection\033[0m")
-                    time.sleep(1)
+            self._select_model_fetch_all_legacy()
         elif choice.isdigit() and 1 <= int(choice) <= len(presets):
             name, endpoint, duration = presets[int(choice) - 1]
             self.config["current_model"] = endpoint
@@ -1607,56 +1894,218 @@ class KlingAutomationUI:
             print(f"\033[92m✓ Model set to: {name}\033[0m")
             time.sleep(1.5)
 
+    def _select_model_fetch_all_legacy(self):
+        """Paginated browser of every fal.ai image-to-video model (input()-based).
+
+        Reached from both the questionary picker ("Fetch all models") and the
+        legacy numbered picker (option 7). The number-paged UX is intentionally
+        kept as input() — it's an advanced, high-cardinality list where a flat
+        arrow menu would be unwieldy.
+        """
+        print("\n\033[93mFetching all image-to-video models from fal.ai...\033[0m")
+        models = self.fetch_available_models()
+        current_model = self.config.get("current_model", "")
+        page_size = 40
+        page = 0
+        total_pages = (len(models) + page_size - 1) // page_size
+
+        print(f"\033[92mFound {len(models)} models total\033[0m")
+
+        while True:
+            start_idx = page * page_size
+            end_idx = min(start_idx + page_size, len(models))
+            page_models = models[start_idx:end_idx]
+
+            print(f"\n\033[92m{'═' * 60}\033[0m")
+            print(
+                f"\033[92m  Image-to-Video Models  ·  Page {page + 1}/{total_pages}  ·  Showing {start_idx + 1}-{end_idx} of {len(models)}\033[0m"
+            )
+            print(f"\033[92m{'═' * 60}\033[0m\n")
+            for idx, m in enumerate(page_models, start_idx + 1):
+                endpoint = m.get("endpoint_id", "")
+                name = m.get("name", endpoint)
+                description = m.get("description", "")
+                price_info = m.get("price")
+                if price_info:
+                    price_str = f"${price_info['price']:.3f}/{price_info['unit']}"
+                else:
+                    price_str = "pricing unavailable"
+                active = (
+                    "  \033[92m◄ CURRENT\033[0m" if endpoint == current_model else ""
+                )
+                print(f"  \033[96m{idx:2d}\033[0m  \033[1;97m{name}\033[0m{active}")
+                print(f"       Price: \033[93m{price_str}\033[0m")
+                if description:
+                    words = description.split()
+                    lines = []
+                    current_line = ""
+                    for word in words:
+                        if len(current_line) + len(word) + 1 <= 65:
+                            current_line += (" " if current_line else "") + word
+                        else:
+                            if current_line:
+                                lines.append(current_line)
+                            current_line = word
+                        if len(lines) >= 3:
+                            break
+                    if current_line and len(lines) < 3:
+                        lines.append(current_line)
+                    for line in lines[:3]:
+                        print(f"       \033[90m{line}\033[0m")
+                print(f"       \033[36m{endpoint}\033[0m")
+                print()
+
+            print()
+            nav_hint = []
+            if page > 0:
+                nav_hint.append("p=prev")
+            if page < total_pages - 1:
+                nav_hint.append("n=next")
+            nav_str = f" ({', '.join(nav_hint)})" if nav_hint else ""
+
+            try:
+                sel = input(
+                    f"\033[92mEnter number to select{nav_str}, or Enter to cancel: \033[0m"
+                ).strip().lower()
+            except EOFError:
+                break
+
+            if sel == "n" and page < total_pages - 1:
+                page += 1
+                continue
+            elif sel == "p" and page > 0:
+                page -= 1
+                continue
+            elif sel == "" or sel == "q":
+                break
+            elif sel.isdigit() and 1 <= int(sel) <= len(models):
+                selected = models[int(sel) - 1]
+                self._apply_model_choice(
+                    selected.get("name", selected.get("endpoint_id")),
+                    selected.get("endpoint_id"),
+                    selected.get("duration", 10),
+                )
+                break
+            else:
+                print("\033[91mInvalid selection\033[0m")
+                time.sleep(1)
+
     def run_configuration_menu(self):
         """Main top-level menu loop."""
         while True:
-            self.display_header()
-            self.display_configuration_menu()
-            choice = input().strip()
-            if choice.startswith('"') and choice.endswith('"'):
-                choice = choice[1:-1]
-            elif choice.startswith("'") and choice.endswith("'"):
-                choice = choice[1:-1]
-            choice_lower = choice.lower()
-            if choice_lower == "q":
-                print("\nGoodbye!")
-                sys.exit(0)
-            if choice_lower == "1":
-                self.run_automation_menu()
-            elif choice_lower == "2":
-                self._scan_automation_cases()
-            elif choice_lower == "3":
-                self._run_resume_automation()
-            elif choice_lower == "4":
-                self._edit_automation_settings()
-            elif choice_lower == "5":
-                selected_path = self._run_manual_kling_menu()
-                if selected_path:
-                    return selected_path
-            elif choice_lower == "6":
-                self.launch_gui()
-            elif choice_lower == "7":
-                self.configure_api_provider_settings()
-            elif choice_lower == "8":
-                self.check_dependencies()
-            elif choice_lower == "9":
-                self.configure_advanced_video_settings()
-            elif choice and Path(choice).exists():
-                selected_root = Path(choice)
-                if selected_root.is_dir():
-                    self.automation_root_folder = str(selected_root)
-                    self.config["automation_root_folder"] = self.automation_root_folder
-                    self.save_config()
-                    self._scan_automation_cases()
-                else:
-                    self.print_red(f"Path is not a folder: {choice}")
-                    self.pause_continue("Press Enter to continue...")
-            elif choice:
-                self.print_red(f"Path not found: {choice}")
-                self.pause_continue("Press Enter to continue...")
+            if self._use_legacy_prompt_ui():
+                result = self._run_configuration_menu_legacy_iteration()
             else:
-                self.print_yellow("Please enter a valid path or select an option")
-                time.sleep(1)
+                result = self._run_configuration_menu_questionary_iteration()
+            if result is not None:
+                # A non-None return is a selected manual-input path (from the
+                # manual Kling menu) that the caller wants to act on.
+                return result
+
+    def _dispatch_configuration_choice(self, choice_lower: str) -> "Optional[str]":
+        """Run the action for a top-level menu choice ("1".."9").
+
+        Returns a manual-input path string when the manual Kling menu yields one
+        (so the outer loop can return it), else None to keep looping.
+        """
+        if choice_lower == "1":
+            self.run_automation_menu()
+        elif choice_lower == "2":
+            self._scan_automation_cases()
+        elif choice_lower == "3":
+            self._run_resume_automation()
+        elif choice_lower == "4":
+            self._edit_automation_settings()
+        elif choice_lower == "5":
+            selected_path = self._run_manual_kling_menu()
+            if selected_path:
+                return selected_path
+        elif choice_lower == "6":
+            self.launch_gui()
+        elif choice_lower == "7":
+            self.configure_api_provider_settings()
+        elif choice_lower == "8":
+            self.check_dependencies()
+        elif choice_lower == "9":
+            self.configure_advanced_video_settings()
+        return None
+
+    def _run_configuration_menu_questionary_iteration(self) -> "Optional[str]":
+        """One iteration of the branded arrow-key top-level menu."""
+        status = [f"Automation root: {self.automation_root_folder or '(not set)'}"]
+        status.extend(self._automation_status_lines())
+        choice = self._q_menu(
+            f"Selfie Gen Ultimate  {RELEASE_VERSION}",
+            [
+                ("🚀  End-to-End Auto Pipeline", "1"),
+                ("🔍  Scan automation root / preview cases", "2"),
+                ("▶️   Run / resume automation batch", "3"),
+                ("⚙️   Automation settings", "4"),
+                ("🎬  Manual Kling video tools", "5"),
+                ("🖥️   Launch GUI manual lab", "6"),
+                ("🔑  API keys / provider settings", "7"),
+                ("📦  Dependency check", "8"),
+                ("🎛️   Advanced video/model settings", "9"),
+                ("📂  Set automation root by path…", "path"),
+                ("🚪  Quit", "q"),
+            ],
+            status_lines=status,
+        )
+        if choice in (None, "q"):
+            print("\nGoodbye!")
+            sys.exit(0)
+        if choice == "path":
+            raw = self._q_text(
+                "Automation root folder path (case folders need front.jpg/png/jpeg):",
+                default=self.automation_root_folder or "",
+            )
+            if raw and raw.strip():
+                self._commit_automation_root(raw.strip().strip('"').strip("'"))
+            return None
+        return self._dispatch_configuration_choice(choice)
+
+    def _run_configuration_menu_legacy_iteration(self) -> "Optional[str]":
+        """One iteration of the legacy numbered top-level menu (non-TTY / pipe).
+
+        Preserves the paste-a-path shortcut: any non-option input that resolves
+        to a directory sets the automation root.
+        """
+        self.display_header()
+        self.display_configuration_menu()
+        try:
+            choice = input().strip()
+        except EOFError:
+            # Closed / exhausted stdin (pipe) at the top-level menu: exit cleanly
+            # instead of letting EOFError crash out of the while-True loop.
+            print("\nGoodbye!")
+            sys.exit(0)
+        if choice.startswith('"') and choice.endswith('"'):
+            choice = choice[1:-1]
+        elif choice.startswith("'") and choice.endswith("'"):
+            choice = choice[1:-1]
+        choice_lower = choice.lower()
+        if choice_lower == "q":
+            print("\nGoodbye!")
+            sys.exit(0)
+        if choice_lower in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
+            return self._dispatch_configuration_choice(choice_lower)
+        if choice and Path(choice).exists():
+            selected_root = Path(choice)
+            if selected_root.is_dir():
+                self.automation_root_folder = str(selected_root)
+                self.config["automation_root_folder"] = self.automation_root_folder
+                self.save_config()
+                self._scan_automation_cases()
+            else:
+                self.print_red(f"Path is not a folder: {choice}")
+                self.pause_continue("Press Enter to continue...")
+        elif choice:
+            self.print_red(f"Path not found: {choice}")
+            self.pause_continue("Press Enter to continue...")
+        else:
+            self.print_yellow("Please enter a valid path or select an option")
+            time.sleep(1)
+        return None
 
     def _automation_manifest_path(self) -> Optional[Path]:
         if not self.automation_root_folder:
@@ -1683,7 +2132,7 @@ class KlingAutomationUI:
         if not isinstance(prompts, dict):
             prompts = {}
         defaults = merge_automation_defaults({}).get("automation_selfie_prompts", {})
-        for i in range(1, 11):
+        for i in range(1, _PROMPT_SLOT_COUNT + 1):
             prompts.setdefault(str(i), "")
         if not prompts.get("1"):
             prompts["1"] = defaults.get("1", "")
@@ -1763,6 +2212,16 @@ class KlingAutomationUI:
         return lines
 
     def _apply_recommended_automation_defaults(self) -> None:
+        # This overwrites ~60 automation_* keys (front/selfie/expand/video/oldcam/
+        # rppg + prompts) with the recommended baseline. Confirm before clobbering
+        # a customized config (E1). default=True so the headless/test path (which
+        # chose this action deliberately) proceeds, while a TTY user gets a y/N.
+        if not self._confirm(
+            "Apply recommended automation defaults? This overwrites your current automation settings.",
+            default=True,
+        ):
+            self.print_yellow("Recommended defaults not applied.")
+            return
         before = {
             "front": (
                 self.config.get("automation_front_expand_provider"),
@@ -1945,10 +2404,46 @@ class KlingAutomationUI:
 
     def _select_automation_root(self):
         logging.info("automation_root_select_start")
+        # Questionary path (interactive TTY): reuse the shared _qs_directory
+        # picker, which already offers native folder-picker / type / keep. The
+        # legacy numbered browse/type walker stays as the non-TTY fallback so
+        # CI / piped stdin keep working.
+        if not self._use_legacy_prompt_ui():
+            try:
+                picked = self._qs_directory(
+                    "Select automation root folder:",
+                    self.automation_root_folder,
+                    "Select Automation Root Folder",
+                )
+            except (KeyboardInterrupt, EOFError, _QuestionarySectionAbort):
+                picked = None
+            if not picked:
+                self.print_yellow("Automation root unchanged.")
+                return
+            self._commit_automation_root(picked)
+            return
+        return self._select_automation_root_legacy()
+
+    def _commit_automation_root(self, selected_path: str) -> None:
+        """Validate + persist a chosen automation root, then scan cases."""
+        selected = Path(selected_path)
+        if not selected.exists() or not selected.is_dir():
+            self.print_red("Invalid folder path.")
+            logging.warning("automation_root_select_invalid path=%s", selected)
+            self.pause_continue("Press Enter to continue...")
+            return
+        self.automation_root_folder = str(selected)
+        logging.info("automation_root_select_success path=%s", self.automation_root_folder)
+        self.config["automation_root_folder"] = self.automation_root_folder
+        self.save_config()
+        self.print_yellow(f"Automation root set: {self.automation_root_folder}")
+        self._scan_automation_cases()
+
+    def _select_automation_root_legacy(self):
         print("\nSelect automation root:")
         print("  1) Browse for folder (recommended)")
         print("  2) Type folder path")
-        choice = input("Choose option [1/2, default 1]: ").strip()
+        choice = self._safe_input("Choose option [1/2, default 1]: ").strip()
         selected_path: Optional[str] = None
         use_browse = choice in {"", "1"}
         logging.info("automation_root_select_mode use_browse=%s choice=%s", use_browse, choice or "<default>")
@@ -1969,7 +2464,7 @@ class KlingAutomationUI:
                 logging.info("automation_root_picker_browse_canceled_or_unavailable")
             if not selected_path:
                 logging.info("automation_root_typed_fallback_prompt")
-                raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
+                raw = self._safe_input("Enter automation root folder path (leave blank to cancel): ").strip()
                 if not raw:
                     self.print_yellow("Automation root selection canceled.")
                     logging.info("automation_root_select_canceled")
@@ -1981,7 +2476,7 @@ class KlingAutomationUI:
                 selected_path = raw
         else:
             logging.info("automation_root_typed_primary_prompt")
-            raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
+            raw = self._safe_input("Enter automation root folder path (leave blank to cancel): ").strip()
             if not raw:
                 self.print_yellow("Automation root selection canceled.")
                 logging.info("automation_root_select_canceled")
@@ -1992,18 +2487,7 @@ class KlingAutomationUI:
                 raw = raw[1:-1]
             selected_path = raw
 
-        selected = Path(selected_path)
-        if not selected.exists() or not selected.is_dir():
-            self.print_red("Invalid folder path.")
-            logging.warning("automation_root_select_invalid path=%s", selected)
-            self.pause_continue("Press Enter to continue...")
-            return
-        self.automation_root_folder = str(selected)
-        logging.info("automation_root_select_success path=%s", self.automation_root_folder)
-        self.config["automation_root_folder"] = self.automation_root_folder
-        self.save_config()
-        self.print_yellow(f"Automation root set: {self.automation_root_folder}")
-        self._scan_automation_cases()
+        self._commit_automation_root(selected_path)
 
     def _normalize_max_cases(self, value: Any) -> Optional[int]:
         raw = str(value).strip().lower()
@@ -2104,7 +2588,11 @@ class KlingAutomationUI:
             self.print_red("Automation root path does not exist.")
             self.pause_review("Press Enter to continue...")
             return
-        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        records = discover_case_folders(
+            root,
+            self.config.get("automation_front_names", []),
+            front_globs=self.config.get("automation_front_globs", []),
+        )
         manifest = AutomationManifest.load_if_exists(self._automation_manifest_path())
         rows, counts, _ = self._collect_case_snapshot(records, manifest)
         table = Table(title="Automation Scan Preview")
@@ -2148,12 +2636,7 @@ class KlingAutomationUI:
         """Dispatch: questionary-based UX when available + interactive TTY,
         otherwise fall back to the legacy linear input() walker so tests and
         non-TTY callers (CI, piped stdin) keep working."""
-        use_legacy = (
-            not _QUESTIONARY_AVAILABLE
-            or not sys.stdin.isatty()
-            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
-        )
-        if use_legacy:
+        if self._use_legacy_prompt_ui():
             return self._edit_automation_settings_legacy()
         try:
             return self._edit_automation_settings_questionary()
@@ -2175,7 +2658,7 @@ class KlingAutomationUI:
     def _edit_automation_settings_legacy(self):
         def _ask(prompt: str, key: str, cast_fn, validator=None):
             current = self.config.get(key)
-            raw = input(f"{prompt} (current: {current}) [Enter keep]: ").strip()
+            raw = self._safe_input(f"{prompt} (current: {current}) [Enter keep]: ").strip()
             if not raw:
                 return
             try:
@@ -2188,7 +2671,7 @@ class KlingAutomationUI:
 
         def _ask_choice(prompt: str, key: str, choices: list):
             current = str(self.config.get(key))
-            raw = input(f"{prompt} {choices} (current: {current}) [Enter keep]: ").strip().lower()
+            raw = self._safe_input(f"{prompt} {choices} (current: {current}) [Enter keep]: ").strip().lower()
             if not raw:
                 return
             if raw not in choices:
@@ -2198,7 +2681,7 @@ class KlingAutomationUI:
 
         def _ask_bool(prompt: str, key: str):
             current = bool(self.config.get(key, False))
-            raw = input(f"{prompt} [y/n] (current: {'y' if current else 'n'}) [Enter keep]: ").strip().lower()
+            raw = self._safe_input(f"{prompt} [y/n] (current: {'y' if current else 'n'}) [Enter keep]: ").strip().lower()
             if not raw:
                 return
             if raw in {"y", "yes", "1", "true"}:
@@ -2212,7 +2695,7 @@ class KlingAutomationUI:
         print("Press Enter on any prompt to keep current value.\n")
 
         print("[Discovery]")
-        raw_root = input(f"Automation root path (current: {self.automation_root_folder or '(not set)'}) [Enter keep]: ").strip()
+        raw_root = self._safe_input(f"Automation root path (current: {self.automation_root_folder or '(not set)'}) [Enter keep]: ").strip()
         if raw_root:
             root_path = Path(raw_root)
             if root_path.exists() and root_path.is_dir():
@@ -2226,7 +2709,7 @@ class KlingAutomationUI:
             str,
             lambda v: len(v) > 0 and v.endswith(".json") and Path(v).name == v,
         )
-        max_cases_raw = input(
+        max_cases_raw = self._safe_input(
             f"Max cases per run [1/5/10/all] (current: {self._read_max_cases_setting()}) [Enter keep]: "
         ).strip().lower()
         if max_cases_raw:
@@ -2240,13 +2723,13 @@ class KlingAutomationUI:
         _ask_bool("Skip if selfie exists", "automation_skip_if_selfie_exists")
         _ask_bool("Skip if video exists", "automation_skip_if_video_exists")
         _ask_bool("Allow reprocess", "automation_allow_reprocess")
-        _ask_choice("Reprocess mode", "automation_reprocess_mode", ["skip", "overwrite", "increment"])
+        _ask_choice("Reprocess mode", "automation_reprocess_mode", _REPROCESS_MODE_OPTIONS)
 
         print("\n[Front Expansion]")
         _ask_bool("Front expand enabled", "automation_front_expand_enabled")
-        _ask_choice("Front expand provider", "automation_front_expand_provider", ["auto", "bfl", "fal"])
-        _ask_choice("Front expand mode", "automation_front_expand_mode", ["document_3x4", "percent"])
-        _ask_choice("Front composite mode", "automation_front_expand_composite_mode", ["preserve_seamless", "feathered", "hard", "none"])
+        _ask_choice("Front expand provider", "automation_front_expand_provider", _EXPAND_PROVIDER_OPTIONS)
+        _ask_choice("Front expand mode", "automation_front_expand_mode", _EXPAND_MODE_OPTIONS)
+        _ask_choice("Front composite mode", "automation_front_expand_composite_mode", _COMPOSITE_MODE_OPTIONS)
         _ask("Front expand percent", "automation_front_expand_percent", int, lambda v: v >= 0)
         _ask("Front expand passes [1|2]", "automation_front_expand_passes", int, lambda v: v in {1, 2})
         _ask_bool("Front edge seal enabled", "automation_front_edge_seal_enabled")
@@ -2264,7 +2747,7 @@ class KlingAutomationUI:
         print("  2) GPT Image 2 Edit")
         print("  3) Both")
         print("  4) Custom endpoints")
-        model_choice = input(f"Choose model set (current: {current_models}) [Enter keep]: ").strip()
+        model_choice = self._safe_input(f"Choose model set (current: {current_models}) [Enter keep]: ").strip()
         if model_choice == "1":
             self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
         elif model_choice == "2":
@@ -2272,28 +2755,30 @@ class KlingAutomationUI:
         elif model_choice == "3":
             self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit", "openai/gpt-image-2/edit"]
         elif model_choice == "4":
-            models_raw = input("Custom selfie model endpoints comma-separated: ").strip()
+            models_raw = self._safe_input("Custom selfie model endpoints comma-separated: ").strip()
             models = [m.strip() for m in models_raw.split(",") if m.strip()]
             if models:
                 self.config["automation_selfie_models"] = models
         _ask_choice("Selfie model policy", "automation_selfie_model_policy", ["first_pass", "all"])
         _ask("Max attempts per model", "automation_selfie_max_attempts_per_model", int, lambda v: v > 0)
         _ask("Similarity threshold", "automation_similarity_threshold", int, lambda v: 0 <= v <= 100)
+        _ask("Selfie width (px, 864=3:4)", "automation_selfie_width", int, lambda v: v > 0)
+        _ask("Selfie height (px, 1152=3:4)", "automation_selfie_height", int, lambda v: v > 0)
         self._ensure_selfie_prompt_slots()
         current_slot = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
         current_prompt = str(self.config.get("automation_selfie_prompts", {}).get(str(current_slot), "") or "")
         print(f"Selfie prompt slot: {current_slot}")
         print(f"Current selfie prompt preview: {(current_prompt[:120] + '...') if len(current_prompt) > 120 else current_prompt}")
-        slot_raw = input("Switch selfie prompt slot [1-10, Enter keep]: ").strip()
+        slot_raw = self._safe_input("Switch selfie prompt slot [1-10, Enter keep]: ").strip()
         if slot_raw.isdigit() and 1 <= int(slot_raw) <= 10:
             self.config["automation_selfie_prompt_slot"] = int(slot_raw)
             current_slot = int(slot_raw)
-        edit_current = input("Edit active selfie prompt now? [y/N]: ").strip().lower()
+        edit_current = self._safe_input("Edit active selfie prompt now? [y/N]: ").strip().lower()
         if edit_current in {"y", "yes"}:
-            new_prompt = input("Enter selfie prompt text: ").strip()
+            new_prompt = self._safe_input("Enter selfie prompt text: ").strip()
             if new_prompt:
                 self.config["automation_selfie_prompts"][str(current_slot)] = new_prompt
-        reset_current = input("Reset active selfie slot to default prompt? [y/N]: ").strip().lower()
+        reset_current = self._safe_input("Reset active selfie slot to default prompt? [y/N]: ").strip().lower()
         if reset_current in {"y", "yes"}:
             defaults = merge_automation_defaults({}).get("automation_selfie_prompts", {})
             self.config["automation_selfie_prompts"][str(current_slot)] = defaults.get(
@@ -2302,9 +2787,9 @@ class KlingAutomationUI:
 
         print("\n[Selfie Expansion / Video / Loop-Oldcam]")
         _ask_bool("Selfie expansion enabled", "automation_selfie_expand_enabled")
-        _ask_choice("Selfie expand provider", "automation_selfie_expand_provider", ["auto", "bfl", "fal"])
-        _ask_choice("Selfie expand mode", "automation_selfie_expand_mode", ["percent", "centered_3x4"])
-        _ask_choice("Selfie composite mode", "automation_selfie_expand_composite_mode", ["preserve_seamless", "feathered", "hard", "none"])
+        _ask_choice("Selfie expand provider", "automation_selfie_expand_provider", _EXPAND_PROVIDER_OPTIONS)
+        _ask_choice("Selfie expand mode", "automation_selfie_expand_mode", _SELFIE_EXPAND_MODE_OPTIONS)
+        _ask_choice("Selfie composite mode", "automation_selfie_expand_composite_mode", _COMPOSITE_MODE_OPTIONS)
         _ask("Selfie expand percent", "automation_selfie_expand_percent", int, lambda v: v >= 0)
         _ask_bool("Video generation enabled", "automation_video_enabled")
         _ask("Video aspect ratio", "automation_video_aspect_ratio", str, lambda v: ":" in v)
@@ -2322,7 +2807,7 @@ class KlingAutomationUI:
         _ask_bool("Face-track required (sub-threshold => fail+skip oldcam)", "automation_facetrack_required")
         _ask("Face-track sample fps", "automation_facetrack_sample_fps", float, lambda v: 1.0 <= v <= 30.0)
         _ask_bool("Oldcam enabled", "automation_oldcam_enabled")
-        _ask_choice("Oldcam version", "automation_oldcam_version", ["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"])
+        _ask_choice("Oldcam version", "automation_oldcam_version", _OLDCAM_VERSION_OPTIONS)
         _ask_bool("Oldcam required", "automation_oldcam_required")
         _ask_bool("rPPG injection enabled (runs LAST; sub-perceptual pulse; untested direction, off by default)", "automation_rppg_enabled")
         _ask_bool("rPPG required (no output => fail+skip case)", "automation_rppg_required")
@@ -2741,6 +3226,22 @@ class KlingAutomationUI:
             choices=["1", "5", "10", "all"],
             default="all",
         )
+        # Extra front-image glob patterns (comma-separated) for folders whose
+        # front image is not literally front.jpg (e.g. *id_photo*.jpg). Empty
+        # keeps exact-name-only discovery. Mirrors the --front-glob CLI flag.
+        current_globs = ", ".join(self.config.get("automation_front_globs", []) or [])
+        raw_globs = questionary.text(
+            "Extra front-image globs (comma-separated, blank = none):",
+            qmark="◆",
+            default=current_globs,
+            instruction=f"(current: {current_globs or '(none)'})",
+            style=KLING_QUESTIONARY_STYLE,
+        ).ask()
+        if raw_globs is None:
+            raise _QuestionarySectionAbort()
+        self.config["automation_front_globs"] = [
+            tok.strip() for tok in raw_globs.split(",") if tok.strip()
+        ]
 
     def _qs_section_run(self):
         self._qs_section_banner(
@@ -2754,7 +3255,7 @@ class KlingAutomationUI:
         self._qs_choice(
             "Reprocess mode:",
             "automation_reprocess_mode",
-            choices=["skip", "overwrite", "increment"],
+            choices=_REPROCESS_MODE_OPTIONS,
             default="skip",
         )
 
@@ -2765,11 +3266,11 @@ class KlingAutomationUI:
         )
         self._qs_bool("Front expand enabled?", "automation_front_expand_enabled", default=True)
         self._qs_choice("Provider:", "automation_front_expand_provider",
-                        choices=["auto", "bfl", "fal"], default="auto")
+                        choices=_EXPAND_PROVIDER_OPTIONS, default="auto")
         self._qs_choice("Expand mode:", "automation_front_expand_mode",
-                        choices=["document_3x4", "percent"], default="document_3x4")
+                        choices=_EXPAND_MODE_OPTIONS, default="document_3x4")
         self._qs_choice("Composite mode:", "automation_front_expand_composite_mode",
-                        choices=["preserve_seamless", "feathered", "hard", "none"],
+                        choices=_COMPOSITE_MODE_OPTIONS,
                         default="preserve_seamless")
         self._qs_int("Expand percent:", "automation_front_expand_percent",
                      default=30, validator=lambda v: v >= 0)
@@ -2816,6 +3317,7 @@ class KlingAutomationUI:
             default="_keep",
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
+        preset = _qs_or_abort(preset)  # B1: Esc aborts the section, not silent fall-through
         if preset == "nano":
             self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
         elif preset == "gpt":
@@ -2828,6 +3330,7 @@ class KlingAutomationUI:
                 qmark="◆",
                 style=KLING_QUESTIONARY_STYLE,
             ).ask()
+            raw = _qs_or_abort(raw)  # B2: Esc aborts rather than falling through
             if raw:
                 models = [m.strip() for m in raw.split(",") if m.strip()]
                 if models:
@@ -2838,6 +3341,13 @@ class KlingAutomationUI:
                      default=1, validator=lambda v: v > 0)
         self._qs_int("Similarity threshold (0-100):", "automation_similarity_threshold",
                      default=80, validator=lambda v: 0 <= v <= 100)
+        # 3:4 selfie dimensions (864x1152 default). Keeping width/height a true
+        # 3:4 ratio is what makes the whole chain 3:4 — the ratio-preserving
+        # expand and Kling both follow the still's aspect.
+        self._qs_int("Selfie width (px):", "automation_selfie_width",
+                     default=864, validator=lambda v: v > 0)
+        self._qs_int("Selfie height (px):", "automation_selfie_height",
+                     default=1152, validator=lambda v: v > 0)
 
         # Prompt slot — only ask if user wants to touch it.
         self._ensure_selfie_prompt_slots()
@@ -2857,6 +3367,7 @@ class KlingAutomationUI:
             default="_keep",
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
+        prompt_action = _qs_or_abort(prompt_action)  # B3: Esc aborts the section
         if prompt_action == "switch":
             slot_raw = questionary.text(
                 "New slot (1-10, or Enter to keep current):",
@@ -2902,11 +3413,11 @@ class KlingAutomationUI:
         )
         self._qs_bool("Selfie expansion enabled?", "automation_selfie_expand_enabled", default=True)
         self._qs_choice("Provider:", "automation_selfie_expand_provider",
-                        choices=["auto", "bfl", "fal"], default="auto")
+                        choices=_EXPAND_PROVIDER_OPTIONS, default="auto")
         self._qs_choice("Expand mode:", "automation_selfie_expand_mode",
-                        choices=["percent", "centered_3x4"], default="percent")
+                        choices=_SELFIE_EXPAND_MODE_OPTIONS, default="percent")
         self._qs_choice("Composite mode:", "automation_selfie_expand_composite_mode",
-                        choices=["preserve_seamless", "feathered", "hard", "none"],
+                        choices=_COMPOSITE_MODE_OPTIONS,
                         default="preserve_seamless")
         self._qs_int("Expand percent:", "automation_selfie_expand_percent",
                      default=30, validator=lambda v: v >= 0)
@@ -2948,12 +3459,13 @@ class KlingAutomationUI:
             "Final stage: apply oldcam (analog-degradation) filter to the generated video.",
         )
         self._qs_bool("Oldcam enabled?", "automation_oldcam_enabled", default=True)
-        # v24 is the current production default per CLAUDE.md. Keep the static
-        # list aligned with the legacy walker so behavior matches.
+        # v24 is the current production default per CLAUDE.md. The option list is
+        # the shared _OLDCAM_VERSION_OPTIONS constant so it can't drift from the
+        # legacy walker (D1).
         self._qs_choice(
             "Oldcam version:",
             "automation_oldcam_version",
-            choices=["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"],
+            choices=_OLDCAM_VERSION_OPTIONS,
             default="v24",
         )
         self._qs_bool("Oldcam required (fail case if oldcam fails)?",
@@ -2988,7 +3500,11 @@ class KlingAutomationUI:
             self.print_red("Automation root path does not exist.")
             self.pause_review("Press Enter to continue...")
             return
-        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        records = discover_case_folders(
+            root,
+            self.config.get("automation_front_names", []),
+            front_globs=self.config.get("automation_front_globs", []),
+        )
         manifest_path = self._automation_manifest_path()
         had_manifest = manifest_path.exists()
         manifest = AutomationManifest.load_if_exists(manifest_path)
@@ -3011,7 +3527,9 @@ class KlingAutomationUI:
             f"front={self.config.get('automation_front_expand_composite_mode', self.config.get('outpaint_composite_mode', 'preserve_seamless'))} "
             f"selfie={self.config.get('automation_selfie_expand_composite_mode', self.config.get('outpaint_composite_mode', 'preserve_seamless'))}"
         )
-        print("  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video -> oldcam")
+        _rppg_on = bool(self.config.get("automation_rppg_enabled", False))
+        _rppg_seg = " -> rppg" if _rppg_on else " -> rppg(off)"
+        print(f"  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg} -> oldcam")
         self.pause_review("\nPress Enter to continue...")
 
     def run_automation_headless(
@@ -3021,12 +3539,21 @@ class KlingAutomationUI:
         auto_approve: bool = True,
         max_cases_override: Optional[str] = None,
         reprocess_override: Optional[str] = None,
+        model_override: Optional[str] = None,
+        model_name_override: Optional[str] = None,
+        oldcam_version_override: Optional[str] = None,
+        rppg_override: Optional[bool] = None,
+        front_globs_override: Optional[List[str]] = None,
+        outpaint_timeout_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
     ) -> int:
         """Non-interactive batch runner for the automation pipeline.
 
         Mirrors the runnable body of :meth:`_run_resume_automation` but reads
         NO stdin (so it can run from cron / Windows Task Scheduler) and returns
-        a process exit code instead of pausing:
+        a process exit code instead of pausing. INVARIANT: this path never
+        invokes ``questionary`` or ``input()`` — it is auto-approved and exits
+        on missing/invalid input rather than prompting (keep it stdin-free):
 
         * ``0`` -- batch ran and EVERY case completed cleanly.
         * ``1`` -- could not run: missing/invalid root, no case folders, no
@@ -3119,10 +3646,77 @@ class KlingAutomationUI:
             _err(f"[batch] Automation root is not a directory: {root}")
             return 1
 
+        # --- FINGERPRINTED overrides: apply BEFORE discovery + create_or_load ---
+        # automation_* keys are baked into the manifest fingerprint
+        # (manifest.py). Applying them AFTER create_or_load would load a stale
+        # manifest under the OLD settings and the new behavior would silently
+        # no-op (the documented bug class at manifest.py:119-128). So these MUST
+        # land on self.config before discover_case_folders and create_or_load.
+        if oldcam_version_override is not None:
+            ver = str(oldcam_version_override).strip().lower()
+            if not ver:
+                _err("[batch] --oldcam-version must not be empty.")
+                return 1
+            self.config["automation_oldcam_version"] = ver
+        if rppg_override is not None:
+            self.config["automation_rppg_enabled"] = bool(rppg_override)
+        if front_globs_override is not None:
+            # Explicit override wins even when empty: passing an empty list (or
+            # only-whitespace patterns) clears any saved globs for this run,
+            # rather than silently leaving them active.
+            self.config["automation_front_globs"] = [
+                str(p).strip() for p in front_globs_override if str(p).strip()
+            ]
+        if provider_override is not None:
+            prov = str(provider_override).strip().lower()
+            if prov not in {"fal", "bfl", "auto"}:
+                _err(f"[batch] Invalid --provider '{provider_override}'; use fal, bfl, or auto.")
+                return 1
+            # Force BOTH expand stages onto the chosen provider. This overrides
+            # the saved automation_*_expand_provider keys (a personal config can
+            # carry bfl while the user wants the run wholly on fal.ai).
+            self.config["automation_front_expand_provider"] = prov
+            self.config["automation_selfie_expand_provider"] = prov
+
+        # --- NON-fingerprinted overrides: model + outpaint timeout. These are
+        # NOT automation_* keys, so they do not affect the manifest fingerprint
+        # and can be applied here (read lazily by the video factory /
+        # get_outpaint_fal_timeout_seconds when the runner is built).
+        if model_override is not None:
+            endpoint = str(model_override).strip()
+            if not endpoint:
+                _err("[batch] --model must not be empty.")
+                return 1
+            self.config["current_model"] = endpoint
+            self.config["model_display_name"] = (
+                str(model_name_override).strip()
+                if model_name_override and str(model_name_override).strip()
+                else _derive_model_display_name(endpoint)
+            )
+        if outpaint_timeout_override is not None:
+            try:
+                raw_t = int(str(outpaint_timeout_override).strip())
+            except (TypeError, ValueError):
+                _err(f"[batch] Invalid --outpaint-timeout '{outpaint_timeout_override}'; use an integer.")
+                return 1
+            # Clamp to the documented [30, 300] envelope at write time + warn so
+            # the stored value matches the effective behavior (the help text
+            # promises a clamp; don't silently store an out-of-range value that
+            # get_outpaint_fal_timeout_seconds quietly clamps on read).
+            clamped_t = max(30, min(300, raw_t))
+            if clamped_t != raw_t:
+                _warn(f"[batch] --outpaint-timeout {raw_t} out of range [30, 300]; using {clamped_t}.")
+            self.config["outpaint_fal_timeout_seconds"] = clamped_t
+
         # EAFP: directly attempt discovery and catch OSError (restricted FS /
         # permission errors) rather than pre-flighting (code-review Gemini, PR #69).
         try:
-            records = discover_case_folders(root_path, self.config.get("automation_front_names", []))
+            records = discover_case_folders(
+                root_path,
+                self.config.get("automation_front_names", []),
+                front_globs=self.config.get("automation_front_globs", []),
+                warn_cb=_warn,
+            )
         except OSError as exc:
             _err(f"[batch] Failed to scan automation root: {exc}")
             return 1
@@ -3130,15 +3724,52 @@ class KlingAutomationUI:
             _warn(f"[batch] No case folders found under {root}.")
             return 1
 
+        # Did the caller pass an EXPLICIT fingerprinted identity override
+        # (oldcam-version / rppg / provider / front-globs)? If so, a fingerprint
+        # mismatch against an OLD manifest is intentional — the help text
+        # promises "forces a fresh manifest". Without this, a user with a v24
+        # manifest running --oldcam-version v13 would hit a mismatch ValueError
+        # and exit 1 with no run (Codex HIGH). On that specific mismatch we back
+        # up the stale manifest and recreate it fresh.
+        # Use `is not None` (not truthiness) for front_globs_override too: an
+        # explicit empty list clears saved globs, which IS a fingerprint-changing
+        # identity override and must trigger create_fresh on a stale manifest
+        # (CodeRabbit). Mirrors how the override is applied above.
+        _identity_override_requested = any(
+            v is not None
+            for v in (
+                oldcam_version_override,
+                rppg_override,
+                provider_override,
+                front_globs_override,
+            )
+        )
+        _manifest_snapshot = {k: v for k, v in self.config.items() if str(k).startswith("automation_")}
         try:
             manifest = AutomationManifest.create_or_load(
                 manifest_path=self._automation_manifest_path(),
                 root_dir=root_path,
-                config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
+                config_snapshot=_manifest_snapshot,
             )
         except Exception as exc:
-            _err(f"[batch] Failed to load manifest: {exc}")
-            return 1
+            is_fingerprint_mismatch = "fingerprint mismatch" in str(exc)
+            if _identity_override_requested and is_fingerprint_mismatch:
+                _warn(
+                    "[batch] Identity override changes the run fingerprint; "
+                    "recreating a fresh manifest (old one backed up)."
+                )
+                try:
+                    manifest = AutomationManifest.create_fresh(
+                        manifest_path=self._automation_manifest_path(),
+                        root_dir=root_path,
+                        config_snapshot=_manifest_snapshot,
+                    )
+                except Exception as exc2:
+                    _err(f"[batch] Failed to recreate manifest: {exc2}")
+                    return 1
+            else:
+                _err(f"[batch] Failed to load manifest: {exc}")
+                return 1
 
         # Apply CLI overrides NOW (post-manifest): these are run policy, not part
         # of the manifest fingerprint, so they must not influence create_or_load.
@@ -3199,6 +3830,23 @@ class KlingAutomationUI:
         print(f"  cases discovered: {len(records)}")
         print(f"  running this batch: {len(runnable_cases)}")
         print(f"  reprocess mode: {self.config.get('automation_reprocess_mode', 'skip')}")
+        # Echo the EFFECTIVE run config so the overnight/unattended log records
+        # exactly which model / oldcam version / rppg state actually ran
+        # (especially the headless --model/--oldcam-version/--rppg overrides).
+        print(
+            f"  video model: {self.config.get('current_model', '')} "
+            f"({self.config.get('model_display_name', '')})"
+        )
+        print(f"  expand provider: front={self.config.get('automation_front_expand_provider', 'fal')} "
+              f"selfie={self.config.get('automation_selfie_expand_provider', 'fal')}")
+        print(f"  oldcam: enabled={self.config.get('automation_oldcam_enabled', True)} "
+              f"version={self.config.get('automation_oldcam_version', 'v24')}")
+        print(f"  rppg enabled: {self.config.get('automation_rppg_enabled', False)}")
+        _eff_globs = self.config.get('automation_front_globs', []) or []
+        if _eff_globs:
+            print(f"  front globs: {_eff_globs}")
+        print(f"  outpaint timeout (s): "
+              f"{get_outpaint_fal_timeout_seconds(self.config)}")
         for line in self._automation_status_lines():
             print(f"  {line}")
         selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
@@ -3215,7 +3863,12 @@ class KlingAutomationUI:
         else:
             run_error = None
             try:
-                runner.progress_cb = lambda message, level="info": print(f"  [{level}] {message}")
+                # Strip any ANSI color codes an upstream tool might forward so a
+                # cron / Task-Scheduler log stays clean (A3 — latent: no current
+                # generator emits color, but oldcam forwards subprocess stdout raw).
+                runner.progress_cb = lambda message, level="info": print(
+                    f"  [{level}] {_ANSI_ESCAPE_RE.sub('', str(message))}"
+                )
                 stats = runner.run(runnable_cases)
             except Exception as exc:
                 stats = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
@@ -3259,7 +3912,11 @@ class KlingAutomationUI:
             self.print_red("Automation root path does not exist.")
             self.pause_review("Press Enter to continue...")
             return
-        records = discover_case_folders(root, self.config.get("automation_front_names", []))
+        records = discover_case_folders(
+            root,
+            self.config.get("automation_front_names", []),
+            front_globs=self.config.get("automation_front_globs", []),
+        )
         if not records:
             self.print_yellow("No case folders found.")
             self.pause_review("Press Enter to continue...")
@@ -3288,8 +3945,7 @@ class KlingAutomationUI:
             self.print_yellow("No runnable cases for this batch.")
             self.pause_review("Press Enter to continue...")
             return
-        approve = input("Approve batch run? [y/N]: ").strip().lower()
-        if approve not in {"y", "yes"}:
+        if not self._confirm("Approve batch run?", default=False):
             print("Run cancelled.")
             self.pause_review("Press Enter to continue...")
             return
@@ -3384,7 +4040,8 @@ class KlingAutomationUI:
             "selfie_expand": "5 selfie expand",
             "video_generate": "6 kling video",
             "facetrack_gate": "6.5 face-track gate",
-            "oldcam": "7 loop/oldcam",
+            "rppg": "7 rppg injection",
+            "oldcam": "8 loop/oldcam",
         }
 
         with Live(console=Console(), refresh_per_second=4, transient=True) as live:
@@ -3469,8 +4126,7 @@ class KlingAutomationUI:
 
     def run_automation_menu(self):
         while True:
-            self._display_automation_menu()
-            choice = input().strip().lower()
+            choice = self._automation_menu_choice()
             if choice == "0":
                 return
             if choice == "1":
@@ -3493,23 +4149,237 @@ class KlingAutomationUI:
                 self.print_red("Unknown option.")
                 time.sleep(1)
 
-    def _run_manual_kling_menu(self) -> Optional[str]:
-        """Legacy Kling-first tools grouped under a manual menu."""
-        while True:
+    @staticmethod
+    def _use_legacy_prompt_ui() -> bool:
+        """True when interactive questionary prompts must fall back to input().
+
+        Single source of truth for the questionary gate used by every
+        interactive helper (_confirm, _automation_menu_choice,
+        _select_automation_root, the settings editor). Legacy/input() is used
+        when questionary is unavailable, stdin is not an interactive TTY, or the
+        KLING_LEGACY_SETTINGS_UI escape hatch is set. The stdin check is fully
+        guarded: sys.stdin can be None (Windows background service) OR a custom
+        stream without isatty() (IDE/GUI wrappers, some test runners), so we
+        getattr + hasattr before calling it (Gemini review, PR #94).
+        """
+        stdin = getattr(sys, "stdin", None)
+        is_tty = bool(stdin) and hasattr(stdin, "isatty") and stdin.isatty()
+        return (
+            not _QUESTIONARY_AVAILABLE
+            or not is_tty
+            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
+        )
+
+    def _confirm(self, message: str, default: bool = False) -> bool:
+        """Yes/no confirm, questionary when interactive else input() fallback.
+
+        Non-TTY / questionary-unavailable callers (CI, piped stdin, headless)
+        get the legacy ``[y/N]`` input() prompt; an empty answer or EOF returns
+        ``default`` so an unattended pipe never hangs.
+        """
+        if not self._use_legacy_prompt_ui():
+            try:
+                answer = questionary.confirm(
+                    message,
+                    qmark="◆",
+                    default=default,
+                    style=KLING_QUESTIONARY_STYLE,
+                ).ask()
+                if answer is None:
+                    # Esc/Ctrl-C: give explicit feedback in interactive mode so the
+                    # user knows nothing happened, then fall back to default (E6).
+                    self.print_yellow("Cancelled.")
+                    return default
+                return bool(answer)
+            except (KeyboardInterrupt, EOFError):
+                return default
+        suffix = "[Y/n]" if default else "[y/N]"
+        try:
+            raw = input(f"{message} {suffix}: ").strip().lower()
+        except EOFError:
+            return default
+        if not raw:
+            return default
+        return raw in {"y", "yes", "1", "true"}
+
+    # ------------------------------------------------------------------
+    # Shared questionary toolkit
+    #
+    # A small, consistent set of helpers so every interactive menu looks and
+    # behaves the same: arrow-key selection, branded ◆ marker + cyan/green
+    # style, graceful Esc/Ctrl-C handling. Each helper is paired with an
+    # input()-based fallback the CALLER provides, gated on _use_legacy_prompt_ui()
+    # so non-TTY / piped-stdin / questionary-unavailable contexts keep working.
+    # ------------------------------------------------------------------
+
+    def _q_menu(
+        self,
+        title: str,
+        choices: "List[Any]",
+        *,
+        status_lines: "Optional[List[str]]" = None,
+        instruction: str = "↑/↓ to move · Enter to select · Esc to go back",
+        show_header: bool = True,
+    ) -> "Optional[str]":
+        """Render a branded arrow-key menu and return the selected value.
+
+        ``choices`` is a list of ``questionary.Choice`` (or (label, value) tuples
+        / plain strings). Returns the selected value, or ``None`` if the user
+        pressed Esc / Ctrl-C (callers treat that as "back/cancel"). Only call on
+        the questionary path — guard with ``self._use_legacy_prompt_ui()`` first.
+        """
+        if show_header:
             self.display_header()
-            print("Manual Kling Video Tools")
-            print("  1) Change output mode")
-            print("  2) Edit/view Kling prompt")
-            print("  3) Toggle verbose logging")
-            print("  4) Select input folder (GUI)")
-            print("  5) Select single image (GUI)")
-            print("  6) Inspect model capabilities")
-            print("  7) Change model")
-            print("  8) Swap prompt slot")
-            print("  e) Quick edit prompt")
-            print("  0) Back")
-            choice = input("\nSelect option: ").strip().lower()
-            if choice == "0":
+        self.print_magenta("═" * 79)
+        _t = title.upper()
+        self.print_magenta(f"{' ' * max(0, (79 - len(_t)) // 2)}{_t}")
+        self.print_magenta("═" * 79)
+        print()
+        if status_lines:
+            for line in status_lines:
+                print(f"  {line}")
+            print()
+        normalized: "List[Any]" = []
+        for ch in choices:
+            if isinstance(ch, tuple) and len(ch) == 2:
+                normalized.append(questionary.Choice(ch[0], ch[1]))
+            else:
+                normalized.append(ch)
+        try:
+            answer = questionary.select(
+                title,
+                qmark="◆",
+                instruction=instruction,
+                choices=normalized,
+                style=KLING_QUESTIONARY_STYLE,
+            ).ask()
+        except (KeyboardInterrupt, EOFError):
+            return None
+        return answer
+
+    def _q_select(
+        self,
+        message: str,
+        choices: "List[Any]",
+        *,
+        default: "Optional[str]" = None,
+        instruction: str = "",
+    ) -> "Optional[str]":
+        """A simple inline single-select (no header). Returns value or None."""
+        normalized: "List[Any]" = []
+        for ch in choices:
+            if isinstance(ch, tuple) and len(ch) == 2:
+                normalized.append(questionary.Choice(ch[0], ch[1]))
+            else:
+                normalized.append(ch)
+        try:
+            return questionary.select(
+                message,
+                qmark="◆",
+                instruction=instruction,
+                choices=normalized,
+                default=default,
+                style=KLING_QUESTIONARY_STYLE,
+            ).ask()
+        except (KeyboardInterrupt, EOFError):
+            return None
+
+    def _q_text(
+        self,
+        message: str,
+        *,
+        default: str = "",
+        validate: "Optional[Any]" = None,
+        instruction: str = "",
+    ) -> "Optional[str]":
+        """Free-text input. Returns the string, or None on Esc/Ctrl-C."""
+        try:
+            kwargs: "Dict[str, Any]" = {
+                "qmark": "◆",
+                "default": default,
+                "style": KLING_QUESTIONARY_STYLE,
+            }
+            if instruction:
+                kwargs["instruction"] = instruction
+            if validate is not None:
+                kwargs["validate"] = validate
+            return questionary.text(message, **kwargs).ask()
+        except (KeyboardInterrupt, EOFError):
+            return None
+
+    def _automation_menu_choice(self) -> str:
+        """Top-level automation menu picker.
+
+        Uses a questionary.select arrow menu when questionary is available AND
+        we're on an interactive TTY; otherwise prints the legacy numbered menu
+        and reads a numeric choice via input() so CI / piped-stdin / non-TTY
+        callers keep working. Returns the numeric choice string ("0".."7").
+        """
+        if self._use_legacy_prompt_ui():
+            self._display_automation_menu()
+            try:
+                return input().strip().lower()
+            except EOFError:
+                # Closed/piped stdin (no input available) -> behave like "Back"
+                # rather than crashing the menu loop (CodeRabbit, PR #94).
+                return "0"
+        # Questionary path: render via the shared _q_menu toolkit so the header /
+        # status panel are drawn once (no per-loop double-render) and the styling
+        # matches every other menu (E2). Esc returns None -> treat as Back.
+        status = [f"Root folder: {self.automation_root_folder or '(not set)'}"]
+        status.extend(self._automation_status_lines())
+        current_version = int(self.config.get("automation_recommended_defaults_version", 0) or 0)
+        if current_version < RECOMMENDED_DEFAULTS_VERSION:
+            status.append(f"Recommendation: apply recommended defaults (target v{RECOMMENDED_DEFAULTS_VERSION}).")
+        answer = self._q_menu(
+            "End-to-End Auto Pipeline",
+            [
+                ("📂  Select automation root folder", "1"),
+                ("🔍  Scan / preview cases", "2"),
+                ("⭐  Apply recommended automation defaults", "3"),
+                ("⚙️   Edit automation settings", "4"),
+                ("🧪  Dry run", "5"),
+                ("▶️   Run / resume automation", "6"),
+                ("📄  Print manifest path", "7"),
+                ("↩️   Back", "0"),
+            ],
+            status_lines=status,
+        )
+        return answer if answer is not None else "0"
+
+    def _run_manual_kling_menu(self) -> Optional[str]:
+        """Manual Kling-first tools grouped under a menu.
+
+        Returns a selected input path (folder/file) when the user picks one, so
+        the caller can act on it; otherwise loops until "Back" / Esc.
+        """
+        while True:
+            if self._use_legacy_prompt_ui():
+                choice = self._manual_kling_menu_choice_legacy()
+            else:
+                _out_mode = "source folder" if self.config.get("use_source_folder", True) else f"custom ({self.config.get('output_folder', '?')})"
+                choice = self._q_menu(
+                    "Manual Kling Video Tools",
+                    [
+                        ("🎞️   Change output mode", "1"),
+                        ("✏️   Edit / view Kling prompt", "2"),
+                        ("🔊  Toggle verbose logging", "3"),
+                        ("📁  Select input folder (GUI)", "4"),
+                        ("🖼️   Select single image (GUI)", "5"),
+                        ("🔬  Inspect model capabilities", "6"),
+                        ("🔀  Change model", "7"),
+                        ("🎚️   Swap prompt slot", "8"),
+                        ("⚡  Quick edit prompt", "e"),
+                        ("↩️   Back", "0"),
+                    ],
+                    status_lines=[
+                        f"Model: {self.config.get('model_display_name', 'Kling 2.5 Turbo Standard')}",
+                        f"Prompt slot: {self.config.get('current_prompt_slot', DEFAULT_KLING_PROMPT_SLOT)}",
+                        f"Output: {_out_mode}",
+                        f"Verbose logging: {'on' if self.verbose_logging else 'off'}",
+                    ],
+                )
+            if choice in (None, "0"):
                 return None
             if choice == "1":
                 self.change_output_mode()
@@ -3536,6 +4406,25 @@ class KlingAutomationUI:
             else:
                 self.print_red("Unknown option.")
                 time.sleep(1)
+
+    def _manual_kling_menu_choice_legacy(self) -> str:
+        """Legacy numbered manual-tools menu (non-TTY / piped stdin)."""
+        self.display_header()
+        print("Manual Kling Video Tools")
+        print("  1) Change output mode")
+        print("  2) Edit/view Kling prompt")
+        print("  3) Toggle verbose logging")
+        print("  4) Select input folder (GUI)")
+        print("  5) Select single image (GUI)")
+        print("  6) Inspect model capabilities")
+        print("  7) Change model")
+        print("  8) Swap prompt slot")
+        print("  e) Quick edit prompt")
+        print("  0) Back")
+        try:
+            return input("\nSelect option: ").strip().lower()
+        except EOFError:
+            return "0"
 
     def count_genx_files(self, root_directory: str) -> int:
         """Count total genx files to process"""
@@ -3609,7 +4498,7 @@ class KlingAutomationUI:
         self.clear_screen()
 
         # Header panel - show configured model
-        model_name = self.config.get("model_display_name", "Kling 2.1 Professional")
+        model_name = self.config.get("model_display_name", "Kling 2.5 Turbo Standard")
         header_text = Text()
         header_text.append(
             f"🚀 {model_name.upper()} BATCH VIDEO GENERATOR 🚀", style="bold cyan"
@@ -3713,7 +4602,7 @@ class KlingAutomationUI:
                     config_table.add_row("Files Amt:", f"{total_files} GenX files")
 
                 model_name = self.config.get(
-                    "model_display_name", "Kling 2.1 Professional"
+                    "model_display_name", "Kling 2.5 Turbo Standard"
                 )
                 duration = self.config.get("video_duration", 10)
                 price = self.fetch_model_pricing(self.config.get("current_model", ""))
@@ -3923,7 +4812,7 @@ class KlingAutomationUI:
                             progress_callback=update_progress,
                             use_source_folder=use_source,
                             duration=self.config.get("video_duration", 10),
-                            aspect_ratio=self.config.get("aspect_ratio", "9:16"),
+                            aspect_ratio=self.config.get("aspect_ratio", "3:4"),
                             resolution=self.config.get("resolution", "720p"),
                             seed=self.config.get("seed", -1),
                             camera_fixed=self.config.get("camera_fixed", False),
@@ -3965,7 +4854,7 @@ class KlingAutomationUI:
                     negative_prompt=negative_prompt,  # Uses gated value from line 1525
                     use_source_folder=use_source,
                     duration=self.config.get("video_duration", 10),
-                    aspect_ratio=self.config.get("aspect_ratio", "9:16"),
+                    aspect_ratio=self.config.get("aspect_ratio", "3:4"),
                     resolution=self.config.get("resolution", "720p"),
                     seed=self.config.get("seed", -1),
                     camera_fixed=self.config.get("camera_fixed", False),
@@ -4053,6 +4942,77 @@ def main(argv=None):
             action="store_true",
             help="Headless --batch only: auto-approve the run (default in --batch).",
         )
+        # Headless --batch operational overrides. These let a batch run differ
+        # from the saved kling_config.json / distributable defaults WITHOUT
+        # editing config on disk (e.g. test on the cheaper STANDARD model, pin a
+        # specific oldcam version, force rPPG on/off). Threaded into
+        # run_automation_headless and applied at the correct point relative to
+        # the manifest fingerprint (fingerprinted automation_* keys BEFORE
+        # create_or_load; current_model / timeout AFTER, they are not fingerprinted).
+        parser.add_argument(
+            "--model",
+            metavar="ENDPOINT",
+            default=None,
+            help="Headless --batch only: override the video model endpoint "
+            "(e.g. fal-ai/kling-video/v2.5-turbo/standard/image-to-video). "
+            "Overrides current_model. Not part of the manifest fingerprint.",
+        )
+        parser.add_argument(
+            "--model-name",
+            metavar="NAME",
+            default=None,
+            help="Headless --batch only: friendly display name for --model "
+            "(e.g. 'Kling 2.5 Turbo Standard'). Defaults to a name derived "
+            "from the endpoint when omitted.",
+        )
+        parser.add_argument(
+            "--oldcam-version",
+            metavar="VER",
+            default=None,
+            help="Headless --batch only: override the oldcam version (e.g. v13, "
+            "v24, or 'all'). Overrides automation_oldcam_version. Changing this "
+            "is part of the run identity, so it forces a fresh manifest.",
+        )
+        parser.add_argument(
+            "--rppg",
+            dest="rppg",
+            action="store_true",
+            default=None,
+            help="Headless --batch only: force rPPG injection ON for this run "
+            "(overrides automation_rppg_enabled). Forces a fresh manifest.",
+        )
+        parser.add_argument(
+            "--no-rppg",
+            dest="rppg",
+            action="store_false",
+            default=None,
+            help="Headless --batch only: force rPPG injection OFF for this run.",
+        )
+        parser.add_argument(
+            "--front-glob",
+            metavar="GLOB",
+            action="append",
+            default=None,
+            help="Headless --batch only: extra fnmatch pattern(s) for the per-folder "
+            "front image, matched in addition to front.jpg/png/jpeg (e.g. "
+            "'*id_photo*.jpg'). Repeatable. Forces a fresh manifest.",
+        )
+        parser.add_argument(
+            "--outpaint-timeout",
+            metavar="SECONDS",
+            default=None,
+            help="Headless --batch only: override the fal outpaint poll timeout in "
+            "seconds (clamped 30-300). Default 150; bump for unattended runs.",
+        )
+        parser.add_argument(
+            "--provider",
+            metavar="PROVIDER",
+            default=None,
+            help="Headless --batch only: force the outpaint provider (fal|bfl|auto) "
+            "for BOTH front-expand and selfie-expand, overriding the saved "
+            "automation_*_expand_provider keys. Use 'fal' to keep everything on "
+            "fal.ai. Forces a fresh manifest.",
+        )
         parser.add_argument("--manual-video", action="store_true", help="Launch legacy manual Kling tools")
         parser.add_argument("--gui", action="store_true", help="Launch GUI manual lab directly")
         parser.add_argument("--verbose-startup", action="store_true", help="Show full startup dependency diagnostics")
@@ -4107,6 +5067,13 @@ def main(argv=None):
                 auto_approve=True,
                 max_cases_override=args.limit,
                 reprocess_override=args.reprocess,
+                model_override=args.model,
+                model_name_override=args.model_name,
+                oldcam_version_override=args.oldcam_version,
+                rppg_override=args.rppg,
+                front_globs_override=args.front_glob,
+                outpaint_timeout_override=args.outpaint_timeout,
+                provider_override=args.provider,
             )
             sys.exit(int(rc))
         if args.gui:
