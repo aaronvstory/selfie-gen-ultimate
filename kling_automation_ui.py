@@ -1562,8 +1562,75 @@ class KlingAutomationUI:
             print("\033[90mCancelled\033[0m")
             time.sleep(0.5)
 
+    # Preset video models offered by the model picker (name, endpoint, default
+    # duration). Shared by the questionary + legacy paths so they never drift.
+    _MODEL_PRESETS = [
+        ("Kling 2.5 Turbo Standard", "fal-ai/kling-video/v2.5-turbo/standard/image-to-video", 10),
+        ("Kling 2.5 Turbo Pro", "fal-ai/kling-video/v2.5-turbo/pro/image-to-video", 10),
+        ("Kling 2.1 Professional", "fal-ai/kling-video/v2.1/pro/image-to-video", 10),
+        ("Wan 2.5", "fal-ai/wan-25-preview/image-to-video", 5),
+        ("Veo 3", "fal-ai/veo3/image-to-video", 8),
+        ("Ovi", "fal-ai/ovi/image-to-video", 5),
+    ]
+
+    def _apply_model_choice(self, name: str, endpoint: str, duration: int) -> None:
+        self.config["current_model"] = endpoint
+        self.config["model_display_name"] = name
+        self.config["video_duration"] = duration
+        self._cached_price = None
+        self.save_config()
+        self.print_green(f"✓ Model set to: {name}")
+        time.sleep(0.9)
+
     def select_model(self):
-        """Select AI model from presets or enter custom endpoint"""
+        """Select AI model from presets or enter custom endpoint."""
+        if not self._use_legacy_prompt_ui():
+            current_model = self.config.get("current_model", "")
+            choices = []
+            for name, endpoint, duration in self._MODEL_PRESETS:
+                price = self.fetch_model_pricing(endpoint)
+                price_str = f"${price:.2f}/sec" if price else "check fal.ai"
+                active = "  ◄" if endpoint == current_model else ""
+                choices.append((f"{name}  ({price_str}){active}", endpoint))
+            choices.append(("➕  Enter custom endpoint…", "__custom__"))
+            choices.append(("🌐  Fetch all models from fal.ai", "__fetch__"))
+            choices.append(("↩️   Cancel", "__cancel__"))
+            pick = self._q_menu(
+                "Model Selection",
+                choices,
+                status_lines=[
+                    f"Current: {self.config.get('model_display_name', 'Unknown')}",
+                    f"Endpoint: {current_model}",
+                ],
+            )
+            if pick in (None, "__cancel__"):
+                return
+            if pick == "__custom__":
+                endpoint = self._q_text(
+                    "fal.ai endpoint id (e.g. fal-ai/kling-video/v2.5-turbo/standard/image-to-video):"
+                )
+                if not endpoint or not endpoint.strip():
+                    return
+                endpoint = endpoint.strip()
+                name = self._q_text("Display name:", default=endpoint) or endpoint
+                dur_raw = self._q_text("Video duration seconds (5/10/15):", default="10")
+                duration = int(dur_raw) if dur_raw and dur_raw.strip().isdigit() else 10
+                self._apply_model_choice(name.strip(), endpoint, duration)
+                return
+            if pick == "__fetch__":
+                # Delegate the paginated "all models" browser to the legacy flow
+                # (its number-paged input() UX is fine for this advanced path).
+                return self._select_model_fetch_all_legacy()
+            # A preset endpoint was chosen.
+            for name, endpoint, duration in self._MODEL_PRESETS:
+                if endpoint == pick:
+                    self._apply_model_choice(name, endpoint, duration)
+                    return
+            return
+        return self._select_model_legacy()
+
+    def _select_model_legacy(self):
+        """Legacy numbered model picker (non-TTY / piped stdin)."""
         self.clear_screen()
 
         print("\033[96m" + "═" * 79 + "\033[0m")
@@ -1649,104 +1716,7 @@ class KlingAutomationUI:
                 print(f"\033[92m✓ Model set to: {name}\033[0m")
                 time.sleep(1.5)
         elif choice == "7":
-            # Show all available models with pagination
-            print("\n\033[93mFetching all image-to-video models from fal.ai...\033[0m")
-            models = self.fetch_available_models()
-            current_model = self.config.get("current_model", "")
-            page_size = 40  # Show up to 40 per page
-            page = 0
-            total_pages = (len(models) + page_size - 1) // page_size
-
-            print(f"\033[92mFound {len(models)} models total\033[0m")
-
-            while True:
-                start_idx = page * page_size
-                end_idx = min(start_idx + page_size, len(models))
-                page_models = models[start_idx:end_idx]
-
-                print(f"\n\033[92m{'═' * 60}\033[0m")
-                print(
-                    f"\033[92m  Image-to-Video Models  ·  Page {page + 1}/{total_pages}  ·  Showing {start_idx + 1}-{end_idx} of {len(models)}\033[0m"
-                )
-                print(f"\033[92m{'═' * 60}\033[0m\n")
-                for idx, m in enumerate(page_models, start_idx + 1):
-                    endpoint = m.get("endpoint_id", "")
-                    name = m.get("name", endpoint)
-                    duration = m.get("duration", 10)
-                    description = m.get("description", "")
-                    price_info = m.get("price")
-                    if price_info:
-                        price_str = f"${price_info['price']:.3f}/{price_info['unit']}"
-                    else:
-                        price_str = "pricing unavailable"
-                    active = (
-                        "  \033[92m◄ CURRENT\033[0m"
-                        if endpoint == current_model
-                        else ""
-                    )
-
-                    print(f"  \033[96m{idx:2d}\033[0m  \033[1;97m{name}\033[0m{active}")
-                    print(f"       Price: \033[93m{price_str}\033[0m")
-                    if description:
-                        # Wrap description to ~65 chars per line, max 3 lines
-                        words = description.split()
-                        lines = []
-                        current_line = ""
-                        for word in words:
-                            if len(current_line) + len(word) + 1 <= 65:
-                                current_line += (" " if current_line else "") + word
-                            else:
-                                if current_line:
-                                    lines.append(current_line)
-                                current_line = word
-                            if len(lines) >= 3:
-                                break
-                        if current_line and len(lines) < 3:
-                            lines.append(current_line)
-                        for line in lines[:3]:
-                            print(f"       \033[90m{line}\033[0m")
-                    print(f"       \033[36m{endpoint}\033[0m")
-                    print()  # Blank line between entries
-
-                print()
-                nav_hint = []
-                if page > 0:
-                    nav_hint.append("p=prev")
-                if page < total_pages - 1:
-                    nav_hint.append("n=next")
-                nav_str = f" ({', '.join(nav_hint)})" if nav_hint else ""
-
-                sel = (
-                    input(
-                        f"\033[92mEnter number to select{nav_str}, or Enter to cancel: \033[0m"
-                    )
-                    .strip()
-                    .lower()
-                )
-
-                if sel == "n" and page < total_pages - 1:
-                    page += 1
-                    continue
-                elif sel == "p" and page > 0:
-                    page -= 1
-                    continue
-                elif sel == "" or sel == "q":
-                    break
-                elif sel.isdigit() and 1 <= int(sel) <= len(models):
-                    selected = models[int(sel) - 1]
-                    self.config["current_model"] = selected.get("endpoint_id")
-                    self.config["model_display_name"] = selected.get(
-                        "name", selected.get("endpoint_id")
-                    )
-                    self.config["video_duration"] = selected.get("duration", 10)
-                    self._cached_price = None
-                    self.save_config()
-                    print(f"\033[92m✓ Model set to: {selected.get('name')}\033[0m")
-                    time.sleep(1.5)
-                    break
-                else:
-                    print("\033[91mInvalid selection\033[0m")
-                    time.sleep(1)
+            self._select_model_fetch_all_legacy()
         elif choice.isdigit() and 1 <= int(choice) <= len(presets):
             name, endpoint, duration = presets[int(choice) - 1]
             self.config["current_model"] = endpoint
@@ -1756,6 +1726,102 @@ class KlingAutomationUI:
             self.save_config()
             print(f"\033[92m✓ Model set to: {name}\033[0m")
             time.sleep(1.5)
+
+    def _select_model_fetch_all_legacy(self):
+        """Paginated browser of every fal.ai image-to-video model (input()-based).
+
+        Reached from both the questionary picker ("Fetch all models") and the
+        legacy numbered picker (option 7). The number-paged UX is intentionally
+        kept as input() — it's an advanced, high-cardinality list where a flat
+        arrow menu would be unwieldy.
+        """
+        print("\n\033[93mFetching all image-to-video models from fal.ai...\033[0m")
+        models = self.fetch_available_models()
+        current_model = self.config.get("current_model", "")
+        page_size = 40
+        page = 0
+        total_pages = (len(models) + page_size - 1) // page_size
+
+        print(f"\033[92mFound {len(models)} models total\033[0m")
+
+        while True:
+            start_idx = page * page_size
+            end_idx = min(start_idx + page_size, len(models))
+            page_models = models[start_idx:end_idx]
+
+            print(f"\n\033[92m{'═' * 60}\033[0m")
+            print(
+                f"\033[92m  Image-to-Video Models  ·  Page {page + 1}/{total_pages}  ·  Showing {start_idx + 1}-{end_idx} of {len(models)}\033[0m"
+            )
+            print(f"\033[92m{'═' * 60}\033[0m\n")
+            for idx, m in enumerate(page_models, start_idx + 1):
+                endpoint = m.get("endpoint_id", "")
+                name = m.get("name", endpoint)
+                description = m.get("description", "")
+                price_info = m.get("price")
+                if price_info:
+                    price_str = f"${price_info['price']:.3f}/{price_info['unit']}"
+                else:
+                    price_str = "pricing unavailable"
+                active = (
+                    "  \033[92m◄ CURRENT\033[0m" if endpoint == current_model else ""
+                )
+                print(f"  \033[96m{idx:2d}\033[0m  \033[1;97m{name}\033[0m{active}")
+                print(f"       Price: \033[93m{price_str}\033[0m")
+                if description:
+                    words = description.split()
+                    lines = []
+                    current_line = ""
+                    for word in words:
+                        if len(current_line) + len(word) + 1 <= 65:
+                            current_line += (" " if current_line else "") + word
+                        else:
+                            if current_line:
+                                lines.append(current_line)
+                            current_line = word
+                        if len(lines) >= 3:
+                            break
+                    if current_line and len(lines) < 3:
+                        lines.append(current_line)
+                    for line in lines[:3]:
+                        print(f"       \033[90m{line}\033[0m")
+                print(f"       \033[36m{endpoint}\033[0m")
+                print()
+
+            print()
+            nav_hint = []
+            if page > 0:
+                nav_hint.append("p=prev")
+            if page < total_pages - 1:
+                nav_hint.append("n=next")
+            nav_str = f" ({', '.join(nav_hint)})" if nav_hint else ""
+
+            try:
+                sel = input(
+                    f"\033[92mEnter number to select{nav_str}, or Enter to cancel: \033[0m"
+                ).strip().lower()
+            except EOFError:
+                break
+
+            if sel == "n" and page < total_pages - 1:
+                page += 1
+                continue
+            elif sel == "p" and page > 0:
+                page -= 1
+                continue
+            elif sel == "" or sel == "q":
+                break
+            elif sel.isdigit() and 1 <= int(sel) <= len(models):
+                selected = models[int(sel) - 1]
+                self._apply_model_choice(
+                    selected.get("name", selected.get("endpoint_id")),
+                    selected.get("endpoint_id"),
+                    selected.get("duration", 10),
+                )
+                break
+            else:
+                print("\033[91mInvalid selection\033[0m")
+                time.sleep(1)
 
     def run_configuration_menu(self):
         """Main top-level menu loop."""
