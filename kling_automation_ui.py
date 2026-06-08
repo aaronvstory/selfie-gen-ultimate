@@ -1982,6 +1982,47 @@ class KlingAutomationUI:
 
     def _select_automation_root(self):
         logging.info("automation_root_select_start")
+        # Questionary path (interactive TTY): reuse the shared _qs_directory
+        # picker, which already offers native folder-picker / type / keep. The
+        # legacy numbered browse/type walker stays as the non-TTY fallback so
+        # CI / piped stdin keep working.
+        use_legacy = (
+            not _QUESTIONARY_AVAILABLE
+            or not (getattr(sys, "stdin", None) and sys.stdin.isatty())
+            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
+        )
+        if not use_legacy:
+            try:
+                picked = self._qs_directory(
+                    "Select automation root folder:",
+                    self.automation_root_folder,
+                    "Select Automation Root Folder",
+                )
+            except (KeyboardInterrupt, EOFError, _QuestionarySectionAbort):
+                picked = None
+            if not picked:
+                self.print_yellow("Automation root unchanged.")
+                return
+            self._commit_automation_root(picked)
+            return
+        return self._select_automation_root_legacy()
+
+    def _commit_automation_root(self, selected_path: str) -> None:
+        """Validate + persist a chosen automation root, then scan cases."""
+        selected = Path(selected_path)
+        if not selected.exists() or not selected.is_dir():
+            self.print_red("Invalid folder path.")
+            logging.warning("automation_root_select_invalid path=%s", selected)
+            self.pause_continue("Press Enter to continue...")
+            return
+        self.automation_root_folder = str(selected)
+        logging.info("automation_root_select_success path=%s", self.automation_root_folder)
+        self.config["automation_root_folder"] = self.automation_root_folder
+        self.save_config()
+        self.print_yellow(f"Automation root set: {self.automation_root_folder}")
+        self._scan_automation_cases()
+
+    def _select_automation_root_legacy(self):
         print("\nSelect automation root:")
         print("  1) Browse for folder (recommended)")
         print("  2) Type folder path")
@@ -2029,18 +2070,7 @@ class KlingAutomationUI:
                 raw = raw[1:-1]
             selected_path = raw
 
-        selected = Path(selected_path)
-        if not selected.exists() or not selected.is_dir():
-            self.print_red("Invalid folder path.")
-            logging.warning("automation_root_select_invalid path=%s", selected)
-            self.pause_continue("Press Enter to continue...")
-            return
-        self.automation_root_folder = str(selected)
-        logging.info("automation_root_select_success path=%s", self.automation_root_folder)
-        self.config["automation_root_folder"] = self.automation_root_folder
-        self.save_config()
-        self.print_yellow(f"Automation root set: {self.automation_root_folder}")
-        self._scan_automation_cases()
+        self._commit_automation_root(selected_path)
 
     def _normalize_max_cases(self, value: Any) -> Optional[int]:
         raw = str(value).strip().lower()
@@ -2782,6 +2812,22 @@ class KlingAutomationUI:
             choices=["1", "5", "10", "all"],
             default="all",
         )
+        # Extra front-image glob patterns (comma-separated) for folders whose
+        # front image is not literally front.jpg (e.g. *id_photo*.jpg). Empty
+        # keeps exact-name-only discovery. Mirrors the --front-glob CLI flag.
+        current_globs = ", ".join(self.config.get("automation_front_globs", []) or [])
+        raw_globs = questionary.text(
+            "Extra front-image globs (comma-separated, blank = none):",
+            qmark="◆",
+            default=current_globs,
+            instruction=f"(current: {current_globs or '(none)'})",
+            style=KLING_QUESTIONARY_STYLE,
+        ).ask()
+        if raw_globs is None:
+            raise _QuestionarySectionAbort()
+        self.config["automation_front_globs"] = [
+            tok.strip() for tok in raw_globs.split(",") if tok.strip()
+        ]
 
     def _qs_section_run(self):
         self._qs_section_banner(
@@ -3417,8 +3463,7 @@ class KlingAutomationUI:
             self.print_yellow("No runnable cases for this batch.")
             self.pause_review("Press Enter to continue...")
             return
-        approve = input("Approve batch run? [y/N]: ").strip().lower()
-        if approve not in {"y", "yes"}:
+        if not self._confirm("Approve batch run?", default=False):
             print("Run cancelled.")
             self.pause_review("Press Enter to continue...")
             return
@@ -3598,8 +3643,7 @@ class KlingAutomationUI:
 
     def run_automation_menu(self):
         while True:
-            self._display_automation_menu()
-            choice = input().strip().lower()
+            choice = self._automation_menu_choice()
             if choice == "0":
                 return
             if choice == "1":
@@ -3621,6 +3665,88 @@ class KlingAutomationUI:
             else:
                 self.print_red("Unknown option.")
                 time.sleep(1)
+
+    def _confirm(self, message: str, default: bool = False) -> bool:
+        """Yes/no confirm, questionary when interactive else input() fallback.
+
+        Non-TTY / questionary-unavailable callers (CI, piped stdin, headless)
+        get the legacy ``[y/N]`` input() prompt; an empty answer or EOF returns
+        ``default`` so an unattended pipe never hangs.
+        """
+        use_legacy = (
+            not _QUESTIONARY_AVAILABLE
+            or not (getattr(sys, "stdin", None) and sys.stdin.isatty())
+            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
+        )
+        if not use_legacy:
+            try:
+                answer = questionary.confirm(
+                    message,
+                    qmark="◆",
+                    default=default,
+                    style=KLING_QUESTIONARY_STYLE,
+                ).ask()
+                return bool(answer) if answer is not None else default
+            except (KeyboardInterrupt, EOFError):
+                return default
+        suffix = "[Y/n]" if default else "[y/N]"
+        try:
+            raw = input(f"{message} {suffix}: ").strip().lower()
+        except EOFError:
+            return default
+        if not raw:
+            return default
+        return raw in {"y", "yes", "1", "true"}
+
+    def _automation_menu_choice(self) -> str:
+        """Top-level automation menu picker.
+
+        Uses a questionary.select arrow menu when questionary is available AND
+        we're on an interactive TTY; otherwise prints the legacy numbered menu
+        and reads a numeric choice via input() so CI / piped-stdin / non-TTY
+        callers keep working. Returns the numeric choice string ("0".."7").
+        """
+        use_legacy = (
+            not _QUESTIONARY_AVAILABLE
+            or not (getattr(sys, "stdin", None) and sys.stdin.isatty())
+            or os.environ.get("KLING_LEGACY_SETTINGS_UI") == "1"
+        )
+        if use_legacy:
+            self._display_automation_menu()
+            return input().strip().lower()
+        # Questionary path: show context (header + status) then an arrow menu.
+        self.display_header()
+        self.print_magenta("═" * 79)
+        self.print_magenta("                     END-TO-END AUTO PIPELINE")
+        self.print_magenta("═" * 79)
+        print()
+        print(f"  Root folder: {self.automation_root_folder or '(not set)'}")
+        for line in self._automation_status_lines():
+            print(f"  {line}")
+        current_version = int(self.config.get("automation_recommended_defaults_version", 0) or 0)
+        if current_version < RECOMMENDED_DEFAULTS_VERSION:
+            print(f"  Recommendation: apply recommended defaults (target version {RECOMMENDED_DEFAULTS_VERSION}).")
+        print()
+        try:
+            answer = questionary.select(
+                "Select action:",
+                qmark="◆",
+                choices=[
+                    questionary.Choice("1  Select automation root folder", "1"),
+                    questionary.Choice("2  Scan / preview cases", "2"),
+                    questionary.Choice("3  Apply recommended automation defaults", "3"),
+                    questionary.Choice("4  Edit automation settings", "4"),
+                    questionary.Choice("5  Dry run", "5"),
+                    questionary.Choice("6  Run / resume automation", "6"),
+                    questionary.Choice("7  Print manifest path", "7"),
+                    questionary.Choice("0  Back", "0"),
+                ],
+                style=KLING_QUESTIONARY_STYLE,
+            ).ask()
+        except (KeyboardInterrupt, EOFError):
+            return "0"
+        # Esc / Ctrl-C inside questionary returns None -> treat as Back.
+        return answer if answer is not None else "0"
 
     def _run_manual_kling_menu(self) -> Optional[str]:
         """Legacy Kling-first tools grouped under a manual menu."""
