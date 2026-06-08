@@ -912,9 +912,50 @@ class KlingAutomationUI:
 
     def change_output_mode(self):
         """Change output mode between source folder and custom folder"""
-        print()
         use_source = self.config.get("use_source_folder", True)
+        current_label = (
+            "Same folder as source images" if use_source
+            else f"Custom folder ({self.config.get('output_folder', '?')})"
+        )
+        if not self._use_legacy_prompt_ui():
+            pick = self._q_select(
+                "Where should generated videos be saved?",
+                [
+                    ("📁  Same folder as source images (next to each input)", "1"),
+                    ("🗂️   Custom folder (all videos to one location)", "2"),
+                    ("↩️   Cancel", "0"),
+                ],
+                instruction=f"(current: {current_label})",
+            )
+            if pick in (None, "0"):
+                return
+            if pick == "1":
+                self.config["use_source_folder"] = True
+                self.save_config()
+                self.print_green("✓ Output mode: same folder as source images")
+                time.sleep(0.8)
+                return
+            # pick == "2": custom folder
+            self.config["use_source_folder"] = False
+            new_path = self._q_text(
+                "Custom output folder path:",
+                default=str(self.config.get("output_folder", "")),
+            )
+            if new_path and new_path.strip():
+                np = new_path.strip().strip('"').strip("'")
+                try:
+                    Path(np).mkdir(parents=True, exist_ok=True)
+                    self.config["output_folder"] = np
+                except OSError as e:
+                    self.print_red(f"Error creating folder: {e}")
+                    time.sleep(1.0)
+                    return
+            self.save_config()
+            self.print_green(f"✓ Output mode: custom folder -> {self.config.get('output_folder')}")
+            time.sleep(0.8)
+            return
 
+        print()
         print("\033[96m" + "─" * 60 + "\033[0m")
         print("\033[95m OUTPUT MODE SETTINGS\033[0m")
         print("\033[96m" + "─" * 60 + "\033[0m")
@@ -1044,17 +1085,26 @@ class KlingAutomationUI:
 
     def _set_aspect_ratio(self):
         """Set video aspect ratio"""
+        ratios = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+        current = self.config.get("aspect_ratio", "3:4")
+        if not self._use_legacy_prompt_ui():
+            selected = self._q_select(
+                "Video aspect ratio:", ratios, default=current,
+                instruction=f"(current: {current})",
+            )
+            if selected:
+                self.config["aspect_ratio"] = selected
+                self.save_config()
+                self.print_green(f"✓ Aspect ratio set to {selected}")
+                time.sleep(0.6)
+            return
         print()
         print("\033[95mSelect Aspect Ratio:\033[0m")
-        ratios = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
         for i, ratio in enumerate(ratios, 1):
-            current = (
-                " (current)" if ratio == self.config.get("aspect_ratio", "3:4") else ""
-            )
-            print(f"  \033[96m{i}\033[0m   {ratio}{current}")
+            mark = " (current)" if ratio == current else ""
+            print(f"  \033[96m{i}\033[0m   {ratio}{mark}")
         print(f"  \033[91m0\033[0m   Cancel")
         print()
-
         choice = input("\033[92mSelect: \033[0m").strip()
         if choice in ["1", "2", "3", "4", "5", "6"]:
             selected = ratios[int(choice) - 1]
@@ -1068,17 +1118,26 @@ class KlingAutomationUI:
 
     def _set_resolution(self):
         """Set video resolution"""
+        resolutions = ["480p", "720p"]
+        current = self.config.get("resolution", "720p")
+        if not self._use_legacy_prompt_ui():
+            selected = self._q_select(
+                "Video resolution:", resolutions, default=current,
+                instruction=f"(current: {current})",
+            )
+            if selected:
+                self.config["resolution"] = selected
+                self.save_config()
+                self.print_green(f"✓ Resolution set to {selected}")
+                time.sleep(0.6)
+            return
         print()
         print("\033[95mSelect Resolution:\033[0m")
-        resolutions = ["480p", "720p"]
         for i, res in enumerate(resolutions, 1):
-            current = (
-                " (current)" if res == self.config.get("resolution", "720p") else ""
-            )
-            print(f"  \033[96m{i}\033[0m   {res}{current}")
+            mark = " (current)" if res == current else ""
+            print(f"  \033[96m{i}\033[0m   {res}{mark}")
         print(f"  \033[91m0\033[0m   Cancel")
         print()
-
         choice = input("\033[92mSelect: \033[0m").strip()
         if choice == "1":
             self.config["resolution"] = "480p"
@@ -1096,30 +1155,39 @@ class KlingAutomationUI:
 
     def _set_seed(self):
         """Set generation seed"""
-        print()
         current_seed = self.config.get("seed", -1)
         seed_display = "Random" if current_seed == -1 else str(current_seed)
-        print(f"\033[95mCurrent seed:\033[0m {seed_display}")
-        print()
-        print("Enter a seed number (integer) or 'r' for random")
-        print()
 
-        choice = input("\033[92mSeed: \033[0m").strip().lower()
-        if choice == "r" or choice == "random" or choice == "-1":
-            self.config["seed"] = -1
-            self.save_config()
-            print(f"\n\033[92m✓ Seed set to random\033[0m")
-            time.sleep(0.8)
-        elif choice:
-            try:
-                seed_val = int(choice)
-                self.config["seed"] = seed_val
+        def _apply(raw: str) -> None:
+            low = raw.strip().lower()
+            if low in {"r", "random", "-1", ""}:
+                self.config["seed"] = -1
                 self.save_config()
-                print(f"\n\033[92m✓ Seed set to {seed_val}\033[0m")
-                time.sleep(0.8)
-            except ValueError:
-                print("\033[91mInvalid seed value (must be integer)\033[0m")
-                time.sleep(1)
+                self.print_green("✓ Seed set to random")
+            else:
+                try:
+                    self.config["seed"] = int(low)
+                    self.save_config()
+                    self.print_green(f"✓ Seed set to {int(low)}")
+                except ValueError:
+                    self.print_red("Invalid seed value (must be an integer or 'r')")
+            time.sleep(0.7)
+
+        if not self._use_legacy_prompt_ui():
+            raw = self._q_text(
+                "Seed (integer, or 'r' for random):",
+                default=seed_display if seed_display != "Random" else "r",
+                instruction=f"(current: {seed_display})",
+            )
+            if raw is not None:
+                _apply(raw)
+            return
+        print()
+        print(f"\033[95mCurrent seed:\033[0m {seed_display}")
+        print("\nEnter a seed number (integer) or 'r' for random\n")
+        choice = input("\033[92mSeed: \033[0m").strip().lower()
+        if choice:
+            _apply(choice)
 
     def inspect_model_capabilities(self):
         """Show detailed capabilities of a model via OpenAPI schema inspection"""
@@ -1404,14 +1472,25 @@ class KlingAutomationUI:
 
     def quick_edit_prompt(self):
         """Quick inline prompt editor - single line input"""
+        current_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
+        existing = str(self.config.get("saved_prompts", {}).get(current_slot, ""))
+        if not self._use_legacy_prompt_ui():
+            new_prompt = self._q_text(
+                f"Kling prompt for slot {current_slot} (Esc to cancel):",
+                default=existing,
+            )
+            if new_prompt and new_prompt.strip():
+                self.config["saved_prompts"][current_slot] = new_prompt.strip()
+                self.save_config()
+                self.print_green(f"✓ Prompt saved to slot {current_slot}")
+                time.sleep(0.8)
+            return
         print()
         print(
             "\033[93mQuick Edit - Enter new prompt (single line, or press Enter to cancel):\033[0m"
         )
         new_prompt = input("\033[92m➤ \033[0m").strip()
-
         if new_prompt:
-            current_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
             self.config["saved_prompts"][current_slot] = new_prompt
             self.save_config()
             print("\033[92m✓ Prompt saved to Slot {}\033[0m".format(current_slot))
@@ -1425,10 +1504,36 @@ class KlingAutomationUI:
 
         Invalid or missing slot values fall back to slot 4 defaults.
         """
-        print()
         saved_prompts = self.config.get("saved_prompts", {})
         current_slot = self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT)
 
+        def _apply(choice: str) -> None:
+            self.config["current_prompt_slot"] = int(choice)
+            self.save_config()
+            if saved_prompts.get(choice):
+                self.print_green(f"✓ Switched to slot {choice}")
+            else:
+                self.print_yellow(f"⚠ Switched to slot {choice} (empty - will use default)")
+            time.sleep(0.8)
+
+        if not self._use_legacy_prompt_ui():
+            slot_choices = []
+            for i in range(1, 11):
+                key = str(i)
+                prompt = saved_prompts.get(key) or ""
+                preview = (prompt[:48] + "…") if len(prompt) > 48 else (prompt or "(empty)")
+                active = "  ◄ ACTIVE" if key == str(current_slot) else ""
+                slot_choices.append((f"[{i}] {preview}{active}", key))
+            slot_choices.append(("↩️   Cancel", "cancel"))
+            pick = self._q_select(
+                "Active Kling prompt slot:", slot_choices,
+                instruction=f"(current: slot {current_slot})",
+            )
+            if pick and pick != "cancel":
+                _apply(pick)
+            return
+
+        print()
         print("\033[93mSaved Prompts:\033[0m")
         for i in range(1, 11):
             slot_key = str(i)
