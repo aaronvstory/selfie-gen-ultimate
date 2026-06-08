@@ -136,6 +136,21 @@ from app_version import RELEASE_VERSION
 RECOMMENDED_DEFAULTS_VERSION = 6
 DEFAULT_KLING_PROMPT_SLOT = 4
 DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT = 3
+
+# Single-source option lists shared by the questionary AND legacy settings
+# editors so the two paths can never drift (review theme D). Edit here only.
+_OLDCAM_VERSION_OPTIONS = ["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"]
+_EXPAND_PROVIDER_OPTIONS = ["auto", "bfl", "fal"]
+_EXPAND_MODE_OPTIONS = ["document_3x4", "percent"]
+_SELFIE_EXPAND_MODE_OPTIONS = ["percent", "centered_3x4"]
+_COMPOSITE_MODE_OPTIONS = ["preserve_seamless", "feathered", "hard", "none"]
+_REPROCESS_MODE_OPTIONS = ["skip", "overwrite", "increment"]
+_VIDEO_RESOLUTION_OPTIONS = ["480p", "720p"]
+_VIDEO_ASPECT_RATIO_OPTIONS = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
+# Common video durations (seconds) most fal video models accept. Used to warn
+# on uncommon values without rejecting them (D6).
+_COMMON_VIDEO_DURATIONS = [2, 3, 4, 5, 6, 7, 8, 10, 15]
+_PROMPT_SLOT_COUNT = 10  # selfie + kling video prompt slots are both 1.._PROMPT_SLOT_COUNT
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
     "Image-to-video: the subject performs a very subtle, slow head movement while "
     "the body and background remain completely motionless. The head turns slightly "
@@ -860,8 +875,11 @@ class KlingAutomationUI:
         model_name = self.config.get("model_display_name", "Kling 2.5 Turbo Standard")
         duration = self.config.get("video_duration", 10)
 
-        # Fetch pricing (cached after first call)
-        if not hasattr(self, "_cached_price"):
+        # Fetch pricing (cached after first call). Value-aware guard: model
+        # switches reset _cached_price to None (not delattr), so a hasattr-only
+        # check would keep the stale/None price forever — the header would show
+        # the old model's price or "Check fal.ai" after every change (A2).
+        if getattr(self, "_cached_price", None) is None:
             self._cached_price = self.fetch_model_pricing(
                 self.config.get("current_model", "")
             )
@@ -1185,69 +1203,50 @@ class KlingAutomationUI:
 
     def _set_aspect_ratio(self):
         """Set video aspect ratio"""
-        ratios = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
-        current = self.config.get("aspect_ratio", "3:4")
-        if not self._use_legacy_prompt_ui():
-            selected = self._q_select(
-                "Video aspect ratio:", ratios, default=current,
-                instruction=f"(current: {current})",
-            )
-            if selected:
-                self.config["aspect_ratio"] = selected
-                self.save_config()
-                self.print_green(f"✓ Aspect ratio set to {selected}")
-                time.sleep(0.6)
-            return
-        print()
-        print("\033[95mSelect Aspect Ratio:\033[0m")
-        for i, ratio in enumerate(ratios, 1):
-            mark = " (current)" if ratio == current else ""
-            print(f"  \033[96m{i}\033[0m   {ratio}{mark}")
-        print(f"  \033[91m0\033[0m   Cancel")
-        print()
-        choice = self._safe_input("\033[92mSelect: \033[0m").strip()
-        if choice in ["1", "2", "3", "4", "5", "6"]:
-            selected = ratios[int(choice) - 1]
-            self.config["aspect_ratio"] = selected
-            self.save_config()
-            print(f"\n\033[92m✓ Aspect ratio set to {selected}\033[0m")
-            time.sleep(0.8)
-        elif choice != "0":
-            print("\033[91mInvalid option\033[0m")
-            time.sleep(0.5)
+        self._edit_indexed_choice_setting(
+            "aspect_ratio", "Video aspect ratio",
+            _VIDEO_ASPECT_RATIO_OPTIONS, default="3:4",
+        )
 
     def _set_resolution(self):
         """Set video resolution"""
-        resolutions = ["480p", "720p"]
-        current = self.config.get("resolution", "720p")
+        self._edit_indexed_choice_setting(
+            "resolution", "Video resolution",
+            _VIDEO_RESOLUTION_OPTIONS, default="720p",
+        )
+
+    def _edit_indexed_choice_setting(self, key, label, options, default):
+        """Set a config value from a fixed option list (questionary + legacy).
+
+        The legacy path is index-based against ``options`` so it scales when an
+        option is added — no per-option hardcoded branch to forget to update
+        (D3/D4/G3). Cancel ("0"/Esc) leaves the value untouched.
+        """
+        current = self.config.get(key, default)
         if not self._use_legacy_prompt_ui():
             selected = self._q_select(
-                "Video resolution:", resolutions, default=current,
+                f"{label}:", list(options), default=current,
                 instruction=f"(current: {current})",
             )
             if selected:
-                self.config["resolution"] = selected
+                self.config[key] = selected
                 self.save_config()
-                self.print_green(f"✓ Resolution set to {selected}")
+                self.print_green(f"✓ {label} set to {selected}")
                 time.sleep(0.6)
             return
         print()
-        print("\033[95mSelect Resolution:\033[0m")
-        for i, res in enumerate(resolutions, 1):
-            mark = " (current)" if res == current else ""
-            print(f"  \033[96m{i}\033[0m   {res}{mark}")
+        print(f"\033[95mSelect {label}:\033[0m")
+        for i, opt in enumerate(options, 1):
+            mark = " (current)" if opt == current else ""
+            print(f"  \033[96m{i}\033[0m   {opt}{mark}")
         print(f"  \033[91m0\033[0m   Cancel")
         print()
         choice = self._safe_input("\033[92mSelect: \033[0m").strip()
-        if choice == "1":
-            self.config["resolution"] = "480p"
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            selected = options[int(choice) - 1]
+            self.config[key] = selected
             self.save_config()
-            print(f"\n\033[92m✓ Resolution set to 480p\033[0m")
-            time.sleep(0.8)
-        elif choice == "2":
-            self.config["resolution"] = "720p"
-            self.save_config()
-            print(f"\n\033[92m✓ Resolution set to 720p\033[0m")
+            print(f"\n\033[92m✓ {label} set to {selected}\033[0m")
             time.sleep(0.8)
         elif choice != "0":
             print("\033[91mInvalid option\033[0m")
@@ -2708,13 +2707,13 @@ class KlingAutomationUI:
         _ask_bool("Skip if selfie exists", "automation_skip_if_selfie_exists")
         _ask_bool("Skip if video exists", "automation_skip_if_video_exists")
         _ask_bool("Allow reprocess", "automation_allow_reprocess")
-        _ask_choice("Reprocess mode", "automation_reprocess_mode", ["skip", "overwrite", "increment"])
+        _ask_choice("Reprocess mode", "automation_reprocess_mode", _REPROCESS_MODE_OPTIONS)
 
         print("\n[Front Expansion]")
         _ask_bool("Front expand enabled", "automation_front_expand_enabled")
-        _ask_choice("Front expand provider", "automation_front_expand_provider", ["auto", "bfl", "fal"])
-        _ask_choice("Front expand mode", "automation_front_expand_mode", ["document_3x4", "percent"])
-        _ask_choice("Front composite mode", "automation_front_expand_composite_mode", ["preserve_seamless", "feathered", "hard", "none"])
+        _ask_choice("Front expand provider", "automation_front_expand_provider", _EXPAND_PROVIDER_OPTIONS)
+        _ask_choice("Front expand mode", "automation_front_expand_mode", _EXPAND_MODE_OPTIONS)
+        _ask_choice("Front composite mode", "automation_front_expand_composite_mode", _COMPOSITE_MODE_OPTIONS)
         _ask("Front expand percent", "automation_front_expand_percent", int, lambda v: v >= 0)
         _ask("Front expand passes [1|2]", "automation_front_expand_passes", int, lambda v: v in {1, 2})
         _ask_bool("Front edge seal enabled", "automation_front_edge_seal_enabled")
@@ -2772,9 +2771,9 @@ class KlingAutomationUI:
 
         print("\n[Selfie Expansion / Video / Loop-Oldcam]")
         _ask_bool("Selfie expansion enabled", "automation_selfie_expand_enabled")
-        _ask_choice("Selfie expand provider", "automation_selfie_expand_provider", ["auto", "bfl", "fal"])
-        _ask_choice("Selfie expand mode", "automation_selfie_expand_mode", ["percent", "centered_3x4"])
-        _ask_choice("Selfie composite mode", "automation_selfie_expand_composite_mode", ["preserve_seamless", "feathered", "hard", "none"])
+        _ask_choice("Selfie expand provider", "automation_selfie_expand_provider", _EXPAND_PROVIDER_OPTIONS)
+        _ask_choice("Selfie expand mode", "automation_selfie_expand_mode", _SELFIE_EXPAND_MODE_OPTIONS)
+        _ask_choice("Selfie composite mode", "automation_selfie_expand_composite_mode", _COMPOSITE_MODE_OPTIONS)
         _ask("Selfie expand percent", "automation_selfie_expand_percent", int, lambda v: v >= 0)
         _ask_bool("Video generation enabled", "automation_video_enabled")
         _ask("Video aspect ratio", "automation_video_aspect_ratio", str, lambda v: ":" in v)
@@ -2792,7 +2791,7 @@ class KlingAutomationUI:
         _ask_bool("Face-track required (sub-threshold => fail+skip oldcam)", "automation_facetrack_required")
         _ask("Face-track sample fps", "automation_facetrack_sample_fps", float, lambda v: 1.0 <= v <= 30.0)
         _ask_bool("Oldcam enabled", "automation_oldcam_enabled")
-        _ask_choice("Oldcam version", "automation_oldcam_version", ["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"])
+        _ask_choice("Oldcam version", "automation_oldcam_version", _OLDCAM_VERSION_OPTIONS)
         _ask_bool("Oldcam required", "automation_oldcam_required")
         _ask_bool("rPPG injection enabled (runs LAST; sub-perceptual pulse; untested direction, off by default)", "automation_rppg_enabled")
         _ask_bool("rPPG required (no output => fail+skip case)", "automation_rppg_required")
@@ -3240,7 +3239,7 @@ class KlingAutomationUI:
         self._qs_choice(
             "Reprocess mode:",
             "automation_reprocess_mode",
-            choices=["skip", "overwrite", "increment"],
+            choices=_REPROCESS_MODE_OPTIONS,
             default="skip",
         )
 
@@ -3251,11 +3250,11 @@ class KlingAutomationUI:
         )
         self._qs_bool("Front expand enabled?", "automation_front_expand_enabled", default=True)
         self._qs_choice("Provider:", "automation_front_expand_provider",
-                        choices=["auto", "bfl", "fal"], default="auto")
+                        choices=_EXPAND_PROVIDER_OPTIONS, default="auto")
         self._qs_choice("Expand mode:", "automation_front_expand_mode",
-                        choices=["document_3x4", "percent"], default="document_3x4")
+                        choices=_EXPAND_MODE_OPTIONS, default="document_3x4")
         self._qs_choice("Composite mode:", "automation_front_expand_composite_mode",
-                        choices=["preserve_seamless", "feathered", "hard", "none"],
+                        choices=_COMPOSITE_MODE_OPTIONS,
                         default="preserve_seamless")
         self._qs_int("Expand percent:", "automation_front_expand_percent",
                      default=30, validator=lambda v: v >= 0)
@@ -3398,11 +3397,11 @@ class KlingAutomationUI:
         )
         self._qs_bool("Selfie expansion enabled?", "automation_selfie_expand_enabled", default=True)
         self._qs_choice("Provider:", "automation_selfie_expand_provider",
-                        choices=["auto", "bfl", "fal"], default="auto")
+                        choices=_EXPAND_PROVIDER_OPTIONS, default="auto")
         self._qs_choice("Expand mode:", "automation_selfie_expand_mode",
-                        choices=["percent", "centered_3x4"], default="percent")
+                        choices=_SELFIE_EXPAND_MODE_OPTIONS, default="percent")
         self._qs_choice("Composite mode:", "automation_selfie_expand_composite_mode",
-                        choices=["preserve_seamless", "feathered", "hard", "none"],
+                        choices=_COMPOSITE_MODE_OPTIONS,
                         default="preserve_seamless")
         self._qs_int("Expand percent:", "automation_selfie_expand_percent",
                      default=30, validator=lambda v: v >= 0)
@@ -3444,12 +3443,13 @@ class KlingAutomationUI:
             "Final stage: apply oldcam (analog-degradation) filter to the generated video.",
         )
         self._qs_bool("Oldcam enabled?", "automation_oldcam_enabled", default=True)
-        # v24 is the current production default per CLAUDE.md. Keep the static
-        # list aligned with the legacy walker so behavior matches.
+        # v24 is the current production default per CLAUDE.md. The option list is
+        # the shared _OLDCAM_VERSION_OPTIONS constant so it can't drift from the
+        # legacy walker (D1).
         self._qs_choice(
             "Oldcam version:",
             "automation_oldcam_version",
-            choices=["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v24", "all"],
+            choices=_OLDCAM_VERSION_OPTIONS,
             default="v24",
         )
         self._qs_bool("Oldcam required (fail case if oldcam fails)?",
