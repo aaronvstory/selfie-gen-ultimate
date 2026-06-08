@@ -3668,14 +3668,19 @@ class KlingAutomationUI:
         # manifest running --oldcam-version v13 would hit a mismatch ValueError
         # and exit 1 with no run (Codex HIGH). On that specific mismatch we back
         # up the stale manifest and recreate it fresh.
+        # Use `is not None` (not truthiness) for front_globs_override too: an
+        # explicit empty list clears saved globs, which IS a fingerprint-changing
+        # identity override and must trigger create_fresh on a stale manifest
+        # (CodeRabbit). Mirrors how the override is applied above.
         _identity_override_requested = any(
             v is not None
             for v in (
                 oldcam_version_override,
                 rppg_override,
                 provider_override,
+                front_globs_override,
             )
-        ) or bool(front_globs_override)
+        )
         _manifest_snapshot = {k: v for k, v in self.config.items() if str(k).startswith("automation_")}
         try:
             manifest = AutomationManifest.create_or_load(

@@ -252,6 +252,31 @@ def test_headless_identity_override_recreates_stale_manifest(tmp_path, monkeypat
     assert list(tmp_path.glob("automation_manifest.json.superseded.*"))
 
 
+def test_headless_empty_front_globs_override_recreates_stale_manifest(tmp_path, monkeypatch):
+    """Clearing globs (front_globs_override=[]) against a manifest fingerprinted
+    with non-empty globs is an identity change and must recreate fresh, not exit
+    1 (CodeRabbit: the identity check must use `is not None`, not truthiness)."""
+    _seed_two_cases(tmp_path)
+    from automation.manifest import AutomationManifest
+
+    manifest_path = tmp_path / "automation_manifest.json"
+    AutomationManifest.create_or_load(
+        manifest_path=manifest_path,
+        root_dir=tmp_path,
+        config_snapshot={"automation_front_globs": ["*id_photo*.jpg"]},
+    )
+    app, captured = _build_app(tmp_path, monkeypatch)
+    rc = app.run_automation_headless(
+        str(tmp_path),
+        front_globs_override=[],  # explicit clear -> identity change
+        max_cases_override="all",
+        reprocess_override="overwrite",
+    )
+    assert rc == 0
+    assert captured["config"]["automation_front_globs"] == []
+    assert list(tmp_path.glob("automation_manifest.json.superseded.*"))
+
+
 def test_headless_invalid_provider_exits_1(tmp_path, monkeypatch):
     _seed_two_cases(tmp_path)
     app, _ = _build_app(tmp_path, monkeypatch)
