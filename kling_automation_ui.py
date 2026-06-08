@@ -299,7 +299,12 @@ class KlingAutomationUI:
             "model_display_name": "Kling 2.5 Turbo Standard",
             # Generation parameters
             "video_duration": 10,
-            "aspect_ratio": "9:16",
+            # 3:4 is the canonical portrait ratio for this pipeline (the selfie
+            # generates at 864x1152 = exact 3:4 and the chain preserves it). Some
+            # Kling endpoints (e.g. 2.5 turbo) ignore aspect_ratio and follow the
+            # input image's ratio anyway, but for endpoints that DO honor it, the
+            # default must match the 3:4 stills so the video isn't reframed.
+            "aspect_ratio": "3:4",
             "resolution": "720p",
             "seed": -1,  # -1 = random
             "camera_fixed": False,
@@ -982,7 +987,7 @@ class KlingAutomationUI:
             print()
 
             # Show current settings
-            aspect_ratio = self.config.get("aspect_ratio", "9:16")
+            aspect_ratio = self.config.get("aspect_ratio", "3:4")
             resolution = self.config.get("resolution", "720p")
             seed = self.config.get("seed", -1)
             camera_fixed = self.config.get("camera_fixed", False)
@@ -1044,7 +1049,7 @@ class KlingAutomationUI:
         ratios = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
         for i, ratio in enumerate(ratios, 1):
             current = (
-                " (current)" if ratio == self.config.get("aspect_ratio", "9:16") else ""
+                " (current)" if ratio == self.config.get("aspect_ratio", "3:4") else ""
             )
             print(f"  \033[96m{i}\033[0m   {ratio}{current}")
         print(f"  \033[91m0\033[0m   Cancel")
@@ -4198,7 +4203,7 @@ class KlingAutomationUI:
                             progress_callback=update_progress,
                             use_source_folder=use_source,
                             duration=self.config.get("video_duration", 10),
-                            aspect_ratio=self.config.get("aspect_ratio", "9:16"),
+                            aspect_ratio=self.config.get("aspect_ratio", "3:4"),
                             resolution=self.config.get("resolution", "720p"),
                             seed=self.config.get("seed", -1),
                             camera_fixed=self.config.get("camera_fixed", False),
@@ -4240,7 +4245,7 @@ class KlingAutomationUI:
                     negative_prompt=negative_prompt,  # Uses gated value from line 1525
                     use_source_folder=use_source,
                     duration=self.config.get("video_duration", 10),
-                    aspect_ratio=self.config.get("aspect_ratio", "9:16"),
+                    aspect_ratio=self.config.get("aspect_ratio", "3:4"),
                     resolution=self.config.get("resolution", "720p"),
                     seed=self.config.get("seed", -1),
                     camera_fixed=self.config.get("camera_fixed", False),
