@@ -408,7 +408,18 @@ class KlingAutomationUI:
         return RECOMMENDED_KLING_PROMPT_SLOT_1
 
     def fetch_model_pricing(self, model_endpoint: str) -> Optional[float]:
-        """Fetch pricing for a model from fal.ai API"""
+        """Fetch pricing for a model from fal.ai API (memoized per endpoint).
+
+        The model picker renders pricing for every preset on each redraw, so
+        without a cache a single menu render fires N network calls (each up to a
+        10s timeout). Memoizing per endpoint — including the None/failure result
+        — keeps the menu snappy on repeat renders within a session.
+        """
+        if not hasattr(self, "_pricing_cache"):
+            self._pricing_cache = {}
+        if model_endpoint in self._pricing_cache:
+            return self._pricing_cache[model_endpoint]
+        price: Optional[float] = None
         try:
             import requests
 
@@ -422,10 +433,11 @@ class KlingAutomationUI:
                 data = response.json()
                 prices = data.get("prices", [])
                 if prices:
-                    return prices[0].get("unit_price")
+                    price = prices[0].get("unit_price")
         except Exception:
-            pass
-        return None
+            price = None
+        self._pricing_cache[model_endpoint] = price
+        return price
 
     def fetch_available_models(self) -> list:
         """Fetch available video models from fal.ai Platform API with pagination"""
@@ -641,7 +653,7 @@ class KlingAutomationUI:
             print(f"  - {spec.config_key}: {key_status(self.config, spec.config_key)}")
         print("  0) Back")
         print()
-        choice = input("Select option: ").strip()
+        choice = self._safe_input("Select option: ").strip()
         if choice == "0":
             self.pause_continue("\nPress Enter to continue...")
             return
@@ -1025,7 +1037,7 @@ class KlingAutomationUI:
         print(f"  \033[91m0\033[0m   Cancel")
         print()
 
-        choice = input("\033[92mSelect option: \033[0m").strip()
+        choice = self._safe_input("\033[92mSelect option: \033[0m").strip()
 
         if choice == "1":
             self.config["use_source_folder"] = True
@@ -1105,7 +1117,7 @@ class KlingAutomationUI:
                 print(f"  \033[91m0\033[0m   Back to main menu")
                 print()
                 try:
-                    choice = input("\033[92mSelect option: \033[0m").strip().lower()
+                    choice = self._safe_input("\033[92mSelect option: \033[0m").strip().lower()
                 except EOFError:
                     choice = "0"
 
@@ -1303,7 +1315,7 @@ class KlingAutomationUI:
             print(f"  \033[91mq\033[0m  Back to menu")
             print()
             try:
-                choice = input("\033[92m➤ Select model: \033[0m").strip().lower()
+                choice = self._safe_input("\033[92m➤ Select model: \033[0m").strip().lower()
             except EOFError:
                 return
             if choice == "q" or choice not in models:
@@ -1523,7 +1535,7 @@ class KlingAutomationUI:
         print("  \033[93m5\033[0m - Return without changes")
         print()
 
-        choice = input("\033[92mSelect option (1-5): \033[0m").strip()
+        choice = self._safe_input("\033[92mSelect option (1-5): \033[0m").strip()
 
         if choice == "1":
             self.config["saved_prompts"][current_slot] = default_prompt
@@ -1668,7 +1680,7 @@ class KlingAutomationUI:
                 print(f"  [\033[90m{i}\033[0m] \033[90m(empty)\033[0m{active}")
         print()
 
-        choice = input("\033[92mSelect slot (1-10) or Enter to cancel: \033[0m").strip()
+        choice = self._safe_input("\033[92mSelect slot (1-10) or Enter to cancel: \033[0m").strip()
         if choice.isdigit() and 1 <= int(choice) <= 10:
             self.config["current_prompt_slot"] = int(choice)
             self.save_config()
@@ -1787,7 +1799,7 @@ class KlingAutomationUI:
         print(f"  \033[90mSee all: https://fal.ai/models?category=video\033[0m")
         print()
 
-        choice = input("\033[92mSelect option: \033[0m").strip()
+        choice = self._safe_input("\033[92mSelect option: \033[0m").strip()
 
         if choice == "0":
             return
@@ -2376,7 +2388,7 @@ class KlingAutomationUI:
         print("\nSelect automation root:")
         print("  1) Browse for folder (recommended)")
         print("  2) Type folder path")
-        choice = input("Choose option [1/2, default 1]: ").strip()
+        choice = self._safe_input("Choose option [1/2, default 1]: ").strip()
         selected_path: Optional[str] = None
         use_browse = choice in {"", "1"}
         logging.info("automation_root_select_mode use_browse=%s choice=%s", use_browse, choice or "<default>")
@@ -2680,7 +2692,7 @@ class KlingAutomationUI:
         print("  2) GPT Image 2 Edit")
         print("  3) Both")
         print("  4) Custom endpoints")
-        model_choice = input(f"Choose model set (current: {current_models}) [Enter keep]: ").strip()
+        model_choice = self._safe_input(f"Choose model set (current: {current_models}) [Enter keep]: ").strip()
         if model_choice == "1":
             self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
         elif model_choice == "2":
