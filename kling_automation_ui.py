@@ -3728,7 +3728,12 @@ class KlingAutomationUI:
         """
         if self._use_legacy_prompt_ui():
             self._display_automation_menu()
-            return input().strip().lower()
+            try:
+                return input().strip().lower()
+            except EOFError:
+                # Closed/piped stdin (no input available) -> behave like "Back"
+                # rather than crashing the menu loop (CodeRabbit, PR #94).
+                return "0"
         # Questionary path: show context (header + status) then an arrow menu.
         self.display_header()
         self.print_magenta("═" * 79)

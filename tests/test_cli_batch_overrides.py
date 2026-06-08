@@ -135,9 +135,8 @@ def _build_app(tmp_path, monkeypatch):
     import kling_automation_ui as kmod
 
     class FakeRunner:
-        last_case_results = []
-
         def __init__(self, config, automation_config, manifest, progress_cb=None):
+            self.last_case_results = []
             captured["config"] = dict(config)
             self.progress_cb = progress_cb
 
@@ -299,6 +298,20 @@ def test_automation_menu_choice_non_tty_uses_numeric_input(monkeypatch):
     app._display_automation_menu = lambda: None
     monkeypatch.setattr("builtins.input", lambda *_a, **_k: "6")
     assert app._automation_menu_choice() == "6"
+
+
+def test_automation_menu_choice_eof_returns_back(monkeypatch):
+    """A closed/piped stdin (EOFError on input) must return '0' (Back), not
+    crash the menu loop."""
+    app = KlingAutomationUI.__new__(KlingAutomationUI)
+    app.config = {}
+    app._display_automation_menu = lambda: None
+
+    def _raise(*_a, **_k):
+        raise EOFError()
+
+    monkeypatch.setattr("builtins.input", _raise)
+    assert app._automation_menu_choice() == "0"
 
 
 def test_use_legacy_prompt_ui_handles_stdin_without_isatty(monkeypatch):
