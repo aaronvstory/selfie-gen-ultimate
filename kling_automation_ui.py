@@ -583,8 +583,30 @@ class KlingAutomationUI:
             )
             logging.getLogger().setLevel(logging.CRITICAL)
 
+    def _set_api_key(self, spec) -> None:
+        """Persist a new value for one API key spec + re-opt-in to env fallback."""
+        self._clear_env_prefill_marker(spec.config_key)
+        optout = env_key_optout_list(self.config)
+        if spec.config_key in optout:
+            optout.remove(spec.config_key)
+            self.config["_env_key_optout"] = optout
+        self.save_config()
+
+    def _clear_api_key(self, spec) -> None:
+        """Clear one API key + persist a env-fallback opt-out so it stays clear."""
+        self.config[spec.config_key] = ""
+        self._clear_env_prefill_marker(spec.config_key)
+        optout = env_key_optout_list(self.config)
+        if spec.config_key not in optout:
+            optout.append(spec.config_key)
+            self.config["_env_key_optout"] = optout
+        self.save_config()
+
     def configure_api_provider_settings(self):
         """Provider-aware API key/editor for automation and manual tools."""
+        if not self._use_legacy_prompt_ui():
+            self._configure_api_provider_settings_questionary()
+            return
         self.clear_screen_simple()
         print("\n" + "=" * 72)
         print("  API SETUP / PROVIDER SETTINGS")
@@ -626,31 +648,47 @@ class KlingAutomationUI:
             value = input(f"Enter {spec.label} API key: ").strip()
             if value:
                 self.config[spec.config_key] = value
-                self._clear_env_prefill_marker(spec.config_key)
-                # A real value was entered — opt this key BACK IN to the env
-                # fallback (drop it from the persisted opt-out list). Mirrors the
-                # GUI clear/set logic (Codex P2, PR #73).
-                optout = env_key_optout_list(self.config)
-                if spec.config_key in optout:
-                    optout.remove(spec.config_key)
-                    self.config["_env_key_optout"] = optout
-                self.save_config()
+                self._set_api_key(spec)
                 print(f"Saved {spec.config_key}.")
         elif len(API_KEY_SPECS) < selected <= len(API_KEY_SPECS) * 2:
             spec = API_KEY_SPECS[selected - len(API_KEY_SPECS) - 1]
-            self.config[spec.config_key] = ""
-            self._clear_env_prefill_marker(spec.config_key)
-            # Persist the clear so it survives restart even when the env var is
-            # still set — otherwise apply_env_key_fallback() refills it from the
-            # env on the next launch and "Clear key" does nothing (Codex P2,
-            # PR #73). Same persisted opt-out the GUI uses.
-            optout = env_key_optout_list(self.config)
-            if spec.config_key not in optout:
-                optout.append(spec.config_key)
-                self.config["_env_key_optout"] = optout
-            self.save_config()
+            self._clear_api_key(spec)
             print(f"Cleared {spec.config_key}.")
         self.pause_continue("\nPress Enter to continue...")
+
+    def _configure_api_provider_settings_questionary(self):
+        """Branded API-key manager (questionary): per-provider set / clear."""
+        while True:
+            status = ["Provider key status:"]
+            for spec in API_KEY_SPECS:
+                status.append(f"  {spec.label}: {key_status(self.config, spec.config_key)}")
+            choices = []
+            for spec in API_KEY_SPECS:
+                choices.append((f"🔑  Set / update {spec.label} key", f"set:{spec.config_key}"))
+            for spec in API_KEY_SPECS:
+                choices.append((f"🧹  Clear {spec.label} key", f"clear:{spec.config_key}"))
+            choices.append(("↩️   Back", "back"))
+            pick = self._q_menu("API Keys / Provider Settings", choices, status_lines=status)
+            if pick in (None, "back"):
+                return
+            action, _, ckey = pick.partition(":")
+            spec = next((s for s in API_KEY_SPECS if s.config_key == ckey), None)
+            if spec is None:
+                continue
+            if action == "set":
+                print(f"\n{spec.label}: {spec.instruction}")
+                print(f"Get key: {spec.url}")
+                value = self._q_text(f"{spec.label} API key (Esc to cancel):")
+                if value and value.strip():
+                    self.config[spec.config_key] = value.strip()
+                    self._set_api_key(spec)
+                    self.print_green(f"✓ Saved {spec.label} key")
+                    time.sleep(0.7)
+            elif action == "clear":
+                if self._confirm(f"Clear the {spec.label} key?", default=False):
+                    self._clear_api_key(spec)
+                    self.print_yellow(f"Cleared {spec.label} key")
+                    time.sleep(0.7)
 
     def _run_startup_key_onboarding(self) -> None:
         if self._startup_key_onboarding_done:
@@ -1021,43 +1059,47 @@ class KlingAutomationUI:
     def configure_advanced_video_settings(self):
         """Configure advanced video generation settings"""
         while True:
-            print()
-            print("\033[96m" + "─" * 60 + "\033[0m")
-            print("\033[95m ADVANCED VIDEO SETTINGS\033[0m")
-            print("\033[96m" + "─" * 60 + "\033[0m")
-            print()
-
-            # Show current settings
             aspect_ratio = self.config.get("aspect_ratio", "3:4")
             resolution = self.config.get("resolution", "720p")
             seed = self.config.get("seed", -1)
             camera_fixed = self.config.get("camera_fixed", False)
             generate_audio = self.config.get("generate_audio", False)
-
             seed_display = "Random" if seed == -1 else str(seed)
-            camera_status = (
-                "\033[92mON\033[0m" if camera_fixed else "\033[91mOFF\033[0m"
-            )
-            audio_status = (
-                "\033[92mON\033[0m" if generate_audio else "\033[91mOFF\033[0m"
-            )
 
-            print(
-                f"  \033[93m1\033[0m   Aspect Ratio    : \033[97m{aspect_ratio}\033[0m"
-            )
-            print(f"  \033[93m2\033[0m   Resolution      : \033[97m{resolution}\033[0m")
-            print(
-                f"  \033[93m3\033[0m   Seed            : \033[97m{seed_display}\033[0m"
-            )
-            print(f"  \033[93m4\033[0m   Camera Fixed    : {camera_status}")
-            print(f"  \033[93m5\033[0m   Generate Audio  : {audio_status}")
-            print()
-            print(f"  \033[91m0\033[0m   Back to main menu")
-            print()
+            if not self._use_legacy_prompt_ui():
+                choice = self._q_menu(
+                    "Advanced Video Settings",
+                    [
+                        (f"📐  Aspect ratio    : {aspect_ratio}", "1"),
+                        (f"🖥️   Resolution      : {resolution}", "2"),
+                        (f"🎲  Seed            : {seed_display}", "3"),
+                        (f"📷  Camera fixed    : {'ON' if camera_fixed else 'OFF'}", "4"),
+                        (f"🔊  Generate audio  : {'ON' if generate_audio else 'OFF'}", "5"),
+                        ("↩️   Back to main menu", "0"),
+                    ],
+                )
+            else:
+                print()
+                print("\033[96m" + "─" * 60 + "\033[0m")
+                print("\033[95m ADVANCED VIDEO SETTINGS\033[0m")
+                print("\033[96m" + "─" * 60 + "\033[0m")
+                print()
+                camera_status = "\033[92mON\033[0m" if camera_fixed else "\033[91mOFF\033[0m"
+                audio_status = "\033[92mON\033[0m" if generate_audio else "\033[91mOFF\033[0m"
+                print(f"  \033[93m1\033[0m   Aspect Ratio    : \033[97m{aspect_ratio}\033[0m")
+                print(f"  \033[93m2\033[0m   Resolution      : \033[97m{resolution}\033[0m")
+                print(f"  \033[93m3\033[0m   Seed            : \033[97m{seed_display}\033[0m")
+                print(f"  \033[93m4\033[0m   Camera Fixed    : {camera_status}")
+                print(f"  \033[93m5\033[0m   Generate Audio  : {audio_status}")
+                print()
+                print(f"  \033[91m0\033[0m   Back to main menu")
+                print()
+                try:
+                    choice = input("\033[92mSelect option: \033[0m").strip().lower()
+                except EOFError:
+                    choice = "0"
 
-            choice = input("\033[92mSelect option: \033[0m").strip()
-
-            if choice == "0" or choice.lower() == "q":
+            if choice in (None, "0", "q"):
                 break
             elif choice == "1":
                 self._set_aspect_ratio()
@@ -1068,20 +1110,16 @@ class KlingAutomationUI:
             elif choice == "4":
                 self.config["camera_fixed"] = not self.config.get("camera_fixed", False)
                 self.save_config()
-                status = "enabled" if self.config["camera_fixed"] else "disabled"
-                print(f"\n\033[92m✓ Camera fixed {status}\033[0m")
-                time.sleep(0.8)
+                self.print_green(f"✓ Camera fixed {'enabled' if self.config['camera_fixed'] else 'disabled'}")
+                time.sleep(0.6)
             elif choice == "5":
-                self.config["generate_audio"] = not self.config.get(
-                    "generate_audio", False
-                )
+                self.config["generate_audio"] = not self.config.get("generate_audio", False)
                 self.save_config()
-                status = "enabled" if self.config["generate_audio"] else "disabled"
-                print(f"\n\033[92m✓ Generate audio {status}\033[0m")
-                time.sleep(0.8)
+                self.print_green(f"✓ Generate audio {'enabled' if self.config['generate_audio'] else 'disabled'}")
+                time.sleep(0.6)
             else:
-                print("\033[91mInvalid option\033[0m")
-                time.sleep(0.5)
+                self.print_red("Invalid option")
+                time.sleep(0.4)
 
     def _set_aspect_ratio(self):
         """Set video aspect ratio"""
@@ -1344,14 +1382,77 @@ class KlingAutomationUI:
 
         self.pause_continue("\nPress Enter to continue...")
 
+    def _edit_prompt_questionary(self, current_slot, current_prompt, default_prompt):
+        """Branded prompt editor (questionary). Slot previews in the status
+        panel; reset / edit positive / edit negative / clear actions."""
+        saved_prompts = self.config.get("saved_prompts", {})
+        status = ["Saved prompt slots:"]
+        for i in range(1, 11):
+            key = str(i)
+            p = saved_prompts.get(key) or ""
+            preview = (p[:46] + "…") if len(p) > 46 else (p or "(empty)")
+            active = "  (ACTIVE)" if key == current_slot else ""
+            status.append(f"  [{i}] {preview}{active}")
+        preview_cur = current_prompt if len(current_prompt) <= 200 else current_prompt[:200] + "…"
+        status.append("")
+        status.append(f"Active slot {current_slot}: {preview_cur}")
+        pick = self._q_menu(
+            "Kling Prompt Editor",
+            [
+                ("↺  Reset active slot to default (head movement)", "1"),
+                ("✏️   Edit positive prompt for active slot", "2"),
+                ("🚫  Edit negative prompt for active slot", "3"),
+                ("🧹  Clear active slot", "4"),
+                ("↩️   Return without changes", "5"),
+            ],
+            status_lines=status,
+        )
+        if pick in (None, "5"):
+            return
+        if pick == "1":
+            self.config["saved_prompts"][current_slot] = default_prompt
+            self.save_config()
+            self.print_green("✓ Reset to default head-movement prompt")
+            time.sleep(0.8)
+        elif pick == "2":
+            new_prompt = self._q_text(
+                f"Positive prompt for slot {current_slot}:",
+                default=current_prompt,
+            )
+            if new_prompt and new_prompt.strip():
+                self.config["saved_prompts"][current_slot] = new_prompt.strip()
+                self.save_config()
+                self.print_green(f"✓ Prompt saved to slot {current_slot}")
+                time.sleep(0.8)
+        elif pick == "3":
+            existing_neg = str(self.config.get("negative_prompts", {}).get(current_slot, ""))
+            neg = self._q_text(
+                f"Negative prompt for slot {current_slot} (what to avoid):",
+                default=existing_neg,
+            )
+            if neg is not None:
+                self.config.setdefault("negative_prompts", {})[current_slot] = neg.strip()
+                self.save_config()
+                self.print_green(f"✓ Negative prompt saved to slot {current_slot}")
+                time.sleep(0.8)
+        elif pick == "4":
+            self.config["saved_prompts"][current_slot] = ""
+            self.config.setdefault("negative_prompts", {})[current_slot] = ""
+            self.save_config()
+            self.print_yellow(f"Slot {current_slot} cleared")
+            time.sleep(0.8)
+
     def edit_prompt(self):
         """Edit or view the Kling generation prompt (full editor with slot support)"""
-        self.clear_screen()
-
         current_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
         current_prompt = self.get_current_prompt()
         default_prompt = self.get_default_prompt()
 
+        if not self._use_legacy_prompt_ui():
+            self._edit_prompt_questionary(current_slot, current_prompt, default_prompt)
+            return
+
+        self.clear_screen()
         print("\033[96m" + "═" * 79 + "\033[0m")
         self.print_magenta("                           KLING PROMPT EDITOR")
         print("\033[96m" + "═" * 79 + "\033[0m")
