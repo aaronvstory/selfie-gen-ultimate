@@ -450,7 +450,7 @@ class KlingAutomationUI:
         try:
             import requests
 
-            headers = {"Authorization": f"Key {self.config['falai_api_key']}"}
+            headers = {"Authorization": f"Key {resolve_api_key(self.config, 'falai_api_key')}"}
             response = requests.get(
                 f"https://api.fal.ai/v1/models/pricing?endpoint_id={model_endpoint}",
                 headers=headers,
@@ -471,7 +471,7 @@ class KlingAutomationUI:
         try:
             import requests
 
-            headers = {"Authorization": f"Key {self.config['falai_api_key']}"}
+            headers = {"Authorization": f"Key {resolve_api_key(self.config, 'falai_api_key')}"}
             all_models = []
             cursor = None
 
@@ -553,7 +553,7 @@ class KlingAutomationUI:
         try:
             import requests
 
-            headers = {"Authorization": f"Key {self.config['falai_api_key']}"}
+            headers = {"Authorization": f"Key {resolve_api_key(self.config, 'falai_api_key')}"}
 
             # Process in batches of 50
             for i in range(0, len(endpoint_ids), 50):
@@ -1482,6 +1482,10 @@ class KlingAutomationUI:
         if pick in (None, "5"):
             return
         if pick == "1":
+            if current_prompt.strip() and not self._confirm(
+                f"Overwrite slot {current_slot} with the default prompt?", default=False
+            ):
+                return
             self.config["saved_prompts"][current_slot] = default_prompt
             self.save_config()
             self.print_green("✓ Reset to default head-movement prompt")
@@ -1508,6 +1512,10 @@ class KlingAutomationUI:
                 self.print_green(f"✓ Negative prompt saved to slot {current_slot}")
                 time.sleep(0.8)
         elif pick == "4":
+            if (current_prompt.strip() or self.config.get("negative_prompts", {}).get(current_slot)) and not self._confirm(
+                f"Clear slot {current_slot} (positive + negative prompt)?", default=False
+            ):
+                return
             self.config["saved_prompts"][current_slot] = ""
             self.config.setdefault("negative_prompts", {})[current_slot] = ""
             self.save_config()
@@ -1622,7 +1630,7 @@ class KlingAutomationUI:
             print(
                 "\033[93mEnter NEGATIVE prompt (what to avoid - e.g. 'blur, bokeh'):\033[0m"
             )
-            neg_prompt = input("\033[92m➤ \033[0m").strip()
+            neg_prompt = self._safe_input("\033[92m➤ \033[0m").strip()
 
             if neg_prompt:
                 self.config["negative_prompts"][current_slot] = neg_prompt
@@ -1662,7 +1670,7 @@ class KlingAutomationUI:
         print(
             "\033[93mQuick Edit - Enter new prompt (single line, or press Enter to cancel):\033[0m"
         )
-        new_prompt = input("\033[92m➤ \033[0m").strip()
+        new_prompt = self._safe_input("\033[92m➤ \033[0m").strip()
         if new_prompt:
             self.config["saved_prompts"][current_slot] = new_prompt
             self.save_config()
@@ -1848,15 +1856,15 @@ class KlingAutomationUI:
             print(
                 "\033[93mEnter fal.ai endpoint ID (e.g., fal-ai/kling-video/v2.1/pro/image-to-video):\033[0m"
             )
-            endpoint = input("\033[92m➤ \033[0m").strip()
+            endpoint = self._safe_input("\033[92m➤ \033[0m").strip()
             if endpoint:
                 name = (
-                    input("\033[92mDisplay name for this model: \033[0m").strip()
+                    self._safe_input("\033[92mDisplay name for this model: \033[0m").strip()
                     or endpoint
                 )
                 # Duration prompt with common options
                 print("\033[93mCommon durations: 5s (most models), 10s (most models), 15s (some models)\033[0m")
-                duration_input = input(
+                duration_input = self._safe_input(
                     "\033[92mVideo duration in seconds (5, 10, 15, default 10): \033[0m"
                 ).strip()
 
@@ -2206,6 +2214,16 @@ class KlingAutomationUI:
         return lines
 
     def _apply_recommended_automation_defaults(self) -> None:
+        # This overwrites ~60 automation_* keys (front/selfie/expand/video/oldcam/
+        # rppg + prompts) with the recommended baseline. Confirm before clobbering
+        # a customized config (E1). default=True so the headless/test path (which
+        # chose this action deliberately) proceeds, while a TTY user gets a y/N.
+        if not self._confirm(
+            "Apply recommended automation defaults? This overwrites your current automation settings.",
+            default=True,
+        ):
+            self.print_yellow("Recommended defaults not applied.")
+            return
         before = {
             "front": (
                 self.config.get("automation_front_expand_provider"),
@@ -2448,7 +2466,7 @@ class KlingAutomationUI:
                 logging.info("automation_root_picker_browse_canceled_or_unavailable")
             if not selected_path:
                 logging.info("automation_root_typed_fallback_prompt")
-                raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
+                raw = self._safe_input("Enter automation root folder path (leave blank to cancel): ").strip()
                 if not raw:
                     self.print_yellow("Automation root selection canceled.")
                     logging.info("automation_root_select_canceled")
@@ -2460,7 +2478,7 @@ class KlingAutomationUI:
                 selected_path = raw
         else:
             logging.info("automation_root_typed_primary_prompt")
-            raw = input("Enter automation root folder path (leave blank to cancel): ").strip()
+            raw = self._safe_input("Enter automation root folder path (leave blank to cancel): ").strip()
             if not raw:
                 self.print_yellow("Automation root selection canceled.")
                 logging.info("automation_root_select_canceled")
@@ -2642,7 +2660,7 @@ class KlingAutomationUI:
     def _edit_automation_settings_legacy(self):
         def _ask(prompt: str, key: str, cast_fn, validator=None):
             current = self.config.get(key)
-            raw = input(f"{prompt} (current: {current}) [Enter keep]: ").strip()
+            raw = self._safe_input(f"{prompt} (current: {current}) [Enter keep]: ").strip()
             if not raw:
                 return
             try:
@@ -2655,7 +2673,7 @@ class KlingAutomationUI:
 
         def _ask_choice(prompt: str, key: str, choices: list):
             current = str(self.config.get(key))
-            raw = input(f"{prompt} {choices} (current: {current}) [Enter keep]: ").strip().lower()
+            raw = self._safe_input(f"{prompt} {choices} (current: {current}) [Enter keep]: ").strip().lower()
             if not raw:
                 return
             if raw not in choices:
@@ -2665,7 +2683,7 @@ class KlingAutomationUI:
 
         def _ask_bool(prompt: str, key: str):
             current = bool(self.config.get(key, False))
-            raw = input(f"{prompt} [y/n] (current: {'y' if current else 'n'}) [Enter keep]: ").strip().lower()
+            raw = self._safe_input(f"{prompt} [y/n] (current: {'y' if current else 'n'}) [Enter keep]: ").strip().lower()
             if not raw:
                 return
             if raw in {"y", "yes", "1", "true"}:
@@ -2679,7 +2697,7 @@ class KlingAutomationUI:
         print("Press Enter on any prompt to keep current value.\n")
 
         print("[Discovery]")
-        raw_root = input(f"Automation root path (current: {self.automation_root_folder or '(not set)'}) [Enter keep]: ").strip()
+        raw_root = self._safe_input(f"Automation root path (current: {self.automation_root_folder or '(not set)'}) [Enter keep]: ").strip()
         if raw_root:
             root_path = Path(raw_root)
             if root_path.exists() and root_path.is_dir():
@@ -2693,7 +2711,7 @@ class KlingAutomationUI:
             str,
             lambda v: len(v) > 0 and v.endswith(".json") and Path(v).name == v,
         )
-        max_cases_raw = input(
+        max_cases_raw = self._safe_input(
             f"Max cases per run [1/5/10/all] (current: {self._read_max_cases_setting()}) [Enter keep]: "
         ).strip().lower()
         if max_cases_raw:
@@ -2739,7 +2757,7 @@ class KlingAutomationUI:
         elif model_choice == "3":
             self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit", "openai/gpt-image-2/edit"]
         elif model_choice == "4":
-            models_raw = input("Custom selfie model endpoints comma-separated: ").strip()
+            models_raw = self._safe_input("Custom selfie model endpoints comma-separated: ").strip()
             models = [m.strip() for m in models_raw.split(",") if m.strip()]
             if models:
                 self.config["automation_selfie_models"] = models
@@ -2753,16 +2771,16 @@ class KlingAutomationUI:
         current_prompt = str(self.config.get("automation_selfie_prompts", {}).get(str(current_slot), "") or "")
         print(f"Selfie prompt slot: {current_slot}")
         print(f"Current selfie prompt preview: {(current_prompt[:120] + '...') if len(current_prompt) > 120 else current_prompt}")
-        slot_raw = input("Switch selfie prompt slot [1-10, Enter keep]: ").strip()
+        slot_raw = self._safe_input("Switch selfie prompt slot [1-10, Enter keep]: ").strip()
         if slot_raw.isdigit() and 1 <= int(slot_raw) <= 10:
             self.config["automation_selfie_prompt_slot"] = int(slot_raw)
             current_slot = int(slot_raw)
-        edit_current = input("Edit active selfie prompt now? [y/N]: ").strip().lower()
+        edit_current = self._safe_input("Edit active selfie prompt now? [y/N]: ").strip().lower()
         if edit_current in {"y", "yes"}:
-            new_prompt = input("Enter selfie prompt text: ").strip()
+            new_prompt = self._safe_input("Enter selfie prompt text: ").strip()
             if new_prompt:
                 self.config["automation_selfie_prompts"][str(current_slot)] = new_prompt
-        reset_current = input("Reset active selfie slot to default prompt? [y/N]: ").strip().lower()
+        reset_current = self._safe_input("Reset active selfie slot to default prompt? [y/N]: ").strip().lower()
         if reset_current in {"y", "yes"}:
             defaults = merge_automation_defaults({}).get("automation_selfie_prompts", {})
             self.config["automation_selfie_prompts"][str(current_slot)] = defaults.get(
@@ -3511,7 +3529,9 @@ class KlingAutomationUI:
             f"front={self.config.get('automation_front_expand_composite_mode', self.config.get('outpaint_composite_mode', 'preserve_seamless'))} "
             f"selfie={self.config.get('automation_selfie_expand_composite_mode', self.config.get('outpaint_composite_mode', 'preserve_seamless'))}"
         )
-        print("  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video -> oldcam")
+        _rppg_on = bool(self.config.get("automation_rppg_enabled", False))
+        _rppg_seg = " -> rppg" if _rppg_on else " -> rppg(off)"
+        print(f"  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg} -> oldcam")
         self.pause_review("\nPress Enter to continue...")
 
     def run_automation_headless(
