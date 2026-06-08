@@ -3,6 +3,7 @@ import contextlib
 import faulthandler
 import io
 import os
+import re
 import signal
 import sys
 import json
@@ -151,6 +152,9 @@ _VIDEO_ASPECT_RATIO_OPTIONS = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
 # on uncommon values without rejecting them (D6).
 _COMMON_VIDEO_DURATIONS = [2, 3, 4, 5, 6, 7, 8, 10, 15]
 _PROMPT_SLOT_COUNT = 10  # selfie + kling video prompt slots are both 1.._PROMPT_SLOT_COUNT
+# Matches ANSI SGR color/style escape sequences (ESC [ ... m). Used to keep
+# non-TTY / cron logs clean of color codes forwarded from subprocess output.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 RECOMMENDED_KLING_PROMPT_SLOT_1 = (
     "Image-to-video: the subject performs a very subtle, slow head movement while "
     "the body and background remain completely motionless. The head turns slightly "
@@ -3857,7 +3861,12 @@ class KlingAutomationUI:
         else:
             run_error = None
             try:
-                runner.progress_cb = lambda message, level="info": print(f"  [{level}] {message}")
+                # Strip any ANSI color codes an upstream tool might forward so a
+                # cron / Task-Scheduler log stays clean (A3 — latent: no current
+                # generator emits color, but oldcam forwards subprocess stdout raw).
+                runner.progress_cb = lambda message, level="info": print(
+                    f"  [{level}] {_ANSI_ESCAPE_RE.sub('', str(message))}"
+                )
                 stats = runner.run(runnable_cases)
             except Exception as exc:
                 stats = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
@@ -4029,7 +4038,8 @@ class KlingAutomationUI:
             "selfie_expand": "5 selfie expand",
             "video_generate": "6 kling video",
             "facetrack_gate": "6.5 face-track gate",
-            "oldcam": "7 loop/oldcam",
+            "rppg": "7 rppg injection",
+            "oldcam": "8 loop/oldcam",
         }
 
         with Live(console=Console(), refresh_per_second=4, transient=True) as live:
@@ -4173,7 +4183,12 @@ class KlingAutomationUI:
                     default=default,
                     style=KLING_QUESTIONARY_STYLE,
                 ).ask()
-                return bool(answer) if answer is not None else default
+                if answer is None:
+                    # Esc/Ctrl-C: give explicit feedback in interactive mode so the
+                    # user knows nothing happened, then fall back to default (E6).
+                    self.print_yellow("Cancelled.")
+                    return default
+                return bool(answer)
             except (KeyboardInterrupt, EOFError):
                 return default
         suffix = "[Y/n]" if default else "[y/N]"
