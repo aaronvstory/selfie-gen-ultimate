@@ -3661,15 +3661,47 @@ class KlingAutomationUI:
             _warn(f"[batch] No case folders found under {root}.")
             return 1
 
+        # Did the caller pass an EXPLICIT fingerprinted identity override
+        # (oldcam-version / rppg / provider / front-globs)? If so, a fingerprint
+        # mismatch against an OLD manifest is intentional — the help text
+        # promises "forces a fresh manifest". Without this, a user with a v24
+        # manifest running --oldcam-version v13 would hit a mismatch ValueError
+        # and exit 1 with no run (Codex HIGH). On that specific mismatch we back
+        # up the stale manifest and recreate it fresh.
+        _identity_override_requested = any(
+            v is not None
+            for v in (
+                oldcam_version_override,
+                rppg_override,
+                provider_override,
+            )
+        ) or bool(front_globs_override)
+        _manifest_snapshot = {k: v for k, v in self.config.items() if str(k).startswith("automation_")}
         try:
             manifest = AutomationManifest.create_or_load(
                 manifest_path=self._automation_manifest_path(),
                 root_dir=root_path,
-                config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
+                config_snapshot=_manifest_snapshot,
             )
         except Exception as exc:
-            _err(f"[batch] Failed to load manifest: {exc}")
-            return 1
+            is_fingerprint_mismatch = "fingerprint mismatch" in str(exc)
+            if _identity_override_requested and is_fingerprint_mismatch:
+                _warn(
+                    "[batch] Identity override changes the run fingerprint; "
+                    "recreating a fresh manifest (old one backed up)."
+                )
+                try:
+                    manifest = AutomationManifest.create_fresh(
+                        manifest_path=self._automation_manifest_path(),
+                        root_dir=root_path,
+                        config_snapshot=_manifest_snapshot,
+                    )
+                except Exception as exc2:
+                    _err(f"[batch] Failed to recreate manifest: {exc2}")
+                    return 1
+            else:
+                _err(f"[batch] Failed to load manifest: {exc}")
+                return 1
 
         # Apply CLI overrides NOW (post-manifest): these are run policy, not part
         # of the manifest fingerprint, so they must not influence create_or_load.

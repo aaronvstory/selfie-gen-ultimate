@@ -24,6 +24,13 @@ def is_ignored_dir(path: Path) -> bool:
     return name in IGNORED_DIR_NAMES or name.startswith(".venv")
 
 
+# Image suffixes a --front-glob match is allowed to resolve to. Keeps a loose
+# pattern ('*front*') from picking a sidecar (.txt/.json) or a video (.mp4)
+# instead of the actual front image. Mirrors path_utils.VALID_EXTENSIONS but is
+# kept local so discovery has no cross-module import.
+_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif")
+
+
 @dataclass(frozen=True)
 class CaseRecord:
     case_dir: Path
@@ -78,6 +85,13 @@ def discover_case_folders(
     def _matches(name_lower: str) -> bool:
         if name_lower in canonical_front_names:
             return True
+        # Glob matches are restricted to image files. A loose pattern like
+        # '*front*' must NOT pick up front.txt / front.mp4 / a sidecar before the
+        # actual image (Codex review). Exact front_names above are trusted as-is.
+        if canonical_front_globs and not any(
+            name_lower.endswith(ext) for ext in _IMAGE_SUFFIXES
+        ):
+            return False
         # fnmatchcase (not fnmatch): name + patterns are already lowercased, so
         # we don't want fnmatch's OS-specific os.path.normcase, which on Windows
         # also rewrites slashes and would make matching non-deterministic across

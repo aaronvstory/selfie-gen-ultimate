@@ -72,6 +72,19 @@ def test_discovery_empty_names_and_globs_finds_nothing(tmp_path):
     assert discover_case_folders(tmp_path, [], front_globs=[]) == []
 
 
+def test_discovery_glob_skips_non_image_files(tmp_path):
+    """A loose glob ('*front*') must not pick a sidecar/.txt/.mp4 that sorts
+    before the real image (Codex MEDIUM)."""
+    case = tmp_path / "a"
+    case.mkdir()
+    (case / "front_notes.txt").write_text("x")  # sorts before front.jpg
+    (case / "front.mp4").write_bytes(b"x")
+    (case / "front.jpg").write_bytes(b"x")
+    cases = discover_case_folders(tmp_path, [], front_globs=["*front*"])
+    assert len(cases) == 1
+    assert cases[0].front_path.name == "front.jpg"
+
+
 # --------------------------------------------------------------------------
 # config: automation_front_globs default + property
 # --------------------------------------------------------------------------
@@ -208,6 +221,35 @@ def test_headless_fingerprinted_overrides_applied_before_manifest(tmp_path, monk
     assert snap.get("automation_oldcam_version") == "v13"
     assert snap.get("automation_rppg_enabled") is True
     assert snap.get("automation_front_expand_provider") == "fal"
+
+
+def test_headless_identity_override_recreates_stale_manifest(tmp_path, monkeypatch):
+    """A stale manifest (old oldcam version) + an explicit --oldcam-version
+    override must RECREATE a fresh manifest and run (rc 0), not exit 1 on a
+    fingerprint mismatch (Codex HIGH). The old manifest is backed up."""
+    _seed_two_cases(tmp_path)
+    # Seed an existing manifest fingerprinted for oldcam v24.
+    from automation.manifest import AutomationManifest
+
+    manifest_path = tmp_path / "automation_manifest.json"
+    AutomationManifest.create_or_load(
+        manifest_path=manifest_path,
+        root_dir=tmp_path,
+        config_snapshot={"automation_oldcam_version": "v24"},
+    )
+    assert manifest_path.exists()
+
+    app, captured = _build_app(tmp_path, monkeypatch)
+    rc = app.run_automation_headless(
+        str(tmp_path),
+        oldcam_version_override="v13",  # identity change vs the v24 manifest
+        max_cases_override="all",
+        reprocess_override="overwrite",
+    )
+    assert rc == 0  # recreated + ran, NOT exit 1
+    assert captured["config"]["automation_oldcam_version"] == "v13"
+    # Old manifest backed up aside.
+    assert list(tmp_path.glob("automation_manifest.json.superseded.*"))
 
 
 def test_headless_invalid_provider_exits_1(tmp_path, monkeypatch):
