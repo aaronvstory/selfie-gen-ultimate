@@ -827,7 +827,7 @@ class KlingAutomationUI:
         """Display the primary Selfie Gen Ultimate header."""
         self.clear_screen()
 
-        model_name = self.config.get("model_display_name", "Kling 2.1 Professional")
+        model_name = self.config.get("model_display_name", "Kling 2.5 Turbo Standard")
         duration = self.config.get("video_duration", 10)
 
         # Fetch pricing (cached after first call)
@@ -2695,6 +2695,8 @@ class KlingAutomationUI:
         _ask_choice("Selfie model policy", "automation_selfie_model_policy", ["first_pass", "all"])
         _ask("Max attempts per model", "automation_selfie_max_attempts_per_model", int, lambda v: v > 0)
         _ask("Similarity threshold", "automation_similarity_threshold", int, lambda v: 0 <= v <= 100)
+        _ask("Selfie width (px, 864=3:4)", "automation_selfie_width", int, lambda v: v > 0)
+        _ask("Selfie height (px, 1152=3:4)", "automation_selfie_height", int, lambda v: v > 0)
         self._ensure_selfie_prompt_slots()
         current_slot = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
         current_prompt = str(self.config.get("automation_selfie_prompts", {}).get(str(current_slot), "") or "")
@@ -3270,6 +3272,13 @@ class KlingAutomationUI:
                      default=1, validator=lambda v: v > 0)
         self._qs_int("Similarity threshold (0-100):", "automation_similarity_threshold",
                      default=80, validator=lambda v: 0 <= v <= 100)
+        # 3:4 selfie dimensions (864x1152 default). Keeping width/height a true
+        # 3:4 ratio is what makes the whole chain 3:4 — the ratio-preserving
+        # expand and Kling both follow the still's aspect.
+        self._qs_int("Selfie width (px):", "automation_selfie_width",
+                     default=864, validator=lambda v: v > 0)
+        self._qs_int("Selfie height (px):", "automation_selfie_height",
+                     default=1152, validator=lambda v: v > 0)
 
         # Prompt slot — only ask if user wants to touch it.
         self._ensure_selfie_prompt_slots()
@@ -4369,7 +4378,7 @@ class KlingAutomationUI:
         self.clear_screen()
 
         # Header panel - show configured model
-        model_name = self.config.get("model_display_name", "Kling 2.1 Professional")
+        model_name = self.config.get("model_display_name", "Kling 2.5 Turbo Standard")
         header_text = Text()
         header_text.append(
             f"🚀 {model_name.upper()} BATCH VIDEO GENERATOR 🚀", style="bold cyan"
@@ -4473,7 +4482,7 @@ class KlingAutomationUI:
                     config_table.add_row("Files Amt:", f"{total_files} GenX files")
 
                 model_name = self.config.get(
-                    "model_display_name", "Kling 2.1 Professional"
+                    "model_display_name", "Kling 2.5 Turbo Standard"
                 )
                 duration = self.config.get("video_duration", 10)
                 price = self.fetch_model_pricing(self.config.get("current_model", ""))
