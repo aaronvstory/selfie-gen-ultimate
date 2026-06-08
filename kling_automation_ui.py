@@ -1273,20 +1273,31 @@ class KlingAutomationUI:
         if current_model not in [m[0] for m in models.values()]:
             models["c"] = (current_model, f"Current: {current_model.split('/')[-1]}")
 
-        print("\033[93mSelect a model to inspect:\033[0m")
-        print()
-        for key, (model_id, name) in models.items():
-            marker = " \033[92m(current)\033[0m" if model_id == current_model else ""
-            print(f"  \033[93m{key}\033[0m  {name}{marker}")
-            print(f"      \033[90m{model_id}\033[0m")
-        print()
-        print(f"  \033[91mq\033[0m  Back to menu")
-        print()
-
-        choice = input("\033[92m➤ Select model: \033[0m").strip().lower()
-
-        if choice == "q" or choice not in models:
-            return
+        if not self._use_legacy_prompt_ui():
+            choices = []
+            for key, (model_id, name) in models.items():
+                marker = "  (current)" if model_id == current_model else ""
+                choices.append((f"{name}{marker}  —  {model_id}", key))
+            choices.append(("↩️   Back", "q"))
+            choice = self._q_menu("Model Capability Inspector", choices, show_header=False)
+            if choice in (None, "q") or choice not in models:
+                return
+        else:
+            print("\033[93mSelect a model to inspect:\033[0m")
+            print()
+            for key, (model_id, name) in models.items():
+                marker = " \033[92m(current)\033[0m" if model_id == current_model else ""
+                print(f"  \033[93m{key}\033[0m  {name}{marker}")
+                print(f"      \033[90m{model_id}\033[0m")
+            print()
+            print(f"  \033[91mq\033[0m  Back to menu")
+            print()
+            try:
+                choice = input("\033[92m➤ Select model: \033[0m").strip().lower()
+            except EOFError:
+                return
+            if choice == "q" or choice not in models:
+                return
 
         model_id, model_name = models[choice]
 
