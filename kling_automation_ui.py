@@ -3551,7 +3551,9 @@ class KlingAutomationUI:
 
         Mirrors the runnable body of :meth:`_run_resume_automation` but reads
         NO stdin (so it can run from cron / Windows Task Scheduler) and returns
-        a process exit code instead of pausing:
+        a process exit code instead of pausing. INVARIANT: this path never
+        invokes ``questionary`` or ``input()`` — it is auto-approved and exits
+        on missing/invalid input rather than prompting (keep it stdin-free):
 
         * ``0`` -- batch ran and EVERY case completed cleanly.
         * ``1`` -- could not run: missing/invalid root, no case folders, no
