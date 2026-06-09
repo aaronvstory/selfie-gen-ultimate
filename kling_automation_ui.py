@@ -298,10 +298,12 @@ class KlingAutomationUI:
     def _safe_input(prompt: str = "", default: str = "") -> str:
         """input() that returns ``default`` on EOF/closed stdin instead of
         raising. Used by legacy sub-menus so a piped/closed stdin cancels the
-        action cleanly rather than crashing the menu loop."""
+        action cleanly rather than crashing the menu loop. RuntimeError covers
+        the sys.stdin-is-None case (input() raises 'lost sys.stdin') that
+        _use_legacy_prompt_ui routes here in GUI/daemon/service contexts."""
         try:
             return input(prompt)
-        except EOFError:
+        except (EOFError, RuntimeError):
             return default
 
     def load_config(self) -> Dict[str, Any]:
