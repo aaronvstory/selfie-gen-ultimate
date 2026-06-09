@@ -32,6 +32,36 @@ def test_pause_review_always_prompts(monkeypatch):
     assert called["count"] == 1
 
 
+def test_pause_review_eof_safe(monkeypatch):
+    """A closed/piped stdin (EOFError) at a review pause must NOT crash the app.
+
+    The legacy walkers are documented as EOF-safe, but pause_review/pause_continue
+    used a bare input() that let EOFError bubble up to main() as a Fatal error
+    (reproduced on macOS: option 4 -> save automation settings under non-TTY stdin).
+    """
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+
+    def _raise_eof(*args, **kwargs):
+        raise EOFError()
+
+    monkeypatch.setattr("builtins.input", _raise_eof)
+    # Must return cleanly (treat EOF as "Enter pressed"), not propagate.
+    ui.pause_review()
+
+
+def test_pause_continue_eof_safe(monkeypatch):
+    """pause_continue with legacy pauses on must also swallow EOF."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = True
+
+    def _raise_eof(*args, **kwargs):
+        raise EOFError()
+
+    monkeypatch.setattr("builtins.input", _raise_eof)
+    ui.pause_continue()
+
+
 def test_cli_branding_text_updated():
     src = (Path(__file__).resolve().parent.parent / "kling_automation_ui.py").read_text(encoding="utf-8")
     assert "SELFIE GEN ULTIMATE" in src

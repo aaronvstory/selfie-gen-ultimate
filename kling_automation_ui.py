@@ -266,14 +266,28 @@ class KlingAutomationUI:
         self._startup_key_onboarding_done = False
         self.setup_logging()
 
+    @staticmethod
+    def _wait_for_enter(message: str) -> None:
+        """input() pause that treats a closed/piped stdin as 'Enter pressed'.
+
+        A bare input() at a review pause raises EOFError under a non-TTY stdin
+        (cron, piped input, Ctrl-D) which bubbled up to main() as a Fatal error
+        and crashed the whole app mid-menu. EOF-safe like the legacy walkers'
+        _safe_input: swallow EOFError/KeyboardInterrupt and continue.
+        """
+        try:
+            input(message)
+        except (EOFError, KeyboardInterrupt):
+            pass
+
     def pause_continue(self, message: str = "Press Enter to continue..."):
         """Pause only when legacy pause mode is enabled."""
         if self.legacy_pauses:
-            input(message)
+            self._wait_for_enter(message)
 
     def pause_review(self, message: str = "Press Enter to continue..."):
         """Pause for explicit review screens or actionable error surfaces."""
-        input(message)
+        self._wait_for_enter(message)
 
     @staticmethod
     def _safe_input(prompt: str = "", default: str = "") -> str:
