@@ -91,6 +91,19 @@ def test_pause_review_stdin_none_safe(monkeypatch):
     ui.pause_review()
 
 
+def test_pause_review_closed_stdin_safe(monkeypatch):
+    """A closed sys.stdin makes input() raise ValueError('I/O operation on
+    closed file'); pause_review must not crash (Gemini MEDIUM, PR #95)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+
+    def _raise_value(*args, **kwargs):
+        raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr("builtins.input", _raise_value)
+    ui.pause_review()
+
+
 def test_cli_branding_text_updated():
     src = (Path(__file__).resolve().parent.parent / "kling_automation_ui.py").read_text(encoding="utf-8")
     assert "SELFIE GEN ULTIMATE" in src
