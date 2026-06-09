@@ -104,6 +104,26 @@ def test_pause_review_closed_stdin_safe(monkeypatch):
     ui.pause_review()
 
 
+def test_pause_review_bad_fd_safe(monkeypatch):
+    """A bad/closed underlying stdin fd makes input() raise OSError (EBADF) or
+    BrokenPipeError on a severed pipe; pause_review must not crash (Gemini
+    MEDIUM / Codex P2, PR #95)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr("builtins.input", _raise_oserror)
+    ui.pause_review()
+
+    def _raise_brokenpipe(*args, **kwargs):
+        raise BrokenPipeError()
+
+    monkeypatch.setattr("builtins.input", _raise_brokenpipe)
+    ui.pause_review()
+
+
 def test_cli_branding_text_updated():
     src = (Path(__file__).resolve().parent.parent / "kling_automation_ui.py").read_text(encoding="utf-8")
     assert "SELFIE GEN ULTIMATE" in src

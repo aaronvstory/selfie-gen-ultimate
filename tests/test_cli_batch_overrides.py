@@ -410,6 +410,17 @@ def test_safe_input_returns_default_on_closed_stdin(monkeypatch):
     assert KlingAutomationUI._safe_input("x") == ""
 
 
+def test_safe_input_returns_default_on_bad_fd(monkeypatch):
+    """A bad/closed underlying stdin fd makes input() raise OSError (EBADF);
+    _safe_input must return the default, not crash (PR #95)."""
+    def _raise(*_a, **_k):
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr("builtins.input", _raise)
+    assert KlingAutomationUI._safe_input("x", default="fallback") == "fallback"
+    assert KlingAutomationUI._safe_input("x") == ""
+
+
 def test_automation_menu_choice_eof_returns_back(monkeypatch):
     """A closed/piped stdin (EOFError on input) must return '0' (Back), not
     crash the menu loop."""

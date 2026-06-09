@@ -276,15 +276,18 @@ class KlingAutomationUI:
         degenerate-stdin failures input() can raise so the pause never crashes:
         EOFError (stdin at EOF — piped/exhausted/Ctrl-D), RuntimeError
         ("lost sys.stdin" when sys.stdin is None — GUI wrappers, daemons,
-        Windows services), and ValueError ("I/O operation on closed file" when
-        sys.stdin is closed). These are exactly the stdin-None/closed cases the
-        headless/_use_legacy_prompt_ui guards already handle. KeyboardInterrupt
-        (Ctrl-C) is deliberately NOT caught — main() already handles it as a
-        clean exit, so letting it propagate keeps Ctrl-C working as an abort.
+        Windows services), ValueError ("I/O operation on closed file" when the
+        stdin object is closed), and OSError (bad/closed underlying fd — EBADF,
+        or BrokenPipeError on a severed pipe). Those four are the complete set
+        input() can raise on degenerate stdin, exactly the None/closed/severed
+        cases the headless/_use_legacy_prompt_ui guards already handle.
+        KeyboardInterrupt (Ctrl-C) is deliberately NOT caught — main() already
+        handles it as a clean exit, so letting it propagate keeps Ctrl-C
+        working as an abort.
         """
         try:
             input(message)
-        except (EOFError, RuntimeError, ValueError):
+        except (EOFError, RuntimeError, ValueError, OSError):
             pass
 
     def pause_continue(self, message: str = "Press Enter to continue..."):
@@ -302,12 +305,13 @@ class KlingAutomationUI:
         raising. Used by legacy sub-menus so a piped/closed stdin cancels the
         action cleanly rather than crashing the menu loop. Covers the full set
         of degenerate-stdin failures input() raises: EOFError (EOF/piped),
-        RuntimeError (sys.stdin is None — 'lost sys.stdin'), and ValueError
-        (sys.stdin closed — 'I/O operation on closed file'), all of which
+        RuntimeError (sys.stdin is None — 'lost sys.stdin'), ValueError
+        (sys.stdin closed — 'I/O operation on closed file'), and OSError
+        (bad/closed underlying fd — EBADF, or BrokenPipeError), all of which
         _use_legacy_prompt_ui can route here in GUI/daemon/service contexts."""
         try:
             return input(prompt)
-        except (EOFError, RuntimeError, ValueError):
+        except (EOFError, RuntimeError, ValueError, OSError):
             return default
 
     def load_config(self) -> Dict[str, Any]:
