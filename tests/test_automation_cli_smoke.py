@@ -62,6 +62,19 @@ def test_pause_continue_eof_safe(monkeypatch):
     ui.pause_continue()
 
 
+def test_pause_review_swallows_keyboard_interrupt(monkeypatch):
+    """Ctrl-C at a dead-end 'press Enter' pause advances past it rather than
+    aborting the app — consistent with the questionary helpers' handling."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+
+    def _raise_kbd(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("builtins.input", _raise_kbd)
+    ui.pause_review()
+
+
 def test_cli_branding_text_updated():
     src = (Path(__file__).resolve().parent.parent / "kling_automation_ui.py").read_text(encoding="utf-8")
     assert "SELFIE GEN ULTIMATE" in src

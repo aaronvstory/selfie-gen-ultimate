@@ -272,8 +272,9 @@ class KlingAutomationUI:
 
         A bare input() at a review pause raises EOFError under a non-TTY stdin
         (cron, piped input, Ctrl-D) which bubbled up to main() as a Fatal error
-        and crashed the whole app mid-menu. EOF-safe like the legacy walkers'
-        _safe_input: swallow EOFError/KeyboardInterrupt and continue.
+        and crashed the whole app mid-menu. Like the legacy _safe_input walker
+        it swallows EOFError; it additionally swallows KeyboardInterrupt so a
+        Ctrl-C at a dead-end "press Enter" prompt just advances past it.
         """
         try:
             input(message)
@@ -2999,7 +3000,7 @@ class KlingAutomationUI:
                 sval = sval[:97] + "..."
             table.add_row(key, sval)
         _RICH_CONSOLE.print(table)
-        input("\nPress Enter to return to the section picker...")
+        self._wait_for_enter("\nPress Enter to return to the section picker...")
 
     # ── Per-section editors ──────────────────────────────────────────
 
