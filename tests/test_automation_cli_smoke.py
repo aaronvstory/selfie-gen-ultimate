@@ -77,6 +77,20 @@ def test_pause_review_propagates_keyboard_interrupt(monkeypatch):
         ui.pause_review()
 
 
+def test_pause_review_stdin_none_safe(monkeypatch):
+    """input() raises RuntimeError('lost sys.stdin') when sys.stdin is None
+    (GUI wrappers, daemons, Windows services). pause_review must not crash —
+    same stdin-None case the headless guards handle (Gemini MEDIUM, PR #95)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+
+    def _raise_runtime(*args, **kwargs):
+        raise RuntimeError("input(): lost sys.stdin")
+
+    monkeypatch.setattr("builtins.input", _raise_runtime)
+    ui.pause_review()
+
+
 def test_cli_branding_text_updated():
     src = (Path(__file__).resolve().parent.parent / "kling_automation_ui.py").read_text(encoding="utf-8")
     assert "SELFIE GEN ULTIMATE" in src

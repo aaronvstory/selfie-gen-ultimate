@@ -273,13 +273,16 @@ class KlingAutomationUI:
         A bare input() at a review pause raises EOFError under a non-TTY stdin
         (cron, piped input, Ctrl-D) which bubbled up to main() as a Fatal error
         and crashed the whole app mid-menu. EOF-safe like the legacy _safe_input
-        walker: swallow EOFError and continue. KeyboardInterrupt (Ctrl-C) is
-        deliberately NOT caught — main() already handles it as a clean exit, so
-        letting it propagate keeps Ctrl-C working as an abort at the pause.
+        walker: swallow EOFError and continue. Also swallow RuntimeError, which
+        input() raises as "lost sys.stdin" when sys.stdin is None (GUI wrappers,
+        background daemons, Windows services) — the same stdin-None case the
+        headless/_use_legacy_prompt_ui guards already handle. KeyboardInterrupt
+        (Ctrl-C) is deliberately NOT caught — main() already handles it as a
+        clean exit, so letting it propagate keeps Ctrl-C working as an abort.
         """
         try:
             input(message)
-        except EOFError:
+        except (EOFError, RuntimeError):
             pass
 
     def pause_continue(self, message: str = "Press Enter to continue..."):
