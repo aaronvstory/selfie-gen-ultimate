@@ -32,6 +32,98 @@ def test_pause_review_always_prompts(monkeypatch):
     assert called["count"] == 1
 
 
+def test_pause_review_eof_safe(monkeypatch):
+    """A closed/piped stdin (EOFError) at a review pause must NOT crash the app.
+
+    The legacy walkers are documented as EOF-safe, but pause_review/pause_continue
+    used a bare input() that let EOFError bubble up to main() as a Fatal error
+    (reproduced on macOS: option 4 -> save automation settings under non-TTY stdin).
+    """
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+
+    def _raise_eof(*args, **kwargs):
+        raise EOFError()
+
+    monkeypatch.setattr("builtins.input", _raise_eof)
+    # Must return cleanly (treat EOF as "Enter pressed"), not propagate.
+    ui.pause_review()
+
+
+def test_pause_continue_eof_safe(monkeypatch):
+    """pause_continue with legacy pauses on must also swallow EOF."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = True
+
+    def _raise_eof(*args, **kwargs):
+        raise EOFError()
+
+    monkeypatch.setattr("builtins.input", _raise_eof)
+    ui.pause_continue()
+
+
+def test_pause_review_propagates_keyboard_interrupt(monkeypatch):
+    """Ctrl-C at a pause must abort: KeyboardInterrupt propagates to main()
+    (which exits cleanly), it is NOT swallowed like EOF. Only catching EOFError
+    keeps Ctrl-C working as an abort (Gemini HIGH / Codex P2, PR #95)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+
+    def _raise_kbd(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr("builtins.input", _raise_kbd)
+    with pytest.raises(KeyboardInterrupt):
+        ui.pause_review()
+
+
+def test_pause_review_stdin_none_safe(monkeypatch):
+    """input() raises RuntimeError('lost sys.stdin') when sys.stdin is None
+    (GUI wrappers, daemons, Windows services). pause_review must not crash —
+    same stdin-None case the headless guards handle (Gemini MEDIUM, PR #95)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+
+    def _raise_runtime(*args, **kwargs):
+        raise RuntimeError("input(): lost sys.stdin")
+
+    monkeypatch.setattr("builtins.input", _raise_runtime)
+    ui.pause_review()
+
+
+def test_pause_review_closed_stdin_safe(monkeypatch):
+    """A closed sys.stdin makes input() raise ValueError('I/O operation on
+    closed file'); pause_review must not crash (Gemini MEDIUM, PR #95)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+
+    def _raise_value(*args, **kwargs):
+        raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr("builtins.input", _raise_value)
+    ui.pause_review()
+
+
+def test_pause_review_bad_fd_safe(monkeypatch):
+    """A bad/closed underlying stdin fd makes input() raise OSError (EBADF) or
+    BrokenPipeError on a severed pipe; pause_review must not crash (Gemini
+    MEDIUM / Codex P2, PR #95)."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr("builtins.input", _raise_oserror)
+    ui.pause_review()
+
+    def _raise_brokenpipe(*args, **kwargs):
+        raise BrokenPipeError()
+
+    monkeypatch.setattr("builtins.input", _raise_brokenpipe)
+    ui.pause_review()
+
+
 def test_cli_branding_text_updated():
     src = (Path(__file__).resolve().parent.parent / "kling_automation_ui.py").read_text(encoding="utf-8")
     assert "SELFIE GEN ULTIMATE" in src

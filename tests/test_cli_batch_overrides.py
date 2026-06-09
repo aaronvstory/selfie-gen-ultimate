@@ -387,6 +387,40 @@ def test_safe_input_returns_default_on_eof(monkeypatch):
     assert KlingAutomationUI._safe_input("x") == ""
 
 
+def test_safe_input_returns_default_on_stdin_none(monkeypatch):
+    """input() raises RuntimeError('lost sys.stdin') when sys.stdin is None
+    (GUI/daemon/service); _safe_input must return the default, not crash —
+    the same stdin-None case _use_legacy_prompt_ui routes here (PR #95)."""
+    def _raise(*_a, **_k):
+        raise RuntimeError("input(): lost sys.stdin")
+
+    monkeypatch.setattr("builtins.input", _raise)
+    assert KlingAutomationUI._safe_input("x", default="fallback") == "fallback"
+    assert KlingAutomationUI._safe_input("x") == ""
+
+
+def test_safe_input_returns_default_on_closed_stdin(monkeypatch):
+    """input() raises ValueError('I/O operation on closed file') when sys.stdin
+    is closed; _safe_input must return the default, not crash (PR #95)."""
+    def _raise(*_a, **_k):
+        raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr("builtins.input", _raise)
+    assert KlingAutomationUI._safe_input("x", default="fallback") == "fallback"
+    assert KlingAutomationUI._safe_input("x") == ""
+
+
+def test_safe_input_returns_default_on_bad_fd(monkeypatch):
+    """A bad/closed underlying stdin fd makes input() raise OSError (EBADF);
+    _safe_input must return the default, not crash (PR #95)."""
+    def _raise(*_a, **_k):
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr("builtins.input", _raise)
+    assert KlingAutomationUI._safe_input("x", default="fallback") == "fallback"
+    assert KlingAutomationUI._safe_input("x") == ""
+
+
 def test_automation_menu_choice_eof_returns_back(monkeypatch):
     """A closed/piped stdin (EOFError on input) must return '0' (Back), not
     crash the menu loop."""

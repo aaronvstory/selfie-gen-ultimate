@@ -266,23 +266,52 @@ class KlingAutomationUI:
         self._startup_key_onboarding_done = False
         self.setup_logging()
 
+    @staticmethod
+    def _wait_for_enter(message: str) -> None:
+        """input() pause that treats a closed/piped stdin as 'Enter pressed'.
+
+        A bare input() at a review pause raises EOFError under a non-TTY stdin
+        (cron, piped input, Ctrl-D) which bubbled up to main() as a Fatal error
+        and crashed the whole app mid-menu. Swallows the full set of
+        degenerate-stdin failures input() can raise so the pause never crashes:
+        EOFError (stdin at EOF — piped/exhausted/Ctrl-D), RuntimeError
+        ("lost sys.stdin" when sys.stdin is None — GUI wrappers, daemons,
+        Windows services), ValueError ("I/O operation on closed file" when the
+        stdin object is closed), and OSError (bad/closed underlying fd — EBADF,
+        or BrokenPipeError on a severed pipe). Those four are the complete set
+        input() can raise on degenerate stdin, exactly the None/closed/severed
+        cases the headless/_use_legacy_prompt_ui guards already handle.
+        KeyboardInterrupt (Ctrl-C) is deliberately NOT caught — main() already
+        handles it as a clean exit, so letting it propagate keeps Ctrl-C
+        working as an abort.
+        """
+        try:
+            input(message)
+        except (EOFError, RuntimeError, ValueError, OSError):
+            pass
+
     def pause_continue(self, message: str = "Press Enter to continue..."):
         """Pause only when legacy pause mode is enabled."""
         if self.legacy_pauses:
-            input(message)
+            self._wait_for_enter(message)
 
     def pause_review(self, message: str = "Press Enter to continue..."):
         """Pause for explicit review screens or actionable error surfaces."""
-        input(message)
+        self._wait_for_enter(message)
 
     @staticmethod
     def _safe_input(prompt: str = "", default: str = "") -> str:
         """input() that returns ``default`` on EOF/closed stdin instead of
         raising. Used by legacy sub-menus so a piped/closed stdin cancels the
-        action cleanly rather than crashing the menu loop."""
+        action cleanly rather than crashing the menu loop. Covers the full set
+        of degenerate-stdin failures input() raises: EOFError (EOF/piped),
+        RuntimeError (sys.stdin is None — 'lost sys.stdin'), ValueError
+        (sys.stdin closed — 'I/O operation on closed file'), and OSError
+        (bad/closed underlying fd — EBADF, or BrokenPipeError), all of which
+        _use_legacy_prompt_ui can route here in GUI/daemon/service contexts."""
         try:
             return input(prompt)
-        except EOFError:
+        except (EOFError, RuntimeError, ValueError, OSError):
             return default
 
     def load_config(self) -> Dict[str, Any]:
@@ -2985,7 +3014,7 @@ class KlingAutomationUI:
                 sval = sval[:97] + "..."
             table.add_row(key, sval)
         _RICH_CONSOLE.print(table)
-        input("\nPress Enter to return to the section picker...")
+        self._wait_for_enter("\nPress Enter to return to the section picker...")
 
     # ── Per-section editors ──────────────────────────────────────────
 
