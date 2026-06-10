@@ -909,43 +909,36 @@ class KlingAutomationUI:
         price = self._cached_price
         price_str = f"${price:.2f}/sec" if price else "Check fal.ai"
 
-        # Beautiful header with horizontal-only borders
-        print("\033[38;5;27m" + "═" * 79 + "\033[0m")
-        print()
+        # Rich header (2026-06-11 restyle — the old raw-ANSI banner printed
+        # stacked ═ rules that read as clutter). Title + release version
+        # (single source of truth: app_version.RELEASE_VERSION, same constant
+        # the GUI chip and the release-zip name read) in one bordered panel
+        # with the model/duration/price status line inside. Rich degrades
+        # cleanly on non-TTY (styles stripped, borders kept as text).
+        from rich.align import Align
+        from rich.console import Group as _RichGroup
+        from rich.text import Text as _RichText
 
-        # ASCII art title + release version (single source of truth:
-        # app_version.RELEASE_VERSION, same constant the GUI chip and the
-        # release-zip name read, so the CLI banner auto-tracks every build).
-        title_art = f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"
-        padding = (79 - len(title_art)) // 2
-        print(f"\033[1;97m{' ' * padding}{title_art}\033[0m")
-        subtitle = "Front DL -> Selfie -> Similarity -> Video -> Oldcam"
-        subtitle_padding = (79 - len(subtitle)) // 2
-        print(f"\033[90m{' ' * subtitle_padding}{subtitle}\033[0m")
-
-        print()
-        print("\033[38;5;27m" + "─" * 79 + "\033[0m")
-
-        # Model info row
-        print(f"  Model: \033[95m{model_name}\033[0m")
-
-        # Config row
-        print(f"  Duration: \033[92m{duration}s\033[0m   ·   Price: \033[93m{price_str}\033[0m")
-
-        # Balance link row
-        print("  Workflow: \033[96mAutomation first, manual Kling tools available\033[0m")
-
-        print()
-        print("\033[38;5;27m" + "═" * 79 + "\033[0m")
-        print()
+        title = _RichText(f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}", style="bold white")
+        subtitle = _RichText("Front DL -> Selfie -> Similarity -> Video -> Oldcam", style="dim")
+        status = _RichText.from_markup(
+            f"[magenta]{model_name}[/magenta]  ·  [green]{duration}s[/green]  ·  "
+            f"[yellow]{price_str}[/yellow]  ·  [cyan]Automation first[/cyan]"
+        )
+        _RICH_CONSOLE.print(
+            Panel(
+                _RichGroup(Align.center(title), Align.center(subtitle), Align.center(status)),
+                border_style="blue",
+                padding=(0, 2),
+            )
+        )
 
     def display_configuration_menu(self):
-        """Display top-level Selfie Gen Ultimate menu."""
-        self.print_magenta("═" * 79)
-        _menu_title = f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"
-        self.print_magenta(f"{' ' * ((79 - len(_menu_title)) // 2)}{_menu_title}")
-        self.print_magenta("═" * 79)
-        print()
+        """Display top-level Selfie Gen Ultimate menu.
+
+        No title banner here — display_header() already renders the branded
+        panel right above this (the duplicated double-banner was part of the
+        "initial menu looks like garbage" feedback, 2026-06-11)."""
         root_value = self.automation_root_folder or "(not set)"
         print(f"  Automation root: \033[97m{root_value}\033[0m")
         for line in self._automation_status_lines():
@@ -1983,7 +1976,7 @@ class KlingAutomationUI:
             nav_str = f" ({', '.join(nav_hint)})" if nav_hint else ""
 
             try:
-                sel = input(
+                sel = self._safe_input(
                     f"\033[92mEnter number to select{nav_str}, or Enter to cancel: \033[0m"
                 ).strip().lower()
             except EOFError:
@@ -2943,7 +2936,7 @@ class KlingAutomationUI:
                     questionary.Choice(f"📼 Oldcam          {summary['oldcam']}", "oldcam"),
                     questionary.Choice(f"🪵 Logging         {summary['logging']}", "logging"),
                     questionary.Separator("─" * 50),
-                    questionary.Choice("👁  View all settings (read-only table)", "_view"),
+                    questionary.Choice("👁  View / edit ALL settings (full table)", "_view"),
                     questionary.Choice("💾 Save and return", "_done"),
                 ],
                 # Default to the first real section ("paths") rather than
@@ -3033,8 +3026,9 @@ class KlingAutomationUI:
         }
 
     def _print_all_automation_settings(self):
-        """Render every automation_* setting in one Rich Table — gives the
-        user the "see all options at a glance" view they asked for."""
+        """Render every automation_* setting in one Rich Table, then (on the
+        questionary path) let the user pick ANY key and edit it in place —
+        the "read-only table" dead-end is gone (user mandate 2026-06-11)."""
         table = Table(title="All automation settings", show_lines=False)
         table.add_column("Setting", style="cyan", no_wrap=True)
         table.add_column("Value", style="white")
@@ -3051,7 +3045,86 @@ class KlingAutomationUI:
                 sval = sval[:97] + "..."
             table.add_row(key, sval)
         _RICH_CONSOLE.print(table)
-        input("\nPress Enter to return to the section picker...")
+        if self._use_legacy_prompt_ui():
+            self._safe_input("\nPress Enter to return to the section picker...")
+            return
+        self._browse_all_settings()
+
+    # Known-choice option lists for the generic editor, derived from the
+    # shared option constants (single source — they can't drift from the
+    # section editors).
+    _SETTING_OPTIONS: Dict[str, List[str]] = {
+        "automation_front_expand_provider": _EXPAND_PROVIDER_OPTIONS,
+        "automation_selfie_expand_provider": _EXPAND_PROVIDER_OPTIONS,
+        "automation_front_expand_mode": _EXPAND_MODE_OPTIONS,
+        "automation_selfie_expand_mode": _SELFIE_EXPAND_MODE_OPTIONS,
+        "automation_front_expand_composite_mode": _COMPOSITE_MODE_OPTIONS,
+        "automation_selfie_expand_composite_mode": _COMPOSITE_MODE_OPTIONS,
+        "automation_reprocess_mode": _REPROCESS_MODE_OPTIONS,
+        "automation_selfie_model_policy": ["first_pass", "all"],
+        "automation_max_cases_per_run": ["1", "5", "10", "all"],
+        "automation_rppg_mode": ["iterative", "inject"],
+    }
+
+    def _browse_all_settings(self) -> None:
+        """Pick any automation_* key (arrow keys / type-to-filter) and edit
+        it with a type-appropriate prompt. Loops until Back."""
+        while True:
+            keys = sorted(k for k in self.config if str(k).startswith("automation_"))
+            choices: List[Any] = []
+            for key in keys:
+                sval = str(self.config.get(key))
+                if len(sval) > 48:
+                    sval = sval[:45] + "..."
+                choices.append(questionary.Choice(f"{key} = {sval}", key))
+            choices.append(questionary.Choice("↩  Back to section picker", "_back"))
+            pick = self._q_select(
+                "Edit which setting?",
+                choices,
+                instruction="(type to filter · Enter to edit · Esc back)",
+            )
+            if pick in (None, "_back"):
+                return
+            try:
+                self._qs_edit_any_setting(pick)
+            except _QuestionarySectionAbort:
+                continue
+            self.save_config()
+
+    def _qs_edit_any_setting(self, key: str) -> None:
+        """Generic typed editor for one automation_* key. Type is inferred
+        from AUTOMATION_DEFAULTS (fallback: the current value); known-choice
+        strings get a select; the oldcam selection gets the checkbox."""
+        if key == "automation_oldcam_version":
+            self._qs_pick_oldcam_versions()
+            return
+        if key == "automation_selfie_models":
+            self._qs_pick_selfie_models()
+            return
+        if key == "automation_selfie_prompts":
+            self._qs_section_selfie_prompt_only()
+            return
+        defaults = merge_automation_defaults({})
+        reference = defaults.get(key, self.config.get(key))
+        if key in self._SETTING_OPTIONS:
+            self._qs_choice(f"{key}:", key, choices=list(self._SETTING_OPTIONS[key]),
+                            default=str(self.config.get(key, reference)))
+        elif isinstance(reference, bool):
+            self._qs_bool(f"{key}?", key, default=bool(reference))
+        elif isinstance(reference, int) and not isinstance(reference, bool):
+            self._qs_int(f"{key}:", key, default=int(reference) if reference is not None else 0)
+        elif isinstance(reference, float):
+            self._qs_float(f"{key}:", key, default=float(reference) if reference is not None else 0.0)
+        elif isinstance(reference, list):
+            current = self.config.get(key, reference)
+            raw = self._q_text(
+                f"{key} (comma-separated):",
+                default=", ".join(str(x) for x in (current or [])),
+            )
+            if raw is not None:
+                self.config[key] = [part.strip() for part in raw.split(",") if part.strip()]
+        else:
+            self._qs_text(f"{key}:", key, default=str(reference) if reference is not None else "")
 
     # ── Per-section editors ──────────────────────────────────────────
 
