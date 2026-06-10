@@ -54,6 +54,20 @@ def test_existing_output_detection_avoids_sim_substring_false_positive(tmp_path:
     assert found.selfie_candidate.name == "portrait_sim_001.png"
 
 
+def test_existing_output_detection_matches_scored_sim_token(tmp_path: Path):
+    """The REAL generated-selfie naming is ``..._sim{NN}_001.png`` (score
+    embedded). The bare-token-only pattern missed it, so existing selfies
+    were silently regenerated — a paid API call — on every rerun (found
+    live in E2E round 0, 2026-06-11)."""
+    case_dir = tmp_path / "case-scored"
+    (case_dir / "gen-images").mkdir(parents=True)
+    (case_dir / "gen-images" / "extracted_nano-banana-2-edit_sim88_001.png").write_bytes(b"x")
+
+    found = detect_existing_outputs(case_dir)
+    assert found.selfie_candidate is not None
+    assert found.selfie_candidate.name == "extracted_nano-banana-2-edit_sim88_001.png"
+
+
 def test_existing_output_detection_ignores_unrelated_root_mp4(tmp_path: Path):
     case_dir = tmp_path / "case3"
     case_dir.mkdir()

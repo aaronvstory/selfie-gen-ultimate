@@ -142,7 +142,11 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
 
     selfie_candidates: List[Path] = []
     video_candidates: List[Path] = []
-    sim_token_re = re.compile(r"(^|[_\-. ])sim($|[_\-. ])")
+    # Matches the similarity token in generated-selfie names: bare "sim"
+    # AND the real-world scored form "sim88" (E2E round 0, 2026-06-11: the
+    # bare-token-only pattern never matched `..._sim88_001.png`, so existing
+    # selfies were silently REGENERATED — a paid API call — on every rerun).
+    sim_token_re = re.compile(r"(^|[_\-. ])sim\d*($|[_\-. ])")
     for base in (gen_images, top):
         if not base.exists() or not base.is_dir():
             continue
