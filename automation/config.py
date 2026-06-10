@@ -108,7 +108,13 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_facetrack_required": False,
     "automation_facetrack_sample_fps": 8.0,
     "automation_oldcam_enabled": True,
-    "automation_oldcam_version": "v24",
+    # Canonical form is a LIST of versions (multi-select, 2026-06-11):
+    # ["v13", "v24"], ["all"] (symbolic — expanded at runtime), or [] (none).
+    # Legacy single-string values ("v24", "all") are coerced via
+    # automation.oldcam.normalize_oldcam_versions everywhere this is read.
+    # Default v13 per user mandate 2026-06-11 (quick-start "best results"
+    # combo is rPPG + oldcam v13; previous default was v24).
+    "automation_oldcam_version": ["v13"],
     "automation_oldcam_required": True,
     # rPPG injection (Phase E: Kling -> rPPG -> Loop -> Oldcam). Installs a
     # physiologically-correct, sub-perceptual pulse so Persona's passive rPPG
@@ -269,6 +275,15 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     if slot_int < 1 or slot_int > 10:
         slot_int = default_slot
     merged["automation_selfie_prompt_slot"] = slot_int
+    # Coerce legacy single-string oldcam selections ("v24", "all") to the
+    # canonical list form so every downstream consumer (pipeline, manifest
+    # fingerprint, UI) sees one shape. Import here keeps module import light
+    # and is cycle-safe (oldcam.py imports nothing from config).
+    from automation.oldcam import normalize_oldcam_versions
+
+    merged["automation_oldcam_version"] = normalize_oldcam_versions(
+        merged.get("automation_oldcam_version", AUTOMATION_DEFAULTS["automation_oldcam_version"])
+    )
     merged["outpaint_fal_timeout_seconds"] = get_outpaint_fal_timeout_seconds(merged)
     return merged
 

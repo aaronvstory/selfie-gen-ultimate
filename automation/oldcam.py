@@ -6,7 +6,7 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 
 def _format_cmd_for_log(cmd: List[str]) -> str:
@@ -35,6 +35,41 @@ def _version_key(version: str) -> Tuple[int, str]:
     match = re.search(r"(\d+)$", version)
     number = int(match.group(1)) if match else -1
     return number, version
+
+
+def normalize_oldcam_versions(value: Union[None, str, Sequence[str]]) -> List[str]:
+    """Coerce any historical/user-facing oldcam-version value to the canonical
+    list form.
+
+    Canonical: a deduped list of lowercase version names sorted by
+    :func:`_version_key` (e.g. ``["v13", "v24"]``). Two special forms:
+
+    - ``["all"]`` — run every discovered version. Kept symbolic (NOT
+      pre-expanded) so manifest fingerprints stay stable when a new
+      ``oldcam-vN/`` directory appears on disk.
+    - ``[]`` — no versions selected; oldcam produces nothing.
+
+    Accepts legacy strings (``"v13"``, ``"all"``, ``"none"``, ``""``),
+    comma-separated strings (``"v13,v24"``), and any sequence of strings.
+    Deterministic output ordering is what makes fingerprint comparison and
+    UI display stable, so every consumer must route through here.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",")]
+    else:
+        parts = [str(part).strip() for part in value]
+    cleaned: List[str] = []
+    for part in parts:
+        token = part.lower()
+        if not token or token == "none":
+            continue
+        if token == "all":
+            return ["all"]
+        if token not in cleaned:
+            cleaned.append(token)
+    return sorted(cleaned, key=_version_key)
 
 
 def discover_oldcam_versions(repo_root: Path) -> List[str]:
@@ -137,7 +172,7 @@ def run_oldcam_version(
 def run_oldcam_all(
     *,
     video_path: Path,
-    version_setting: str,
+    version_setting: Union[str, Sequence[str]],
     repo_root: Path,
     progress_cb: ProgressCB = None,
 ) -> List[Tuple[str, Path]]:
@@ -149,19 +184,28 @@ def run_oldcam_all(
     each — there is no privileged "primary"). ``run_oldcam`` below is the
     back-compat single-path wrapper (highest version) for callers that
     only want one. Single source of truth for version selection.
+
+    ``version_setting`` accepts the canonical list form (``["v13", "v24"]``,
+    ``["all"]``, ``[]``) plus every legacy string form via
+    :func:`normalize_oldcam_versions`.
     """
     available = discover_oldcam_versions(repo_root)
     if not available:
         _report(progress_cb, "No oldcam versions discovered.", "warning")
         return []
 
-    selected = version_setting.lower()
-    if selected == "all":
+    selected = normalize_oldcam_versions(version_setting)
+    if not selected:
+        _report(progress_cb, "No oldcam versions selected; skipping oldcam.", "info")
+        return []
+    if selected == ["all"]:
         targets = available
     else:
-        targets = [selected] if selected in available else []
+        targets = [version for version in selected if version in available]
+        for missing in (version for version in selected if version not in available):
+            _report(progress_cb, f"Requested oldcam version '{missing}' unavailable.", "warning")
     if not targets:
-        _report(progress_cb, f"Requested oldcam version '{version_setting}' unavailable.", "warning")
+        _report(progress_cb, f"No requested oldcam versions available (requested: {', '.join(selected)}).", "warning")
         return []
 
     outputs: List[Tuple[str, Path]] = []
@@ -175,7 +219,7 @@ def run_oldcam_all(
 def run_oldcam(
     *,
     video_path: Path,
-    version_setting: str,
+    version_setting: Union[str, Sequence[str]],
     repo_root: Path,
     progress_cb: ProgressCB = None,
 ) -> Optional[Path]:

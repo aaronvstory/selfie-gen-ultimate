@@ -297,6 +297,8 @@ def test_automation_defaults_use_percent_and_nano_model():
     assert merged["automation_selfie_expand_composite_mode"] == "none"
     assert merged["automation_selfie_expand_percent"] == 30
     assert merged["automation_selfie_models"] == ["fal-ai/nano-banana-2/edit"]
-    assert merged["automation_oldcam_version"] == "v24"
+    # Multi-select canonical list form; CLI default v13 per user mandate
+    # 2026-06-11 (GUI default stays v24 — intentionally divergent).
+    assert merged["automation_oldcam_version"] == ["v13"]
     assert merged["automation_oldcam_required"] is True
     assert "parked car" in merged["automation_selfie_prompts"]["1"].lower()

@@ -54,7 +54,20 @@ def _new_case_state(case_dir: str, front_path: str) -> Dict[str, Any]:
 
 def _build_config_fingerprint(config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
     automation_keys = sorted(key for key in config_snapshot if key.startswith("automation_"))
-    return {key: config_snapshot.get(key) for key in automation_keys}
+    fingerprint = {key: config_snapshot.get(key) for key in automation_keys}
+    # automation_oldcam_version changed representation (legacy single string
+    # "v24"/"all" -> canonical list ["v24"]). Normalize on BOTH sides of the
+    # fingerprint comparison (loaded manifest AND requested config flow
+    # through here) so the representation change alone never invalidates an
+    # old manifest — only a REAL selection change does. Cycle-safe import
+    # (oldcam.py has no automation-internal imports).
+    if "automation_oldcam_version" in fingerprint:
+        from automation.oldcam import normalize_oldcam_versions
+
+        fingerprint["automation_oldcam_version"] = normalize_oldcam_versions(
+            fingerprint["automation_oldcam_version"]
+        )
+    return fingerprint
 
 
 def _new_manifest_payload(root_dir: Path, config_snapshot: Dict[str, Any]) -> Dict[str, Any]:

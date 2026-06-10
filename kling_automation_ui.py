@@ -109,7 +109,16 @@ from automation.discovery import discover_case_folders, detect_existing_outputs
 from automation.logger import resolve_automation_log_path
 from automation.manifest import AutomationManifest
 from automation.pipeline import AutoPipelineRunner
-from automation.oldcam import discover_oldcam_versions, ensure_oldcam_dependencies
+from automation.oldcam import (
+    _version_key as _oldcam_sort_key,
+    discover_oldcam_versions,
+    ensure_oldcam_dependencies,
+    normalize_oldcam_versions,
+)
+
+# Distinguishes "no argument supplied" from an explicit None/empty value in
+# helpers whose argument legitimately accepts falsy values.
+_SENTINEL_UNSET = object()
 from selfie_generator import SelfieGenerator
 from tk_dialogs import select_directory, select_directory_cli_safe, select_open_file
 from app_version import RELEASE_VERSION
@@ -2167,6 +2176,29 @@ class KlingAutomationUI:
             return "unavailable(deps)"
         return f"ready({','.join(versions)})"
 
+    def _selected_oldcam_versions(self) -> List[str]:
+        """Canonical (normalized list) oldcam selection from config."""
+        return normalize_oldcam_versions(self.config.get("automation_oldcam_version", []))
+
+    def _format_oldcam_versions(self, value: Any = _SENTINEL_UNSET) -> str:
+        """Human display for an oldcam selection: the EXACT versions that
+        will run — ``["all"]`` is expanded to the discovered list so the
+        user sees every version before paying for it (2026-06-11 incident:
+        a run fanned out to all 10 versions because "all" was invisible).
+        """
+        if value is _SENTINEL_UNSET:
+            selected = self._selected_oldcam_versions()
+        else:
+            selected = normalize_oldcam_versions(value)
+        if not selected:
+            return "none selected"
+        if selected == ["all"]:
+            discovered = discover_oldcam_versions(Path(__file__).resolve().parent)
+            if discovered:
+                return f"all ({', '.join(discovered)})"
+            return "all (none discovered!)"
+        return ", ".join(selected)
+
     def _automation_status_lines(self) -> List[str]:
         model_labels = self._selfie_model_label_map()
         selfie_models = [model_labels.get(x, x) for x in list(self.config.get("automation_selfie_models", []))]
@@ -2205,7 +2237,7 @@ class KlingAutomationUI:
             f"facetrack_gate={'on' if self.config.get('automation_facetrack_enabled', True) else 'off'} "
             f"min={self.config.get('automation_facetrack_min_pct', 96.0)}% "
             f"mode={'required(fail+skip oldcam)' if self.config.get('automation_facetrack_required', False) else 'advisory(manual_review)'}",
-            f"oldcam version={self.config.get('automation_oldcam_version', 'v24')} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
+            f"oldcam versions={self._format_oldcam_versions()} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
             f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
             f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
         ]
@@ -2807,7 +2839,21 @@ class KlingAutomationUI:
         _ask_bool("Face-track required (sub-threshold => fail+skip oldcam)", "automation_facetrack_required")
         _ask("Face-track sample fps", "automation_facetrack_sample_fps", float, lambda v: 1.0 <= v <= 30.0)
         _ask_bool("Oldcam enabled", "automation_oldcam_enabled")
-        _ask_choice("Oldcam version", "automation_oldcam_version", _OLDCAM_VERSION_OPTIONS)
+        # Multi-select-aware free-text prompt: accepts a single version
+        # ("v13"), a comma list ("v13,v24"), "all", or "none". Empty input
+        # keeps current — existing positional test sequences stay valid.
+        current_oldcam = self._format_oldcam_versions()
+        raw_oldcam = self._safe_input(
+            f"Oldcam versions (e.g. v13 or v13,v24 or all or none) (current: {current_oldcam}) [Enter keep]: "
+        ).strip()
+        if raw_oldcam:
+            requested = normalize_oldcam_versions(raw_oldcam)
+            valid = set(_OLDCAM_VERSION_OPTIONS) | set(discover_oldcam_versions(Path(__file__).resolve().parent))
+            unknown = [v for v in requested if v != "all" and v not in valid]
+            if unknown:
+                self.print_red(f"Unknown oldcam version(s): {', '.join(unknown)}. Keeping previous value.")
+            else:
+                self.config["automation_oldcam_version"] = requested
         _ask_bool("Oldcam required", "automation_oldcam_required")
         _ask_bool("rPPG injection enabled (runs LAST; sub-perceptual pulse; untested direction, off by default)", "automation_rppg_enabled")
         _ask_bool("rPPG required (no output => fail+skip case)", "automation_rppg_required")
@@ -2957,7 +3003,7 @@ class KlingAutomationUI:
             ),
             "oldcam": (
                 f"enabled={'y' if c.get('automation_oldcam_enabled') else 'n'}, "
-                f"version={c.get('automation_oldcam_version', 'v24')}, "
+                f"versions={self._format_oldcam_versions(c.get('automation_oldcam_version'))}, "
                 f"required={'y' if c.get('automation_oldcam_required') else 'n'}"
             ),
             "logging": (
@@ -3146,6 +3192,65 @@ class KlingAutomationUI:
                 return
         else:
             self.config[key] = answer
+
+    def _qs_pick_oldcam_versions(self) -> bool:
+        """Spacebar multi-select of oldcam versions (none / one / many / all).
+
+        Shared by the settings-editor Oldcam section and the option-1 quick
+        editor so the two can never drift. Persists the canonical list form
+        into ``automation_oldcam_version`` and keeps
+        ``automation_oldcam_enabled`` coherent with an empty selection.
+        Returns True when the selection changed.
+        """
+        repo_root = Path(__file__).resolve().parent
+        discovered = discover_oldcam_versions(repo_root)
+        # Union with the shared option list so a version directory that is
+        # temporarily missing on THIS box still shows (flagged) instead of
+        # silently dropping from a saved selection.
+        known = list(dict.fromkeys(discovered + [v for v in _OLDCAM_VERSION_OPTIONS if v != "all"]))
+        known.sort(key=_oldcam_sort_key)
+        current = self._selected_oldcam_versions()
+        run_all = current == ["all"]
+        choices = [
+            questionary.Choice(
+                "ALL versions (every discovered oldcam)",
+                value="all",
+                checked=run_all,
+            )
+        ]
+        for version in known:
+            missing = version not in discovered
+            label = f"{version}  (not installed!)" if missing else version
+            choices.append(
+                questionary.Choice(
+                    label,
+                    value=version,
+                    checked=(not run_all and version in current),
+                )
+            )
+        answer = questionary.checkbox(
+            "Oldcam versions to run (space toggles · none selected = oldcam off):",
+            qmark="◆",
+            choices=choices,
+            style=KLING_QUESTIONARY_STYLE,
+        ).ask()
+        if answer is None:
+            raise _QuestionarySectionAbort()
+        new_value = normalize_oldcam_versions(answer)
+        changed = new_value != current
+        self.config["automation_oldcam_version"] = new_value
+        if not new_value:
+            self.print_yellow("0 oldcam versions selected — the oldcam step will be skipped.")
+            if self.config.get("automation_oldcam_enabled", True):
+                self.config["automation_oldcam_enabled"] = False
+                print("  (automation_oldcam_enabled set to False to match)")
+        elif not self.config.get("automation_oldcam_enabled", True):
+            # Picking versions while the step is disabled almost certainly
+            # means the user wants it back on — keep the flags coherent.
+            self.config["automation_oldcam_enabled"] = True
+            print("  (automation_oldcam_enabled set to True to match selection)")
+        print(f"  Oldcam will run: {self._format_oldcam_versions()}")
+        return changed
 
     def _qs_directory(self, message: str, current_value: Optional[str],
                       picker_title: str) -> Optional[str]:
@@ -3458,16 +3563,10 @@ class KlingAutomationUI:
             "Oldcam",
             "Final stage: apply oldcam (analog-degradation) filter to the generated video.",
         )
-        self._qs_bool("Oldcam enabled?", "automation_oldcam_enabled", default=True)
-        # v24 is the current production default per CLAUDE.md. The option list is
-        # the shared _OLDCAM_VERSION_OPTIONS constant so it can't drift from the
-        # legacy walker (D1).
-        self._qs_choice(
-            "Oldcam version:",
-            "automation_oldcam_version",
-            choices=_OLDCAM_VERSION_OPTIONS,
-            default="v24",
-        )
+        # Multi-select (2026-06-11): spacebar checkbox over discovered
+        # versions; the picker keeps automation_oldcam_enabled coherent
+        # (empty selection => disabled), so no separate enabled? prompt.
+        self._qs_pick_oldcam_versions()
         self._qs_bool("Oldcam required (fail case if oldcam fails)?",
                       "automation_oldcam_required", default=False)
         # rPPG runs AFTER oldcam (the true final stage). Untested forward
@@ -3653,11 +3752,19 @@ class KlingAutomationUI:
         # no-op (the documented bug class at manifest.py:119-128). So these MUST
         # land on self.config before discover_case_folders and create_or_load.
         if oldcam_version_override is not None:
-            ver = str(oldcam_version_override).strip().lower()
-            if not ver:
+            raw_ver = str(oldcam_version_override).strip()
+            if not raw_ver:
                 _err("[batch] --oldcam-version must not be empty.")
                 return 1
-            self.config["automation_oldcam_version"] = ver
+            # Accepts a single version ("v13"), a comma list ("v13,v24"),
+            # "all", or "none" (explicit empty selection => oldcam skipped).
+            normalized_ver = normalize_oldcam_versions(raw_ver)
+            self.config["automation_oldcam_version"] = normalized_ver
+            if not normalized_ver:
+                # --oldcam-version none means "no oldcam this run"; drop the
+                # required flag too or validate_configuration() would reject
+                # the run as contradictory (required=true + empty selection).
+                self.config["automation_oldcam_required"] = False
         if rppg_override is not None:
             self.config["automation_rppg_enabled"] = bool(rppg_override)
         if front_globs_override is not None:
@@ -3840,7 +3947,7 @@ class KlingAutomationUI:
         print(f"  expand provider: front={self.config.get('automation_front_expand_provider', 'fal')} "
               f"selfie={self.config.get('automation_selfie_expand_provider', 'fal')}")
         print(f"  oldcam: enabled={self.config.get('automation_oldcam_enabled', True)} "
-              f"version={self.config.get('automation_oldcam_version', 'v24')}")
+              f"versions={self._format_oldcam_versions()}")
         print(f"  rppg enabled: {self.config.get('automation_rppg_enabled', False)}")
         _eff_globs = self.config.get('automation_front_globs', []) or []
         if _eff_globs:
@@ -4969,9 +5076,11 @@ def main(argv=None):
             "--oldcam-version",
             metavar="VER",
             default=None,
-            help="Headless --batch only: override the oldcam version (e.g. v13, "
-            "v24, or 'all'). Overrides automation_oldcam_version. Changing this "
-            "is part of the run identity, so it forces a fresh manifest.",
+            help="Headless --batch only: override the oldcam version selection "
+            "(a single version like v13, a comma list like v13,v24, 'all', or "
+            "'none' to skip oldcam). Overrides automation_oldcam_version. "
+            "Changing this is part of the run identity, so it forces a fresh "
+            "manifest.",
         )
         parser.add_argument(
             "--rppg",

@@ -19,6 +19,7 @@ from automation.oldcam import (
     _version_key as _oldcam_version_key,
     discover_oldcam_versions,
     ensure_oldcam_dependencies,
+    normalize_oldcam_versions,
     run_oldcam_all,
 )
 from automation.rppg import is_rppg_artifact, run_rppg
@@ -151,6 +152,24 @@ class AutoPipelineRunner:
         raw = self.automation.get(key, default)
         parsed = _parse_bool(raw)
         return parsed if parsed is not None else bool(default)
+
+    def _oldcam_versions(self) -> List[str]:
+        """Canonical (normalized list) oldcam selection from config."""
+        return normalize_oldcam_versions(self.automation.get("automation_oldcam_version", []))
+
+    def _oldcam_active(self) -> bool:
+        """Oldcam runs only when enabled AND at least one version is selected.
+
+        Multi-select (2026-06-11) made the empty selection ``[]`` a first-class
+        "off" state alongside ``automation_oldcam_enabled=False`` — the UI keeps
+        the two coherent but the pipeline must tolerate any combination.
+        """
+        return bool(self.automation.get("automation_oldcam_enabled", True)) and bool(self._oldcam_versions())
+
+    def _oldcam_inactive_reason(self) -> str:
+        if not self.automation.get("automation_oldcam_enabled", True):
+            return "oldcam disabled"
+        return "no oldcam versions selected"
 
     def _report(self, message: str, level: str = "info") -> None:
         if self.progress_cb:
@@ -339,16 +358,25 @@ class AutoPipelineRunner:
             repo_root = Path(__file__).resolve().parent.parent
             versions = discover_oldcam_versions(repo_root)
             deps_ok, deps_error = ensure_oldcam_dependencies()
-            configured_version = str(self.automation.get("automation_oldcam_version", "all")).lower()
+            configured_versions = normalize_oldcam_versions(
+                self.automation.get("automation_oldcam_version", ["all"])
+            )
             available_versions = {str(v).lower() for v in versions}
-            if configured_version == "all":
+            if not configured_versions:
+                issues.append(
+                    "automation_oldcam_required=true but no oldcam versions are selected "
+                    "(automation_oldcam_version is empty)."
+                )
+            elif configured_versions == ["all"]:
                 if not available_versions:
                     issues.append("Oldcam required with version=all but no usable oldcam versions were discovered.")
-            elif configured_version not in available_versions:
-                issues.append(
-                    f"Oldcam required but configured version {configured_version} is unavailable. "
-                    f"Available: {', '.join(sorted(available_versions)) or '(none)'}."
-                )
+            else:
+                missing = [v for v in configured_versions if v not in available_versions]
+                if missing:
+                    issues.append(
+                        f"Oldcam required but configured version(s) {', '.join(missing)} unavailable. "
+                        f"Available: {', '.join(sorted(available_versions)) or '(none)'}."
+                    )
             if not deps_ok:
                 issues.append(f"Oldcam required but dependencies are not ready: {deps_error or 'unknown dependency error'}.")
         return issues
@@ -1073,8 +1101,8 @@ class AutoPipelineRunner:
                     output=str(existing.video_candidate),
                     meta=self._policy_meta("video_generate", True, reprocess_mode),
                 )
-                if not self.automation.get("automation_oldcam_enabled", True):
-                    self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
+                if not self._oldcam_active():
+                    self.manifest.update_step(case_key, "oldcam", "skipped", error=self._oldcam_inactive_reason())
                     # Pre-rPPG this short-circuited to completed (video
                     # reused + oldcam off = nothing left). rPPG can now be
                     # the ONLY enabled post-process on a reused video, so
@@ -1292,7 +1320,7 @@ class AutoPipelineRunner:
                     )
 
         # Step 7: optional oldcam pass
-        if self.automation.get("automation_oldcam_enabled", True):
+        if self._oldcam_active():
             # Source video for Oldcam: prefer the rPPG-first injected
             # base (Phase E above), else the raw video_generate output,
             # else any existing candidate from disk.
@@ -1323,7 +1351,7 @@ class AutoPipelineRunner:
                 # queue). Plain -oldcam-vN files are kept (non-destructive).
                 oldcam_all = run_oldcam_all(
                     video_path=selected_video_path,
-                    version_setting=str(self.automation.get("automation_oldcam_version", "v12")),
+                    version_setting=self.automation.get("automation_oldcam_version", []),
                     repo_root=Path(__file__).resolve().parent.parent,
                     progress_cb=self.progress_cb,
                 )
@@ -1371,7 +1399,7 @@ class AutoPipelineRunner:
                 if required:
                     return self._finalize_case(case_entry, "failed")
         else:
-            self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
+            self.manifest.update_step(case_key, "oldcam", "skipped", error=self._oldcam_inactive_reason())
 
         # Step 8: optional per-Oldcam rPPG fan-out + final
         # bookkeeping. The PRIMARY rPPG injection already ran in

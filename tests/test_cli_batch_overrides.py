@@ -187,7 +187,7 @@ def test_headless_overrides_land_in_runner_config(tmp_path, monkeypatch):
     cfg = captured["config"]
     assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
     assert cfg["model_display_name"] == "Kling 2.5 Turbo Standard"
-    assert cfg["automation_oldcam_version"] == "v13"
+    assert cfg["automation_oldcam_version"] == ["v13"]
     assert cfg["automation_rppg_enabled"] is True
     assert cfg["automation_front_expand_provider"] == "fal"
     assert cfg["automation_selfie_expand_provider"] == "fal"
@@ -218,7 +218,7 @@ def test_headless_fingerprinted_overrides_applied_before_manifest(tmp_path, monk
     # create_or_load are baked into this snapshot; applied after, they would be
     # absent here and silently no-op on a stale manifest.
     snap = manifest.get("config_snapshot", {})
-    assert snap.get("automation_oldcam_version") == "v13"
+    assert snap.get("automation_oldcam_version") == ["v13"]
     assert snap.get("automation_rppg_enabled") is True
     assert snap.get("automation_front_expand_provider") == "fal"
 
@@ -247,9 +247,84 @@ def test_headless_identity_override_recreates_stale_manifest(tmp_path, monkeypat
         reprocess_override="overwrite",
     )
     assert rc == 0  # recreated + ran, NOT exit 1
-    assert captured["config"]["automation_oldcam_version"] == "v13"
+    assert captured["config"]["automation_oldcam_version"] == ["v13"]
     # Old manifest backed up aside.
     assert list(tmp_path.glob("automation_manifest.json.superseded.*"))
+
+
+def test_headless_oldcam_comma_list_override(tmp_path, monkeypatch):
+    """--oldcam-version accepts a comma list; it lands as the canonical
+    normalized list (deduped, version-sorted)."""
+    _seed_two_cases(tmp_path)
+    app, captured = _build_app(tmp_path, monkeypatch)
+    rc = app.run_automation_headless(
+        str(tmp_path),
+        oldcam_version_override="v24,v13",
+        max_cases_override="all",
+        reprocess_override="overwrite",
+    )
+    assert rc == 0
+    assert captured["config"]["automation_oldcam_version"] == ["v13", "v24"]
+
+
+def test_headless_oldcam_none_override_skips_oldcam(tmp_path, monkeypatch):
+    """--oldcam-version none = explicit empty selection: oldcam step off for
+    this run, and the required flag is dropped so validation doesn't reject
+    the run as contradictory."""
+    _seed_two_cases(tmp_path)
+    app, captured = _build_app(tmp_path, monkeypatch)
+    app.config["automation_oldcam_required"] = True
+    rc = app.run_automation_headless(
+        str(tmp_path),
+        oldcam_version_override="none",
+        max_cases_override="all",
+        reprocess_override="overwrite",
+    )
+    assert rc == 0
+    assert captured["config"]["automation_oldcam_version"] == []
+    assert captured["config"]["automation_oldcam_required"] is False
+
+
+def test_legacy_string_manifest_fingerprint_does_not_churn_on_list_form(tmp_path):
+    """Representation-only change (old manifest "v13" string vs new ["v13"]
+    list) must NOT invalidate the manifest — normalize-on-compare in
+    _build_config_fingerprint keeps it loading cleanly. A REAL selection
+    change still mismatches."""
+    import pytest as _pytest
+
+    from automation.manifest import AutomationManifest
+
+    manifest_path = tmp_path / "automation_manifest.json"
+    legacy_snapshot = {
+        "automation_oldcam_version": "v13",
+        "automation_root_folder": str(tmp_path),
+    }
+    AutomationManifest.create_or_load(
+        manifest_path=manifest_path, root_dir=tmp_path, config_snapshot=legacy_snapshot
+    )
+
+    # Same selection, new list representation: loads cleanly (no churn).
+    loaded = AutomationManifest.create_or_load(
+        manifest_path=manifest_path,
+        root_dir=tmp_path,
+        config_snapshot={
+            "automation_oldcam_version": ["v13"],
+            "automation_root_folder": str(tmp_path),
+        },
+    )
+    assert loaded.data["config_snapshot"]["automation_oldcam_version"] == "v13"
+    assert not list(tmp_path.glob("automation_manifest.json.superseded.*"))
+
+    # A REAL selection change is still a fingerprint mismatch.
+    with _pytest.raises(ValueError, match="fingerprint mismatch"):
+        AutomationManifest.create_or_load(
+            manifest_path=manifest_path,
+            root_dir=tmp_path,
+            config_snapshot={
+                "automation_oldcam_version": ["v13", "v24"],
+                "automation_root_folder": str(tmp_path),
+            },
+        )
 
 
 def test_headless_empty_front_globs_override_recreates_stale_manifest(tmp_path, monkeypatch):
