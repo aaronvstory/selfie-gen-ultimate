@@ -4426,6 +4426,9 @@ class KlingAutomationUI:
             root,
             self.config.get("automation_front_names", []),
             front_globs=self.config.get("automation_front_globs", []),
+            # Surface glob warnings (invalid pattern etc.) in interactive
+            # runs too — they were silently dropped (Gemini, PR #96 r3).
+            warn_cb=self.print_yellow,
         )
         if not records:
             self.print_yellow("No case folders found.")
