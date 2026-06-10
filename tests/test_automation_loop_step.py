@@ -149,7 +149,7 @@ def test_rppg_prepass_reuses_existing_sibling_on_resume(tmp_path, monkeypatch):
 
     monkeypatch.setattr("automation.pipeline.run_rppg", must_not_run)
     oldcam_capture = []
-    runner, record, manifest = _build_runner(
+    runner, record, _manifest = _build_runner(
         tmp_path,
         monkeypatch,
         extra_config={"automation_rppg_enabled": True},

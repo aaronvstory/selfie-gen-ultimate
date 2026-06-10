@@ -114,7 +114,9 @@ class AutomationManifest:
     # dashboard's reader thread (the worker mutates cases while the UI
     # thread renders). RLock: update_step/ensure_case call save_atomic
     # internally. Excluded from repr/compare (not part of manifest value).
-    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
+    _lock: threading.RLock = field(
+        default_factory=threading.RLock, init=False, repr=False, compare=False
+    )
 
     @property
     def lock(self) -> threading.RLock:

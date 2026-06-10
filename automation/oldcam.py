@@ -58,8 +58,14 @@ def normalize_oldcam_versions(value: Union[None, str, Sequence[str]]) -> List[st
         return []
     if isinstance(value, str):
         parts = [part.strip() for part in value.split(",")]
-    else:
+    elif isinstance(value, (list, tuple, set)):
         parts = [str(part).strip() for part in value]
+    else:
+        # Hand-edited config with a scalar (int/bool/...): coerce to its
+        # string form instead of raising TypeError on iteration (Gemini
+        # MED, PR #96 round 4). An unknown token is simply never matched
+        # against the available versions downstream.
+        parts = [str(value).strip()]
     cleaned: List[str] = []
     for part in parts:
         token = part.lower()

@@ -240,6 +240,23 @@ class AutoPipelineRunner:
             use_source_folder=False,
         )
 
+    def _branch_run_rppg(self, video_path: Path) -> Optional[Path]:
+        """One rPPG injection with the canonical knob set (shared by the
+        branch chain; the primary pre-pass keeps its inline call for
+        manifest bookkeeping)."""
+        return run_rppg(
+            video_path=video_path,
+            repo_root=Path(__file__).resolve().parent.parent,
+            progress_cb=self.progress_cb,
+            keep_metrics=self._read_bool("automation_rppg_metrics_in_filename", False),
+            iterative=str(self.automation.get("automation_rppg_mode") or "iterative").strip().lower() == "iterative",
+            iterate_from_baseline=self._read_bool("automation_rppg_iterate_from_baseline", True),
+            skip_diagnosis=self._read_bool("automation_rppg_skip_diagnosis", True),
+            skip_kinematic_gate=self._read_bool("automation_rppg_skip_kinematic_gate", True),
+            landmark_stride=self._read_int("automation_rppg_landmark_stride", 1, min_value=1),
+            verbose=self.verbose_logging,
+        )
+
     @staticmethod
     def _branch_slug(endpoint: str) -> str:
         """Filename-safe model slug for a fan-out branch (single source of
@@ -500,28 +517,34 @@ class AutoPipelineRunner:
         branch_issues: List[str] = []
         current = Path(branch_video)
         if self._read_bool("automation_rppg_enabled", False) and not is_rppg_artifact(current):
-            _abort_checkpoint("rppg")
-            injected = run_rppg(
-                video_path=current,
-                repo_root=Path(__file__).resolve().parent.parent,
-                progress_cb=self.progress_cb,
-                keep_metrics=self._read_bool("automation_rppg_metrics_in_filename", False),
-                iterative=str(self.automation.get("automation_rppg_mode") or "iterative").strip().lower() == "iterative",
-                iterate_from_baseline=self._read_bool("automation_rppg_iterate_from_baseline", True),
-                skip_diagnosis=self._read_bool("automation_rppg_skip_diagnosis", True),
-                skip_kinematic_gate=self._read_bool("automation_rppg_skip_kinematic_gate", True),
-                landmark_stride=self._read_int("automation_rppg_landmark_stride", 1, min_value=1),
-                verbose=self.verbose_logging,
-            )
-            if injected and injected.exists():
-                current = injected
-                result["rppg"] = str(injected)
-            elif self._read_bool("automation_rppg_required", False):
-                branch_issues.append("required rPPG produced no output")
+            # Parity with the primary pre-pass (Gemini HIGH, round 4): a
+            # resumed branch must reuse its clean-named -rppg sibling
+            # instead of re-running the minutes-long GPU injection.
+            existing_branch_rppg = current.with_name(f"{current.stem}-rppg{current.suffix}")
+            if reprocess_mode == "skip" and existing_branch_rppg.exists():
+                current = existing_branch_rppg
+                result["rppg"] = str(existing_branch_rppg)
+                self._report(
+                    f"[{case_key}] branch {endpoint}: reusing existing rPPG base "
+                    f"{existing_branch_rppg.name}",
+                    "info",
+                )
+            else:
+                _abort_checkpoint("rppg")
+                injected = self._branch_run_rppg(current)
+                if injected and injected.exists():
+                    current = injected
+                    result["rppg"] = str(injected)
+                elif self._read_bool("automation_rppg_required", False):
+                    branch_issues.append("required rPPG produced no output")
         if self._read_bool("automation_loop_enabled", False):
             _abort_checkpoint("loop")
             looped = create_looped_video(
-                str(current), suffix="_looped", overwrite=True, log_callback=self.progress_cb,
+                str(current),
+                suffix="_looped",
+                # Same skip-mode reuse as the primary loop step (Gemini MED).
+                overwrite=(reprocess_mode != "skip"),
+                log_callback=self.progress_cb,
             )
             if looped and Path(looped).exists():
                 current = Path(looped)
@@ -1781,6 +1804,21 @@ class AutoPipelineRunner:
                         f"[{case_key}] Reusing existing rPPG base: {existing_rppg.name}",
                         "info",
                     )
+                    # Stamp completion NOW (before loop/oldcam finish) so
+                    # finished_at ordering reflects the real chain position
+                    # (CodeRabbit Major, round 4 — see the injection path
+                    # below for the full reasoning).
+                    if not (
+                        self.manifest.get_step(case_key, "rppg").get("status") == "complete"
+                        and self.manifest.get_step(case_key, "rppg").get("output") == str(existing_rppg)
+                    ):
+                        self.manifest.update_step(
+                            case_key,
+                            "rppg",
+                            "complete",
+                            output=str(existing_rppg),
+                            meta={**self._policy_meta("rppg", True, reprocess_mode), "pre_pass": True},
+                        )
                 else:
                     # Track the pre-pass as the active step: the dashboard
                     # shows "rppg" instead of lying with the prior step, and
@@ -1821,6 +1859,22 @@ class AutoPipelineRunner:
                             "case %s rppg-first: %s -> %s",
                             case_key, video_out_path.name, injected.name,
                         )
+                        # Stamp the rppg completion AT THE PRE-PASS, not in
+                        # Step 8: case_is_complete_and_valid picks the final
+                        # deliverable by finished_at, and Step 8's late
+                        # bookkeeping ran AFTER oldcam — making the manifest
+                        # claim the rPPG base finished last, which masked a
+                        # deleted oldcam output as complete again
+                        # (CodeRabbit Major, round 4). Step 8's "already"
+                        # branch now skips the re-stamp when this record is
+                        # in place.
+                        self.manifest.update_step(
+                            case_key,
+                            "rppg",
+                            "complete",
+                            output=str(injected),
+                            meta={**self._policy_meta("rppg", False, reprocess_mode), "pre_pass": True},
+                        )
 
         # Step 7-pre-b: optional ping-pong loop (Phase E order:
         # Kling -> rPPG -> Loop -> Oldcam, mirroring the GUI queue).
@@ -1849,10 +1903,14 @@ class AutoPipelineRunner:
             else:
                 self._set_active_step(case_entry, "loop")
                 self.manifest.update_step(case_key, "loop", "running")
+                # skip mode reuses an existing _looped sibling (its source —
+                # the rPPG base/raw video — is also reused in skip mode, so
+                # it cannot be stale); overwrite/increment re-encode
+                # (Gemini MED, PR #96 round 4).
                 looped = create_looped_video(
                     str(loop_source),
                     suffix="_looped",
-                    overwrite=True,
+                    overwrite=(reprocess_mode != "skip"),
                     log_callback=self.progress_cb,
                 )
                 if looped and Path(looped).exists():
@@ -2096,13 +2154,23 @@ class AutoPipelineRunner:
                     len(already),
                     already[-1].name,
                 )
-                self.manifest.update_step(
-                    case_key,
-                    "rppg",
-                    "complete",
-                    output=final,
-                    meta={**self._policy_meta("rppg", True, reprocess_mode), "already_injected": True},
-                )
+                _rppg_step = self.manifest.get_step(case_key, "rppg")
+                if _rppg_step.get("status") == "complete" and _rppg_step.get("output") == final:
+                    # The pre-pass already stamped this exact completion.
+                    # Re-stamping here would push rppg's finished_at AFTER
+                    # oldcam's and make case_is_complete_and_valid treat the
+                    # BASE as the final deliverable again (CodeRabbit Major,
+                    # round 4 — the finished_at ordering must reflect real
+                    # chain position).
+                    self.logger.info("case %s rppg pre-pass record kept (no re-stamp)", case_key)
+                else:
+                    self.manifest.update_step(
+                        case_key,
+                        "rppg",
+                        "complete",
+                        output=final,
+                        meta={**self._policy_meta("rppg", True, reprocess_mode), "already_injected": True},
+                    )
                 self._run_extra_branches(
                     case_key=case_key,
                     case_dir=case_dir,

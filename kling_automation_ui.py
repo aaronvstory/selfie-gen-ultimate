@@ -4132,7 +4132,9 @@ class KlingAutomationUI:
             # selected but the stage itself disabled.
             oldcam_display = f"DISABLED (selection: {oldcam_display})"
         model_labels = self._selfie_model_label_map()
-        selfie_models = [model_labels.get(x, x) for x in list(c.get("automation_selfie_models", []))]
+        # `or []`: an explicit null in a hand-edited config would make
+        # list(None) crash the table render (Gemini MED, round 4).
+        selfie_models = [model_labels.get(x, x) for x in list(c.get("automation_selfie_models") or [])]
         selfie_slot, _prompt, selfie_source = self._get_selected_selfie_prompt()
         front_provider = self._resolve_provider(str(c.get("automation_front_expand_provider", "auto")))
         selfie_provider = self._resolve_provider(str(c.get("automation_selfie_expand_provider", "auto")))
