@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import re
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -41,6 +42,14 @@ class PipelineDeps:
     outpaint_factory: Callable[[], OutpaintGenerator]
     selfie_factory: Callable[[], SelfieGenerator]
     video_factory: Callable[[], FalAIKlingGenerator]
+
+
+class AutomationAbort(Exception):
+    """Raised between pipeline steps when the runner's abort_event is set.
+
+    Caught in run(): the in-flight case's status reverts to "pending" so a
+    later Run/Resume picks it up at its first incomplete step (the manifest
+    keeps every completed step's state)."""
 
 
 class AutoPipelineRunner:
@@ -82,6 +91,16 @@ class AutoPipelineRunner:
         self.last_case_results: Dict[str, Dict[str, Any]] = {}
         self.logger, self.log_path = create_automation_logger(self.config, self.config.get("automation_root_folder"))
         self.verbose_logging = bool(self.config.get("automation_verbose_logging", self.config.get("verbose_logging", True)))
+        # Cooperative pause/abort (2026-06-11, CLI live-dashboard keys):
+        #   pause_event — finish the CURRENT case, then stop (between-cases
+        #     check in run()).
+        #   abort_event — stop after the CURRENT step (checked at every
+        #     _set_active_step transition); the in-flight case reverts to
+        #     "pending" so Run/Resume continues it from the first incomplete
+        #     step.
+        self.pause_event = threading.Event()
+        self.abort_event = threading.Event()
+        self.stopped_reason: Optional[str] = None
 
     def _read_int(
         self,
@@ -485,6 +504,10 @@ class AutoPipelineRunner:
         }
 
     def _set_active_step(self, case_entry: Dict[str, Any], step_name: Optional[str]) -> None:
+        # Abort checkpoint: every step transition is a safe stopping point
+        # (no half-written outputs — each step finishes or is re-runnable).
+        if step_name is not None and self.abort_event.is_set():
+            raise AutomationAbort(f"aborted before step {step_name}")
         case_entry["active_step"] = step_name
         self.manifest.save_atomic()
 
@@ -688,6 +711,15 @@ class AutoPipelineRunner:
 
         stats = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
         for case in cases:
+            if self.abort_event.is_set() or self.pause_event.is_set():
+                self.stopped_reason = "aborted" if self.abort_event.is_set() else "paused"
+                self._report(
+                    f"Run {self.stopped_reason} — remaining cases stay pending; "
+                    "use Run/Resume to continue.",
+                    "warning",
+                )
+                self.logger.info("automation run %s before case %s", self.stopped_reason, case.relative_key)
+                break
             self.logger.info("case start: %s", case.relative_key)
             self.manifest.ensure_case(case.relative_key, case.case_dir, case.front_path)
             if self.automation.get("automation_skip_completed", True) and self.manifest.case_is_complete_and_valid(case.relative_key):
@@ -697,6 +729,24 @@ class AutoPipelineRunner:
                 continue
             try:
                 final_status = self._run_case(case)
+            except AutomationAbort:
+                # Revert the in-flight case to "pending": every completed
+                # step's manifest state is kept, so Run/Resume continues it
+                # from the first incomplete step.
+                self.stopped_reason = "aborted"
+                cases_map = self.manifest.data.setdefault("cases", {})
+                case_state = cases_map.setdefault(case.relative_key, {})
+                case_state["status"] = "pending"
+                case_state["active_step"] = None
+                case_state["updated_at"] = now_iso()
+                self.manifest.save_atomic()
+                self._report(
+                    f"[{case.relative_key}] aborted mid-case — progress saved; "
+                    "Run/Resume continues from the next incomplete step.",
+                    "warning",
+                )
+                self.logger.info("case aborted (reverted to pending): %s", case.relative_key)
+                break
             except Exception as exc:
                 self._report(f"[{case.relative_key}] case failed: {exc}", "error")
                 self.logger.exception("case failed with exception: %s", case.relative_key)

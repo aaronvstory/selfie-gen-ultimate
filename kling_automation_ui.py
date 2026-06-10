@@ -4484,31 +4484,132 @@ class KlingAutomationUI:
         self._write_automation_summary(manifest, runner.last_case_results, stats)
         self.pause_review("\nPress Enter to continue...")
 
+    _DASHBOARD_STEP_LABELS = {
+        "front_expand": "1 front expand",
+        "extract_portrait": "2 extract portrait",
+        "selfie_generate": "3 generate selfie",
+        "similarity_gate": "4 similarity gate",
+        "selfie_expand": "5 selfie expand",
+        "video_generate": "6 kling video",
+        "facetrack_gate": "6.5 face-track gate",
+        "rppg": "7 rppg injection",
+        "loop": "7.5 loop",
+        "oldcam": "8 oldcam",
+    }
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _suppress_stream_logging():
+        """Detach console (stdout/stderr) handlers from the ROOT logger for
+        the duration of the Rich Live display, keeping every file handler.
+
+        This is THE fix for the stacked-panel disaster: setup_logging()
+        attaches a StreamHandler to the root logger, so any library log line
+        (e.g. model_schema_manager's "Parsed N parameters from schema")
+        printed raw between Live frames shattered the panel into dozens of
+        partial reprints. File logging (kling_automation.log + the rotating
+        automation log) is untouched. NOTE: FileHandler subclasses
+        StreamHandler, so the keep-check must test FileHandler FIRST.
+        """
+        root = logging.getLogger()
+        removed: List[logging.Handler] = []
+        for handler in list(root.handlers):
+            if isinstance(handler, logging.FileHandler):
+                continue  # file-backed — keep (RotatingFileHandler included)
+            if isinstance(handler, logging.StreamHandler):
+                stream = getattr(handler, "stream", None)
+                if stream in (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__):
+                    root.removeHandler(handler)
+                    removed.append(handler)
+        try:
+            yield
+        finally:
+            for handler in removed:
+                root.addHandler(handler)
+
+    @classmethod
+    def _build_dashboard_panel(
+        cls,
+        *,
+        total: int,
+        counts: Dict[str, int],
+        current_case: str,
+        current_step: str,
+        similarity: str,
+        last_output: str,
+        error_reason: str,
+        events: List[Tuple[str, str, str]],
+        footer: str,
+    ) -> Panel:
+        """Pure renderable builder (unit-testable without threads). ASCII
+        body — conhost wobbles on emoji width inside panels."""
+        done = sum(counts.get(k, 0) for k in ("completed", "failed", "manual_review", "skipped"))
+        pct = int((done / total) * 100) if total else 100
+        bar_width = 30
+        filled = int(bar_width * (done / total)) if total else bar_width
+        bar = "#" * filled + "-" * (bar_width - filled)
+        lines = [
+            f"[bold]Progress[/bold]  [{bar}] {done}/{total} ({pct}%)",
+            f"[bold]Case[/bold]      {current_case}",
+            f"[bold]Step[/bold]      {current_step}",
+            f"[bold]Similarity[/bold] {similarity}",
+            f"[bold]Last out[/bold]  {last_output}",
+            f"[bold]Issue[/bold]     {error_reason}",
+            f"completed={counts.get('completed', 0)} failed={counts.get('failed', 0)} "
+            f"manual_review={counts.get('manual_review', 0)} skipped={counts.get('skipped', 0)} "
+            f"remaining={max(0, total - done)}",
+        ]
+        if events:
+            lines.append("[dim]--- last events ---------------------------------[/dim]")
+            for ts, level, message in events:
+                style = {"error": "red", "warning": "yellow", "success": "green"}.get(level, "dim")
+                lines.append(f"[{style}]{ts} {message}[/{style}]")
+        lines.append(f"[dim]{footer}[/dim]")
+        return Panel("\n".join(lines), title="Automation Live Progress", border_style="cyan")
+
     def _run_with_live_dashboard(
         self,
         runner: AutoPipelineRunner,
         run_cases: List[Any],
         manifest: AutomationManifest,
     ) -> Tuple[Dict[str, int], Optional[str]]:
+        """ONE pinned, in-place-updating dashboard panel.
+
+        2026-06-11 rebuild — the previous implementation stacked dozens of
+        partial panels because (a) the worker thread mutated shared state +
+        manifest.data while the UI thread rendered them unlocked, (b) a
+        second Console + transient=True fought the app console, and (c) the
+        root logger's StreamHandler wrote raw lines through Live. Now: a
+        locked event/state holder, manifest.snapshot_statuses() copies, the
+        SHARED _RICH_CONSOLE with redirect_stdout/stderr, console logging
+        suppressed for the duration (file logs untouched), and pause/abort
+        keys ([p]=finish current case then stop, [a]=stop after current
+        step; both resumable via Run/Resume)."""
+        state_lock = threading.Lock()
         state: Dict[str, Any] = {
             "message": "",
             "level": "info",
             "last_output": "-",
             "error_reason": "-",
-            "similarity": "-",
-            "current_case": "-",
-            "current_step": "-",
+            "events": [],  # list of (time, level, message), newest last
         }
-        run_result: Dict[str, Any] = {"stats": None, "error": None}
 
         def _cb(message: str, level: str = "info"):
-            state["message"] = message
-            state["level"] = level
-            lowered = message.lower()
-            if ".mp4" in lowered or "output:" in lowered:
-                state["last_output"] = message
+            timestamp = time.strftime("%H:%M:%S")
+            with state_lock:
+                state["message"] = message
+                state["level"] = level
+                lowered = message.lower()
+                if ".mp4" in lowered or "output:" in lowered:
+                    state["last_output"] = message
+                if level in {"error", "warning"}:
+                    state["error_reason"] = message
+                events = state["events"]
+                events.append((timestamp, level, message[:110]))
+                del events[:-8]  # keep the last 8
 
         runner.progress_cb = _cb
+        run_result: Dict[str, Any] = {"stats": None, "error": None}
 
         def _worker():
             try:
@@ -4520,68 +4621,110 @@ class KlingAutomationUI:
         worker.start()
 
         total_cases = len(run_cases)
-        steps = {
-            "front_expand": "1 front expand",
-            "extract_portrait": "2 extract portrait",
-            "selfie_generate": "3 generate selfie",
-            "similarity_gate": "4 similarity gate",
-            "selfie_expand": "5 selfie expand",
-            "video_generate": "6 kling video",
-            "facetrack_gate": "6.5 face-track gate",
-            "rppg": "7 rppg injection",
-            "oldcam": "8 loop/oldcam",
-        }
+        case_keys = [case.relative_key for case in run_cases]
+        footer_active = "[p] pause after current case   [a] abort after current step   Ctrl-C aborts"
+        # getattr-defensive: tests drive this with stub runners that may not
+        # carry the pause/abort events (PR #73 lesson — stub objects lack
+        # new fields).
+        pause_event = getattr(runner, "pause_event", None) or threading.Event()
+        abort_event = getattr(runner, "abort_event", None) or threading.Event()
 
-        with Live(console=Console(), refresh_per_second=4, transient=True) as live:
-            while worker.is_alive():
+        def _poll_keys() -> None:
+            """Windows: non-blocking key reads while Live owns the screen."""
+            if os.name != "nt":
+                return
+            try:
+                import msvcrt
+                while msvcrt.kbhit():
+                    key = msvcrt.getwch().lower()
+                    if key == "p" and not pause_event.is_set():
+                        pause_event.set()
+                        _cb("PAUSE requested — finishing the current case, then stopping.", "warning")
+                    elif key == "a" and not abort_event.is_set():
+                        abort_event.set()
+                        _cb("ABORT requested — stopping after the current step.", "warning")
+            except Exception:
+                pass  # key polling is best-effort; never break the run
+
+        def _render() -> Panel:
+            snap_fn = getattr(manifest, "snapshot_statuses", None)
+            if callable(snap_fn):
+                snapshot = snap_fn(case_keys)
+            else:  # stub manifests in tests
                 cases = manifest.data.get("cases", {})
-                completed = 0
-                failed = 0
-                manual_review = 0
-                skipped = 0
-                active_step = "-"
-                active_case = "-"
-                for case_key in [case.relative_key for case in run_cases]:
-                    status = str(cases.get(case_key, {}).get("status", "pending"))
-                    if status == "complete":
-                        completed += 1
-                    elif status == "failed":
-                        failed += 1
-                    elif status == "manual_review":
-                        manual_review += 1
-                    elif status == "skipped":
-                        skipped += 1
-                    if status == "running":
-                        active_case = case_key
-                        step_name = str(cases.get(case_key, {}).get("active_step", "") or "")
-                        active_step = steps.get(step_name, step_name or "-")
-                        sim = cases.get(case_key, {}).get("steps", {}).get("similarity_gate", {}).get("meta", {}).get("score")
-                        if sim is not None:
-                            state["similarity"] = str(sim)
-                done = completed + failed + manual_review + skipped
-                state["current_case"] = active_case
-                state["current_step"] = active_step
-                remaining = max(0, len(run_cases) - done)
-                if state["level"] in {"error", "warning"}:
-                    state["error_reason"] = state["message"]
-                progress_pct = int((done / total_cases) * 100) if total_cases else 100
-                dashboard = "\n".join(
-                    [
-                        f"Progress: {done}/{total_cases} ({progress_pct}%)",
-                        f"Current case: {state['current_case']}",
-                        f"Current step: {state['current_step']}",
-                        f"Similarity: {state['similarity']}",
-                        f"Last output: {state['last_output']}",
-                        f"Errors/manual review reason: {state['error_reason']}",
-                        f"completed={completed} failed={failed} manual_review={manual_review} skipped={skipped} remaining={remaining}",
-                        f"Event: [{state['level']}] {state['message']}",
-                    ]
-                )
-                panel = Panel(dashboard, title="Automation Live Progress")
-                live.update(panel)
-                time.sleep(0.2)
+                snapshot = {
+                    key: {
+                        "status": str((cases.get(key) or {}).get("status", "pending")),
+                        "active_step": (cases.get(key) or {}).get("active_step"),
+                        "similarity": None,
+                    }
+                    for key in case_keys
+                }
+            counts = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
+            current_case = "-"
+            current_step = "-"
+            similarity = "-"
+            for key in case_keys:
+                entry = snapshot[key]
+                status = entry["status"]
+                if status == "complete":
+                    counts["completed"] += 1
+                elif status in counts:
+                    counts[status] += 1
+                if status == "running":
+                    current_case = key
+                    step_name = str(entry.get("active_step") or "")
+                    current_step = self._DASHBOARD_STEP_LABELS.get(step_name, step_name or "-")
+                    if entry.get("similarity") is not None:
+                        similarity = str(entry["similarity"])
+            with state_lock:
+                last_output = state["last_output"]
+                error_reason = state["error_reason"]
+                events = list(state["events"])
+            if abort_event.is_set():
+                footer = "ABORTING after current step..."
+            elif pause_event.is_set():
+                footer = "PAUSING after current case..."
+            else:
+                footer = footer_active
+            return self._build_dashboard_panel(
+                total=total_cases,
+                counts=counts,
+                current_case=current_case,
+                current_step=current_step,
+                similarity=similarity,
+                last_output=last_output,
+                error_reason=error_reason,
+                events=events,
+                footer=footer,
+            )
+
+        try:
+            with self._suppress_stream_logging():
+                with Live(
+                    _render(),
+                    console=_RICH_CONSOLE,
+                    refresh_per_second=4,
+                    transient=False,
+                    redirect_stdout=True,
+                    redirect_stderr=True,
+                ) as live:
+                    while worker.is_alive():
+                        _poll_keys()
+                        live.update(_render())
+                        time.sleep(0.2)
+                    worker.join()
+                    live.update(_render())  # final pinned frame = end state
+        except KeyboardInterrupt:
+            abort_event.set()
+            self.print_yellow("Ctrl-C — aborting after the current step (progress is saved)...")
             worker.join()
 
+        stopped_reason = getattr(runner, "stopped_reason", None)
+        if stopped_reason:
+            self.print_yellow(
+                f"Run {stopped_reason}. Progress is saved — use Run/Resume to continue where it left off."
+            )
         return run_result.get("stats") or {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}, run_result.get("error")
 
     def _write_automation_summary(
