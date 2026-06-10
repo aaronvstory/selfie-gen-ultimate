@@ -2,6 +2,70 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-11 (unreleased) — CLI UX overhaul: settings visibility, multi-select oldcam, multi-model fan-out, live dashboard rebuild
+
+A real batch run executed ALL 10 oldcam versions with NO rPPG because the
+option-1 (End-to-End Pipeline) flow never surfaced those settings before
+approval. This overhaul (`feat/cli-ux-overhaul-v7`) makes the critical
+settings impossible to miss and adds the missing pipeline capabilities.
+
+### Added
+
+- **Pre-run MAIN-settings table + approval loop.** Option 1 opens with a Rich
+  table of the settings that matter: rPPG bold-green ON / bold-red OFF, the
+  EXACT oldcam version list (`all` expanded to the discovered names), loop,
+  video/selfie models + prompt slots, Step-0 expand provider/blend/percent +
+  run-2x passes, crop factor, Step-2.5 provider/blend/percent, similarity,
+  batch scope. Run/Resume shows the same table + manifest-based resume
+  intelligence ("N case(s) resume at step X") behind an
+  [Approve / Quick edit / View FULL prompts / Cancel] questionary loop, and a
+  settings change vs. an existing manifest now offers backup-and-recreate
+  interactively (previously a dead-end error). Headless `--batch` preflight
+  prints the plain-text variant of the same table.
+- **⚡ Quick edit + editable all-settings browser.** 1–2-keystroke edits for
+  rPPG, oldcam, loop, models, prompt slots/text, expand settings, crop factor
+  and similarity; the old "read-only table" now chains into a type-aware
+  editor for ANY `automation_*` key.
+- **Oldcam multi-select.** `automation_oldcam_version` canonically holds a
+  LIST (`["v13","v24"]`, symbolic `["all"]`, `[]` = off) picked via a
+  spacebar checkbox; legacy strings keep working everywhere
+  (`normalize_oldcam_versions` is the single coercion point, and the manifest
+  fingerprint normalizes on compare so the representation change alone never
+  invalidates a manifest). Headless `--oldcam-version` accepts comma lists +
+  `none`.
+- **Loop as a real automation step.** Kling → rPPG → Loop → Oldcam (GUI
+  Phase E order); `automation_loop_enabled` default OFF; graceful-skip when
+  ffmpeg is missing. The FFmpeg implementation moved to
+  `automation/video_loop.py` (headless-safe); `kling_gui/video_looper.py`
+  remains as a re-export shim.
+- **Multi-selfie-model fan-out.** N selected image models ⇒ each model whose
+  best candidate passes the similarity threshold gets its OWN expand → video
+  → rPPG/Loop/Oldcam chain (recorded in `video_generate` meta["branches"]).
+  Single-model behavior unchanged.
+- **Live dashboard pause/abort.** `[p]` finishes the current case then stops;
+  `[a]` stops after the current step; the in-flight case reverts to pending
+  with completed-step state intact, so Run/Resume continues where it left
+  off.
+
+### Fixed
+
+- **Stacked/garbled live progress panels.** ONE pinned Rich Live panel on the
+  shared console (locked state snapshots + `AutomationManifest` RLock +
+  `snapshot_statuses()`), with console logging suppressed for the duration —
+  the root-logger StreamHandler was printing library log lines straight
+  through Live and shattering the render. Rolling last-8 events now live
+  inside the panel.
+- **Recommended defaults v7.** rPPG ON (the validated "best results" combo is
+  rPPG + oldcam v13), oldcam `["v13"]` (was v24), loop OFF, provider **fal**
+  for BOTH expand steps (was bfl), composites unchanged
+  (preserve_seamless / none). CLI-automation preset only; GUI defaults
+  untouched.
+- **Doubled main-menu banner.** `display_header()` is one Rich panel (title +
+  pipeline + model/duration/price); the duplicate raw-ANSI title inside
+  `display_configuration_menu()` is gone.
+- **Env-fallback test leak.** The no-env test now clears every alias in
+  `spec.env_vars` (a box with `FAL_API_KEY` set failed it spuriously).
+
 ## 2026-06-06 (v2.24) — macOS Apple-Silicon polish: tkdnd cap + pytest dev extra
 
 After v2.21 landed the uv migration on Windows, the macOS round-trip surfaced

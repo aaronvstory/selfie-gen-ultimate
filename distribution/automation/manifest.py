@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 SCHEMA_VERSION = 1
@@ -18,6 +19,11 @@ STEP_NAMES = [
     "selfie_expand",
     "video_generate",
     "facetrack_gate",
+    # Post-processing order is Kling -> rPPG -> Loop -> Oldcam (Phase E,
+    # mirrored from the GUI queue). "loop" (ping-pong, 2026-06-11) sits
+    # between the rPPG-first injection and the oldcam fan-out; ensure_case
+    # setdefault()s it into pre-loop manifests.
+    "loop",
     "oldcam",
     "rppg",
 ]
@@ -54,7 +60,20 @@ def _new_case_state(case_dir: str, front_path: str) -> Dict[str, Any]:
 
 def _build_config_fingerprint(config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
     automation_keys = sorted(key for key in config_snapshot if key.startswith("automation_"))
-    return {key: config_snapshot.get(key) for key in automation_keys}
+    fingerprint = {key: config_snapshot.get(key) for key in automation_keys}
+    # automation_oldcam_version changed representation (legacy single string
+    # "v24"/"all" -> canonical list ["v24"]). Normalize on BOTH sides of the
+    # fingerprint comparison (loaded manifest AND requested config flow
+    # through here) so the representation change alone never invalidates an
+    # old manifest — only a REAL selection change does. Cycle-safe import
+    # (oldcam.py has no automation-internal imports).
+    if "automation_oldcam_version" in fingerprint:
+        from automation.oldcam import normalize_oldcam_versions
+
+        fingerprint["automation_oldcam_version"] = normalize_oldcam_versions(
+            fingerprint["automation_oldcam_version"]
+        )
+    return fingerprint
 
 
 def _new_manifest_payload(root_dir: Path, config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
@@ -72,6 +91,11 @@ def _new_manifest_payload(root_dir: Path, config_snapshot: Dict[str, Any]) -> Di
 class AutomationManifest:
     manifest_path: Path
     data: Dict[str, Any]
+    # Guards data mutation + the atomic write against the CLI live
+    # dashboard's reader thread (the worker mutates cases while the UI
+    # thread renders). RLock: update_step/ensure_case call save_atomic
+    # internally. Excluded from repr/compare (not part of manifest value).
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     @classmethod
     def create_or_load(cls, manifest_path: Path, root_dir: Path, config_snapshot: Dict[str, Any]) -> "AutomationManifest":
@@ -156,6 +180,28 @@ class AutomationManifest:
         inst.save_atomic()
         return inst
 
+    @classmethod
+    def create_fresh(cls, manifest_path: Path, root_dir: Path, config_snapshot: Dict[str, Any]) -> "AutomationManifest":
+        """Force-create a new manifest, backing up any existing one.
+
+        Used when the caller has INTENTIONALLY changed the run identity (an
+        explicit fingerprinted override like --oldcam-version) and a stale
+        manifest would otherwise fail create_or_load with a fingerprint
+        mismatch. The old manifest is renamed aside (``.superseded.<ts>``) so it
+        is recoverable, then a fresh manifest is written with the requested
+        snapshot.
+        """
+        if manifest_path.exists():
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_path = manifest_path.with_suffix(
+                manifest_path.suffix + f".superseded.{timestamp}"
+            )
+            os.replace(manifest_path, backup_path)
+        created = _new_manifest_payload(root_dir, config_snapshot)
+        inst = cls(manifest_path=manifest_path, data=created)
+        inst.save_atomic()
+        return inst
+
     @staticmethod
     def _backup_invalid_manifest(manifest_path: Path, reason: str) -> None:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -194,27 +240,52 @@ class AutomationManifest:
         return self.data.get("cases", {}).get(relative_key, {}).get("steps", {}).get(step_name, {})
 
     def save_atomic(self) -> None:
-        self.data["updated_at"] = now_iso()
-        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.manifest_path.with_suffix(self.manifest_path.suffix + ".tmp")
-        with open(temp_path, "w", encoding="utf-8") as handle:
-            json.dump(self.data, handle, indent=2)
-        os.replace(temp_path, self.manifest_path)
+        with self._lock:
+            self.data["updated_at"] = now_iso()
+            self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = self.manifest_path.with_suffix(self.manifest_path.suffix + ".tmp")
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump(self.data, handle, indent=2)
+            os.replace(temp_path, self.manifest_path)
 
     def ensure_case(self, relative_key: str, case_dir: Path, front_path: Path) -> Dict[str, Any]:
-        cases = self.data.setdefault("cases", {})
-        if relative_key not in cases:
-            cases[relative_key] = _new_case_state(str(case_dir), str(front_path))
-        case_entry = cases[relative_key]
-        case_entry["case_dir"] = str(case_dir)
-        case_entry["front_path"] = str(front_path)
-        case_entry.setdefault("steps", {})
-        for step_name in STEP_NAMES:
-            case_entry["steps"].setdefault(step_name, _new_step_state())
-        case_entry.setdefault("outputs", {})
-        case_entry.setdefault("errors", [])
-        case_entry["updated_at"] = now_iso()
-        return case_entry
+        with self._lock:
+            cases = self.data.setdefault("cases", {})
+            if relative_key not in cases:
+                cases[relative_key] = _new_case_state(str(case_dir), str(front_path))
+            case_entry = cases[relative_key]
+            case_entry["case_dir"] = str(case_dir)
+            case_entry["front_path"] = str(front_path)
+            case_entry.setdefault("steps", {})
+            for step_name in STEP_NAMES:
+                case_entry["steps"].setdefault(step_name, _new_step_state())
+            case_entry.setdefault("outputs", {})
+            case_entry.setdefault("errors", [])
+            case_entry["updated_at"] = now_iso()
+            return case_entry
+
+    def snapshot_statuses(self, case_keys: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Thread-safe per-case snapshot for the live dashboard's reader
+        thread: status, active_step, and the similarity-gate score, COPIED
+        under the lock so the renderer never iterates dicts the pipeline
+        worker is mutating (the partial-panel bug, 2026-06-11)."""
+        with self._lock:
+            cases = self.data.get("cases", {})
+            snapshot: Dict[str, Dict[str, Any]] = {}
+            for key in case_keys:
+                entry = cases.get(key, {}) or {}
+                sim = (
+                    (entry.get("steps", {}) or {})
+                    .get("similarity_gate", {})
+                    .get("meta", {})
+                    or {}
+                ).get("score")
+                snapshot[key] = {
+                    "status": str(entry.get("status", "pending")),
+                    "active_step": entry.get("active_step"),
+                    "similarity": sim,
+                }
+            return snapshot
 
     def update_step(
         self,
@@ -232,28 +303,29 @@ class AutomationManifest:
             raise ValueError(f"Unknown step: {step_name}")
         if status not in STEP_STATUSES:
             raise ValueError(f"Invalid step status: {status}")
-        case_entry = self.data["cases"][relative_key]
-        step = case_entry["steps"][step_name]
+        with self._lock:
+            case_entry = self.data["cases"][relative_key]
+            step = case_entry["steps"][step_name]
 
-        if status == "running" and not step.get("started_at"):
-            step["started_at"] = now_iso()
-        if status in {"complete", "failed", "manual_review", "skipped", "pending_not_implemented"}:
-            step["finished_at"] = now_iso()
+            if status == "running" and not step.get("started_at"):
+                step["started_at"] = now_iso()
+            if status in {"complete", "failed", "manual_review", "skipped", "pending_not_implemented"}:
+                step["finished_at"] = now_iso()
 
-        step["status"] = status
-        step["output"] = output
-        step["provider"] = provider
-        step["margins"] = margins
-        step["error"] = error
-        if meta is not None:
-            step["meta"] = meta
+            step["status"] = status
+            step["output"] = output
+            step["provider"] = provider
+            step["margins"] = margins
+            step["error"] = error
+            if meta is not None:
+                step["meta"] = meta
 
-        if output:
-            case_entry["outputs"][step_name] = output
-        if error:
-            case_entry["errors"].append({"step": step_name, "error": error, "at": now_iso()})
-        case_entry["updated_at"] = now_iso()
-        self.save_atomic()
+            if output:
+                case_entry["outputs"][step_name] = output
+            if error:
+                case_entry["errors"].append({"step": step_name, "error": error, "at": now_iso()})
+            case_entry["updated_at"] = now_iso()
+            self.save_atomic()
 
     def case_is_complete_and_valid(self, relative_key: str) -> bool:
         case_entry = self.data.get("cases", {}).get(relative_key)
@@ -275,6 +347,7 @@ class AutomationManifest:
         else:
             final_output = (
                 steps.get("oldcam", {}).get("output")
+                or steps.get("loop", {}).get("output")
                 or steps.get("video_generate", {}).get("output")
             )
         if not final_output:

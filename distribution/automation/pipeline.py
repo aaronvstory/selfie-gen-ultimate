@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import re
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -19,9 +21,11 @@ from automation.oldcam import (
     _version_key as _oldcam_version_key,
     discover_oldcam_versions,
     ensure_oldcam_dependencies,
+    normalize_oldcam_versions,
     run_oldcam_all,
 )
 from automation.rppg import is_rppg_artifact, run_rppg
+from automation.video_loop import check_ffmpeg_available, create_looped_video
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
@@ -38,6 +42,14 @@ class PipelineDeps:
     outpaint_factory: Callable[[], OutpaintGenerator]
     selfie_factory: Callable[[], SelfieGenerator]
     video_factory: Callable[[], FalAIKlingGenerator]
+
+
+class AutomationAbort(Exception):
+    """Raised between pipeline steps when the runner's abort_event is set.
+
+    Caught in run(): the in-flight case's status reverts to "pending" so a
+    later Run/Resume picks it up at its first incomplete step (the manifest
+    keeps every completed step's state)."""
 
 
 class AutoPipelineRunner:
@@ -79,6 +91,16 @@ class AutoPipelineRunner:
         self.last_case_results: Dict[str, Dict[str, Any]] = {}
         self.logger, self.log_path = create_automation_logger(self.config, self.config.get("automation_root_folder"))
         self.verbose_logging = bool(self.config.get("automation_verbose_logging", self.config.get("verbose_logging", True)))
+        # Cooperative pause/abort (2026-06-11, CLI live-dashboard keys):
+        #   pause_event — finish the CURRENT case, then stop (between-cases
+        #     check in run()).
+        #   abort_event — stop after the CURRENT step (checked at every
+        #     _set_active_step transition); the in-flight case reverts to
+        #     "pending" so Run/Resume continues it from the first incomplete
+        #     step.
+        self.pause_event = threading.Event()
+        self.abort_event = threading.Event()
+        self.stopped_reason: Optional[str] = None
 
     def _read_int(
         self,
@@ -152,6 +174,300 @@ class AutoPipelineRunner:
         parsed = _parse_bool(raw)
         return parsed if parsed is not None else bool(default)
 
+    def _oldcam_versions(self) -> List[str]:
+        """Canonical (normalized list) oldcam selection from config."""
+        return normalize_oldcam_versions(self.automation.get("automation_oldcam_version", []))
+
+    def _oldcam_active(self) -> bool:
+        """Oldcam runs only when enabled AND at least one version is selected.
+
+        Multi-select (2026-06-11) made the empty selection ``[]`` a first-class
+        "off" state alongside ``automation_oldcam_enabled=False`` — the UI keeps
+        the two coherent but the pipeline must tolerate any combination.
+        """
+        return bool(self.automation.get("automation_oldcam_enabled", True)) and bool(self._oldcam_versions())
+
+    def _oldcam_inactive_reason(self) -> str:
+        if not self.automation.get("automation_oldcam_enabled", True):
+            return "oldcam disabled"
+        return "no oldcam versions selected"
+
+    def _generate_video_for_still(self, video, still_path: str, video_output_dir: Path) -> Optional[str]:
+        """Run one Kling generation for ``still_path`` with the exact kwargs
+        the primary Step 6 has always used (CLI parity with the GUI queue —
+        see the comment block at the call site). Shared by the primary chain
+        and the multi-model fan-out branches so their generations can never
+        drift."""
+        _slot = str(self.config.get("current_prompt_slot", 1))
+        # _read_bool (not raw .get) so a string "false" in the
+        # automation config disables prompt/negative reuse as the
+        # user intended — raw bool("false") is truthy (CodeRabbit,
+        # PR #41). It IS an automation_* key, so self._read_bool's
+        # self.automation source is correct here.
+        _use_existing = self._read_bool("automation_video_use_existing_prompt", True)
+        try:
+            _cfg_val = float(self.config.get("cfg_scale_value", 0.7))
+        except (TypeError, ValueError):
+            _cfg_val = 0.7
+        # lock_end_frame is a GUI (kling_config) key, NOT an
+        # automation_* key — read it from self.config via the
+        # canonical _parse_bool (NOT self._read_bool, which only
+        # looks in self.automation and would always return the
+        # default here).
+        from face_similarity import _parse_bool as _pb
+        _lock_ef = _pb(self.config.get("lock_end_frame", True))
+        if _lock_ef is None:
+            _lock_ef = True
+        return video.create_kling_generation(
+            character_image_path=still_path,
+            output_folder=str(video_output_dir),
+            custom_prompt=self.config.get("saved_prompts", {}).get(_slot)
+            if _use_existing
+            else None,
+            negative_prompt=(
+                self.config.get("negative_prompts", {}).get(_slot) or None
+            )
+            if _use_existing
+            else None,
+            duration=int(self.config.get("video_duration", 10)),
+            aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
+            resolution=self.config.get("resolution", "720p"),
+            seed=int(self.config.get("seed", -1)),
+            camera_fixed=bool(self.config.get("camera_fixed", False)),
+            generate_audio=bool(self.config.get("generate_audio", False)),
+            cfg_scale=max(0.0, min(1.0, _cfg_val)),
+            lock_end_frame=bool(_lock_ef),
+            use_source_folder=False,
+        )
+
+    @staticmethod
+    def _branch_slug(endpoint: str) -> str:
+        """Filename-safe model slug for a fan-out branch (single source of
+        truth: SelfieGenerator's output-filename slugger)."""
+        from selfie_generator import SelfieGenerator
+        return SelfieGenerator._model_short_name(endpoint)
+
+    def _existing_branch_candidate(
+        self, case_dir: Path, endpoint: str, threshold: int
+    ) -> Optional[Dict[str, Any]]:
+        """Resume support for fan-out branches: when this run REUSED an
+        existing primary selfie (so no per-model generation happened), find
+        the best already-on-disk selfie for ``endpoint`` by its slug +
+        embedded similarity score (``..._{slug}_sim{NN}_...``). Returns the
+        same candidate shape as branch_best entries, or None."""
+        slug = self._branch_slug(endpoint)
+        if not slug:
+            return None
+        gen_images = case_dir / "gen-images"
+        if not gen_images.is_dir():
+            return None
+        best: Optional[Dict[str, Any]] = None
+        pattern = re.compile(re.escape(slug) + r"_sim(\d+)_", re.IGNORECASE)
+        for candidate in gen_images.iterdir():
+            if not candidate.is_file() or candidate.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                continue
+            if "-expanded" in candidate.stem:
+                continue  # expansion outputs are downstream artifacts, not selfies
+            match = pattern.search(candidate.name)
+            if not match:
+                continue
+            score = int(match.group(1))
+            if best is None or score > best["score"]:
+                best = {
+                    "endpoint": endpoint,
+                    "path": str(candidate),
+                    "score": score,
+                    "similarity": {"score": score, "threshold": threshold, "match": score >= threshold},
+                }
+        return best
+
+    def _run_extra_branches(
+        self,
+        *,
+        case_key: str,
+        case_dir: Path,
+        extra_branches: List[Dict[str, Any]],
+        reprocess_mode: str,
+        resolved_selfie_provider: str,
+        selfie_composite_mode: str,
+    ) -> None:
+        """Process every fan-out branch (expand -> video -> rPPG -> loop ->
+        oldcam) after the primary chain completed. Branch results land in the
+        video_generate step's meta["branches"]; a branch failure is reported
+        but NEVER fails the case (the primary deliverable already exists)."""
+        if not extra_branches:
+            return
+        results: List[Dict[str, Any]] = []
+        for branch in extra_branches:
+            endpoint = branch["endpoint"]
+            self._report(
+                f"[{case_key}] fan-out branch: {endpoint} (score {branch['score']})",
+                "info",
+            )
+            try:
+                results.append(
+                    self._run_branch_chain(
+                        case_key=case_key,
+                        case_dir=case_dir,
+                        branch=branch,
+                        reprocess_mode=reprocess_mode,
+                        resolved_selfie_provider=resolved_selfie_provider,
+                        selfie_composite_mode=selfie_composite_mode,
+                    )
+                )
+            except Exception as exc:  # never let a branch kill the case
+                self.logger.exception("case %s branch %s crashed", case_key, endpoint)
+                self._report(f"[{case_key}] branch {endpoint} failed: {exc}", "error")
+                results.append({"endpoint": endpoint, "status": "failed", "error": str(exc)})
+        # Persist the branch summary on the video_generate step so the
+        # manifest carries the full fan-out picture without changing the
+        # one-status-per-step schema.
+        video_step = self.manifest.get_step(case_key, "video_generate")
+        merged_meta = dict(video_step.get("meta") or {})
+        merged_meta["branches"] = results
+        self.manifest.update_step(
+            case_key,
+            "video_generate",
+            video_step.get("status") or "complete",
+            output=video_step.get("output"),
+            meta=merged_meta,
+        )
+
+    def _run_branch_chain(
+        self,
+        *,
+        case_key: str,
+        case_dir: Path,
+        branch: Dict[str, Any],
+        reprocess_mode: str,
+        resolved_selfie_provider: str,
+        selfie_composite_mode: str,
+    ) -> Dict[str, Any]:
+        """One fan-out branch: expand the branch selfie, generate its video,
+        then apply the same post chain (rPPG -> Loop -> Oldcam). Reuses
+        existing outputs on resume (skip semantics: deterministic expand
+        name; newest video derived from the branch's expanded stem)."""
+        endpoint = branch["endpoint"]
+        still_path = str(branch["path"])
+        result: Dict[str, Any] = {
+            "endpoint": endpoint,
+            "selfie": still_path,
+            "score": branch["score"],
+            "status": "failed",
+        }
+
+        # --- expand (same geometry/prompt rules as primary Step 5) ---
+        final_still = still_path
+        if self.automation.get("automation_selfie_expand_enabled", True):
+            expanded_output = case_dir / "gen-images" / f"{Path(still_path).stem}-expanded.png"
+            if reprocess_mode == "skip" and expanded_output.exists():
+                final_still = str(expanded_output)
+            else:
+                if reprocess_mode == "increment":
+                    expanded_output = self._next_increment_path(expanded_output)
+                pct = self._read_int("automation_selfie_expand_percent", 30)
+                with Image.open(still_path) as _img:
+                    width, height = ImageOps.exif_transpose(_img).size
+                plan = compute_percent_expand_plan(
+                    width, height, pct, compute_provider_caps(resolved_selfie_provider),
+                )
+                _section = self.config.get("selfie_expand_prompt")
+                if isinstance(_section, str):
+                    expand_prompt = _section
+                else:
+                    expand_prompt = str(self.config.get("outpaint_prompt", "") or "")
+                outpaint = self.deps.outpaint_factory()
+                outpaint.set_progress_callback(self.progress_cb)
+                expanded_result = outpaint.outpaint(
+                    image_path=still_path,
+                    output_folder=str(case_dir / "gen-images"),
+                    output_path=str(expanded_output),
+                    provider=resolved_selfie_provider,
+                    composite_mode=selfie_composite_mode,
+                    document_mode=self.automation.get("automation_selfie_expand_mode") == "centered_3x4",
+                    expand_left=int(plan["left"]),
+                    expand_right=int(plan["right"]),
+                    expand_top=int(plan["top"]),
+                    expand_bottom=int(plan["bottom"]),
+                    edge_seal_px=0,
+                    poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
+                    prompt=expand_prompt,
+                )
+                if not expanded_result:
+                    result["error"] = "branch selfie expand failed"
+                    return result
+                final_still = expanded_result
+        result["expanded"] = final_still
+
+        # --- video ---
+        branch_video: Optional[str] = None
+        if self.automation.get("automation_video_enabled", True):
+            video_output_dir = case_dir / "gen-videos"
+            video_output_dir.mkdir(exist_ok=True)
+            expanded_stem = Path(final_still).stem
+            if reprocess_mode == "skip" and self.automation.get("automation_skip_if_video_exists", True):
+                reusable = sorted(
+                    p for p in video_output_dir.glob(f"{expanded_stem}*.mp4")
+                    if not is_rppg_artifact(p)
+                    and "-oldcam-" not in p.stem
+                    and "_looped" not in p.stem
+                )
+                if reusable:
+                    branch_video = str(reusable[-1])
+            if branch_video is None:
+                video = self.deps.video_factory()
+                video.set_progress_callback(self.progress_cb)
+                branch_video = self._generate_video_for_still(video, final_still, video_output_dir)
+            if not branch_video:
+                result["error"] = "branch video generation failed"
+                return result
+            if reprocess_mode == "increment":
+                out_video_path = Path(branch_video)
+                inc_video_path = self._next_increment_path(out_video_path)
+                if inc_video_path != out_video_path:
+                    out_video_path.replace(inc_video_path)
+                    branch_video = str(inc_video_path)
+            result["video"] = branch_video
+        else:
+            result["status"] = "complete"
+            return result
+
+        # --- post chain: rPPG -> Loop -> Oldcam (graceful-skip parity) ---
+        current = Path(branch_video)
+        if self._read_bool("automation_rppg_enabled", False) and not is_rppg_artifact(current):
+            injected = run_rppg(
+                video_path=current,
+                repo_root=Path(__file__).resolve().parent.parent,
+                progress_cb=self.progress_cb,
+                keep_metrics=self._read_bool("automation_rppg_metrics_in_filename", False),
+                iterative=str(self.automation.get("automation_rppg_mode") or "iterative").strip().lower() == "iterative",
+                iterate_from_baseline=self._read_bool("automation_rppg_iterate_from_baseline", True),
+                skip_diagnosis=self._read_bool("automation_rppg_skip_diagnosis", True),
+                skip_kinematic_gate=self._read_bool("automation_rppg_skip_kinematic_gate", True),
+                landmark_stride=self._read_int("automation_rppg_landmark_stride", 1, min_value=1),
+                verbose=self.verbose_logging,
+            )
+            if injected and injected.exists():
+                current = injected
+                result["rppg"] = str(injected)
+        if self._read_bool("automation_loop_enabled", False):
+            looped = create_looped_video(
+                str(current), suffix="_looped", overwrite=True, log_callback=self.progress_cb,
+            )
+            if looped and Path(looped).exists():
+                current = Path(looped)
+                result["loop"] = str(looped)
+        if self._oldcam_active():
+            oldcam_all = run_oldcam_all(
+                video_path=current,
+                version_setting=self.automation.get("automation_oldcam_version", []),
+                repo_root=Path(__file__).resolve().parent.parent,
+                progress_cb=self.progress_cb,
+            )
+            result["oldcam_outputs"] = [str(p) for _v, p in oldcam_all]
+        result["status"] = "complete"
+        return result
+
     def _report(self, message: str, level: str = "info") -> None:
         if self.progress_cb:
             self.progress_cb(message, level)
@@ -188,6 +504,10 @@ class AutoPipelineRunner:
         }
 
     def _set_active_step(self, case_entry: Dict[str, Any], step_name: Optional[str]) -> None:
+        # Abort checkpoint: every step transition is a safe stopping point
+        # (no half-written outputs — each step finishes or is re-runnable).
+        if step_name is not None and self.abort_event.is_set():
+            raise AutomationAbort(f"aborted before step {step_name}")
         case_entry["active_step"] = step_name
         self.manifest.save_atomic()
 
@@ -335,20 +655,40 @@ class AutoPipelineRunner:
         # oldcam does.
         if self._read_bool("automation_rppg_required", False) and not self._read_bool("automation_rppg_enabled", False):
             issues.append("automation_rppg_required=true requires automation_rppg_enabled=true.")
+        if self._read_bool("automation_loop_enabled", False):
+            ffmpeg_ok, ffmpeg_msg = check_ffmpeg_available()
+            if not ffmpeg_ok:
+                # Loop is graceful-skip at runtime; surface the problem at
+                # validation as a WARNING via progress so the user learns
+                # BEFORE a paid run that looping will be skipped. Not a
+                # hard issue: parity with rPPG's degrade-don't-crash rule.
+                self._report(
+                    f"Loop enabled but ffmpeg unavailable — loop step will be skipped ({ffmpeg_msg}).",
+                    "warning",
+                )
         if self.automation.get("automation_oldcam_required", False):
             repo_root = Path(__file__).resolve().parent.parent
             versions = discover_oldcam_versions(repo_root)
             deps_ok, deps_error = ensure_oldcam_dependencies()
-            configured_version = str(self.automation.get("automation_oldcam_version", "all")).lower()
+            configured_versions = normalize_oldcam_versions(
+                self.automation.get("automation_oldcam_version", ["all"])
+            )
             available_versions = {str(v).lower() for v in versions}
-            if configured_version == "all":
+            if not configured_versions:
+                issues.append(
+                    "automation_oldcam_required=true but no oldcam versions are selected "
+                    "(automation_oldcam_version is empty)."
+                )
+            elif configured_versions == ["all"]:
                 if not available_versions:
                     issues.append("Oldcam required with version=all but no usable oldcam versions were discovered.")
-            elif configured_version not in available_versions:
-                issues.append(
-                    f"Oldcam required but configured version {configured_version} is unavailable. "
-                    f"Available: {', '.join(sorted(available_versions)) or '(none)'}."
-                )
+            else:
+                missing = [v for v in configured_versions if v not in available_versions]
+                if missing:
+                    issues.append(
+                        f"Oldcam required but configured version(s) {', '.join(missing)} unavailable. "
+                        f"Available: {', '.join(sorted(available_versions)) or '(none)'}."
+                    )
             if not deps_ok:
                 issues.append(f"Oldcam required but dependencies are not ready: {deps_error or 'unknown dependency error'}.")
         return issues
@@ -371,6 +711,15 @@ class AutoPipelineRunner:
 
         stats = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
         for case in cases:
+            if self.abort_event.is_set() or self.pause_event.is_set():
+                self.stopped_reason = "aborted" if self.abort_event.is_set() else "paused"
+                self._report(
+                    f"Run {self.stopped_reason} — remaining cases stay pending; "
+                    "use Run/Resume to continue.",
+                    "warning",
+                )
+                self.logger.info("automation run %s before case %s", self.stopped_reason, case.relative_key)
+                break
             self.logger.info("case start: %s", case.relative_key)
             self.manifest.ensure_case(case.relative_key, case.case_dir, case.front_path)
             if self.automation.get("automation_skip_completed", True) and self.manifest.case_is_complete_and_valid(case.relative_key):
@@ -380,6 +729,24 @@ class AutoPipelineRunner:
                 continue
             try:
                 final_status = self._run_case(case)
+            except AutomationAbort:
+                # Revert the in-flight case to "pending": every completed
+                # step's manifest state is kept, so Run/Resume continues it
+                # from the first incomplete step.
+                self.stopped_reason = "aborted"
+                cases_map = self.manifest.data.setdefault("cases", {})
+                case_state = cases_map.setdefault(case.relative_key, {})
+                case_state["status"] = "pending"
+                case_state["active_step"] = None
+                case_state["updated_at"] = now_iso()
+                self.manifest.save_atomic()
+                self._report(
+                    f"[{case.relative_key}] aborted mid-case — progress saved; "
+                    "Run/Resume continues from the next incomplete step.",
+                    "warning",
+                )
+                self.logger.info("case aborted (reverted to pending): %s", case.relative_key)
+                break
             except Exception as exc:
                 self._report(f"[{case.relative_key}] case failed: {exc}", "error")
                 self.logger.exception("case failed with exception: %s", case.relative_key)
@@ -774,6 +1141,16 @@ class AutoPipelineRunner:
             threshold,
         )
 
+        # Multi-model fan-out (2026-06-11): with N>1 selected models, EVERY
+        # model whose best candidate passes the similarity threshold becomes
+        # a branch — its selfie gets its own expand -> video -> post chain.
+        # The overall-best candidate stays the PRIMARY (owns the manifest
+        # step statuses, byte-identical single-model behavior); the others
+        # are processed by _run_extra_branches after the primary completes.
+        fan_out = len(model_endpoints) > 1
+        branch_best: Dict[str, Dict[str, Any]] = {}
+        best_endpoint: Optional[str] = None
+
         best_path: Optional[str] = str(existing.selfie_candidate) if (
             reprocess_mode == "skip"
             and existing.selfie_candidate
@@ -822,19 +1199,36 @@ class AutoPipelineRunner:
                         continue
                     score_info = compute_face_similarity_details(str(extracted_path), generated, report_cb=self.progress_cb)
                     score = int(score_info.get("score", 0))
+                    similarity_meta = {
+                        "score": score_info.get("score"),
+                        "threshold": threshold,
+                        "match": score_info.get("match"),
+                        "error": score_info.get("error"),
+                        "diagnostics": score_info.get("diagnostics"),
+                    }
+                    prior = branch_best.get(endpoint)
+                    if prior is None or score > prior["score"]:
+                        branch_best[endpoint] = {
+                            "endpoint": endpoint,
+                            "path": generated,
+                            "score": score,
+                            "similarity": similarity_meta,
+                        }
                     if score > best_score:
                         best_score = score
                         best_path = generated
-                        best_similarity_meta = {
-                            "score": score_info.get("score"),
-                            "threshold": threshold,
-                            "match": score_info.get("match"),
-                            "error": score_info.get("error"),
-                            "diagnostics": score_info.get("diagnostics"),
-                        }
+                        best_endpoint = endpoint
+                        best_similarity_meta = similarity_meta
                     if self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass" and score >= threshold:
                         break
-                if self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass" and best_score >= threshold:
+                # Fan-out mode generates for EVERY selected model — the
+                # cross-model first_pass early-exit only applies to
+                # single-model runs (where it is the historical behavior).
+                if (
+                    not fan_out
+                    and self.automation.get("automation_selfie_model_policy", "first_pass") == "first_pass"
+                    and best_score >= threshold
+                ):
                     break
 
         if not best_path:
@@ -958,6 +1352,37 @@ class AutoPipelineRunner:
             meta=best_similarity_meta,
         )
 
+        # Multi-model fan-out: collect the EXTRA branches (non-primary
+        # models whose best candidate passed the threshold). Processed by
+        # _run_extra_branches at every completed-finalize site below; a
+        # branch failure never fails the case (the primary already
+        # succeeded) — it is recorded in the video_generate step's
+        # meta["branches"] for visibility.
+        extra_branches: List[Dict[str, Any]] = []
+        if fan_out:
+            for endpoint in model_endpoints:
+                cand = branch_best.get(endpoint)
+                if cand is None and best_path:
+                    cand = self._existing_branch_candidate(case_dir, endpoint, threshold)
+                if cand is None:
+                    continue
+                if str(cand["path"]) == str(best_path) or endpoint == best_endpoint:
+                    continue  # the primary chain already covers this one
+                if cand["score"] < threshold:
+                    self._report(
+                        f"[{case_key}] branch {endpoint}: best score {cand['score']} "
+                        f"below threshold {threshold} — branch skipped.",
+                        "warning",
+                    )
+                    continue
+                extra_branches.append(cand)
+            if extra_branches:
+                self.logger.info(
+                    "case %s fan-out branches=%s",
+                    case_key,
+                    [b["endpoint"] for b in extra_branches],
+                )
+
         # Step 5: selfie expand
         final_still = best_path
         if self.automation.get("automation_selfie_expand_enabled", True):
@@ -1073,15 +1498,26 @@ class AutoPipelineRunner:
                     output=str(existing.video_candidate),
                     meta=self._policy_meta("video_generate", True, reprocess_mode),
                 )
-                if not self.automation.get("automation_oldcam_enabled", True):
-                    self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
+                if not self._oldcam_active():
+                    self.manifest.update_step(case_key, "oldcam", "skipped", error=self._oldcam_inactive_reason())
                     # Pre-rPPG this short-circuited to completed (video
-                    # reused + oldcam off = nothing left). rPPG can now be
-                    # the ONLY enabled post-process on a reused video, so
-                    # only finalize early when rPPG is also disabled —
-                    # otherwise fall through to Step 8, which picks up the
-                    # reused video from the video_generate step output.
-                    if not self._read_bool("automation_rppg_enabled", False):
+                    # reused + oldcam off = nothing left). rPPG or Loop can
+                    # now be the ONLY enabled post-process on a reused
+                    # video, so only finalize early when BOTH are disabled —
+                    # otherwise fall through so the rPPG/Loop blocks pick up
+                    # the reused video from the video_generate step output.
+                    if not self._read_bool("automation_rppg_enabled", False) and not self._read_bool(
+                        "automation_loop_enabled", False
+                    ):
+                        self.manifest.update_step(case_key, "loop", "skipped", error="loop disabled")
+                        self._run_extra_branches(
+                            case_key=case_key,
+                            case_dir=case_dir,
+                            extra_branches=extra_branches,
+                            reprocess_mode=reprocess_mode,
+                            resolved_selfie_provider=resolved_selfie_provider,
+                            selfie_composite_mode=selfie_composite_mode,
+                        )
                         return self._finalize_case(case_entry, "completed")
             if not skipped_existing_video:
                 video = self.deps.video_factory()
@@ -1097,48 +1533,8 @@ class AutoPipelineRunner:
                 # selected model's capabilities (get_model_capabilities —
                 # single source of truth), so an o3/seedance run silently
                 # drops the unsupported ones exactly as the GUI does.
-                _slot = str(self.config.get("current_prompt_slot", 1))
-                # _read_bool (not raw .get) so a string "false" in the
-                # automation config disables prompt/negative reuse as the
-                # user intended — raw bool("false") is truthy (CodeRabbit,
-                # PR #41). It IS an automation_* key, so self._read_bool's
-                # self.automation source is correct here.
-                _use_existing = self._read_bool(
-                    "automation_video_use_existing_prompt", True
-                )
-                try:
-                    _cfg_val = float(self.config.get("cfg_scale_value", 0.7))
-                except (TypeError, ValueError):
-                    _cfg_val = 0.7
-                # lock_end_frame is a GUI (kling_config) key, NOT an
-                # automation_* key — read it from self.config via the
-                # canonical _parse_bool (NOT self._read_bool, which only
-                # looks in self.automation and would always return the
-                # default here).
-                from face_similarity import _parse_bool as _pb
-                _lock_ef = _pb(self.config.get("lock_end_frame", True))
-                if _lock_ef is None:
-                    _lock_ef = True
-                output_video = video.create_kling_generation(
-                    character_image_path=final_still,
-                    output_folder=str(video_output_dir),
-                    custom_prompt=self.config.get("saved_prompts", {}).get(_slot)
-                    if _use_existing
-                    else None,
-                    negative_prompt=(
-                        self.config.get("negative_prompts", {}).get(_slot) or None
-                    )
-                    if _use_existing
-                    else None,
-                    duration=int(self.config.get("video_duration", 10)),
-                    aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
-                    resolution=self.config.get("resolution", "720p"),
-                    seed=int(self.config.get("seed", -1)),
-                    camera_fixed=bool(self.config.get("camera_fixed", False)),
-                    generate_audio=bool(self.config.get("generate_audio", False)),
-                    cfg_scale=max(0.0, min(1.0, _cfg_val)),
-                    lock_end_frame=bool(_lock_ef),
-                    use_source_folder=False,
+                output_video = self._generate_video_for_still(
+                    video, final_still, video_output_dir
                 )
                 if not output_video:
                     self.manifest.update_step(case_key, "video_generate", "failed", error="video generation failed")
@@ -1291,12 +1687,71 @@ class AutoPipelineRunner:
                         case_key, video_out_path.name, injected.name,
                     )
 
-        # Step 7: optional oldcam pass
-        if self.automation.get("automation_oldcam_enabled", True):
-            # Source video for Oldcam: prefer the rPPG-first injected
-            # base (Phase E above), else the raw video_generate output,
-            # else any existing candidate from disk.
+        # Step 7-pre-b: optional ping-pong loop (Phase E order:
+        # Kling -> rPPG -> Loop -> Oldcam, mirroring the GUI queue).
+        # Loops the rPPG'd base when present, else the raw Kling output,
+        # so Oldcam derives from the looped file. Graceful-skip on any
+        # failure (ffmpeg missing, encode error) — the case continues on
+        # the unlooped video, mirroring the rPPG skip semantics.
+        loop_path: Optional[Path] = None
+        if self._read_bool("automation_loop_enabled", False):
+            loop_source: Optional[Path] = None
             if rppg_base_path is not None and rppg_base_path.exists():
+                loop_source = rppg_base_path
+            else:
+                video_out = self.manifest.get_step(case_key, "video_generate").get("output")
+                candidate = Path(video_out) if video_out else None
+                if candidate and candidate.exists() and candidate.suffix.lower() == ".mp4":
+                    loop_source = candidate
+                elif existing.video_candidate:
+                    candidate = Path(existing.video_candidate)
+                    if candidate.exists() and candidate.suffix.lower() == ".mp4":
+                        loop_source = candidate
+            if loop_source is None:
+                self.manifest.update_step(
+                    case_key, "loop", "skipped", error="no mp4 video to loop",
+                )
+            else:
+                self._set_active_step(case_entry, "loop")
+                self.manifest.update_step(case_key, "loop", "running")
+                looped = create_looped_video(
+                    str(loop_source),
+                    suffix="_looped",
+                    overwrite=True,
+                    log_callback=self.progress_cb,
+                )
+                if looped and Path(looped).exists():
+                    loop_path = Path(looped)
+                    self.logger.info(
+                        "case %s loop: %s -> %s", case_key, loop_source.name, loop_path.name,
+                    )
+                    self.manifest.update_step(
+                        case_key,
+                        "loop",
+                        "complete",
+                        output=str(loop_path),
+                        meta=self._policy_meta("loop", False, reprocess_mode),
+                    )
+                else:
+                    self.logger.warning("case %s loop failed; continuing unlooped", case_key)
+                    self.manifest.update_step(
+                        case_key,
+                        "loop",
+                        "skipped",
+                        error="loop failed or ffmpeg unavailable",
+                    )
+        else:
+            self.manifest.update_step(case_key, "loop", "skipped", error="loop disabled")
+
+        # Step 7: optional oldcam pass
+        if self._oldcam_active():
+            # Source video for Oldcam: prefer the looped output (Phase E:
+            # Kling -> rPPG -> Loop -> Oldcam), else the rPPG-first
+            # injected base, else the raw video_generate output, else any
+            # existing candidate from disk.
+            if loop_path is not None and loop_path.exists():
+                selected_video_path = loop_path
+            elif rppg_base_path is not None and rppg_base_path.exists():
                 selected_video_path = rppg_base_path
             else:
                 manifest_video = self.manifest.get_step(case_key, "video_generate").get("output")
@@ -1323,7 +1778,7 @@ class AutoPipelineRunner:
                 # queue). Plain -oldcam-vN files are kept (non-destructive).
                 oldcam_all = run_oldcam_all(
                     video_path=selected_video_path,
-                    version_setting=str(self.automation.get("automation_oldcam_version", "v12")),
+                    version_setting=self.automation.get("automation_oldcam_version", []),
                     repo_root=Path(__file__).resolve().parent.parent,
                     progress_cb=self.progress_cb,
                 )
@@ -1371,7 +1826,7 @@ class AutoPipelineRunner:
                 if required:
                     return self._finalize_case(case_entry, "failed")
         else:
-            self.manifest.update_step(case_key, "oldcam", "skipped", error="oldcam disabled")
+            self.manifest.update_step(case_key, "oldcam", "skipped", error=self._oldcam_inactive_reason())
 
         # Step 8: optional per-Oldcam rPPG fan-out + final
         # bookkeeping. The PRIMARY rPPG injection already ran in
@@ -1512,6 +1967,14 @@ class AutoPipelineRunner:
                     "complete",
                     output=final,
                     meta={**self._policy_meta("rppg", True, reprocess_mode), "already_injected": True},
+                )
+                self._run_extra_branches(
+                    case_key=case_key,
+                    case_dir=case_dir,
+                    extra_branches=extra_branches,
+                    reprocess_mode=reprocess_mode,
+                    resolved_selfie_provider=resolved_selfie_provider,
+                    selfie_composite_mode=selfie_composite_mode,
                 )
                 return self._finalize_case(case_entry, "completed")
             else:
@@ -1654,4 +2117,12 @@ class AutoPipelineRunner:
         else:
             self.manifest.update_step(case_key, "rppg", "skipped", error="rPPG disabled")
 
+        self._run_extra_branches(
+            case_key=case_key,
+            case_dir=case_dir,
+            extra_branches=extra_branches,
+            reprocess_mode=reprocess_mode,
+            resolved_selfie_provider=resolved_selfie_provider,
+            selfie_composite_mode=selfie_composite_mode,
+        )
         return self._finalize_case(case_entry, "completed")

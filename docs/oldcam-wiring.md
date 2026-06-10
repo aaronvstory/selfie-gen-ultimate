@@ -114,7 +114,7 @@ endlocal & exit /b %EXIT_CODE%
 | `launchers/run_oldcam.bat` | delegate to `launchers\windows\run_oldcam.bat` |
 | `launchers/run_oldcam.command` | exec `launchers/macos/run_oldcam.command` |
 | `run_oldcam.bat` (root, thin wrapper) | delegate to `launchers\windows\run_oldcam_vN.bat` |
-| `automation/config.py` | `"automation_oldcam_version": "vN"` |
+| `automation/config.py` | `"automation_oldcam_version": ["vN"]` (canonical LIST form since 2026-06-11 — multi-select; `["all"]` symbolic, `[]` = off; legacy strings coerced via `automation.oldcam.normalize_oldcam_versions`) |
 
 ### 4. GUI checkbox — `kling_gui/config_panel.py`
 
@@ -288,6 +288,6 @@ Checklist — update all 6 of these atomically in one commit:
 - [ ] `launchers/run_oldcam.bat` — chain through `launchers\windows\run_oldcam.bat`
 - [ ] `launchers/run_oldcam.command` — chain through `launchers/macos/run_oldcam.command`
 - [ ] Root `run_oldcam.bat` — thin wrapper stays, just points to updated chain
-- [ ] `automation/config.py` — `"automation_oldcam_version": "vN"`
+- [ ] `automation/config.py` — `"automation_oldcam_version": ["vN"]` (canonical list form)
 - [ ] `kling_gui/config_panel.py` — flip `value=True` to new version, `value=False` on old default
 - [ ] CHANGELOG + `app_version.py` — bump version, document the change

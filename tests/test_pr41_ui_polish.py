@@ -400,8 +400,9 @@ class CodeRabbitCleanupTests(unittest.TestCase):
             src,
             r'self\.config\["automation_selfie_expand_composite_mode"\]\s*=\s*"none"',
         )
-        self.assertIn("-> bfl / percent / 30 / none", src)
-        self.assertNotIn("-> bfl / percent / 30 / preserve_seamless", src)
+        # v7 recommended defaults (2026-06-11): provider fal everywhere.
+        self.assertIn("-> fal / percent / 30 / none", src)
+        self.assertNotIn("/ percent / 30 / preserve_seamless", src)
 
     def test_get_merged_models_exempts_current_from_both_hide_paths(self):
         from kling_gui.config_panel import ModelFetcher

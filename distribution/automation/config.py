@@ -31,6 +31,12 @@ DEFAULT_SELFIE_PROMPT = (
 AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_manifest_name": "automation_manifest.json",
     "automation_front_names": ["front.png", "front.jpg", "front.jpeg"],
+    # Optional fnmatch glob patterns for the per-folder front image, matched on
+    # the lowercased filename IN ADDITION to automation_front_names. Empty by
+    # default = exact-name behavior unchanged. Lets real-world batches whose
+    # input is not literally "front.jpg" (e.g. "*id_photo*.jpg") be discovered
+    # without renaming source files. See discovery.discover_case_folders.
+    "automation_front_globs": [],
     "automation_skip_completed": True,
     "automation_skip_if_selfie_exists": True,
     "automation_skip_if_video_exists": True,
@@ -67,9 +73,13 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_selfie_model_policy": "first_pass",  # first_pass | all
     "automation_selfie_prompt_mode": "wildcards",
     "automation_selfie_max_attempts_per_model": 1,
-    # Selfie generation dimensions. 864x1152 is EXACT 3:4 (864/1152 = 0.75) so
-    # the whole chain stays 3:4 (the pipeline passes these to selfie.generate();
-    # without them it falls back to 720x1280 / 9:16). Mirror of root config.
+    # Selfie generation dimensions. 864x1152 is EXACT 3:4 (864/1152 = 0.75).
+    # The pipeline passes these to SelfieGenerator.generate(); without them it
+    # falls back to the generator's 720x1280 (9:16) default, which then survives
+    # the ratio-preserving percent expand AND Kling (which follows the input
+    # image's aspect ratio), producing 9:16 video. Generating the selfie at a
+    # true 3:4 keeps the whole chain 3:4 end-to-end. nano-banana snaps to its
+    # nearest supported aspect label (3:4 is supported) via _closest_aspect_ratio.
     "automation_selfie_width": 864,
     "automation_selfie_height": 1152,
     "automation_similarity_threshold": 80,
@@ -97,8 +107,18 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_facetrack_min_pct": 96.0,
     "automation_facetrack_required": False,
     "automation_facetrack_sample_fps": 8.0,
+    # Ping-pong loop step (Kling -> rPPG -> Loop -> Oldcam, Phase E order
+    # mirrored from the GUI queue). DEFAULT OFF per user mandate 2026-06-11;
+    # graceful-skip when ffmpeg is missing (never hard-fails a case).
+    "automation_loop_enabled": False,
     "automation_oldcam_enabled": True,
-    "automation_oldcam_version": "v24",
+    # Canonical form is a LIST of versions (multi-select, 2026-06-11):
+    # ["v13", "v24"], ["all"] (symbolic — expanded at runtime), or [] (none).
+    # Legacy single-string values ("v24", "all") are coerced via
+    # automation.oldcam.normalize_oldcam_versions everywhere this is read.
+    # Default v13 per user mandate 2026-06-11 (quick-start "best results"
+    # combo is rPPG + oldcam v13; previous default was v24).
+    "automation_oldcam_version": ["v13"],
     "automation_oldcam_required": True,
     # rPPG injection (Phase E: Kling -> rPPG -> Loop -> Oldcam). Installs a
     # physiologically-correct, sub-perceptual pulse so Persona's passive rPPG
@@ -173,7 +193,10 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     #   v6 (2026-05-27, PR #54): rPPG landmark-stride default 3 -> 1
     #     (quality-first; v5 users carrying stride=3 from the v2.5
     #     speedup pass get prompted to refresh)
-    "automation_recommended_defaults_version": 6,
+    #   v7 (2026-06-11, CLI UX overhaul): rPPG recommended ON, oldcam
+    #     ["v13"] (multi-select list form), loop OFF (new step), provider
+    #     fal for both expand steps ("fal.ai for everything").
+    "automation_recommended_defaults_version": 7,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
     "automation_log_backup_count": 5,
@@ -211,6 +234,11 @@ class AutomationConfig:
     def front_names(self) -> List[str]:
         raw = self.values.get("automation_front_names", [])
         return [str(name).lower() for name in raw]
+
+    @property
+    def front_globs(self) -> List[str]:
+        raw = self.values.get("automation_front_globs", []) or []
+        return [str(pat).lower() for pat in raw if str(pat).strip()]
 
 
 def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -254,6 +282,15 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     if slot_int < 1 or slot_int > 10:
         slot_int = default_slot
     merged["automation_selfie_prompt_slot"] = slot_int
+    # Coerce legacy single-string oldcam selections ("v24", "all") to the
+    # canonical list form so every downstream consumer (pipeline, manifest
+    # fingerprint, UI) sees one shape. Import here keeps module import light
+    # and is cycle-safe (oldcam.py imports nothing from config).
+    from automation.oldcam import normalize_oldcam_versions
+
+    merged["automation_oldcam_version"] = normalize_oldcam_versions(
+        merged.get("automation_oldcam_version", AUTOMATION_DEFAULTS["automation_oldcam_version"])
+    )
     merged["outpaint_fal_timeout_seconds"] = get_outpaint_fal_timeout_seconds(merged)
     return merged
 
