@@ -1206,7 +1206,9 @@ class AutoPipelineRunner:
         self.manifest.update_step(case_key, "selfie_generate", "running")
         if best_path:
             score_info = compute_face_similarity_details(str(extracted_path), best_path, report_cb=self.progress_cb)
-            best_score = int(score_info.get("score", 0))
+            # `or 0`: an error path can return {"score": None}; int(None)
+            # would crash the case (Gemini MED, PR #96).
+            best_score = int(score_info.get("score") or 0)
             best_similarity_meta = {
                 "score": score_info.get("score"),
                 "threshold": threshold,
@@ -1247,7 +1249,9 @@ class AutoPipelineRunner:
                     if not generated:
                         continue
                     score_info = compute_face_similarity_details(str(extracted_path), generated, report_cb=self.progress_cb)
-                    score = int(score_info.get("score", 0))
+                    # `or 0`: an error path can return {"score": None};
+                    # int(None) would crash the case (Gemini MED, PR #96).
+                    score = int(score_info.get("score") or 0)
                     similarity_meta = {
                         "score": score_info.get("score"),
                         "threshold": threshold,
