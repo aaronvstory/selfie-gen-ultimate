@@ -1852,6 +1852,10 @@ class AutoPipelineRunner:
                         skip_diagnosis=skip_diagnosis,
                         skip_kinematic_gate=skip_kinematic_gate,
                         landmark_stride=landmark_stride,
+                        # Wire verbose like every other run_rppg site — the
+                        # pre-pass (the longest GPU call) silently ignored
+                        # automation_verbose_logging (round-5 review).
+                        verbose=self.verbose_logging,
                     )
                     if injected and injected.exists():
                         rppg_base_path = injected
