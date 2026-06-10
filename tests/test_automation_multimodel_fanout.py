@@ -296,6 +296,32 @@ def test_abort_skips_remaining_branches(tmp_path, monkeypatch):
     assert list((tmp_path / "case-a" / "gen-videos").glob("*sim90*_k.mp4"))
 
 
+def test_abort_before_branches_reverts_case_for_resume(tmp_path, monkeypatch):
+    """Codex P1 (round 3): an abort landing BETWEEN the primary chain and
+    the fan-out loop must RAISE (case reverts to pending) — returning
+    normally finalized the case "completed", which resume then skipped, so
+    the selected branches never ran."""
+    runner, record, manifest, selfie, video = _build(
+        tmp_path, monkeypatch, models=[NANO, GPT], scores={NANO: 92, GPT: 88},
+    )
+
+    def oldcam_sets_abort(**kwargs):
+        runner.abort_event.set()  # fires during the PRIMARY oldcam stage
+        return []
+
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", oldcam_sets_abort)
+    stats = runner.run([record])
+
+    assert runner.stopped_reason == "aborted"
+    assert stats["completed"] == 0
+    case = manifest.data["cases"]["case-a"]
+    assert case["status"] == "pending"  # resumable — branches WILL run later
+    branches = case["steps"]["video_generate"]["meta"]["branches"]
+    assert [b["status"] for b in branches] == ["skipped"]
+    assert branches[0]["endpoint"] == GPT
+    assert branches[0]["error"] == "aborted"
+
+
 def test_branch_failure_never_fails_the_case(tmp_path, monkeypatch):
     runner, record, manifest, selfie, video = _build(
         tmp_path, monkeypatch, models=[NANO, GPT], scores={NANO: 92, GPT: 88},

@@ -138,6 +138,37 @@ def test_loop_failure_is_graceful_skip_and_case_completes(tmp_path, monkeypatch)
     assert str(oldcam_capture[0]["video_path"]).endswith("video.mp4")
 
 
+def test_rppg_prepass_reuses_existing_sibling_on_resume(tmp_path, monkeypatch):
+    """Codex P2 (round 3): the rPPG pre-pass used to be untracked — on a
+    resume after an abort, the minutes-long GPU injection re-ran from
+    scratch even though the clean-named ``{stem}-rppg{ext}`` sibling sat on
+    disk. With skip semantics the sibling is now reused and run_rppg is
+    NEVER invoked."""
+    def must_not_run(**kwargs):
+        raise AssertionError("run_rppg must not be called when the -rppg sibling exists")
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", must_not_run)
+    oldcam_capture = []
+    runner, record, manifest = _build_runner(
+        tmp_path,
+        monkeypatch,
+        extra_config={"automation_rppg_enabled": True},
+        oldcam_capture=oldcam_capture,
+    )
+
+    # Pre-seed the rPPG sibling next to where the fake Kling output lands.
+    video_dir = record.case_dir / "gen-videos"
+    video_dir.mkdir(exist_ok=True)
+    (video_dir / "video-rppg.mp4").write_bytes(b"rppg-mp4")
+
+    stats = runner.run([record])
+
+    assert stats["completed"] == 1
+    # Oldcam consumed the REUSED rPPG base, not the raw video.
+    assert len(oldcam_capture) == 1
+    assert str(oldcam_capture[0]["video_path"]).endswith("video-rppg.mp4")
+
+
 def test_rppg_then_loop_order(tmp_path, monkeypatch):
     """With rPPG AND loop enabled, the loop input must be the rPPG-injected
     base (Kling -> rPPG -> Loop -> Oldcam), and Oldcam gets the looped file."""

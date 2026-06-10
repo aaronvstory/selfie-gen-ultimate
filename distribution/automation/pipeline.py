@@ -299,19 +299,25 @@ class AutoPipelineRunner:
             return
         results: List[Dict[str, Any]] = []
         try:
-            for branch in extra_branches:
+            for index, branch in enumerate(extra_branches):
                 endpoint = branch["endpoint"]
                 if self.abort_event.is_set():
-                    # [a] must stop branch fan-out too — without this check
-                    # the run kept spending on paid branch work after the
-                    # user aborted (Codex P2, PR #96).
+                    # [a] must stop branch fan-out too — and it must RAISE,
+                    # not continue: returning normally would let the caller
+                    # finalize the case "completed", which resume then
+                    # SKIPS — the selected branches would never run
+                    # (Codex P1, round 3). Record every remaining branch
+                    # first (the finally persists), then propagate so the
+                    # case reverts to pending for resume.
+                    remaining = [b["endpoint"] for b in extra_branches[index:]]
                     self._report(
-                        f"[{case_key}] abort requested — remaining fan-out branch(es) skipped "
-                        f"({endpoint}{'…' if branch is not extra_branches[-1] else ''}).",
+                        f"[{case_key}] abort requested — remaining fan-out branch(es) "
+                        f"recorded as aborted: {', '.join(remaining)}.",
                         "warning",
                     )
-                    results.append({"endpoint": endpoint, "status": "skipped", "error": "aborted"})
-                    continue
+                    for rem in remaining:
+                        results.append({"endpoint": rem, "status": "skipped", "error": "aborted"})
+                    raise AutomationAbort("aborted between fan-out branches")
                 self._report(
                     f"[{case_key}] fan-out branch: {endpoint} (score {branch['score']})",
                     "info",
@@ -1762,38 +1768,59 @@ class AutoPipelineRunner:
                 and video_out_path.suffix.lower() == ".mp4"
                 and not is_rppg_artifact(video_out_path)
             ):
-                rppg_mode = str(self.automation.get("automation_rppg_mode") or "iterative").strip().lower()
-                iterative = rppg_mode == "iterative"
-                iterate_from_baseline = self._read_bool("automation_rppg_iterate_from_baseline", True)
-                skip_diagnosis = self._read_bool("automation_rppg_skip_diagnosis", True)
-                skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
-                keep_metrics = self._read_bool("automation_rppg_metrics_in_filename", False)
-                # _read_int is the safe coercion helper (used by every
-                # other automation_*_int key). The naive `int(... or 1)`
-                # form would crash the pipeline mid-case on a stringy
-                # config value AND silently rewrite a legitimate ``0``
-                # to the default. (Subagent HIGH on PR #52 round 3.)
-                # Default 1 from 2026-05-27 v2.6 quality-first revert.
-                landmark_stride = self._read_int(
-                    "automation_rppg_landmark_stride", 1, min_value=1,
+                # Resume reuse (Codex P2, round 3): the pre-pass used to be
+                # untracked, so an abort right after a (minutes-long, GPU)
+                # injection re-ran it from scratch on resume even though the
+                # clean-named ``{stem}-rppg{ext}`` sibling sat on disk.
+                existing_rppg = video_out_path.with_name(
+                    f"{video_out_path.stem}-rppg{video_out_path.suffix}"
                 )
-                injected = run_rppg(
-                    video_path=video_out_path,
-                    repo_root=Path(__file__).resolve().parent.parent,
-                    progress_cb=self.progress_cb,
-                    keep_metrics=keep_metrics,
-                    iterative=iterative,
-                    iterate_from_baseline=iterate_from_baseline,
-                    skip_diagnosis=skip_diagnosis,
-                    skip_kinematic_gate=skip_kinematic_gate,
-                    landmark_stride=landmark_stride,
-                )
-                if injected and injected.exists():
-                    rppg_base_path = injected
-                    self.logger.info(
-                        "case %s rppg-first: %s -> %s",
-                        case_key, video_out_path.name, injected.name,
+                if reprocess_mode == "skip" and existing_rppg.exists():
+                    rppg_base_path = existing_rppg
+                    self._report(
+                        f"[{case_key}] Reusing existing rPPG base: {existing_rppg.name}",
+                        "info",
                     )
+                else:
+                    # Track the pre-pass as the active step: the dashboard
+                    # shows "rppg" instead of lying with the prior step, and
+                    # the transition doubles as an abort checkpoint BEFORE
+                    # the expensive injection (Codex P2, round 3). Step 8
+                    # finalizes the rppg step's terminal status as before.
+                    self._set_active_step(case_entry, "rppg")
+                    self.manifest.update_step(case_key, "rppg", "running")
+                    rppg_mode = str(self.automation.get("automation_rppg_mode") or "iterative").strip().lower()
+                    iterative = rppg_mode == "iterative"
+                    iterate_from_baseline = self._read_bool("automation_rppg_iterate_from_baseline", True)
+                    skip_diagnosis = self._read_bool("automation_rppg_skip_diagnosis", True)
+                    skip_kinematic_gate = self._read_bool("automation_rppg_skip_kinematic_gate", True)
+                    keep_metrics = self._read_bool("automation_rppg_metrics_in_filename", False)
+                    # _read_int is the safe coercion helper (used by every
+                    # other automation_*_int key). The naive `int(... or 1)`
+                    # form would crash the pipeline mid-case on a stringy
+                    # config value AND silently rewrite a legitimate ``0``
+                    # to the default. (Subagent HIGH on PR #52 round 3.)
+                    # Default 1 from 2026-05-27 v2.6 quality-first revert.
+                    landmark_stride = self._read_int(
+                        "automation_rppg_landmark_stride", 1, min_value=1,
+                    )
+                    injected = run_rppg(
+                        video_path=video_out_path,
+                        repo_root=Path(__file__).resolve().parent.parent,
+                        progress_cb=self.progress_cb,
+                        keep_metrics=keep_metrics,
+                        iterative=iterative,
+                        iterate_from_baseline=iterate_from_baseline,
+                        skip_diagnosis=skip_diagnosis,
+                        skip_kinematic_gate=skip_kinematic_gate,
+                        landmark_stride=landmark_stride,
+                    )
+                    if injected and injected.exists():
+                        rppg_base_path = injected
+                        self.logger.info(
+                            "case %s rppg-first: %s -> %s",
+                            case_key, video_out_path.name, injected.name,
+                        )
 
         # Step 7-pre-b: optional ping-pong loop (Phase E order:
         # Kling -> rPPG -> Loop -> Oldcam, mirroring the GUI queue).
