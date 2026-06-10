@@ -107,7 +107,7 @@ from automation.config import (
 )
 from automation.discovery import discover_case_folders, detect_existing_outputs
 from automation.logger import resolve_automation_log_path
-from automation.manifest import AutomationManifest
+from automation.manifest import AutomationManifest, STEP_NAMES
 from automation.pipeline import AutoPipelineRunner
 from automation.oldcam import (
     _version_key as _oldcam_sort_key,
@@ -2446,6 +2446,8 @@ class KlingAutomationUI:
         print("  \033[93m5\033[0m   Dry run")
         print("  \033[93m6\033[0m   Run / resume automation")
         print("  \033[93m7\033[0m   Print manifest path")
+        print("  \033[93m8\033[0m   Quick edit main settings")
+        print("  \033[93m9\033[0m   View full prompts (selfie + video)")
         print("  \033[93m0\033[0m   Back")
         print()
         print("\033[92m➤ Select option:\033[0m ", end="", flush=True)
@@ -3424,40 +3426,9 @@ class KlingAutomationUI:
             "Generate identity-locked selfies; multiple attempts are gated by the similarity threshold.",
         )
         self._qs_bool("Selfie generation enabled?", "automation_selfie_enabled", default=True)
-        current_models = list(self.config.get("automation_selfie_models", []))
-        current_label = ", ".join(current_models) if current_models else "(none)"
-        preset = questionary.select(
-            "Selfie model set:",
-            qmark="◆",
-            instruction=f"(current: {current_label})",
-            choices=[
-                questionary.Choice("Nano Banana 2 Edit only", "nano"),
-                questionary.Choice("GPT Image 2 Edit only", "gpt"),
-                questionary.Choice("Both (Nano Banana + GPT Image 2)", "both"),
-                questionary.Choice("Custom comma-separated endpoints", "custom"),
-                questionary.Choice("Keep current", "_keep"),
-            ],
-            default="_keep",
-            style=KLING_QUESTIONARY_STYLE,
-        ).ask()
-        preset = _qs_or_abort(preset)  # B1: Esc aborts the section, not silent fall-through
-        if preset == "nano":
-            self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
-        elif preset == "gpt":
-            self.config["automation_selfie_models"] = ["openai/gpt-image-2/edit"]
-        elif preset == "both":
-            self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit", "openai/gpt-image-2/edit"]
-        elif preset == "custom":
-            raw = questionary.text(
-                "Custom endpoints (comma-separated):",
-                qmark="◆",
-                style=KLING_QUESTIONARY_STYLE,
-            ).ask()
-            raw = _qs_or_abort(raw)  # B2: Esc aborts rather than falling through
-            if raw:
-                models = [m.strip() for m in raw.split(",") if m.strip()]
-                if models:
-                    self.config["automation_selfie_models"] = models
+        # Shared picker (also used by the option-1 quick editor) — multiple
+        # models selected = one full chain per model (fan-out).
+        self._qs_pick_selfie_models()
         self._qs_choice("Model policy:", "automation_selfie_model_policy",
                         choices=["first_pass", "all"], default="first_pass")
         self._qs_int("Max attempts per model:", "automation_selfie_max_attempts_per_model",
@@ -3980,6 +3951,9 @@ class KlingAutomationUI:
               f"{get_outpaint_fal_timeout_seconds(self.config)}")
         for line in self._automation_status_lines():
             print(f"  {line}")
+        # Same MAIN-settings summary the interactive table shows (Req:
+        # rPPG + exact oldcam versions visible in every preflight).
+        self._print_run_settings_plain()
         selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
         prompt_preview = selfie_prompt if len(selfie_prompt) <= 160 else f"{selfie_prompt[:160]}..."
         print(f"  selfie prompt slot/source: {selfie_slot} / {selfie_source}")
@@ -4032,6 +4006,294 @@ class KlingAutomationUI:
             return 2
         return 0
 
+    # ------------------------------------------------------------------
+    # Pre-run settings visibility (2026-06-11 mandate: a real batch run
+    # fanned out to ALL oldcam versions with NO rPPG because nothing in
+    # the option-1 flow surfaced those settings before approval).
+    # ------------------------------------------------------------------
+
+    def _run_settings_rows(self) -> List[Tuple[str, str, str]]:
+        """(label, value, rich-style) rows for the MAIN run settings — the
+        single source for the Rich table, the plain headless variant, and
+        the quick editor's re-render."""
+        c = self.config
+        rppg_on = bool(c.get("automation_rppg_enabled", False))
+        loop_on = bool(c.get("automation_loop_enabled", False))
+        oldcam_required = bool(c.get("automation_oldcam_required", False))
+        oldcam_display = self._format_oldcam_versions()
+        model_labels = self._selfie_model_label_map()
+        selfie_models = [model_labels.get(x, x) for x in list(c.get("automation_selfie_models", []))]
+        selfie_slot, _prompt, selfie_source = self._get_selected_selfie_prompt()
+        front_provider = self._resolve_provider(str(c.get("automation_front_expand_provider", "auto")))
+        selfie_provider = self._resolve_provider(str(c.get("automation_selfie_expand_provider", "auto")))
+        default_composite = c.get("outpaint_composite_mode", "preserve_seamless")
+        front_passes = c.get("automation_front_expand_passes", 2)
+        rows = [
+            ("rPPG injection", "ON" if rppg_on else "OFF — no pulse will be injected",
+             "bold green" if rppg_on else "bold red"),
+            ("Oldcam versions", f"{oldcam_display}  ({'required' if oldcam_required else 'optional'})",
+             "bold red" if oldcam_display == "none selected" else ("bold yellow" if oldcam_display.startswith("all") else "bold green")),
+            ("Loop (ping-pong)", "ON" if loop_on else "off", "green" if loop_on else "dim"),
+            ("Video model", f"{c.get('model_display_name') or c.get('current_model', '?')}  ·  kling prompt slot {c.get('current_prompt_slot', DEFAULT_KLING_PROMPT_SLOT)}", ""),
+            ("Selfie model(s)", f"{', '.join(selfie_models) if selfie_models else '(none)'}"
+             + ("  ·  FAN-OUT: one full chain per model" if len(selfie_models) > 1 else ""),
+             "bold yellow" if len(selfie_models) > 1 else ""),
+            ("Selfie prompt", f"slot {selfie_slot} ({selfie_source})", ""),
+            ("Step 0 front expand",
+             f"{front_provider} · {c.get('automation_front_expand_mode', 'percent')} · "
+             f"blend={c.get('automation_front_expand_composite_mode', default_composite)} · "
+             f"{c.get('automation_front_expand_percent', 70)}% · "
+             f"run {front_passes}x" + (" (2-pass)" if str(front_passes) == "2" else ""),
+             ""),
+            ("Step 0 crop factor", str(c.get("automation_crop_multiplier", 1.5)), ""),
+            ("Step 2.5 selfie expand",
+             f"{selfie_provider} · {c.get('automation_selfie_expand_mode', 'percent')} · "
+             f"blend={c.get('automation_selfie_expand_composite_mode', 'none')} · "
+             f"{c.get('automation_selfie_expand_percent', 30)}%",
+             ""),
+            ("Similarity threshold", str(c.get("automation_similarity_threshold", 80)), ""),
+            ("Batch scope", f"max {self._read_max_cases_setting()} case(s) · reprocess={c.get('automation_reprocess_mode', 'skip')}", ""),
+            ("Root folder", str(self.automation_root_folder or "(not set)"), "dim"),
+        ]
+        return rows
+
+    def _render_run_settings_table(self, title: str = "Main run settings") -> None:
+        table = Table(title=title, show_header=False, expand=False)
+        table.add_column("Setting", style="cyan", no_wrap=True)
+        table.add_column("Value")
+        for label, value, style in self._run_settings_rows():
+            table.add_row(label, f"[{style}]{value}[/{style}]" if style else value)
+        _RICH_CONSOLE.print(table)
+
+    def _print_run_settings_plain(self) -> None:
+        """Plain-text variant for headless --batch / non-TTY preflight."""
+        print("\nMain run settings:")
+        for label, value, _style in self._run_settings_rows():
+            print(f"  {label}: {value}")
+
+    def _show_full_prompts(self) -> None:
+        """Show the COMPLETE selfie + kling video prompts (the table only
+        shows slot numbers; the user must be able to read the full text
+        before paying for a batch)."""
+        selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
+        _RICH_CONSOLE.print(Panel(
+            selfie_prompt or "(empty)",
+            title=f"Selfie prompt — slot {selfie_slot} ({selfie_source})",
+            border_style="cyan",
+        ))
+        kling_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
+        kling_prompt = str(self.config.get("saved_prompts", {}).get(kling_slot, "") or "")
+        kling_negative = str(self.config.get("negative_prompts", {}).get(kling_slot, "") or "")
+        _RICH_CONSOLE.print(Panel(
+            kling_prompt or "(empty)",
+            title=f"Kling video prompt — slot {kling_slot}",
+            border_style="magenta",
+        ))
+        _RICH_CONSOLE.print(Panel(
+            kling_negative or "(empty)",
+            title=f"Kling negative prompt — slot {kling_slot}",
+            border_style="red",
+        ))
+
+    def _qs_pick_selfie_models(self) -> None:
+        """Selfie model-set picker (preset or custom endpoints). Shared by
+        the settings-editor Selfie section and the option-1 quick editor.
+        Raises _QuestionarySectionAbort on Esc."""
+        current_models = list(self.config.get("automation_selfie_models", []))
+        current_label = ", ".join(current_models) if current_models else "(none)"
+        preset = questionary.select(
+            "Selfie model set:",
+            qmark="◆",
+            instruction=f"(current: {current_label} · multiple models = one full chain per model)",
+            choices=[
+                questionary.Choice("Nano Banana 2 Edit only", "nano"),
+                questionary.Choice("GPT Image 2 Edit only", "gpt"),
+                questionary.Choice("Both (Nano Banana + GPT Image 2) — fan-out", "both"),
+                questionary.Choice("Custom comma-separated endpoints", "custom"),
+                questionary.Choice("Keep current", "_keep"),
+            ],
+            default="_keep",
+            style=KLING_QUESTIONARY_STYLE,
+        ).ask()
+        preset = _qs_or_abort(preset)  # B1: Esc aborts the section, not silent fall-through
+        if preset == "nano":
+            self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit"]
+        elif preset == "gpt":
+            self.config["automation_selfie_models"] = ["openai/gpt-image-2/edit"]
+        elif preset == "both":
+            self.config["automation_selfie_models"] = ["fal-ai/nano-banana-2/edit", "openai/gpt-image-2/edit"]
+        elif preset == "custom":
+            raw = questionary.text(
+                "Custom endpoints (comma-separated):",
+                qmark="◆",
+                style=KLING_QUESTIONARY_STYLE,
+            ).ask()
+            raw = _qs_or_abort(raw)  # B2: Esc aborts rather than falling through
+            if raw:
+                models = [m.strip() for m in raw.split(",") if m.strip()]
+                if models:
+                    self.config["automation_selfie_models"] = models
+
+    def _quick_edit_settings(self) -> None:
+        """One- or two-keystroke editing of the MAIN settings from option 1,
+        re-rendering the settings table after each change. Persists on exit."""
+        if self._use_legacy_prompt_ui():
+            # Non-TTY: the grouped legacy walker already covers everything.
+            self._edit_automation_settings()
+            return
+        while True:
+            self._render_run_settings_table(title="Quick settings")
+            c = self.config
+            rppg_on = bool(c.get("automation_rppg_enabled", False))
+            loop_on = bool(c.get("automation_loop_enabled", False))
+            choice = self._q_select(
+                "Quick edit:",
+                [
+                    (f"💉 rPPG injection: {'ON' if rppg_on else 'OFF'} — toggle", "rppg"),
+                    (f"📼 Oldcam versions: {self._format_oldcam_versions()} — pick (spacebar)", "oldcam"),
+                    (f"🔁 Loop: {'ON' if loop_on else 'off'} — toggle", "loop"),
+                    ("🎬 Video model…", "video_model"),
+                    ("🎬 Kling prompt slot / text…", "kling_prompt"),
+                    ("✨ Selfie model set…", "selfie_models"),
+                    ("✨ Selfie prompt slot / text…", "selfie_prompt"),
+                    ("🖼  Step 0 front expand (provider/blend/percent/passes)…", "front_expand"),
+                    ("👤 Step 0 crop factor…", "crop"),
+                    ("➕ Step 2.5 selfie expand (provider/blend/percent)…", "selfie_expand"),
+                    ("🎯 Similarity threshold…", "similarity"),
+                    ("📜 View FULL prompts (selfie + video)", "prompts"),
+                    ("⚙️  All settings (full editor)…", "all"),
+                    ("💾 Done (save and return)", "done"),
+                ],
+                instruction="↑/↓ · Enter · Esc saves and returns",
+            )
+            if choice in (None, "done"):
+                self.save_config()
+                return
+            try:
+                if choice == "rppg":
+                    c["automation_rppg_enabled"] = not rppg_on
+                    print(f"  rPPG injection -> {'ON' if c['automation_rppg_enabled'] else 'OFF'}")
+                elif choice == "oldcam":
+                    self._qs_pick_oldcam_versions()
+                elif choice == "loop":
+                    c["automation_loop_enabled"] = not loop_on
+                    print(f"  Loop -> {'ON' if c['automation_loop_enabled'] else 'off'}")
+                elif choice == "video_model":
+                    self.select_model()
+                elif choice == "kling_prompt":
+                    sub = self._q_select(
+                        "Kling prompt:",
+                        [
+                            ("🎚  Swap prompt slot", "swap"),
+                            ("✏  Edit prompt text", "edit"),
+                            ("↩  Back", "back"),
+                        ],
+                    )
+                    if sub == "swap":
+                        self.swap_prompt_slot()
+                    elif sub == "edit":
+                        self.quick_edit_prompt()
+                elif choice == "selfie_models":
+                    self._qs_pick_selfie_models()
+                elif choice == "selfie_prompt":
+                    self._qs_section_selfie_prompt_only()
+                elif choice == "front_expand":
+                    self._qs_choice("Provider:", "automation_front_expand_provider",
+                                    choices=_EXPAND_PROVIDER_OPTIONS, default="fal")
+                    self._qs_choice("Blend (composite) mode:", "automation_front_expand_composite_mode",
+                                    choices=_COMPOSITE_MODE_OPTIONS, default="preserve_seamless")
+                    self._qs_int("Expand percent:", "automation_front_expand_percent",
+                                 default=70, validator=lambda v: v >= 0)
+                    self._qs_choice("Run expansion how many times (passes):", "automation_front_expand_passes",
+                                    choices=["1", "2"], default="2", cast_fn=int)
+                elif choice == "crop":
+                    self._qs_float("Crop multiplier (extraction factor):", "automation_crop_multiplier",
+                                   default=1.5, validator=lambda v: v > 0)
+                elif choice == "selfie_expand":
+                    self._qs_choice("Provider:", "automation_selfie_expand_provider",
+                                    choices=_EXPAND_PROVIDER_OPTIONS, default="fal")
+                    self._qs_choice("Blend (composite) mode:", "automation_selfie_expand_composite_mode",
+                                    choices=_COMPOSITE_MODE_OPTIONS, default="none")
+                    self._qs_int("Expand percent:", "automation_selfie_expand_percent",
+                                 default=30, validator=lambda v: v >= 0)
+                elif choice == "similarity":
+                    self._qs_int("Similarity threshold (0-100):", "automation_similarity_threshold",
+                                 default=80, validator=lambda v: 0 <= v <= 100)
+                elif choice == "prompts":
+                    self._show_full_prompts()
+                    self.pause_review("Press Enter to continue...")
+                elif choice == "all":
+                    self._edit_automation_settings()
+            except _QuestionarySectionAbort:
+                continue  # Esc inside a field -> back to the quick menu
+            self.save_config()
+
+    def _qs_section_selfie_prompt_only(self) -> None:
+        """The selfie prompt slot/edit sub-flow, runnable standalone from the
+        quick editor (extracted behavior parity with _qs_section_selfie)."""
+        self._ensure_selfie_prompt_slots()
+        current_slot = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
+        current_prompt = str(self.config.get("automation_selfie_prompts", {}).get(str(current_slot), "") or "")
+        preview = (current_prompt[:80] + "...") if len(current_prompt) > 80 else current_prompt
+        action = self._q_select(
+            "Selfie prompt:",
+            [
+                ("👁  View full prompt", "view"),
+                ("🔢 Switch to a different slot (1-10)", "switch"),
+                ("✏  Edit the active prompt text", "edit"),
+                ("↩  Keep as-is", "_keep"),
+            ],
+            instruction=f"(slot {current_slot}: \"{preview}\")",
+        )
+        if action == "view":
+            self._show_full_prompts()
+            self.pause_review("Press Enter to continue...")
+        elif action == "switch":
+            slot_raw = self._q_text(
+                "New slot (1-10):",
+                validate=lambda t: (
+                    True if (not t.strip() or (t.strip().isdigit() and 1 <= int(t.strip()) <= 10))
+                    else "Please enter a number between 1 and 10."
+                ),
+            )
+            if slot_raw and slot_raw.strip():
+                self.config["automation_selfie_prompt_slot"] = int(slot_raw.strip())
+        elif action == "edit":
+            new_prompt = self._q_text("New prompt text:", default=current_prompt)
+            if new_prompt is not None:
+                self.config["automation_selfie_prompts"][str(current_slot)] = new_prompt
+
+    def _resume_intelligence_lines(self, records, manifest: AutomationManifest) -> List[str]:
+        """Human lines describing what a Run/Resume will actually do with
+        partially-processed cases (which step each in-progress case resumes
+        at) — manifest-based, surfaced BEFORE approval."""
+        lines: List[str] = []
+        cases = manifest.data.get("cases", {})
+        resume_points: Dict[str, int] = {}
+        for record in records:
+            entry = cases.get(record.relative_key)
+            if not entry:
+                continue
+            if entry.get("status") in {"complete", "skipped"}:
+                continue
+            steps = entry.get("steps", {})
+            ran_any = any(
+                (steps.get(name, {}) or {}).get("status") not in (None, "pending")
+                for name in steps
+            )
+            if not ran_any:
+                continue
+            next_step = next(
+                (name for name in STEP_NAMES
+                 if (steps.get(name, {}) or {}).get("status") in (None, "pending", "running", "failed")),
+                None,
+            )
+            label = next_step or "(re-validate)"
+            resume_points[label] = resume_points.get(label, 0) + 1
+        for step, count in sorted(resume_points.items()):
+            lines.append(f"{count} case(s) resume at: {step}")
+        return lines
+
     def _run_resume_automation(self):
         if not self.automation_root_folder:
             self.print_red("Set automation root folder first.")
@@ -4043,6 +4305,16 @@ class KlingAutomationUI:
             self.print_red("Automation root path does not exist.")
             self.pause_review("Press Enter to continue...")
             return
+        if self._use_legacy_prompt_ui():
+            return self._run_resume_automation_legacy(root)
+        return self._run_resume_automation_interactive(root)
+
+    def _discover_and_load_manifest(self, root: Path, *, interactive: bool):
+        """Shared discover + manifest load. Returns (records, manifest) or
+        (None, None) after printing the reason. The interactive path offers
+        the fingerprint-mismatch RECREATE prompt (the legacy/non-TTY path
+        keeps the historical hard-error so tests/cron behavior is
+        unchanged)."""
         records = discover_case_folders(
             root,
             self.config.get("automation_front_names", []),
@@ -4051,17 +4323,52 @@ class KlingAutomationUI:
         if not records:
             self.print_yellow("No case folders found.")
             self.pause_review("Press Enter to continue...")
-            return
-
+            return None, None
+        snapshot = {k: v for k, v in self.config.items() if str(k).startswith("automation_")}
         try:
             manifest = AutomationManifest.create_or_load(
                 manifest_path=self._automation_manifest_path(),
                 root_dir=root,
-                config_snapshot={k: v for k, v in self.config.items() if str(k).startswith("automation_")},
+                config_snapshot=snapshot,
             )
+        except ValueError as exc:
+            if interactive and "fingerprint mismatch" in str(exc):
+                # Settings changed since the manifest was created (e.g. via
+                # quick edit). Surface the change and offer the same
+                # backup-and-recreate path headless --batch already has —
+                # previously this was an interactive dead-end.
+                self.print_yellow("Run settings changed since this manifest was created:")
+                print(f"  {exc}")
+                if self._confirm(
+                    "Back up the old manifest and start fresh with the new settings?",
+                    default=True,
+                ):
+                    manifest = AutomationManifest.create_fresh(
+                        manifest_path=self._automation_manifest_path(),
+                        root_dir=root,
+                        config_snapshot=snapshot,
+                    )
+                    print("  Old manifest backed up (.superseded.*); fresh manifest created.")
+                else:
+                    self.print_yellow("Run cancelled (manifest unchanged).")
+                    self.pause_review("Press Enter to continue...")
+                    return None, None
+            else:
+                self.print_red(f"Failed to load manifest: {exc}")
+                self.pause_review("Press Enter to continue...")
+                return None, None
         except Exception as exc:
             self.print_red(f"Failed to load manifest: {exc}")
             self.pause_review("Press Enter to continue...")
+            return None, None
+        return records, manifest
+
+    def _run_resume_automation_legacy(self, root: Path):
+        """Non-TTY / legacy path: behavior-identical to the historical flow
+        (plain prints + single y/N confirm) — test choreography depends on
+        it."""
+        records, manifest = self._discover_and_load_manifest(root, interactive=False)
+        if not records:
             return
         rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
         print("\nRun preview:")
@@ -4080,7 +4387,57 @@ class KlingAutomationUI:
             print("Run cancelled.")
             self.pause_review("Press Enter to continue...")
             return
+        self._execute_automation_run(manifest, records, runnable_cases)
 
+    def _run_resume_automation_interactive(self, root: Path):
+        """Interactive approval loop: case preview + the MAIN-settings table
+        + [Approve / Quick edit / View full prompts / Cancel]. Quick edits
+        reload the manifest (they may change the run fingerprint)."""
+        while True:
+            records, manifest = self._discover_and_load_manifest(root, interactive=True)
+            if not records:
+                return
+            rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
+            preview = Table(title="Run preview", show_header=False)
+            preview.add_column("k", style="cyan")
+            preview.add_column("v")
+            preview.add_row("Discovered", str(counts["discovered"]))
+            preview.add_row("Completed total", str(counts["completed_total"]))
+            preview.add_row("Pending/runnable", str(counts["pending"]))
+            preview.add_row("Will run this batch", f"[bold]{counts['will_run']}[/bold]")
+            preview.add_row("Manual review / failed", f"{counts['manual_review']} / {counts['failed']}")
+            for line in self._resume_intelligence_lines(records, manifest):
+                preview.add_row("Resume", line)
+            _RICH_CONSOLE.print(preview)
+            self._render_run_settings_table(title="Main run settings — review before approving")
+            if not runnable_cases:
+                self.print_yellow("No runnable cases for this batch.")
+                self.pause_review("Press Enter to continue...")
+                return
+            action = self._q_select(
+                "Start the batch with these settings?",
+                [
+                    (f"✅ Approve & run ({counts['will_run']} case(s))", "run"),
+                    ("⚡ Quick edit settings first", "edit"),
+                    ("📜 View FULL prompts (selfie + video)", "prompts"),
+                    ("✗ Cancel", "cancel"),
+                ],
+            )
+            if action in (None, "cancel"):
+                print("Run cancelled.")
+                return
+            if action == "edit":
+                self._quick_edit_settings()
+                continue  # re-discover + reload manifest (fingerprint may have changed)
+            if action == "prompts":
+                self._show_full_prompts()
+                self.pause_review("Press Enter to continue...")
+                continue
+            break
+        self._execute_automation_run(manifest, records, runnable_cases)
+
+    def _execute_automation_run(self, manifest: AutomationManifest, records, runnable_cases) -> None:
+        """Shared validate -> preflight echo -> live run -> summary tail."""
         self.config["automation_root_folder"] = self.automation_root_folder
         runner = AutoPipelineRunner(
             config=self.config,
@@ -4276,6 +4633,11 @@ class KlingAutomationUI:
                 manifest_path = self._automation_manifest_path()
                 print(f"\nManifest path: {manifest_path if manifest_path else '(set root first)'}")
                 self.pause_review("\nPress Enter to continue...")
+            elif choice == "8":
+                self._quick_edit_settings()
+            elif choice == "9":
+                self._show_full_prompts()
+                self.pause_review("\nPress Enter to continue...")
             else:
                 self.print_red("Unknown option.")
                 time.sleep(1)
@@ -4454,27 +4816,35 @@ class KlingAutomationUI:
                 # Closed/piped stdin (no input available) -> behave like "Back"
                 # rather than crashing the menu loop (CodeRabbit, PR #94).
                 return "0"
-        # Questionary path: render via the shared _q_menu toolkit so the header /
-        # status panel are drawn once (no per-loop double-render) and the styling
-        # matches every other menu (E2). Esc returns None -> treat as Back.
-        status = [f"Root folder: {self.automation_root_folder or '(not set)'}"]
-        status.extend(self._automation_status_lines())
+        # Questionary path: header + the MAIN-settings Rich table (2026-06-11
+        # mandate — rPPG/oldcam/models/providers must be impossible to miss
+        # when entering option 1), then the arrow menu. Esc -> Back.
+        self.display_header()
+        self.print_magenta("═" * 79)
+        _t = "END-TO-END AUTO PIPELINE"
+        self.print_magenta(f"{' ' * max(0, (79 - len(_t)) // 2)}{_t}")
+        self.print_magenta("═" * 79)
+        print()
+        self._render_run_settings_table()
         current_version = int(self.config.get("automation_recommended_defaults_version", 0) or 0)
         if current_version < RECOMMENDED_DEFAULTS_VERSION:
-            status.append(f"Recommendation: apply recommended defaults (target v{RECOMMENDED_DEFAULTS_VERSION}).")
+            print(f"  \033[93mRecommendation:\033[0m apply recommended defaults (target v{RECOMMENDED_DEFAULTS_VERSION}).")
+            print()
         answer = self._q_menu(
             "End-to-End Auto Pipeline",
             [
+                ("▶️   Run / resume automation", "6"),
+                ("⚡  Quick edit main settings", "8"),
+                ("📜  View full prompts (selfie + video)", "9"),
                 ("📂  Select automation root folder", "1"),
                 ("🔍  Scan / preview cases", "2"),
                 ("⭐  Apply recommended automation defaults", "3"),
-                ("⚙️   Edit automation settings", "4"),
+                ("⚙️   Edit ALL automation settings", "4"),
                 ("🧪  Dry run", "5"),
-                ("▶️   Run / resume automation", "6"),
                 ("📄  Print manifest path", "7"),
                 ("↩️   Back", "0"),
             ],
-            status_lines=status,
+            show_header=False,
         )
         return answer if answer is not None else "0"
 
