@@ -253,9 +253,10 @@ def test_branch_marks_failed_when_required_oldcam_produces_nothing(tmp_path, mon
 
 
 def test_abort_skips_remaining_branches(tmp_path, monkeypatch):
-    """Codex P2 (PR #96): [a] abort must stop fan-out too — branches not
-    yet started are recorded as skipped/aborted instead of continuing to
-    spend on paid work."""
+    """Codex P2 + Gemini HIGH/MED (PR #96): [a] abort must stop fan-out at
+    the next branch-stage checkpoint, the partial branch records must STILL
+    be persisted (the finally — losing them costs paid regeneration on
+    resume), and the case reverts to pending for resume."""
     THIRD = "vendor-x/third-model/edit"
     runner, record, manifest, selfie, video = _build(
         tmp_path,
@@ -274,12 +275,22 @@ def test_abort_skips_remaining_branches(tmp_path, monkeypatch):
     monkeypatch.setattr(StemEchoVideo, "create_kling_generation", abort_during_first_branch)
     stats = runner.run([record])
 
-    assert stats["completed"] == 1  # primary chain finished before the abort
-    branches = manifest.data["cases"]["case-a"]["steps"]["video_generate"]["meta"]["branches"]
+    # The abort propagates from the branch chain's next stage checkpoint
+    # (oldcam), so the run stops and the case reverts to "pending" — every
+    # completed step (the ENTIRE primary chain) is preserved for resume.
+    assert runner.stopped_reason == "aborted"
+    assert stats["completed"] == 0
+    case = manifest.data["cases"]["case-a"]
+    assert case["status"] == "pending"
+    assert case["steps"]["video_generate"]["status"] == "complete"  # primary work kept
+    # The finally persisted the partial branch records despite the abort.
+    branches = case["steps"]["video_generate"]["meta"]["branches"]
     by_endpoint = {b["endpoint"]: b for b in branches}
-    assert by_endpoint[GPT]["status"] == "complete"  # in-flight branch finished its chain
-    assert by_endpoint[THIRD]["status"] == "skipped"
-    assert by_endpoint[THIRD]["error"] == "aborted"
+    assert by_endpoint[GPT]["status"] == "skipped"
+    assert by_endpoint[GPT]["error"] == "aborted"
+    assert THIRD not in by_endpoint  # never started; rebuilt on resume
+    # Branch 1's paid video DID land on disk before the abort -> reusable.
+    assert list((tmp_path / "case-a" / "gen-videos").glob("*sim90*_k.mp4"))
 
 
 def test_branch_failure_never_fails_the_case(tmp_path, monkeypatch):

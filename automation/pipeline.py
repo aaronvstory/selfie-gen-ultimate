@@ -298,56 +298,63 @@ class AutoPipelineRunner:
         if not extra_branches:
             return
         results: List[Dict[str, Any]] = []
-        for branch in extra_branches:
-            endpoint = branch["endpoint"]
-            if self.abort_event.is_set():
-                # [a] must stop branch fan-out too — without this check the
-                # run kept spending on paid branch outpaint/video/post work
-                # after the user aborted (Codex P2, PR #96).
-                self._report(
-                    f"[{case_key}] abort requested — remaining fan-out branch(es) skipped "
-                    f"({endpoint}{'…' if branch is not extra_branches[-1] else ''}).",
-                    "warning",
-                )
-                results.append({"endpoint": endpoint, "status": "skipped", "error": "aborted"})
-                continue
-            self._report(
-                f"[{case_key}] fan-out branch: {endpoint} (score {branch['score']})",
-                "info",
-            )
-            try:
-                results.append(
-                    self._run_branch_chain(
-                        case_key=case_key,
-                        case_dir=case_dir,
-                        branch=branch,
-                        reprocess_mode=reprocess_mode,
-                        resolved_selfie_provider=resolved_selfie_provider,
-                        selfie_composite_mode=selfie_composite_mode,
+        try:
+            for branch in extra_branches:
+                endpoint = branch["endpoint"]
+                if self.abort_event.is_set():
+                    # [a] must stop branch fan-out too — without this check
+                    # the run kept spending on paid branch work after the
+                    # user aborted (Codex P2, PR #96).
+                    self._report(
+                        f"[{case_key}] abort requested — remaining fan-out branch(es) skipped "
+                        f"({endpoint}{'…' if branch is not extra_branches[-1] else ''}).",
+                        "warning",
                     )
+                    results.append({"endpoint": endpoint, "status": "skipped", "error": "aborted"})
+                    continue
+                self._report(
+                    f"[{case_key}] fan-out branch: {endpoint} (score {branch['score']})",
+                    "info",
                 )
-            except AutomationAbort:
-                # Never swallow an abort into a "branch failed" record — it
-                # must propagate to run()'s case-level abort handler
-                # (code-review MEDIUM, PR #96).
-                raise
-            except Exception as exc:  # never let a branch kill the case
-                self.logger.exception("case %s branch %s crashed", case_key, endpoint)
-                self._report(f"[{case_key}] branch {endpoint} failed: {exc}", "error")
-                results.append({"endpoint": endpoint, "status": "failed", "error": str(exc)})
-        # Persist the branch summary on the video_generate step so the
-        # manifest carries the full fan-out picture without changing the
-        # one-status-per-step schema.
-        video_step = self.manifest.get_step(case_key, "video_generate")
-        merged_meta = dict(video_step.get("meta") or {})
-        merged_meta["branches"] = results
-        self.manifest.update_step(
-            case_key,
-            "video_generate",
-            video_step.get("status") or "complete",
-            output=video_step.get("output"),
-            meta=merged_meta,
-        )
+                try:
+                    results.append(
+                        self._run_branch_chain(
+                            case_key=case_key,
+                            case_dir=case_dir,
+                            branch=branch,
+                            reprocess_mode=reprocess_mode,
+                            resolved_selfie_provider=resolved_selfie_provider,
+                            selfie_composite_mode=selfie_composite_mode,
+                        )
+                    )
+                except AutomationAbort:
+                    # Never swallow an abort into a "branch failed" record —
+                    # it must propagate to run()'s case-level abort handler
+                    # (code-review MEDIUM, PR #96). The finally below still
+                    # persists everything finished so far.
+                    results.append({"endpoint": endpoint, "status": "skipped", "error": "aborted"})
+                    raise
+                except Exception as exc:  # never let a branch kill the case
+                    self.logger.exception("case %s branch %s crashed", case_key, endpoint)
+                    self._report(f"[{case_key}] branch {endpoint} failed: {exc}", "error")
+                    results.append({"endpoint": endpoint, "status": "failed", "error": str(exc)})
+        finally:
+            # Persist the branch summary even when an abort propagates —
+            # losing the records of branches that DID finish would cost
+            # redundant paid regeneration on resume (Gemini HIGH, PR #96).
+            # Stored on the video_generate step so the manifest carries the
+            # full fan-out picture without changing the one-status-per-step
+            # schema.
+            video_step = self.manifest.get_step(case_key, "video_generate")
+            merged_meta = dict(video_step.get("meta") or {})
+            merged_meta["branches"] = results
+            self.manifest.update_step(
+                case_key,
+                "video_generate",
+                video_step.get("status") or "complete",
+                output=video_step.get("output"),
+                meta=merged_meta,
+            )
 
     def _run_branch_chain(
         self,
@@ -372,6 +379,14 @@ class AutoPipelineRunner:
             "status": "failed",
         }
 
+        def _abort_checkpoint(stage: str) -> None:
+            # Same contract as the primary chain's _set_active_step: [a]
+            # stops after the CURRENT stage, never mid-stage (Gemini MED,
+            # PR #96 — without these a branch ran every remaining paid
+            # stage after the abort).
+            if self.abort_event.is_set():
+                raise AutomationAbort(f"aborted before branch stage {stage} ({endpoint})")
+
         # --- expand (same geometry/prompt rules as primary Step 5) ---
         final_still = still_path
         if self.automation.get("automation_selfie_expand_enabled", True):
@@ -379,6 +394,7 @@ class AutoPipelineRunner:
             if reprocess_mode == "skip" and expanded_output.exists():
                 final_still = str(expanded_output)
             else:
+                _abort_checkpoint("selfie_expand")
                 if reprocess_mode == "increment":
                     expanded_output = self._next_increment_path(expanded_output)
                 pct = self._read_int("automation_selfie_expand_percent", 30)
@@ -431,6 +447,7 @@ class AutoPipelineRunner:
                 if reusable:
                     branch_video = str(reusable[-1])
             if branch_video is None:
+                _abort_checkpoint("video_generate")
                 video = self.deps.video_factory()
                 video.set_progress_callback(self.progress_cb)
                 branch_video = self._generate_video_for_still(video, final_still, video_output_dir)
@@ -456,6 +473,7 @@ class AutoPipelineRunner:
         branch_issues: List[str] = []
         current = Path(branch_video)
         if self._read_bool("automation_rppg_enabled", False) and not is_rppg_artifact(current):
+            _abort_checkpoint("rppg")
             injected = run_rppg(
                 video_path=current,
                 repo_root=Path(__file__).resolve().parent.parent,
@@ -474,6 +492,7 @@ class AutoPipelineRunner:
             elif self._read_bool("automation_rppg_required", False):
                 branch_issues.append("required rPPG produced no output")
         if self._read_bool("automation_loop_enabled", False):
+            _abort_checkpoint("loop")
             looped = create_looped_video(
                 str(current), suffix="_looped", overwrite=True, log_callback=self.progress_cb,
             )
@@ -481,6 +500,7 @@ class AutoPipelineRunner:
                 current = Path(looped)
                 result["loop"] = str(looped)
         if self._oldcam_active():
+            _abort_checkpoint("oldcam")
             oldcam_all = run_oldcam_all(
                 video_path=current,
                 version_setting=self.automation.get("automation_oldcam_version", []),
