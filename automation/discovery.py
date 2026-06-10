@@ -156,6 +156,13 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
             suffix = item.suffix.lower()
             lname = item.name.lower()
             sim_token = bool(sim_token_re.search(lname))
+            if "-expanded" in lname:
+                # Expansion outputs are Step-5 artifacts, not Step-3
+                # selfies. Ranking one as the reuse candidate made Step 5
+                # re-expand it (`...-expanded-expanded.png`) — one wasted
+                # paid outpaint + a wrong-geometry deliverable (E2E round
+                # 1b, 2026-06-11).
+                continue
             if suffix in {".png", ".jpg", ".jpeg", ".webp"} and ("selfie" in lname or sim_token):
                 selfie_candidates.append(item)
     # Prefer generated videos under gen-videos, and avoid oldcam artifacts.

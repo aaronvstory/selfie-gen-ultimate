@@ -68,6 +68,31 @@ def test_existing_output_detection_matches_scored_sim_token(tmp_path: Path):
     assert found.selfie_candidate.name == "extracted_nano-banana-2-edit_sim88_001.png"
 
 
+def test_existing_output_detection_never_picks_expanded_artifact(tmp_path: Path):
+    """Step-5 expansion outputs (``...-expanded.png``) must NOT win the
+    selfie-candidate ranking — reusing one makes Step 5 re-expand it into
+    ``...-expanded-expanded.png`` (wasted paid outpaint + wrong geometry;
+    found live in E2E round 1b, 2026-06-11). The raw selfie wins even when
+    the expanded file is newer."""
+    import os
+    import time
+
+    case_dir = tmp_path / "case-exp"
+    gen_images = case_dir / "gen-images"
+    gen_images.mkdir(parents=True)
+    raw = gen_images / "extracted_nano-banana-2-edit_sim88_001.png"
+    raw.write_bytes(b"x")
+    expanded = gen_images / "extracted_nano-banana-2-edit_sim88_001-expanded.png"
+    expanded.write_bytes(b"x")
+    now = time.time()
+    os.utime(raw, (now - 100, now - 100))
+    os.utime(expanded, (now, now))  # expanded is NEWER — would win on mtime
+
+    found = detect_existing_outputs(case_dir)
+    assert found.selfie_candidate is not None
+    assert found.selfie_candidate.name == "extracted_nano-banana-2-edit_sim88_001.png"
+
+
 def test_existing_output_detection_ignores_unrelated_root_mp4(tmp_path: Path):
     case_dir = tmp_path / "case3"
     case_dir.mkdir()
