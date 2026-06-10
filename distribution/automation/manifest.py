@@ -58,6 +58,25 @@ def _new_case_state(case_dir: str, front_path: str) -> Dict[str, Any]:
     }
 
 
+def _collision_free_backup_path(manifest_path: Path, kind: str) -> Path:
+    """Backup name that can never clobber an earlier backup.
+
+    Second-resolution timestamps alone let two backups in the same second
+    silently overwrite each other via os.replace (Codex P2, PR #96 round
+    4 — e.g. a double create_fresh in quick succession). A numeric suffix
+    loop keeps every backup.
+    """
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    candidate = manifest_path.with_suffix(manifest_path.suffix + f".{kind}.{timestamp}")
+    index = 1
+    while candidate.exists():
+        candidate = manifest_path.with_suffix(
+            manifest_path.suffix + f".{kind}.{timestamp}-{index}"
+        )
+        index += 1
+    return candidate
+
+
 def _build_config_fingerprint(config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
     automation_keys = sorted(key for key in config_snapshot if key.startswith("automation_"))
     fingerprint = {key: config_snapshot.get(key) for key in automation_keys}
@@ -201,10 +220,7 @@ class AutomationManifest:
         snapshot.
         """
         if manifest_path.exists():
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            backup_path = manifest_path.with_suffix(
-                manifest_path.suffix + f".superseded.{timestamp}"
-            )
+            backup_path = _collision_free_backup_path(manifest_path, "superseded")
             os.replace(manifest_path, backup_path)
         created = _new_manifest_payload(root_dir, config_snapshot)
         inst = cls(manifest_path=manifest_path, data=created)
@@ -213,35 +229,45 @@ class AutomationManifest:
 
     @staticmethod
     def _backup_invalid_manifest(manifest_path: Path, reason: str) -> None:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup_path = manifest_path.with_suffix(manifest_path.suffix + f".corrupt.{timestamp}")
+        backup_path = _collision_free_backup_path(manifest_path, "corrupt")
         os.replace(manifest_path, backup_path)
         raise ValueError(f"Manifest invalid at {manifest_path}: {reason}. Backed up to {backup_path}.")
 
     @staticmethod
     def _backup_invalid_manifest_no_raise(manifest_path: Path, reason: str) -> None:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup_path = manifest_path.with_suffix(manifest_path.suffix + f".corrupt.{timestamp}")
+        backup_path = _collision_free_backup_path(manifest_path, "corrupt")
         os.replace(manifest_path, backup_path)
 
     @classmethod
-    def load_if_exists(cls, manifest_path: Path) -> Optional["AutomationManifest"]:
+    def load_if_exists(
+        cls, manifest_path: Path, *, read_only: bool = False
+    ) -> Optional["AutomationManifest"]:
+        """Load the manifest or return None.
+
+        ``read_only=True`` makes invalid-manifest handling NON-mutating
+        (no .corrupt rename): preview surfaces (scan, dry run) promise to
+        leave the tree untouched — a dry run quietly renaming the manifest
+        breaks that promise (Codex P2, PR #96 round 4). Real load paths
+        keep the rename-aside recovery behavior.
+        """
         if not manifest_path.exists():
             return None
         try:
             with open(manifest_path, "r", encoding="utf-8") as handle:
                 loaded = json.load(handle)
         except (JSONDecodeError, UnicodeDecodeError) as exc:
-            cls._backup_invalid_manifest_no_raise(manifest_path, f"invalid json: {exc}")
+            if not read_only:
+                cls._backup_invalid_manifest_no_raise(manifest_path, f"invalid json: {exc}")
             return None
         except OSError:
             return None
         if not isinstance(loaded, dict) or loaded.get("schema_version") != SCHEMA_VERSION:
             got_version = loaded.get("schema_version") if isinstance(loaded, dict) else type(loaded).__name__
-            cls._backup_invalid_manifest_no_raise(
-                manifest_path,
-                f"schema_version mismatch: got {got_version!r}, expected {SCHEMA_VERSION}",
-            )
+            if not read_only:
+                cls._backup_invalid_manifest_no_raise(
+                    manifest_path,
+                    f"schema_version mismatch: got {got_version!r}, expected {SCHEMA_VERSION}",
+                )
             return None
         return cls(manifest_path=manifest_path, data=loaded)
 
@@ -343,16 +369,27 @@ class AutomationManifest:
         if case_entry.get("status") != "complete":
             return False
         steps = case_entry.get("steps", {})
-        # rPPG is the LAST post-process: when it completed, the injected
-        # file is the real final deliverable. Validate against THAT, so a
-        # deleted rPPG output isn't masked as "complete" just because the
-        # pre-rPPG oldcam/video file still exists (skip_completed would
-        # then wrongly skip the case, leaving no rPPG deliverable). If
-        # rppg did not complete (disabled / skipped / failed-non-required),
-        # fall back to the prior oldcam -> video_generate chain unchanged.
-        rppg_step = steps.get("rppg", {})
-        if rppg_step.get("status") == "complete" and rppg_step.get("output"):
-            final_output = rppg_step.get("output")
+        # The FINAL deliverable belongs to whichever post-process stage
+        # finished LAST — and that is order-dependent: the Phase E default
+        # runs Kling -> rPPG(base) -> Loop -> Oldcam (oldcam output is
+        # final), while the legacy per-oldcam fan-out runs rPPG last (the
+        # injected file is final, the PR #39 contract). A static stage
+        # preference breaks one or the other: validating the rppg BASE
+        # under Phase E masked a deleted oldcam output as "complete"
+        # (Codex P1, PR #96 round 4). finished_at (ISO-8601, lexically
+        # chronological) is the order-independent truth — update_step stamps
+        # it on every terminal status, so real manifests always carry it.
+        # Ties / missing timestamps keep the historical PR #39 preference
+        # (rppg > loop > oldcam) so legacy states behave as before.
+        candidates = []
+        for preference, stage in enumerate(("oldcam", "loop", "rppg")):
+            stage_step = steps.get(stage, {})
+            if stage_step.get("status") == "complete" and stage_step.get("output"):
+                candidates.append(
+                    (str(stage_step.get("finished_at") or ""), preference, stage_step["output"])
+                )
+        if candidates:
+            final_output = max(candidates)[2]
         else:
             final_output = (
                 steps.get("oldcam", {}).get("output")

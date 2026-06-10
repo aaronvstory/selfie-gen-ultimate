@@ -2653,7 +2653,9 @@ class KlingAutomationUI:
             self.config.get("automation_front_names", []),
             front_globs=self.config.get("automation_front_globs", []),
         )
-        manifest = AutomationManifest.load_if_exists(self._automation_manifest_path())
+        # read_only: scan is a PREVIEW — it must never rename a corrupt
+        # manifest aside (Codex P2, PR #96 round 4).
+        manifest = AutomationManifest.load_if_exists(self._automation_manifest_path(), read_only=True)
         rows, counts, _ = self._collect_case_snapshot(records, manifest)
         table = Table(title="Automation Scan Preview")
         table.add_column("Case")
@@ -3689,7 +3691,9 @@ class KlingAutomationUI:
         )
         manifest_path = self._automation_manifest_path()
         had_manifest = manifest_path.exists()
-        manifest = AutomationManifest.load_if_exists(manifest_path)
+        # read_only: dry run promises non-mutation — it must never rename a
+        # corrupt manifest aside (Codex P2, PR #96 round 4).
+        manifest = AutomationManifest.load_if_exists(manifest_path, read_only=True)
         manifest_warning = ""
         if manifest is None and had_manifest:
             manifest_warning = "Warning: existing manifest unreadable or schema-mismatched; dry-run ignoring manifest state."
@@ -4856,11 +4860,31 @@ class KlingAutomationUI:
         ]
         for case_key, result in sorted(last_case_results.items(), key=lambda item: item[0].lower()):
             case_entry = manifest.data.get("cases", {}).get(case_key, {})
-            video_out = case_entry.get("steps", {}).get("video_generate", {}).get("output") or "-"
-            oldcam_out = case_entry.get("steps", {}).get("oldcam", {}).get("output") or "-"
+            steps = case_entry.get("steps", {})
+            video_step = steps.get("video_generate", {})
+            video_out = video_step.get("output") or "-"
+            oldcam_out = steps.get("oldcam", {}).get("output") or "-"
+            # New post-chain stages + fan-out branches surfaced too —
+            # omitting them hid paid deliverables from the summary
+            # (Codex P3, PR #96 round 4).
+            rppg_out = steps.get("rppg", {}).get("output") or "-"
+            loop_out = steps.get("loop", {}).get("output") or "-"
             summary_lines.append(
-                f"- `{case_key}`: status={result.get('status', '')}, video={video_out}, oldcam={oldcam_out}, reason={result.get('reason', '')}"
+                f"- `{case_key}`: status={result.get('status', '')}, video={video_out}, "
+                f"rppg={rppg_out}, loop={loop_out}, oldcam={oldcam_out}, reason={result.get('reason', '')}"
             )
+            for branch in (video_step.get("meta", {}) or {}).get("branches", []) or []:
+                branch_bits = [f"status={branch.get('status', '')}"]
+                for field in ("video", "rppg", "loop"):
+                    if branch.get(field):
+                        branch_bits.append(f"{field}={branch[field]}")
+                if branch.get("oldcam_outputs"):
+                    branch_bits.append(f"oldcam={'; '.join(branch['oldcam_outputs'])}")
+                if branch.get("error"):
+                    branch_bits.append(f"error={branch['error']}")
+                summary_lines.append(
+                    f"  - branch `{branch.get('endpoint', '?')}`: {', '.join(branch_bits)}"
+                )
         summary_path = manifest.manifest_path.parent / "automation_run_summary.md"
         summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
         print(f"\nSummary written: {summary_path}")
