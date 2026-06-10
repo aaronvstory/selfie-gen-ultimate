@@ -185,11 +185,23 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
         if not candidates:
             return None
         now = max((c.stat().st_mtime for c in candidates if c.exists()), default=0.0)
+        score_re = re.compile(r"(?:^|[_\-. ])sim(\d+)(?:$|[_\-. ])", re.IGNORECASE)
+
+        def _embedded_score(p: Path) -> int:
+            match = score_re.search(p.name)
+            return int(match.group(1)) if match else -1
+
+        # Embedded similarity score ranks ABOVE mtime (Codex P2, PR #96):
+        # the reuse candidate gates the whole case, and a low-score selfie
+        # merely being NEWER must not beat a higher-scoring one — resume
+        # would route the case to manual_review despite a passing selfie
+        # sitting right next to it.
         ranked = sorted(
             candidates,
             key=lambda p: (
                 1 if p.parent == gen_images else 0,
                 1 if "selfie" in p.name.lower() else 0,
+                _embedded_score(p),
                 p.stat().st_mtime if p.exists() else now,
                 p.name.lower(),
             ),

@@ -488,7 +488,9 @@ class AutoPipelineRunner:
                 progress_cb=self.progress_cb,
             )
             result["oldcam_outputs"] = [str(p) for _v, p in oldcam_all]
-            if not oldcam_all and bool(self.automation.get("automation_oldcam_required", False)):
+            # _read_bool (not raw bool()) — bool("false") is True (round-2
+            # review LOW; matches the rppg_required check above).
+            if not oldcam_all and self._read_bool("automation_oldcam_required", False):
                 branch_issues.append("required oldcam produced no outputs")
         if branch_issues:
             result["status"] = "failed"
@@ -597,8 +599,10 @@ class AutoPipelineRunner:
         status_value = "complete" if final_status == "completed" else final_status
         with self.manifest.lock:
             case_entry["status"] = status_value
+            # _set_active_step commits via save_atomic — no second save here
+            # (round-2 review MED: the lock wrapper had doubled the disk
+            # write per finalization).
             self._set_active_step(case_entry, None)
-            self.manifest.save_atomic()
         return final_status
 
     def validate_configuration(self) -> List[str]:
@@ -850,8 +854,8 @@ class AutoPipelineRunner:
                 )
         with self.manifest.lock:
             case_entry["status"] = "running"
+            # _set_active_step commits via save_atomic (round-2 review MED).
             self._set_active_step(case_entry, None)
-            self.manifest.save_atomic()
 
         outpaint = self.deps.outpaint_factory()
         outpaint.set_progress_callback(self.progress_cb)

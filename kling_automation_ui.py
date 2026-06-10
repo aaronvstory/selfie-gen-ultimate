@@ -2291,6 +2291,15 @@ class KlingAutomationUI:
             self.config["automation_max_cases_per_run"] = "1"
             max_cases_status = "set to 1 (invalid/missing previous value)"
 
+        # v7 (Codex P2, PR #96): the recommended baseline must reset EVERY
+        # behavior-affecting stage toggle — a config carrying e.g.
+        # automation_selfie_enabled=False from earlier experimentation would
+        # otherwise still skip core steps right after "apply recommended
+        # defaults" claimed a known-good baseline.
+        self.config["automation_front_expand_enabled"] = True
+        self.config["automation_extract_enabled"] = True
+        self.config["automation_selfie_enabled"] = True
+        self.config["automation_selfie_expand_enabled"] = True
         # v7: provider fal for BOTH expand steps ("fal.ai for everything",
         # user mandate 2026-06-11; previously bfl).
         self.config["automation_front_expand_provider"] = "fal"
@@ -2384,6 +2393,10 @@ class KlingAutomationUI:
         # injector's metric-suffix rename is opt-in (see automation/rppg.py
         # finalize_rppg_output).
         self.config["automation_rppg_metrics_in_filename"] = False
+        # Legacy per-oldcam rPPG fan-out stays OFF in the recommended
+        # baseline (Codex P2, PR #96 — a leftover opt-in would silently
+        # multiply rPPG runtime per oldcam version).
+        self.config["automation_rppg_per_oldcam_fanout"] = False
         self.config["automation_recommended_defaults_version"] = RECOMMENDED_DEFAULTS_VERSION
         self.save_config()
 
@@ -4090,10 +4103,24 @@ class KlingAutomationUI:
         single source for the Rich table, the plain headless variant, and
         the quick editor's re-render."""
         c = self.config
-        rppg_on = bool(c.get("automation_rppg_enabled", False))
-        loop_on = bool(c.get("automation_loop_enabled", False))
-        oldcam_required = bool(c.get("automation_oldcam_required", False))
+
+        def _flag(key: str, default: bool = False) -> bool:
+            # Same coercion the pipeline uses (_parse_bool): a string
+            # "false" in a hand-edited config must not display as ON while
+            # running as off (Codex P3, PR #96).
+            from face_similarity import _parse_bool
+            parsed = _parse_bool(c.get(key, default))
+            return parsed if parsed is not None else bool(default)
+
+        rppg_on = _flag("automation_rppg_enabled")
+        loop_on = _flag("automation_loop_enabled")
+        oldcam_required = _flag("automation_oldcam_required")
+        oldcam_enabled = _flag("automation_oldcam_enabled", True)
         oldcam_display = self._format_oldcam_versions()
+        if not oldcam_enabled:
+            # Mirror the pipeline's _oldcam_active() truth: versions may be
+            # selected but the stage itself disabled.
+            oldcam_display = f"DISABLED (selection: {oldcam_display})"
         model_labels = self._selfie_model_label_map()
         selfie_models = [model_labels.get(x, x) for x in list(c.get("automation_selfie_models", []))]
         selfie_slot, _prompt, selfie_source = self._get_selected_selfie_prompt()
@@ -4105,7 +4132,8 @@ class KlingAutomationUI:
             ("rPPG injection", "ON" if rppg_on else "OFF — no pulse will be injected",
              "bold green" if rppg_on else "bold red"),
             ("Oldcam versions", f"{oldcam_display}  ({'required' if oldcam_required else 'optional'})",
-             "bold red" if oldcam_display == "none selected" else ("bold yellow" if oldcam_display.startswith("all") else "bold green")),
+             "bold red" if (oldcam_display == "none selected" or not oldcam_enabled)
+             else ("bold yellow" if oldcam_display.startswith("all") else "bold green")),
             ("Loop (ping-pong)", "ON" if loop_on else "off", "green" if loop_on else "dim"),
             ("Video model", f"{c.get('model_display_name') or c.get('current_model', '?')}  ·  kling prompt slot {c.get('current_prompt_slot', DEFAULT_KLING_PROMPT_SLOT)}", ""),
             ("Selfie model(s)", f"{', '.join(selfie_models) if selfie_models else '(none)'}"

@@ -68,6 +68,30 @@ def test_existing_output_detection_matches_scored_sim_token(tmp_path: Path):
     assert found.selfie_candidate.name == "extracted_nano-banana-2-edit_sim88_001.png"
 
 
+def test_existing_output_detection_prefers_higher_embedded_score_over_mtime(tmp_path: Path):
+    """Codex P2 (PR #96): the reuse candidate gates the whole case, so a
+    LOW-score selfie merely being NEWER must not beat a higher-scoring one
+    — resume would route the case to manual_review despite a passing
+    selfie sitting right next to it."""
+    import os
+    import time
+
+    case_dir = tmp_path / "case-score-rank"
+    gen_images = case_dir / "gen-images"
+    gen_images.mkdir(parents=True)
+    high = gen_images / "extracted_gpt-image-2-edit_sim92_001.png"
+    high.write_bytes(b"x")
+    low = gen_images / "extracted_nano-banana-2-edit_sim50_001.png"
+    low.write_bytes(b"x")
+    now = time.time()
+    os.utime(high, (now - 100, now - 100))
+    os.utime(low, (now, now))  # the LOW-score selfie is newer
+
+    found = detect_existing_outputs(case_dir)
+    assert found.selfie_candidate is not None
+    assert found.selfie_candidate.name == "extracted_gpt-image-2-edit_sim92_001.png"
+
+
 def test_existing_output_detection_never_picks_expanded_artifact(tmp_path: Path):
     """Step-5 expansion outputs (``...-expanded.png``) must NOT win the
     selfie-candidate ranking — reusing one makes Step 5 re-expand it into

@@ -599,6 +599,13 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
 
     ui._apply_recommended_automation_defaults()
     assert saved["count"] == 1
+    # v7 (Codex P2, PR #96): the recommended baseline resets EVERY
+    # behavior-affecting stage toggle.
+    assert ui.config["automation_front_expand_enabled"] is True
+    assert ui.config["automation_extract_enabled"] is True
+    assert ui.config["automation_selfie_enabled"] is True
+    assert ui.config["automation_selfie_expand_enabled"] is True
+    assert ui.config["automation_rppg_per_oldcam_fanout"] is False
     # v7 (2026-06-11): provider fal for BOTH expand steps ("fal.ai for
     # everything", user mandate).
     assert ui.config["automation_front_expand_provider"] == "fal"
