@@ -310,13 +310,16 @@ class AutomationManifest:
             cases = self.data.get("cases", {})
             snapshot: Dict[str, Dict[str, Any]] = {}
             for key in case_keys:
-                entry = cases.get(key, {}) or {}
-                sim = (
-                    (entry.get("steps", {}) or {})
-                    .get("similarity_gate", {})
-                    .get("meta", {})
-                    or {}
-                ).get("score")
+                entry = cases.get(key)
+                if not isinstance(entry, dict):
+                    # Corrupted/hand-edited manifest: never crash the
+                    # dashboard render thread (Gemini MED, PR #96 round 5).
+                    snapshot[key] = {"status": "pending", "active_step": None, "similarity": None}
+                    continue
+                steps = entry.get("steps")
+                gate = steps.get("similarity_gate") if isinstance(steps, dict) else None
+                meta = gate.get("meta") if isinstance(gate, dict) else None
+                sim = meta.get("score") if isinstance(meta, dict) else None
                 snapshot[key] = {
                     "status": str(entry.get("status", "pending")),
                     "active_step": entry.get("active_step"),

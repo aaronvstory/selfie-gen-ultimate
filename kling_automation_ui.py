@@ -4768,14 +4768,18 @@ class KlingAutomationUI:
                 snapshot = snap_fn(case_keys)
             else:  # stub manifests in tests
                 cases = manifest.data.get("cases", {})
-                snapshot = {
-                    key: {
-                        "status": str((cases.get(key) or {}).get("status", "pending")),
-                        "active_step": (cases.get(key) or {}).get("active_step"),
+                if not isinstance(cases, dict):
+                    cases = {}  # corrupted manifest: never crash the render (Gemini MED, r5)
+                snapshot = {}
+                for key in case_keys:
+                    entry = cases.get(key)
+                    if not isinstance(entry, dict):
+                        entry = {}
+                    snapshot[key] = {
+                        "status": str(entry.get("status", "pending")),
+                        "active_step": entry.get("active_step"),
                         "similarity": None,
                     }
-                    for key in case_keys
-                }
             counts = {"completed": 0, "failed": 0, "manual_review": 0, "skipped": 0}
             current_case = "-"
             current_step = "-"
