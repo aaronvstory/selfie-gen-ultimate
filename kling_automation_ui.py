@@ -2237,6 +2237,8 @@ class KlingAutomationUI:
             f"facetrack_gate={'on' if self.config.get('automation_facetrack_enabled', True) else 'off'} "
             f"min={self.config.get('automation_facetrack_min_pct', 96.0)}% "
             f"mode={'required(fail+skip oldcam)' if self.config.get('automation_facetrack_required', False) else 'advisory(manual_review)'}",
+            f"rppg={'ON' if self.config.get('automation_rppg_enabled', False) else 'off'} "
+            f"loop={'ON' if self.config.get('automation_loop_enabled', False) else 'off'} "
             f"oldcam versions={self._format_oldcam_versions()} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
             f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
             f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
@@ -2858,6 +2860,7 @@ class KlingAutomationUI:
         _ask_bool("rPPG injection enabled (runs LAST; sub-perceptual pulse; untested direction, off by default)", "automation_rppg_enabled")
         _ask_bool("rPPG required (no output => fail+skip case)", "automation_rppg_required")
         _ask_bool("rPPG metrics in filename (off => clean *-rppg name + .metrics.json sidecar)", "automation_rppg_metrics_in_filename")
+        _ask_bool("Loop video (seamless ping-pong, runs before oldcam)", "automation_loop_enabled")
         _ask_bool("Automation verbose logging", "automation_verbose_logging")
         _ask("Automation log max bytes", "automation_log_max_bytes", int, lambda v: v > 0)
         _ask("Automation log backup count", "automation_log_backup_count", int, lambda v: v >= 1)
@@ -3002,7 +3005,8 @@ class KlingAutomationUI:
                 f"{'required' if c.get('automation_facetrack_required', False) else 'advisory'}"
             ),
             "oldcam": (
-                f"enabled={'y' if c.get('automation_oldcam_enabled') else 'n'}, "
+                f"rppg={'ON' if c.get('automation_rppg_enabled') else 'off'}, "
+                f"loop={'ON' if c.get('automation_loop_enabled') else 'off'}, "
                 f"versions={self._format_oldcam_versions(c.get('automation_oldcam_version'))}, "
                 f"required={'y' if c.get('automation_oldcam_required') else 'n'}"
             ),
@@ -3560,23 +3564,27 @@ class KlingAutomationUI:
 
     def _qs_section_oldcam(self):
         self._qs_section_banner(
-            "Oldcam",
-            "Final stage: apply oldcam (analog-degradation) filter to the generated video.",
+            "Post-processing: rPPG + Loop + Oldcam",
+            "Final stages, applied in order Kling -> rPPG -> Loop -> Oldcam.",
         )
+        # rPPG injects a sub-perceptual pulse on the raw Kling output BEFORE
+        # loop/oldcam (Phase E order) so every downstream file carries it.
+        self._qs_bool("rPPG injection enabled (sub-perceptual pulse)?",
+                      "automation_rppg_enabled", default=False)
+        self._qs_bool("rPPG required (fail case if rPPG produces no output)?",
+                      "automation_rppg_required", default=False)
+        self._qs_bool("rPPG metrics in filename (off = clean *-rppg + .metrics.json sidecar)?",
+                      "automation_rppg_metrics_in_filename", default=False)
+        # Ping-pong loop (2026-06-11): default OFF; graceful-skip when
+        # ffmpeg is missing.
+        self._qs_bool("Loop video (seamless ping-pong, runs before oldcam)?",
+                      "automation_loop_enabled", default=False)
         # Multi-select (2026-06-11): spacebar checkbox over discovered
         # versions; the picker keeps automation_oldcam_enabled coherent
         # (empty selection => disabled), so no separate enabled? prompt.
         self._qs_pick_oldcam_versions()
         self._qs_bool("Oldcam required (fail case if oldcam fails)?",
                       "automation_oldcam_required", default=False)
-        # rPPG runs AFTER oldcam (the true final stage). Untested forward
-        # direction — off by default, non-required (graceful skip).
-        self._qs_bool("rPPG injection enabled (runs last, after oldcam)?",
-                      "automation_rppg_enabled", default=False)
-        self._qs_bool("rPPG required (fail case if rPPG produces no output)?",
-                      "automation_rppg_required", default=False)
-        self._qs_bool("rPPG metrics in filename (off = clean *-rppg + .metrics.json sidecar)?",
-                      "automation_rppg_metrics_in_filename", default=False)
 
     def _qs_section_logging(self):
         self._qs_section_banner(
@@ -3628,7 +3636,9 @@ class KlingAutomationUI:
         )
         _rppg_on = bool(self.config.get("automation_rppg_enabled", False))
         _rppg_seg = " -> rppg" if _rppg_on else " -> rppg(off)"
-        print(f"  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg} -> oldcam")
+        _loop_on = bool(self.config.get("automation_loop_enabled", False))
+        _loop_seg = " -> loop" if _loop_on else " -> loop(off)"
+        print(f"  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg}{_loop_seg} -> oldcam")
         self.pause_review("\nPress Enter to continue...")
 
     def run_automation_headless(

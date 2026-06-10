@@ -23,6 +23,7 @@ from automation.oldcam import (
     run_oldcam_all,
 )
 from automation.rppg import is_rppg_artifact, run_rppg
+from automation.video_loop import check_ffmpeg_available, create_looped_video
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
@@ -354,6 +355,17 @@ class AutoPipelineRunner:
         # oldcam does.
         if self._read_bool("automation_rppg_required", False) and not self._read_bool("automation_rppg_enabled", False):
             issues.append("automation_rppg_required=true requires automation_rppg_enabled=true.")
+        if self._read_bool("automation_loop_enabled", False):
+            ffmpeg_ok, ffmpeg_msg = check_ffmpeg_available()
+            if not ffmpeg_ok:
+                # Loop is graceful-skip at runtime; surface the problem at
+                # validation as a WARNING via progress so the user learns
+                # BEFORE a paid run that looping will be skipped. Not a
+                # hard issue: parity with rPPG's degrade-don't-crash rule.
+                self._report(
+                    f"Loop enabled but ffmpeg unavailable — loop step will be skipped ({ffmpeg_msg}).",
+                    "warning",
+                )
         if self.automation.get("automation_oldcam_required", False):
             repo_root = Path(__file__).resolve().parent.parent
             versions = discover_oldcam_versions(repo_root)
@@ -1104,12 +1116,15 @@ class AutoPipelineRunner:
                 if not self._oldcam_active():
                     self.manifest.update_step(case_key, "oldcam", "skipped", error=self._oldcam_inactive_reason())
                     # Pre-rPPG this short-circuited to completed (video
-                    # reused + oldcam off = nothing left). rPPG can now be
-                    # the ONLY enabled post-process on a reused video, so
-                    # only finalize early when rPPG is also disabled —
-                    # otherwise fall through to Step 8, which picks up the
-                    # reused video from the video_generate step output.
-                    if not self._read_bool("automation_rppg_enabled", False):
+                    # reused + oldcam off = nothing left). rPPG or Loop can
+                    # now be the ONLY enabled post-process on a reused
+                    # video, so only finalize early when BOTH are disabled —
+                    # otherwise fall through so the rPPG/Loop blocks pick up
+                    # the reused video from the video_generate step output.
+                    if not self._read_bool("automation_rppg_enabled", False) and not self._read_bool(
+                        "automation_loop_enabled", False
+                    ):
+                        self.manifest.update_step(case_key, "loop", "skipped", error="loop disabled")
                         return self._finalize_case(case_entry, "completed")
             if not skipped_existing_video:
                 video = self.deps.video_factory()
@@ -1319,12 +1334,71 @@ class AutoPipelineRunner:
                         case_key, video_out_path.name, injected.name,
                     )
 
+        # Step 7-pre-b: optional ping-pong loop (Phase E order:
+        # Kling -> rPPG -> Loop -> Oldcam, mirroring the GUI queue).
+        # Loops the rPPG'd base when present, else the raw Kling output,
+        # so Oldcam derives from the looped file. Graceful-skip on any
+        # failure (ffmpeg missing, encode error) — the case continues on
+        # the unlooped video, mirroring the rPPG skip semantics.
+        loop_path: Optional[Path] = None
+        if self._read_bool("automation_loop_enabled", False):
+            loop_source: Optional[Path] = None
+            if rppg_base_path is not None and rppg_base_path.exists():
+                loop_source = rppg_base_path
+            else:
+                video_out = self.manifest.get_step(case_key, "video_generate").get("output")
+                candidate = Path(video_out) if video_out else None
+                if candidate and candidate.exists() and candidate.suffix.lower() == ".mp4":
+                    loop_source = candidate
+                elif existing.video_candidate:
+                    candidate = Path(existing.video_candidate)
+                    if candidate.exists() and candidate.suffix.lower() == ".mp4":
+                        loop_source = candidate
+            if loop_source is None:
+                self.manifest.update_step(
+                    case_key, "loop", "skipped", error="no mp4 video to loop",
+                )
+            else:
+                self._set_active_step(case_entry, "loop")
+                self.manifest.update_step(case_key, "loop", "running")
+                looped = create_looped_video(
+                    str(loop_source),
+                    suffix="_looped",
+                    overwrite=True,
+                    log_callback=self.progress_cb,
+                )
+                if looped and Path(looped).exists():
+                    loop_path = Path(looped)
+                    self.logger.info(
+                        "case %s loop: %s -> %s", case_key, loop_source.name, loop_path.name,
+                    )
+                    self.manifest.update_step(
+                        case_key,
+                        "loop",
+                        "complete",
+                        output=str(loop_path),
+                        meta=self._policy_meta("loop", False, reprocess_mode),
+                    )
+                else:
+                    self.logger.warning("case %s loop failed; continuing unlooped", case_key)
+                    self.manifest.update_step(
+                        case_key,
+                        "loop",
+                        "skipped",
+                        error="loop failed or ffmpeg unavailable",
+                    )
+        else:
+            self.manifest.update_step(case_key, "loop", "skipped", error="loop disabled")
+
         # Step 7: optional oldcam pass
         if self._oldcam_active():
-            # Source video for Oldcam: prefer the rPPG-first injected
-            # base (Phase E above), else the raw video_generate output,
-            # else any existing candidate from disk.
-            if rppg_base_path is not None and rppg_base_path.exists():
+            # Source video for Oldcam: prefer the looped output (Phase E:
+            # Kling -> rPPG -> Loop -> Oldcam), else the rPPG-first
+            # injected base, else the raw video_generate output, else any
+            # existing candidate from disk.
+            if loop_path is not None and loop_path.exists():
+                selected_video_path = loop_path
+            elif rppg_base_path is not None and rppg_base_path.exists():
                 selected_video_path = rppg_base_path
             else:
                 manifest_video = self.manifest.get_step(case_key, "video_generate").get("output")

@@ -18,6 +18,11 @@ STEP_NAMES = [
     "selfie_expand",
     "video_generate",
     "facetrack_gate",
+    # Post-processing order is Kling -> rPPG -> Loop -> Oldcam (Phase E,
+    # mirrored from the GUI queue). "loop" (ping-pong, 2026-06-11) sits
+    # between the rPPG-first injection and the oldcam fan-out; ensure_case
+    # setdefault()s it into pre-loop manifests.
+    "loop",
     "oldcam",
     "rppg",
 ]
@@ -310,6 +315,7 @@ class AutomationManifest:
         else:
             final_output = (
                 steps.get("oldcam", {}).get("output")
+                or steps.get("loop", {}).get("output")
                 or steps.get("video_generate", {}).get("output")
             )
         if not final_output:
