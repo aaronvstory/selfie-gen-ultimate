@@ -1875,6 +1875,34 @@ class AutoPipelineRunner:
                             output=str(injected),
                             meta={**self._policy_meta("rppg", False, reprocess_mode), "pre_pass": True},
                         )
+            elif (
+                video_out_path
+                and video_out_path.exists()
+                and video_out_path.suffix.lower() == ".mp4"
+                and is_rppg_artifact(video_out_path)
+            ):
+                # The (reused) video IS already an rPPG artifact — treat it
+                # as the pre-pass result and stamp NOW, before loop/oldcam
+                # finish. Leaving the stamp to Step 8 put rppg's finished_at
+                # AFTER oldcam's, re-opening the masked-deleted-deliverable
+                # hole for exactly this resume path (Codex P1, round 5).
+                rppg_base_path = video_out_path
+                _rppg_pre = self.manifest.get_step(case_key, "rppg")
+                if not (
+                    _rppg_pre.get("status") == "complete"
+                    and _rppg_pre.get("output") == str(video_out_path)
+                ):
+                    self.manifest.update_step(
+                        case_key,
+                        "rppg",
+                        "complete",
+                        output=str(video_out_path),
+                        meta={
+                            **self._policy_meta("rppg", True, reprocess_mode),
+                            "pre_pass": True,
+                            "already_injected": True,
+                        },
+                    )
 
         # Step 7-pre-b: optional ping-pong loop (Phase E order:
         # Kling -> rPPG -> Loop -> Oldcam, mirroring the GUI queue).

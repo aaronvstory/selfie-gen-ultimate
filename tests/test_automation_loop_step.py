@@ -169,6 +169,64 @@ def test_rppg_prepass_reuses_existing_sibling_on_resume(tmp_path, monkeypatch):
     assert str(oldcam_capture[0]["video_path"]).endswith("video-rppg.mp4")
 
 
+def test_rppg_artifact_video_stamps_prepass_before_oldcam(tmp_path, monkeypatch):
+    """Codex P1 (round 5): when the generated/reused video is ITSELF an
+    rPPG artifact, the pre-pass used to skip entirely and Step 8 stamped
+    the rppg completion AFTER oldcam — finished_at then claimed the BASE
+    was the final deliverable, masking a deleted oldcam output as
+    complete. The artifact is now stamped as the pre-pass result, so the
+    timestamp ordering reflects the real chain and deleting the oldcam
+    output invalidates the case."""
+
+    class RppgNamedVideo:
+        def set_progress_callback(self, _cb):
+            return None
+
+        def create_kling_generation(self, character_image_path, output_folder=None, **kwargs):
+            del character_image_path, kwargs
+            out = Path(output_folder or ".") / "clip-rppg.mp4"  # an rPPG artifact name
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"mp4")
+            return str(out)
+
+    def must_not_run(**kwargs):
+        raise AssertionError("run_rppg must not run on an already-injected video")
+
+    monkeypatch.setattr("automation.pipeline.run_rppg", must_not_run)
+
+    runner, record, manifest = _build_runner(
+        tmp_path, monkeypatch, extra_config={"automation_rppg_enabled": True},
+    )
+
+    def oldcam_with_output(**kwargs):
+        video_path = Path(kwargs["video_path"])
+        out = video_path.with_name(f"{video_path.stem}-oldcam-v13.mp4")
+        out.write_bytes(b"oldcam")
+        return [("v13", out)]
+
+    # AFTER _build_runner — the fixture installs its own run_oldcam_all mock.
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", oldcam_with_output)
+    runner.deps = PipelineDeps(
+        outpaint_factory=runner.deps.outpaint_factory,
+        selfie_factory=runner.deps.selfie_factory,
+        video_factory=lambda: RppgNamedVideo(),
+    )
+    stats = runner.run([record])
+
+    assert stats["completed"] == 1
+    steps = manifest.data["cases"]["case-a"]["steps"]
+    assert steps["rppg"]["status"] == "complete"
+    assert steps["rppg"]["meta"].get("pre_pass") is True
+    assert steps["oldcam"]["status"] == "complete"
+    # The pre-pass stamp happened BEFORE oldcam finished.
+    assert steps["rppg"]["finished_at"] <= steps["oldcam"]["finished_at"]
+    # The real proof: deleting the FINAL (oldcam) deliverable invalidates
+    # the case even though the rppg base still exists.
+    assert manifest.case_is_complete_and_valid("case-a") is True
+    Path(steps["oldcam"]["output"]).unlink()
+    assert manifest.case_is_complete_and_valid("case-a") is False
+
+
 def test_rppg_then_loop_order(tmp_path, monkeypatch):
     """With rPPG AND loop enabled, the loop input must be the rPPG-injected
     base (Kling -> rPPG -> Loop -> Oldcam), and Oldcam gets the looped file."""
