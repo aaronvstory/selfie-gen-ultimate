@@ -115,13 +115,13 @@ from automation.oldcam import (
     ensure_oldcam_dependencies,
     normalize_oldcam_versions,
 )
+from selfie_generator import SelfieGenerator
+from tk_dialogs import select_directory, select_directory_cli_safe, select_open_file
+from app_version import RELEASE_VERSION
 
 # Distinguishes "no argument supplied" from an explicit None/empty value in
 # helpers whose argument legitimately accepts falsy values.
 _SENTINEL_UNSET = object()
-from selfie_generator import SelfieGenerator
-from tk_dialogs import select_directory, select_directory_cli_safe, select_open_file
-from app_version import RELEASE_VERSION
 
 # v2 (2026-05-19): added automation_rppg_* recommended defaults (all OFF —
 # rPPG is the untested forward direction, opt-in only).

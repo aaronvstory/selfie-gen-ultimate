@@ -97,6 +97,15 @@ class AutomationManifest:
     # internally. Excluded from repr/compare (not part of manifest value).
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
+    @property
+    def lock(self) -> threading.RLock:
+        """Public handle for callers that mutate ``data`` directly (the
+        pipeline's case-status writes). BOTH sides of every read/write pair
+        must hold this lock — locking only the snapshot reader while the
+        worker writes bare gives the appearance of thread safety without
+        the substance (code-review HIGH, PR #96)."""
+        return self._lock
+
     @classmethod
     def create_or_load(cls, manifest_path: Path, root_dir: Path, config_snapshot: Dict[str, Any]) -> "AutomationManifest":
         resolved_root = str(root_dir.resolve())

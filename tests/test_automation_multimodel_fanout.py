@@ -221,6 +221,67 @@ def test_branch_oldcam_runs_on_branch_video(tmp_path, monkeypatch):
     assert any("sim92" in p for p in oldcam_capture)
 
 
+def test_branch_marks_failed_when_required_oldcam_produces_nothing(tmp_path, monkeypatch):
+    """Codex P2 (PR #96): with automation_oldcam_required=True and the
+    branch's oldcam fan-out producing ZERO outputs, the branch record must
+    say "failed" — not report success with an empty oldcam_outputs list.
+    The CASE still completes (primary chain owns the case verdict)."""
+    runner, record, manifest, selfie, video = _build(
+        tmp_path,
+        monkeypatch,
+        models=[NANO, GPT],
+        scores={NANO: 92, GPT: 88},
+        extra_config={"automation_oldcam_required": True},
+    )
+
+    def selective_oldcam(**kwargs):
+        video_path = Path(kwargs["video_path"])
+        if "sim88" in video_path.stem:  # the GPT branch: oldcam produces nothing
+            return []
+        out = video_path.with_name(f"{video_path.stem}-oldcam-v13.mp4")
+        out.write_bytes(b"oldcam")
+        return [("v13", out)]
+
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", selective_oldcam)
+    stats = runner.run([record])
+
+    assert stats["completed"] == 1  # primary oldcam succeeded -> case OK
+    branches = manifest.data["cases"]["case-a"]["steps"]["video_generate"]["meta"]["branches"]
+    assert branches[0]["status"] == "failed"
+    assert "required oldcam" in branches[0]["error"]
+    assert branches[0]["oldcam_outputs"] == []
+
+
+def test_abort_skips_remaining_branches(tmp_path, monkeypatch):
+    """Codex P2 (PR #96): [a] abort must stop fan-out too — branches not
+    yet started are recorded as skipped/aborted instead of continuing to
+    spend on paid work."""
+    THIRD = "vendor-x/third-model/edit"
+    runner, record, manifest, selfie, video = _build(
+        tmp_path,
+        monkeypatch,
+        models=[NANO, GPT, THIRD],
+        scores={NANO: 95, GPT: 90, THIRD: 85},
+    )
+
+    original = StemEchoVideo.create_kling_generation
+
+    def abort_during_first_branch(self, character_image_path, output_folder=None, **kwargs):
+        if "sim90" in Path(character_image_path).stem:
+            runner.abort_event.set()  # fires DURING branch 1's video gen
+        return original(self, character_image_path, output_folder=output_folder, **kwargs)
+
+    monkeypatch.setattr(StemEchoVideo, "create_kling_generation", abort_during_first_branch)
+    stats = runner.run([record])
+
+    assert stats["completed"] == 1  # primary chain finished before the abort
+    branches = manifest.data["cases"]["case-a"]["steps"]["video_generate"]["meta"]["branches"]
+    by_endpoint = {b["endpoint"]: b for b in branches}
+    assert by_endpoint[GPT]["status"] == "complete"  # in-flight branch finished its chain
+    assert by_endpoint[THIRD]["status"] == "skipped"
+    assert by_endpoint[THIRD]["error"] == "aborted"
+
+
 def test_branch_failure_never_fails_the_case(tmp_path, monkeypatch):
     runner, record, manifest, selfie, video = _build(
         tmp_path, monkeypatch, models=[NANO, GPT], scores={NANO: 92, GPT: 88},

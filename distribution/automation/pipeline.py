@@ -300,6 +300,17 @@ class AutoPipelineRunner:
         results: List[Dict[str, Any]] = []
         for branch in extra_branches:
             endpoint = branch["endpoint"]
+            if self.abort_event.is_set():
+                # [a] must stop branch fan-out too — without this check the
+                # run kept spending on paid branch outpaint/video/post work
+                # after the user aborted (Codex P2, PR #96).
+                self._report(
+                    f"[{case_key}] abort requested — remaining fan-out branch(es) skipped "
+                    f"({endpoint}{'…' if branch is not extra_branches[-1] else ''}).",
+                    "warning",
+                )
+                results.append({"endpoint": endpoint, "status": "skipped", "error": "aborted"})
+                continue
             self._report(
                 f"[{case_key}] fan-out branch: {endpoint} (score {branch['score']})",
                 "info",
@@ -315,6 +326,11 @@ class AutoPipelineRunner:
                         selfie_composite_mode=selfie_composite_mode,
                     )
                 )
+            except AutomationAbort:
+                # Never swallow an abort into a "branch failed" record — it
+                # must propagate to run()'s case-level abort handler
+                # (code-review MEDIUM, PR #96).
+                raise
             except Exception as exc:  # never let a branch kill the case
                 self.logger.exception("case %s branch %s crashed", case_key, endpoint)
                 self._report(f"[{case_key}] branch {endpoint} failed: {exc}", "error")
@@ -432,7 +448,12 @@ class AutoPipelineRunner:
             result["status"] = "complete"
             return result
 
-        # --- post chain: rPPG -> Loop -> Oldcam (graceful-skip parity) ---
+        # --- post chain: rPPG -> Loop -> Oldcam (graceful-skip parity).
+        # A branch failure never fails the CASE (the primary deliverable
+        # exists), but the branch RECORD must be honest: a missing REQUIRED
+        # deliverable marks the branch "failed", not "complete" (Codex P2,
+        # PR #96 — the old code reported empty oldcam fan-outs as success).
+        branch_issues: List[str] = []
         current = Path(branch_video)
         if self._read_bool("automation_rppg_enabled", False) and not is_rppg_artifact(current):
             injected = run_rppg(
@@ -450,6 +471,8 @@ class AutoPipelineRunner:
             if injected and injected.exists():
                 current = injected
                 result["rppg"] = str(injected)
+            elif self._read_bool("automation_rppg_required", False):
+                branch_issues.append("required rPPG produced no output")
         if self._read_bool("automation_loop_enabled", False):
             looped = create_looped_video(
                 str(current), suffix="_looped", overwrite=True, log_callback=self.progress_cb,
@@ -465,7 +488,16 @@ class AutoPipelineRunner:
                 progress_cb=self.progress_cb,
             )
             result["oldcam_outputs"] = [str(p) for _v, p in oldcam_all]
-        result["status"] = "complete"
+            if not oldcam_all and bool(self.automation.get("automation_oldcam_required", False)):
+                branch_issues.append("required oldcam produced no outputs")
+        if branch_issues:
+            result["status"] = "failed"
+            result["error"] = "; ".join(branch_issues)
+            self._report(
+                f"[{case_key}] branch {endpoint}: {result['error']}", "warning",
+            )
+        else:
+            result["status"] = "complete"
         return result
 
     def _report(self, message: str, level: str = "info") -> None:
@@ -508,8 +540,11 @@ class AutoPipelineRunner:
         # (no half-written outputs — each step finishes or is re-runnable).
         if step_name is not None and self.abort_event.is_set():
             raise AutomationAbort(f"aborted before step {step_name}")
-        case_entry["active_step"] = step_name
-        self.manifest.save_atomic()
+        # Mutation under the manifest lock: the dashboard's snapshot reader
+        # holds it while reading these exact fields (code-review HIGH, PR #96).
+        with self.manifest.lock:
+            case_entry["active_step"] = step_name
+            self.manifest.save_atomic()
 
     def _resolve_outpaint_provider(self, configured_provider: str) -> str:
         normalized = str(configured_provider or "auto").strip().lower()
@@ -560,9 +595,10 @@ class AutoPipelineRunner:
 
     def _finalize_case(self, case_entry: Dict[str, Any], final_status: str) -> str:
         status_value = "complete" if final_status == "completed" else final_status
-        case_entry["status"] = status_value
-        self._set_active_step(case_entry, None)
-        self.manifest.save_atomic()
+        with self.manifest.lock:
+            case_entry["status"] = status_value
+            self._set_active_step(case_entry, None)
+            self.manifest.save_atomic()
         return final_status
 
     def validate_configuration(self) -> List[str]:
@@ -734,12 +770,13 @@ class AutoPipelineRunner:
                 # step's manifest state is kept, so Run/Resume continues it
                 # from the first incomplete step.
                 self.stopped_reason = "aborted"
-                cases_map = self.manifest.data.setdefault("cases", {})
-                case_state = cases_map.setdefault(case.relative_key, {})
-                case_state["status"] = "pending"
-                case_state["active_step"] = None
-                case_state["updated_at"] = now_iso()
-                self.manifest.save_atomic()
+                with self.manifest.lock:
+                    cases_map = self.manifest.data.setdefault("cases", {})
+                    case_state = cases_map.setdefault(case.relative_key, {})
+                    case_state["status"] = "pending"
+                    case_state["active_step"] = None
+                    case_state["updated_at"] = now_iso()
+                    self.manifest.save_atomic()
                 self._report(
                     f"[{case.relative_key}] aborted mid-case — progress saved; "
                     "Run/Resume continues from the next incomplete step.",
@@ -811,9 +848,10 @@ class AutoPipelineRunner:
                     selfie_candidate=existing.selfie_candidate,
                     video_candidate=manifest_video_path,
                 )
-        case_entry["status"] = "running"
-        self._set_active_step(case_entry, None)
-        self.manifest.save_atomic()
+        with self.manifest.lock:
+            case_entry["status"] = "running"
+            self._set_active_step(case_entry, None)
+            self.manifest.save_atomic()
 
         outpaint = self.deps.outpaint_factory()
         outpaint.set_progress_callback(self.progress_cb)
@@ -1185,6 +1223,16 @@ class AutoPipelineRunner:
             # a 3:4 video. Without them the generator defaults to 720x1280 (9:16).
             selfie_w = self._read_int("automation_selfie_width", 864)
             selfie_h = self._read_int("automation_selfie_height", 1152)
+            # Unattended batch automation passes the poll-timeout CEILING
+            # (180s; SelfieGenerator clamps) unless the user configured one:
+            # the interactive 120s default exists to surface stuck queues
+            # fast to a watching user, but in a batch run it silently killed
+            # GPT Image 2 Edit (~137s on a SUCCESSFUL generation — the exact
+            # model the fan-out duo ships with; E2E round 3, 2026-06-11).
+            selfie_poll_timeout = SelfieGenerator.sanitize_poll_timeout_seconds(
+                self.config.get("selfie_poll_timeout_seconds")
+                or SelfieGenerator.MAX_POLL_TIMEOUT_SECONDS
+            )
             for endpoint in model_endpoints:
                 for _attempt in range(max_attempts):
                     generated = selfie.generate(
@@ -1194,6 +1242,7 @@ class AutoPipelineRunner:
                         model_endpoint=endpoint,
                         width=selfie_w,
                         height=selfie_h,
+                        poll_timeout_seconds=selfie_poll_timeout,
                     )
                     if not generated:
                         continue
@@ -1365,6 +1414,16 @@ class AutoPipelineRunner:
                 if cand is None and best_path:
                     cand = self._existing_branch_candidate(case_dir, endpoint, threshold)
                 if cand is None:
+                    if endpoint != best_endpoint:
+                        # LOUD: a selected model silently producing nothing
+                        # (e.g. generation timeout) must be visible — E2E
+                        # round 3 lost the whole GPT branch to a quiet poll
+                        # timeout with no trace in the run output.
+                        self._report(
+                            f"[{case_key}] branch {endpoint}: no usable selfie this run "
+                            "(generation failed/timed out and nothing reusable on disk) — branch SKIPPED.",
+                            "warning",
+                        )
                     continue
                 if str(cand["path"]) == str(best_path) or endpoint == best_endpoint:
                     continue  # the primary chain already covers this one

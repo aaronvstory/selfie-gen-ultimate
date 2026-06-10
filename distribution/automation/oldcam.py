@@ -66,6 +66,11 @@ def normalize_oldcam_versions(value: Union[None, str, Sequence[str]]) -> List[st
         if not token or token == "none":
             continue
         if token == "all":
+            # "all" anywhere wins and the OTHER tokens are deliberately
+            # dropped — ["all"] is the symbolic superset, so mixing it with
+            # explicit versions is redundant, not an error. (Interactive
+            # surfaces use the checkbox picker which can't produce the mix;
+            # this branch covers programmatic/comma-string callers.)
             return ["all"]
         if token not in cleaned:
             cleaned.append(token)
