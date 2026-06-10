@@ -287,9 +287,12 @@ def test_abort_skips_remaining_branches(tmp_path, monkeypatch):
     branches = case["steps"]["video_generate"]["meta"]["branches"]
     by_endpoint = {b["endpoint"]: b for b in branches}
     assert by_endpoint[GPT]["status"] == "skipped"
-    assert by_endpoint[GPT]["error"] == "aborted"
+    assert "aborted" in by_endpoint[GPT]["error"]
     assert THIRD not in by_endpoint  # never started; rebuilt on resume
-    # Branch 1's paid video DID land on disk before the abort -> reusable.
+    # Branch 1's paid video DID land on disk before the abort -> reusable,
+    # AND the partial record carried on the exception preserved its path
+    # (round-3 review must-fix: a bare skipped record lost it).
+    assert by_endpoint[GPT].get("video", "").endswith("_k.mp4")
     assert list((tmp_path / "case-a" / "gen-videos").glob("*sim90*_k.mp4"))
 
 

@@ -118,6 +118,10 @@ from automation.oldcam import (
 from selfie_generator import SelfieGenerator
 from tk_dialogs import select_directory, select_directory_cli_safe, select_open_file
 from app_version import RELEASE_VERSION
+# The repo's canonical config-bool coercion (bool("false") is True; this
+# parses string forms). face_similarity is stdlib-light at module level —
+# the heavy TF/DeepFace imports are lazy inside its engine getter.
+from face_similarity import _parse_bool as _parse_bool_cfg
 
 # Distinguishes "no argument supplied" from an explicit None/empty value in
 # helpers whose argument legitimately accepts falsy values.
@@ -4105,11 +4109,13 @@ class KlingAutomationUI:
         c = self.config
 
         def _flag(key: str, default: bool = False) -> bool:
-            # Same coercion the pipeline uses (_parse_bool): a string
-            # "false" in a hand-edited config must not display as ON while
-            # running as off (Codex P3, PR #96).
-            from face_similarity import _parse_bool
-            parsed = _parse_bool(c.get(key, default))
+            # Same coercion the pipeline uses (_parse_bool, the repo's
+            # canonical config-bool helper): a string "false" in a
+            # hand-edited config must not display as ON while running as
+            # off (Codex P3, PR #96). face_similarity is stdlib-light at
+            # module level (TF/DeepFace are lazy inside _get_engine), so
+            # this import is cheap.
+            parsed = _parse_bool_cfg(c.get(key, default))
             return parsed if parsed is not None else bool(default)
 
         rppg_on = _flag("automation_rppg_enabled")

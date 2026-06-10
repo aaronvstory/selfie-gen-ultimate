@@ -327,12 +327,17 @@ class AutoPipelineRunner:
                             selfie_composite_mode=selfie_composite_mode,
                         )
                     )
-                except AutomationAbort:
+                except AutomationAbort as abort_exc:
                     # Never swallow an abort into a "branch failed" record —
                     # it must propagate to run()'s case-level abort handler
-                    # (code-review MEDIUM, PR #96). The finally below still
-                    # persists everything finished so far.
-                    results.append({"endpoint": endpoint, "status": "skipped", "error": "aborted"})
+                    # (code-review MEDIUM, PR #96). Persist the PARTIAL
+                    # result carried on the exception (fields recorded
+                    # before the abort, e.g. a landed video) so resume can
+                    # reuse the paid work; the finally below writes it out.
+                    partial = getattr(abort_exc, "partial_result", None)
+                    results.append(
+                        partial or {"endpoint": endpoint, "status": "skipped", "error": "aborted"}
+                    )
                     raise
                 except Exception as exc:  # never let a branch kill the case
                     self.logger.exception("case %s branch %s crashed", case_key, endpoint)
@@ -344,17 +349,25 @@ class AutoPipelineRunner:
             # redundant paid regeneration on resume (Gemini HIGH, PR #96).
             # Stored on the video_generate step so the manifest carries the
             # full fan-out picture without changing the one-status-per-step
-            # schema.
-            video_step = self.manifest.get_step(case_key, "video_generate")
-            merged_meta = dict(video_step.get("meta") or {})
-            merged_meta["branches"] = results
-            self.manifest.update_step(
-                case_key,
-                "video_generate",
-                video_step.get("status") or "complete",
-                output=video_step.get("output"),
-                meta=merged_meta,
-            )
+            # schema. Guarded: an exception INSIDE a finally would REPLACE
+            # the propagating AutomationAbort and break the abort contract
+            # (round-3 review — update_step validates its status arg), so
+            # a persistence failure is logged, never raised from here.
+            try:
+                video_step = self.manifest.get_step(case_key, "video_generate")
+                merged_meta = dict(video_step.get("meta") or {})
+                merged_meta["branches"] = results
+                self.manifest.update_step(
+                    case_key,
+                    "video_generate",
+                    video_step.get("status") or "complete",
+                    output=video_step.get("output"),
+                    meta=merged_meta,
+                )
+            except Exception:
+                self.logger.exception(
+                    "case %s: failed to persist branch summary (non-fatal)", case_key
+                )
 
     def _run_branch_chain(
         self,
@@ -383,9 +396,17 @@ class AutoPipelineRunner:
             # Same contract as the primary chain's _set_active_step: [a]
             # stops after the CURRENT stage, never mid-stage (Gemini MED,
             # PR #96 — without these a branch ran every remaining paid
-            # stage after the abort).
+            # stage after the abort). The PARTIAL result rides on the
+            # exception so the caller persists fields recorded before the
+            # abort (e.g. an already-landed branch video) instead of a
+            # bare skipped record — losing them cost a paid regeneration
+            # on resume (round-3 review must-fix).
             if self.abort_event.is_set():
-                raise AutomationAbort(f"aborted before branch stage {stage} ({endpoint})")
+                result["status"] = "skipped"
+                result["error"] = f"aborted before branch stage {stage}"
+                exc = AutomationAbort(f"aborted before branch stage {stage} ({endpoint})")
+                exc.partial_result = result
+                raise exc
 
         # --- expand (same geometry/prompt rules as primary Step 5) ---
         final_still = still_path
