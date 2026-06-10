@@ -599,12 +599,14 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
 
     ui._apply_recommended_automation_defaults()
     assert saved["count"] == 1
-    assert ui.config["automation_front_expand_provider"] == "bfl"
+    # v7 (2026-06-11): provider fal for BOTH expand steps ("fal.ai for
+    # everything", user mandate).
+    assert ui.config["automation_front_expand_provider"] == "fal"
     assert ui.config["automation_front_expand_mode"] == "percent"
     assert ui.config["automation_front_expand_composite_mode"] == "preserve_seamless"
     assert ui.config["automation_front_expand_percent"] == 70
     assert ui.config["automation_front_expand_passes"] == 2
-    assert ui.config["automation_selfie_expand_provider"] == "bfl"
+    assert ui.config["automation_selfie_expand_provider"] == "fal"
     assert ui.config["automation_selfie_expand_mode"] == "percent"
     # Ship default for Step 2.5 selfie expand is "none" (raw AI output)
     # — see automation/config.py + default_config_template.json + the
@@ -628,14 +630,16 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_similarity_threshold"] == 80
     assert ui.config["automation_video_enabled"] is True
     assert ui.config["automation_oldcam_enabled"] is True
-    assert ui.config["automation_oldcam_version"] == "v24"
+    # v7: oldcam v13 only, canonical multi-select list form.
+    assert ui.config["automation_oldcam_version"] == ["v13"]
     assert ui.config["automation_oldcam_required"] is True
-    # PR #43 / CodeRabbit cycle-3 migration-guard fix: the apply-
-    # recommended-defaults helper must write the v5 rPPG iterative-
-    # mode baseline so v4-or-earlier users pulling the update can
-    # apply-and-go. The rppg_enabled GATE stays False (opt-in), but
-    # the MODE knobs are pre-set so enabling-via-toggle just works.
-    assert ui.config["automation_rppg_enabled"] is False
+    # v7: loop is a real pipeline step now; recommended baseline ships OFF.
+    assert ui.config["automation_loop_enabled"] is False
+    # v7 (user decision 2026-06-11): the recommended GATE is ON — "rPPG +
+    # oldcam v13 = best results"; a real batch run burned because rPPG
+    # silently stayed off. The iterative-mode baseline (PR #43) still
+    # applies. The GUI's own opt-in default is unaffected.
+    assert ui.config["automation_rppg_enabled"] is True
     assert ui.config["automation_rppg_mode"] == "iterative"
     assert ui.config["automation_rppg_iterate_from_baseline"] is True
     assert ui.config["automation_rppg_skip_diagnosis"] is True
@@ -649,13 +653,12 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
         "v6 apply-defaults must reset landmark_stride to 1 — that's "
         "the entire reason the version bumped from 5 to 6"
     )
-    # Version bumped 5 -> 6 in PR #54 (2026-05-27) when
-    # automation_rppg_landmark_stride default was reverted 3 -> 1.
-    # Drives the "apply recommended defaults" yellow prompt on the
-    # automation menu for v5 users still carrying stride=3.
+    # Version bumped 6 -> 7 in the 2026-06-11 CLI UX overhaul (rPPG ON,
+    # oldcam ["v13"], loop OFF, fal everywhere). Drives the "apply
+    # recommended defaults" yellow prompt for v6 users.
     from kling_automation_ui import RECOMMENDED_DEFAULTS_VERSION
-    assert RECOMMENDED_DEFAULTS_VERSION == 6
-    assert ui.config["automation_recommended_defaults_version"] == 6
+    assert RECOMMENDED_DEFAULTS_VERSION == 7
+    assert ui.config["automation_recommended_defaults_version"] == 7
     # Round-3 review fix (PR #54): catch the lockstep miss where
     # `kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION` was bumped
     # but `automation.config.AUTOMATION_DEFAULTS` stayed stale. Both

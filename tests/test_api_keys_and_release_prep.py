@@ -256,10 +256,16 @@ def test_apply_env_key_fallback_strips_whitespace(monkeypatch):
 
 
 def test_apply_env_key_fallback_noop_when_no_env(monkeypatch):
-    """No env vars set -> nothing filled, keys stay empty, returns []."""
+    """No env vars set -> nothing filled, keys stay empty, returns [].
+
+    Must clear EVERY alias in spec.env_vars, not just the primary
+    spec.env_var — apply_env_key_fallback reads all aliases, so a box
+    with e.g. FAL_API_KEY (the second fal alias) set would otherwise
+    leak into this test and fail it spuriously.
+    """
     for spec in API_KEY_SPECS:
-        if spec.env_var:
-            monkeypatch.delenv(spec.env_var, raising=False)
+        for name in spec.env_vars:
+            monkeypatch.delenv(name, raising=False)
     config = {spec.config_key: "" for spec in API_KEY_SPECS}
     assert apply_env_key_fallback(config) == []
     assert all(config[spec.config_key] == "" for spec in API_KEY_SPECS)

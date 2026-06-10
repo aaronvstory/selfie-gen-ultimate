@@ -143,7 +143,17 @@ from app_version import RELEASE_VERSION
 # prompt asks for and silently degrading those clips is worse than
 # the slowdown). Without this bump, v5 users would silently keep
 # stride=3 in their saved config and not get prompted to refresh.
-RECOMMENDED_DEFAULTS_VERSION = 6
+# v7 (2026-06-11, CLI UX overhaul): user-mandated "best results" baseline —
+# rPPG ON (the quick-start combo is rPPG + oldcam v13; a real batch run
+# burned by silently running 10 oldcam versions with NO rPPG), oldcam
+# ["v13"] only (canonical multi-select list form), loop OFF, provider fal
+# for BOTH expand steps ("fal.ai for everything"), composites unchanged
+# (front preserve_seamless / selfie-expand none). The GUI keeps its own
+# opt-in rPPG default — this preset is CLI-automation only.
+RECOMMENDED_DEFAULTS_VERSION = 7
+# rPPG default in the v7 recommended preset (user decision 2026-06-11:
+# ON). Single flip point should that decision change.
+RECOMMENDED_RPPG_ENABLED_V7 = True
 DEFAULT_KLING_PROMPT_SLOT = 4
 DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT = 3
 
@@ -2274,7 +2284,9 @@ class KlingAutomationUI:
             "video_model": self.config.get("model_display_name") or self.config.get("current_model"),
             "selfie_prompt_slot": self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT),
             "kling_prompt_slot": self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT),
-            "oldcam": (self.config.get("automation_oldcam_version", "v24"), self.config.get("automation_oldcam_required", False)),
+            "oldcam": (self.config.get("automation_oldcam_version"), self.config.get("automation_oldcam_required", False)),
+            "rppg": bool(self.config.get("automation_rppg_enabled", False)),
+            "loop": bool(self.config.get("automation_loop_enabled", False)),
             "max_cases": self._read_max_cases_setting(),
         }
 
@@ -2286,14 +2298,16 @@ class KlingAutomationUI:
             self.config["automation_max_cases_per_run"] = "1"
             max_cases_status = "set to 1 (invalid/missing previous value)"
 
-        self.config["automation_front_expand_provider"] = "bfl"
+        # v7: provider fal for BOTH expand steps ("fal.ai for everything",
+        # user mandate 2026-06-11; previously bfl).
+        self.config["automation_front_expand_provider"] = "fal"
         self.config["automation_front_expand_mode"] = "percent"
         self.config["automation_front_expand_percent"] = 70
         self.config["automation_front_expand_passes"] = 2
         self.config["outpaint_composite_mode"] = "preserve_seamless"
         self.config["automation_front_expand_composite_mode"] = "preserve_seamless"
         self.config["automation_front_edge_seal_enabled"] = False
-        self.config["automation_selfie_expand_provider"] = "bfl"
+        self.config["automation_selfie_expand_provider"] = "fal"
         self.config["automation_selfie_expand_mode"] = "percent"
         self.config["automation_selfie_expand_percent"] = 30
         # Ship default for Step 2.5 selfie expand is "none" (raw AI
@@ -2345,16 +2359,21 @@ class KlingAutomationUI:
         self.config["automation_facetrack_required"] = False
         self.config["automation_facetrack_sample_fps"] = 8.0
         self.config["automation_oldcam_enabled"] = True
-        self.config["automation_oldcam_version"] = "v24"
+        # v7: oldcam v13 only (canonical multi-select list form) — the
+        # quick-start "best results" combo is rPPG + oldcam v13.
+        self.config["automation_oldcam_version"] = ["v13"]
         self.config["automation_oldcam_required"] = True
-        # rPPG injection runs Phase E (Kling -> rPPG -> Loop -> Oldcam). It is
-        # opt-in (default OFF) — but when the user DOES enable it, the
-        # mode is "iterative" + the three companion flags are ON, per
-        # PR #43 (friend confirmed iterative is mandatory for prod use
-        # because the initial single-shot rarely lands at optimal
-        # strength). Recommended defaults keep the GATE off but set the
-        # MODE so enabling-via-toggle just works without further config.
-        self.config["automation_rppg_enabled"] = False
+        # v7: loop ships OFF (user mandate 2026-06-11) but is now a real
+        # pipeline step toggleable from quick settings.
+        self.config["automation_loop_enabled"] = False
+        # rPPG injection runs Phase E (Kling -> rPPG -> Loop -> Oldcam).
+        # v7 flips the recommended GATE to ON (user decision 2026-06-11:
+        # "rPPG and oldcam v13 = best results"; a real batch run burned
+        # because rPPG silently stayed off). The mode is "iterative" + the
+        # three companion flags ON, per PR #43 (friend confirmed iterative
+        # is mandatory for prod use). The global GUI default stays opt-in;
+        # this preset is CLI-automation only.
+        self.config["automation_rppg_enabled"] = RECOMMENDED_RPPG_ENABLED_V7
         self.config["automation_rppg_mode"] = "iterative"
         self.config["automation_rppg_iterate_from_baseline"] = True
         self.config["automation_rppg_skip_diagnosis"] = True
@@ -2375,39 +2394,34 @@ class KlingAutomationUI:
         self.config["automation_recommended_defaults_version"] = RECOMMENDED_DEFAULTS_VERSION
         self.save_config()
 
-        print("\nApplied recommended automation defaults.")
+        print("\nApplied recommended automation defaults (v7).")
         print("Before -> After")
         print(
             "  front expand: "
             f"{before['front'][0]} / {before['front'][1]} / {before['front'][2]} / "
             f"passes={before['front'][3]} / {before['front'][4]} "
-            "-> bfl / percent / 70 / passes=2 / preserve_seamless"
+            "-> fal / percent / 70 / passes=2 / preserve_seamless"
         )
-        print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} / {before['selfie_expand'][3]} -> bfl / percent / 30 / none")
+        print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} / {before['selfie_expand'][3]} -> fal / percent / 30 / none")
         print(f"  selfie model: {before['selfie_models']} -> Nano Banana 2 Edit")
         print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
         print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 3")
         print(f"  Kling prompt slot: {before['kling_prompt_slot']} -> 4")
-        print(f"  oldcam: {before['oldcam'][0]} / {'required' if before['oldcam'][1] else 'optional'} -> v24 / required")
-        # PR #43: rPPG iterative-mode flags become part of the v5
-        # recommended baseline. They only ACTIVATE when rppg_enabled
-        # is true; the baseline keeps rppg off but pre-sets the
-        # iterative-mode keys so enabling-via-toggle just works.
         print(
-            "  rPPG mode: iterative + --iterate-from-baseline + "
-            "--skip-diagnosis + --skip-kinematic-gate "
-            "(active only when rPPG is enabled)"
+            f"  oldcam: {self._format_oldcam_versions(before['oldcam'][0])} / "
+            f"{'required' if before['oldcam'][1] else 'optional'} -> v13 / required"
         )
+        print(f"  rPPG: {'ON' if before.get('rppg') else 'off'} -> {'ON' if RECOMMENDED_RPPG_ENABLED_V7 else 'off'} (iterative + from-baseline + skip-diag/kinematic)")
+        print(f"  loop: {'ON' if before.get('loop') else 'off'} -> off")
         print(f"  max cases per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
         print("\nCurrent recommended state:")
-        print("  front expand: bfl / percent / 70 / preserve_seamless")
-        print("  selfie expand: bfl / percent / 30 / preserve_seamless")
+        print("  front expand: fal / percent / 70 / preserve_seamless")
+        print("  selfie expand: fal / percent / 30 / none")
         print("  selfie model: Nano Banana 2 Edit")
         print("  video model: Kling 2.5 Turbo Standard")
         print("  selfie prompt slot: 3")
         print("  Kling prompt slot: 4")
-        print("  oldcam: v24 / required")
-        print("  rPPG: opt-in; when enabled -> iterative + from-baseline + skip-diag/kinematic")
+        print(f"  oldcam: v13 / required   ·   rPPG: {'ON' if RECOMMENDED_RPPG_ENABLED_V7 else 'off'}   ·   loop: off")
         print(f"  max cases per run: {self._read_max_cases_setting()}")
         self.pause_continue("\nPress Enter to continue...")
 

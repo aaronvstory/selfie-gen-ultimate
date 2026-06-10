@@ -193,7 +193,10 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     #   v6 (2026-05-27, PR #54): rPPG landmark-stride default 3 -> 1
     #     (quality-first; v5 users carrying stride=3 from the v2.5
     #     speedup pass get prompted to refresh)
-    "automation_recommended_defaults_version": 6,
+    #   v7 (2026-06-11, CLI UX overhaul): rPPG recommended ON, oldcam
+    #     ["v13"] (multi-select list form), loop OFF (new step), provider
+    #     fal for both expand steps ("fal.ai for everything").
+    "automation_recommended_defaults_version": 7,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
     "automation_log_backup_count": 5,
