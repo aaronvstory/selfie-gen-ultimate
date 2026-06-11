@@ -104,6 +104,9 @@ from automation.config import (
     merge_automation_defaults,
     from_app_config,
     get_outpaint_fal_timeout_seconds,
+    resolve_cli_kling_prompt_slot,
+    resolve_cli_video_duration,
+    resolve_cli_video_model,
 )
 from automation.discovery import discover_case_folders, detect_existing_outputs
 from automation.logger import resolve_automation_log_path
@@ -160,6 +163,19 @@ RECOMMENDED_DEFAULTS_VERSION = 7
 RECOMMENDED_RPPG_ENABLED_V7 = True
 DEFAULT_KLING_PROMPT_SLOT = 4
 DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT = 3
+
+# Block-letter CLI banner ("the title doesn't stand out at all" — user,
+# 2026-06-11). Hand-rolled constant, no figlet dependency. Every line must
+# stay ≤79 cols (tests/test_cli_gui_settings_split.py locks this); terminals
+# narrower than _BANNER_MIN_WIDTH (and non-TTY output) fall back to the
+# bordered Rich panel header instead.
+_BANNER_ASCII = """\
+███████ ███████ ██      ███████ ██ ███████      ██████  ███████ ███    ██
+██      ██      ██      ██      ██ ██          ██       ██      ████   ██
+███████ █████   ██      █████   ██ █████       ██   ███ █████   ██ ██  ██
+     ██ ██      ██      ██      ██ ██          ██    ██ ██      ██  ██ ██
+███████ ███████ ███████ ██      ██ ███████      ██████  ███████ ██   ████"""
+_BANNER_MIN_WIDTH = 76
 
 # Single-source option lists shared by the questionary AND legacy settings
 # editors so the two paths can never drift (review theme D). Edit here only.
@@ -899,36 +915,56 @@ class KlingAutomationUI:
         """Display the primary Selfie Gen Ultimate header."""
         self.clear_screen()
 
-        model_name = self.config.get("model_display_name", "Kling 2.5 Turbo Standard")
-        duration = self.config.get("video_duration", 10)
+        # The header status line shows the AUTOMATION pipeline's effective
+        # model ("Automation first") — per-surface cli_* keys, falling back
+        # to the GUI keys for pre-split configs.
+        _hdr_endpoint, _hdr_display = resolve_cli_video_model(self.config)
+        model_name = _hdr_display or _hdr_endpoint or "Kling 2.5 Turbo Standard"
+        duration = resolve_cli_video_duration(self.config)
 
         # Fetch pricing (cached after first call). Value-aware guard: model
         # switches reset _cached_price to None (not delattr), so a hasattr-only
         # check would keep the stale/None price forever — the header would show
         # the old model's price or "Check fal.ai" after every change (A2).
         if getattr(self, "_cached_price", None) is None:
-            self._cached_price = self.fetch_model_pricing(
-                self.config.get("current_model", "")
-            )
+            self._cached_price = self.fetch_model_pricing(_hdr_endpoint or "")
         price = self._cached_price
         price_str = f"${price:.2f}/sec" if price else "Check fal.ai"
 
-        # Rich header (2026-06-11 restyle — the old raw-ANSI banner printed
-        # stacked ═ rules that read as clutter). Title + release version
-        # (single source of truth: app_version.RELEASE_VERSION, same constant
-        # the GUI chip and the release-zip name read) in one bordered panel
-        # with the model/duration/price status line inside. Rich degrades
-        # cleanly on non-TTY (styles stripped, borders kept as text).
+        # Header v2 (2026-06-11 round 2): block-letter ASCII banner so the
+        # title actually reads as a TITLE instead of blending into the
+        # settings table. Version single-source: app_version.RELEASE_VERSION
+        # (same constant as the GUI chip + release-zip name). Non-TTY output
+        # and narrow terminals keep the bordered Rich panel (degrades cleanly,
+        # and the banner would wrap into garbage under ~76 cols).
         from rich.align import Align
         from rich.console import Group as _RichGroup
         from rich.text import Text as _RichText
 
-        title = _RichText(f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}", style="bold white")
-        subtitle = _RichText("Front DL -> Selfie -> Similarity -> Video -> Oldcam", style="dim")
         status = _RichText.from_markup(
             f"[magenta]{model_name}[/magenta]  ·  [green]{duration}s[/green]  ·  "
             f"[yellow]{price_str}[/yellow]  ·  [cyan]Automation first[/cyan]"
         )
+        use_ascii_banner = (
+            bool(getattr(_RICH_CONSOLE, "is_terminal", False))
+            and (_RICH_CONSOLE.width or 0) >= _BANNER_MIN_WIDTH
+        )
+        if use_ascii_banner:
+            from rich.rule import Rule
+
+            tagline = _RichText.from_markup(
+                f"[bold white]ULTIMATE  {RELEASE_VERSION}[/bold white]"
+                "[dim]  ·  Front → Selfie → Similarity → Video → Oldcam[/dim]"
+            )
+            _RICH_CONSOLE.print(Align.center(_RichText(_BANNER_ASCII, style="bold cyan")))
+            print()
+            _RICH_CONSOLE.print(Align.center(tagline))
+            _RICH_CONSOLE.print(Align.center(status))
+            _RICH_CONSOLE.print(Rule(style="blue"))
+            return
+
+        title = _RichText(f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}", style="bold white")
+        subtitle = _RichText("Front DL -> Selfie -> Similarity -> Video -> Oldcam", style="dim")
         _RICH_CONSOLE.print(
             Panel(
                 _RichGroup(Align.center(title), Align.center(subtitle), Align.center(status)),
@@ -1663,9 +1699,16 @@ class KlingAutomationUI:
             print("\n\033[93mSlot {} cleared\033[0m".format(current_slot))
             time.sleep(1.5)
 
-    def quick_edit_prompt(self):
-        """Quick inline prompt editor - single line input"""
-        current_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
+    def quick_edit_prompt(self, target: str = "gui"):
+        """Quick inline prompt editor - single line input.
+
+        ``target="cli"`` edits the text of the CLI pipeline's active slot
+        (the slot POINTER is per-surface; the TEXT is shared with the GUI by
+        design — saved_prompts is the single prompt store)."""
+        if target == "cli":
+            current_slot = str(resolve_cli_kling_prompt_slot(self.config, DEFAULT_KLING_PROMPT_SLOT))
+        else:
+            current_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
         existing = str(self.config.get("saved_prompts", {}).get(current_slot, ""))
         if not self._use_legacy_prompt_ui():
             new_prompt = self._q_text(
@@ -1692,16 +1735,23 @@ class KlingAutomationUI:
             print("\033[90mCancelled\033[0m")
             time.sleep(0.5)
 
-    def swap_prompt_slot(self):
+    def swap_prompt_slot(self, target: str = "gui"):
         """Swap active Kling video prompt slot across slots 1-10.
 
         Invalid or missing slot values fall back to slot 4 defaults.
+        ``target="cli"`` moves the CLI pipeline's own slot pointer
+        (cli_kling_prompt_slot) without touching the GUI's current_prompt_slot.
         """
         saved_prompts = self.config.get("saved_prompts", {})
-        current_slot = self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT)
+        if target == "cli":
+            current_slot = resolve_cli_kling_prompt_slot(self.config, DEFAULT_KLING_PROMPT_SLOT)
+            slot_key = "cli_kling_prompt_slot"
+        else:
+            current_slot = self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT)
+            slot_key = "current_prompt_slot"
 
         def _apply(choice: str) -> None:
-            self.config["current_prompt_slot"] = int(choice)
+            self.config[slot_key] = int(choice)
             self.save_config()
             if saved_prompts.get(choice):
                 self.print_green(f"✓ Switched to slot {choice}")
@@ -1741,7 +1791,7 @@ class KlingAutomationUI:
 
         choice = self._safe_input("\033[92mSelect slot (1-10) or Enter to cancel: \033[0m").strip()
         if choice.isdigit() and 1 <= int(choice) <= 10:
-            self.config["current_prompt_slot"] = int(choice)
+            self.config[slot_key] = int(choice)
             self.save_config()
             prompt = saved_prompts.get(choice)
             if prompt:
@@ -1766,19 +1816,35 @@ class KlingAutomationUI:
         ("Ovi", "fal-ai/ovi/image-to-video", 5),
     ]
 
-    def _apply_model_choice(self, name: str, endpoint: str, duration: int) -> None:
-        self.config["current_model"] = endpoint
-        self.config["model_display_name"] = name
-        self.config["video_duration"] = duration
+    def _apply_model_choice(self, name: str, endpoint: str, duration: int, target: str = "gui") -> None:
+        # target="cli" writes the CLI automation pipeline's own keys so the
+        # GUI's manual-lab selection is never clobbered (per-surface split,
+        # 2026-06-11); target="gui" is the manual-tools/GUI-shared selection.
+        if target == "cli":
+            self.config["cli_video_model"] = endpoint
+            self.config["cli_video_model_display_name"] = name
+            self.config["cli_video_duration"] = duration
+        else:
+            self.config["current_model"] = endpoint
+            self.config["model_display_name"] = name
+            self.config["video_duration"] = duration
         self._cached_price = None
         self.save_config()
-        self.print_green(f"✓ Model set to: {name}")
+        self.print_green(f"✓ {'Automation video model' if target == 'cli' else 'Model'} set to: {name}")
         time.sleep(0.9)
 
-    def select_model(self):
-        """Select AI model from presets or enter custom endpoint."""
+    def select_model(self, target: str = "gui"):
+        """Select AI model from presets or enter custom endpoint.
+
+        ``target="cli"`` edits the automation pipeline's per-surface selection
+        (cli_video_model); the default edits the GUI/manual-tools selection."""
         if not self._use_legacy_prompt_ui():
-            current_model = self.config.get("current_model", "")
+            if target == "cli":
+                current_model, current_display = resolve_cli_video_model(self.config)
+                current_model = current_model or ""
+            else:
+                current_model = self.config.get("current_model", "")
+                current_display = self.config.get("model_display_name", "Unknown")
             choices = []
             for name, endpoint, duration in self._MODEL_PRESETS:
                 price = self.fetch_model_pricing(endpoint)
@@ -1789,10 +1855,10 @@ class KlingAutomationUI:
             choices.append(("🌐  Fetch all models from fal.ai", "__fetch__"))
             choices.append(("↩️   Back", "__cancel__"))
             pick = self._q_menu(
-                "Model Selection",
+                "Automation Video Model" if target == "cli" else "Model Selection",
                 choices,
                 status_lines=[
-                    f"Current: {self.config.get('model_display_name', 'Unknown')}",
+                    f"Current: {current_display or 'Unknown'}",
                     f"Endpoint: {current_model}",
                 ],
             )
@@ -1810,16 +1876,16 @@ class KlingAutomationUI:
                 duration = int(dur_raw) if dur_raw and dur_raw.strip().isdigit() else 10
                 if duration not in _COMMON_VIDEO_DURATIONS:
                     self.print_yellow(f"⚠ Uncommon duration {duration}s — verify the model supports it.")
-                self._apply_model_choice(name.strip(), endpoint, duration)
+                self._apply_model_choice(name.strip(), endpoint, duration, target=target)
                 return
             if pick == "__fetch__":
                 # Delegate the paginated "all models" browser to the legacy flow
                 # (its number-paged input() UX is fine for this advanced path).
-                return self._select_model_fetch_all_legacy()
+                return self._select_model_fetch_all_legacy(target=target)
             # A preset endpoint was chosen.
             for name, endpoint, duration in self._MODEL_PRESETS:
                 if endpoint == pick:
-                    self._apply_model_choice(name, endpoint, duration)
+                    self._apply_model_choice(name, endpoint, duration, target=target)
                     return
             return
         return self._select_model_legacy()
@@ -1910,17 +1976,21 @@ class KlingAutomationUI:
             print(f"\033[92m✓ Model set to: {name}\033[0m")
             time.sleep(1.5)
 
-    def _select_model_fetch_all_legacy(self):
+    def _select_model_fetch_all_legacy(self, target: str = "gui"):
         """Paginated browser of every fal.ai image-to-video model (input()-based).
 
         Reached from both the questionary picker ("Fetch all models") and the
         legacy numbered picker (option 7). The number-paged UX is intentionally
         kept as input() — it's an advanced, high-cardinality list where a flat
-        arrow menu would be unwieldy.
+        arrow menu would be unwieldy. ``target`` flows through to
+        _apply_model_choice (cli = automation per-surface keys).
         """
         print("\n\033[93mFetching all image-to-video models from fal.ai...\033[0m")
         models = self.fetch_available_models()
-        current_model = self.config.get("current_model", "")
+        if target == "cli":
+            current_model = resolve_cli_video_model(self.config)[0] or ""
+        else:
+            current_model = self.config.get("current_model", "")
         page_size = 40
         page = 0
         total_pages = (len(models) + page_size - 1) // page_size
@@ -2000,6 +2070,7 @@ class KlingAutomationUI:
                     selected.get("name", selected.get("endpoint_id")),
                     selected.get("endpoint_id"),
                     selected.get("duration", 10),
+                    target=target,
                 )
                 break
             else:
@@ -2008,6 +2079,10 @@ class KlingAutomationUI:
 
     def run_configuration_menu(self):
         """Main top-level menu loop."""
+        # Silent one-time upgrade to the current recommended pipeline baseline
+        # (interactive entry only — headless --batch never lands here, so a
+        # scheduled run's behavior can't flip mid-schedule).
+        self._auto_upgrade_recommended_defaults()
         while True:
             if self._use_legacy_prompt_ui():
                 result = self._run_configuration_menu_legacy_iteration()
@@ -2046,51 +2121,141 @@ class KlingAutomationUI:
             self.configure_advanced_video_settings()
         return None
 
+    def _main_menu_choice_pairs(self) -> "List[Tuple[str, str]]":
+        """(label, value) entries for the flattened top-level menu — single
+        source for the grouped questionary menu and the structure test.
+        Each action lives in EXACTLY one place (the old layout duplicated
+        scan/run/settings/root between the top level and the End-to-End
+        submenu — "bloated and confusing", user 2026-06-11). Group
+        separators are added by the renderer."""
+        return [
+            ("🚀  Run / resume end-to-end pipeline", "run"),
+            ("🔍  Scan / preview cases", "scan"),
+            ("🧪  Dry run (no API calls)", "dry_run"),
+            ("⚡  Quick settings (edit the table above)", "quick"),
+            ("⚙️   All settings…", "settings"),
+            ("🎬  Manual Kling video tools", "manual"),
+            ("🖥️   Launch GUI manual lab", "gui"),
+            ("🩺  Maintenance (deps, manifest)…", "maintenance"),
+            ("🚪  Quit", "q"),
+        ]
+
+    _MAIN_MENU_GROUPS = (
+        ("Run", ("run", "scan", "dry_run")),
+        ("Settings", ("quick", "settings")),
+        ("Tools", ("manual", "gui", "maintenance")),
+        (None, ("q",)),
+    )
+
     def _run_configuration_menu_questionary_iteration(self) -> "Optional[str]":
         """One iteration of the branded arrow-key top-level menu."""
         # The MAIN-settings Rich table replaces the old raw key=value blob
         # ("plain text not fitting with the rest" — user, 2026-06-11) and
-        # matches the option-1 styling; the header panel already brands the
+        # matches the option-1 styling; the header banner already brands the
         # screen, so no second title rule either.
         self.display_header()
         self._render_run_settings_table()
-        current_version = int(self.config.get("automation_recommended_defaults_version", 0) or 0)
-        if current_version < RECOMMENDED_DEFAULTS_VERSION:
-            _RICH_CONSOLE.print(
-                f"  [yellow]Tip:[/yellow] apply recommended defaults "
-                f"(End-to-End menu → ⭐) to upgrade v{current_version} → v{RECOMMENDED_DEFAULTS_VERSION}.",
-            )
-            print()
+        by_value = {value: label for label, value in self._main_menu_choice_pairs()}
+        grouped: "List[Any]" = []
+        for group_title, values in self._MAIN_MENU_GROUPS:
+            if group_title is not None:
+                grouped.append(questionary.Separator(f"  ─── {group_title} ───"))
+            grouped.extend(questionary.Choice(by_value[v], v) for v in values)
+            grouped.append(questionary.Separator(" "))
+        grouped.pop()  # no trailing spacer after Quit
         choice = self._q_menu(
             f"Selfie Gen Ultimate  {RELEASE_VERSION}",
-            [
-                ("🚀  End-to-End Auto Pipeline", "1"),
-                ("🔍  Scan automation root / preview cases", "2"),
-                ("▶️   Run / resume automation batch", "3"),
-                ("⚙️   Automation settings", "4"),
-                ("🎬  Manual Kling video tools", "5"),
-                ("🖥️   Launch GUI manual lab", "6"),
-                ("🔑  API keys / provider settings", "7"),
-                ("📦  Dependency check", "8"),
-                ("🎛️   Advanced video/model settings", "9"),
-                ("📂  Set automation root by path…", "path"),
-                ("🚪  Quit", "q"),
-            ],
+            grouped,
             show_header=False,
             show_title_rule=False,
         )
         if choice in (None, "q"):
             print("\nGoodbye!")
             sys.exit(0)
-        if choice == "path":
-            raw = self._q_text(
-                "Automation root folder path (case folders need front.jpg/png/jpeg):",
-                default=self.automation_root_folder or "",
-            )
-            if raw and raw.strip():
-                self._commit_automation_root(raw.strip().strip('"').strip("'"))
+        if choice == "run":
+            # Flattened run entry: offer the folder picker instead of a dead
+            # red "set root first" error when no root is set yet.
+            if not self.automation_root_folder:
+                self._select_automation_root()
+            if self.automation_root_folder:
+                self._run_resume_automation()
             return None
-        return self._dispatch_configuration_choice(choice)
+        if choice == "scan":
+            self._scan_automation_cases()
+            return None
+        if choice == "dry_run":
+            self._dry_run_automation()
+            return None
+        if choice == "quick":
+            self._quick_edit_settings()
+            return None
+        if choice == "settings":
+            self._settings_hub_menu()
+            return None
+        if choice == "manual":
+            return self._run_manual_kling_menu() or None
+        if choice == "gui":
+            self.launch_gui()
+            return None
+        if choice == "maintenance":
+            self._maintenance_menu()
+            return None
+        return None
+
+    def _settings_hub_menu(self) -> None:
+        """Every settings surface in ONE hub (questionary path only — the
+        legacy numbered menu keeps its original per-option layout)."""
+        while True:
+            choice = self._q_menu(
+                "Settings",
+                [
+                    ("⚡  Quick settings (main run settings)", "quick"),
+                    ("⚙️   Edit ALL automation settings", "all"),
+                    ("🎛️   Advanced video/model settings", "advanced"),
+                    ("🔑  API keys / provider settings", "keys"),
+                    ("📜  View full prompts (selfie + video)", "prompts"),
+                    ("🔄  Compare with GUI settings…", "compare"),
+                    ("⭐  Reset to recommended pipeline defaults", "reset"),
+                    ("↩️   Back", "back"),
+                ],
+            )
+            if choice in (None, "back"):
+                return
+            if choice == "quick":
+                self._quick_edit_settings()
+            elif choice == "all":
+                self._edit_automation_settings()
+            elif choice == "advanced":
+                self.configure_advanced_video_settings()
+            elif choice == "keys":
+                self.configure_api_provider_settings()
+            elif choice == "prompts":
+                self._show_full_prompts()
+                self.pause_review("\nPress Enter to continue...")
+            elif choice == "compare":
+                self._compare_gui_settings_menu()
+            elif choice == "reset":
+                self._apply_recommended_automation_defaults()
+
+    def _maintenance_menu(self) -> None:
+        """Housekeeping actions that don't belong next to run/settings."""
+        while True:
+            choice = self._q_menu(
+                "Maintenance",
+                [
+                    ("📦  Dependency check", "deps"),
+                    ("📄  Print manifest path", "manifest"),
+                    ("↩️   Back", "back"),
+                ],
+            )
+            if choice in (None, "back"):
+                return
+            if choice == "deps":
+                self.check_dependencies()
+            elif choice == "manifest":
+                manifest_path = self._automation_manifest_path()
+                print(f"\nManifest path: {manifest_path if manifest_path else '(set root first)'}")
+                self.pause_review("\nPress Enter to continue...")
 
     def _run_configuration_menu_legacy_iteration(self) -> "Optional[str]":
         """One iteration of the legacy numbered top-level menu (non-TTY / pipe).
@@ -2252,7 +2417,7 @@ class KlingAutomationUI:
             front_status,
             selfie_status,
             f"selfie models={', '.join(selfie_models) if selfie_models else '(none)'} prompt_slot={selfie_slot} prompt_source={selfie_prompt_source}",
-            f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={self.config.get('model_display_name') or self.config.get('current_model')} kling_prompt_slot={self.config.get('current_prompt_slot', DEFAULT_KLING_PROMPT_SLOT)}",
+            f"similarity_threshold={self.config.get('automation_similarity_threshold', 80)} video_model={(lambda e, d: d or e)(*resolve_cli_video_model(self.config))} kling_prompt_slot={resolve_cli_kling_prompt_slot(self.config, DEFAULT_KLING_PROMPT_SLOT)}",
             f"facetrack_gate={'on' if self.config.get('automation_facetrack_enabled', True) else 'off'} "
             f"min={self.config.get('automation_facetrack_min_pct', 96.0)}% "
             f"mode={'required(fail+skip oldcam)' if self.config.get('automation_facetrack_required', False) else 'advisory(manual_review)'}",
@@ -2264,41 +2429,17 @@ class KlingAutomationUI:
         ]
         return lines
 
-    def _apply_recommended_automation_defaults(self) -> None:
-        # This overwrites ~60 automation_* keys (front/selfie/expand/video/oldcam/
-        # rppg + prompts) with the recommended baseline. Confirm before clobbering
-        # a customized config (E1). default=True so the headless/test path (which
-        # chose this action deliberately) proceeds, while a TTY user gets a y/N.
-        if not self._confirm(
-            "Apply recommended automation defaults? This overwrites your current automation settings.",
-            default=True,
-        ):
-            self.print_yellow("Recommended defaults not applied.")
-            return
-        before = {
-            "front": (
-                self.config.get("automation_front_expand_provider"),
-                self.config.get("automation_front_expand_mode"),
-                self.config.get("automation_front_expand_percent"),
-                self.config.get("automation_front_expand_passes"),
-                self.config.get("automation_front_expand_composite_mode"),
-            ),
-            "selfie_expand": (
-                self.config.get("automation_selfie_expand_provider"),
-                self.config.get("automation_selfie_expand_mode"),
-                self.config.get("automation_selfie_expand_percent"),
-                self.config.get("automation_selfie_expand_composite_mode"),
-            ),
-            "selfie_models": list(self.config.get("automation_selfie_models", [])),
-            "video_model": self.config.get("model_display_name") or self.config.get("current_model"),
-            "selfie_prompt_slot": self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT),
-            "kling_prompt_slot": self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT),
-            "oldcam": (self.config.get("automation_oldcam_version"), self.config.get("automation_oldcam_required", False)),
-            "rppg": bool(self.config.get("automation_rppg_enabled", False)),
-            "loop": bool(self.config.get("automation_loop_enabled", False)),
-            "max_cases": self._read_max_cases_setting(),
-        }
+    def _write_recommended_automation_baseline(self) -> str:
+        """Write the recommended v7 baseline to the keys the CLI pipeline OWNS:
+        the automation_* set plus the per-surface cli_* selection (video model /
+        kling prompt slot / duration). NO GUI-shared key is touched here —
+        current_model / model_display_name / current_prompt_slot /
+        saved_prompts / negative_prompts / cfg_scale_value / lock_end_frame /
+        outpaint_composite_mode all stay exactly as the GUI left them.
 
+        Single source shared by the explicit ⭐ reset AND the silent one-time
+        startup migration so the two can never drift. Caller saves.
+        Returns the max-cases status line for the ⭐ report."""
         valid_max_cases = {"1", "5", "10", "all"}
         current_max_cases = str(self.config.get("automation_max_cases_per_run", "")).strip().lower()
         if current_max_cases in valid_max_cases:
@@ -2322,7 +2463,6 @@ class KlingAutomationUI:
         self.config["automation_front_expand_mode"] = "percent"
         self.config["automation_front_expand_percent"] = 70
         self.config["automation_front_expand_passes"] = 2
-        self.config["outpaint_composite_mode"] = "preserve_seamless"
         self.config["automation_front_expand_composite_mode"] = "preserve_seamless"
         self.config["automation_front_edge_seal_enabled"] = False
         self.config["automation_selfie_expand_provider"] = "fal"
@@ -2341,28 +2481,13 @@ class KlingAutomationUI:
         defaults = merge_automation_defaults({}).get("automation_selfie_prompts", {})
         self.config["automation_selfie_prompts"]["1"] = defaults.get("1", "")
         self.config["automation_selfie_prompts"]["3"] = defaults.get("3", defaults.get("1", ""))
-        self.config["current_model"] = "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
-        self.config["model_display_name"] = "Kling 2.5 Turbo Standard"
-        self.config["current_prompt_slot"] = DEFAULT_KLING_PROMPT_SLOT
-        saved_prompts = self.config.get("saved_prompts")
-        if not isinstance(saved_prompts, dict):
-            saved_prompts = {}
-        saved_prompts["1"] = RECOMMENDED_KLING_PROMPT_SLOT_1
-        saved_prompts["4"] = RECOMMENDED_KLING_PROMPT_SLOT_1
-        self.config["saved_prompts"] = saved_prompts
-        # Pair the minimal-motion positive with the recommended negative
-        # on the same slots (the dispatcher drops it for models that
-        # don't accept negative_prompt — o3 / seedance).
-        negative_prompts = self.config.get("negative_prompts")
-        if not isinstance(negative_prompts, dict):
-            negative_prompts = {}
-        negative_prompts["1"] = RECOMMENDED_KLING_NEGATIVE_SLOT_1
-        negative_prompts["4"] = RECOMMENDED_KLING_NEGATIVE_SLOT_1
-        self.config["negative_prompts"] = negative_prompts
-        # Motion knobs: stricter prompt adherence + mechanical
-        # return-to-pose via the end-frame lock.
-        self.config["cfg_scale_value"] = 0.7
-        self.config["lock_end_frame"] = True
+        # Per-surface CLI selection (split, 2026-06-11): the recommended
+        # Kling 2.5 Turbo Standard on prompt slot 4 lands on the cli_* keys
+        # so the GUI's manual-lab model/slot selection survives untouched.
+        self.config["cli_video_model"] = "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+        self.config["cli_video_model_display_name"] = "Kling 2.5 Turbo Standard"
+        self.config["cli_video_duration"] = 10
+        self.config["cli_kling_prompt_slot"] = DEFAULT_KLING_PROMPT_SLOT
         self.config["automation_similarity_threshold"] = 80
         self.config["automation_video_enabled"] = True
         # Face-track gate is DIAGNOSTIC-ONLY and OFF by default. A large
@@ -2414,6 +2539,109 @@ class KlingAutomationUI:
         # multiply rPPG runtime per oldcam version).
         self.config["automation_rppg_per_oldcam_fanout"] = False
         self.config["automation_recommended_defaults_version"] = RECOMMENDED_DEFAULTS_VERSION
+        return max_cases_status
+
+    def _auto_upgrade_recommended_defaults(self) -> None:
+        """One-time SILENT upgrade to the current recommended pipeline baseline.
+
+        Runs at interactive menu startup only — never on the headless --batch
+        path, where a scheduled/cron run's behavior must not flip mid-schedule
+        (headless users pass explicit override flags instead). Replaces the
+        old jargon tip ("upgrade v1 → v7" meant nothing to end users; mandate
+        2026-06-11: apply it automatically and ship fresh).
+
+        GUI-safety contract: only automation_* + cli_* keys are written. The
+        shared Kling prompt slots (1/4) are seeded ONLY where empty — prompt
+        text is shared with the GUI by design and user-authored text survives.
+        """
+        try:
+            current_version = int(self.config.get("automation_recommended_defaults_version", 0) or 0)
+        except (TypeError, ValueError):
+            current_version = 0
+        if current_version >= RECOMMENDED_DEFAULTS_VERSION:
+            return
+        self._write_recommended_automation_baseline()
+        saved_prompts = self.config.get("saved_prompts")
+        if not isinstance(saved_prompts, dict):
+            saved_prompts = {}
+            self.config["saved_prompts"] = saved_prompts
+        negative_prompts = self.config.get("negative_prompts")
+        if not isinstance(negative_prompts, dict):
+            negative_prompts = {}
+            self.config["negative_prompts"] = negative_prompts
+        for slot in ("1", "4"):
+            if not str(saved_prompts.get(slot, "") or "").strip():
+                saved_prompts[slot] = RECOMMENDED_KLING_PROMPT_SLOT_1
+            if not str(negative_prompts.get(slot, "") or "").strip():
+                negative_prompts[slot] = RECOMMENDED_KLING_NEGATIVE_SLOT_1
+        self.save_config()
+        _RICH_CONSOLE.print(
+            "[dim]Pipeline settings were upgraded to the latest recommended baseline "
+            "(GUI settings untouched).[/dim]"
+        )
+
+    def _apply_recommended_automation_defaults(self) -> None:
+        # Explicit ⭐ reset: the automation/cli baseline PLUS the shared video
+        # knobs (Kling prompt slots 1/4 text, negative prompts, cfg scale,
+        # end-frame lock, outpaint composite). Confirm before clobbering a
+        # customized config (E1). default=True so the headless/test path
+        # (which chose this action deliberately) proceeds, while a TTY user
+        # gets a y/N.
+        if not self._confirm(
+            "Reset to recommended pipeline defaults? This overwrites the automation "
+            "settings AND the shared Kling prompt slots 1/4 + video motion knobs.",
+            default=True,
+        ):
+            self.print_yellow("Recommended defaults not applied.")
+            return
+        before = {
+            "front": (
+                self.config.get("automation_front_expand_provider"),
+                self.config.get("automation_front_expand_mode"),
+                self.config.get("automation_front_expand_percent"),
+                self.config.get("automation_front_expand_passes"),
+                self.config.get("automation_front_expand_composite_mode"),
+            ),
+            "selfie_expand": (
+                self.config.get("automation_selfie_expand_provider"),
+                self.config.get("automation_selfie_expand_mode"),
+                self.config.get("automation_selfie_expand_percent"),
+                self.config.get("automation_selfie_expand_composite_mode"),
+            ),
+            "selfie_models": list(self.config.get("automation_selfie_models", [])),
+            "video_model": (lambda e, d: d or e)(*resolve_cli_video_model(self.config)),
+            "selfie_prompt_slot": self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT),
+            "kling_prompt_slot": resolve_cli_kling_prompt_slot(self.config, DEFAULT_KLING_PROMPT_SLOT),
+            "oldcam": (self.config.get("automation_oldcam_version"), self.config.get("automation_oldcam_required", False)),
+            "rppg": bool(self.config.get("automation_rppg_enabled", False)),
+            "loop": bool(self.config.get("automation_loop_enabled", False)),
+            "max_cases": self._read_max_cases_setting(),
+        }
+
+        max_cases_status = self._write_recommended_automation_baseline()
+        # Shared video knobs the EXPLICIT reset still normalizes (the silent
+        # startup migration deliberately leaves these alone — they're shared
+        # with the GUI, and the confirm above names them).
+        self.config["outpaint_composite_mode"] = "preserve_seamless"
+        saved_prompts = self.config.get("saved_prompts")
+        if not isinstance(saved_prompts, dict):
+            saved_prompts = {}
+        saved_prompts["1"] = RECOMMENDED_KLING_PROMPT_SLOT_1
+        saved_prompts["4"] = RECOMMENDED_KLING_PROMPT_SLOT_1
+        self.config["saved_prompts"] = saved_prompts
+        # Pair the minimal-motion positive with the recommended negative
+        # on the same slots (the dispatcher drops it for models that
+        # don't accept negative_prompt — o3 / seedance).
+        negative_prompts = self.config.get("negative_prompts")
+        if not isinstance(negative_prompts, dict):
+            negative_prompts = {}
+        negative_prompts["1"] = RECOMMENDED_KLING_NEGATIVE_SLOT_1
+        negative_prompts["4"] = RECOMMENDED_KLING_NEGATIVE_SLOT_1
+        self.config["negative_prompts"] = negative_prompts
+        # Motion knobs: stricter prompt adherence + mechanical
+        # return-to-pose via the end-frame lock.
+        self.config["cfg_scale_value"] = 0.7
+        self.config["lock_end_frame"] = True
         self.save_config()
 
         print("\nApplied recommended automation defaults (v7).")
@@ -3895,8 +4123,10 @@ class KlingAutomationUI:
             if not endpoint:
                 _err("[batch] --model must not be empty.")
                 return 1
-            self.config["current_model"] = endpoint
-            self.config["model_display_name"] = (
+            # Per-surface split: the override targets the CLI pipeline's own
+            # keys; the GUI's current_model selection stays untouched.
+            self.config["cli_video_model"] = endpoint
+            self.config["cli_video_model_display_name"] = (
                 str(model_name_override).strip()
                 if model_name_override and str(model_name_override).strip()
                 else _derive_model_display_name(endpoint)
@@ -4041,10 +4271,8 @@ class KlingAutomationUI:
         # Echo the EFFECTIVE run config so the overnight/unattended log records
         # exactly which model / oldcam version / rppg state actually ran
         # (especially the headless --model/--oldcam-version/--rppg overrides).
-        print(
-            f"  video model: {self.config.get('current_model', '')} "
-            f"({self.config.get('model_display_name', '')})"
-        )
+        _eff_endpoint, _eff_display = resolve_cli_video_model(self.config)
+        print(f"  video model: {_eff_endpoint or ''} ({_eff_display or ''})")
         print(f"  expand provider: front={self.config.get('automation_front_expand_provider', 'fal')} "
               f"selfie={self.config.get('automation_selfie_expand_provider', 'fal')}")
         print(f"  oldcam: enabled={self.config.get('automation_oldcam_enabled', True)} "
@@ -4152,6 +4380,7 @@ class KlingAutomationUI:
         selfie_provider = self._resolve_provider(str(c.get("automation_selfie_expand_provider", "auto")))
         default_composite = c.get("outpaint_composite_mode", "preserve_seamless")
         front_passes = c.get("automation_front_expand_passes", 2)
+        video_endpoint, video_display = resolve_cli_video_model(c)
         rows = [
             ("rPPG injection", "ON" if rppg_on else "OFF — no pulse will be injected",
              "bold green" if rppg_on else "bold red"),
@@ -4159,7 +4388,7 @@ class KlingAutomationUI:
              "bold red" if (oldcam_display == "none selected" or not oldcam_enabled)
              else ("bold yellow" if oldcam_display.startswith("all") else "bold green")),
             ("Loop (ping-pong)", "ON" if loop_on else "off", "green" if loop_on else "dim"),
-            ("Video model", f"{c.get('model_display_name') or c.get('current_model', '?')}  ·  kling prompt slot {c.get('current_prompt_slot', DEFAULT_KLING_PROMPT_SLOT)}", ""),
+            ("Video model", f"{video_display or video_endpoint or '?'}  ·  kling prompt slot {resolve_cli_kling_prompt_slot(c, DEFAULT_KLING_PROMPT_SLOT)}", ""),
             ("Selfie model(s)", f"{', '.join(selfie_models) if selfie_models else '(none)'}"
              + ("  ·  FAN-OUT: one full chain per model" if len(selfie_models) > 1 else ""),
              "bold yellow" if len(selfie_models) > 1 else ""),
@@ -4212,7 +4441,7 @@ class KlingAutomationUI:
             title=f"Selfie prompt — slot {selfie_slot} ({selfie_source})",
             border_style="cyan",
         ))
-        kling_slot = str(self.config.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT))
+        kling_slot = str(resolve_cli_kling_prompt_slot(self.config, DEFAULT_KLING_PROMPT_SLOT))
         kling_prompt = str(self.config.get("saved_prompts", {}).get(kling_slot, "") or "")
         kling_negative = str(self.config.get("negative_prompts", {}).get(kling_slot, "") or "")
         _RICH_CONSOLE.print(Panel(
@@ -4265,6 +4494,168 @@ class KlingAutomationUI:
                 if models:
                     self.config["automation_selfie_models"] = models
 
+    def _gui_cli_comparison_rows(self) -> "List[Dict[str, Any]]":
+        """Structured rows comparing the Tkinter GUI's settings with the CLI
+        pipeline's per-surface settings (same kling_config.json, different
+        keys after the 2026-06-11 split).
+
+        status: "same" / "differs" for the per-surface rows (model, slot
+        pointer, duration); "shared" for single-value rows used by BOTH
+        surfaces (prompt text, motion knobs) — shown so the user can see
+        exactly what IS shared."""
+        c = self.config
+        gui_endpoint = str(c.get("current_model") or "")
+        gui_model = str(c.get("model_display_name") or gui_endpoint or "(not set)")
+        cli_endpoint, cli_display = resolve_cli_video_model(c)
+        cli_model = str(cli_display or cli_endpoint or "(not set)")
+        gui_slot = c.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT)
+        cli_slot = resolve_cli_kling_prompt_slot(c, DEFAULT_KLING_PROMPT_SLOT)
+        gui_duration = c.get("video_duration", 10)
+        cli_duration = resolve_cli_video_duration(c)
+        rows: "List[Dict[str, Any]]" = [
+            {
+                "id": "video_model", "label": "Video model",
+                "gui": gui_model, "cli": cli_model,
+                "status": "same" if gui_endpoint == str(cli_endpoint or "") else "differs",
+            },
+            {
+                "id": "kling_prompt_slot", "label": "Kling prompt slot (pointer)",
+                "gui": str(gui_slot), "cli": str(cli_slot),
+                "status": "same" if str(gui_slot) == str(cli_slot) else "differs",
+            },
+            {
+                "id": "video_duration", "label": "Video duration (s)",
+                "gui": str(gui_duration), "cli": str(cli_duration),
+                "status": "same" if str(gui_duration) == str(cli_duration) else "differs",
+            },
+        ]
+        slot_key = str(cli_slot)
+        prompt_text = str((c.get("saved_prompts") or {}).get(slot_key, "") or "")
+        preview = (prompt_text[:60] + "…") if len(prompt_text) > 60 else (prompt_text or "(empty)")
+        for row_id, label, value in (
+            ("kling_prompt_text", f"Kling prompt text (slot {slot_key})", preview),
+            ("cfg_scale", "CFG scale", str(c.get("cfg_scale_value", 0.7))),
+            ("lock_end_frame", "Lock end frame", "ON" if c.get("lock_end_frame", True) else "off"),
+            ("outpaint_composite", "Outpaint blend default", str(c.get("outpaint_composite_mode", "preserve_seamless"))),
+        ):
+            rows.append({"id": row_id, "label": label, "gui": value, "cli": value, "status": "shared"})
+        return rows
+
+    def _adopt_gui_settings(self, row_ids: "List[str]") -> None:
+        """Copy the selected GUI values into the CLI pipeline's cli_* keys.
+
+        STRICTLY one-directional — no GUI key is ever written here.
+        Divergence is a supported state (the per-surface keys exist exactly
+        so CLI settings don't mess with GUI settings); this is the explicit
+        convergence shortcut."""
+        c = self.config
+        if "video_model" in row_ids:
+            c["cli_video_model"] = str(c.get("current_model") or "")
+            c["cli_video_model_display_name"] = str(c.get("model_display_name") or "")
+            c["cli_video_duration"] = c.get("video_duration", 10)
+            self._cached_price = None
+        if "video_duration" in row_ids and "video_model" not in row_ids:
+            c["cli_video_duration"] = c.get("video_duration", 10)
+        if "kling_prompt_slot" in row_ids:
+            c["cli_kling_prompt_slot"] = c.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT)
+        self.save_config()
+
+    def _compare_gui_settings_menu(self) -> None:
+        """Side-by-side GUI ⇄ CLI settings view with one-press adopt."""
+        if self._use_legacy_prompt_ui():
+            print("\nGUI vs CLI pipeline settings:")
+            for row in self._gui_cli_comparison_rows():
+                print(f"  {row['label']}: GUI={row['gui']} | CLI={row['cli']} ({row['status']})")
+            self.pause_review("\nPress Enter to continue...")
+            return
+        while True:
+            rows = self._gui_cli_comparison_rows()
+            table = Table(
+                title="[bold cyan]GUI ⇄ CLI pipeline settings[/bold cyan]",
+                show_header=True,
+                expand=False,
+                border_style="blue",
+                padding=(0, 1),
+            )
+            table.add_column("Setting", style="cyan", no_wrap=True)
+            table.add_column("GUI (Tkinter)")
+            table.add_column("CLI pipeline")
+            table.add_column("")
+            markers = {
+                "same": "[green]✔ same[/green]",
+                "differs": "[yellow]≠ differs[/yellow]",
+                "shared": "[dim]shared[/dim]",
+            }
+            for row in rows:
+                table.add_row(row["label"], row["gui"], row["cli"], markers[row["status"]])
+            _RICH_CONSOLE.print(table)
+            _RICH_CONSOLE.print(
+                "[dim]Shared rows are one value used by both surfaces. Adopting copies "
+                "GUI → CLI only — your GUI settings are never changed from here.[/dim]"
+            )
+            differing = [r for r in rows if r["status"] == "differs"]
+            choice = self._q_select(
+                "Compare with GUI:",
+                [
+                    ("⬇  Adopt ALL GUI values into the CLI pipeline", "adopt_all"),
+                    ("☑  Adopt selected settings… (spacebar)", "adopt_some"),
+                    ("↩  Back", "back"),
+                ],
+            )
+            if choice in (None, "back"):
+                return
+            if choice == "adopt_all":
+                self._adopt_gui_settings([r["id"] for r in rows if r["status"] != "shared"])
+                self.print_green("✓ CLI pipeline settings now match the GUI.")
+                time.sleep(0.8)
+            elif choice == "adopt_some":
+                if not differing:
+                    self.print_yellow("Nothing differs — the CLI already matches the GUI.")
+                    time.sleep(0.8)
+                    continue
+                try:
+                    picks = questionary.checkbox(
+                        "Adopt which GUI values?",
+                        qmark="◆",
+                        choices=[
+                            questionary.Choice(f"{r['label']}: {r['gui']}  (CLI now: {r['cli']})", r["id"], checked=True)
+                            for r in differing
+                        ],
+                        style=KLING_QUESTIONARY_STYLE,
+                    ).ask()
+                except (KeyboardInterrupt, EOFError):
+                    picks = None
+                if picks:
+                    self._adopt_gui_settings(list(picks))
+                    self.print_green(f"✓ Adopted {len(picks)} setting(s) from the GUI.")
+                    time.sleep(0.8)
+
+    def _quick_edit_choice_pairs(self) -> "List[Tuple[str, str]]":
+        """(label, value) entries for the quick editor — single source so the
+        menu and the structure test can never drift. Covers every row of the
+        Main run settings table (the table must be 1:1 editable here)."""
+        c = self.config
+        rppg_on = bool(c.get("automation_rppg_enabled", False))
+        loop_on = bool(c.get("automation_loop_enabled", False))
+        return [
+            (f"💉 rPPG injection: {'ON' if rppg_on else 'OFF'} — toggle", "rppg"),
+            (f"📼 Oldcam versions: {self._format_oldcam_versions()} — pick (spacebar)", "oldcam"),
+            (f"🔁 Loop: {'ON' if loop_on else 'off'} — toggle", "loop"),
+            ("🎬 Video model…", "video_model"),
+            ("🎬 Kling prompt slot / text…", "kling_prompt"),
+            ("✨ Selfie model set…", "selfie_models"),
+            ("✨ Selfie prompt slot / text…", "selfie_prompt"),
+            ("🖼  Step 0 front expand (provider/blend/percent/passes)…", "front_expand"),
+            ("👤 Step 0 crop factor…", "crop"),
+            ("➕ Step 2.5 selfie expand (provider/blend/percent)…", "selfie_expand"),
+            ("🎯 Similarity threshold…", "similarity"),
+            (f"📦 Batch scope: max {self._read_max_cases_setting()} · reprocess={c.get('automation_reprocess_mode', 'skip')}…", "batch"),
+            (f"📂 Root folder: {self.automation_root_folder or '(not set)'}…", "root"),
+            ("📜 View FULL prompts (selfie + video)", "prompts"),
+            ("⚙️  All settings (full editor)…", "all"),
+            ("💾 Done (save and return)", "done"),
+        ]
+
     def _quick_edit_settings(self) -> None:
         """One- or two-keystroke editing of the MAIN settings from option 1,
         re-rendering the settings table after each change. Persists on exit."""
@@ -4279,22 +4670,7 @@ class KlingAutomationUI:
             loop_on = bool(c.get("automation_loop_enabled", False))
             choice = self._q_select(
                 "Quick edit:",
-                [
-                    (f"💉 rPPG injection: {'ON' if rppg_on else 'OFF'} — toggle", "rppg"),
-                    (f"📼 Oldcam versions: {self._format_oldcam_versions()} — pick (spacebar)", "oldcam"),
-                    (f"🔁 Loop: {'ON' if loop_on else 'off'} — toggle", "loop"),
-                    ("🎬 Video model…", "video_model"),
-                    ("🎬 Kling prompt slot / text…", "kling_prompt"),
-                    ("✨ Selfie model set…", "selfie_models"),
-                    ("✨ Selfie prompt slot / text…", "selfie_prompt"),
-                    ("🖼  Step 0 front expand (provider/blend/percent/passes)…", "front_expand"),
-                    ("👤 Step 0 crop factor…", "crop"),
-                    ("➕ Step 2.5 selfie expand (provider/blend/percent)…", "selfie_expand"),
-                    ("🎯 Similarity threshold…", "similarity"),
-                    ("📜 View FULL prompts (selfie + video)", "prompts"),
-                    ("⚙️  All settings (full editor)…", "all"),
-                    ("💾 Done (save and return)", "done"),
-                ],
+                self._quick_edit_choice_pairs(),
                 instruction="↑/↓ · Enter · Esc saves and returns",
             )
             if choice in (None, "done"):
@@ -4310,7 +4686,9 @@ class KlingAutomationUI:
                     c["automation_loop_enabled"] = not loop_on
                     print(f"  Loop -> {'ON' if c['automation_loop_enabled'] else 'off'}")
                 elif choice == "video_model":
-                    self.select_model()
+                    # target="cli": the automation pipeline's own selection —
+                    # never clobbers the GUI / manual-tools model.
+                    self.select_model(target="cli")
                 elif choice == "kling_prompt":
                     sub = self._q_select(
                         "Kling prompt:",
@@ -4321,9 +4699,9 @@ class KlingAutomationUI:
                         ],
                     )
                     if sub == "swap":
-                        self.swap_prompt_slot()
+                        self.swap_prompt_slot(target="cli")
                     elif sub == "edit":
-                        self.quick_edit_prompt()
+                        self.quick_edit_prompt(target="cli")
                 elif choice == "selfie_models":
                     self._qs_pick_selfie_models()
                 elif choice == "selfie_prompt":
@@ -4350,6 +4728,13 @@ class KlingAutomationUI:
                 elif choice == "similarity":
                     self._qs_int("Similarity threshold (0-100):", "automation_similarity_threshold",
                                  default=80, validator=lambda v: 0 <= v <= 100)
+                elif choice == "batch":
+                    self._qs_choice("Max cases per run:", "automation_max_cases_per_run",
+                                    choices=["1", "5", "10", "all"], default="5")
+                    self._qs_choice("Reprocess mode:", "automation_reprocess_mode",
+                                    choices=_REPROCESS_MODE_OPTIONS, default="skip")
+                elif choice == "root":
+                    self._select_automation_root()
                 elif choice == "prompts":
                     self._show_full_prompts()
                     self.pause_review("Press Enter to continue...")
@@ -5130,12 +5515,6 @@ class KlingAutomationUI:
         # (no manual duplicate).
         self.display_header()
         self._render_run_settings_table()
-        current_version = int(self.config.get("automation_recommended_defaults_version", 0) or 0)
-        if current_version < RECOMMENDED_DEFAULTS_VERSION:
-            _RICH_CONSOLE.print(
-                f"  [yellow]Recommendation:[/yellow] apply recommended defaults (⭐, target v{RECOMMENDED_DEFAULTS_VERSION})."
-            )
-            print()
         answer = self._q_menu(
             "End-to-End Auto Pipeline",
             [

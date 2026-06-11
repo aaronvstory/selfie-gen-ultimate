@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from api_keys import API_KEY_SPECS
+from automation.config import resolve_cli_kling_prompt_slot, resolve_cli_video_model
 from path_utils import get_app_dir
 
 
@@ -20,11 +21,19 @@ def key_status(value: Any) -> str:
 
 
 def build_safe_config_snapshot(config: Dict[str, Any], automation_root_folder: Optional[str]) -> Dict[str, Any]:
+    # cli_video_model / cli_kling_prompt_slot are the EFFECTIVE pipeline
+    # selection (per-surface split, falling back to the GUI keys for
+    # pre-split configs); the raw GUI keys stay in the snapshot so a log
+    # reader can tell where the value came from.
+    effective_endpoint, effective_display = resolve_cli_video_model(config)
     snapshot: Dict[str, Any] = {
         "automation_root_folder": automation_root_folder or "",
         "current_model": config.get("current_model"),
         "model_display_name": config.get("model_display_name"),
         "current_prompt_slot": config.get("current_prompt_slot"),
+        "cli_video_model": effective_endpoint,
+        "cli_video_model_display_name": effective_display,
+        "cli_kling_prompt_slot": resolve_cli_kling_prompt_slot(config),
     }
     for spec in API_KEY_SPECS:
         snapshot[spec.config_key] = key_status(config.get(spec.config_key))

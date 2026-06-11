@@ -241,6 +241,61 @@ class AutomationConfig:
         return [str(pat).lower() for pat in raw if str(pat).strip()]
 
 
+def resolve_cli_video_model(config: Mapping[str, Any]) -> tuple:
+    """(endpoint, display_name) of the video model the CLI automation
+    pipeline should use.
+
+    The CLI keeps its own selection (``cli_video_model`` /
+    ``cli_video_model_display_name``) so changing the automation model never
+    overwrites the GUI's ``current_model`` — and vice versa (per-surface
+    split, 2026-06-11). Configs from before the split fall back to the shared
+    GUI keys. When the CLI endpoint is set but its display name is not, the
+    endpoint doubles as the display — borrowing the GUI's display name would
+    label a DIFFERENT model.
+
+    DELIBERATELY not ``automation_*``-prefixed: the manifest fingerprints
+    every ``automation_*`` key and the model is deliberately
+    non-fingerprinted (resuming with a different model is legal — see the
+    ``--batch --model`` override).
+    """
+    endpoint = str(config.get("cli_video_model") or "").strip()
+    if endpoint:
+        display = str(config.get("cli_video_model_display_name") or "").strip()
+        return endpoint, (display or endpoint)
+    return config.get("current_model"), config.get("model_display_name")
+
+
+def resolve_cli_kling_prompt_slot(config: Mapping[str, Any], default: int = 1) -> int:
+    """The Kling prompt SLOT POINTER for the CLI pipeline (1-10).
+
+    Falls back to the GUI's ``current_prompt_slot`` for pre-split configs.
+    Only the pointer is per-surface — the slot CONTENT
+    (``saved_prompts`` / ``negative_prompts``) stays shared by design so a
+    prompt edited in the GUI is the same prompt the CLI runs.
+    """
+    raw = config.get("cli_kling_prompt_slot")
+    if raw in (None, ""):
+        raw = config.get("current_prompt_slot", default)
+    try:
+        slot = int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+    return slot if 1 <= slot <= 10 else int(default)
+
+
+def resolve_cli_video_duration(config: Mapping[str, Any], default: int = 10) -> int:
+    """Video duration (seconds) for the CLI pipeline, per-surface like the
+    model itself (a GUI model with a different native duration must not bleed
+    into automation runs). Falls back to the shared ``video_duration``."""
+    raw = config.get("cli_video_duration")
+    if raw in (None, ""):
+        raw = config.get("video_duration", default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(config)
     # Subagent CRITICAL on 286613c (2026-05-22): the GUI writes the

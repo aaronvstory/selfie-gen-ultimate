@@ -13,6 +13,9 @@ from automation.config import (
     AutomationConfig,
     DEFAULT_SELFIE_PROMPT,
     get_outpaint_fal_timeout_seconds,
+    resolve_cli_kling_prompt_slot,
+    resolve_cli_video_duration,
+    resolve_cli_video_model,
 )
 from automation.discovery import CaseRecord, detect_existing_outputs
 from automation.logger import build_safe_config_snapshot, create_automation_logger
@@ -79,12 +82,15 @@ class AutoPipelineRunner:
                 freeimage_key=self.config.get("freeimage_api_key"),
                 bfl_api_key=self.config.get("bfl_api_key"),
             ),
+            # Per-surface split (2026-06-11): the CLI's own model/slot keys
+            # win; pre-split configs fall back to the shared GUI keys inside
+            # the resolvers.
             video_factory=lambda: FalAIKlingGenerator(
                 api_key=self.config.get("falai_api_key", ""),
                 verbose=self.config.get("verbose_logging", False),
-                model_endpoint=self.config.get("current_model"),
-                model_display_name=self.config.get("model_display_name"),
-                prompt_slot=int(self.config.get("current_prompt_slot", 1)),
+                model_endpoint=resolve_cli_video_model(self.config)[0],
+                model_display_name=resolve_cli_video_model(self.config)[1],
+                prompt_slot=resolve_cli_kling_prompt_slot(self.config),
                 freeimage_key=self.config.get("freeimage_api_key"),
             ),
         )
@@ -198,7 +204,7 @@ class AutoPipelineRunner:
         see the comment block at the call site). Shared by the primary chain
         and the multi-model fan-out branches so their generations can never
         drift."""
-        _slot = str(self.config.get("current_prompt_slot", 1))
+        _slot = str(resolve_cli_kling_prompt_slot(self.config))
         # _read_bool (not raw .get) so a string "false" in the
         # automation config disables prompt/negative reuse as the
         # user intended — raw bool("false") is truthy (CodeRabbit,
@@ -229,7 +235,7 @@ class AutoPipelineRunner:
             )
             if _use_existing
             else None,
-            duration=int(self.config.get("video_duration", 10)),
+            duration=resolve_cli_video_duration(self.config),
             aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
             resolution=self.config.get("resolution", "720p"),
             seed=int(self.config.get("seed", -1)),
@@ -811,8 +817,8 @@ class AutoPipelineRunner:
             "selection summary: selfie_models=%s selfie_prompt_slot=%s video_model=%s kling_prompt_slot=%s",
             self.automation.get("automation_selfie_models"),
             self.automation.get("automation_selfie_prompt_slot", 1),
-            self.config.get("model_display_name") or self.config.get("current_model"),
-            self.config.get("current_prompt_slot", 1),
+            resolve_cli_video_model(self.config)[1] or resolve_cli_video_model(self.config)[0],
+            resolve_cli_kling_prompt_slot(self.config),
         )
         validation_issues = self.validate_configuration()
         if validation_issues:

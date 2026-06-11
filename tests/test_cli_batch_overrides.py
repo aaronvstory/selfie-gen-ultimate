@@ -185,8 +185,12 @@ def test_headless_overrides_land_in_runner_config(tmp_path, monkeypatch):
     )
     assert rc == 0
     cfg = captured["config"]
-    assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
-    assert cfg["model_display_name"] == "Kling 2.5 Turbo Standard"
+    # --model targets the CLI pipeline's per-surface keys; the GUI's
+    # current_model selection must stay untouched (split, PR #96 round 2).
+    assert cfg["cli_video_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+    assert cfg["cli_video_model_display_name"] == "Kling 2.5 Turbo Standard"
+    assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+    assert cfg["model_display_name"] == "Kling 2.5 Turbo Pro"
     assert cfg["automation_oldcam_version"] == ["v13"]
     assert cfg["automation_rppg_enabled"] is True
     assert cfg["automation_front_expand_provider"] == "fal"

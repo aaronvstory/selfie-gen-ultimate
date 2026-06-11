@@ -625,9 +625,15 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_selfie_prompt_slot"] == 3
     assert "parked car" in ui.config["automation_selfie_prompts"]["1"].lower()
     assert "parked car" in ui.config["automation_selfie_prompts"]["3"].lower()
-    assert ui.config["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
-    assert ui.config["model_display_name"] == "Kling 2.5 Turbo Standard"
-    assert ui.config["current_prompt_slot"] == 4
+    # Per-surface split (PR #96 round 2): the recommended model/slot land on
+    # the CLI's own keys; the GUI's selection (current_model / display /
+    # current_prompt_slot) must survive byte-identical.
+    assert ui.config["cli_video_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+    assert ui.config["cli_video_model_display_name"] == "Kling 2.5 Turbo Standard"
+    assert ui.config["cli_kling_prompt_slot"] == 4
+    assert ui.config["current_model"] == "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+    assert ui.config["model_display_name"] == "Kling 2.5 Turbo Pro"
+    assert ui.config["current_prompt_slot"] == 2
     # Recommended-defaults now seed the minimal-motion prompt + negative
     # + motion knobs (PR #2).
     assert "smallest believable range" in ui.config["saved_prompts"]["1"].lower()
