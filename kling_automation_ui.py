@@ -110,7 +110,7 @@ from automation.config import (
     resolve_cli_video_duration,
     resolve_cli_video_model,
 )
-from automation.discovery import discover_case_folders, detect_existing_outputs
+from automation.discovery import CaseRecord, discover_case_folders, detect_existing_outputs, find_front_in_dir
 from automation.logger import resolve_automation_log_path
 from automation.manifest import AutomationManifest, STEP_NAMES
 from automation.pipeline import AutoPipelineRunner
@@ -121,7 +121,12 @@ from automation.oldcam import (
     normalize_oldcam_versions,
 )
 from selfie_generator import SelfieGenerator
-from tk_dialogs import select_directory, select_directory_cli_safe, select_open_file
+from tk_dialogs import (
+    select_directory,
+    select_directory_cli_safe,
+    select_open_file,
+    select_open_file_cli_safe,
+)
 from app_version import RELEASE_VERSION
 # The repo's canonical config-bool coercion (bool("false") is True; this
 # parses string forms). face_similarity is stdlib-light at module level —
@@ -2195,6 +2200,7 @@ class KlingAutomationUI:
         separators are added by the renderer."""
         return [
             ("🚀  Run / resume end-to-end pipeline", "run"),
+            ("🎯  Run ONE folder / image…", "single"),
             ("🔍  Scan / preview cases", "scan"),
             # Dry run intentionally NOT top-level — it's offered at the
             # pre-run approval inside Run (user feedback, round 3).
@@ -2208,7 +2214,7 @@ class KlingAutomationUI:
         ]
 
     _MAIN_MENU_GROUPS = (
-        ("Run", ("run", "scan")),
+        ("Run", ("run", "single", "scan")),
         ("Settings", ("quick", "settings")),
         ("Tools", ("manual", "gui", "maintenance")),
         (None, ("q",)),
@@ -2253,6 +2259,9 @@ class KlingAutomationUI:
                 self._select_automation_root()
             if self.automation_root_folder:
                 self._run_resume_automation()
+            return None
+        if choice == "single":
+            self._run_single_case()
             return None
         if choice == "scan":
             self._scan_automation_cases()
@@ -5309,9 +5318,19 @@ class KlingAutomationUI:
             self.print_yellow("No case folders found.")
             self.pause_review("Press Enter to continue...")
             return None, None
+        manifest = self._load_manifest_with_recreate_prompt(root, interactive=interactive)
+        if manifest is None:
+            return None, None
+        return records, manifest
+
+    def _load_manifest_with_recreate_prompt(self, root: Path, *, interactive: bool) -> "Optional[AutomationManifest]":
+        """create_or_load with the interactive fingerprint-mismatch
+        backup-and-recreate prompt. Extracted from _discover_and_load_manifest
+        (round 9) so the SINGLE-case flow shares the exact same manifest
+        semantics; messages/pauses preserved verbatim."""
         snapshot = {k: v for k, v in self.config.items() if str(k).startswith("automation_")}
         try:
-            manifest = AutomationManifest.create_or_load(
+            return AutomationManifest.create_or_load(
                 manifest_path=self._automation_manifest_path(),
                 root_dir=root,
                 config_snapshot=snapshot,
@@ -5334,25 +5353,189 @@ class KlingAutomationUI:
                     "Back up the old manifest and start fresh with the new settings?",
                     default=True,
                 ):
-                    manifest = AutomationManifest.create_fresh(
+                    fresh = AutomationManifest.create_fresh(
                         manifest_path=self._automation_manifest_path(),
                         root_dir=root,
                         config_snapshot=snapshot,
                     )
                     print("  Old manifest backed up (.superseded.*); fresh manifest created.")
-                else:
-                    self.print_yellow("Run cancelled (manifest unchanged).")
-                    self.pause_review("Press Enter to continue...")
-                    return None, None
-            else:
-                self.print_red(f"Failed to load manifest: {exc}")
+                    return fresh
+                self.print_yellow("Run cancelled (manifest unchanged).")
                 self.pause_review("Press Enter to continue...")
-                return None, None
+                return None
+            self.print_red(f"Failed to load manifest: {exc}")
+            self.pause_review("Press Enter to continue...")
+            return None
         except Exception as exc:
             self.print_red(f"Failed to load manifest: {exc}")
             self.pause_review("Press Enter to continue...")
-            return None, None
-        return records, manifest
+            return None
+
+    def _resolve_single_case_target(self, raw: str) -> "Tuple[Optional[CaseRecord], str]":
+        """Turn a user-picked path into a single CaseRecord (round 9).
+
+        Accepts EITHER a folder (the front image is located inside it with
+        the exact same matching semantics as batch discovery — names +
+        image-only globs, first sorted match, multi-match warning) OR an
+        image file used directly as the front. Returns (record, "") on
+        success or (None, reason)."""
+        path = Path(str(raw).strip().strip('"').strip("'")).expanduser()
+        try:
+            path = path.resolve()
+        except OSError:
+            return None, f"Path is not accessible: {path}"
+        if not path.exists():
+            return None, f"Path does not exist: {path}"
+        if path.is_file():
+            if path.suffix.lower() not in VALID_EXTENSIONS:
+                return None, (
+                    f"'{path.name}' is not an image file ({path.suffix or 'no extension'}) — "
+                    "pick a png/jpg/jpeg/webp/bmp."
+                )
+            case_dir = path.parent
+            rel_key = case_dir.name or str(case_dir)
+            return CaseRecord(case_dir=case_dir, front_path=path, relative_key=rel_key), ""
+        front = find_front_in_dir(
+            path,
+            self.config.get("automation_front_names", []),
+            front_globs=self.config.get("automation_front_globs", []),
+            warn_cb=self.print_yellow,
+        )
+        if front is None:
+            names = ", ".join(self.config.get("automation_front_names", []) or []) or "(none configured)"
+            globs = self.config.get("automation_front_globs", []) or []
+            hint = f" or globs {globs}" if globs else ""
+            return None, f"No front image found in {path} (looked for: {names}{hint})."
+        rel_key = path.name or str(path)
+        return CaseRecord(case_dir=path, front_path=front, relative_key=rel_key), ""
+
+    def _run_single_case(self) -> None:
+        """🎯 Single-case mode (round 9): run the FULL pipeline on exactly one
+        folder (front image auto-located inside) or one image file picked
+        directly — no batch root required."""
+        if self._use_legacy_prompt_ui():
+            raw = self._safe_input("Folder or front-image path for the single run: ").strip()
+            if not raw:
+                return
+            record, err = self._resolve_single_case_target(raw)
+            if record is None:
+                self.print_red(err)
+                self.pause_review("Press Enter to continue...")
+                return
+            self._run_single_case_with(record)
+            return
+        choice = self._q_select(
+            "Single run — pick the input:",
+            [
+                ("📁  Choose a FOLDER (front image auto-detected inside)…", "folder"),
+                ("🖼  Choose an IMAGE file directly…", "file"),
+                ("⌨  Type a path (folder or image)…", "manual"),
+                ("↩  Back", "back"),
+            ],
+        )
+        if choice in (None, "back"):
+            return
+        raw: "Optional[str]" = None
+        if choice == "folder":
+            try:
+                raw = select_directory_cli_safe(title="Select the case folder (contains the front image)")
+            except Exception as exc:
+                self.print_yellow(f"Folder picker unavailable ({exc}). Falling back to typed path.")
+            if not raw:
+                print("  (picker cancelled — falling back to manual entry)")
+                raw = self._q_text("Folder path:")
+        elif choice == "file":
+            try:
+                raw = select_open_file_cli_safe(title="Select the front image", image_only=True)
+            except Exception as exc:
+                self.print_yellow(f"File picker unavailable ({exc}). Falling back to typed path.")
+            if not raw:
+                print("  (picker cancelled — falling back to manual entry)")
+                raw = self._q_text("Image file path:")
+        else:
+            raw = self._q_text("Folder or image path:")
+        if not raw or not str(raw).strip():
+            return
+        record, err = self._resolve_single_case_target(raw)
+        if record is None:
+            self.print_red(err)
+            self.pause_review("\nPress Enter to continue...")
+            return
+        self._run_single_case_with(record)
+
+    def _run_single_case_with(self, record: "CaseRecord") -> None:
+        """Approval + execution for one resolved case. The case folder's
+        PARENT acts as the run root (manifest + logs live there), so a
+        single run of a folder inside an existing batch root records into
+        the SAME manifest — batch Run/Resume stays coherent with it."""
+        root = record.case_dir.parent
+        saved_root_attr = self.automation_root_folder
+        saved_root_cfg = self.config.get("automation_root_folder")
+        self.automation_root_folder = str(root)
+        try:
+            while True:
+                interactive = not self._use_legacy_prompt_ui()
+                manifest = self._load_manifest_with_recreate_prompt(root, interactive=interactive)
+                if manifest is None:
+                    return
+                entry = (manifest.data.get("cases") or {}).get(record.relative_key) or {}
+                already_complete = str(entry.get("status", "")) == "complete"
+                if not interactive:
+                    if not self._confirm(f"Run single case '{record.relative_key}'?", default=False):
+                        print("Run cancelled.")
+                        return
+                    self._execute_automation_run(manifest, [record], [record])
+                    return
+                self.display_header()
+                _RICH_CONSOLE.print(Panel(
+                    f"[bold cyan]{_rich_markup_escape(record.relative_key)}[/bold cyan]\n"
+                    f"[dim]Folder:[/dim] {_rich_markup_escape(self._elide_path(str(record.case_dir), 72))}\n"
+                    f"[dim]Front: [/dim] {_rich_markup_escape(record.front_path.name)}"
+                    + ("\n[yellow]Already recorded as COMPLETE here — pick re-run to redo every step.[/yellow]"
+                       if already_complete else ""),
+                    title="[bold white]🎯  Single case[/bold white]",
+                    border_style="blue",
+                ))
+                print()
+                self._render_run_settings_table(title="Main run settings — review before starting")
+                print()
+                _RICH_CONSOLE.print(self._build_cost_estimate_table(1))
+                print()
+                options: "List[Tuple[str, str]]" = [("▶  Start run", "run")]
+                if already_complete:
+                    options.append(("🔄  Re-run from scratch (reset this case)", "rerun"))
+                options += [
+                    ("🔧  Quick edit settings first", "edit"),
+                    ("📜  View FULL prompts", "prompts"),
+                    ("✗  Cancel", "cancel"),
+                ]
+                action = self._q_select("Run this single case?", options)
+                if action in (None, "cancel"):
+                    print("Run cancelled.")
+                    return
+                if action == "edit":
+                    self._quick_edit_settings()
+                    continue  # reload manifest — the fingerprint may have changed
+                if action == "prompts":
+                    self._show_full_prompts()
+                    self.pause_review("\nPress Enter to continue...")
+                    continue
+                if action == "rerun":
+                    # reset_case_for_new_front IS the generic per-case reset:
+                    # it rewrites the case to a fresh state (same mechanism
+                    # the front-changed guard uses).
+                    manifest.reset_case_for_new_front(record.relative_key, record.case_dir, record.front_path)
+                self._execute_automation_run(manifest, [record], [record])
+                return
+        finally:
+            # Restore BOTH the attr and the config key — _execute_automation_run
+            # copies the attr into config, and a later save_config must never
+            # persist the single-run root over the user's saved batch root.
+            self.automation_root_folder = saved_root_attr
+            if saved_root_cfg is None:
+                self.config.pop("automation_root_folder", None)
+            else:
+                self.config["automation_root_folder"] = saved_root_cfg
 
     def _run_resume_automation_legacy(self, root: Path):
         """Non-TTY / legacy path: behavior-identical to the historical flow

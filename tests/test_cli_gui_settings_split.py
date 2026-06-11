@@ -472,7 +472,7 @@ def test_main_menu_choices_grouped_without_duplicates():
     ui = _bare_ui(dict(AUTOMATION_DEFAULTS))
     values = [v for _label, v in ui._main_menu_choice_pairs()]
     # The flattened menu: run actions + settings + tools, each exactly once.
-    for expected in ("run", "scan", "quick", "settings", "manual", "gui", "maintenance", "q"):
+    for expected in ("run", "single", "scan", "quick", "settings", "manual", "gui", "maintenance", "q"):
         assert values.count(expected) == 1, f"expected exactly one {expected!r} entry"
     # Retired duplicates must be gone:
     assert "path" not in values  # root folder now lives in Quick settings
@@ -522,7 +522,7 @@ def _wired_ui(tmp_path=None):
         return lambda *a, **k: calls.append(name)
 
     for name in (
-        "_run_resume_automation", "_scan_automation_cases", "_dry_run_automation",
+        "_run_resume_automation", "_run_single_case", "_scan_automation_cases", "_dry_run_automation",
         "_quick_edit_settings", "_settings_hub_menu", "_run_manual_kling_menu",
         "launch_gui", "_maintenance_menu", "_select_automation_root",
         "display_header", "_render_run_settings_table",
@@ -539,6 +539,7 @@ def _wired_ui(tmp_path=None):
 @pytest.mark.parametrize(
     "choice,expected",
     [
+        ("single", "_run_single_case"),
         ("scan", "_scan_automation_cases"),
         ("quick", "_quick_edit_settings"),
         ("settings", "_settings_hub_menu"),
@@ -614,6 +615,87 @@ def test_quick_editor_toggle_and_done_round_trip():
     ui._quick_edit_settings()
     assert ui.config["automation_rppg_enabled"] is True, "toggle must flip the value"
     assert "save_config" in calls
+
+
+# --------------------------------------------------------------------------
+# Single-case mode (round 9): folder OR image file → one CaseRecord
+# --------------------------------------------------------------------------
+
+def _single_ui():
+    ui = _bare_ui(dict(AUTOMATION_DEFAULTS))
+    ui.print_yellow = lambda *a, **k: None
+    return ui
+
+
+def test_resolve_single_target_folder_finds_front(tmp_path):
+    case = tmp_path / "Alecia-Banks"
+    case.mkdir()
+    (case / "front.jpg").write_bytes(b"x")
+    record, err = _single_ui()._resolve_single_case_target(str(case))
+    assert err == "" and record is not None
+    assert record.case_dir == case.resolve()
+    assert record.front_path.name == "front.jpg"
+    assert record.relative_key == "Alecia-Banks"
+
+
+def test_resolve_single_target_folder_respects_globs(tmp_path):
+    case = tmp_path / "c1"
+    case.mkdir()
+    (case / "scan-id_photo.jpg").write_bytes(b"x")
+    ui = _single_ui()
+    ui.config["automation_front_globs"] = ["*id_photo*.jpg"]
+    record, err = ui._resolve_single_case_target(str(case))
+    assert err == "" and record is not None
+    assert record.front_path.name == "scan-id_photo.jpg"
+
+
+def test_resolve_single_target_image_file_directly(tmp_path):
+    case = tmp_path / "MyShoot"
+    case.mkdir()
+    img = case / "whatever-name.png"
+    img.write_bytes(b"x")
+    record, err = _single_ui()._resolve_single_case_target(str(img))
+    assert err == "" and record is not None
+    assert record.front_path == img.resolve()
+    assert record.case_dir == case.resolve()
+    assert record.relative_key == "MyShoot"
+
+
+def test_resolve_single_target_rejects_non_image_file(tmp_path):
+    f = tmp_path / "notes.txt"
+    f.write_text("x")
+    record, err = _single_ui()._resolve_single_case_target(str(f))
+    assert record is None and "not an image" in err
+
+
+def test_resolve_single_target_folder_without_front_says_what_it_looked_for(tmp_path):
+    case = tmp_path / "empty"
+    case.mkdir()
+    record, err = _single_ui()._resolve_single_case_target(str(case))
+    assert record is None
+    assert "No front image found" in err and "front.jpg" in err
+
+
+def test_resolve_single_target_missing_path(tmp_path):
+    record, err = _single_ui()._resolve_single_case_target(str(tmp_path / "nope"))
+    assert record is None and "does not exist" in err
+
+
+def test_find_front_in_dir_matches_batch_semantics(tmp_path):
+    from automation.discovery import find_front_in_dir
+
+    case = tmp_path / "c"
+    case.mkdir()
+    (case / "front_notes.txt").write_text("x")  # loose glob must NOT pick this
+    (case / "front.mp4").write_bytes(b"x")
+    (case / "front.jpg").write_bytes(b"x")
+    found = find_front_in_dir(case, [], front_globs=["*front*"])
+    assert found is not None and found.name == "front.jpg"
+    assert find_front_in_dir(case, [], front_globs=[]) is None  # both empty = nothing
+    warns: list = []
+    (case / "a-front.png").write_bytes(b"x")
+    find_front_in_dir(case, [], front_globs=["*front*"], warn_cb=warns.append)
+    assert warns and "match" in warns[0].lower()
 
 
 # --------------------------------------------------------------------------
