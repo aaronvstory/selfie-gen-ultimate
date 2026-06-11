@@ -768,14 +768,7 @@ class KlingAutomationUI:
         """Branded API-key manager (questionary): per-provider set / clear."""
         while True:
             self.display_header()
-            status_table = Table(
-                title="[bold white]🔑  API keys / provider status[/bold white]",
-                show_header=False,
-                expand=False,
-                box=_rich_box.ROUNDED,
-                border_style="blue",
-                padding=(0, 1),
-            )
+            status_table = self._styled_table("🔑  API keys / provider status")
             status_table.add_column("Provider", style="cyan", no_wrap=True)
             status_table.add_column("Status")
             for spec in API_KEY_SPECS:
@@ -2227,12 +2220,10 @@ class KlingAutomationUI:
         self._render_run_settings_table(caption="🔧 Quick settings edits these")
         print()  # one blank line between the table and the menu
         by_value = {value: label for label, value in self._main_menu_choice_pairs()}
-        # Same structure as the quick editor (round 5): hints on their own dim
-        # line under the title, blank line before the first group.
-        grouped: "List[Any]" = [
-            questionary.Separator("   ↑/↓ move · Enter to select · Esc to quit"),
-            questionary.Separator(" "),
-        ]
+        # Inline hint after the short "Main menu" title (round 6: the hanging
+        # hint line read weird here — the quick editor keeps ITS hint line
+        # because that title is long); blank spacer before the first group.
+        grouped: "List[Any]" = [questionary.Separator(" ")]
         for group_title, values in self._MAIN_MENU_GROUPS:
             if group_title is not None:
                 grouped.append(questionary.Separator(f"  ─── {group_title} ───"))
@@ -2244,7 +2235,7 @@ class KlingAutomationUI:
         choice = self._q_menu(
             "Main menu",
             grouped,
-            instruction=" ",
+            instruction="↑/↓ move · Enter to select · Esc to quit",
             show_header=False,
             show_title_rule=False,
         )
@@ -3007,12 +2998,7 @@ class KlingAutomationUI:
         interactive = not self._use_legacy_prompt_ui()
         if interactive:
             self.display_header()
-            table = Table(
-                title="[bold white]🔍  Scan preview[/bold white]",
-                box=_rich_box.ROUNDED,
-                border_style="blue",
-                padding=(0, 1),
-            )
+            table = self._styled_table("🔍  Scan preview", show_header=True)
         else:
             table = Table(title="Automation Scan Preview")
         table.add_column("Case")
@@ -3040,14 +3026,7 @@ class KlingAutomationUI:
         else:
             print(f"\nDiscovered {len(records)} case folders.")
         if interactive:
-            totals = Table(
-                title="[bold white]Σ  Totals[/bold white]",
-                show_header=False,
-                expand=False,
-                box=_rich_box.ROUNDED,
-                border_style="blue",
-                padding=(0, 1),
-            )
+            totals = self._styled_table("Σ  Totals")
             totals.add_column("k", style="cyan", no_wrap=True)
             totals.add_column("v")
             totals.add_row("Discovered", str(counts["discovered"]))
@@ -3427,7 +3406,7 @@ class KlingAutomationUI:
         """Render every automation_* setting in one Rich Table, then (on the
         questionary path) let the user pick ANY key and edit it in place —
         the "read-only table" dead-end is gone (user mandate 2026-06-11)."""
-        table = Table(title="All automation settings", show_lines=False)
+        table = self._styled_table("⚙  All automation settings", show_header=True)
         table.add_column("Setting", style="cyan", no_wrap=True)
         table.add_column("Value", style="white")
         table.add_row("automation_root_folder", str(self.automation_root_folder or "(not set)"))
@@ -3641,16 +3620,24 @@ class KlingAutomationUI:
         self.config[key] = float(answer.strip())
 
     def _qs_bool(self, message: str, key: str, default: bool = False) -> None:
-        current = bool(self.config.get(key, default))
-        answer = questionary.confirm(
+        # Arrow-key ON/off select, NOT a y/n confirm — the whole editor is
+        # arrow-driven and the lingering "(Y/n)" prompts read as unfinished
+        # (user, PR #96 round 6). Same coercion as the settings table so a
+        # hand-edited "false" string preselects off.
+        current = _parse_bool_cfg(self.config.get(key, default))
+        if current is None:
+            current = bool(default)
+        answer = questionary.select(
             message,
             qmark="◆",
-            default=current,
+            instruction=f"(current: {'ON' if current else 'off'})",
+            choices=["ON", "off"],
+            default="ON" if current else "off",
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
         if answer is None:
             raise _QuestionarySectionAbort()
-        self.config[key] = bool(answer)
+        self.config[key] = answer == "ON"
 
     def _qs_choice(self, message: str, key: str, choices: List[str],
                    default: Optional[str] = None,
@@ -3720,8 +3707,9 @@ class KlingAutomationUI:
                 )
             )
         answer = questionary.checkbox(
-            "Oldcam versions to run (space toggles · none selected = oldcam off):",
+            "Oldcam versions to run (none selected = oldcam off):",
             qmark="◆",
+            instruction="(space toggles · Enter applies · Ctrl+C keeps current)",
             choices=choices,
             style=KLING_QUESTIONARY_STYLE,
         ).ask()
@@ -4089,14 +4077,7 @@ class KlingAutomationUI:
             # Branded repaint + Rich layout (interactive only — the legacy
             # prints below are asserted by non-TTY tests / cron logs).
             self.display_header()
-            dr = Table(
-                title="[bold white]🧪  Dry run — no API calls[/bold white]",
-                show_header=False,
-                expand=False,
-                box=_rich_box.ROUNDED,
-                border_style="blue",
-                padding=(0, 1),
-            )
+            dr = self._styled_table("🧪  Dry run — no API calls")
             dr.add_column("k", style="cyan", no_wrap=True)
             dr.add_column("v")
             if manifest_warning:
@@ -4573,9 +4554,35 @@ class KlingAutomationUI:
              ""),
             ("Similarity threshold", str(c.get("automation_similarity_threshold", 80)), ""),
             ("Batch scope", f"max {self._read_max_cases_setting()} case(s) · reprocess={c.get('automation_reprocess_mode', 'skip')}", ""),
-            ("Root folder", str(self.automation_root_folder or "(not set)"), "dim"),
+            ("Root folder", self._elide_path(self.automation_root_folder, 56) if self.automation_root_folder else "(not set)", "dim"),
         ]
         return rows
+
+    @staticmethod
+    def _styled_table(title: str, *, border_style: str = "blue",
+                      show_header: bool = False, caption: "Optional[str]" = None) -> Table:
+        """THE house style for every interactive Rich table (round 6 sweep:
+        'all wherever this exists … should be beautified'): rounded box,
+        blue border, bold-white title, dim caption. One constructor so no
+        screen drifts back to the bare default look."""
+        return Table(
+            title=f"[bold white]{title}[/bold white]",
+            caption=f"[dim]{caption}[/dim]" if caption else None,
+            show_header=show_header,
+            expand=False,
+            box=_rich_box.ROUNDED,
+            border_style=border_style,
+            padding=(0, 1),
+        )
+
+    @staticmethod
+    def _elide_path(path: "Any", max_len: int = 48) -> str:
+        """Tail-elided path for labels/tables ('…\\Pandia\\Batch_04') — the
+        tail is the part humans recognize; full paths blow out layouts."""
+        p = str(path or "")
+        if len(p) <= max_len:
+            return p
+        return "…" + p[-(max_len - 1):]
 
     # Visual section breaks for the settings table — after these row labels
     # the table draws a divider, grouping: stage toggles / models+prompts /
@@ -4585,15 +4592,7 @@ class KlingAutomationUI:
 
     def _render_run_settings_table(self, title: str = "Main run settings",
                                    caption: "Optional[str]" = None) -> None:
-        table = Table(
-            title=f"[bold white]⚙  {title}[/bold white]",
-            caption=f"[dim]{caption}[/dim]" if caption else None,
-            show_header=False,
-            expand=False,
-            box=_rich_box.ROUNDED,
-            border_style="blue",
-            padding=(0, 1),
-        )
+        table = self._styled_table(f"⚙  {title}", caption=caption)
         table.add_column("Setting", style="cyan", no_wrap=True)
         table.add_column("Value")
         for label, value, style in self._run_settings_rows():
@@ -4751,13 +4750,7 @@ class KlingAutomationUI:
         while True:
             self.display_header()  # clears screen — stable repaint, no stacking
             rows = self._gui_cli_comparison_rows()
-            table = Table(
-                title="[bold cyan]GUI ⇄ CLI pipeline settings[/bold cyan]",
-                show_header=True,
-                expand=False,
-                border_style="blue",
-                padding=(0, 1),
-            )
+            table = self._styled_table("🔄  GUI ⇄ CLI pipeline settings", show_header=True)
             table.add_column("Setting", style="cyan", no_wrap=True)
             table.add_column("GUI (Tkinter)")
             table.add_column("CLI pipeline")
@@ -4846,8 +4839,7 @@ class KlingAutomationUI:
             (f"👤 Crop factor: {c.get('automation_crop_multiplier', 1.5)}", "crop"),
             # ── Step 2 · Selfie ──
             (f"✨ Selfie model set: {', '.join(selfie_models) if selfie_models else '(none)'}", "selfie_models"),
-            (f"🔢 Selfie prompt slot: {selfie_slot}", "selfie_slot"),
-            (f"📝 Selfie prompt text: \"{_preview(selfie_text)}\"", "selfie_text"),
+            (f"📝 Selfie prompt: slot {selfie_slot} · \"{_preview(selfie_text)}\"", "selfie_prompt"),
             (f"🎯 Similarity threshold: {c.get('automation_similarity_threshold', 80)}", "similarity"),
             # ── Step 2.5 · Selfie expand ──
             (f"➕ Selfie expand provider: {c.get('automation_selfie_expand_provider', 'fal')}", "sexp_provider"),
@@ -4855,8 +4847,7 @@ class KlingAutomationUI:
             (f"➕ Selfie expand percent: {c.get('automation_selfie_expand_percent', 30)}%", "sexp_percent"),
             # ── Step 3 · Video (Kling) ──
             (f"🎬 Video model: {video_display or video_endpoint or '(not set)'}", "video_model"),
-            (f"🔢 Kling prompt slot: {kling_slot}", "kling_slot"),
-            (f"📝 Kling prompt text: \"{_preview(kling_text)}\"", "kling_text"),
+            (f"📝 Kling prompt: slot {kling_slot} · \"{_preview(kling_text)}\"", "kling_prompt"),
             # ── Post · rPPG → Loop → Oldcam ──
             (f"💉 rPPG injection: {'ON' if rppg_on else 'OFF'} — toggle", "rppg"),
             (f"🔁 Loop (ping-pong): {'ON' if loop_on else 'off'} — toggle", "loop"),
@@ -4864,7 +4855,7 @@ class KlingAutomationUI:
             # ── Run scope ──
             (f"📦 Max cases per run: {self._read_max_cases_setting()}", "batch_max"),
             (f"📦 Reprocess mode: {c.get('automation_reprocess_mode', 'skip')}", "batch_reprocess"),
-            (f"📂 Root folder: {self.automation_root_folder or '(not set)'}", "root"),
+            (f"📂 Root folder: {self._elide_path(self.automation_root_folder, 44) if self.automation_root_folder else '(not set)'}", "root"),
             # ── ungrouped actions ──
             ("📜 View FULL prompts (selfie + video)", "prompts"),
             ("⚙️  All settings (full editor)…", "all"),
@@ -4877,9 +4868,9 @@ class KlingAutomationUI:
     # spacers exactly like the main menu.
     _QUICK_EDIT_GROUPS = (
         ("Step 0 · Front prep", ("front_provider", "front_blend", "front_percent", "front_passes", "crop")),
-        ("Step 2 · Selfie", ("selfie_models", "selfie_slot", "selfie_text", "similarity")),
+        ("Step 2 · Selfie", ("selfie_models", "selfie_prompt", "similarity")),
         ("Step 2.5 · Selfie expand", ("sexp_provider", "sexp_blend", "sexp_percent")),
-        ("Step 3 · Video (Kling)", ("video_model", "kling_slot", "kling_text")),
+        ("Step 3 · Video (Kling)", ("video_model", "kling_prompt")),
         ("Post · rPPG → Loop → Oldcam", ("rppg", "loop", "oldcam")),
         ("Run scope", ("batch_max", "batch_reprocess", "root")),
         (None, ("prompts", "all", "done")),
@@ -4982,10 +4973,8 @@ class KlingAutomationUI:
                 # ── Step 2 · Selfie ──
                 elif choice == "selfie_models":
                     self._qs_pick_selfie_models()
-                elif choice == "selfie_slot":
-                    self._quick_pick_selfie_prompt_slot()
-                elif choice == "selfie_text":
-                    self._quick_edit_selfie_prompt_text()
+                elif choice == "selfie_prompt":
+                    self._prompt_slot_browser("selfie")
                 elif choice == "similarity":
                     self._qs_int("Similarity threshold (0-100):", "automation_similarity_threshold",
                                  default=80, validator=lambda v: 0 <= v <= 100)
@@ -5004,10 +4993,8 @@ class KlingAutomationUI:
                     # Inline picker writing the CLI per-surface keys — never
                     # the GUI / manual-tools model.
                     self._quick_pick_cli_video_model()
-                elif choice == "kling_slot":
-                    self.swap_prompt_slot(target="cli")
-                elif choice == "kling_text":
-                    self.quick_edit_prompt(target="cli")
+                elif choice == "kling_prompt":
+                    self._prompt_slot_browser("kling")
                 # ── Post · rPPG → Loop → Oldcam ──
                 elif choice == "rppg":
                     c["automation_rppg_enabled"] = not rppg_on
@@ -5043,35 +5030,90 @@ class KlingAutomationUI:
                 continue  # Esc inside a field -> back to the quick menu
             self.save_config()
 
-    def _quick_pick_selfie_prompt_slot(self) -> None:
-        """Inline selfie prompt slot picker with per-slot previews."""
-        self._ensure_selfie_prompt_slots()
-        prompts = self.config.get("automation_selfie_prompts", {})
-        current = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
-        slot_choices: "List[Tuple[str, str]]" = []
-        for i in range(1, _PROMPT_SLOT_COUNT + 1):
-            text = str(prompts.get(str(i), "") or "")
-            preview = (text[:48] + "…") if len(text) > 48 else (text or "(empty)")
-            active = "  ◄ ACTIVE" if i == current else ""
-            slot_choices.append((f"[{i}] {preview}{active}", str(i)))
-        pick = self._q_select(
-            "Selfie prompt slot:", slot_choices,
-            instruction=f"(current: slot {current})",
-        )
-        if pick:
-            self.config["automation_selfie_prompt_slot"] = int(pick)
+    def _prompt_slot_browser(self, kind: str) -> None:
+        """Prompt slot BROWSER (round 6): the active slot's COMPLETE text
+        stays visible in a panel while you navigate; Enter on a slot
+        activates it (revealing its full text), with in-place edit and an
+        explicit Back row. Replaces the blind preview-only pickers — "if
+        we're showing only the first sentence … how can we even know which
+        prompt is what".
 
-    def _quick_edit_selfie_prompt_text(self) -> None:
-        """Inline edit of the ACTIVE selfie prompt slot's text."""
-        self._ensure_selfie_prompt_slots()
-        current = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
-        existing = str(self.config.get("automation_selfie_prompts", {}).get(str(current), "") or "")
-        new_prompt = self._q_text(
-            f"Selfie prompt for slot {current} (Esc to cancel):",
-            default=existing,
-        )
-        if new_prompt is not None:
-            self.config["automation_selfie_prompts"][str(current)] = new_prompt
+        kind="kling": shared saved_prompts/negative_prompts TEXT (by design,
+        GUI ⇄ CLI) + the per-surface cli_kling_prompt_slot pointer.
+        kind="selfie": automation_selfie_prompts + automation_selfie_prompt_slot.
+        """
+        while True:
+            self.display_header()
+            if kind == "kling":
+                prompts = self.config.get("saved_prompts") or {}
+                negatives = self.config.get("negative_prompts") or {}
+                active = resolve_cli_kling_prompt_slot(self.config, DEFAULT_KLING_PROMPT_SLOT)
+                label = "Kling video prompt"
+            else:
+                self._ensure_selfie_prompt_slots()
+                prompts = self.config.get("automation_selfie_prompts") or {}
+                negatives = None
+                try:
+                    active = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
+                except (TypeError, ValueError):
+                    active = DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT
+                label = "Selfie prompt"
+            full = str(prompts.get(str(active), "") or "")
+            _RICH_CONSOLE.print(Panel(
+                full or "[dim](empty — pick '✏  Edit' below to write one)[/dim]",
+                title=f"[bold white]{label} — slot {active} (ACTIVE)[/bold white]",
+                border_style="magenta" if kind == "kling" else "cyan",
+            ))
+            if negatives is not None:
+                neg_full = str(negatives.get(str(active), "") or "")
+                if neg_full:
+                    _RICH_CONSOLE.print(Panel(
+                        neg_full,
+                        title=f"[bold white]Negative prompt — slot {active}[/bold white]",
+                        border_style="red",
+                    ))
+            print()
+            choices: "List[Any]" = []
+            for i in range(1, _PROMPT_SLOT_COUNT + 1):
+                text = str(prompts.get(str(i), "") or "")
+                preview = (text[:58] + "…") if len(text) > 58 else (text or "(empty)")
+                marker = "  ◄ ACTIVE" if i == active else ""
+                choices.append((f"[{i}] {preview}{marker}", f"slot:{i}"))
+            choices.append(questionary.Separator(" "))
+            choices.append((f"✏  Edit slot {active} text", "edit"))
+            if negatives is not None:
+                choices.append((f"✏  Edit slot {active} NEGATIVE prompt", "edit_neg"))
+            choices.append(("↩  Back", "back"))
+            pick = self._q_select(
+                f"{label} slots — Enter activates a slot (full text shows above):",
+                choices,
+            )
+            if pick in (None, "back"):
+                return
+            if pick == "edit":
+                new_text = self._q_text(f"{label} for slot {active}:", default=full)
+                if new_text is not None:
+                    prompts[str(active)] = new_text
+                    if kind == "kling":
+                        self.config["saved_prompts"] = prompts
+                    else:
+                        self.config["automation_selfie_prompts"] = prompts
+                    self.save_config()
+            elif pick == "edit_neg" and negatives is not None:
+                neg_now = str(negatives.get(str(active), "") or "")
+                new_neg = self._q_text(f"Negative prompt for slot {active}:", default=neg_now)
+                if new_neg is not None:
+                    negatives[str(active)] = new_neg
+                    self.config["negative_prompts"] = negatives
+                    self.save_config()
+            elif pick.startswith("slot:"):
+                new_slot = int(pick.split(":", 1)[1])
+                if kind == "kling":
+                    # Per-surface pointer — never the GUI's current_prompt_slot.
+                    self.config["cli_kling_prompt_slot"] = new_slot
+                else:
+                    self.config["automation_selfie_prompt_slot"] = new_slot
+                self.save_config()
 
     def _qs_section_selfie_prompt_only(self) -> None:
         """The selfie prompt slot/edit sub-flow, runnable standalone from the
@@ -5181,12 +5223,18 @@ class KlingAutomationUI:
             )
         except ValueError as exc:
             if interactive and "fingerprint mismatch" in str(exc):
-                # Settings changed since the manifest was created (e.g. via
-                # quick edit). Surface the change and offer the same
-                # backup-and-recreate path headless --batch already has —
-                # previously this was an interactive dead-end.
-                self.print_yellow("Run settings changed since this manifest was created:")
-                print(f"  {exc}")
+                # OUTPUT-AFFECTING settings changed since the manifest was
+                # created (run-scope knobs like max-cases are excluded from
+                # the fingerprint and never land here — automation/manifest
+                # _FINGERPRINT_EXCLUDED_KEYS). Offer the same backup-and-
+                # recreate path headless --batch already has.
+                _RICH_CONSOLE.print(Panel(
+                    "[yellow]Run settings changed since this manifest was created — "
+                    "existing outputs may not match the new settings.[/yellow]\n"
+                    f"[dim]{exc}[/dim]",
+                    title="[bold yellow]⚠  Manifest mismatch[/bold yellow]",
+                    border_style="yellow",
+                ))
                 if self._confirm(
                     "Back up the old manifest and start fresh with the new settings?",
                     default=True,
@@ -5246,18 +5294,24 @@ class KlingAutomationUI:
             if not records:
                 return
             rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
-            preview = Table(title="Run preview", show_header=False)
-            preview.add_column("k", style="cyan")
+            preview = self._styled_table("📋  Run preview")
+            preview.add_column("k", style="cyan", no_wrap=True)
             preview.add_column("v")
             preview.add_row("Discovered", str(counts["discovered"]))
             preview.add_row("Completed total", str(counts["completed_total"]))
-            preview.add_row("Pending/runnable", str(counts["pending"]))
-            preview.add_row("Will run this batch", f"[bold]{counts['will_run']}[/bold]")
-            preview.add_row("Manual review / failed", f"{counts['manual_review']} / {counts['failed']}")
+            preview.add_row("Pending / runnable", str(counts["pending"]))
+            preview.add_row("Will run this batch", f"[bold green]{counts['will_run']}[/bold green]")
+            _mr, _fl = counts["manual_review"], counts["failed"]
+            preview.add_row(
+                "Manual review / failed",
+                f"[yellow]{_mr}[/yellow] / [red]{_fl}[/red]" if (_mr or _fl) else "0 / 0",
+            )
             for line in self._resume_intelligence_lines(records, manifest):
-                preview.add_row("Resume", line)
+                preview.add_row("Resume", f"[dim]{line}[/dim]")
             _RICH_CONSOLE.print(preview)
+            print()
             self._render_run_settings_table(title="Main run settings — review before approving")
+            print()
             if not runnable_cases:
                 self.print_yellow("No runnable cases for this batch.")
                 self.pause_review("Press Enter to continue...")
@@ -5316,14 +5370,7 @@ class KlingAutomationUI:
             # blob was already reviewed on the approval screen); legacy
             # keeps the historical prints below for tests/cron logs.
             self.display_header()
-            pre = Table(
-                title="[bold white]🚦  Preflight — starting run[/bold white]",
-                show_header=False,
-                expand=False,
-                box=_rich_box.ROUNDED,
-                border_style="blue",
-                padding=(0, 1),
-            )
+            pre = self._styled_table("🚦  Preflight — starting run")
             pre.add_column("k", style="cyan", no_wrap=True)
             pre.add_column("v")
             pre.add_row("Cases discovered", str(len(records)))
@@ -5352,14 +5399,7 @@ class KlingAutomationUI:
             self.pause_review("\nPress Enter to continue...")
             return
         if interactive:
-            done = Table(
-                title="[bold white]✅  Automation run complete[/bold white]",
-                show_header=False,
-                expand=False,
-                box=_rich_box.ROUNDED,
-                border_style="green",
-                padding=(0, 1),
-            )
+            done = self._styled_table("✅  Automation run complete", border_style="green")
             done.add_column("k", style="cyan", no_wrap=True)
             done.add_column("v")
             done.add_row("Completed", f"[bold green]{stats.get('completed', 0)}[/bold green]")
@@ -5375,12 +5415,7 @@ class KlingAutomationUI:
             print(f"  manual_review: {stats.get('manual_review', 0)}")
             print(f"  skipped: {stats.get('skipped', 0)}")
         if interactive:
-            table = Table(
-                title="[bold white]Per-case summary[/bold white]",
-                box=_rich_box.ROUNDED,
-                border_style="blue",
-                padding=(0, 1),
-            )
+            table = self._styled_table("Per-case summary", show_header=True)
         else:
             table = Table(title="Per-Case Summary")
         table.add_column("Case")

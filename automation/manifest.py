@@ -77,8 +77,38 @@ def _collision_free_backup_path(manifest_path: Path, kind: str) -> Path:
     return candidate
 
 
+# Run-SCOPE / metadata keys deliberately EXCLUDED from the config fingerprint.
+# The fingerprint exists to answer ONE question: "would re-running produce
+# DIFFERENT outputs for a case than the ones this manifest already recorded?"
+# These keys control how much of the batch runs per invocation (max cases,
+# reprocess policy), logging verbosity, discovery scope (which folders are
+# FOUND — not what a processed case produces), or pure bookkeeping (the
+# recommended-defaults version stamp). Fingerprinting them forced a
+# back-up-and-recreate prompt on every trivial change (user, PR #96 round 6:
+# flipping max-cases 5 -> 1 demanded a manifest rebuild per run).
+# The exclusion applies to BOTH sides of the comparison (loaded manifest AND
+# requested config flow through this builder), so manifests that RECORDED
+# these keys before the exclusion existed stay valid too.
+_FINGERPRINT_EXCLUDED_KEYS = frozenset(
+    {
+        "automation_max_cases_per_run",
+        "automation_reprocess_mode",
+        "automation_allow_reprocess",
+        "automation_verbose_logging",
+        "automation_recommended_defaults_version",
+        "automation_root_folder",  # compared separately as the manifest root
+        "automation_front_names",  # discovery scope only
+        "automation_front_globs",  # discovery scope only
+    }
+)
+
+
 def _build_config_fingerprint(config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
-    automation_keys = sorted(key for key in config_snapshot if key.startswith("automation_"))
+    automation_keys = sorted(
+        key
+        for key in config_snapshot
+        if key.startswith("automation_") and key not in _FINGERPRINT_EXCLUDED_KEYS
+    )
     fingerprint = {key: config_snapshot.get(key) for key in automation_keys}
     # automation_oldcam_version changed representation (legacy single string
     # "v24"/"all" -> canonical list ["v24"]). Normalize on BOTH sides of the

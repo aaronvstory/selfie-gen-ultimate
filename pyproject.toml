@@ -288,3 +288,13 @@ explicit = true
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+# Dev-only tools. The launcher sync runs --no-default-groups, so end-user
+# boxes never install these; dev boxes set KLING_UV_DEV=1 (honored by
+# scripts/uv_torch_select._run_uv_sync) so `uv sync` stops PRUNING pytest
+# from the venv on every launch — the recurring "No module named
+# pytest.__main__" breakage (2026-06-11).
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]

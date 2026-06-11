@@ -153,12 +153,19 @@ def _run_uv_sync(uv: str, project: Path, extra: str, *, quiet: bool) -> int:
     """``uv sync --extra <extra>`` in ``project``. Returns uv's exit code.
 
     --no-default-groups keeps dev/test groups out of the end-user env.
+    DEV BOXES: ``uv sync`` makes the env exactly match the selected set, so
+    it UNINSTALLS anything out-of-band — including pytest — on every launch.
+    Set ``KLING_UV_DEV=1`` (e.g. ``setx KLING_UV_DEV 1``) to include the
+    ``dev`` dependency group so test tooling survives app launches.
     --frozen would forbid re-resolution; we DON'T use it here so a launcher can
     self-heal if the lock drifted — but the committed lock should make this a
     fast no-op when already in sync (uv verifies the lock, not just presence).
     """
     cmd = [uv, "sync", "--no-default-groups", "--extra", extra]
-    _log(f"running: uv sync --extra {extra}", quiet=quiet)
+    if os.environ.get("KLING_UV_DEV") == "1":
+        cmd += ["--group", "dev"]
+    _log(f"running: uv sync --extra {extra}"
+         + (" --group dev" if os.environ.get("KLING_UV_DEV") == "1" else ""), quiet=quiet)
     # CREATE_NO_WINDOW: no console-flash under pythonw.exe (gemini MEDIUM, PR #73).
     _flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     try:

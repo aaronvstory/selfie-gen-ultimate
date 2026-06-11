@@ -315,6 +315,35 @@ def test_manifest_fingerprint_captures_all_automation_keys(tmp_path: Path, chang
         AutomationManifest.create_or_load(manifest_path, root, snap_b)
 
 
+@pytest.mark.parametrize(
+    "scope_key,old_value,new_value",
+    [
+        ("automation_max_cases_per_run", "5", "1"),
+        ("automation_reprocess_mode", "skip", "overwrite"),
+        ("automation_allow_reprocess", False, True),
+        ("automation_verbose_logging", True, False),
+        ("automation_recommended_defaults_version", 6, 7),
+        ("automation_front_globs", [], ["*id_photo*.jpg"]),
+        ("automation_front_names", ["front.jpg"], ["front.jpg", "front.png"]),
+    ],
+)
+def test_manifest_run_scope_keys_never_invalidate(tmp_path: Path, scope_key: str, old_value, new_value):
+    """Run-scope / metadata keys are EXCLUDED from the fingerprint: changing
+    how much of the batch runs, discovery scope, or bookkeeping stamps must
+    never demand a manifest rebuild (PR #96 round 6 — the user got the
+    back-up-and-recreate prompt every time max-cases changed). The first
+    create stores the key in the snapshot, so the reload also proves the
+    exclusion applies to manifests that RECORDED these keys."""
+    manifest_path = tmp_path / "automation_manifest.json"
+    root = tmp_path / "root"
+    root.mkdir()
+    snap_a = {"automation_front_expand_percent": 30, scope_key: old_value}
+    snap_b = {"automation_front_expand_percent": 30, scope_key: new_value}
+    AutomationManifest.create_or_load(manifest_path, root, snap_a)
+    # Must NOT raise — the change is run-scope, outputs are unaffected.
+    AutomationManifest.create_or_load(manifest_path, root, snap_b)
+
+
 def test_manifest_create_or_load_non_dict_payload_backs_up_once(tmp_path: Path):
     manifest_path = tmp_path / "automation_manifest.json"
     manifest_path.write_text(json.dumps(["bad-root"]), encoding="utf-8")

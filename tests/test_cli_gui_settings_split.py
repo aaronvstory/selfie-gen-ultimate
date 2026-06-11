@@ -431,11 +431,12 @@ def test_quick_edit_choices_cover_every_field_and_groups_are_consistent():
     ui.automation_root_folder = ""
     pairs = ui._quick_edit_choice_pairs()
     values = [v for _label, v in pairs]
-    # One entry per FIELD (round 3): bundles split into individual settings.
+    # One entry per FIELD (round 3); the prompt entries open the full-text
+    # slot BROWSER (round 6) so slot+text merged into one row per kind.
     for expected in ("front_provider", "front_blend", "front_percent", "front_passes", "crop",
-                     "selfie_models", "selfie_slot", "selfie_text", "similarity",
+                     "selfie_models", "selfie_prompt", "similarity",
                      "sexp_provider", "sexp_blend", "sexp_percent",
-                     "video_model", "kling_slot", "kling_text",
+                     "video_model", "kling_prompt",
                      "rppg", "loop", "oldcam",
                      "batch_max", "batch_reprocess", "root",
                      "prompts", "all", "done"):
