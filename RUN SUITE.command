@@ -6,12 +6,25 @@ set -uo pipefail
 # Delegates to the canonical launcher chain in launchers/macos (which owns
 # Python resolution, venv bootstrap and ALL dependency installs - this file
 # must never pip install anything itself).
+# Colors only when stdout is a TTY; plain otherwise (pipes, logs).
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 APP_VER="$(sed -n 's/^RELEASE_VERSION[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' \
   "${ROOT_DIR}/app_version.py" 2>/dev/null | head -1 || true)"
 [[ -n "${APP_VER}" ]] || APP_VER="unknown"
+
+if [[ -t 1 ]]; then
+  C0=$'\033[0m'    # reset
+  CB=$'\033[1;97m' # bold white
+  CC=$'\033[96m'   # cyan
+  CY=$'\033[93m'   # yellow
+  CG=$'\033[92m'   # green
+  CR=$'\033[91m'   # red
+  CD=$'\033[90m'   # dim
+else
+  C0=''; CB=''; CC=''; CY=''; CG=''; CR=''; CD=''
+fi
 
 resolve_python() {
   local cand
@@ -32,28 +45,30 @@ resolve_python() {
 
 banner() {
   clear
+  printf '\n'
+  printf '%s' "${CC}"
   cat <<'EOF'
-
   ███████ ███████ ██      ███████ ██ ███████      ██████  ███████ ███    ██
   ██      ██      ██      ██      ██ ██          ██       ██      ████   ██
   ███████ █████   ██      █████   ██ █████       ██   ███ █████   ██ ██  ██
        ██ ██      ██      ██      ██ ██          ██    ██ ██      ██  ██ ██
   ███████ ███████ ███████ ██      ██ ███████      ██████  ███████ ██   ████
-
 EOF
-  printf '            ULTIMATE  %s  ·  Front → Selfie → Similarity → Video → Oldcam\n' "${APP_VER}"
-  printf '  ==========================================================================\n'
-  printf '    Host: %s\n' "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo 'unknown CPU')"
-  printf '    Note: the CUDA GPU check is Windows-only; rPPG runs on CPU on macOS.\n'
+  printf '%s\n' "${C0}"
+  printf '            %sULTIMATE  %s%s  %s·  Front → Selfie → Similarity → Video → Oldcam%s\n' \
+    "${CB}" "${APP_VER}" "${C0}" "${CD}" "${C0}"
+  printf '  %s==========================================================================%s\n' "${CD}" "${C0}"
+  printf '    %sHost:%s %s\n' "${CG}" "${C0}" "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo 'unknown CPU')"
+  printf '    %sNote: the CUDA GPU check is Windows-only; rPPG runs on CPU on macOS.%s\n' "${CD}" "${C0}"
 }
 
 while true; do
   banner
   printf '\n'
-  printf '    [1]  Launch GUI          (Tkinter manual lab)\n'
-  printf '    [2]  Launch CLI          (automation pipeline)\n'
-  printf '    [3]  Dependency check / repair\n'
-  printf '    [q]  Quit\n'
+  printf '    %s[1]%s  %sLaunch GUI%s          %s(Tkinter manual lab)%s\n' "${CY}" "${C0}" "${CB}" "${C0}" "${CD}" "${C0}"
+  printf '    %s[2]%s  %sLaunch CLI%s          %s(automation pipeline)%s\n' "${CY}" "${C0}" "${CB}" "${C0}" "${CD}" "${C0}"
+  printf '    %s[3]%s  Dependency check / repair\n' "${CY}" "${C0}"
+  printf '    %s[q]%s  Quit\n' "${CR}" "${C0}"
   printf '\n'
   read -r -p '   Select an option: ' choice || exit 0
   case "${choice}" in
