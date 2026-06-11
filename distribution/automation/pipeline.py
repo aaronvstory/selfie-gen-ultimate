@@ -107,6 +107,10 @@ class AutoPipelineRunner:
         self.pause_event = threading.Event()
         self.abort_event = threading.Event()
         self.stopped_reason: Optional[str] = None
+        # Cases whose recorded front image changed this run: every existing
+        # output came from the OLD source, so file-based reuse (skip mode +
+        # skip_if_*_exists) must not re-adopt them (codex P1, PR #96 round 9).
+        self._force_regen_cases: set = set()
 
     def _read_int(
         self,
@@ -278,6 +282,10 @@ class AutoPipelineRunner:
             "case front changed (%s -> %s): %s", prior_front, case.front_path, case.relative_key
         )
         self.manifest.reset_case_for_new_front(case.relative_key, case.case_dir, case.front_path)
+        # The manifest reset alone is not enough: file-based reuse would
+        # re-adopt the on-disk selfie/video made from the OLD front. Force a
+        # real regeneration for this case (codex P1, PR #96 round 9).
+        self._force_regen_cases.add(case.relative_key)
 
     def _branch_run_rppg(self, video_path: Path) -> Optional[Path]:
         """One rPPG injection with the canonical knob set (shared by the
@@ -315,11 +323,16 @@ class AutoPipelineRunner:
         if not slug:
             return None
         gen_images = case_dir / "gen-images"
-        if not gen_images.is_dir():
+        try:
+            # EAFP: missing dir AND restricted-filesystem errors both mean
+            # "no resumable branch candidate" — the is_dir preflight itself
+            # can raise on odd mounts (Gemini MED, PR #96 round 10).
+            candidates = list(gen_images.iterdir())
+        except OSError:
             return None
         best: Optional[Dict[str, Any]] = None
         pattern = re.compile(re.escape(slug) + r"_sim(\d+)_", re.IGNORECASE)
-        for candidate in gen_images.iterdir():
+        for candidate in candidates:
             if not candidate.is_file() or candidate.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
                 continue
             if "-expanded" in candidate.stem:
@@ -622,7 +635,12 @@ class AutoPipelineRunner:
             else:
                 self.logger.info(message)
 
-    def _effective_reprocess_mode(self) -> str:
+    def _effective_reprocess_mode(self, case_key: Optional[str] = None) -> str:
+        if case_key and case_key in self._force_regen_cases:
+            # Front image changed for this case: regenerate every step
+            # non-destructively (old outputs keep their names, new ones get
+            # incremented names) regardless of the global skip/reuse policy.
+            return "increment"
         if not self.automation.get("automation_allow_reprocess", False):
             return "skip"
         mode = str(self.automation.get("automation_reprocess_mode", "skip")).lower()
@@ -969,7 +987,7 @@ class AutoPipelineRunner:
 
         outpaint = self.deps.outpaint_factory()
         outpaint.set_progress_callback(self.progress_cb)
-        reprocess_mode = self._effective_reprocess_mode()
+        reprocess_mode = self._effective_reprocess_mode(case_key)
         front_provider = str(self.automation.get("automation_front_expand_provider", "fal")).lower()
         selfie_provider = str(self.automation.get("automation_selfie_expand_provider", "fal")).lower()
         front_composite_mode = self._resolve_composite_mode("front")

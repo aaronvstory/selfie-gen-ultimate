@@ -26,16 +26,24 @@ else
   C0=''; CB=''; CC=''; CY=''; CG=''; CR=''; CD=''
 fi
 
+supported_python() {
+  # Project-supported range is 3.10-3.12 (3.11 canonical on macOS). Every
+  # candidate must be version-probed: a stale venv or a python3 outside the
+  # range would make the dependency check run against the wrong interpreter
+  # (launcher venv-resolver rule; codex P3, PR #96).
+  "$1" -c 'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 13) else 1)' >/dev/null 2>&1
+}
+
 resolve_python() {
   local cand
   for cand in "${ROOT_DIR}/.venv311/bin/python" "${ROOT_DIR}/venv/bin/python"; do
-    if [[ -x "${cand}" ]]; then
+    if [[ -x "${cand}" ]] && supported_python "${cand}"; then
       printf '%s' "${cand}"
       return 0
     fi
   done
-  for cand in python3.11 python3; do
-    if command -v "${cand}" >/dev/null 2>&1; then
+  for cand in python3.11 python3.12 python3.10 python3; do
+    if command -v "${cand}" >/dev/null 2>&1 && supported_python "${cand}"; then
       printf '%s' "${cand}"
       return 0
     fi

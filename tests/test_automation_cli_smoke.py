@@ -288,6 +288,46 @@ def test_collect_case_snapshot_applies_max_cases_after_filters(tmp_path):
     assert len(runnable) == 1
 
 
+def test_collect_case_snapshot_front_changed_completed_case_is_runnable(tmp_path):
+    """codex P1 (PR #96 round 9): when discovery now selects a DIFFERENT
+    front image than the one a completed case was built from, the case must
+    flow into the runner (whose _reset_case_if_front_changed resets it) —
+    not be filtered out here as skip_complete with stale wrong-source
+    outputs."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_skip_completed": True,
+        "automation_skip_if_selfie_exists": True,
+        "automation_skip_if_video_exists": True,
+        "automation_max_cases_per_run": "all",
+    }
+    ui._read_max_cases_setting = lambda: "all"
+    case_dir = tmp_path / "a"
+    case_dir.mkdir()
+    (case_dir / "front-NEW.png").write_bytes(b"x")
+    record = type(
+        "Rec",
+        (),
+        {"relative_key": "a", "front_path": case_dir / "front-NEW.png", "case_dir": case_dir},
+    )
+
+    class _FakeManifest:
+        data = {
+            "cases": {
+                "a": {"status": "complete", "front_path": str(case_dir / "front-OLD.png")}
+            }
+        }
+
+        def case_is_complete_and_valid(self, key):
+            return True
+
+    rows, counts, runnable = ui._collect_case_snapshot([record], _FakeManifest())
+    assert rows[0]["planned"] == "run_front_changed"
+    assert counts["skipped_complete"] == 0
+    assert counts["pending"] == 1
+    assert len(runnable) == 1
+
+
 def test_collect_case_snapshot_existing_video_still_runnable(tmp_path):
     ui = KlingAutomationUI.__new__(KlingAutomationUI)
     ui.config = {

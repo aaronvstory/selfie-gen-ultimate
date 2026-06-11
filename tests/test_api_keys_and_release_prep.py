@@ -384,6 +384,44 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
     assert sanitized["saved_prompts"]["1"] == "prompt one"
 
 
+def test_release_forces_cli_video_defaults_template_only(tmp_path: Path):
+    """codex P2 (PR #96 round 9): a template-only build (no live
+    kling_config.json) must still ship the CLI-owned per-surface video
+    defaults. Without them the resolvers fall back to the GUI keys, so
+    headless --batch — which never runs the interactive defaults
+    migration — would generate with Kling Pro / the GUI prompt slot
+    instead of the shipped CLI defaults (Standard / slot 4 / 10s)."""
+    template = tmp_path / "default_config_template.json"
+    template.write_text(
+        json.dumps(
+            {
+                "current_model": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+                "model_display_name": "Kling 2.5 Turbo Pro",
+                "current_prompt_slot": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = build_sanitized_config(template)
+    assert cfg["cli_video_model"] == (
+        "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+    )
+    assert cfg["cli_video_model_display_name"] == "Kling 2.5 Turbo Standard"
+    assert cfg["cli_kling_prompt_slot"] == 4
+    assert cfg["cli_video_duration"] == 10
+    # The contract the CLI actually depends on — the resolvers must pick
+    # the CLI surface, not fall back to the GUI Pro/slot-5 selection.
+    from automation.config import (
+        resolve_cli_kling_prompt_slot,
+        resolve_cli_video_model,
+    )
+
+    endpoint, display = resolve_cli_video_model(cfg)
+    assert endpoint == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+    assert display == "Kling 2.5 Turbo Standard"
+    assert resolve_cli_kling_prompt_slot(cfg) == 4
+
+
 def test_release_forces_active_slot_prompt_and_overrides_cfg(tmp_path: Path):
     """PR #41 (user request): the v2.1 bundle ships
     current_prompt_slot=3 with slot 3 carrying its OWN distinct

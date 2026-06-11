@@ -352,7 +352,12 @@ class AutomationManifest:
         under the lock so the renderer never iterates dicts the pipeline
         worker is mutating (the partial-panel bug, 2026-06-11)."""
         with self._lock:
-            cases = self.data.get("cases", {})
+            # Corrupted/hand-edited manifest: a non-dict root or "cases"
+            # value must degrade to empty, not AttributeError the reader
+            # thread (Gemini HIGH, PR #96 round 10).
+            cases = self.data.get("cases") if isinstance(self.data, dict) else None
+            if not isinstance(cases, dict):
+                cases = {}
             snapshot: Dict[str, Dict[str, Any]] = {}
             for key in case_keys:
                 entry = cases.get(key)
@@ -418,8 +423,11 @@ class AutomationManifest:
         # every read/write pair must hold it (entire-branch review MED; the
         # lock is an RLock, so nested acquisition is safe).
         with self._lock:
-            case_entry = self.data.get("cases", {}).get(relative_key)
-            if not case_entry:
+            # isinstance guards: a corrupted/hand-edited manifest may carry a
+            # non-dict "cases" or case entry (Gemini HIGH, PR #96 round 10).
+            cases = self.data.get("cases") if isinstance(self.data, dict) else None
+            case_entry = cases.get(relative_key) if isinstance(cases, dict) else None
+            if not isinstance(case_entry, dict):
                 return False
             if case_entry.get("status") != "complete":
                 return False

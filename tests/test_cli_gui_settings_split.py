@@ -681,6 +681,37 @@ def test_resolve_single_target_missing_path(tmp_path):
     assert record is None and "does not exist" in err
 
 
+def test_resolve_single_target_rejects_image_at_filesystem_root(monkeypatch):
+    """An image whose parent has no name (filesystem root) cannot form a
+    case — 'C:\\' would become a nonsense manifest key (review LOW, r9).
+    Simulated with a fake Path so the test never touches a real drive root."""
+    import kling_automation_ui as kmod
+
+    class _Fake:
+        suffix = ".jpg"
+        name = "front.jpg"
+
+        def __init__(self, p):
+            self._p = p
+            self.parent = type("P", (), {"name": ""})()
+
+        def exists(self):
+            return True
+
+        def is_file(self):
+            return True
+
+        def resolve(self):
+            return self
+
+        def expanduser(self):
+            return self
+
+    monkeypatch.setattr(kmod, "Path", lambda raw: _Fake(raw))
+    record, err = _single_ui()._resolve_single_case_target("C:\\front.jpg")
+    assert record is None and "filesystem root" in err
+
+
 def test_find_front_in_dir_matches_batch_semantics(tmp_path):
     from automation.discovery import find_front_in_dir
 
@@ -696,6 +727,123 @@ def test_find_front_in_dir_matches_batch_semantics(tmp_path):
     (case / "a-front.png").write_bytes(b"x")
     find_front_in_dir(case, [], front_globs=["*front*"], warn_cb=warns.append)
     assert warns and "match" in warns[0].lower()
+
+
+def test_load_manifest_path_follows_root_param_not_attr(tmp_path):
+    """The manifest path must derive from the `root` PARAMETER. A mid-flow
+    change of self.automation_root_folder (quick-edit root re-pick inside
+    the single-case loop) would otherwise point the manifest at a different
+    folder than the run's root_dir — writing a poisoned manifest into the
+    new root (adversarial review HIGH, PR #96 round 9)."""
+    ui = _single_ui()
+    run_root = tmp_path / "batch-root"
+    run_root.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    ui.automation_root_folder = str(elsewhere)  # the mutated attr must be ignored
+    manifest = ui._load_manifest_with_recreate_prompt(run_root, interactive=False)
+    assert manifest is not None
+    assert (run_root / "automation_manifest.json").exists()
+    assert not (elsewhere / "automation_manifest.json").exists()
+
+
+def _single_run_ui():
+    """_single_ui wired far enough to drive _run_single_case_with."""
+    ui = _single_ui()
+    ui._use_legacy_prompt_ui = lambda: False
+    ui.print_red = lambda *a, **k: None
+    ui.display_header = lambda *a, **k: None
+    ui._render_run_settings_table = lambda *a, **k: None
+    ui._build_cost_estimate_table = lambda *a, **k: "(cost)"
+    ui.pause_review = lambda *a, **k: None
+    ui.automation_root_folder = ""
+    return ui
+
+
+def test_single_case_rerun_forces_real_reprocess(tmp_path):
+    """'Re-run from scratch' must actually regenerate: the manifest reset
+    alone leaves file-based reuse (skip mode + skip_if_*_exists defaults)
+    free to silently re-adopt the existing on-disk selfie/video
+    (adversarial review HIGH, PR #96 round 9). The run gets a temporary
+    reprocess override; the user's policy keys are restored afterwards."""
+    ui = _single_run_ui()
+    policy = {
+        "automation_allow_reprocess": False,
+        "automation_reprocess_mode": "skip",
+        "automation_skip_completed": True,
+        "automation_skip_if_selfie_exists": True,
+        "automation_skip_if_video_exists": True,
+    }
+    ui.config.update(policy)
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    img = case_dir / "front.jpg"
+    img.write_bytes(b"x")
+    record, err = ui._resolve_single_case_target(str(img))
+    assert err == "" and record is not None
+    # Pre-mark the case complete so the approval loop offers "rerun".
+    pre = ui._load_manifest_with_recreate_prompt(tmp_path, interactive=False)
+    assert pre is not None
+    pre.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    with pre.lock:
+        pre.data["cases"][record.relative_key]["status"] = "complete"
+        pre.save_atomic()
+
+    seen: dict = {}
+
+    def fake_exec(manifest_arg, records, runnable):
+        seen["allow"] = ui.config.get("automation_allow_reprocess")
+        seen["mode"] = ui.config.get("automation_reprocess_mode")
+        seen["skip_completed"] = ui.config.get("automation_skip_completed")
+        seen["skip_selfie"] = ui.config.get("automation_skip_if_selfie_exists")
+        seen["skip_video"] = ui.config.get("automation_skip_if_video_exists")
+        seen["status"] = manifest_arg.data["cases"][record.relative_key]["status"]
+
+    ui._execute_automation_run = fake_exec
+    ui._q_select = lambda *a, **k: "rerun"
+    ui._run_single_case_with(record)
+    assert seen["allow"] is True
+    assert seen["mode"] == "increment"
+    assert seen["skip_completed"] is False
+    assert seen["skip_selfie"] is False and seen["skip_video"] is False
+    assert seen["status"] != "complete", "rerun must reset the manifest case"
+    for key, value in policy.items():
+        assert ui.config.get(key) == value, f"{key} must be restored after the run"
+
+
+def test_single_case_quick_edit_root_change_preserved_and_run_pinned(tmp_path):
+    """Changing the root folder from quick-edit INSIDE the single-case loop:
+    the run itself stays pinned to the case folder's parent (manifest and
+    run root coherent), while the user's deliberate new root survives the
+    flow instead of being silently reverted by the finally-restore
+    (adversarial review HIGH+MED, PR #96 round 9)."""
+    ui = _single_run_ui()
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    img = case_dir / "front.jpg"
+    img.write_bytes(b"x")
+    record, err = ui._resolve_single_case_target(str(img))
+    assert err == "" and record is not None
+    new_root = tmp_path / "new-root"
+    new_root.mkdir()
+
+    def fake_quick_edit():
+        ui.automation_root_folder = str(new_root)
+        ui.config["automation_root_folder"] = str(new_root)
+
+    ui._quick_edit_settings = fake_quick_edit
+    seen: dict = {}
+    ui._execute_automation_run = (
+        lambda m, r, rn: seen.setdefault("root_at_run", ui.automation_root_folder)
+    )
+    actions = iter(["edit", "run"])
+    ui._q_select = lambda *a, **k: next(actions)
+    ui._run_single_case_with(record)
+    assert seen["root_at_run"] == str(tmp_path), "run must stay pinned to the case parent"
+    assert ui.automation_root_folder == str(new_root), "user's new root must survive"
+    assert ui.config.get("automation_root_folder") == str(new_root)
+    # And no manifest may have leaked into the user's new root.
+    assert not (new_root / "automation_manifest.json").exists()
 
 
 # --------------------------------------------------------------------------

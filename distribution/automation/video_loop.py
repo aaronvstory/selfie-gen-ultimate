@@ -113,7 +113,13 @@ def create_looped_video(
         output_file = Path(output_path)
 
     # Ensure output directory exists
-    output_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # Permission/filesystem errors degrade to a logged failure, not a
+        # pipeline crash (Gemini MED, PR #96 round 10).
+        log(f"Failed to create output directory: {exc}", "error")
+        return None
 
     # Check if output exists
     if output_file.exists() and not overwrite:

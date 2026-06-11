@@ -343,6 +343,26 @@ def build_sanitized_config(
     config["model_display_name"] = str(
         template.get("model_display_name", "Kling 2.5 Turbo Pro")
     ).strip()
+    # CLI-owned per-surface video selection (PR #96 v2.31 split): the CLI
+    # pipeline ships Kling 2.5 Turbo STANDARD on prompt slot 4 at 10s —
+    # independent of the GUI's Pro default above. Without these a
+    # template-only build (no live kling_config.json) would leave the
+    # resolvers falling back to the GUI keys, so headless --batch (which
+    # never runs the interactive defaults migration) would generate with
+    # Pro / slot 5 (codex P2, PR #96 round 9). Deliberately NOT stamping
+    # automation_recommended_defaults_version: the first interactive
+    # launch silently applies the full recommended baseline on top.
+    config["cli_video_model"] = str(
+        template.get(
+            "cli_video_model",
+            "fal-ai/kling-video/v2.5-turbo/standard/image-to-video",
+        )
+    ).strip()
+    config["cli_video_model_display_name"] = str(
+        template.get("cli_video_model_display_name", "Kling 2.5 Turbo Standard")
+    ).strip()
+    config["cli_kling_prompt_slot"] = template.get("cli_kling_prompt_slot", 4)
+    config["cli_video_duration"] = template.get("cli_video_duration", 10)
     # Template-driven so default_config_template.json explicitly
     # setting lock_end_frame: false actually ships false (Codex P2,
     # PR #41). Unparseable / missing template key -> True (the

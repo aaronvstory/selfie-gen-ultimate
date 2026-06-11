@@ -2380,14 +2380,20 @@ class KlingAutomationUI:
             time.sleep(1)
         return None
 
-    def _automation_manifest_path(self) -> Optional[Path]:
-        if not self.automation_root_folder:
+    def _automation_manifest_path(self, root: Optional[Path] = None) -> Optional[Path]:
+        # `root` override: callers that already hold the run root (the
+        # single-case flow, whose root is the case folder's parent) must not
+        # depend on self.automation_root_folder — a mid-flow root change via
+        # quick-edit would silently point the manifest at a DIFFERENT folder
+        # than the run's root_dir (adversarial review HIGH, PR #96 round 9).
+        base = str(root) if root is not None else self.automation_root_folder
+        if not base:
             return None
         raw_manifest_name = str(self.config.get("automation_manifest_name", "automation_manifest.json") or "").strip()
         safe_manifest_name = Path(raw_manifest_name).name if raw_manifest_name else "automation_manifest.json"
         if not safe_manifest_name.endswith(".json"):
             safe_manifest_name = "automation_manifest.json"
-        return Path(self.automation_root_folder) / safe_manifest_name
+        return Path(base) / safe_manifest_name
 
     def _resolve_provider(self, configured_provider: str) -> str:
         normalized = str(configured_provider or "auto").strip().lower()
@@ -2952,15 +2958,26 @@ class KlingAutomationUI:
         runnable: List[Any] = []
         for record in records:
             case_entry = manifest.data.get("cases", {}).get(record.relative_key, {}) if manifest else {}
+            prior_front = case_entry.get("front_path") if isinstance(case_entry, dict) else None
+            # Discovery now selects a DIFFERENT front image than the one the
+            # recorded outputs came from: the case must flow into the runner
+            # (whose _reset_case_if_front_changed resets it) instead of being
+            # filtered out here as skip_complete/manual_review/failed with
+            # stale wrong-source outputs (codex P1, PR #96 round 9).
+            front_changed = bool(prior_front and str(prior_front) != str(record.front_path))
             existing = detect_existing_outputs(record.case_dir)
             is_complete = bool(
                 manifest
+                and not front_changed
                 and case_entry.get("status") == "complete"
                 and manifest.case_is_complete_and_valid(record.relative_key)
             )
             if existing.video_candidate or existing.selfie_candidate:
                 counts["existing_videos_selfies"] += 1
-            planned = self._planned_action_for_case(case_entry, existing, is_complete)
+            if front_changed:
+                planned = "run_front_changed"
+            else:
+                planned = self._planned_action_for_case(case_entry, existing, is_complete)
             if is_complete:
                 counts["completed_total"] += 1
             if planned == "skip_complete":
@@ -2969,7 +2986,7 @@ class KlingAutomationUI:
                 counts["manual_review"] += 1
             elif planned == "failed":
                 counts["failed"] += 1
-            elif planned in {"run_pending", "skip_video_exists", "skip_selfie_exists"}:
+            elif planned in {"run_pending", "run_front_changed", "skip_video_exists", "skip_selfie_exists"}:
                 counts["pending"] += 1
                 runnable.append(record)
             row = {
@@ -5323,15 +5340,23 @@ class KlingAutomationUI:
             return None, None
         return records, manifest
 
-    def _load_manifest_with_recreate_prompt(self, root: Path, *, interactive: bool) -> "Optional[AutomationManifest]":
+    def _load_manifest_with_recreate_prompt(
+        self, root: Path, *, interactive: bool, single_case: bool = False
+    ) -> "Optional[AutomationManifest]":
         """create_or_load with the interactive fingerprint-mismatch
         backup-and-recreate prompt. Extracted from _discover_and_load_manifest
         (round 9) so the SINGLE-case flow shares the exact same manifest
-        semantics; messages/pauses preserved verbatim."""
+        semantics; messages/pauses preserved verbatim. The manifest path is
+        derived from the `root` PARAMETER (not the mutable
+        self.automation_root_folder) so a mid-flow root change cannot point
+        path and root_dir at different folders. ``single_case`` reframes the
+        recreate prompt: superseding the manifest resets the recorded state
+        for EVERY case under root, which deserves an explicit warning (and a
+        No default) on a screen framed as a one-case run."""
         snapshot = {k: v for k, v in self.config.items() if str(k).startswith("automation_")}
         try:
             return AutomationManifest.create_or_load(
-                manifest_path=self._automation_manifest_path(),
+                manifest_path=self._automation_manifest_path(root),
                 root_dir=root,
                 config_snapshot=snapshot,
             )
@@ -5342,19 +5367,27 @@ class KlingAutomationUI:
                 # the fingerprint and never land here — automation/manifest
                 # _FINGERPRINT_EXCLUDED_KEYS). Offer the same backup-and-
                 # recreate path headless --batch already has.
+                scope_note = (
+                    "\n[yellow]This manifest tracks ALL case folders under "
+                    f"{_rich_markup_escape(self._elide_path(str(root), 60))} — recreating it resets the "
+                    "recorded run state for every one of them (files on disk are untouched).[/yellow]"
+                    if single_case
+                    else ""
+                )
                 _RICH_CONSOLE.print(Panel(
                     "[yellow]Run settings changed since this manifest was created — "
-                    "existing outputs may not match the new settings.[/yellow]\n"
+                    "existing outputs may not match the new settings.[/yellow]"
+                    + scope_note + "\n"
                     f"[dim]{_rich_markup_escape(str(exc))}[/dim]",
                     title="[bold yellow]⚠  Manifest mismatch[/bold yellow]",
                     border_style="yellow",
                 ))
                 if self._confirm(
                     "Back up the old manifest and start fresh with the new settings?",
-                    default=True,
+                    default=not single_case,
                 ):
                     fresh = AutomationManifest.create_fresh(
-                        manifest_path=self._automation_manifest_path(),
+                        manifest_path=self._automation_manifest_path(root),
                         root_dir=root,
                         config_snapshot=snapshot,
                     )
@@ -5393,8 +5426,15 @@ class KlingAutomationUI:
                     "pick a png/jpg/jpeg/webp/bmp."
                 )
             case_dir = path.parent
-            rel_key = case_dir.name or str(case_dir)
-            return CaseRecord(case_dir=case_dir, front_path=path, relative_key=rel_key), ""
+            if not case_dir.name:
+                # Image sitting at a filesystem root: there is no folder to
+                # act as the case (and "C:\\" would become a nonsense
+                # manifest key). Ask for a real folder instead.
+                return None, (
+                    f"'{path.name}' sits at a filesystem root — put it in a folder "
+                    "and pick that (the folder becomes the case)."
+                )
+            return CaseRecord(case_dir=case_dir, front_path=path, relative_key=case_dir.name), ""
         front = find_front_in_dir(
             path,
             self.config.get("automation_front_names", []),
@@ -5471,11 +5511,20 @@ class KlingAutomationUI:
         root = record.case_dir.parent
         saved_root_attr = self.automation_root_folder
         saved_root_cfg = self.config.get("automation_root_folder")
+        # The quick-edit screen reachable below exposes the "Root folder"
+        # row; a deliberate re-pick there is the user's saved batch root for
+        # AFTER this run — the single run itself stays pinned to the case
+        # folder's parent (adversarial review HIGH, PR #96 round 9).
+        user_root_attr: Optional[str] = None
+        user_root_cfg: Optional[str] = None
         self.automation_root_folder = str(root)
         try:
             while True:
+                self.automation_root_folder = str(root)
                 interactive = not self._use_legacy_prompt_ui()
-                manifest = self._load_manifest_with_recreate_prompt(root, interactive=interactive)
+                manifest = self._load_manifest_with_recreate_prompt(
+                    root, interactive=interactive, single_case=True
+                )
                 if manifest is None:
                     return
                 entry = (manifest.data.get("cases") or {}).get(record.relative_key) or {}
@@ -5515,6 +5564,12 @@ class KlingAutomationUI:
                     return
                 if action == "edit":
                     self._quick_edit_settings()
+                    if self.automation_root_folder != str(root):
+                        # User re-picked the root folder inside quick-edit:
+                        # remember it as their new saved batch root, then
+                        # re-pin this run to the case parent (loop top).
+                        user_root_attr = self.automation_root_folder
+                        user_root_cfg = self.config.get("automation_root_folder")
                     continue  # reload manifest — the fingerprint may have changed
                 if action == "prompts":
                     self._show_full_prompts()
@@ -5523,16 +5578,44 @@ class KlingAutomationUI:
                 if action == "rerun":
                     # reset_case_for_new_front IS the generic per-case reset:
                     # it rewrites the case to a fresh state (same mechanism
-                    # the front-changed guard uses).
+                    # the front-changed guard uses). The manifest reset alone
+                    # is NOT enough though — file-based reuse (skip mode +
+                    # skip_if_*_exists) would silently re-adopt the existing
+                    # on-disk selfie/video, so "redo every step" must force a
+                    # real reprocess for this run (same override set the
+                    # headless --reprocess flag uses); increment keeps the old
+                    # outputs under their names (adversarial review HIGH, r9).
                     manifest.reset_case_for_new_front(record.relative_key, record.case_dir, record.front_path)
+                    rerun_overrides = {
+                        "automation_allow_reprocess": True,
+                        "automation_reprocess_mode": "increment",
+                        "automation_skip_completed": False,
+                        "automation_skip_if_selfie_exists": False,
+                        "automation_skip_if_video_exists": False,
+                    }
+                    saved_policy = {k: self.config.get(k) for k in rerun_overrides}
+                    self.config.update(rerun_overrides)
+                    try:
+                        self._execute_automation_run(manifest, [record], [record])
+                    finally:
+                        for key, value in saved_policy.items():
+                            if value is None:
+                                self.config.pop(key, None)
+                            else:
+                                self.config[key] = value
+                    return
                 self._execute_automation_run(manifest, [record], [record])
                 return
         finally:
             # Restore BOTH the attr and the config key — _execute_automation_run
             # copies the attr into config, and a later save_config must never
             # persist the single-run root over the user's saved batch root.
-            self.automation_root_folder = saved_root_attr
-            if saved_root_cfg is None:
+            # A root the user deliberately re-picked mid-flow wins over the
+            # pre-run value (it was already save_config'd by the picker).
+            self.automation_root_folder = user_root_attr if user_root_attr else saved_root_attr
+            if user_root_attr:
+                self.config["automation_root_folder"] = user_root_cfg
+            elif saved_root_cfg is None:
                 self.config.pop("automation_root_folder", None)
             else:
                 self.config["automation_root_folder"] = saved_root_cfg
@@ -5601,7 +5684,7 @@ class KlingAutomationUI:
                 batch_table.add_column("#", style="dim", no_wrap=True)
                 batch_table.add_column("Folder", style="cyan")
                 for idx, rec in enumerate(runnable_cases[:15], 1):
-                    batch_table.add_row(str(idx), getattr(rec, "relative_key", str(rec)))
+                    batch_table.add_row(str(idx), _rich_markup_escape(str(getattr(rec, "relative_key", rec))))
                 if len(runnable_cases) > 15:
                     batch_table.add_row("…", f"[dim]+{len(runnable_cases) - 15} more[/dim]")
                 _RICH_CONSOLE.print(batch_table)
@@ -5677,7 +5760,7 @@ class KlingAutomationUI:
                 f"{self.config.get('automation_skip_if_selfie_exists', True)} / {self.config.get('automation_skip_if_video_exists', True)}",
             )
             pre.add_row("Selfie prompt", f"slot {selfie_slot} ({selfie_source})")
-            pre.add_row("Prompt preview", f"[dim]{prompt_preview}[/dim]")
+            pre.add_row("Prompt preview", f"[dim]{_rich_markup_escape(prompt_preview)}[/dim]")
             _RICH_CONSOLE.print(pre)
         else:
             print("\nAutomation preflight:")
@@ -5793,11 +5876,17 @@ class KlingAutomationUI:
 
         root.addHandler(null_guard)
         _strip()
+        # Restore ONLY the handlers that existed BEFORE this window: handlers
+        # absl/TF install MID-run get stripped per tick and must NOT leak
+        # onto the root logger afterwards (entire-branch review MED — a
+        # caller with no console handler before the run would otherwise gain
+        # absl's handler after it).
+        initially_removed = list(removed)
         try:
             yield _strip
         finally:
             root.removeHandler(null_guard)
-            for handler in removed:
+            for handler in initially_removed:
                 root.addHandler(handler)
 
     @classmethod

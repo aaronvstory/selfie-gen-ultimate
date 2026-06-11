@@ -18,6 +18,16 @@ rem ============================================================================
 
 set "ROOT_DIR=%~dp0"
 
+rem --- nvidia-smi resolution (PATH first, then standard install dirs) ---------
+rem Driver packages put nvidia-smi.exe in System32 (usually on PATH), but some
+rem setups only carry ProgramFiles\NVIDIA Corporation\NVSMI. Resolve ONCE here
+rem and use the resolved path everywhere (gemini HIGH, PR #96 round 10).
+set "NVSMI_EXE="
+where nvidia-smi >nul 2>&1
+if not errorlevel 1 set "NVSMI_EXE=nvidia-smi"
+if not defined NVSMI_EXE if exist "%SystemRoot%\System32\nvidia-smi.exe" set "NVSMI_EXE=%SystemRoot%\System32\nvidia-smi.exe"
+if not defined NVSMI_EXE if exist "%ProgramFiles%\NVIDIA Corporation\NVSMI\nvidia-smi.exe" set "NVSMI_EXE=%ProgramFiles%\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+
 rem --- App version (single source: app_version.py; delims== idiom) ------------
 set "APP_VER="
 for /f "tokens=2 delims==" %%V in ('findstr /b /c:"RELEASE_VERSION" "%ROOT_DIR%app_version.py" 2^>nul') do set "APP_VER=%%V"
@@ -84,9 +94,8 @@ goto menu
 :gpu_brief
 set "GPU_NAME="
 set "GPU_DRV="
-where nvidia-smi >nul 2>&1
-if errorlevel 1 goto gpu_brief_none
-for /f "tokens=1,2 delims=," %%A in ('cmd /c "nvidia-smi --query-gpu=name,driver_version --format=csv,noheader" 2^>nul') do set "GPU_NAME=%%A" & set "GPU_DRV=%%B"
+if not defined NVSMI_EXE goto gpu_brief_none
+for /f "tokens=1,2 delims=," %%A in ('cmd /c ""%NVSMI_EXE%" --query-gpu=name,driver_version --format=csv,noheader" 2^>nul') do set "GPU_NAME=%%A" & set "GPU_DRV=%%B"
 if not defined GPU_NAME goto gpu_brief_none
 set "GPU_DRV=%GPU_DRV: =%"
 echo     %CLRG%GPU:%CLR0% %GPU_NAME%  %CLRD%(driver %GPU_DRV%)%CLR0%
@@ -120,12 +129,11 @@ goto menu
 
 :gpu_full
 echo(
-where nvidia-smi >nul 2>&1
-if errorlevel 1 goto gpu_full_none
-nvidia-smi
+if not defined NVSMI_EXE goto gpu_full_none
+"%NVSMI_EXE%"
 echo(
 echo   %CLRC%--- Per-GPU summary -------------------------------------------------------%CLR0%
-nvidia-smi --query-gpu=name,driver_version,memory.total,memory.used --format=csv
+"%NVSMI_EXE%" --query-gpu=name,driver_version,memory.total,memory.used --format=csv
 goto gpu_full_done
 :gpu_full_none
 echo   %CLRY%nvidia-smi not found - no NVIDIA GPU/driver detected. rPPG runs on CPU.%CLR0%

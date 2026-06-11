@@ -179,9 +179,11 @@ def test_suppress_stream_logging_restrip_catches_late_handlers(tmp_path):
             assert late_stream not in root.handlers, "late StreamHandler must be stripped"
             assert late_absl not in root.handlers, "late non-StreamHandler console handler must be stripped"
             assert file_handler in root.handlers, "file handler must always be KEPT"
-        # Everything stripped during the window is restored afterwards.
-        assert late_stream in root.handlers
-        assert late_absl in root.handlers
+        # Only handlers that existed BEFORE the window are restored —
+        # handlers absl/TF installed MID-run must NOT leak onto the root
+        # logger afterwards (entire-branch review MED, round 9).
+        assert late_stream not in root.handlers, "mid-run handler must NOT be restored"
+        assert late_absl not in root.handlers, "mid-run handler must NOT be restored"
         assert file_handler in root.handlers
     finally:
         for h in (late_stream, late_absl):
