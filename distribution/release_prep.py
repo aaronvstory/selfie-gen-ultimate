@@ -149,6 +149,12 @@ def _should_skip(path: Path) -> bool:
         return True
     if any(part.startswith("kling_ui_shareable_") for part in path.parts):
         return True
+    # PR #96 round 7: agent/review scratch artifacts (.scratch_*.txt review
+    # outputs, .scratch_* probe venvs/scripts). Gitignored, but release_prep
+    # sweeps the WORKING TREE — 7 of them shipped in the first v2.31 zip.
+    # Prefix match on any path part covers files and dirs alike.
+    if any(part.startswith(".scratch") for part in path.parts):
+        return True
     if path.name in EXCLUDED_FILES:
         return True
     if path.name.startswith("session-ses_") and path.suffix.lower() == ".md":

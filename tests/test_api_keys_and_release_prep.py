@@ -494,6 +494,12 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     (src / ".tmp_pytest" / "temp.txt").write_text("private", encoding="utf-8")
     (src / "map-codebase-session-abc.md").write_text("private", encoding="utf-8")
     (src / "session-ses_123.md").write_text("private", encoding="utf-8")
+    # PR #96 round 7: agent/review scratch artifacts — 7 .scratch_*.txt
+    # review outputs shipped in the first v2.31 zip (gitignored ≠ excluded;
+    # release_prep walks the working tree).
+    (src / ".scratch_codex_review.txt").write_text("private", encoding="utf-8")
+    (src / ".scratch_probe_venv").mkdir(parents=True)
+    (src / ".scratch_probe_venv" / "x.py").write_text("private", encoding="utf-8")
     (src / "normal.py").write_text("ok", encoding="utf-8")
 
     copy_sanitized_tree(src, dst)
@@ -504,6 +510,12 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     assert not (dst / ".tmp_pytest").exists()
     assert not (dst / "map-codebase-session-abc.md").exists()
     assert not (dst / "session-ses_123.md").exists()
+    assert not (dst / ".scratch_codex_review.txt").exists(), (
+        ".scratch_* review output leaked into release bundle"
+    )
+    assert not (dst / ".scratch_probe_venv").exists(), (
+        ".scratch_* dir leaked into release bundle"
+    )
     assert (dst / "normal.py").exists()
 
 
