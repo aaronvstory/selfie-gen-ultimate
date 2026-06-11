@@ -13,6 +13,7 @@ import traceback
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import logging
+from rich import box as _rich_box
 from rich.console import Console, Group
 from rich.table import Table
 from rich.live import Live
@@ -948,10 +949,25 @@ class KlingAutomationUI:
         from rich.console import Group as _RichGroup
         from rich.text import Text as _RichText
 
-        status = _RichText.from_markup(
-            f"[magenta]{model_name}[/magenta]  ·  [green]{duration}s[/green]  ·  "
-            f"[yellow]{price_str}[/yellow]  ·  [cyan]Automation first[/cyan]"
+        # Live status: BOTH generation models (user 2026-06-11 round 3 —
+        # "both are basically equally as important"). Re-built on every
+        # render, so model/pricing changes show immediately.
+        selfie_labels = self._selfie_model_label_map()
+        selfie_models = [selfie_labels.get(x, x) for x in list(self.config.get("automation_selfie_models") or [])]
+        selfie_label = " + ".join(selfie_models) if selfie_models else "(none)"
+        video_markup = (
+            f"🎬 [magenta]{model_name}[/magenta] · [green]{duration}s[/green] · [yellow]{price_str}[/yellow]"
         )
+        selfie_markup = f"✨ [bold cyan]{selfie_label}[/bold cyan]"
+        plain_len = len(f"🎬 {model_name} · {duration}s · {price_str}   ·   ✨ {selfie_label}")
+        if plain_len <= 76:
+            status_lines = [_RichText.from_markup(f"{video_markup}   ·   {selfie_markup}")]
+        else:
+            # Long custom endpoints / multi-model fan-out: two centered lines.
+            status_lines = [
+                _RichText.from_markup(video_markup),
+                _RichText.from_markup(selfie_markup),
+            ]
         use_ascii_banner = (
             bool(getattr(_RICH_CONSOLE, "is_terminal", False))
             and (_RICH_CONSOLE.width or 0) >= _BANNER_MIN_WIDTH
@@ -966,7 +982,8 @@ class KlingAutomationUI:
             _RICH_CONSOLE.print(Align.center(_RichText(_BANNER_ASCII, style="bold cyan")))
             print()
             _RICH_CONSOLE.print(Align.center(tagline))
-            _RICH_CONSOLE.print(Align.center(status))
+            for line in status_lines:
+                _RICH_CONSOLE.print(Align.center(line))
             _RICH_CONSOLE.print(Rule(style="blue"))
             return
 
@@ -974,7 +991,8 @@ class KlingAutomationUI:
         subtitle = _RichText("Front DL -> Selfie -> Similarity -> Video -> Oldcam", style="dim")
         _RICH_CONSOLE.print(
             Panel(
-                _RichGroup(Align.center(title), Align.center(subtitle), Align.center(status)),
+                _RichGroup(Align.center(title), Align.center(subtitle),
+                           *[Align.center(line) for line in status_lines]),
                 border_style="blue",
                 padding=(0, 2),
             )
@@ -2138,8 +2156,10 @@ class KlingAutomationUI:
         return [
             ("🚀  Run / resume end-to-end pipeline", "run"),
             ("🔍  Scan / preview cases", "scan"),
-            ("🧪  Dry run (no API calls)", "dry_run"),
-            ("⚡  Quick settings (edit the table above)", "quick"),
+            # Dry run intentionally NOT top-level — it's offered at the
+            # pre-run approval inside Run (user feedback, round 3).
+            # 🔧 not ⚡ — U+26A1 renders as a broken narrow glyph in cmd.exe.
+            ("🔧  Quick settings (edit the table above)", "quick"),
             ("⚙️   All settings…", "settings"),
             ("🎬  Manual Kling video tools", "manual"),
             ("🖥️   Launch GUI manual lab", "gui"),
@@ -2148,7 +2168,7 @@ class KlingAutomationUI:
         ]
 
     _MAIN_MENU_GROUPS = (
-        ("Run", ("run", "scan", "dry_run")),
+        ("Run", ("run", "scan")),
         ("Settings", ("quick", "settings")),
         ("Tools", ("manual", "gui", "maintenance")),
         (None, ("q",)),
@@ -2161,7 +2181,7 @@ class KlingAutomationUI:
         # matches the option-1 styling; the header banner already brands the
         # screen, so no second title rule either.
         self.display_header()
-        self._render_run_settings_table()
+        self._render_run_settings_table(caption="🔧 Quick settings edits these")
         by_value = {value: label for label, value in self._main_menu_choice_pairs()}
         grouped: "List[Any]" = []
         for group_title, values in self._MAIN_MENU_GROUPS:
@@ -2170,9 +2190,12 @@ class KlingAutomationUI:
             grouped.extend(questionary.Choice(by_value[v], v) for v in values)
             grouped.append(questionary.Separator(" "))
         grouped.pop()  # no trailing spacer after Quit
+        # Plain "Main menu" message — the banner above already carries the
+        # app name + version, repeating it here read as clutter (round 3).
         choice = self._q_menu(
-            f"Selfie Gen Ultimate  {RELEASE_VERSION}",
+            "Main menu",
             grouped,
+            instruction="↑/↓ to move · Enter to select · Esc to quit",
             show_header=False,
             show_title_rule=False,
         )
@@ -2189,9 +2212,6 @@ class KlingAutomationUI:
             return None
         if choice == "scan":
             self._scan_automation_cases()
-            return None
-        if choice == "dry_run":
-            self._dry_run_automation()
             return None
         if choice == "quick":
             self._quick_edit_settings()
@@ -2216,7 +2236,7 @@ class KlingAutomationUI:
             choice = self._q_menu(
                 "Settings",
                 [
-                    ("⚡  Quick settings (main run settings)", "quick"),
+                    ("🔧  Quick settings (main run settings)", "quick"),
                     ("⚙️   Edit ALL automation settings", "all"),
                     ("🎛️   Advanced video/model settings", "advanced"),
                     ("🔑  API keys / provider settings", "keys"),
@@ -4449,11 +4469,20 @@ class KlingAutomationUI:
         ]
         return rows
 
-    def _render_run_settings_table(self, title: str = "Main run settings") -> None:
+    # Visual section breaks for the settings table — after these row labels
+    # the table draws a divider, grouping: stage toggles / models+prompts /
+    # image prep / scoring+scope. Labels (not indexes) so _run_settings_rows
+    # can evolve without silently mis-grouping.
+    _SETTINGS_TABLE_SECTION_AFTER = {"Loop (ping-pong)", "Selfie prompt", "Step 2.5 selfie expand"}
+
+    def _render_run_settings_table(self, title: str = "Main run settings",
+                                   caption: "Optional[str]" = None) -> None:
         table = Table(
-            title=f"[bold cyan]{title}[/bold cyan]",
+            title=f"[bold white]⚙  {title}[/bold white]",
+            caption=f"[dim]{caption}[/dim]" if caption else None,
             show_header=False,
             expand=False,
+            box=_rich_box.ROUNDED,
             border_style="blue",
             padding=(0, 1),
         )
@@ -4461,6 +4490,8 @@ class KlingAutomationUI:
         table.add_column("Value")
         for label, value, style in self._run_settings_rows():
             table.add_row(label, f"[{style}]{value}[/{style}]" if style else value)
+            if label in self._SETTINGS_TABLE_SECTION_AFTER:
+                table.add_section()
         _RICH_CONSOLE.print(table)
 
     def _print_run_settings_plain(self) -> None:
@@ -4607,6 +4638,7 @@ class KlingAutomationUI:
             self.pause_review("\nPress Enter to continue...")
             return
         while True:
+            self.display_header()  # clears screen — stable repaint, no stacking
             rows = self._gui_cli_comparison_rows()
             table = Table(
                 title="[bold cyan]GUI ⇄ CLI pipeline settings[/bold cyan]",
@@ -4670,110 +4702,208 @@ class KlingAutomationUI:
 
     def _quick_edit_choice_pairs(self) -> "List[Tuple[str, str]]":
         """(label, value) entries for the quick editor — single source so the
-        menu and the structure test can never drift. Covers every row of the
-        Main run settings table (the table must be 1:1 editable here)."""
+        menu and the structure test can never drift. One entry per FIELD,
+        each label carrying its current value (round 3: "configurable right
+        then and there… not having to go into a sub menu for each"), grouped
+        chronologically by pipeline step via _QUICK_EDIT_GROUPS."""
         c = self.config
         # _parse_bool_cfg (not raw bool): a hand-edited "false" string must
         # show OFF here exactly like the table does, or the label and the
         # toggle disagree (code-reviewer MED, PR #96 round 2).
         rppg_on = _parse_bool_cfg(c.get("automation_rppg_enabled", False)) or False
         loop_on = _parse_bool_cfg(c.get("automation_loop_enabled", False)) or False
+        video_endpoint, video_display = resolve_cli_video_model(c)
+        kling_slot = resolve_cli_kling_prompt_slot(c, DEFAULT_KLING_PROMPT_SLOT)
+        kling_text = str((c.get("saved_prompts") or {}).get(str(kling_slot), "") or "")
+        try:
+            selfie_slot = int(c.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
+        except (TypeError, ValueError):
+            selfie_slot = DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT
+        selfie_text = str((c.get("automation_selfie_prompts") or {}).get(str(selfie_slot), "") or "")
+        selfie_labels = self._selfie_model_label_map()
+        selfie_models = [selfie_labels.get(x, x) for x in list(c.get("automation_selfie_models") or [])]
+
+        def _preview(text: str, n: int = 38) -> str:
+            return (text[:n] + "…") if len(text) > n else (text or "(empty)")
+
         return [
+            # ── Step 0 · Front prep ──
+            (f"🖼  Front expand provider: {c.get('automation_front_expand_provider', 'fal')}", "front_provider"),
+            (f"🖼  Front expand blend: {c.get('automation_front_expand_composite_mode', 'preserve_seamless')}", "front_blend"),
+            (f"🖼  Front expand percent: {c.get('automation_front_expand_percent', 70)}%", "front_percent"),
+            (f"🖼  Front expand passes: {c.get('automation_front_expand_passes', 2)}x", "front_passes"),
+            (f"👤 Crop factor: {c.get('automation_crop_multiplier', 1.5)}", "crop"),
+            # ── Step 2 · Selfie ──
+            (f"✨ Selfie model set: {', '.join(selfie_models) if selfie_models else '(none)'}", "selfie_models"),
+            (f"🔢 Selfie prompt slot: {selfie_slot}", "selfie_slot"),
+            (f"📝 Selfie prompt text: \"{_preview(selfie_text)}\"", "selfie_text"),
+            (f"🎯 Similarity threshold: {c.get('automation_similarity_threshold', 80)}", "similarity"),
+            # ── Step 2.5 · Selfie expand ──
+            (f"➕ Selfie expand provider: {c.get('automation_selfie_expand_provider', 'fal')}", "sexp_provider"),
+            (f"➕ Selfie expand blend: {c.get('automation_selfie_expand_composite_mode', 'none')}", "sexp_blend"),
+            (f"➕ Selfie expand percent: {c.get('automation_selfie_expand_percent', 30)}%", "sexp_percent"),
+            # ── Step 3 · Video (Kling) ──
+            (f"🎬 Video model: {video_display or video_endpoint or '(not set)'}", "video_model"),
+            (f"🔢 Kling prompt slot: {kling_slot}", "kling_slot"),
+            (f"📝 Kling prompt text: \"{_preview(kling_text)}\"", "kling_text"),
+            # ── Post · rPPG → Loop → Oldcam ──
             (f"💉 rPPG injection: {'ON' if rppg_on else 'OFF'} — toggle", "rppg"),
+            (f"🔁 Loop (ping-pong): {'ON' if loop_on else 'off'} — toggle", "loop"),
             (f"📼 Oldcam versions: {self._format_oldcam_versions()} — pick (spacebar)", "oldcam"),
-            (f"🔁 Loop: {'ON' if loop_on else 'off'} — toggle", "loop"),
-            ("🎬 Video model…", "video_model"),
-            ("🎬 Kling prompt slot / text…", "kling_prompt"),
-            ("✨ Selfie model set…", "selfie_models"),
-            ("✨ Selfie prompt slot / text…", "selfie_prompt"),
-            ("🖼  Step 0 front expand (provider/blend/percent/passes)…", "front_expand"),
-            ("👤 Step 0 crop factor…", "crop"),
-            ("➕ Step 2.5 selfie expand (provider/blend/percent)…", "selfie_expand"),
-            ("🎯 Similarity threshold…", "similarity"),
-            (f"📦 Batch scope: max {self._read_max_cases_setting()} · reprocess={c.get('automation_reprocess_mode', 'skip')}…", "batch"),
-            (f"📂 Root folder: {self.automation_root_folder or '(not set)'}…", "root"),
+            # ── Run scope ──
+            (f"📦 Max cases per run: {self._read_max_cases_setting()}", "batch_max"),
+            (f"📦 Reprocess mode: {c.get('automation_reprocess_mode', 'skip')}", "batch_reprocess"),
+            (f"📂 Root folder: {self.automation_root_folder or '(not set)'}", "root"),
+            # ── ungrouped actions ──
             ("📜 View FULL prompts (selfie + video)", "prompts"),
             ("⚙️  All settings (full editor)…", "all"),
             ("💾 Done (save and return)", "done"),
         ]
 
+    # Chronological pipeline-step grouping for the quick editor (mirrors the
+    # Tkinter step tabs; Post group ordered rPPG → Loop → Oldcam = the actual
+    # Phase-E chain). The renderer interleaves Separator headers + blank-line
+    # spacers exactly like the main menu.
+    _QUICK_EDIT_GROUPS = (
+        ("Step 0 · Front prep", ("front_provider", "front_blend", "front_percent", "front_passes", "crop")),
+        ("Step 2 · Selfie", ("selfie_models", "selfie_slot", "selfie_text", "similarity")),
+        ("Step 2.5 · Selfie expand", ("sexp_provider", "sexp_blend", "sexp_percent")),
+        ("Step 3 · Video (Kling)", ("video_model", "kling_slot", "kling_text")),
+        ("Post · rPPG → Loop → Oldcam", ("rppg", "loop", "oldcam")),
+        ("Run scope", ("batch_max", "batch_reprocess", "root")),
+        (None, ("prompts", "all", "done")),
+    )
+
+    def _quick_pick_cli_video_model(self) -> None:
+        """Inline automation-model picker for the quick editor — a single
+        _q_select, no full-page Model Selection screen (round 3)."""
+        current_endpoint, current_display = resolve_cli_video_model(self.config)
+        choices: "List[Tuple[str, str]]" = []
+        for name, endpoint, _duration in self._MODEL_PRESETS:
+            active = "  ◄" if endpoint == (current_endpoint or "") else ""
+            choices.append((f"{name}{active}", endpoint))
+        choices.append(("➕ Custom endpoint…", "__custom__"))
+        choices.append(("🌐 Fetch all models from fal.ai…", "__fetch__"))
+        choices.append(("↩ Keep current", "__keep__"))
+        pick = self._q_select(
+            "Automation video model:",
+            choices,
+            instruction=f"(current: {current_display or current_endpoint or '(not set)'})",
+        )
+        if pick in (None, "__keep__"):
+            return
+        if pick == "__custom__":
+            endpoint = self._q_text(
+                "fal.ai endpoint id (e.g. fal-ai/kling-video/v2.5-turbo/standard/image-to-video):"
+            )
+            if not endpoint or not endpoint.strip():
+                return
+            endpoint = endpoint.strip()
+            name = self._q_text("Display name:", default=endpoint) or endpoint
+            dur_raw = self._q_text("Video duration seconds (5/10/15):", default="10")
+            duration = int(dur_raw) if dur_raw and dur_raw.strip().isdigit() else 10
+            if duration not in _COMMON_VIDEO_DURATIONS:
+                self.print_yellow(f"⚠ Uncommon duration {duration}s — verify the model supports it.")
+            self._apply_model_choice(name.strip(), endpoint, duration, target="cli")
+            return
+        if pick == "__fetch__":
+            return self._select_model_fetch_all_legacy(target="cli")
+        for name, endpoint, duration in self._MODEL_PRESETS:
+            if endpoint == pick:
+                self._apply_model_choice(name, endpoint, duration, target="cli")
+                return
+
     def _quick_edit_settings(self) -> None:
-        """One- or two-keystroke editing of the MAIN settings from option 1,
-        re-rendering the settings table after each change. Persists on exit."""
+        """Grouped, value-bearing quick editor: every field visible with its
+        current value, one Enter = one inline edit, repainted (banner + list)
+        after each change. No settings table here — each row IS its value
+        (round 3: the stacked banner+table+table screen "looks like a mess").
+        Persists on exit."""
         if self._use_legacy_prompt_ui():
             # Non-TTY: the grouped legacy walker already covers everything.
             self._edit_automation_settings()
             return
         while True:
-            self._render_run_settings_table(title="Quick settings")
+            self.display_header()  # clears screen — stable repaint, no stacking
             c = self.config
-            # Same _parse_bool_cfg coercion as the table/_quick_edit_choice_pairs
-            # so toggling a hand-edited "false" string flips to ON, not no-op.
             rppg_on = _parse_bool_cfg(c.get("automation_rppg_enabled", False)) or False
             loop_on = _parse_bool_cfg(c.get("automation_loop_enabled", False)) or False
+            by_value = {v: label for label, v in self._quick_edit_choice_pairs()}
+            grouped: "List[Any]" = []
+            for group_title, values in self._QUICK_EDIT_GROUPS:
+                if group_title is not None:
+                    grouped.append(questionary.Separator(f"  ── {group_title} ──"))
+                grouped.extend(questionary.Choice(by_value[v], v) for v in values)
+                grouped.append(questionary.Separator(" "))
+            grouped.pop()  # no trailing spacer
             choice = self._q_select(
-                "Quick edit:",
-                self._quick_edit_choice_pairs(),
+                "Quick settings — Enter edits one field:",
+                grouped,
                 instruction="↑/↓ · Enter · Esc saves and returns",
             )
             if choice in (None, "done"):
                 self.save_config()
                 return
             try:
-                if choice == "rppg":
-                    c["automation_rppg_enabled"] = not rppg_on
-                    print(f"  rPPG injection -> {'ON' if c['automation_rppg_enabled'] else 'OFF'}")
-                elif choice == "oldcam":
-                    self._qs_pick_oldcam_versions()
-                elif choice == "loop":
-                    c["automation_loop_enabled"] = not loop_on
-                    print(f"  Loop -> {'ON' if c['automation_loop_enabled'] else 'off'}")
-                elif choice == "video_model":
-                    # target="cli": the automation pipeline's own selection —
-                    # never clobbers the GUI / manual-tools model.
-                    self.select_model(target="cli")
-                elif choice == "kling_prompt":
-                    sub = self._q_select(
-                        "Kling prompt:",
-                        [
-                            ("🎚  Swap prompt slot", "swap"),
-                            ("✏  Edit prompt text", "edit"),
-                            ("↩  Back", "back"),
-                        ],
-                    )
-                    if sub == "swap":
-                        self.swap_prompt_slot(target="cli")
-                    elif sub == "edit":
-                        self.quick_edit_prompt(target="cli")
-                elif choice == "selfie_models":
-                    self._qs_pick_selfie_models()
-                elif choice == "selfie_prompt":
-                    self._qs_section_selfie_prompt_only()
-                elif choice == "front_expand":
-                    self._qs_choice("Provider:", "automation_front_expand_provider",
+                # ── Step 0 · Front prep ──
+                if choice == "front_provider":
+                    self._qs_choice("Front expand provider:", "automation_front_expand_provider",
                                     choices=_EXPAND_PROVIDER_OPTIONS, default="fal")
-                    self._qs_choice("Blend (composite) mode:", "automation_front_expand_composite_mode",
+                elif choice == "front_blend":
+                    self._qs_choice("Front expand blend (composite) mode:", "automation_front_expand_composite_mode",
                                     choices=_COMPOSITE_MODE_OPTIONS, default="preserve_seamless")
-                    self._qs_int("Expand percent:", "automation_front_expand_percent",
+                elif choice == "front_percent":
+                    self._qs_int("Front expand percent:", "automation_front_expand_percent",
                                  default=70, validator=lambda v: v >= 0)
-                    self._qs_choice("Run expansion how many times (passes):", "automation_front_expand_passes",
+                elif choice == "front_passes":
+                    self._qs_choice("Run front expansion how many times (passes):", "automation_front_expand_passes",
                                     choices=["1", "2"], default="2", cast_fn=int)
                 elif choice == "crop":
                     self._qs_float("Crop multiplier (extraction factor):", "automation_crop_multiplier",
                                    default=1.5, validator=lambda v: v > 0)
-                elif choice == "selfie_expand":
-                    self._qs_choice("Provider:", "automation_selfie_expand_provider",
-                                    choices=_EXPAND_PROVIDER_OPTIONS, default="fal")
-                    self._qs_choice("Blend (composite) mode:", "automation_selfie_expand_composite_mode",
-                                    choices=_COMPOSITE_MODE_OPTIONS, default="none")
-                    self._qs_int("Expand percent:", "automation_selfie_expand_percent",
-                                 default=30, validator=lambda v: v >= 0)
+                # ── Step 2 · Selfie ──
+                elif choice == "selfie_models":
+                    self._qs_pick_selfie_models()
+                elif choice == "selfie_slot":
+                    self._quick_pick_selfie_prompt_slot()
+                elif choice == "selfie_text":
+                    self._quick_edit_selfie_prompt_text()
                 elif choice == "similarity":
                     self._qs_int("Similarity threshold (0-100):", "automation_similarity_threshold",
                                  default=80, validator=lambda v: 0 <= v <= 100)
-                elif choice == "batch":
+                # ── Step 2.5 · Selfie expand ──
+                elif choice == "sexp_provider":
+                    self._qs_choice("Selfie expand provider:", "automation_selfie_expand_provider",
+                                    choices=_EXPAND_PROVIDER_OPTIONS, default="fal")
+                elif choice == "sexp_blend":
+                    self._qs_choice("Selfie expand blend (composite) mode:", "automation_selfie_expand_composite_mode",
+                                    choices=_COMPOSITE_MODE_OPTIONS, default="none")
+                elif choice == "sexp_percent":
+                    self._qs_int("Selfie expand percent:", "automation_selfie_expand_percent",
+                                 default=30, validator=lambda v: v >= 0)
+                # ── Step 3 · Video (Kling) ──
+                elif choice == "video_model":
+                    # Inline picker writing the CLI per-surface keys — never
+                    # the GUI / manual-tools model.
+                    self._quick_pick_cli_video_model()
+                elif choice == "kling_slot":
+                    self.swap_prompt_slot(target="cli")
+                elif choice == "kling_text":
+                    self.quick_edit_prompt(target="cli")
+                # ── Post · rPPG → Loop → Oldcam ──
+                elif choice == "rppg":
+                    c["automation_rppg_enabled"] = not rppg_on
+                    print(f"  rPPG injection -> {'ON' if c['automation_rppg_enabled'] else 'OFF'}")
+                elif choice == "loop":
+                    c["automation_loop_enabled"] = not loop_on
+                    print(f"  Loop -> {'ON' if c['automation_loop_enabled'] else 'off'}")
+                elif choice == "oldcam":
+                    self._qs_pick_oldcam_versions()
+                # ── Run scope ──
+                elif choice == "batch_max":
                     self._qs_choice("Max cases per run:", "automation_max_cases_per_run",
                                     choices=["1", "5", "10", "all"], default="5")
+                elif choice == "batch_reprocess":
                     self._qs_choice("Reprocess mode:", "automation_reprocess_mode",
                                     choices=_REPROCESS_MODE_OPTIONS, default="skip")
                     # _effective_reprocess_mode forces "skip" unless
@@ -4785,6 +4915,7 @@ class KlingAutomationUI:
                     )
                 elif choice == "root":
                     self._select_automation_root()
+                # ── actions ──
                 elif choice == "prompts":
                     self._show_full_prompts()
                     self.pause_review("Press Enter to continue...")
@@ -4793,6 +4924,36 @@ class KlingAutomationUI:
             except _QuestionarySectionAbort:
                 continue  # Esc inside a field -> back to the quick menu
             self.save_config()
+
+    def _quick_pick_selfie_prompt_slot(self) -> None:
+        """Inline selfie prompt slot picker with per-slot previews."""
+        self._ensure_selfie_prompt_slots()
+        prompts = self.config.get("automation_selfie_prompts", {})
+        current = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
+        slot_choices: "List[Tuple[str, str]]" = []
+        for i in range(1, _PROMPT_SLOT_COUNT + 1):
+            text = str(prompts.get(str(i), "") or "")
+            preview = (text[:48] + "…") if len(text) > 48 else (text or "(empty)")
+            active = "  ◄ ACTIVE" if i == current else ""
+            slot_choices.append((f"[{i}] {preview}{active}", str(i)))
+        pick = self._q_select(
+            "Selfie prompt slot:", slot_choices,
+            instruction=f"(current: slot {current})",
+        )
+        if pick:
+            self.config["automation_selfie_prompt_slot"] = int(pick)
+
+    def _quick_edit_selfie_prompt_text(self) -> None:
+        """Inline edit of the ACTIVE selfie prompt slot's text."""
+        self._ensure_selfie_prompt_slots()
+        current = int(self.config.get("automation_selfie_prompt_slot", DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT))
+        existing = str(self.config.get("automation_selfie_prompts", {}).get(str(current), "") or "")
+        new_prompt = self._q_text(
+            f"Selfie prompt for slot {current} (Esc to cancel):",
+            default=existing,
+        )
+        if new_prompt is not None:
+            self.config["automation_selfie_prompts"][str(current)] = new_prompt
 
     def _qs_section_selfie_prompt_only(self) -> None:
         """The selfie prompt slot/edit sub-flow, runnable standalone from the
@@ -4987,7 +5148,8 @@ class KlingAutomationUI:
                 "Start the batch with these settings?",
                 [
                     (f"✅ Approve & run ({counts['will_run']} case(s))", "run"),
-                    ("⚡ Quick edit settings first", "edit"),
+                    ("🧪 Dry run first (no API calls)", "dry_run"),
+                    ("🔧 Quick edit settings first", "edit"),
                     ("📜 View FULL prompts (selfie + video)", "prompts"),
                     ("✗ Cancel", "cancel"),
                 ],
@@ -4995,6 +5157,12 @@ class KlingAutomationUI:
             if action in (None, "cancel"):
                 print("Run cancelled.")
                 return
+            if action == "dry_run":
+                # Moved here from the main menu (round 3) — dry run is a
+                # pre-flight check, not a top-level destination. Loops back
+                # to this same approval afterwards.
+                self._dry_run_automation()
+                continue
             if action == "edit":
                 self._quick_edit_settings()
                 continue  # re-discover + reload manifest (fingerprint may have changed)

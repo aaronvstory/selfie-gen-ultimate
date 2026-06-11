@@ -415,22 +415,39 @@ def test_main_menu_choices_grouped_without_duplicates():
     ui = _bare_ui(dict(AUTOMATION_DEFAULTS))
     values = [v for _label, v in ui._main_menu_choice_pairs()]
     # The flattened menu: run actions + settings + tools, each exactly once.
-    for expected in ("run", "scan", "dry_run", "quick", "settings", "manual", "gui", "maintenance", "q"):
+    for expected in ("run", "scan", "quick", "settings", "manual", "gui", "maintenance", "q"):
         assert values.count(expected) == 1, f"expected exactly one {expected!r} entry"
     # Retired duplicates must be gone:
     assert "path" not in values  # root folder now lives in Quick settings
+    # Round 3: dry run is a pre-run approval option, not a top-level action.
+    assert "dry_run" not in values
+    # Every value the group spec references must exist (and vice versa).
+    grouped_values = [v for _t, vs in ui._MAIN_MENU_GROUPS for v in vs]
+    assert sorted(grouped_values) == sorted(values)
 
 
-def test_quick_edit_choices_cover_root_and_batch_scope():
+def test_quick_edit_choices_cover_every_field_and_groups_are_consistent():
     ui = _bare_ui(dict(AUTOMATION_DEFAULTS))
-    values = [v for _label, v in ui._quick_edit_choice_pairs()]
-    assert "root" in values
-    assert "batch" in values
-    # Original quick-edit surface intact:
-    for expected in ("rppg", "oldcam", "loop", "video_model", "kling_prompt",
-                     "selfie_models", "selfie_prompt", "front_expand", "crop",
-                     "selfie_expand", "similarity", "prompts", "all", "done"):
+    ui.automation_root_folder = ""
+    pairs = ui._quick_edit_choice_pairs()
+    values = [v for _label, v in pairs]
+    # One entry per FIELD (round 3): bundles split into individual settings.
+    for expected in ("front_provider", "front_blend", "front_percent", "front_passes", "crop",
+                     "selfie_models", "selfie_slot", "selfie_text", "similarity",
+                     "sexp_provider", "sexp_blend", "sexp_percent",
+                     "video_model", "kling_slot", "kling_text",
+                     "rppg", "loop", "oldcam",
+                     "batch_max", "batch_reprocess", "root",
+                     "prompts", "all", "done"):
         assert expected in values, f"quick edit lost {expected!r}"
+    # The chronological group spec must cover exactly the pairs (a new entry
+    # added to one but not the other would silently vanish from the menu).
+    grouped_values = [v for _t, vs in ui._QUICK_EDIT_GROUPS for v in vs]
+    assert sorted(grouped_values) == sorted(values)
+    # Labels carry current values (the editor has no separate table anymore).
+    labels = {v: label for label, v in pairs}
+    assert "fal" in labels["front_provider"]
+    assert "80" in labels["similarity"]
 
 
 # --------------------------------------------------------------------------
