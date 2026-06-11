@@ -331,10 +331,14 @@ def test_legacy_string_manifest_fingerprint_does_not_churn_on_list_form(tmp_path
         )
 
 
-def test_headless_empty_front_globs_override_recreates_stale_manifest(tmp_path, monkeypatch):
-    """Clearing globs (front_globs_override=[]) against a manifest fingerprinted
-    with non-empty globs is an identity change and must recreate fresh, not exit
-    1 (CodeRabbit: the identity check must use `is not None`, not truthiness)."""
+def test_headless_front_globs_override_keeps_manifest(tmp_path, monkeypatch):
+    """Round 7 contract: --front-glob (including an explicit clear) KEEPS the
+    manifest — discovery keys are excluded from the fingerprint, and the
+    per-case front-changed guard (AutoPipelineRunner._reset_case_if_front_changed)
+    reprocesses exactly the cases whose front re-selected. The fixture pins
+    the providers to the DEFAULTS so this test exercises the glob path itself
+    (the old version passed only because non-default providers tripped the
+    new-key-at-non-default loop — an accidental pass)."""
     _seed_two_cases(tmp_path)
     from automation.manifest import AutomationManifest
 
@@ -345,15 +349,22 @@ def test_headless_empty_front_globs_override_recreates_stale_manifest(tmp_path, 
         config_snapshot={"automation_front_globs": ["*id_photo*.jpg"]},
     )
     app, captured = _build_app(tmp_path, monkeypatch)
+    # Defaults, not bfl — otherwise the provider keys (still fingerprinted)
+    # mask the glob behavior under test.
+    app.config["automation_front_expand_provider"] = "fal"
+    app.config["automation_selfie_expand_provider"] = "fal"
     rc = app.run_automation_headless(
         str(tmp_path),
-        front_globs_override=[],  # explicit clear -> identity change
+        front_globs_override=[],  # explicit clear -> still keeps the manifest
         max_cases_override="all",
         reprocess_override="overwrite",
     )
     assert rc == 0
     assert captured["config"]["automation_front_globs"] == []
-    assert list(tmp_path.glob("automation_manifest.json.superseded.*"))
+    assert manifest_path.exists()
+    assert not list(tmp_path.glob("automation_manifest.json.superseded.*")), (
+        "a glob-only change must not back up / recreate the manifest anymore"
+    )
 
 
 def test_headless_invalid_provider_exits_1(tmp_path, monkeypatch):

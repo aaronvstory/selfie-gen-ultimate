@@ -408,6 +408,63 @@ def test_adopt_subset_only_touches_selected_rows():
 
 
 # --------------------------------------------------------------------------
+# Per-case front-changed guard (adversarial review M1, round 7)
+# --------------------------------------------------------------------------
+
+def _front_guard_fixture(tmp_path):
+    import automation.pipeline as pmod
+    from automation.discovery import CaseRecord
+    from automation.manifest import AutomationManifest
+    from automation.config import from_app_config
+
+    cfg = dict(AUTOMATION_DEFAULTS)
+    cfg["automation_root_folder"] = str(tmp_path)
+    manifest = AutomationManifest.create_or_load(
+        tmp_path / "automation_manifest.json", tmp_path, cfg
+    )
+    case_dir = tmp_path / "u1"
+    case_dir.mkdir()
+    old_front = case_dir / "front.jpg"
+    old_front.write_bytes(b"a")
+    new_front = case_dir / "scan-id_photo.jpg"
+    new_front.write_bytes(b"b")
+    manifest.ensure_case("u1", case_dir, old_front)
+    with manifest.lock:
+        manifest.data["cases"]["u1"]["status"] = "complete"
+    runner = pmod.AutoPipelineRunner(cfg, from_app_config(cfg), manifest)
+    return runner, manifest, CaseRecord, case_dir, old_front, new_front
+
+
+def test_front_changed_guard_resets_completed_case(tmp_path):
+    """A front_names/front_globs change that re-selects a DIFFERENT file in
+    the same folder must reset the case — its recorded outputs came from
+    another source image and 'already complete' would deliver wrong-source
+    results (the per-case replacement for the old whole-manifest
+    fingerprint rebuild on discovery-key changes)."""
+    runner, manifest, CaseRecord, case_dir, _old, new_front = _front_guard_fixture(tmp_path)
+    rec = CaseRecord(case_dir=case_dir, front_path=new_front, relative_key="u1")
+    runner._reset_case_if_front_changed(rec)
+    entry = manifest.data["cases"]["u1"]
+    assert entry["status"] == "pending"
+    assert entry["front_path"] == str(new_front)
+    assert not manifest.case_is_complete_and_valid("u1")
+
+
+def test_front_changed_guard_noop_when_front_unchanged(tmp_path):
+    runner, manifest, CaseRecord, case_dir, old_front, _new = _front_guard_fixture(tmp_path)
+    rec = CaseRecord(case_dir=case_dir, front_path=old_front, relative_key="u1")
+    runner._reset_case_if_front_changed(rec)
+    assert manifest.data["cases"]["u1"]["status"] == "complete"
+
+
+def test_front_changed_guard_noop_for_brand_new_case(tmp_path):
+    runner, manifest, CaseRecord, case_dir, _old, new_front = _front_guard_fixture(tmp_path)
+    rec = CaseRecord(case_dir=case_dir, front_path=new_front, relative_key="never-seen")
+    runner._reset_case_if_front_changed(rec)  # must not raise or create state
+    assert "never-seen" not in manifest.data["cases"]
+
+
+# --------------------------------------------------------------------------
 # Menu structure: grouped main menu + quick-edit coverage (single source lists)
 # --------------------------------------------------------------------------
 

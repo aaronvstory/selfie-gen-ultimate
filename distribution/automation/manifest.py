@@ -331,6 +331,21 @@ class AutomationManifest:
             case_entry["updated_at"] = now_iso()
             return case_entry
 
+    def reset_case_for_new_front(self, relative_key: str, case_dir: Path, front_path: Path) -> None:
+        """Wipe a case's recorded state because its FRONT IMAGE changed.
+
+        A front_names/front_globs change can re-select a DIFFERENT file
+        inside the same case folder; everything previously recorded for the
+        case was generated from another source image, so skipping or
+        resuming it would silently deliver wrong-source outputs. This is the
+        strictly-better PER-CASE replacement for the old whole-manifest
+        fingerprint rebuild on discovery-key changes (adversarial review M1,
+        PR #96 round 7)."""
+        with self._lock:
+            cases = self.data.setdefault("cases", {})
+            cases[relative_key] = _new_case_state(str(case_dir), str(front_path))
+            self.save_atomic()
+
     def snapshot_statuses(self, case_keys: List[str]) -> Dict[str, Dict[str, Any]]:
         """Thread-safe per-case snapshot for the live dashboard's reader
         thread: status, active_step, and the similarity-gate score, COPIED

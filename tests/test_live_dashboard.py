@@ -77,6 +77,55 @@ def test_dashboard_panel_zero_total_is_100_percent():
     assert "0/0 (100%)" in _render_text(panel)
 
 
+def test_dashboard_panel_round7_queue_next_and_step_progress():
+    """Round 7: the panel shows the per-case queue, the NEXT step, the step
+    position, and the in-step progress line (fed by progress_update events)."""
+    panel = KlingAutomationUI._build_dashboard_panel(
+        total=3,
+        counts={"completed": 1, "failed": 0, "manual_review": 0, "skipped": 0},
+        current_case="User_2",
+        current_step="6 kling video",
+        similarity="-",
+        last_output="-",
+        error_reason="-",
+        events=[],
+        footer="f",
+        queue_lines=[
+            "[green][ ok ][/green] User_1",
+            "[bold cyan][ >> ][/bold cyan] User_2",
+            "[dim][    ][/dim] User_3",
+        ],
+        next_step="7 rppg injection",
+        step_pos="step 6/10",
+        step_progress="Generating… poll 14 · 73s elapsed",
+    )
+    text = _render_text(panel)
+    assert "User_1" in text and "User_2" in text and "User_3" in text
+    assert "7 rppg injection" in text
+    assert "step 6/10" in text
+    assert "poll 14" in text
+
+
+def test_build_queue_lines_small_batch_lists_every_folder():
+    snap = {"a": {"status": "complete"}, "b": {"status": "running"}, "c": {"status": "pending"}}
+    lines = KlingAutomationUI._build_queue_lines(["a", "b", "c"], snap)
+    assert len(lines) == 3
+    assert " ok " in lines[0] and lines[0].endswith(" a")
+    assert " >> " in lines[1] and lines[1].endswith(" b")
+
+
+def test_build_queue_lines_large_batch_collapses_finished_and_tail():
+    keys = [f"c{i:02d}" for i in range(30)]
+    snap = {k: {"status": "complete"} for k in keys[:10]}
+    snap[keys[10]] = {"status": "running"}
+    snap.update({k: {"status": "pending"} for k in keys[11:]})
+    lines = KlingAutomationUI._build_queue_lines(keys, snap, max_rows=12)
+    assert len(lines) <= 12
+    assert any("10 case(s) finished" in line for line in lines)
+    assert any("c10" in line for line in lines), "the RUNNING case must stay visible"
+    assert any("more pending" in line for line in lines)
+
+
 # ---------------------------------------------------------------------------
 # _suppress_stream_logging
 # ---------------------------------------------------------------------------

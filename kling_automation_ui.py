@@ -15,6 +15,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import logging
 from rich import box as _rich_box
 from rich.console import Console, Group
+from rich.markup import escape as _rich_markup_escape
 from rich.table import Table
 from rich.live import Live
 from rich.panel import Panel
@@ -4193,14 +4194,13 @@ class KlingAutomationUI:
                 _err(f"[batch] Invalid --reprocess '{reprocess_override}'; use skip, overwrite, or increment.")
                 return 1
             reprocess_override = norm_reprocess
-        # NOTE: --reprocess / --limit overrides are applied AFTER the manifest is
-        # loaded, NOT here. AutomationManifest fingerprints every automation_*
-        # key and REJECTS a changed fingerprint on load -- so flipping
-        # automation_allow_reprocess / automation_reprocess_mode before
-        # create_or_load turns an existing-manifest run into a load FAILURE
-        # (exit 1) instead of reprocessing (code-review Codex P1, PR #69). These
-        # are run policy, not manifest identity, so they go on the config only
-        # once the manifest is loaded.
+        # NOTE: --reprocess / --limit overrides are applied AFTER the manifest
+        # is loaded. Since round 7 the fingerprint EXCLUDES run-scope keys
+        # (automation/manifest._FINGERPRINT_EXCLUDED_KEYS), so applying them
+        # earlier would no longer break the load — but the after-load ordering
+        # is kept: they are run policy, not manifest identity, and the
+        # ordering documents that (original hazard: code-review Codex P1,
+        # PR #69, when these keys WERE fingerprinted).
 
         root = (root or "").strip()
         if not root:
@@ -4310,23 +4310,23 @@ class KlingAutomationUI:
             return 1
 
         # Did the caller pass an EXPLICIT fingerprinted identity override
-        # (oldcam-version / rppg / provider / front-globs)? If so, a fingerprint
-        # mismatch against an OLD manifest is intentional — the help text
-        # promises "forces a fresh manifest". Without this, a user with a v24
-        # manifest running --oldcam-version v13 would hit a mismatch ValueError
-        # and exit 1 with no run (Codex HIGH). On that specific mismatch we back
+        # (oldcam-version / rppg / provider)? If so, a fingerprint mismatch
+        # against an OLD manifest is intentional — the help text promises
+        # "forces a fresh manifest". Without this, a user with a v24 manifest
+        # running --oldcam-version v13 would hit a mismatch ValueError and
+        # exit 1 with no run (Codex HIGH). On that specific mismatch we back
         # up the stale manifest and recreate it fresh.
-        # Use `is not None` (not truthiness) for front_globs_override too: an
-        # explicit empty list clears saved globs, which IS a fingerprint-changing
-        # identity override and must trigger create_fresh on a stale manifest
-        # (CodeRabbit). Mirrors how the override is applied above.
+        # NOTE: --front-glob is NOT in this set anymore (round 7) — the
+        # discovery keys are excluded from the fingerprint, so a glob change
+        # keeps the manifest; the per-case front-changed guard in
+        # AutoPipelineRunner._reset_case_if_front_changed reprocesses exactly
+        # the cases whose front re-selected to a different file.
         _identity_override_requested = any(
             v is not None
             for v in (
                 oldcam_version_override,
                 rppg_override,
                 provider_override,
-                front_globs_override,
             )
         )
         _manifest_snapshot = {k: v for k, v in self.config.items() if str(k).startswith("automation_")}
@@ -4615,8 +4615,10 @@ class KlingAutomationUI:
             # Branded repaint — callers pause + repaint their own screen after.
             self.display_header()
         selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
+        # markup-escape: bracketed prompt text must DISPLAY, not get parsed
+        # as rich style tags (and "[/x]" would crash with MarkupError).
         _RICH_CONSOLE.print(Panel(
-            selfie_prompt or "(empty)",
+            _rich_markup_escape(selfie_prompt) if selfie_prompt else "(empty)",
             title=f"Selfie prompt — slot {selfie_slot} ({selfie_source})",
             border_style="cyan",
         ))
@@ -4624,12 +4626,12 @@ class KlingAutomationUI:
         kling_prompt = str(self.config.get("saved_prompts", {}).get(kling_slot, "") or "")
         kling_negative = str(self.config.get("negative_prompts", {}).get(kling_slot, "") or "")
         _RICH_CONSOLE.print(Panel(
-            kling_prompt or "(empty)",
+            _rich_markup_escape(kling_prompt) if kling_prompt else "(empty)",
             title=f"Kling video prompt — slot {kling_slot}",
             border_style="magenta",
         ))
         _RICH_CONSOLE.print(Panel(
-            kling_negative or "(empty)",
+            _rich_markup_escape(kling_negative) if kling_negative else "(empty)",
             title=f"Kling negative prompt — slot {kling_slot}",
             border_style="red",
         ))
@@ -4761,7 +4763,14 @@ class KlingAutomationUI:
                 "shared": "[dim]shared[/dim]",
             }
             for row in rows:
-                table.add_row(row["label"], row["gui"], row["cli"], markers[row["status"]])
+                # Values can carry prompt-text previews — escape so brackets
+                # display instead of being parsed as rich markup.
+                table.add_row(
+                    row["label"],
+                    _rich_markup_escape(str(row["gui"])),
+                    _rich_markup_escape(str(row["cli"])),
+                    markers[row["status"]],
+                )
             _RICH_CONSOLE.print(table)
             _RICH_CONSOLE.print(
                 "[dim]Shared rows are one value used by both surfaces. Adopting copies "
@@ -5059,8 +5068,12 @@ class KlingAutomationUI:
                     active = DEFAULT_AUTOMATION_SELFIE_PROMPT_SLOT
                 label = "Selfie prompt"
             full = str(prompts.get(str(active), "") or "")
+            # markup-escape the USER text: rich eats "[bracketed]" segments
+            # as style tags and a literal "[/x]" raises MarkupError — the
+            # whole point of this browser is showing the COMPLETE prompt
+            # (adversarial review, round 7).
             _RICH_CONSOLE.print(Panel(
-                full or "[dim](empty — pick '✏  Edit' below to write one)[/dim]",
+                _rich_markup_escape(full) if full else "[dim](empty — pick '✏  Edit' below to write one)[/dim]",
                 title=f"[bold white]{label} — slot {active} (ACTIVE)[/bold white]",
                 border_style="magenta" if kind == "kling" else "cyan",
             ))
@@ -5068,7 +5081,7 @@ class KlingAutomationUI:
                 neg_full = str(negatives.get(str(active), "") or "")
                 if neg_full:
                     _RICH_CONSOLE.print(Panel(
-                        neg_full,
+                        _rich_markup_escape(neg_full),
                         title=f"[bold white]Negative prompt — slot {active}[/bold white]",
                         border_style="red",
                     ))
@@ -5231,7 +5244,7 @@ class KlingAutomationUI:
                 _RICH_CONSOLE.print(Panel(
                     "[yellow]Run settings changed since this manifest was created — "
                     "existing outputs may not match the new settings.[/yellow]\n"
-                    f"[dim]{exc}[/dim]",
+                    f"[dim]{_rich_markup_escape(str(exc))}[/dim]",
                     title="[bold yellow]⚠  Manifest mismatch[/bold yellow]",
                     border_style="yellow",
                 ))
@@ -5310,6 +5323,20 @@ class KlingAutomationUI:
                 preview.add_row("Resume", f"[dim]{line}[/dim]")
             _RICH_CONSOLE.print(preview)
             print()
+            if runnable_cases:
+                # WHICH folders this batch will work on — by name, before any
+                # money is spent (round 7: "it should clearly show which of
+                # the 5 it will work on"). The live dashboard then tracks the
+                # same list with ok/>>/pending glyphs during the run.
+                batch_table = self._styled_table(f"🗂  Cases in this batch ({len(runnable_cases)})")
+                batch_table.add_column("#", style="dim", no_wrap=True)
+                batch_table.add_column("Folder", style="cyan")
+                for idx, rec in enumerate(runnable_cases[:15], 1):
+                    batch_table.add_row(str(idx), getattr(rec, "relative_key", str(rec)))
+                if len(runnable_cases) > 15:
+                    batch_table.add_row("…", f"[dim]+{len(runnable_cases) - 15} more[/dim]")
+                _RICH_CONSOLE.print(batch_table)
+                print()
             self._render_run_settings_table(title="Main run settings — review before approving")
             print()
             if not runnable_cases:
@@ -5483,32 +5510,105 @@ class KlingAutomationUI:
         error_reason: str,
         events: List[Tuple[str, str, str]],
         footer: str,
+        queue_lines: "Optional[List[str]]" = None,
+        next_step: str = "",
+        step_pos: str = "",
+        step_progress: str = "",
     ) -> Panel:
         """Pure renderable builder (unit-testable without threads). ASCII
-        body — conhost wobbles on emoji width inside panels."""
+        body — conhost wobbles on emoji width inside panels.
+
+        Round-7 additions (all optional, defaults keep old callers/tests
+        intact): the per-case QUEUE with live status glyphs, the NEXT step,
+        the current step's position (k/N), and the in-step progress line
+        fed by the pipeline's progress_update events — so the user always
+        sees which folder is being worked, where in the chain it is, and
+        how far the current step has come."""
         done = sum(counts.get(k, 0) for k in ("completed", "failed", "manual_review", "skipped"))
         pct = int((done / total) * 100) if total else 100
         bar_width = 30
         filled = int(bar_width * (done / total)) if total else bar_width
         bar = "#" * filled + "-" * (bar_width - filled)
+        # MARKUP-ESCAPE every literal bracket + every dynamic string: rich
+        # parses "[####...]" as a hex-color tag and "[p]"/"[a]" as style
+        # tags, silently EATING the progress bar and the key hints (the
+        # long-standing "live view looks off" bug, found round 7). \\[ is
+        # rich's literal-bracket escape; dynamic content (paths, messages)
+        # goes through markup-escape so a bracketed filename can't break
+        # the panel.
+        _esc = _rich_markup_escape
         lines = [
-            f"[bold]Progress[/bold]  [{bar}] {done}/{total} ({pct}%)",
-            f"[bold]Case[/bold]      {current_case}",
-            f"[bold]Step[/bold]      {current_step}",
-            f"[bold]Similarity[/bold] {similarity}",
-            f"[bold]Last out[/bold]  {last_output}",
-            f"[bold]Issue[/bold]     {error_reason}",
-            f"completed={counts.get('completed', 0)} failed={counts.get('failed', 0)} "
-            f"manual_review={counts.get('manual_review', 0)} skipped={counts.get('skipped', 0)} "
-            f"remaining={max(0, total - done)}",
+            f"[bold]Progress[/bold]   [cyan]\\[{bar}][/cyan] {done}/{total} ({pct}%)",
         ]
+        if queue_lines:
+            lines.append("")
+            lines.append("[bold]Cases[/bold]")
+            lines.extend(f"  {q}" for q in queue_lines)
+            lines.append("")
+        step_line = f"[bold]Step[/bold]       [cyan]{_esc(current_step)}[/cyan]"
+        if step_pos:
+            step_line += f"  [dim]({_esc(step_pos)})[/dim]"
+        lines.append(f"[bold]Case[/bold]       [bold cyan]{_esc(current_case)}[/bold cyan]")
+        lines.append(step_line)
+        if next_step:
+            lines.append(f"[bold]Next[/bold]       [dim]{_esc(next_step)}[/dim]")
+        if step_progress:
+            lines.append(f"[bold]Step prog[/bold]  [green]{_esc(step_progress)}[/green]")
+        lines.extend(
+            [
+                f"[bold]Similarity[/bold] {_esc(similarity)}",
+                f"[bold]Last out[/bold]   {_esc(last_output)}",
+                f"[bold]Issue[/bold]      {_esc(error_reason)}",
+                f"completed=[green]{counts.get('completed', 0)}[/green] failed=[red]{counts.get('failed', 0)}[/red] "
+                f"manual_review={counts.get('manual_review', 0)} skipped={counts.get('skipped', 0)} "
+                f"remaining={max(0, total - done)}",
+            ]
+        )
         if events:
             lines.append("[dim]--- last events ---------------------------------[/dim]")
             for ts, level, message in events:
                 style = {"error": "red", "warning": "yellow", "success": "green"}.get(level, "dim")
-                lines.append(f"[{style}]{ts} {message}[/{style}]")
-        lines.append(f"[dim]{footer}[/dim]")
+                lines.append(f"[{style}]{ts} {_esc(message)}[/{style}]")
+        lines.append(f"[dim]{_esc(footer)}[/dim]")
         return Panel("\n".join(lines), title="Automation Live Progress", border_style="cyan")
+
+    # Live case-queue glyphs: (markup color, 4-char ASCII tag). ASCII tags —
+    # emoji width wobbles inside Live panels on conhost.
+    _QUEUE_GLYPHS = {
+        "complete": ("green", " ok "),
+        "failed": ("red", "FAIL"),
+        "manual_review": ("yellow", " MR "),
+        "skipped": ("dim", "skip"),
+        "running": ("bold cyan", " >> "),
+    }
+
+    @classmethod
+    def _build_queue_lines(cls, case_keys: "List[str]", snapshot: "Dict[str, Dict[str, Any]]",
+                           max_rows: int = 12) -> "List[str]":
+        """Per-case status lines for the live panel. Small batches list every
+        folder; large ones collapse the finished block and the far tail so
+        the panel never scrolls the step/event area off screen."""
+        entries = []
+        for key in case_keys:
+            status = str((snapshot.get(key) or {}).get("status", "pending"))
+            color, glyph = cls._QUEUE_GLYPHS.get(status, ("dim", "    "))
+            # \\[ escapes the literal bracket (rich would eat "[FAIL]" as a
+            # style tag); folder names are markup-escaped for the same reason.
+            entries.append((status, f"[{color}]\\[{glyph}][/{color}] {_rich_markup_escape(key)}"))
+        if len(entries) <= max_rows:
+            return [line for _status, line in entries]
+        finished = {"complete", "failed", "manual_review", "skipped"}
+        lines: "List[str]" = []
+        done_block = [e for e in entries if e[0] in finished]
+        rest = [e for e in entries if e[0] not in finished]
+        if done_block:
+            lines.append(f"[green]\\[ ok ][/green] [dim]{len(done_block)} case(s) finished[/dim]")
+        shown = rest[: max_rows - len(lines) - 1]
+        lines.extend(line for _status, line in shown)
+        hidden = len(rest) - len(shown)
+        if hidden > 0:
+            lines.append(f"[dim]       … +{hidden} more pending[/dim]")
+        return lines
 
     def _run_with_live_dashboard(
         self,
@@ -5534,12 +5634,19 @@ class KlingAutomationUI:
             "level": "info",
             "last_output": "-",
             "error_reason": "-",
+            "step_progress": "",  # in-step % / elapsed line (progress_update)
             "events": [],  # list of (time, level, message), newest last
         }
 
         def _cb(message: str, level: str = "info"):
             timestamp = time.strftime("%H:%M:%S")
             with state_lock:
+                if level == "progress_update":
+                    # High-frequency in-step progress (video poll ticks, rPPG
+                    # iterations, oldcam frames): pinned to its own line, NOT
+                    # appended to events — it would flush real events out.
+                    state["step_progress"] = message[:110]
+                    return
                 state["message"] = message
                 state["level"] = level
                 lowered = message.lower()
@@ -5565,7 +5672,12 @@ class KlingAutomationUI:
 
         total_cases = len(run_cases)
         case_keys = [case.relative_key for case in run_cases]
-        footer_active = "[p] pause after current case   [a] abort after current step   Ctrl-C aborts"
+        footer_active = (
+            "[p] pause after current case · [a] abort after current step · "
+            "paused/aborted runs RESUME from the menu (Run / resume)"
+        )
+        # Ordered step labels for the "next:" hint + step k/N position.
+        step_labels_ordered = list(self._DASHBOARD_STEP_LABELS.values())
         # getattr-defensive: tests drive this with stub runners that may not
         # carry the pause/abort events (PR #73 lesson — stub objects lack
         # new fields).
@@ -5627,13 +5739,24 @@ class KlingAutomationUI:
             with state_lock:
                 last_output = state["last_output"]
                 error_reason = state["error_reason"]
+                step_progress = state["step_progress"]
                 events = list(state["events"])
             if abort_event.is_set():
-                footer = "ABORTING after current step..."
+                footer = "ABORTING after current step... (progress saved — Run / resume continues)"
             elif pause_event.is_set():
-                footer = "PAUSING after current case..."
+                footer = "PAUSING after current case... (progress saved — Run / resume continues)"
             else:
                 footer = footer_active
+            next_step = ""
+            step_pos = ""
+            if current_step in step_labels_ordered:
+                idx = step_labels_ordered.index(current_step)
+                step_pos = f"step {idx + 1}/{len(step_labels_ordered)}"
+                next_step = (
+                    step_labels_ordered[idx + 1]
+                    if idx + 1 < len(step_labels_ordered)
+                    else "finish case"
+                )
             return self._build_dashboard_panel(
                 total=total_cases,
                 counts=counts,
@@ -5644,6 +5767,10 @@ class KlingAutomationUI:
                 error_reason=error_reason,
                 events=events,
                 footer=footer,
+                queue_lines=self._build_queue_lines(case_keys, snapshot),
+                next_step=next_step,
+                step_pos=step_pos,
+                step_progress=step_progress,
             )
 
         try:
@@ -6559,7 +6686,9 @@ def main(argv=None):
         # specific oldcam version, force rPPG on/off). Threaded into
         # run_automation_headless and applied at the correct point relative to
         # the manifest fingerprint (fingerprinted automation_* keys BEFORE
-        # create_or_load; current_model / timeout AFTER, they are not fingerprinted).
+        # create_or_load; cli_video_model / timeout / run-scope keys AFTER —
+        # they are not fingerprinted; --front-glob keeps the manifest and the
+        # per-case front-changed guard reprocesses affected cases).
         parser.add_argument(
             "--model",
             metavar="ENDPOINT",
@@ -6608,7 +6737,8 @@ def main(argv=None):
             default=None,
             help="Headless --batch only: extra fnmatch pattern(s) for the per-folder "
             "front image, matched in addition to front.jpg/png/jpeg (e.g. "
-            "'*id_photo*.jpg'). Repeatable. Forces a fresh manifest.",
+            "'*id_photo*.jpg'). Repeatable. Keeps the manifest; any case whose "
+            "front image re-selects to a different file is reprocessed from scratch.",
         )
         parser.add_argument(
             "--outpaint-timeout",

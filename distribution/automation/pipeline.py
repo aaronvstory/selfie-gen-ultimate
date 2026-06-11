@@ -252,6 +252,33 @@ class AutoPipelineRunner:
             use_source_folder=False,
         )
 
+    def _reset_case_if_front_changed(self, case: CaseRecord) -> None:
+        """Reset a case whose FRONT IMAGE re-selected to a different file.
+
+        front_names/front_globs are deliberately excluded from the manifest
+        fingerprint (run-scope), but a pattern change can pick a DIFFERENT
+        file inside the same folder — and every output recorded for the case
+        came from the old source image. Skipping ("already complete") or
+        per-step resuming would then silently deliver wrong-source results.
+        Captured BEFORE ensure_case, which clobbers the recorded front_path
+        (adversarial review M1, PR #96 round 7)."""
+        prior_front: Optional[str] = None
+        with self.manifest.lock:
+            prior_entry = (self.manifest.data.get("cases") or {}).get(case.relative_key)
+            if isinstance(prior_entry, dict):
+                prior_front = prior_entry.get("front_path")
+        if not prior_front or str(prior_front) == str(case.front_path):
+            return
+        self._report(
+            f"[{case.relative_key}] front image changed since last run "
+            f"({Path(str(prior_front)).name} -> {Path(str(case.front_path)).name}) — reprocessing from scratch.",
+            "warning",
+        )
+        self.logger.info(
+            "case front changed (%s -> %s): %s", prior_front, case.front_path, case.relative_key
+        )
+        self.manifest.reset_case_for_new_front(case.relative_key, case.case_dir, case.front_path)
+
     def _branch_run_rppg(self, video_path: Path) -> Optional[Path]:
         """One rPPG injection with the canonical knob set (shared by the
         branch chain; the primary pre-pass keeps its inline call for
@@ -843,6 +870,7 @@ class AutoPipelineRunner:
                 self.logger.info("automation run %s before case %s", self.stopped_reason, case.relative_key)
                 break
             self.logger.info("case start: %s", case.relative_key)
+            self._reset_case_if_front_changed(case)
             self.manifest.ensure_case(case.relative_key, case.case_dir, case.front_path)
             if self.automation.get("automation_skip_completed", True) and self.manifest.case_is_complete_and_valid(case.relative_key):
                 stats["skipped"] += 1
