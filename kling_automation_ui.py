@@ -511,7 +511,15 @@ class KlingAutomationUI:
                 data = response.json()
                 prices = data.get("prices", [])
                 if prices:
-                    price = prices[0].get("unit_price")
+                    # float() guard: a string/odd-typed unit_price from the
+                    # API must degrade to "no price", not crash the f"{:.2f}"
+                    # at BOTH render sites (video $/sec + selfie $/img) —
+                    # a TypeError here would break every header render
+                    # (code-reviewer IMPORTANT, PR #96 round 5).
+                    try:
+                        price = float(prices[0].get("unit_price"))
+                    except (TypeError, ValueError):
+                        price = None
         except Exception:
             price = None
         self._pricing_cache[model_endpoint] = price
