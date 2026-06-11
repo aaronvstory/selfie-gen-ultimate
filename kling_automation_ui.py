@@ -971,13 +971,22 @@ class KlingAutomationUI:
         # "both are basically equally as important"). Re-built on every
         # render, so model/pricing changes show immediately.
         selfie_labels = self._selfie_model_label_map()
-        selfie_models = [selfie_labels.get(x, x) for x in list(self.config.get("automation_selfie_models") or [])]
+        raw_selfie_models = list(self.config.get("automation_selfie_models") or [])
+        selfie_models = [selfie_labels.get(x, x) for x in raw_selfie_models]
         selfie_label = " + ".join(selfie_models) if selfie_models else "(none)"
+        # Per-image price for the selfie model too — both generators cost
+        # real money (user, round 5). fetch_model_pricing is endpoint-generic
+        # and memoized; multi-model fan-out skips the price (ambiguous), and
+        # non-fal endpoints simply return None.
+        selfie_price = self.fetch_model_pricing(raw_selfie_models[0]) if len(raw_selfie_models) == 1 else None
+        selfie_price_plain = f" · ${selfie_price:.2f}/img" if selfie_price else ""
         video_markup = (
             f"🎬 [magenta]{model_name}[/magenta] · [green]{duration}s[/green] · [yellow]{price_str}[/yellow]"
         )
-        selfie_markup = f"✨ [bold cyan]{selfie_label}[/bold cyan]"
-        plain_len = len(f"🎬 {model_name} · {duration}s · {price_str}   ·   ✨ {selfie_label}")
+        selfie_markup = f"✨ [bold cyan]{selfie_label}[/bold cyan]" + (
+            f" · [yellow]${selfie_price:.2f}/img[/yellow]" if selfie_price else ""
+        )
+        plain_len = len(f"🎬 {model_name} · {duration}s · {price_str}   ·   ✨ {selfie_label}{selfie_price_plain}")
         if plain_len <= 76:
             status_lines = [_RichText.from_markup(f"{video_markup}   ·   {selfie_markup}")]
         else:
