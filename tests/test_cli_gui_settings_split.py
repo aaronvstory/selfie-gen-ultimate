@@ -253,6 +253,40 @@ def test_auto_upgrade_is_a_noop_at_current_version():
     assert not saves
 
 
+def test_load_config_missing_version_key_marks_config_for_migration(tmp_path):
+    """A config from before recommended-defaults versioning must NOT inherit
+    the fresh-install version stamp from default_config — that would mark it
+    'already current' and silently skip the one-time migration (Codex P2)."""
+    import json
+
+    cfg_file = tmp_path / "kling_config.json"
+    cfg_file.write_text(json.dumps({"falai_api_key": "k"}), encoding="utf-8")
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(cfg_file)
+    merged = ui.load_config()
+    assert merged["automation_recommended_defaults_version"] == 0
+
+
+def test_load_config_fresh_install_is_already_current(tmp_path):
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(tmp_path / "does-not-exist.json")
+    merged = ui.load_config()
+    assert merged["automation_recommended_defaults_version"] == RECOMMENDED_DEFAULTS_VERSION
+
+
+def test_load_config_existing_version_value_is_preserved(tmp_path):
+    import json
+
+    cfg_file = tmp_path / "kling_config.json"
+    cfg_file.write_text(
+        json.dumps({"automation_recommended_defaults_version": 6}), encoding="utf-8"
+    )
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config_file = str(cfg_file)
+    merged = ui.load_config()
+    assert merged["automation_recommended_defaults_version"] == 6
+
+
 # --------------------------------------------------------------------------
 # Explicit ⭐ reset no longer clobbers the GUI model / slot pointer
 # --------------------------------------------------------------------------

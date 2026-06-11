@@ -405,6 +405,13 @@ class KlingAutomationUI:
                     loaded_config = json.load(f)
                     # Merge with defaults, ensuring new fields exist
                     merged = {**default_config, **loaded_config}
+                    # A config from before the recommended-defaults
+                    # versioning must NOT inherit the fresh-install stamp
+                    # from default_config — that would mark it "already
+                    # current" and skip the one-time silent migration
+                    # (Codex P2, PR #96 round 2). Absent key = version 0.
+                    if "automation_recommended_defaults_version" not in loaded_config:
+                        merged["automation_recommended_defaults_version"] = 0
                     # Ensure saved_prompts has all slots (1-10)
                     if "saved_prompts" not in merged:
                         merged["saved_prompts"] = default_config["saved_prompts"]
@@ -4635,8 +4642,11 @@ class KlingAutomationUI:
         menu and the structure test can never drift. Covers every row of the
         Main run settings table (the table must be 1:1 editable here)."""
         c = self.config
-        rppg_on = bool(c.get("automation_rppg_enabled", False))
-        loop_on = bool(c.get("automation_loop_enabled", False))
+        # _parse_bool_cfg (not raw bool): a hand-edited "false" string must
+        # show OFF here exactly like the table does, or the label and the
+        # toggle disagree (code-reviewer MED, PR #96 round 2).
+        rppg_on = _parse_bool_cfg(c.get("automation_rppg_enabled", False)) or False
+        loop_on = _parse_bool_cfg(c.get("automation_loop_enabled", False)) or False
         return [
             (f"💉 rPPG injection: {'ON' if rppg_on else 'OFF'} — toggle", "rppg"),
             (f"📼 Oldcam versions: {self._format_oldcam_versions()} — pick (spacebar)", "oldcam"),
@@ -4666,8 +4676,10 @@ class KlingAutomationUI:
         while True:
             self._render_run_settings_table(title="Quick settings")
             c = self.config
-            rppg_on = bool(c.get("automation_rppg_enabled", False))
-            loop_on = bool(c.get("automation_loop_enabled", False))
+            # Same _parse_bool_cfg coercion as the table/_quick_edit_choice_pairs
+            # so toggling a hand-edited "false" string flips to ON, not no-op.
+            rppg_on = _parse_bool_cfg(c.get("automation_rppg_enabled", False)) or False
+            loop_on = _parse_bool_cfg(c.get("automation_loop_enabled", False)) or False
             choice = self._q_select(
                 "Quick edit:",
                 self._quick_edit_choice_pairs(),
