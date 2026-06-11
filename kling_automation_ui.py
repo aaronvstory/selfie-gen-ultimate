@@ -4099,6 +4099,25 @@ class KlingAutomationUI:
             dr.add_row("Blends (front/selfie)", f"{_front_blend} / {_selfie_blend}")
             dr.add_row("Planned steps", f"[dim]{_steps_line}[/dim]")
             _RICH_CONSOLE.print(dr)
+            # WHICH folders this batch slice would run, and where each starts
+            # (round 8: a dry run that only repeated the approval counts had
+            # no reason to exist).
+            if runnable_cases:
+                rows_by_key = {r["case"]: r for r in _rows}
+                plan = self._styled_table(f"🗂  This batch would run ({len(runnable_cases)})")
+                plan.add_column("#", style="dim", no_wrap=True)
+                plan.add_column("Folder", style="cyan")
+                plan.add_column("Starts at")
+                for idx, rec in enumerate(runnable_cases[:15], 1):
+                    key = getattr(rec, "relative_key", str(rec))
+                    planned = str((rows_by_key.get(key) or {}).get("planned", "run"))
+                    plan.add_row(str(idx), _rich_markup_escape(key), _rich_markup_escape(planned))
+                if len(runnable_cases) > 15:
+                    plan.add_row("…", f"[dim]+{len(runnable_cases) - 15} more[/dim]", "")
+                print()
+                _RICH_CONSOLE.print(plan)
+                print()
+                _RICH_CONSOLE.print(self._build_cost_estimate_table(len(runnable_cases)))
             self.pause_review("\nPress Enter to continue...")
             return
         print("\nDry run summary")
@@ -4113,6 +4132,60 @@ class KlingAutomationUI:
         print(f"  composites: front={_front_blend} selfie={_selfie_blend}")
         print(f"  planned steps: {_steps_line}")
         self.pause_review("\nPress Enter to continue...")
+
+    def _estimate_batch_cost_rows(self, will_run: int) -> "List[Tuple[str, str]]":
+        """(label, value) rows estimating the API spend for ``will_run`` cases.
+
+        Uses the memoized fal pricing API: selfie $/img per selected model
+        (multi-model fan-out runs ONE FULL CHAIN per model, so the video cost
+        multiplies too) and video $/sec × duration. Expand/outpaint steps and
+        similarity-gate retries are excluded — the caption discloses that.
+        Unknown prices render "n/a" instead of pretending."""
+        c = self.config
+        models = list(c.get("automation_selfie_models") or [])
+        n_models = max(1, len(models))
+        video_endpoint, _video_display = resolve_cli_video_model(c)
+        duration = resolve_cli_video_duration(c)
+        video_price = self.fetch_model_pricing(video_endpoint) if video_endpoint else None
+        selfie_prices = [self.fetch_model_pricing(m) for m in models]
+        rows: "List[Tuple[str, str]]" = []
+        per_case = 0.0
+        complete = True
+        if models:
+            known = [p for p in selfie_prices if p]
+            if len(known) == len(models):
+                selfie_total = sum(known)
+                per_case += selfie_total
+                rows.append(("Selfie image(s)", f"${selfie_total:.2f} / case  ({len(models)} model(s))"))
+            else:
+                complete = False
+                rows.append(("Selfie image(s)", "n/a (no price for one or more models)"))
+        if video_price:
+            video_total = video_price * duration * n_models
+            per_case += video_total
+            rows.append((
+                "Kling video",
+                f"${video_total:.2f} / case  (${video_price:.2f}/sec × {duration}s"
+                + (f" × {n_models} fan-out chains)" if n_models > 1 else ")"),
+            ))
+        else:
+            complete = False
+            rows.append(("Kling video", "n/a (price unavailable)"))
+        approx = "≈" if complete else "≥"
+        rows.append(("Per case", f"[bold]{approx} ${per_case:.2f}[/bold]"))
+        rows.append((f"Batch ({will_run} case(s))", f"[bold yellow]{approx} ${per_case * will_run:.2f}[/bold yellow]"))
+        return rows
+
+    def _build_cost_estimate_table(self, will_run: int) -> Table:
+        table = self._styled_table(
+            "💰  Estimated spend",
+            caption="estimate only — excludes expand/outpaint steps, retries and provider fees",
+        )
+        table.add_column("k", style="cyan", no_wrap=True)
+        table.add_column("v")
+        for label, value in self._estimate_batch_cost_rows(will_run):
+            table.add_row(label, value)
+        return table
 
     def run_automation_headless(
         self,

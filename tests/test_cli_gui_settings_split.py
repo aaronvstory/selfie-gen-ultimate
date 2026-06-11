@@ -617,6 +617,46 @@ def test_quick_editor_toggle_and_done_round_trip():
 
 
 # --------------------------------------------------------------------------
+# Dry-run cost estimator (round 8: dry run must EARN its menu slot)
+# --------------------------------------------------------------------------
+
+def _cost_ui(models, video_price=0.04, selfie_price=0.08):
+    ui = _bare_ui(dict(AUTOMATION_DEFAULTS))
+    ui.config["automation_selfie_models"] = models
+    ui.config["cli_video_model"] = STANDARD
+    ui.config["cli_video_duration"] = 10
+    ui.fetch_model_pricing = lambda ep: (
+        selfie_price if "banana" in str(ep) else (video_price if "kling" in str(ep) else None)
+    )
+    return ui
+
+
+def test_cost_estimate_single_model_math():
+    rows = dict(_cost_ui(["fal-ai/nano-banana-2/edit"])._estimate_batch_cost_rows(5))
+    assert "$0.08" in rows["Selfie image(s)"]
+    assert "$0.40" in rows["Kling video"]  # $0.04/sec × 10s
+    assert "≈ $0.48" in rows["Per case"]
+    assert "≈ $2.40" in rows["Batch (5 case(s))"]
+
+
+def test_cost_estimate_fanout_multiplies_video_too():
+    """Multi-model fan-out runs one FULL chain per model — the video cost
+    multiplies, not just the selfie cost."""
+    rows = dict(_cost_ui(["fal-ai/nano-banana-2/edit", "fal-ai/nano-banana-2/edit"])._estimate_batch_cost_rows(1))
+    assert "$0.16" in rows["Selfie image(s)"]
+    assert "$0.80" in rows["Kling video"]
+    assert "≈ $0.96" in rows["Per case"]
+
+
+def test_cost_estimate_unknown_price_says_so():
+    ui = _cost_ui(["openai/gpt-image-2/edit"])  # no price for this one
+    rows = dict(ui._estimate_batch_cost_rows(2))
+    assert "n/a" in rows["Selfie image(s)"]
+    # Incomplete estimate is a LOWER bound, flagged with ≥ not ≈.
+    assert "≥" in rows["Per case"]
+
+
+# --------------------------------------------------------------------------
 # ASCII banner constant
 # --------------------------------------------------------------------------
 
