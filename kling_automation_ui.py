@@ -759,16 +759,34 @@ class KlingAutomationUI:
     def _configure_api_provider_settings_questionary(self):
         """Branded API-key manager (questionary): per-provider set / clear."""
         while True:
-            status = ["Provider key status:"]
+            self.display_header()
+            status_table = Table(
+                title="[bold white]🔑  API keys / provider status[/bold white]",
+                show_header=False,
+                expand=False,
+                box=_rich_box.ROUNDED,
+                border_style="blue",
+                padding=(0, 1),
+            )
+            status_table.add_column("Provider", style="cyan", no_wrap=True)
+            status_table.add_column("Status")
             for spec in API_KEY_SPECS:
-                status.append(f"  {spec.label}: {key_status(self.config, spec.config_key)}")
+                state = str(key_status(self.config, spec.config_key))
+                state_style = "green" if "set" in state.lower() else "yellow"
+                status_table.add_row(spec.label, f"[{state_style}]{state}[/{state_style}]")
+            _RICH_CONSOLE.print(status_table)
             choices = []
             for spec in API_KEY_SPECS:
                 choices.append((f"🔑  Set / update {spec.label} key", f"set:{spec.config_key}"))
             for spec in API_KEY_SPECS:
                 choices.append((f"🧹  Clear {spec.label} key", f"clear:{spec.config_key}"))
             choices.append(("↩️   Back", "back"))
-            pick = self._q_menu("API Keys / Provider Settings", choices, status_lines=status)
+            pick = self._q_menu(
+                "API keys",
+                choices,
+                show_header=False,
+                show_title_rule=False,
+            )
             if pick in (None, "back"):
                 return
             action, _, ckey = pick.partition(":")
@@ -1062,6 +1080,13 @@ class KlingAutomationUI:
         try:
             from dependency_checker import run_dependency_check
 
+            if not self._use_legacy_prompt_ui():
+                self.display_header()
+                _RICH_CONSOLE.print(Panel.fit(
+                    "[bold]📦  Dependency check[/bold]\n"
+                    "[dim]Verifies the full face/video stack and offers installs for anything missing — can take a minute.[/dim]",
+                    border_style="cyan",
+                ))
             print()
             run_dependency_check(auto_mode=False)
             print()
@@ -2955,7 +2980,17 @@ class KlingAutomationUI:
         # manifest aside (Codex P2, PR #96 round 4).
         manifest = AutomationManifest.load_if_exists(self._automation_manifest_path(), read_only=True)
         rows, counts, _ = self._collect_case_snapshot(records, manifest)
-        table = Table(title="Automation Scan Preview")
+        interactive = not self._use_legacy_prompt_ui()
+        if interactive:
+            self.display_header()
+            table = Table(
+                title="[bold white]🔍  Scan preview[/bold white]",
+                box=_rich_box.ROUNDED,
+                border_style="blue",
+                padding=(0, 1),
+            )
+        else:
+            table = Table(title="Automation Scan Preview")
         table.add_column("Case")
         table.add_column("Front")
         table.add_column("front-expanded")
@@ -2980,6 +3015,28 @@ class KlingAutomationUI:
             print(f"\nShowing first 60/{len(records)} cases.")
         else:
             print(f"\nDiscovered {len(records)} case folders.")
+        if interactive:
+            totals = Table(
+                title="[bold white]Σ  Totals[/bold white]",
+                show_header=False,
+                expand=False,
+                box=_rich_box.ROUNDED,
+                border_style="blue",
+                padding=(0, 1),
+            )
+            totals.add_column("k", style="cyan", no_wrap=True)
+            totals.add_column("v")
+            totals.add_row("Discovered", str(counts["discovered"]))
+            totals.add_row("Completed total", str(counts["completed_total"]))
+            totals.add_row("Skipped complete", str(counts["skipped_complete"]))
+            totals.add_row("Pending / runnable", str(counts["pending"]))
+            totals.add_row("Will run this batch", f"[bold green]{counts['will_run']}[/bold green]")
+            totals.add_row("Manual review / failed", f"{counts['manual_review']} / {counts['failed']}")
+            totals.add_row("Existing videos+selfies", str(counts["existing_videos_selfies"]))
+            totals.add_row("Max cases per run", str(self._read_max_cases_setting()))
+            _RICH_CONSOLE.print(totals)
+            self.pause_review("\nPress Enter to continue...")
+            return
         print("\nTotals:")
         print(f"  discovered: {counts['discovered']}")
         print(f"  completed total: {counts['completed_total']}")
@@ -3997,6 +4054,41 @@ class KlingAutomationUI:
             manifest_warning = "Warning: existing manifest unreadable or schema-mismatched; dry-run ignoring manifest state."
         _rows, counts, runnable_cases = self._collect_case_snapshot(records, manifest)
 
+        _front_blend = self.config.get('automation_front_expand_composite_mode', self.config.get('outpaint_composite_mode', 'preserve_seamless'))
+        _selfie_blend = self.config.get('automation_selfie_expand_composite_mode', self.config.get('outpaint_composite_mode', 'preserve_seamless'))
+        _rppg_on = bool(self.config.get("automation_rppg_enabled", False))
+        _rppg_seg = " -> rppg" if _rppg_on else " -> rppg(off)"
+        _loop_on = bool(self.config.get("automation_loop_enabled", False))
+        _loop_seg = " -> loop" if _loop_on else " -> loop(off)"
+        _steps_line = f"front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg}{_loop_seg} -> oldcam"
+        if not self._use_legacy_prompt_ui():
+            # Branded repaint + Rich layout (interactive only — the legacy
+            # prints below are asserted by non-TTY tests / cron logs).
+            self.display_header()
+            dr = Table(
+                title="[bold white]🧪  Dry run — no API calls[/bold white]",
+                show_header=False,
+                expand=False,
+                box=_rich_box.ROUNDED,
+                border_style="blue",
+                padding=(0, 1),
+            )
+            dr.add_column("k", style="cyan", no_wrap=True)
+            dr.add_column("v")
+            if manifest_warning:
+                dr.add_row("Warning", f"[yellow]{manifest_warning}[/yellow]")
+            dr.add_row("Discovered cases", str(counts["discovered"]))
+            dr.add_row("Completed total", str(counts["completed_total"]))
+            dr.add_row("Skipped complete", str(counts["skipped_complete"]))
+            dr.add_row("Pending", str(counts["pending"]))
+            dr.add_row("Failed / manual review", str(counts["failed"] + counts["manual_review"]))
+            dr.add_row("Will run this batch", f"[bold green]{len(runnable_cases)}[/bold green]")
+            dr.add_section()
+            dr.add_row("Blends (front/selfie)", f"{_front_blend} / {_selfie_blend}")
+            dr.add_row("Planned steps", f"[dim]{_steps_line}[/dim]")
+            _RICH_CONSOLE.print(dr)
+            self.pause_review("\nPress Enter to continue...")
+            return
         print("\nDry run summary")
         if manifest_warning:
             print(f"  {manifest_warning}")
@@ -4006,16 +4098,8 @@ class KlingAutomationUI:
         print(f"  pending: {counts['pending']}")
         print(f"  failed/manual_review: {counts['failed'] + counts['manual_review']}")
         print(f"  will run this batch: {len(runnable_cases)}")
-        print(
-            "  composites: "
-            f"front={self.config.get('automation_front_expand_composite_mode', self.config.get('outpaint_composite_mode', 'preserve_seamless'))} "
-            f"selfie={self.config.get('automation_selfie_expand_composite_mode', self.config.get('outpaint_composite_mode', 'preserve_seamless'))}"
-        )
-        _rppg_on = bool(self.config.get("automation_rppg_enabled", False))
-        _rppg_seg = " -> rppg" if _rppg_on else " -> rppg(off)"
-        _loop_on = bool(self.config.get("automation_loop_enabled", False))
-        _loop_seg = " -> loop" if _loop_on else " -> loop(off)"
-        print(f"  planned steps: front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg}{_loop_seg} -> oldcam")
+        print(f"  composites: front={_front_blend} selfie={_selfie_blend}")
+        print(f"  planned steps: {_steps_line}")
         self.pause_review("\nPress Enter to continue...")
 
     def run_automation_headless(
@@ -4504,6 +4588,9 @@ class KlingAutomationUI:
         """Show the COMPLETE selfie + kling video prompts (the table only
         shows slot numbers; the user must be able to read the full text
         before paying for a batch)."""
+        if not self._use_legacy_prompt_ui():
+            # Branded repaint — callers pause + repaint their own screen after.
+            self.display_header()
         selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
         _RICH_CONSOLE.print(Panel(
             selfie_prompt or "(empty)",
@@ -5190,28 +5277,81 @@ class KlingAutomationUI:
             self.pause_review("\nPress Enter to continue...")
             return
 
-        print("\nAutomation preflight:")
-        print(f"  cases discovered: {len(records)}")
-        print(f"  running this batch: {len(runnable_cases)}")
-        print(f"  reprocess mode: {self.config.get('automation_reprocess_mode', 'skip')}")
-        print(f"  skip selfie/video existing: {self.config.get('automation_skip_if_selfie_exists', True)} / {self.config.get('automation_skip_if_video_exists', True)}")
-        for line in self._automation_status_lines():
-            print(f"  {line}")
+        interactive = not self._use_legacy_prompt_ui()
         selfie_slot, selfie_prompt, selfie_source = self._get_selected_selfie_prompt()
         prompt_preview = selfie_prompt if len(selfie_prompt) <= 160 else f"{selfie_prompt[:160]}..."
-        print(f"  selfie prompt slot/source: {selfie_slot} / {selfie_source}")
-        print(f"  selfie prompt preview: {prompt_preview}")
+        if interactive:
+            # Branded repaint + compact Rich preflight (the full settings
+            # blob was already reviewed on the approval screen); legacy
+            # keeps the historical prints below for tests/cron logs.
+            self.display_header()
+            pre = Table(
+                title="[bold white]🚦  Preflight — starting run[/bold white]",
+                show_header=False,
+                expand=False,
+                box=_rich_box.ROUNDED,
+                border_style="blue",
+                padding=(0, 1),
+            )
+            pre.add_column("k", style="cyan", no_wrap=True)
+            pre.add_column("v")
+            pre.add_row("Cases discovered", str(len(records)))
+            pre.add_row("Running this batch", f"[bold green]{len(runnable_cases)}[/bold green]")
+            pre.add_row("Reprocess mode", str(self.config.get("automation_reprocess_mode", "skip")))
+            pre.add_row(
+                "Skip if selfie/video exists",
+                f"{self.config.get('automation_skip_if_selfie_exists', True)} / {self.config.get('automation_skip_if_video_exists', True)}",
+            )
+            pre.add_row("Selfie prompt", f"slot {selfie_slot} ({selfie_source})")
+            pre.add_row("Prompt preview", f"[dim]{prompt_preview}[/dim]")
+            _RICH_CONSOLE.print(pre)
+        else:
+            print("\nAutomation preflight:")
+            print(f"  cases discovered: {len(records)}")
+            print(f"  running this batch: {len(runnable_cases)}")
+            print(f"  reprocess mode: {self.config.get('automation_reprocess_mode', 'skip')}")
+            print(f"  skip selfie/video existing: {self.config.get('automation_skip_if_selfie_exists', True)} / {self.config.get('automation_skip_if_video_exists', True)}")
+            for line in self._automation_status_lines():
+                print(f"  {line}")
+            print(f"  selfie prompt slot/source: {selfie_slot} / {selfie_source}")
+            print(f"  selfie prompt preview: {prompt_preview}")
         stats, run_error = self._run_with_live_dashboard(runner, runnable_cases, manifest)
         if run_error:
             self.print_red(f"Automation run failed: {run_error}")
             self.pause_review("\nPress Enter to continue...")
             return
-        print("\nAutomation run complete.")
-        print(f"  completed: {stats.get('completed', 0)}")
-        print(f"  failed: {stats.get('failed', 0)}")
-        print(f"  manual_review: {stats.get('manual_review', 0)}")
-        print(f"  skipped: {stats.get('skipped', 0)}")
-        table = Table(title="Per-Case Summary")
+        if interactive:
+            done = Table(
+                title="[bold white]✅  Automation run complete[/bold white]",
+                show_header=False,
+                expand=False,
+                box=_rich_box.ROUNDED,
+                border_style="green",
+                padding=(0, 1),
+            )
+            done.add_column("k", style="cyan", no_wrap=True)
+            done.add_column("v")
+            done.add_row("Completed", f"[bold green]{stats.get('completed', 0)}[/bold green]")
+            failed_n = stats.get("failed", 0)
+            done.add_row("Failed", f"[bold red]{failed_n}[/bold red]" if failed_n else "0")
+            done.add_row("Manual review", str(stats.get("manual_review", 0)))
+            done.add_row("Skipped", str(stats.get("skipped", 0)))
+            _RICH_CONSOLE.print(done)
+        else:
+            print("\nAutomation run complete.")
+            print(f"  completed: {stats.get('completed', 0)}")
+            print(f"  failed: {stats.get('failed', 0)}")
+            print(f"  manual_review: {stats.get('manual_review', 0)}")
+            print(f"  skipped: {stats.get('skipped', 0)}")
+        if interactive:
+            table = Table(
+                title="[bold white]Per-case summary[/bold white]",
+                box=_rich_box.ROUNDED,
+                border_style="blue",
+                padding=(0, 1),
+            )
+        else:
+            table = Table(title="Per-Case Summary")
         table.add_column("Case")
         table.add_column("Status")
         table.add_column("Reason")
