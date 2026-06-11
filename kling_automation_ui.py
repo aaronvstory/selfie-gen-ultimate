@@ -4577,7 +4577,7 @@ class KlingAutomationUI:
 
     @staticmethod
     def _elide_path(path: "Any", max_len: int = 48) -> str:
-        """Tail-elided path for labels/tables ('…\\Pandia\\Batch_04') — the
+        """Tail-elided path for labels/tables ('…\\client\\Batch_04') — the
         tail is the part humans recognize; full paths blow out layouts."""
         p = str(path or "")
         if len(p) <= max_len:
