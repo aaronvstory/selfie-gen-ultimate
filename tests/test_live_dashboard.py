@@ -153,6 +153,43 @@ def test_suppress_stream_logging_removes_console_keeps_file(tmp_path):
                 root.addHandler(h)
 
 
+def test_suppress_stream_logging_restrip_catches_late_handlers(tmp_path):
+    """Round-8 regression: deepface/TF/absl import LAZILY inside the run and
+    install fresh console handlers on the ROOT logger AFTER the initial
+    strip — their WARNING lines printed bare through Live and shattered the
+    panel. The context manager yields a re-strip callable the dashboard loop
+    invokes every tick; it must also catch handlers that are NOT
+    StreamHandler subclasses (absl's ABSLHandler isn't)."""
+
+    class FakeAbslHandler(logging.Handler):  # mimics absl.logging.ABSLHandler
+        def emit(self, record):  # pragma: no cover - never called
+            pass
+
+    root = logging.getLogger()
+    file_handler = logging.FileHandler(tmp_path / "t.log")
+    root.addHandler(file_handler)
+    late_stream = logging.StreamHandler(sys.stderr)
+    late_absl = FakeAbslHandler()
+    try:
+        with KlingAutomationUI._suppress_stream_logging() as restrip:
+            # Simulate the mid-run lazy import adding console handlers:
+            root.addHandler(late_stream)
+            root.addHandler(late_absl)
+            restrip()  # what the dashboard loop does every tick
+            assert late_stream not in root.handlers, "late StreamHandler must be stripped"
+            assert late_absl not in root.handlers, "late non-StreamHandler console handler must be stripped"
+            assert file_handler in root.handlers, "file handler must always be KEPT"
+        # Everything stripped during the window is restored afterwards.
+        assert late_stream in root.handlers
+        assert late_absl in root.handlers
+        assert file_handler in root.handlers
+    finally:
+        for h in (late_stream, late_absl):
+            root.removeHandler(h)
+        file_handler.close()
+        root.removeHandler(file_handler)
+
+
 def test_suppress_stream_logging_restores_on_exception(tmp_path):
     root = logging.getLogger()
     stream_handler = logging.StreamHandler(sys.stderr)
