@@ -995,7 +995,7 @@ class KlingAutomationUI:
 
             tagline = _RichText.from_markup(
                 f"[bold white]ULTIMATE  {RELEASE_VERSION}[/bold white]"
-                "[dim]  ·  Front → Selfie → Similarity → Video → Oldcam[/dim]"
+                "[dim]  ·  Front → Selfie → Similarity → Video → rPPG → Oldcam[/dim]"
             )
             _RICH_CONSOLE.print(Align.center(_RichText(_BANNER_ASCII, style="bold cyan")))
             print()
@@ -1003,10 +1003,11 @@ class KlingAutomationUI:
             for line in status_lines:
                 _RICH_CONSOLE.print(Align.center(line))
             _RICH_CONSOLE.print(Rule(style="blue"))
+            print()  # one blank line between the header and whatever follows
             return
 
         title = _RichText(f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}", style="bold white")
-        subtitle = _RichText("Front DL -> Selfie -> Similarity -> Video -> Oldcam", style="dim")
+        subtitle = _RichText("Front DL -> Selfie -> Similarity -> Video -> rPPG -> Oldcam", style="dim")
         _RICH_CONSOLE.print(
             Panel(
                 _RichGroup(Align.center(title), Align.center(subtitle),
@@ -2207,8 +2208,14 @@ class KlingAutomationUI:
         # screen, so no second title rule either.
         self.display_header()
         self._render_run_settings_table(caption="🔧 Quick settings edits these")
+        print()  # one blank line between the table and the menu
         by_value = {value: label for label, value in self._main_menu_choice_pairs()}
-        grouped: "List[Any]" = []
+        # Same structure as the quick editor (round 5): hints on their own dim
+        # line under the title, blank line before the first group.
+        grouped: "List[Any]" = [
+            questionary.Separator("   ↑/↓ move · Enter to select · Esc to quit"),
+            questionary.Separator(" "),
+        ]
         for group_title, values in self._MAIN_MENU_GROUPS:
             if group_title is not None:
                 grouped.append(questionary.Separator(f"  ─── {group_title} ───"))
@@ -2220,7 +2227,7 @@ class KlingAutomationUI:
         choice = self._q_menu(
             "Main menu",
             grouped,
-            instruction="↑/↓ to move · Enter to select · Esc to quit",
+            instruction=" ",
             show_header=False,
             show_title_rule=False,
         )
@@ -4916,7 +4923,14 @@ class KlingAutomationUI:
             rppg_on = _parse_bool_cfg(c.get("automation_rppg_enabled", False)) or False
             loop_on = _parse_bool_cfg(c.get("automation_loop_enabled", False)) or False
             by_value = {v: label for label, v in self._quick_edit_choice_pairs()}
-            grouped: "List[Any]" = []
+            # Control hints live on their OWN line below the title (a leading
+            # Separator row — the only way to render text under a questionary
+            # message), then a blank line before the first step group
+            # (user feedback, round 5).
+            grouped: "List[Any]" = [
+                questionary.Separator("   ↑/↓ move · Enter edits one field · Esc saves and returns"),
+                questionary.Separator(" "),
+            ]
             for group_title, values in self._QUICK_EDIT_GROUPS:
                 if group_title is not None:
                     grouped.append(questionary.Separator(f"  ── {group_title} ──"))
@@ -4924,9 +4938,9 @@ class KlingAutomationUI:
                 grouped.append(questionary.Separator(" "))
             grouped.pop()  # no trailing spacer
             choice = self._q_select(
-                "Quick settings — Enter edits one field:",
+                "Quick settings",
                 grouped,
-                instruction="↑/↓ · Enter · Esc saves and returns",
+                instruction=" ",
             )
             if choice in (None, "done"):
                 self.save_config()

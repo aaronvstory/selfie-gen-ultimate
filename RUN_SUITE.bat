@@ -62,7 +62,7 @@ echo   %CLRC%####### #####   ##      #####   ## #####      ##   ### #####   ## #
 echo   %CLRC%     ## ##      ##      ##      ## ##         ##    ## ##      ##  ## ##%CLR0%
 echo   %CLRC%####### ####### ####### ##      ## #######     ######  ####### ##   ####%CLR0%
 echo(
-echo             %CLRB%ULTIMATE  %APP_VER%%CLR0%  %CLRD%-  Front - Selfie - Similarity - Video - Oldcam%CLR0%
+echo             %CLRB%ULTIMATE  %APP_VER%%CLR0%  %CLRD%-  Front - Selfie - Similarity - Video - rPPG - Oldcam%CLR0%
 echo   %CLRD%==========================================================================%CLR0%
 call :gpu_brief
 echo(

@@ -55,7 +55,7 @@ banner() {
   ███████ ███████ ███████ ██      ██ ███████      ██████  ███████ ██   ████
 EOF
   printf '%s\n' "${C0}"
-  printf '            %sULTIMATE  %s%s  %s·  Front → Selfie → Similarity → Video → Oldcam%s\n' \
+  printf '            %sULTIMATE  %s%s  %s·  Front → Selfie → Similarity → Video → rPPG → Oldcam%s\n' \
     "${CB}" "${APP_VER}" "${C0}" "${CD}" "${C0}"
   printf '  %s==========================================================================%s\n' "${CD}" "${C0}"
   printf '    %sHost:%s %s\n' "${CG}" "${C0}" "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo 'unknown CPU')"
