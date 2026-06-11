@@ -5312,6 +5312,10 @@ class KlingAutomationUI:
         + [Approve / Quick edit / View full prompts / Cancel]. Quick edits
         reload the manifest (they may change the run fingerprint)."""
         while True:
+            # Full repaint like every other screen (round 8): without it the
+            # main menu's questionary echo line sat directly above the
+            # preview table with no separation.
+            self.display_header()
             records, manifest = self._discover_and_load_manifest(root, interactive=True)
             if not records:
                 return
