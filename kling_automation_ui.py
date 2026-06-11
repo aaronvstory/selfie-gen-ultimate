@@ -2048,8 +2048,19 @@ class KlingAutomationUI:
 
     def _run_configuration_menu_questionary_iteration(self) -> "Optional[str]":
         """One iteration of the branded arrow-key top-level menu."""
-        status = [f"Automation root: {self.automation_root_folder or '(not set)'}"]
-        status.extend(self._automation_status_lines())
+        # The MAIN-settings Rich table replaces the old raw key=value blob
+        # ("plain text not fitting with the rest" — user, 2026-06-11) and
+        # matches the option-1 styling; the header panel already brands the
+        # screen, so no second title rule either.
+        self.display_header()
+        self._render_run_settings_table()
+        current_version = int(self.config.get("automation_recommended_defaults_version", 0) or 0)
+        if current_version < RECOMMENDED_DEFAULTS_VERSION:
+            _RICH_CONSOLE.print(
+                f"  [yellow]Tip:[/yellow] apply recommended defaults "
+                f"(End-to-End menu → ⭐) to upgrade v{current_version} → v{RECOMMENDED_DEFAULTS_VERSION}.",
+            )
+            print()
         choice = self._q_menu(
             f"Selfie Gen Ultimate  {RELEASE_VERSION}",
             [
@@ -2065,7 +2076,8 @@ class KlingAutomationUI:
                 ("📂  Set automation root by path…", "path"),
                 ("🚪  Quit", "q"),
             ],
-            status_lines=status,
+            show_header=False,
+            show_title_rule=False,
         )
         if choice in (None, "q"):
             print("\nGoodbye!")
@@ -4171,7 +4183,13 @@ class KlingAutomationUI:
         return rows
 
     def _render_run_settings_table(self, title: str = "Main run settings") -> None:
-        table = Table(title=title, show_header=False, expand=False)
+        table = Table(
+            title=f"[bold cyan]{title}[/bold cyan]",
+            show_header=False,
+            expand=False,
+            border_style="blue",
+            padding=(0, 1),
+        )
         table.add_column("Setting", style="cyan", no_wrap=True)
         table.add_column("Value")
         for label, value, style in self._run_settings_rows():
@@ -4996,6 +5014,7 @@ class KlingAutomationUI:
         status_lines: "Optional[List[str]]" = None,
         instruction: str = "↑/↓ to move · Enter to select · Esc to go back",
         show_header: bool = True,
+        show_title_rule: bool = True,
     ) -> "Optional[str]":
         """Render a branded arrow-key menu and return the selected value.
 
@@ -5003,14 +5022,19 @@ class KlingAutomationUI:
         / plain strings). Returns the selected value, or ``None`` if the user
         pressed Esc / Ctrl-C (callers treat that as "back/cancel"). Only call on
         the questionary path — guard with ``self._use_legacy_prompt_ui()`` first.
+        ``show_title_rule=False`` skips the ═ title block for callers whose
+        screen is already branded (the main menu's header panel carries the
+        same title — the doubled banner was part of the "looks like garbage"
+        feedback, 2026-06-11).
         """
         if show_header:
             self.display_header()
-        self.print_magenta("═" * 79)
-        _t = title.upper()
-        self.print_magenta(f"{' ' * max(0, (79 - len(_t)) // 2)}{_t}")
-        self.print_magenta("═" * 79)
-        print()
+        if show_title_rule:
+            self.print_magenta("═" * 79)
+            _t = title.upper()
+            self.print_magenta(f"{' ' * max(0, (79 - len(_t)) // 2)}{_t}")
+            self.print_magenta("═" * 79)
+            print()
         if status_lines:
             for line in status_lines:
                 print(f"  {line}")
@@ -5101,17 +5125,16 @@ class KlingAutomationUI:
                 return "0"
         # Questionary path: header + the MAIN-settings Rich table (2026-06-11
         # mandate — rPPG/oldcam/models/providers must be impossible to miss
-        # when entering option 1), then the arrow menu. Esc -> Back.
+        # when entering option 1), then the arrow menu. Esc -> Back. The
+        # _q_menu title rule is the SINGLE "END-TO-END AUTO PIPELINE" banner
+        # (no manual duplicate).
         self.display_header()
-        self.print_magenta("═" * 79)
-        _t = "END-TO-END AUTO PIPELINE"
-        self.print_magenta(f"{' ' * max(0, (79 - len(_t)) // 2)}{_t}")
-        self.print_magenta("═" * 79)
-        print()
         self._render_run_settings_table()
         current_version = int(self.config.get("automation_recommended_defaults_version", 0) or 0)
         if current_version < RECOMMENDED_DEFAULTS_VERSION:
-            print(f"  \033[93mRecommendation:\033[0m apply recommended defaults (target v{RECOMMENDED_DEFAULTS_VERSION}).")
+            _RICH_CONSOLE.print(
+                f"  [yellow]Recommendation:[/yellow] apply recommended defaults (⭐, target v{RECOMMENDED_DEFAULTS_VERSION})."
+            )
             print()
         answer = self._q_menu(
             "End-to-End Auto Pipeline",
@@ -5128,6 +5151,7 @@ class KlingAutomationUI:
                 ("↩️   Back", "0"),
             ],
             show_header=False,
+            show_title_rule=False,
         )
         return answer if answer is not None else "0"
 
