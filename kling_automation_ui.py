@@ -5512,15 +5512,23 @@ class KlingAutomationUI:
             self.pause_review("\nPress Enter to continue...")
             return
         if interactive:
-            done = self._styled_table("✅  Automation run complete", border_style="green")
-            done.add_column("k", style="cyan", no_wrap=True)
-            done.add_column("v")
-            done.add_row("Completed", f"[bold green]{stats.get('completed', 0)}[/bold green]")
+            # One wide row of counts — the stacked two-column version was
+            # narrower than its own title, which wrapped (round 8).
+            done = self._styled_table("✅  Automation run complete", border_style="green", show_header=True)
+            done.add_column("Completed", justify="center")
+            done.add_column("Failed", justify="center")
+            done.add_column("Manual review", justify="center")
+            done.add_column("Skipped", justify="center")
             failed_n = stats.get("failed", 0)
-            done.add_row("Failed", f"[bold red]{failed_n}[/bold red]" if failed_n else "0")
-            done.add_row("Manual review", str(stats.get("manual_review", 0)))
-            done.add_row("Skipped", str(stats.get("skipped", 0)))
+            done.add_row(
+                f"[bold green]{stats.get('completed', 0)}[/bold green]",
+                f"[bold red]{failed_n}[/bold red]" if failed_n else "0",
+                str(stats.get("manual_review", 0)),
+                str(stats.get("skipped", 0)),
+            )
+            print()
             _RICH_CONSOLE.print(done)
+            print()
         else:
             print("\nAutomation run complete.")
             print(f"  completed: {stats.get('completed', 0)}")
@@ -5574,16 +5582,27 @@ class KlingAutomationUI:
         """
         root = logging.getLogger()
         removed: List[logging.Handler] = []
-        for handler in list(root.handlers):
-            if isinstance(handler, logging.FileHandler):
-                continue  # file-backed — keep (RotatingFileHandler included)
-            if isinstance(handler, logging.StreamHandler):
-                stream = getattr(handler, "stream", None)
-                if stream in (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__):
-                    root.removeHandler(handler)
-                    removed.append(handler)
+
+        def _strip() -> None:
+            # Remove EVERY non-file-backed root handler. Two round-8 lessons:
+            # (1) the heavy face stack imports LAZILY inside the run, and
+            # absl/TF install a fresh console handler on the ROOT logger at
+            # import time — i.e. AFTER a one-shot strip ("Anti-spoofing…" /
+            # "Pricing API returned 400" printed bare mid-panel and shattered
+            # it). The dashboard loop re-invokes this every tick. (2) absl's
+            # ABSLHandler is NOT a StreamHandler subclass and Live's
+            # redirect replaces sys.stdout, so neither the isinstance- nor
+            # the stream-identity check is reliable — keep file handlers,
+            # drop everything else for the Live window.
+            for handler in list(root.handlers):
+                if isinstance(handler, logging.FileHandler):
+                    continue  # file-backed — keep (RotatingFileHandler included)
+                root.removeHandler(handler)
+                removed.append(handler)
+
+        _strip()
         try:
-            yield
+            yield _strip
         finally:
             for handler in removed:
                 root.addHandler(handler)
@@ -5658,8 +5677,18 @@ class KlingAutomationUI:
         if events:
             lines.append("[dim]--- last events ---------------------------------[/dim]")
             for ts, level, message in events:
-                style = {"error": "red", "warning": "yellow", "success": "green"}.get(level, "dim")
-                lines.append(f"[{style}]{ts} {_esc(message)}[/{style}]")
+                style = {"error": "red", "warning": "yellow", "success": "green"}.get(level)
+                if style is None:
+                    # Keyword tinting for info-level events — an all-grey
+                    # trail hid the interesting lines (round 8).
+                    low = message.lower()
+                    if any(k in low for k in ("complete", " pass", "downloaded", "saved", "done", "✓")):
+                        style = "green"
+                    elif any(k in low for k in ("launching", "starting", "submit", "processing", "fetching", "polling", "generating")):
+                        style = "cyan"
+                    else:
+                        style = "dim"
+                lines.append(f"[dim]{ts}[/dim] [{style}]{_esc(message)}[/{style}]")
         lines.append(f"[dim]{_esc(footer)}[/dim]")
         return Panel("\n".join(lines), title="Automation Live Progress", border_style="cyan")
 
@@ -5742,7 +5771,15 @@ class KlingAutomationUI:
                 state["level"] = level
                 lowered = message.lower()
                 if ".mp4" in lowered or "output:" in lowered:
-                    state["last_output"] = message
+                    # Just the FILENAME of the newest artifact — a full rPPG
+                    # launch command in "Last out" was an unreadable wall of
+                    # wrapped paths (round 8).
+                    hits = re.findall(r"[^\s\"']+\.mp4", message)
+                    if hits:
+                        state["last_output"] = Path(hits[-1]).name[-70:]
+                    elif "output:" in lowered:
+                        tail = message.split(":", 1)[1].strip()
+                        state["last_output"] = ("…" + tail[-69:]) if len(tail) > 70 else tail
                 if level in {"error", "warning"}:
                     state["error_reason"] = message
                 events = state["events"]
@@ -5865,7 +5902,7 @@ class KlingAutomationUI:
             )
 
         try:
-            with self._suppress_stream_logging():
+            with self._suppress_stream_logging() as restrip_console_logging:
                 with Live(
                     _render(),
                     console=_RICH_CONSOLE,
@@ -5876,6 +5913,10 @@ class KlingAutomationUI:
                 ) as live:
                     while worker.is_alive():
                         _poll_keys()
+                        # Lazily-imported libs (deepface/TF/absl) add fresh
+                        # console handlers MID-RUN — re-strip every tick or
+                        # their log lines shatter the pinned panel (round 8).
+                        restrip_console_logging()
                         live.update(_render())
                         time.sleep(0.2)
                     worker.join()
