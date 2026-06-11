@@ -431,7 +431,17 @@ class AutomationManifest:
                 return False
             if case_entry.get("status") != "complete":
                 return False
-            steps = case_entry.get("steps", {})
+            steps = case_entry.get("steps")
+            if not isinstance(steps, dict):
+                # Same corrupted-manifest class as the guards above: a
+                # null/str "steps" must read as empty, not AttributeError
+                # (Gemini HIGH, PR #96 round 11).
+                steps = {}
+
+            def _step(name: str) -> Dict[str, Any]:
+                value = steps.get(name)
+                return value if isinstance(value, dict) else {}
+
             # The FINAL deliverable belongs to whichever post-process stage
             # finished LAST — and that is order-dependent: the Phase E default
             # runs Kling -> rPPG(base) -> Loop -> Oldcam (oldcam output is
@@ -446,7 +456,7 @@ class AutomationManifest:
             # (rppg > loop > oldcam) so legacy states behave as before.
             candidates = []
             for preference, stage in enumerate(("oldcam", "loop", "rppg")):
-                stage_step = steps.get(stage, {})
+                stage_step = _step(stage)
                 if stage_step.get("status") == "complete" and stage_step.get("output"):
                     candidates.append(
                         (str(stage_step.get("finished_at") or ""), preference, stage_step["output"])
@@ -455,9 +465,9 @@ class AutomationManifest:
                 final_output = max(candidates)[2]
             else:
                 final_output = (
-                    steps.get("oldcam", {}).get("output")
-                    or steps.get("loop", {}).get("output")
-                    or steps.get("video_generate", {}).get("output")
+                    _step("oldcam").get("output")
+                    or _step("loop").get("output")
+                    or _step("video_generate").get("output")
                 )
         if not final_output:
             return False

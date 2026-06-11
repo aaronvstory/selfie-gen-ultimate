@@ -51,6 +51,35 @@ def test_manifest_complete_requires_existing_final_output(tmp_path: Path):
     assert manifest.case_is_complete_and_valid("case/a") is True
 
 
+def test_manifest_corrupted_reads_degrade_not_crash(tmp_path: Path):
+    """Gemini HIGH (PR #96 rounds 10-11): a corrupted/hand-edited manifest —
+    non-dict "cases", case entry, or "steps" — must make
+    case_is_complete_and_valid return False and snapshot_statuses degrade
+    to pending placeholders, never AttributeError."""
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest = AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+    manifest.ensure_case("case/a", tmp_path / "case/a", tmp_path / "case/a/front.png")
+
+    # Corrupted "steps" (string instead of dict) on a complete case.
+    manifest.data["cases"]["case/a"]["status"] = "complete"
+    manifest.data["cases"]["case/a"]["steps"] = "corrupted"
+    assert manifest.case_is_complete_and_valid("case/a") is False
+
+    # Corrupted per-stage entry (null instead of dict) must also degrade.
+    manifest.data["cases"]["case/a"]["steps"] = {"oldcam": None, "loop": "bad", "rppg": 7}
+    assert manifest.case_is_complete_and_valid("case/a") is False
+
+    # Corrupted case entry (string instead of dict).
+    manifest.data["cases"]["case/a"] = "corrupted"
+    assert manifest.case_is_complete_and_valid("case/a") is False
+    assert manifest.snapshot_statuses(["case/a"])["case/a"]["status"] == "pending"
+
+    # Corrupted "cases" root (list instead of dict).
+    manifest.data["cases"] = ["corrupted"]
+    assert manifest.case_is_complete_and_valid("case/a") is False
+    assert manifest.snapshot_statuses(["case/a"])["case/a"]["status"] == "pending"
+
+
 def test_manifest_complete_validates_rppg_output_when_rppg_completed(tmp_path: Path):
     """Regression (Codex P2, PR #39): rPPG is the LAST post-process. When
     the rppg step completed, validation must check the injected file —
