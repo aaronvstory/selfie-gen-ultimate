@@ -245,8 +245,36 @@ def test_auto_upgrade_seeds_only_empty_shared_prompt_slots():
     assert c["saved_prompts"]["1"] == RECOMMENDED_KLING_PROMPT_SLOT_1
 
 
-def test_auto_upgrade_is_a_noop_at_current_version():
+def test_auto_upgrade_at_current_version_only_seeds_cli_keys():
+    """A config already at the current version must NOT be re-baselined —
+    but it gets the cli_* selection seeded from the GUI values once
+    (behavior-preserving: the resolvers were falling back to exactly these),
+    so the per-surface split applies to pre-split v7 configs too (Codex P2)."""
     ui, saves = _migration_ui({"automation_recommended_defaults_version": RECOMMENDED_DEFAULTS_VERSION})
+    ui._auto_upgrade_recommended_defaults()
+    c = ui.config
+    assert c["cli_video_model"] == "gui/sentinel-model"
+    assert c["cli_video_model_display_name"] == "GUI Sentinel Model"
+    assert c["cli_kling_prompt_slot"] == 2
+    assert c["cli_video_duration"] == 5
+    # No baseline reset: the user's automation settings survive.
+    assert c["automation_rppg_enabled"] is False
+    assert c["automation_oldcam_version"] == ["v24"]
+    for key, sentinel in GUI_SENTINELS.items():
+        assert c[key] == sentinel
+    assert saves
+
+
+def test_auto_upgrade_is_a_full_noop_when_cli_keys_already_exist():
+    ui, saves = _migration_ui(
+        {
+            "automation_recommended_defaults_version": RECOMMENDED_DEFAULTS_VERSION,
+            "cli_video_model": STANDARD,
+            "cli_video_model_display_name": "Kling 2.5 Turbo Standard",
+            "cli_kling_prompt_slot": 6,
+            "cli_video_duration": 10,
+        }
+    )
     before = dict(ui.config)
     ui._auto_upgrade_recommended_defaults()
     assert ui.config == before

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 
 DEFAULT_SELFIE_PROMPT = (
@@ -241,9 +241,11 @@ class AutomationConfig:
         return [str(pat).lower() for pat in raw if str(pat).strip()]
 
 
-def resolve_cli_video_model(config: Mapping[str, Any]) -> tuple:
+def resolve_cli_video_model(config: Mapping[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     """(endpoint, display_name) of the video model the CLI automation
-    pipeline should use.
+    pipeline should use. Either element may be None on the fallback path —
+    identical to the raw ``config.get`` reads this replaced; callers
+    (FalAIKlingGenerator, displays) already handle None.
 
     The CLI keeps its own selection (``cli_video_model`` /
     ``cli_video_model_display_name``) so changing the automation model never

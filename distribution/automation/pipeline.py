@@ -224,6 +224,12 @@ class AutoPipelineRunner:
         _lock_ef = _pb(self.config.get("lock_end_frame", True))
         if _lock_ef is None:
             _lock_ef = True
+        # A hand-edited null/"" seed must degrade to -1 (random), not crash
+        # the whole pipeline at dispatch (Gemini MED, PR #96 round 2).
+        try:
+            _seed_val = int(self.config.get("seed", -1))
+        except (TypeError, ValueError):
+            _seed_val = -1
         return video.create_kling_generation(
             character_image_path=still_path,
             output_folder=str(video_output_dir),
@@ -238,7 +244,7 @@ class AutoPipelineRunner:
             duration=resolve_cli_video_duration(self.config),
             aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
             resolution=self.config.get("resolution", "720p"),
-            seed=int(self.config.get("seed", -1)),
+            seed=_seed_val,
             camera_fixed=bool(self.config.get("camera_fixed", False)),
             generate_audio=bool(self.config.get("generate_audio", False)),
             cfg_scale=max(0.0, min(1.0, _cfg_val)),

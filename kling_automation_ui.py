@@ -2566,6 +2566,12 @@ class KlingAutomationUI:
         except (TypeError, ValueError):
             current_version = 0
         if current_version >= RECOMMENDED_DEFAULTS_VERSION:
+            # Already current — but a config stamped v7 BEFORE the
+            # per-surface split has no cli_* keys, so its pipeline would
+            # keep tracking the GUI selection through the resolver
+            # fallback (Codex P2). Adopt the GUI values once —
+            # behavior-preserving at seed time, independent afterwards.
+            self._seed_cli_selection_keys_if_absent()
             return
         self._write_recommended_automation_baseline()
         saved_prompts = self.config.get("saved_prompts")
@@ -2586,6 +2592,31 @@ class KlingAutomationUI:
             "[dim]Pipeline settings were upgraded to the latest recommended baseline "
             "(GUI settings untouched).[/dim]"
         )
+
+    def _seed_cli_selection_keys_if_absent(self) -> None:
+        """One-time adoption of the GUI selection as the CLI's starting point.
+
+        For configs already at the current recommended version when the
+        per-surface split shipped: the resolvers were falling back to these
+        exact GUI values, so seeding them is a no-op for behavior — but from
+        now on a GUI model change no longer silently retargets the pipeline.
+        Saves only when something was seeded."""
+        c = self.config
+        changed = False
+        if not str(c.get("cli_video_model") or "").strip():
+            gui_endpoint = str(c.get("current_model") or "").strip()
+            if gui_endpoint:
+                c["cli_video_model"] = gui_endpoint
+                c["cli_video_model_display_name"] = str(c.get("model_display_name") or "")
+                changed = True
+        if c.get("cli_kling_prompt_slot") in (None, ""):
+            c["cli_kling_prompt_slot"] = c.get("current_prompt_slot", DEFAULT_KLING_PROMPT_SLOT)
+            changed = True
+        if c.get("cli_video_duration") in (None, ""):
+            c["cli_video_duration"] = c.get("video_duration", 10)
+            changed = True
+        if changed:
+            self.save_config()
 
     def _apply_recommended_automation_defaults(self) -> None:
         # Explicit ⭐ reset: the automation/cli baseline PLUS the shared video
@@ -4745,6 +4776,13 @@ class KlingAutomationUI:
                                     choices=["1", "5", "10", "all"], default="5")
                     self._qs_choice("Reprocess mode:", "automation_reprocess_mode",
                                     choices=_REPROCESS_MODE_OPTIONS, default="skip")
+                    # _effective_reprocess_mode forces "skip" unless
+                    # automation_allow_reprocess is set — a quick-picked
+                    # overwrite/increment must actually take effect (Codex P2).
+                    c["automation_allow_reprocess"] = (
+                        str(c.get("automation_reprocess_mode", "skip")).strip().lower()
+                        in ("overwrite", "increment")
+                    )
                 elif choice == "root":
                     self._select_automation_root()
                 elif choice == "prompts":
