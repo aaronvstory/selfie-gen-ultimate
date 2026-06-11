@@ -982,10 +982,13 @@ class KlingAutomationUI:
         # non-fal endpoints simply return None.
         selfie_price = self.fetch_model_pricing(raw_selfie_models[0]) if len(raw_selfie_models) == 1 else None
         selfie_price_plain = f" · ${selfie_price:.2f}/img" if selfie_price else ""
+        # markup-escape the model labels: custom endpoints / display names are
+        # USER text — "[bracketed]" segments vanish and "[/x]" raises
+        # MarkupError on EVERY screen repaint (entire-branch review CRITICAL).
         video_markup = (
-            f"🎬 [magenta]{model_name}[/magenta] · [green]{duration}s[/green] · [yellow]{price_str}[/yellow]"
+            f"🎬 [magenta]{_rich_markup_escape(str(model_name))}[/magenta] · [green]{duration}s[/green] · [yellow]{price_str}[/yellow]"
         )
-        selfie_markup = f"✨ [bold cyan]{selfie_label}[/bold cyan]" + (
+        selfie_markup = f"✨ [bold cyan]{_rich_markup_escape(str(selfie_label))}[/bold cyan]" + (
             f" · [yellow]${selfie_price:.2f}/img[/yellow]" if selfie_price else ""
         )
         plain_len = len(f"🎬 {model_name} · {duration}s · {price_str}   ·   ✨ {selfie_label}{selfie_price_plain}")
@@ -3011,9 +3014,11 @@ class KlingAutomationUI:
         table.add_column("manifest status")
         table.add_column("planned action")
         for row in rows[:60]:
+            # Folder + file names are user-controlled — escape so "case[A]" /
+            # "front[1].jpg" display instead of crashing the table render.
             table.add_row(
-                row["case"],
-                row["front"],
+                _rich_markup_escape(str(row["case"])),
+                _rich_markup_escape(str(row["front"])),
                 row["front_expanded"],
                 row["extracted"],
                 row["selfie"],
@@ -3421,7 +3426,8 @@ class KlingAutomationUI:
             sval = str(val)
             if len(sval) > 100:
                 sval = sval[:97] + "..."
-            table.add_row(key, sval)
+            # Prompt values are user text — escape or "[/x]" crashes the render.
+            table.add_row(key, _rich_markup_escape(sval))
         _RICH_CONSOLE.print(table)
         if self._use_legacy_prompt_ui():
             self._safe_input("\nPress Enter to return to the section picker...")
@@ -4596,7 +4602,10 @@ class KlingAutomationUI:
         table.add_column("Setting", style="cyan", no_wrap=True)
         table.add_column("Value")
         for label, value, style in self._run_settings_rows():
-            table.add_row(label, f"[{style}]{value}[/{style}]" if style else value)
+            # Values carry user text (model display names, paths) — escape so
+            # brackets display instead of crashing the table render.
+            safe_value = _rich_markup_escape(str(value))
+            table.add_row(label, f"[{style}]{safe_value}[/{style}]" if style else safe_value)
             if label in self._SETTINGS_TABLE_SECTION_AFTER:
                 table.add_section()
         _RICH_CONSOLE.print(table)
@@ -5449,7 +5458,12 @@ class KlingAutomationUI:
         table.add_column("Status")
         table.add_column("Reason")
         for key, result in sorted(runner.last_case_results.items(), key=lambda item: item[0].lower()):
-            table.add_row(key, str(result.get("status", "")), str(result.get("reason", "")))
+            # Folder names + error reasons are user-influenced text — escape.
+            table.add_row(
+                _rich_markup_escape(key),
+                str(result.get("status", "")),
+                _rich_markup_escape(str(result.get("reason", ""))),
+            )
         _RICH_CONSOLE.print(table)
         self._write_automation_summary(manifest, runner.last_case_results, stats)
         self.pause_review("\nPress Enter to continue...")

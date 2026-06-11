@@ -413,39 +413,44 @@ class AutomationManifest:
             self.save_atomic()
 
     def case_is_complete_and_valid(self, relative_key: str) -> bool:
-        case_entry = self.data.get("cases", {}).get(relative_key)
-        if not case_entry:
-            return False
-        if case_entry.get("status") != "complete":
-            return False
-        steps = case_entry.get("steps", {})
-        # The FINAL deliverable belongs to whichever post-process stage
-        # finished LAST — and that is order-dependent: the Phase E default
-        # runs Kling -> rPPG(base) -> Loop -> Oldcam (oldcam output is
-        # final), while the legacy per-oldcam fan-out runs rPPG last (the
-        # injected file is final, the PR #39 contract). A static stage
-        # preference breaks one or the other: validating the rppg BASE
-        # under Phase E masked a deleted oldcam output as "complete"
-        # (Codex P1, PR #96 round 4). finished_at (ISO-8601, lexically
-        # chronological) is the order-independent truth — update_step stamps
-        # it on every terminal status, so real manifests always carry it.
-        # Ties / missing timestamps keep the historical PR #39 preference
-        # (rppg > loop > oldcam) so legacy states behave as before.
-        candidates = []
-        for preference, stage in enumerate(("oldcam", "loop", "rppg")):
-            stage_step = steps.get(stage, {})
-            if stage_step.get("status") == "complete" and stage_step.get("output"):
-                candidates.append(
-                    (str(stage_step.get("finished_at") or ""), preference, stage_step["output"])
+        # Lock discipline: the worker thread calls this while the dashboard
+        # reader thread holds the lock for snapshot_statuses — BOTH sides of
+        # every read/write pair must hold it (entire-branch review MED; the
+        # lock is an RLock, so nested acquisition is safe).
+        with self._lock:
+            case_entry = self.data.get("cases", {}).get(relative_key)
+            if not case_entry:
+                return False
+            if case_entry.get("status") != "complete":
+                return False
+            steps = case_entry.get("steps", {})
+            # The FINAL deliverable belongs to whichever post-process stage
+            # finished LAST — and that is order-dependent: the Phase E default
+            # runs Kling -> rPPG(base) -> Loop -> Oldcam (oldcam output is
+            # final), while the legacy per-oldcam fan-out runs rPPG last (the
+            # injected file is final, the PR #39 contract). A static stage
+            # preference breaks one or the other: validating the rppg BASE
+            # under Phase E masked a deleted oldcam output as "complete"
+            # (Codex P1, PR #96 round 4). finished_at (ISO-8601, lexically
+            # chronological) is the order-independent truth — update_step stamps
+            # it on every terminal status, so real manifests always carry it.
+            # Ties / missing timestamps keep the historical PR #39 preference
+            # (rppg > loop > oldcam) so legacy states behave as before.
+            candidates = []
+            for preference, stage in enumerate(("oldcam", "loop", "rppg")):
+                stage_step = steps.get(stage, {})
+                if stage_step.get("status") == "complete" and stage_step.get("output"):
+                    candidates.append(
+                        (str(stage_step.get("finished_at") or ""), preference, stage_step["output"])
+                    )
+            if candidates:
+                final_output = max(candidates)[2]
+            else:
+                final_output = (
+                    steps.get("oldcam", {}).get("output")
+                    or steps.get("loop", {}).get("output")
+                    or steps.get("video_generate", {}).get("output")
                 )
-        if candidates:
-            final_output = max(candidates)[2]
-        else:
-            final_output = (
-                steps.get("oldcam", {}).get("output")
-                or steps.get("loop", {}).get("output")
-                or steps.get("video_generate", {}).get("output")
-            )
         if not final_output:
             return False
         return Path(final_output).exists()
