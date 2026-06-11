@@ -5582,9 +5582,17 @@ class KlingAutomationUI:
         """
         root = logging.getLogger()
         removed: List[logging.Handler] = []
+        # logging.lastResort guard (round 8, found via REAL run capture): if
+        # absl/TF imported before setup_logging, basicConfig is a NO-OP and
+        # the strip can leave root with ZERO handlers — then Python's
+        # lastResort handler (NOT in root.handlers, unstrippable) prints
+        # every WARNING bare to stderr through Live. A NullHandler makes
+        # "a handler exists" true so lastResort can never fire; file
+        # handlers (when present) still write normally.
+        null_guard = logging.NullHandler()
 
         def _strip() -> None:
-            # Remove EVERY non-file-backed root handler. Two round-8 lessons:
+            # Remove EVERY non-file-backed root handler. Round-8 lessons:
             # (1) the heavy face stack imports LAZILY inside the run, and
             # absl/TF install a fresh console handler on the ROOT logger at
             # import time — i.e. AFTER a one-shot strip ("Anti-spoofing…" /
@@ -5595,15 +5603,17 @@ class KlingAutomationUI:
             # the stream-identity check is reliable — keep file handlers,
             # drop everything else for the Live window.
             for handler in list(root.handlers):
-                if isinstance(handler, logging.FileHandler):
-                    continue  # file-backed — keep (RotatingFileHandler included)
+                if isinstance(handler, logging.FileHandler) or handler is null_guard:
+                    continue  # file-backed / our guard — keep
                 root.removeHandler(handler)
                 removed.append(handler)
 
+        root.addHandler(null_guard)
         _strip()
         try:
             yield _strip
         finally:
+            root.removeHandler(null_guard)
             for handler in removed:
                 root.addHandler(handler)
 

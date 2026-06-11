@@ -190,6 +190,28 @@ def test_suppress_stream_logging_restrip_catches_late_handlers(tmp_path):
         root.removeHandler(file_handler)
 
 
+def test_suppress_stream_logging_neutralizes_lastresort():
+    """Round-8 REAL-run finding: when absl/TF import before setup_logging,
+    basicConfig is a no-op and the strip can leave root with ZERO handlers —
+    Python's logging.lastResort (not in root.handlers, unstrippable) then
+    prints every WARNING bare to stderr through Live. The CM must keep at
+    least a guard handler on root so lastResort can never fire."""
+    root = logging.getLogger()
+    saved = list(root.handlers)
+    for h in saved:
+        root.removeHandler(h)
+    try:
+        with KlingAutomationUI._suppress_stream_logging():
+            assert root.handlers, (
+                "root must keep a guard handler during the Live window — "
+                "an empty root.handlers re-enables logging.lastResort"
+            )
+        assert not root.handlers, "the guard must be removed on exit"
+    finally:
+        for h in saved:
+            root.addHandler(h)
+
+
 def test_suppress_stream_logging_restores_on_exception(tmp_path):
     root = logging.getLogger()
     stream_handler = logging.StreamHandler(sys.stderr)
