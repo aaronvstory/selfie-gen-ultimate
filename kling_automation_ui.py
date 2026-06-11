@@ -403,7 +403,15 @@ class KlingAutomationUI:
             # gated per-model by the dispatcher's capability check.
             "cfg_scale_value": 0.7,
             "lock_end_frame": True,
-            "automation_recommended_defaults_version": RECOMMENDED_DEFAULTS_VERSION,
+            # Fresh install (no config file) starts at version 0 so the
+            # one-time SILENT migration applies the FULL recommended
+            # baseline (rPPG ON + oldcam v13 + cli_* Standard/slot 4) on
+            # the first interactive launch. The v7 baseline deliberately
+            # DIVERGES from the global defaults (automation_rppg_enabled
+            # is False there) — stamping the current version here marked
+            # fresh installs "already migrated" and the baseline never
+            # landed (Codex bot P2, PR #96 round 11).
+            "automation_recommended_defaults_version": 0,
         }
 
         try:

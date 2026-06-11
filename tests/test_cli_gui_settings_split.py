@@ -295,11 +295,36 @@ def test_load_config_missing_version_key_marks_config_for_migration(tmp_path):
     assert merged["automation_recommended_defaults_version"] == 0
 
 
-def test_load_config_fresh_install_is_already_current(tmp_path):
+def test_load_config_fresh_install_marks_config_for_migration(tmp_path):
+    """A TRUE fresh install (no config file at all) must start at version 0
+    so the silent migration applies the full v7 baseline — the baseline
+    deliberately diverges from the global defaults (rPPG ON vs OFF), so a
+    fresh install stamped 'already current' would never get it (Codex bot
+    P2, PR #96 round 11; supersedes the old 'already current' contract)."""
     ui = KlingAutomationUI.__new__(KlingAutomationUI)
     ui.config_file = str(tmp_path / "does-not-exist.json")
     merged = ui.load_config()
-    assert merged["automation_recommended_defaults_version"] == RECOMMENDED_DEFAULTS_VERSION
+    assert merged["automation_recommended_defaults_version"] == 0
+
+
+def test_fresh_install_migration_lands_rppg_on_baseline(tmp_path):
+    """End-to-end contract of the Codex bot P2 fix: fresh install →
+    load_config (version 0) → _auto_upgrade_recommended_defaults applies
+    the v7 baseline (rPPG ON, oldcam v13, CLI Standard/slot 4) silently."""
+    from automation.config import merge_automation_defaults
+
+    loader = KlingAutomationUI.__new__(KlingAutomationUI)
+    loader.config_file = str(tmp_path / "does-not-exist.json")
+    ui = _bare_ui(merge_automation_defaults(loader.load_config()))
+    saves: list = []
+    ui.save_config = lambda: saves.append(True)
+    ui._auto_upgrade_recommended_defaults()
+    assert ui.config["automation_recommended_defaults_version"] == RECOMMENDED_DEFAULTS_VERSION
+    assert ui.config["automation_rppg_enabled"] is True
+    assert ui.config["automation_oldcam_version"] == ["v13"]
+    assert ui.config["cli_video_model"] == STANDARD
+    assert ui.config["cli_kling_prompt_slot"] == 4
+    assert saves, "the migration must persist"
 
 
 def test_load_config_existing_version_value_is_preserved(tmp_path):
