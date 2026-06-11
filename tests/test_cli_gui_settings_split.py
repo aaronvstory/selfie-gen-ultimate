@@ -509,6 +509,114 @@ def test_quick_edit_choices_cover_every_field_and_groups_are_consistent():
 
 
 # --------------------------------------------------------------------------
+# Menu DISPATCH wiring: every value must reach its handler (a typo'd id in
+# the choice list or dispatch chain would otherwise ship a dead menu entry)
+# --------------------------------------------------------------------------
+
+def _wired_ui(tmp_path=None):
+    ui = _bare_ui(dict(AUTOMATION_DEFAULTS))
+    ui.automation_root_folder = str(tmp_path) if tmp_path else ""
+    calls: list = []
+
+    def _stub(name):
+        return lambda *a, **k: calls.append(name)
+
+    for name in (
+        "_run_resume_automation", "_scan_automation_cases", "_dry_run_automation",
+        "_quick_edit_settings", "_settings_hub_menu", "_run_manual_kling_menu",
+        "launch_gui", "_maintenance_menu", "_select_automation_root",
+        "display_header", "_render_run_settings_table",
+        "_edit_automation_settings", "configure_advanced_video_settings",
+        "configure_api_provider_settings", "_show_full_prompts",
+        "_compare_gui_settings_menu", "_apply_recommended_automation_defaults",
+        "check_dependencies", "pause_review", "save_config",
+    ):
+        setattr(ui, name, _stub(name))
+    ui._use_legacy_prompt_ui = lambda: False
+    return ui, calls
+
+
+@pytest.mark.parametrize(
+    "choice,expected",
+    [
+        ("scan", "_scan_automation_cases"),
+        ("quick", "_quick_edit_settings"),
+        ("settings", "_settings_hub_menu"),
+        ("manual", "_run_manual_kling_menu"),
+        ("gui", "launch_gui"),
+        ("maintenance", "_maintenance_menu"),
+    ],
+)
+def test_main_menu_dispatch_reaches_handler(choice, expected):
+    ui, calls = _wired_ui()
+    ui._q_menu = lambda *a, **k: choice
+    result = ui._run_configuration_menu_questionary_iteration()
+    assert expected in calls
+    assert result is None
+
+
+def test_main_menu_run_offers_root_picker_when_unset():
+    ui, calls = _wired_ui()
+    ui._q_menu = lambda *a, **k: "run"
+    ui._run_configuration_menu_questionary_iteration()
+    assert "_select_automation_root" in calls
+    assert "_run_resume_automation" not in calls  # root still unset -> no run
+
+
+def test_main_menu_run_dispatches_with_root(tmp_path):
+    ui, calls = _wired_ui(tmp_path)
+    ui._q_menu = lambda *a, **k: "run"
+    ui._run_configuration_menu_questionary_iteration()
+    assert "_run_resume_automation" in calls
+
+
+def test_main_menu_quit_exits():
+    ui, _calls = _wired_ui()
+    ui._q_menu = lambda *a, **k: "q"
+    with pytest.raises(SystemExit):
+        ui._run_configuration_menu_questionary_iteration()
+
+
+def test_settings_hub_dispatches_every_entry():
+    ui, calls = _wired_ui()
+    # Restore the REAL hub under test; everything it calls stays stubbed.
+    ui._settings_hub_menu = KlingAutomationUI._settings_hub_menu.__get__(ui, KlingAutomationUI)
+    seq = iter(["quick", "all", "advanced", "keys", "prompts", "compare", "reset", "back"])
+    ui._q_menu = lambda *a, **k: next(seq)
+    ui._settings_hub_menu()
+    for expected in (
+        "_quick_edit_settings", "_edit_automation_settings",
+        "configure_advanced_video_settings", "configure_api_provider_settings",
+        "_show_full_prompts", "_compare_gui_settings_menu",
+        "_apply_recommended_automation_defaults",
+    ):
+        assert expected in calls, f"settings hub never dispatched {expected!r}"
+
+
+def test_maintenance_menu_dispatches_every_entry(tmp_path):
+    ui, calls = _wired_ui()
+    ui._maintenance_menu = KlingAutomationUI._maintenance_menu.__get__(ui, KlingAutomationUI)
+    ui._automation_manifest_path = lambda: tmp_path / "automation_manifest.json"
+    seq = iter(["deps", "manifest", "back"])
+    ui._q_menu = lambda *a, **k: next(seq)
+    ui._maintenance_menu()
+    assert "check_dependencies" in calls
+
+
+def test_quick_editor_toggle_and_done_round_trip():
+    ui, calls = _wired_ui()
+    ui._quick_edit_settings = KlingAutomationUI._quick_edit_settings.__get__(ui, KlingAutomationUI)
+    ui.config["automation_rppg_enabled"] = False
+    ui._format_oldcam_versions = lambda *a, **k: "v13"
+    ui._read_max_cases_setting = lambda: "5"
+    seq = iter(["rppg", "done"])
+    ui._q_select = lambda *a, **k: next(seq)
+    ui._quick_edit_settings()
+    assert ui.config["automation_rppg_enabled"] is True, "toggle must flip the value"
+    assert "save_config" in calls
+
+
+# --------------------------------------------------------------------------
 # ASCII banner constant
 # --------------------------------------------------------------------------
 

@@ -596,6 +596,55 @@ Load-bearing rules (the ones that bite):
   darwin-x86_64 wheel). Don't add it back.
 
 ---
+## CLI UX architecture (v2.31, PR #96) — binding invariants
+
+The CLI (`kling_automation_ui.py`) was fully overhauled in PR #96. The rules
+that bite, learned across 7 review rounds:
+
+- **Rich markup-escape EVERY user string** rendered through `_RICH_CONSOLE`
+  (Panel bodies, Table cells, `Text.from_markup`, dashboard lines): prompts,
+  model display names, endpoints, folder/file names, paths, error text.
+  `[bracketed]` text silently vanishes and a literal `[/x]` raises
+  `MarkupError` — one unescaped sink crashed every screen repaint. Use
+  `_rich_markup_escape` (imported at top); literal bracket glyphs in OUR
+  markup use the `\[` escape. questionary/prompt_toolkit labels are plain
+  text and safe.
+- **Per-surface config keys**: the CLI pipeline reads `cli_video_model` /
+  `cli_video_model_display_name` / `cli_kling_prompt_slot` /
+  `cli_video_duration` via `automation/config.py::resolve_cli_*` (fallback to
+  the GUI's `current_model` / `model_display_name` / `current_prompt_slot` /
+  `video_duration` for pre-split configs). Prompt slot TEXT
+  (`saved_prompts`/`negative_prompts`) stays SHARED GUI⇄CLI by design.
+  **Never `automation_`-prefix these keys**: `automation/manifest.py`
+  fingerprints every `automation_*` key and the model is deliberately
+  non-fingerprinted (resume-with-different-model + `--model` contract).
+- **Manifest fingerprint**: run-scope/discovery/metadata keys are excluded
+  (`_FINGERPRINT_EXCLUDED_KEYS`). The fingerprint answers exactly one
+  question — "would re-running produce different OUTPUTS?". The lost
+  front-discovery protection is replaced by the per-case
+  `AutoPipelineRunner._reset_case_if_front_changed` guard. Manifest reads
+  from any thread hold `manifest.lock` (both sides of every read/write pair).
+- **Menus**: choice lists are single-source `(label, value)` pair methods
+  (`_main_menu_choice_pairs`, `_quick_edit_choice_pairs`) + group specs
+  (`_MAIN_MENU_GROUPS`, `_QUICK_EDIT_GROUPS`) — tests assert pairs⇄groups
+  consistency AND dispatch wiring (`tests/test_cli_gui_settings_split.py`).
+  Every interactive screen repaints via `display_header()` (clears + banner);
+  **legacy/non-TTY output must stay byte-identical** — gate all restyles on
+  `not self._use_legacy_prompt_ui()`. Tables come from `_styled_table()`
+  only. No `questionary.confirm` y/n — `_qs_bool` is an ON/off select.
+- **`RUN_SUITE.bat` / `RUN_SUITE.command`** (root): the unified front door.
+  They DELEGATE to `launchers/windows|macos/*` and must never install
+  anything themselves. The `.bat` is ASCII-only with runtime ANSI (forfiles
+  0x1B trick) gated on VT-capable consoles; cmd traps that bit here: `%CD%`
+  etc. are dynamic variables (never use as var names), `for /f` running a
+  command with `=`/`,` flags needs a `cmd /c "..."` wrapper.
+- **Release zips**: `distribution/build_release.py` CLOBBERS `dist/` — run
+  `build_release_personal.py` LAST. Verify every zip: no `.scratch*`, keys
+  blanked, `RUN_SUITE.*` present, import probe from the extracted tree.
+- **Dev box**: `KLING_UV_DEV=1` (set user-wide) makes the launcher `uv sync`
+  include the `dev` dependency group so pytest survives app launches;
+  without it every launch uninstalls pytest.
+
 ## Supply Chain Audit
 
 Two project-level scanners run on every commit that touches a dep manifest,
