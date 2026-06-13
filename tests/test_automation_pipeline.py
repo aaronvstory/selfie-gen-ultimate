@@ -379,8 +379,11 @@ def test_front_expand_2pass_uses_distinct_intermediate_path(tmp_path: Path, monk
       * Pass 1's output_path is distinct from pass 2's.
       * Pass 1's path ends in `-stage1.png` (the deliberate intermediate
         marker introduced in d82ccb7d).
-      * After pass 2 succeeds, the stage1 file is cleaned up so the case
-        dir doesn't accumulate junk (subagent M1).
+      * The stage1 file is RETAINED alongside the final output so both
+        expansion stages are available for review (user request: "run 2x
+        mode should save the expanded both steps"). The earlier behavior
+        unlinked it; that is now reversed and the stage1 path is recorded
+        in the front_expand manifest meta.
     """
     case_dir = tmp_path / "case-g"
     case_dir.mkdir()
@@ -444,12 +447,180 @@ def test_front_expand_2pass_uses_distinct_intermediate_path(tmp_path: Path, monk
     # Pass 2's input must be pass 1's output (chained).
     assert front_calls[1]["image_path"] == pass1_out
 
-    # Stage1 intermediate cleaned up after pass 2 succeeds (subagent M1).
-    assert not Path(pass1_out).exists(), (
-        f"stage1 intermediate {pass1_out} should be deleted after pass 2"
+    # Stage1 intermediate is RETAINED after pass 2 (user request: keep both
+    # expansion stages on disk for review).
+    assert Path(pass1_out).exists(), (
+        f"stage1 intermediate {pass1_out} should be retained alongside the final"
     )
     # Final pass-2 output survives.
     assert Path(pass2_out).exists()
+    # The retained stage1 path is recorded in the front_expand manifest meta
+    # so callers can find it deterministically.
+    front_step = manifest.get_step(record.relative_key, "front_expand")
+    assert front_step.get("meta", {}).get("stage1_output") == pass1_out
+
+
+class _GeometryRecordingOutpaint:
+    """Records the expand margins per call and writes an output sized to
+    (input + requested margins) so a 2-pass run's pass-2 input is genuinely
+    larger than pass-1's — exercising the per-pass geometry recompute."""
+
+    def __init__(self):
+        self.invocations = []
+
+    def set_progress_callback(self, _cb):
+        return None
+
+    def outpaint(self, image_path, output_folder, output_path=None, **kwargs):
+        from PIL import Image as _Img, ImageOps as _Ops
+        with _Img.open(image_path) as _im:
+            iw, ih = _Ops.exif_transpose(_im).size
+        l = int(kwargs.get("expand_left", 0))
+        r = int(kwargs.get("expand_right", 0))
+        t = int(kwargs.get("expand_top", 0))
+        b = int(kwargs.get("expand_bottom", 0))
+        self.invocations.append({
+            "image_path": image_path,
+            "output_path": output_path,
+            "margins": (l, r, t, b),
+            "input_size": (iw, ih),
+        })
+        out_path = Path(output_path or (Path(output_folder) / f"{Path(image_path).stem}-expanded.png"))
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        _Img.new("RGB", (max(1, iw + l + r), max(1, ih + t + b)), (120, 120, 120)).save(out_path)
+        return str(out_path)
+
+
+def test_front_expand_2pass_recomputes_geometry_per_pass(tmp_path: Path, monkeypatch):
+    """Regression for the user-reported black-border bug: the 2-pass front
+    expand must recompute the expand plan from EACH pass's actual input
+    dimensions, not reuse pass-1's plan on pass-2's already-larger image.
+
+    We spy on compute_percent_expand_plan and assert it is invoked once per
+    pass with the THAT pass's real input dims (pass 1 = original; pass 2 =
+    pass-1's larger output). The OLD bug computed the plan ONCE before the
+    loop from the original dims and never re-derived it for pass 2."""
+    case_dir = tmp_path / "case-geo"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    # Landscape original, large enough that two passes meaningfully grow it.
+    Image.new("RGB", (900, 600), (1, 1, 1)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-geo")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x",
+        "automation_oldcam_required": False,
+        "saved_prompts": {"1": "prompt"},
+        "current_prompt_slot": 1,
+        "automation_front_expand_passes": 2,
+        "automation_front_expand_percent": 40,
+        "automation_front_expand_provider": "fal",
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop",
+                        lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details",
+                        lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
+
+    # Spy on the plan function, recording the (w, h) it is called with.
+    import automation.pipeline as _pipe
+    real_plan = _pipe.compute_percent_expand_plan
+    plan_dims = []
+
+    def spy_plan(w, h, pct, caps):
+        plan_dims.append((w, h))
+        return real_plan(w, h, pct, caps)
+
+    monkeypatch.setattr(_pipe, "compute_percent_expand_plan", spy_plan)
+
+    fake = _GeometryRecordingOutpaint()
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: fake,
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+
+    front_calls = [inv for inv in fake.invocations if Path(inv["output_path"] or "").parent == case_dir]
+    assert len(front_calls) == 2, f"expected 2 front-expand calls, got {front_calls}"
+
+    # Pass 2 reads pass 1's output, which is LARGER than the original.
+    assert front_calls[1]["input_size"] != front_calls[0]["input_size"]
+    assert front_calls[1]["input_size"][0] > front_calls[0]["input_size"][0]
+
+    # The plan was recomputed for the front step once per pass: pass 1 with
+    # the original dims, pass 2 with pass-1's (larger) output dims. The OLD
+    # bug only ever planned from the original (900, 600).
+    assert (900, 600) in plan_dims, f"pass 1 should plan from original dims; got {plan_dims}"
+    pass2_dims = front_calls[1]["input_size"]
+    assert pass2_dims in plan_dims, (
+        f"pass 2 must recompute the plan from its own input dims {pass2_dims}; got {plan_dims}"
+    )
+
+
+def test_front_expand_black_fill_forces_single_pass(tmp_path: Path, monkeypatch):
+    """black_fill is deterministic; a 2nd pass would re-border an already
+    bordered image. The pipeline forces a single pass and threads
+    composite_mode='black_fill' through to the generator."""
+    case_dir = tmp_path / "case-bf"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (200, 150), (1, 1, 1)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-bf")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x",
+        "automation_oldcam_required": False,
+        "saved_prompts": {"1": "prompt"},
+        "current_prompt_slot": 1,
+        "automation_front_expand_passes": 2,  # should be forced to 1
+        "automation_front_expand_composite_mode": "black_fill",
+        "automation_front_expand_provider": "fal",
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop",
+                        lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details",
+                        lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
+
+    fake = FakeOutpaint()
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: fake,
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+
+    front_calls = [inv for inv in fake.invocations if Path(inv["output_path"] or "").parent == case_dir]
+    # Single front-expand pass (not 2) because black_fill forces it.
+    assert len(front_calls) == 1, f"black_fill must run a single front pass; got {front_calls}"
+    # No -stage1 intermediate is produced for a single pass.
+    assert not front_calls[0]["output_path"].endswith("-stage1.png")
+    # composite_mode threaded through to the generator.
+    assert any(call.get("composite_mode") == "black_fill" for call in fake.calls)
+    # Manifest records the single executed pass.
+    front_step = manifest.get_step(record.relative_key, "front_expand")
+    assert front_step.get("meta", {}).get("executed_passes") == 1
 
 
 def test_pipeline_overwrite_mode_reuses_base_output_name(tmp_path: Path, monkeypatch):

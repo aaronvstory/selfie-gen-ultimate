@@ -302,7 +302,10 @@ class OutpaintGenerator:
             output_format: Output format ("png" or "jpg")
             composite_mode: "preserve_seamless" (outside-only seam blend + exact center),
                 "feathered" (legacy 3px blend), "hard" (pixel-perfect),
-                or "none" (raw AI output)
+                "none" (raw AI output — still calls the provider), or
+                "black_fill" (paste the original onto a solid BLACK canvas with
+                NO provider call — instant, free, deterministic; the expansion
+                regions are pure black instead of AI-generated content)
             output_path: If provided, use this exact path instead of generating one
             poll_timeout_seconds: Maximum seconds to wait for async poll completion.
             cancel_event: Optional event to abort waiting and return early.
@@ -311,6 +314,29 @@ class OutpaintGenerator:
             Absolute path to expanded image, or None on failure.
         """
         self._set_last_outpaint_error_detail("")
+
+        # black_fill: a no-API local mode. Instead of asking a provider to
+        # generate the expansion regions, paste the original onto a solid
+        # black canvas sized exactly like the AI path would have produced.
+        # Short-circuit BEFORE any provider selection / upload / queue call
+        # so it stays instant, free, and deterministic (and never touches
+        # the BFL/fal credentials). Geometry mirrors the fal path: the
+        # original is scaled to the same simulated-upload size the AI path
+        # uses, then black margins are added — so swapping black_fill in/out
+        # changes only what fills the borders, not the framing.
+        if (composite_mode or "").strip().lower() == "black_fill":
+            return self._black_fill_expand(
+                image_path=image_path,
+                output_folder=output_folder,
+                expand_left=expand_left,
+                expand_right=expand_right,
+                expand_top=expand_top,
+                expand_bottom=expand_bottom,
+                output_format=output_format,
+                output_path=output_path,
+                document_mode=document_mode,
+            )
+
         selected_provider = (provider or "auto").strip().lower()
         if selected_provider not in {"auto", "bfl", "fal"}:
             self._report(f"Invalid provider override: {provider}", "error")
@@ -704,6 +730,125 @@ class OutpaintGenerator:
 
         return output_path
 
+    # ── black_fill (no-API local expand) ─────────────────────────────────
+
+    def _black_fill_expand(
+        self,
+        image_path: str,
+        output_folder: str,
+        expand_left: int,
+        expand_right: int,
+        expand_top: int,
+        expand_bottom: int,
+        output_format: str,
+        output_path: Optional[str] = None,
+        document_mode: bool = False,
+    ) -> Optional[str]:
+        """Expand by pasting the original onto a solid BLACK canvas.
+
+        No provider call: the borders are filled with pure black instead of
+        AI-generated content. Geometry matches the fal path so the framing is
+        identical to a real expand — only the fill differs. Returns the output
+        path, or None on failure.
+        """
+        try:
+            # Resolve margins the same way the fal path would, so the framing
+            # is identical to a real expand. document_mode recomputes a
+            # centered 3:4 plan; otherwise honor the caller's margins.
+            if document_mode:
+                try:
+                    with Image.open(image_path) as src_img:
+                        src_w, src_h = ImageOps.exif_transpose(src_img).size
+                    plan = compute_centered_aspect_expand_plan(
+                        orig_w=src_w,
+                        orig_h=src_h,
+                        target_aspect=(3, 4),
+                        caps=compute_provider_caps("fal"),
+                    )
+                    expand_left = int(plan["left"])
+                    expand_right = int(plan["right"])
+                    expand_top = int(plan["top"])
+                    expand_bottom = int(plan["bottom"])
+                except Exception as exc:
+                    # Fail rather than fall through: the automation pipeline
+                    # passes empty margins in document mode (the percent plan
+                    # is skipped), so swallowing this would silently produce a
+                    # ZERO-expansion canvas that looks like a successful
+                    # "expand". A real failure must propagate to the caller.
+                    self._report(
+                        f"black_fill document-mode planning failed: {exc}", "error"
+                    )
+                    self._set_last_outpaint_error_detail(
+                        f"black_fill_document_plan_failed:{type(exc).__name__}"
+                    )
+                    return None
+
+            # Use the SAME preflight scaling the fal path uses so the
+            # original sits at the same simulated-upload size + the margins
+            # are in the same coordinate system. This keeps black_fill output
+            # geometry identical to what an AI expand would have framed.
+            max_size, adj_l, adj_r, adj_t, adj_b, sim_w, sim_h = self._preflight_size(
+                image_path, expand_left, expand_right, expand_top, expand_bottom
+            )
+            base_img = self._prepare_processed_image(
+                image_path=image_path, max_size=max_size
+            )
+            # _prepare_processed_image thumbnails to max_size; sim_w/sim_h is
+            # the geometry preflight planned around. Align them exactly so the
+            # canvas math below can't drift by a rounding pixel. Close the
+            # pre-resize handle so a long automation loop doesn't leak PIL
+            # decoders.
+            try:
+                if base_img.size != (sim_w, sim_h):
+                    resized = base_img.resize((sim_w, sim_h), Image.Resampling.LANCZOS)
+                    base_img.close()
+                    base_img = resized
+
+                canvas_w = sim_w + adj_l + adj_r
+                canvas_h = sim_h + adj_t + adj_b
+                self._report(
+                    (
+                        "black_fill: building black canvas "
+                        f"{canvas_w}x{canvas_h} (orig≈{sim_w}x{sim_h}, "
+                        f"margins L={adj_l} R={adj_r} T={adj_t} B={adj_b}) — no API call"
+                    ),
+                    "progress",
+                )
+
+                canvas = Image.new("RGB", (canvas_w, canvas_h), (0, 0, 0))
+                canvas.paste(base_img, (adj_l, adj_t))
+            finally:
+                base_img.close()
+
+            os.makedirs(output_folder, exist_ok=True)
+            if output_path is None:
+                stem = Path(image_path).stem
+                ext = f".{output_format}"
+                output_path = os.path.join(output_folder, f"{stem}-expanded{ext}")
+                counter = 1
+                while os.path.exists(output_path):
+                    output_path = os.path.join(
+                        output_folder, f"{stem}-expanded_v{counter}{ext}"
+                    )
+                    counter += 1
+
+            save_kwargs = (
+                {"quality": 95}
+                if output_format.lower() in ("jpg", "jpeg")
+                else {}
+            )
+            canvas.save(output_path, **save_kwargs)
+            self._report(
+                f"black_fill saved: {os.path.basename(output_path)}", "success"
+            )
+            return output_path
+        except Exception as exc:
+            self._report(f"black_fill expand failed: {exc}", "error")
+            self._set_last_outpaint_error_detail(
+                f"black_fill_failed:{type(exc).__name__}"
+            )
+            return None
+
     # ── Shared composite ─────────────────────────────────────────────────
 
     def _composite_onto_result(
@@ -1090,6 +1235,21 @@ class OutpaintGenerator:
         """Outpaint via BFL Expand (FLUX Pro 1.0). Returns output path or None."""
         import requests
         self._set_last_outpaint_error_detail("")
+
+        # Defensive: black_fill never calls a provider. outpaint() short-
+        # circuits it before reaching here, but a direct/test caller of
+        # _bfl_outpaint with black_fill must also stay API-free.
+        if (composite_mode or "").strip().lower() == "black_fill":
+            return self._black_fill_expand(
+                image_path=image_path,
+                output_folder=output_folder,
+                expand_left=expand_left,
+                expand_right=expand_right,
+                expand_top=expand_top,
+                expand_bottom=expand_bottom,
+                output_format=output_format,
+                output_path=output_path,
+            )
 
         def _summarize_poll_payload(payload: dict) -> str:
             safe = {}
