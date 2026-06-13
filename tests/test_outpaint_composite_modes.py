@@ -660,3 +660,35 @@ def test_black_fill_direct_bfl_outpaint_stays_local(monkeypatch, tmp_path: Path)
     )
     assert out == str(out_path)
     assert Image.open(out_path).convert("RGB").getpixel((0, 0)) == (0, 0, 0)
+
+
+def test_black_fill_document_mode_plan_failure_returns_none(monkeypatch, tmp_path: Path):
+    """If document-mode 3:4 planning raises, black_fill must FAIL rather than
+    fall through with zero margins (which would silently produce a
+    no-expansion canvas that looks like success)."""
+    _assert_no_network(monkeypatch)
+    gen = OutpaintGenerator(api_key="x")
+    src_path = tmp_path / "in.png"
+    _build_source_image(60, 80).save(src_path)
+    out_path = tmp_path / "bf_doc.png"
+
+    def boom_plan(*_args, **_kwargs):
+        raise RuntimeError("simulated plan failure")
+
+    monkeypatch.setattr("outpaint_generator.compute_centered_aspect_expand_plan", boom_plan)
+
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        output_path=str(out_path),
+        provider="fal",
+        composite_mode="black_fill",
+        document_mode=True,
+        output_format="png",
+        # In document mode the pipeline passes empty margins (0); the plan is
+        # what supplies them. If the plan fails we must NOT ship a 0-margin file.
+        expand_left=0, expand_right=0, expand_top=0, expand_bottom=0,
+    )
+    assert out is None
+    assert not out_path.exists(), "no zero-margin output should be written on plan failure"
+    assert "black_fill_document_plan_failed" in gen.get_last_outpaint_error_detail()

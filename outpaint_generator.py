@@ -770,9 +770,18 @@ class OutpaintGenerator:
                     expand_top = int(plan["top"])
                     expand_bottom = int(plan["bottom"])
                 except Exception as exc:
+                    # Fail rather than fall through: the automation pipeline
+                    # passes empty margins in document mode (the percent plan
+                    # is skipped), so swallowing this would silently produce a
+                    # ZERO-expansion canvas that looks like a successful
+                    # "expand". A real failure must propagate to the caller.
                     self._report(
-                        f"black_fill document-mode planning failed: {exc}", "warning"
+                        f"black_fill document-mode planning failed: {exc}", "error"
                     )
+                    self._set_last_outpaint_error_detail(
+                        f"black_fill_document_plan_failed:{type(exc).__name__}"
+                    )
+                    return None
 
             # Use the SAME preflight scaling the fal path uses so the
             # original sits at the same simulated-upload size + the margins
@@ -786,23 +795,30 @@ class OutpaintGenerator:
             )
             # _prepare_processed_image thumbnails to max_size; sim_w/sim_h is
             # the geometry preflight planned around. Align them exactly so the
-            # canvas math below can't drift by a rounding pixel.
-            if base_img.size != (sim_w, sim_h):
-                base_img = base_img.resize((sim_w, sim_h), Image.Resampling.LANCZOS)
+            # canvas math below can't drift by a rounding pixel. Close the
+            # pre-resize handle so a long automation loop doesn't leak PIL
+            # decoders.
+            try:
+                if base_img.size != (sim_w, sim_h):
+                    resized = base_img.resize((sim_w, sim_h), Image.Resampling.LANCZOS)
+                    base_img.close()
+                    base_img = resized
 
-            canvas_w = sim_w + adj_l + adj_r
-            canvas_h = sim_h + adj_t + adj_b
-            self._report(
-                (
-                    "black_fill: building black canvas "
-                    f"{canvas_w}x{canvas_h} (orig≈{sim_w}x{sim_h}, "
-                    f"margins L={adj_l} R={adj_r} T={adj_t} B={adj_b}) — no API call"
-                ),
-                "progress",
-            )
+                canvas_w = sim_w + adj_l + adj_r
+                canvas_h = sim_h + adj_t + adj_b
+                self._report(
+                    (
+                        "black_fill: building black canvas "
+                        f"{canvas_w}x{canvas_h} (orig≈{sim_w}x{sim_h}, "
+                        f"margins L={adj_l} R={adj_r} T={adj_t} B={adj_b}) — no API call"
+                    ),
+                    "progress",
+                )
 
-            canvas = Image.new("RGB", (canvas_w, canvas_h), (0, 0, 0))
-            canvas.paste(base_img, (adj_l, adj_t))
+                canvas = Image.new("RGB", (canvas_w, canvas_h), (0, 0, 0))
+                canvas.paste(base_img, (adj_l, adj_t))
+            finally:
+                base_img.close()
 
             os.makedirs(output_folder, exist_ok=True)
             if output_path is None:
