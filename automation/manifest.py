@@ -89,6 +89,14 @@ def _collision_free_backup_path(manifest_path: Path, kind: str) -> Path:
 # The exclusion applies to BOTH sides of the comparison (loaded manifest AND
 # requested config flow through this builder), so manifests that RECORDED
 # these keys before the exclusion existed stay valid too.
+#
+# CROSS-OS REBASE COUPLING: any NEW path-valued automation_* key that can sit
+# under the manifest root MUST be added here. The cross-OS load rebases the
+# loaded config_snapshot in place (_rebase_manifest_paths), but the REQUESTED
+# snapshot is not rebased — so a fingerprinted path-valued key would differ
+# loaded-vs-requested purely from the rebase and manufacture a spurious
+# "fingerprint mismatch" that hard-fails resume. Today every path-valued
+# snapshot key is either listed here or a bare filename (no root prefix).
 _FINGERPRINT_EXCLUDED_KEYS = frozenset(
     {
         "automation_max_cases_per_run",

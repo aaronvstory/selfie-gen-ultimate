@@ -334,6 +334,67 @@ def test_manifest_cross_os_resume_skips_when_output_present(tmp_path: Path):
     assert loaded.case_is_complete_and_valid("absent") is False   # output missing -> reprocess
 
 
+def test_manifest_rebase_respects_path_boundary_and_substrings(tmp_path: Path):
+    """The rebase must only rewrite values that sit UNDER the old root with a
+    path boundary — a sibling folder sharing a name prefix (Batch_040 vs
+    Batch_04) and a free-text value that merely contains the root substring
+    mid-string must be left untouched.
+    """
+    root = tmp_path / "Batch_04"
+    root.mkdir()
+    manifest_path = root / "automation_manifest.json"
+    snapshot = {"automation_manifest_name": "automation_manifest.json"}
+    win_root = r"D:\shoots\Batch_04"
+
+    sibling = r"D:\shoots\Batch_040\case\x\out.mp4"  # NOT under Batch_04
+    midstring = r"copied from D:\shoots\Batch_04\case to backup"  # not a path prefix
+    nested_under_root = r"D:\shoots\Batch_04\case\a\extracted.png"  # genuinely under root
+
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "root_dir": win_root,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "config_snapshot": snapshot,
+                "cases": {
+                    "case/a": {
+                        "status": "complete",
+                        "steps": {
+                            "extract_portrait": {"status": "complete", "output": nested_under_root},
+                            # path buried in nested meta list -> deep-walk must reach it
+                            "similarity_gate": {
+                                "status": "complete",
+                                "meta": {
+                                    "note": midstring,
+                                    "diagnostics": {
+                                        "mode_results": [{"diagnostics": {"ref_path": nested_under_root}}]
+                                    },
+                                },
+                            },
+                            "sibling": {"status": "complete", "output": sibling},
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = AutomationManifest.create_or_load(manifest_path, root, snapshot)
+    steps = loaded.data["cases"]["case/a"]["steps"]
+
+    # Under-root paths rebased (including the nested meta list path).
+    assert steps["extract_portrait"]["output"] == str(root / "case" / "a" / "extracted.png")
+    assert steps["similarity_gate"]["meta"]["diagnostics"]["mode_results"][0]["diagnostics"][
+        "ref_path"
+    ] == str(root / "case" / "a" / "extracted.png")
+    # Sibling prefix and mid-string text left exactly as-is.
+    assert steps["sibling"]["output"] == sibling
+    assert steps["similarity_gate"]["meta"]["note"] == midstring
+
+
 def test_manifest_create_or_load_raises_on_fingerprint_mismatch(tmp_path: Path):
     manifest_path = tmp_path / "automation_manifest.json"
     root = tmp_path / "root"
