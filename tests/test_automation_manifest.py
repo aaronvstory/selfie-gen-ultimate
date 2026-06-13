@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from automation.manifest import AutomationManifest
+from automation.manifest import AutomationManifest, SCHEMA_VERSION
 from automation.config import merge_automation_defaults
 
 
@@ -227,6 +227,41 @@ def test_manifest_create_or_load_raises_on_root_mismatch(tmp_path: Path):
 
     with pytest.raises(ValueError, match="Manifest root mismatch"):
         AutomationManifest.create_or_load(manifest_path, root_b, snapshot)
+
+
+def test_manifest_rebases_foreign_os_root_when_in_place(tmp_path: Path):
+    """A manifest carrying a Windows-style root_dir must still load when the
+    file physically lives in the requested (POSIX) folder — resume across
+    OSes / after a folder move. The stale root_dir is rebased, not rejected.
+    """
+    root = tmp_path / "Batch_04"
+    root.mkdir()
+    manifest_path = root / "automation_manifest.json"
+    snapshot = {"automation_manifest_name": "automation_manifest.json"}
+
+    # Simulate a manifest authored on Windows: backslash drive-letter root.
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "root_dir": r"F:\Downloads\Telegram Desktop\DLs\Pandia\Batch_04",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "config_snapshot": snapshot,
+                "cases": {"case/a": {"status": "complete", "steps": {}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = AutomationManifest.create_or_load(manifest_path, root, snapshot)
+
+    # Loaded without raising, case data preserved, and root_dir rebased to
+    # the live POSIX path AND persisted to disk.
+    assert loaded.data["cases"]["case/a"]["status"] == "complete"
+    assert loaded.data["root_dir"] == str(root.resolve())
+    on_disk = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert on_disk["root_dir"] == str(root.resolve())
 
 
 def test_manifest_create_or_load_raises_on_fingerprint_mismatch(tmp_path: Path):

@@ -195,9 +195,27 @@ class AutomationManifest:
 
             loaded_root = str(Path(loaded.get("root_dir", "")).resolve())
             if loaded_root != resolved_root:
-                raise ValueError(
-                    f"Manifest root mismatch at {manifest_path}: manifest={loaded_root!r}, requested={resolved_root!r}"
-                )
+                # A manifest's authoritative identity is the FOLDER IT
+                # PHYSICALLY LIVES IN, not the absolute-path STRING it
+                # recorded at creation time. That string is OS- and
+                # location-specific: a manifest written on Windows records
+                # root_dir="F:\\...\\Batch_04", which Path().resolve() on
+                # macOS mangles into "<cwd>/F:\\...\\Batch_04" (a backslash
+                # path is not absolute on POSIX) — a guaranteed mismatch
+                # even when the file sits in EXACTLY the requested folder.
+                # The same happens when a folder is moved/renamed on one OS.
+                # When the manifest resides in the requested root, that
+                # stale root_dir is just metadata: rebase it to the live
+                # path and continue (cross-OS resume fix, 2026-06-13). Only
+                # a manifest loaded for a root it does NOT live in is a
+                # genuinely misplaced manifest -> hard error.
+                manifest_home = str(manifest_path.parent.resolve())
+                if manifest_home != resolved_root:
+                    raise ValueError(
+                        f"Manifest root mismatch at {manifest_path}: manifest={loaded_root!r}, requested={resolved_root!r}"
+                    )
+                loaded["root_dir"] = resolved_root
+                cls(manifest_path=manifest_path, data=loaded).save_atomic()
 
             loaded_fingerprint = _build_config_fingerprint(loaded.get("config_snapshot", {}))
             # Backward compatibility (Codex P1/P2, PR #39): a purely-
