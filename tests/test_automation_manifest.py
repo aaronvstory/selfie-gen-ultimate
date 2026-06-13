@@ -239,16 +239,31 @@ def test_manifest_rebases_foreign_os_root_when_in_place(tmp_path: Path):
     manifest_path = root / "automation_manifest.json"
     snapshot = {"automation_manifest_name": "automation_manifest.json"}
 
-    # Simulate a manifest authored on Windows: backslash drive-letter root.
+    # Simulate a manifest authored on Windows: backslash drive-letter root,
+    # with a completed case whose recorded paths are ALSO Windows absolutes.
+    win_root = r"F:\Downloads\Telegram Desktop\DLs\Pandia\Batch_04"
     manifest_path.write_text(
         json.dumps(
             {
                 "schema_version": SCHEMA_VERSION,
-                "root_dir": r"F:\Downloads\Telegram Desktop\DLs\Pandia\Batch_04",
+                "root_dir": win_root,
                 "created_at": "2026-01-01T00:00:00+00:00",
                 "updated_at": "2026-01-01T00:00:00+00:00",
                 "config_snapshot": snapshot,
-                "cases": {"case/a": {"status": "complete", "steps": {}}},
+                "cases": {
+                    "case/a": {
+                        "status": "complete",
+                        "case_dir": win_root + r"\case\a",
+                        "front_path": win_root + r"\case\a\front.png",
+                        "steps": {
+                            "video_generate": {
+                                "status": "complete",
+                                "output": win_root + r"\case\a\out.mp4",
+                            }
+                        },
+                        "outputs": {"video_generate": win_root + r"\case\a\out.mp4"},
+                    }
+                },
             }
         ),
         encoding="utf-8",
@@ -256,12 +271,67 @@ def test_manifest_rebases_foreign_os_root_when_in_place(tmp_path: Path):
 
     loaded = AutomationManifest.create_or_load(manifest_path, root, snapshot)
 
-    # Loaded without raising, case data preserved, and root_dir rebased to
-    # the live POSIX path AND persisted to disk.
-    assert loaded.data["cases"]["case/a"]["status"] == "complete"
+    # Loaded without raising, case data preserved, and EVERY path field
+    # rebased to the live POSIX root (root_dir + case_dir + front_path +
+    # step output + outputs mirror) AND persisted to disk.
+    case = loaded.data["cases"]["case/a"]
+    assert case["status"] == "complete"
     assert loaded.data["root_dir"] == str(root.resolve())
+    assert case["case_dir"] == str(root / "case" / "a")
+    assert case["front_path"] == str(root / "case" / "a" / "front.png")
+    assert case["steps"]["video_generate"]["output"] == str(root / "case" / "a" / "out.mp4")
+    assert case["outputs"]["video_generate"] == str(root / "case" / "a" / "out.mp4")
     on_disk = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert on_disk["root_dir"] == str(root.resolve())
+    assert on_disk["cases"]["case/a"]["steps"]["video_generate"]["output"] == str(
+        root / "case" / "a" / "out.mp4"
+    )
+
+
+def test_manifest_cross_os_resume_skips_when_output_present(tmp_path: Path):
+    """The real point of the path rebase: after a cross-OS load, a completed
+    case is skipped IFF its (now-rebased) output actually exists on this
+    machine, and reprocessed otherwise — instead of always reprocessing.
+    """
+    root = tmp_path / "Batch_07"
+    root.mkdir()
+    manifest_path = root / "automation_manifest.json"
+    snapshot = {"automation_manifest_name": "automation_manifest.json"}
+    win_root = r"D:\shoots\Batch_07"
+
+    def _case(rel: str, fname: str) -> dict:
+        return {
+            "status": "complete",
+            "steps": {
+                "video_generate": {
+                    "status": "complete",
+                    "output": win_root + rf"\{rel}\{fname}",
+                    "finished_at": "2026-01-01T00:00:00+00:00",
+                }
+            },
+        }
+
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "root_dir": win_root,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "config_snapshot": snapshot,
+                "cases": {"present": _case("present", "out.mp4"), "absent": _case("absent", "out.mp4")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Only the "present" case's output was actually copied to this machine.
+    (root / "present").mkdir()
+    (root / "present" / "out.mp4").write_bytes(b"video")
+
+    loaded = AutomationManifest.create_or_load(manifest_path, root, snapshot)
+
+    assert loaded.case_is_complete_and_valid("present") is True   # output exists -> skip
+    assert loaded.case_is_complete_and_valid("absent") is False   # output missing -> reprocess
 
 
 def test_manifest_create_or_load_raises_on_fingerprint_mismatch(tmp_path: Path):

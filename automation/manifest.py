@@ -136,6 +136,71 @@ def _new_manifest_payload(root_dir: Path, config_snapshot: Dict[str, Any]) -> Di
     }
 
 
+def _rebase_path_str(value: Any, old_root_raw: str, new_root: str) -> Any:
+    """Rewrite a stored absolute path that lived under ``old_root_raw`` so it
+    points under ``new_root`` instead, normalizing separators.
+
+    The stored value may use the OTHER OS's separators (a Windows-authored
+    manifest records "F:\\...\\Batch_04\\case\\a\\out.png"), so prefix
+    matching is done on a forward-slash-normalized copy of both sides. A
+    trailing path-boundary check prevents ".../Batch_04" from matching a
+    sibling ".../Batch_040". Values that do not sit under the old root (or
+    aren't a non-empty string) are returned unchanged.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    norm_old = old_root_raw.replace("\\", "/").rstrip("/")
+    if not norm_old:
+        return value
+    norm_val = value.replace("\\", "/")
+    if norm_val == norm_old:
+        return str(Path(new_root))
+    if norm_val.startswith(norm_old + "/"):
+        remainder = norm_val[len(norm_old) + 1 :]
+        return str(Path(new_root) / remainder)
+    return value
+
+
+def _rebase_manifest_paths(loaded: Dict[str, Any], old_root_raw: str, new_root: str) -> None:
+    """Deep, in-place rebase of EVERY string anywhere in the manifest that
+    sits under ``old_root_raw``, rewriting it to live under ``new_root``.
+
+    Rebasing the top-level root_dir alone is not enough for a true cross-OS
+    (or moved-folder) resume: ``case_is_complete_and_valid`` gates
+    skip-completed on ``Path(step_output).exists()`` and the pipeline's
+    front-changed guard compares the recorded front_path to the live one —
+    left as foreign-OS absolutes, those checks ALWAYS fail and a fully
+    finished batch silently reprocesses end-to-end. After rebasing,
+    ``.exists()`` is the correct arbiter: a case whose outputs were copied
+    alongside the folder is skipped, one whose outputs are absent is
+    (correctly) reprocessed.
+
+    A targeted field list is too fragile — recorded paths also hide in step
+    meta (similarity_gate diagnostics ref_path/target_path, nested
+    mode_results[]; oldcam all_outputs[]), the per-case outputs mirror, and
+    config_snapshot.automation_root_folder. A recursive walk rebases them
+    all, including any field added later. Strings that do not sit under the
+    old root are left untouched (the prefix + path-boundary check in
+    _rebase_path_str), so non-path values are never corrupted.
+    """
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, (dict, list)):
+                    _walk(value)
+                else:
+                    node[key] = _rebase_path_str(value, old_root_raw, new_root)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                if isinstance(value, (dict, list)):
+                    _walk(value)
+                else:
+                    node[index] = _rebase_path_str(value, old_root_raw, new_root)
+
+    _walk(loaded)
+
+
 @dataclass
 class AutomationManifest:
     manifest_path: Path
@@ -193,7 +258,8 @@ class AutomationManifest:
                 inst.save_atomic()
                 return inst
 
-            loaded_root = str(Path(loaded.get("root_dir", "")).resolve())
+            loaded_root_raw = loaded.get("root_dir", "")
+            loaded_root = str(Path(loaded_root_raw).resolve())
             if loaded_root != resolved_root:
                 # A manifest's authoritative identity is the FOLDER IT
                 # PHYSICALLY LIVES IN, not the absolute-path STRING it
@@ -205,15 +271,23 @@ class AutomationManifest:
                 # even when the file sits in EXACTLY the requested folder.
                 # The same happens when a folder is moved/renamed on one OS.
                 # When the manifest resides in the requested root, that
-                # stale root_dir is just metadata: rebase it to the live
-                # path and continue (cross-OS resume fix, 2026-06-13). Only
-                # a manifest loaded for a root it does NOT live in is a
+                # stale root_dir is just metadata: rebase the whole manifest
+                # (root_dir + every recorded case/step path) to the live
+                # location and continue (cross-OS resume fix, 2026-06-13).
+                # Only a manifest loaded for a root it does NOT live in is a
                 # genuinely misplaced manifest -> hard error.
                 manifest_home = str(manifest_path.parent.resolve())
                 if manifest_home != resolved_root:
                     raise ValueError(
                         f"Manifest root mismatch at {manifest_path}: manifest={loaded_root!r}, requested={resolved_root!r}"
                     )
+                # Rewrite recorded case/step paths from the old root prefix
+                # to the new one BEFORE persisting, so skip-completed's
+                # Path(output).exists() check and the front-changed guard
+                # operate on live paths (see _rebase_manifest_paths). Use the
+                # RAW stored root as the prefix — that is what the recorded
+                # output paths actually share, not the cwd-mangled resolve.
+                _rebase_manifest_paths(loaded, loaded_root_raw, resolved_root)
                 loaded["root_dir"] = resolved_root
                 cls(manifest_path=manifest_path, data=loaded).save_atomic()
 
