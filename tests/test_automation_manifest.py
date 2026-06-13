@@ -51,6 +51,35 @@ def test_manifest_complete_requires_existing_final_output(tmp_path: Path):
     assert manifest.case_is_complete_and_valid("case/a") is True
 
 
+def test_manifest_corrupted_reads_degrade_not_crash(tmp_path: Path):
+    """Gemini HIGH (PR #96 rounds 10-11): a corrupted/hand-edited manifest —
+    non-dict "cases", case entry, or "steps" — must make
+    case_is_complete_and_valid return False and snapshot_statuses degrade
+    to pending placeholders, never AttributeError."""
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest = AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+    manifest.ensure_case("case/a", tmp_path / "case/a", tmp_path / "case/a/front.png")
+
+    # Corrupted "steps" (string instead of dict) on a complete case.
+    manifest.data["cases"]["case/a"]["status"] = "complete"
+    manifest.data["cases"]["case/a"]["steps"] = "corrupted"
+    assert manifest.case_is_complete_and_valid("case/a") is False
+
+    # Corrupted per-stage entry (null instead of dict) must also degrade.
+    manifest.data["cases"]["case/a"]["steps"] = {"oldcam": None, "loop": "bad", "rppg": 7}
+    assert manifest.case_is_complete_and_valid("case/a") is False
+
+    # Corrupted case entry (string instead of dict).
+    manifest.data["cases"]["case/a"] = "corrupted"
+    assert manifest.case_is_complete_and_valid("case/a") is False
+    assert manifest.snapshot_statuses(["case/a"])["case/a"]["status"] == "pending"
+
+    # Corrupted "cases" root (list instead of dict).
+    manifest.data["cases"] = ["corrupted"]
+    assert manifest.case_is_complete_and_valid("case/a") is False
+    assert manifest.snapshot_statuses(["case/a"])["case/a"]["status"] == "pending"
+
+
 def test_manifest_complete_validates_rppg_output_when_rppg_completed(tmp_path: Path):
     """Regression (Codex P2, PR #39): rPPG is the LAST post-process. When
     the rppg step completed, validation must check the injected file —
@@ -88,6 +117,67 @@ def test_manifest_complete_validates_rppg_output_when_rppg_completed(tmp_path: P
     steps["rppg"]["output"] = None
     manifest.save_atomic()
     assert manifest.case_is_complete_and_valid("case/r") is True  # oldcam file exists
+
+
+def test_case_validation_uses_most_recently_finished_stage(tmp_path: Path):
+    """Codex P1 (PR #96 round 4): under the Phase E order (Kling -> rPPG
+    base -> Loop -> Oldcam) the OLDCAM output is the final deliverable; the
+    rppg step's output is the pre-oldcam base. With real finished_at
+    timestamps (update_step always stamps them), a deleted oldcam output
+    must invalidate the case even though the rppg base still exists."""
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest = AutomationManifest.create_or_load(manifest_path, tmp_path, {})
+    manifest.ensure_case("case/e", tmp_path / "case/e", tmp_path / "case/e/front.png")
+    manifest.data["cases"]["case/e"]["status"] = "complete"
+
+    rppg_base = tmp_path / "clip-rppg.mp4"
+    rppg_base.write_bytes(b"rppg-base")
+    oldcam_out = tmp_path / "clip-rppg-oldcam-v13.mp4"  # NOT created yet
+
+    # Phase E order via real timestamps: rppg (base) finished BEFORE oldcam.
+    steps = manifest.data["cases"]["case/e"]["steps"]
+    steps["rppg"].update(
+        status="complete", output=str(rppg_base), finished_at="2026-06-11T01:00:00+00:00"
+    )
+    steps["oldcam"].update(
+        status="complete", output=str(oldcam_out), finished_at="2026-06-11T01:05:00+00:00"
+    )
+    manifest.save_atomic()
+
+    # Oldcam (the most recently finished stage) output is missing -> the
+    # case must NOT be treated complete, despite the surviving rppg base.
+    assert manifest.case_is_complete_and_valid("case/e") is False
+
+    oldcam_out.write_bytes(b"oldcam")
+    assert manifest.case_is_complete_and_valid("case/e") is True
+
+
+def test_backup_paths_never_collide_within_a_second(tmp_path: Path):
+    """Codex P2 (PR #96 round 4): two create_fresh calls in the same second
+    used identical second-resolution backup names — os.replace silently
+    overwrote the first backup (data loss)."""
+    manifest_path = tmp_path / "automation_manifest.json"
+    AutomationManifest.create_or_load(manifest_path, tmp_path, {"automation_x": 1})
+    AutomationManifest.create_fresh(manifest_path, tmp_path, {"automation_x": 2})
+    AutomationManifest.create_fresh(manifest_path, tmp_path, {"automation_x": 3})
+    backups = list(tmp_path.glob("automation_manifest.json.superseded.*"))
+    assert len(backups) == 2, f"both backups must survive, got {[b.name for b in backups]}"
+
+
+def test_load_if_exists_read_only_does_not_rename_corrupt_manifest(tmp_path: Path):
+    """Codex P2 (PR #96 round 4): preview surfaces (scan/dry-run) promise
+    non-mutation — read_only=True must NOT rename a corrupt manifest aside."""
+    manifest_path = tmp_path / "automation_manifest.json"
+    manifest_path.write_text("{ bad json", encoding="utf-8")
+
+    assert AutomationManifest.load_if_exists(manifest_path, read_only=True) is None
+    assert manifest_path.exists(), "read-only load must leave the corrupt file in place"
+    assert not list(tmp_path.glob("*.corrupt.*"))
+
+    # The default (mutating) load still backs it up for recovery.
+    assert AutomationManifest.load_if_exists(manifest_path) is None
+    assert not manifest_path.exists()
+    assert list(tmp_path.glob("*.corrupt.*"))
 
 
 def test_manifest_corrupt_file_is_backed_up_and_recreated(tmp_path: Path):
@@ -254,6 +344,35 @@ def test_manifest_fingerprint_captures_all_automation_keys(tmp_path: Path, chang
         AutomationManifest.create_or_load(manifest_path, root, snap_b)
 
 
+@pytest.mark.parametrize(
+    "scope_key,old_value,new_value",
+    [
+        ("automation_max_cases_per_run", "5", "1"),
+        ("automation_reprocess_mode", "skip", "overwrite"),
+        ("automation_allow_reprocess", False, True),
+        ("automation_verbose_logging", True, False),
+        ("automation_recommended_defaults_version", 6, 7),
+        ("automation_front_globs", [], ["*id_photo*.jpg"]),
+        ("automation_front_names", ["front.jpg"], ["front.jpg", "front.png"]),
+    ],
+)
+def test_manifest_run_scope_keys_never_invalidate(tmp_path: Path, scope_key: str, old_value, new_value):
+    """Run-scope / metadata keys are EXCLUDED from the fingerprint: changing
+    how much of the batch runs, discovery scope, or bookkeeping stamps must
+    never demand a manifest rebuild (PR #96 round 6 — the user got the
+    back-up-and-recreate prompt every time max-cases changed). The first
+    create stores the key in the snapshot, so the reload also proves the
+    exclusion applies to manifests that RECORDED these keys."""
+    manifest_path = tmp_path / "automation_manifest.json"
+    root = tmp_path / "root"
+    root.mkdir()
+    snap_a = {"automation_front_expand_percent": 30, scope_key: old_value}
+    snap_b = {"automation_front_expand_percent": 30, scope_key: new_value}
+    AutomationManifest.create_or_load(manifest_path, root, snap_a)
+    # Must NOT raise — the change is run-scope, outputs are unaffected.
+    AutomationManifest.create_or_load(manifest_path, root, snap_b)
+
+
 def test_manifest_create_or_load_non_dict_payload_backs_up_once(tmp_path: Path):
     manifest_path = tmp_path / "automation_manifest.json"
     manifest_path.write_text(json.dumps(["bad-root"]), encoding="utf-8")
@@ -297,6 +416,8 @@ def test_automation_defaults_use_percent_and_nano_model():
     assert merged["automation_selfie_expand_composite_mode"] == "none"
     assert merged["automation_selfie_expand_percent"] == 30
     assert merged["automation_selfie_models"] == ["fal-ai/nano-banana-2/edit"]
-    assert merged["automation_oldcam_version"] == "v24"
+    # Multi-select canonical list form; CLI default v13 per user mandate
+    # 2026-06-11 (GUI default stays v24 — intentionally divergent).
+    assert merged["automation_oldcam_version"] == ["v13"]
     assert merged["automation_oldcam_required"] is True
     assert "parked car" in merged["automation_selfie_prompts"]["1"].lower()

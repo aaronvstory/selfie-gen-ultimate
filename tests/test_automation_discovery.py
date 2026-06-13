@@ -54,6 +54,69 @@ def test_existing_output_detection_avoids_sim_substring_false_positive(tmp_path:
     assert found.selfie_candidate.name == "portrait_sim_001.png"
 
 
+def test_existing_output_detection_matches_scored_sim_token(tmp_path: Path):
+    """The REAL generated-selfie naming is ``..._sim{NN}_001.png`` (score
+    embedded). The bare-token-only pattern missed it, so existing selfies
+    were silently regenerated — a paid API call — on every rerun (found
+    live in E2E round 0, 2026-06-11)."""
+    case_dir = tmp_path / "case-scored"
+    (case_dir / "gen-images").mkdir(parents=True)
+    (case_dir / "gen-images" / "extracted_nano-banana-2-edit_sim88_001.png").write_bytes(b"x")
+
+    found = detect_existing_outputs(case_dir)
+    assert found.selfie_candidate is not None
+    assert found.selfie_candidate.name == "extracted_nano-banana-2-edit_sim88_001.png"
+
+
+def test_existing_output_detection_prefers_higher_embedded_score_over_mtime(tmp_path: Path):
+    """Codex P2 (PR #96): the reuse candidate gates the whole case, so a
+    LOW-score selfie merely being NEWER must not beat a higher-scoring one
+    — resume would route the case to manual_review despite a passing
+    selfie sitting right next to it."""
+    import os
+    import time
+
+    case_dir = tmp_path / "case-score-rank"
+    gen_images = case_dir / "gen-images"
+    gen_images.mkdir(parents=True)
+    high = gen_images / "extracted_gpt-image-2-edit_sim92_001.png"
+    high.write_bytes(b"x")
+    low = gen_images / "extracted_nano-banana-2-edit_sim50_001.png"
+    low.write_bytes(b"x")
+    now = time.time()
+    os.utime(high, (now - 100, now - 100))
+    os.utime(low, (now, now))  # the LOW-score selfie is newer
+
+    found = detect_existing_outputs(case_dir)
+    assert found.selfie_candidate is not None
+    assert found.selfie_candidate.name == "extracted_gpt-image-2-edit_sim92_001.png"
+
+
+def test_existing_output_detection_never_picks_expanded_artifact(tmp_path: Path):
+    """Step-5 expansion outputs (``...-expanded.png``) must NOT win the
+    selfie-candidate ranking — reusing one makes Step 5 re-expand it into
+    ``...-expanded-expanded.png`` (wasted paid outpaint + wrong geometry;
+    found live in E2E round 1b, 2026-06-11). The raw selfie wins even when
+    the expanded file is newer."""
+    import os
+    import time
+
+    case_dir = tmp_path / "case-exp"
+    gen_images = case_dir / "gen-images"
+    gen_images.mkdir(parents=True)
+    raw = gen_images / "extracted_nano-banana-2-edit_sim88_001.png"
+    raw.write_bytes(b"x")
+    expanded = gen_images / "extracted_nano-banana-2-edit_sim88_001-expanded.png"
+    expanded.write_bytes(b"x")
+    now = time.time()
+    os.utime(raw, (now - 100, now - 100))
+    os.utime(expanded, (now, now))  # expanded is NEWER — would win on mtime
+
+    found = detect_existing_outputs(case_dir)
+    assert found.selfie_candidate is not None
+    assert found.selfie_candidate.name == "extracted_nano-banana-2-edit_sim88_001.png"
+
+
 def test_existing_output_detection_ignores_unrelated_root_mp4(tmp_path: Path):
     case_dir = tmp_path / "case3"
     case_dir.mkdir()

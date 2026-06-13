@@ -2983,3 +2983,55 @@ def test_merge_automation_defaults_bridges_rppg_fanout_gui_key():
     assert "automation_rppg_per_oldcam_fanout" not in merged, (
         "Bridge must NOT inject the automation key when neither source key is set"
     )
+
+
+def test_effective_reprocess_mode_forces_increment_for_front_changed_case():
+    """codex P1 (PR #96 round 9): a case whose front image changed must not
+    re-adopt on-disk outputs via file-based reuse — _effective_reprocess_mode
+    returns 'increment' for the registered case and the global policy for
+    everything else."""
+    runner = AutoPipelineRunner.__new__(AutoPipelineRunner)
+    runner.automation = {}
+    runner._force_regen_cases = {"changed-case"}
+    assert runner._effective_reprocess_mode("changed-case") == "increment"
+    assert runner._effective_reprocess_mode("other-case") == "skip"
+    assert runner._effective_reprocess_mode() == "skip"
+
+
+def test_reset_case_if_front_changed_registers_force_regen(tmp_path):
+    """The front-changed guard must do BOTH halves: reset the manifest case
+    AND register the case for forced regeneration (the manifest reset alone
+    leaves file-based reuse free to re-adopt the old-front outputs)."""
+    import logging as _logging
+
+    manifest = AutomationManifest.create_or_load(
+        tmp_path / "automation_manifest.json", tmp_path, {}
+    )
+    case_dir = tmp_path / "a"
+    case_dir.mkdir()
+    old = case_dir / "front-OLD.png"
+    old.write_bytes(b"x")
+    new = case_dir / "front-NEW.png"
+    new.write_bytes(b"x")
+    manifest.ensure_case("a", case_dir, old)
+
+    runner = AutoPipelineRunner.__new__(AutoPipelineRunner)
+    runner.manifest = manifest
+    runner.automation = {}
+    runner.progress_cb = None
+    runner.verbose_logging = False
+    runner.logger = _logging.getLogger("test_force_regen")
+    runner._force_regen_cases = set()
+
+    runner._reset_case_if_front_changed(
+        CaseRecord(case_dir=case_dir, front_path=new, relative_key="a")
+    )
+    assert "a" in runner._force_regen_cases
+    assert runner._effective_reprocess_mode("a") == "increment"
+    # Same front again: no registration, normal policy applies.
+    runner._force_regen_cases.clear()
+    manifest.ensure_case("a", case_dir, new)
+    runner._reset_case_if_front_changed(
+        CaseRecord(case_dir=case_dir, front_path=new, relative_key="a")
+    )
+    assert not runner._force_regen_cases

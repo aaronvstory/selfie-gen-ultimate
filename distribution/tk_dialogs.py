@@ -221,6 +221,96 @@ def select_directory_cli_safe(*, title: str = "Select Folder") -> Optional[str]:
     return None
 
 
+def select_open_file_cli_safe(*, title: str = "Select File", image_only: bool = False) -> Optional[str]:
+    """Select a single file for CLI flows with a native macOS backend when
+    available — the file-picker sibling of :func:`select_directory_cli_safe`
+    (same osascript backend, same logging fields, same cancel semantics).
+    ``image_only`` restricts the macOS chooser to images and supplies image
+    filetypes to the Tk fallback."""
+    if sys.platform != "darwin":
+        filetypes = (
+            [("Images", "*.png *.jpg *.jpeg *.webp *.bmp"), ("All files", "*.*")]
+            if image_only
+            else None
+        )
+        kwargs: dict = {"title": title}
+        if filetypes:
+            kwargs["filetypes"] = filetypes
+        return select_open_file(**kwargs)
+
+    started = time.perf_counter()
+    logger.info(
+        "picker_start dialog=%s backend=%s platform=%s parented=%s cli_safe=%s",
+        "choose_file",
+        "osascript",
+        sys.platform,
+        False,
+        True,
+    )
+    prompt = title.replace(chr(34), chr(39))
+    of_type = ' of type {"public.image"}' if image_only else ""
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/osascript",
+                "-e",
+                f'POSIX path of (choose file with prompt "{prompt}"{of_type})',
+            ],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+    except Exception:
+        logger.error(
+            "picker_error dialog=%s backend=%s error_type=Exception phase=invoke elapsed_ms=%d traceback=%s",
+            "choose_file",
+            "osascript",
+            int((time.perf_counter() - started) * 1000),
+            traceback.format_exc(),
+        )
+        logger.info(
+            "picker_end dialog=%s backend=%s status=%s elapsed_ms=%d",
+            "choose_file",
+            "osascript",
+            "fallback_none",
+            int((time.perf_counter() - started) * 1000),
+        )
+        return None
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if result.returncode == 0 and stdout:
+        logger.info(
+            "picker_end dialog=%s backend=%s status=%s elapsed_ms=%d",
+            "choose_file",
+            "osascript",
+            "success",
+            elapsed_ms,
+        )
+        return stdout
+
+    is_cancel = "User canceled" in stderr or "cancel" in stderr.lower()
+    logger.info(
+        "picker_end dialog=%s backend=%s status=%s elapsed_ms=%d",
+        "choose_file",
+        "osascript",
+        "cancel" if is_cancel else "fallback_none",
+        elapsed_ms,
+    )
+    if not is_cancel:
+        logger.error(
+            "picker_error dialog=%s backend=%s error_type=ProcessError phase=returncode rc=%d stderr=%s",
+            "choose_file",
+            "osascript",
+            result.returncode,
+            stderr,
+        )
+    return None
+
+
 def select_directory(*, parent: Optional[tk.Misc] = None, **kwargs: Any) -> Optional[str]:
     """Open a directory picker and normalize cancel to None."""
     result = _run_dialog(

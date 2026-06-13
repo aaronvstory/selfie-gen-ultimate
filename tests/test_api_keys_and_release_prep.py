@@ -256,10 +256,16 @@ def test_apply_env_key_fallback_strips_whitespace(monkeypatch):
 
 
 def test_apply_env_key_fallback_noop_when_no_env(monkeypatch):
-    """No env vars set -> nothing filled, keys stay empty, returns []."""
+    """No env vars set -> nothing filled, keys stay empty, returns [].
+
+    Must clear EVERY alias in spec.env_vars, not just the primary
+    spec.env_var — apply_env_key_fallback reads all aliases, so a box
+    with e.g. FAL_API_KEY (the second fal alias) set would otherwise
+    leak into this test and fail it spuriously.
+    """
     for spec in API_KEY_SPECS:
-        if spec.env_var:
-            monkeypatch.delenv(spec.env_var, raising=False)
+        for name in spec.env_vars:
+            monkeypatch.delenv(name, raising=False)
     config = {spec.config_key: "" for spec in API_KEY_SPECS}
     assert apply_env_key_fallback(config) == []
     assert all(config[spec.config_key] == "" for spec in API_KEY_SPECS)
@@ -378,6 +384,44 @@ def test_build_sanitized_config_clears_keys_and_paths(tmp_path: Path):
     assert sanitized["saved_prompts"]["1"] == "prompt one"
 
 
+def test_release_forces_cli_video_defaults_template_only(tmp_path: Path):
+    """codex P2 (PR #96 round 9): a template-only build (no live
+    kling_config.json) must still ship the CLI-owned per-surface video
+    defaults. Without them the resolvers fall back to the GUI keys, so
+    headless --batch — which never runs the interactive defaults
+    migration — would generate with Kling Pro / the GUI prompt slot
+    instead of the shipped CLI defaults (Standard / slot 4 / 10s)."""
+    template = tmp_path / "default_config_template.json"
+    template.write_text(
+        json.dumps(
+            {
+                "current_model": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+                "model_display_name": "Kling 2.5 Turbo Pro",
+                "current_prompt_slot": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = build_sanitized_config(template)
+    assert cfg["cli_video_model"] == (
+        "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+    )
+    assert cfg["cli_video_model_display_name"] == "Kling 2.5 Turbo Standard"
+    assert cfg["cli_kling_prompt_slot"] == 4
+    assert cfg["cli_video_duration"] == 10
+    # The contract the CLI actually depends on — the resolvers must pick
+    # the CLI surface, not fall back to the GUI Pro/slot-5 selection.
+    from automation.config import (
+        resolve_cli_kling_prompt_slot,
+        resolve_cli_video_model,
+    )
+
+    endpoint, display = resolve_cli_video_model(cfg)
+    assert endpoint == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+    assert display == "Kling 2.5 Turbo Standard"
+    assert resolve_cli_kling_prompt_slot(cfg) == 4
+
+
 def test_release_forces_active_slot_prompt_and_overrides_cfg(tmp_path: Path):
     """PR #41 (user request): the v2.1 bundle ships
     current_prompt_slot=3 with slot 3 carrying its OWN distinct
@@ -488,6 +532,12 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     (src / ".tmp_pytest" / "temp.txt").write_text("private", encoding="utf-8")
     (src / "map-codebase-session-abc.md").write_text("private", encoding="utf-8")
     (src / "session-ses_123.md").write_text("private", encoding="utf-8")
+    # PR #96 round 7: agent/review scratch artifacts — 7 .scratch_*.txt
+    # review outputs shipped in the first v2.31 zip (gitignored ≠ excluded;
+    # release_prep walks the working tree).
+    (src / ".scratch_codex_review.txt").write_text("private", encoding="utf-8")
+    (src / ".scratch_probe_venv").mkdir(parents=True)
+    (src / ".scratch_probe_venv" / "x.py").write_text("private", encoding="utf-8")
     (src / "normal.py").write_text("ok", encoding="utf-8")
 
     copy_sanitized_tree(src, dst)
@@ -498,6 +548,12 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     assert not (dst / ".tmp_pytest").exists()
     assert not (dst / "map-codebase-session-abc.md").exists()
     assert not (dst / "session-ses_123.md").exists()
+    assert not (dst / ".scratch_codex_review.txt").exists(), (
+        ".scratch_* review output leaked into release bundle"
+    )
+    assert not (dst / ".scratch_probe_venv").exists(), (
+        ".scratch_* dir leaked into release bundle"
+    )
     assert (dst / "normal.py").exists()
 
 

@@ -2734,6 +2734,11 @@ dev = [
     { name = "pytest" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "absl-py", specifier = ">=2.3,<3" },
@@ -2791,6 +2796,9 @@ requires-dist = [
     { name = "webdriver-manager", specifier = ">=4.0,<5" },
 ]
 provides-extras = ["cpu", "cu121", "cu128", "dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "setuptools"

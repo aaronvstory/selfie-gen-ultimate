@@ -288,6 +288,46 @@ def test_collect_case_snapshot_applies_max_cases_after_filters(tmp_path):
     assert len(runnable) == 1
 
 
+def test_collect_case_snapshot_front_changed_completed_case_is_runnable(tmp_path):
+    """codex P1 (PR #96 round 9): when discovery now selects a DIFFERENT
+    front image than the one a completed case was built from, the case must
+    flow into the runner (whose _reset_case_if_front_changed resets it) —
+    not be filtered out here as skip_complete with stale wrong-source
+    outputs."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.config = {
+        "automation_skip_completed": True,
+        "automation_skip_if_selfie_exists": True,
+        "automation_skip_if_video_exists": True,
+        "automation_max_cases_per_run": "all",
+    }
+    ui._read_max_cases_setting = lambda: "all"
+    case_dir = tmp_path / "a"
+    case_dir.mkdir()
+    (case_dir / "front-NEW.png").write_bytes(b"x")
+    record = type(
+        "Rec",
+        (),
+        {"relative_key": "a", "front_path": case_dir / "front-NEW.png", "case_dir": case_dir},
+    )
+
+    class _FakeManifest:
+        data = {
+            "cases": {
+                "a": {"status": "complete", "front_path": str(case_dir / "front-OLD.png")}
+            }
+        }
+
+        def case_is_complete_and_valid(self, key):
+            return True
+
+    rows, counts, runnable = ui._collect_case_snapshot([record], _FakeManifest())
+    assert rows[0]["planned"] == "run_front_changed"
+    assert counts["skipped_complete"] == 0
+    assert counts["pending"] == 1
+    assert len(runnable) == 1
+
+
 def test_collect_case_snapshot_existing_video_still_runnable(tmp_path):
     ui = KlingAutomationUI.__new__(KlingAutomationUI)
     ui.config = {
@@ -599,12 +639,21 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
 
     ui._apply_recommended_automation_defaults()
     assert saved["count"] == 1
-    assert ui.config["automation_front_expand_provider"] == "bfl"
+    # v7 (Codex P2, PR #96): the recommended baseline resets EVERY
+    # behavior-affecting stage toggle.
+    assert ui.config["automation_front_expand_enabled"] is True
+    assert ui.config["automation_extract_enabled"] is True
+    assert ui.config["automation_selfie_enabled"] is True
+    assert ui.config["automation_selfie_expand_enabled"] is True
+    assert ui.config["automation_rppg_per_oldcam_fanout"] is False
+    # v7 (2026-06-11): provider fal for BOTH expand steps ("fal.ai for
+    # everything", user mandate).
+    assert ui.config["automation_front_expand_provider"] == "fal"
     assert ui.config["automation_front_expand_mode"] == "percent"
     assert ui.config["automation_front_expand_composite_mode"] == "preserve_seamless"
     assert ui.config["automation_front_expand_percent"] == 70
     assert ui.config["automation_front_expand_passes"] == 2
-    assert ui.config["automation_selfie_expand_provider"] == "bfl"
+    assert ui.config["automation_selfie_expand_provider"] == "fal"
     assert ui.config["automation_selfie_expand_mode"] == "percent"
     # Ship default for Step 2.5 selfie expand is "none" (raw AI output)
     # — see automation/config.py + default_config_template.json + the
@@ -616,9 +665,15 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_selfie_prompt_slot"] == 3
     assert "parked car" in ui.config["automation_selfie_prompts"]["1"].lower()
     assert "parked car" in ui.config["automation_selfie_prompts"]["3"].lower()
-    assert ui.config["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
-    assert ui.config["model_display_name"] == "Kling 2.5 Turbo Standard"
-    assert ui.config["current_prompt_slot"] == 4
+    # Per-surface split (PR #96 round 2): the recommended model/slot land on
+    # the CLI's own keys; the GUI's selection (current_model / display /
+    # current_prompt_slot) must survive byte-identical.
+    assert ui.config["cli_video_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+    assert ui.config["cli_video_model_display_name"] == "Kling 2.5 Turbo Standard"
+    assert ui.config["cli_kling_prompt_slot"] == 4
+    assert ui.config["current_model"] == "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+    assert ui.config["model_display_name"] == "Kling 2.5 Turbo Pro"
+    assert ui.config["current_prompt_slot"] == 2
     # Recommended-defaults now seed the minimal-motion prompt + negative
     # + motion knobs (PR #2).
     assert "smallest believable range" in ui.config["saved_prompts"]["1"].lower()
@@ -628,14 +683,16 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_similarity_threshold"] == 80
     assert ui.config["automation_video_enabled"] is True
     assert ui.config["automation_oldcam_enabled"] is True
-    assert ui.config["automation_oldcam_version"] == "v24"
+    # v7: oldcam v13 only, canonical multi-select list form.
+    assert ui.config["automation_oldcam_version"] == ["v13"]
     assert ui.config["automation_oldcam_required"] is True
-    # PR #43 / CodeRabbit cycle-3 migration-guard fix: the apply-
-    # recommended-defaults helper must write the v5 rPPG iterative-
-    # mode baseline so v4-or-earlier users pulling the update can
-    # apply-and-go. The rppg_enabled GATE stays False (opt-in), but
-    # the MODE knobs are pre-set so enabling-via-toggle just works.
-    assert ui.config["automation_rppg_enabled"] is False
+    # v7: loop is a real pipeline step now; recommended baseline ships OFF.
+    assert ui.config["automation_loop_enabled"] is False
+    # v7 (user decision 2026-06-11): the recommended GATE is ON — "rPPG +
+    # oldcam v13 = best results"; a real batch run burned because rPPG
+    # silently stayed off. The iterative-mode baseline (PR #43) still
+    # applies. The GUI's own opt-in default is unaffected.
+    assert ui.config["automation_rppg_enabled"] is True
     assert ui.config["automation_rppg_mode"] == "iterative"
     assert ui.config["automation_rppg_iterate_from_baseline"] is True
     assert ui.config["automation_rppg_skip_diagnosis"] is True
@@ -649,13 +706,12 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
         "v6 apply-defaults must reset landmark_stride to 1 — that's "
         "the entire reason the version bumped from 5 to 6"
     )
-    # Version bumped 5 -> 6 in PR #54 (2026-05-27) when
-    # automation_rppg_landmark_stride default was reverted 3 -> 1.
-    # Drives the "apply recommended defaults" yellow prompt on the
-    # automation menu for v5 users still carrying stride=3.
+    # Version bumped 6 -> 7 in the 2026-06-11 CLI UX overhaul (rPPG ON,
+    # oldcam ["v13"], loop OFF, fal everywhere). Drives the "apply
+    # recommended defaults" yellow prompt for v6 users.
     from kling_automation_ui import RECOMMENDED_DEFAULTS_VERSION
-    assert RECOMMENDED_DEFAULTS_VERSION == 6
-    assert ui.config["automation_recommended_defaults_version"] == 6
+    assert RECOMMENDED_DEFAULTS_VERSION == 7
+    assert ui.config["automation_recommended_defaults_version"] == 7
     # Round-3 review fix (PR #54): catch the lockstep miss where
     # `kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION` was bumped
     # but `automation.config.AUTOMATION_DEFAULTS` stayed stale. Both

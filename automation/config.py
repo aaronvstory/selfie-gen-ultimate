@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 
 DEFAULT_SELFIE_PROMPT = (
@@ -107,8 +107,18 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_facetrack_min_pct": 96.0,
     "automation_facetrack_required": False,
     "automation_facetrack_sample_fps": 8.0,
+    # Ping-pong loop step (Kling -> rPPG -> Loop -> Oldcam, Phase E order
+    # mirrored from the GUI queue). DEFAULT OFF per user mandate 2026-06-11;
+    # graceful-skip when ffmpeg is missing (never hard-fails a case).
+    "automation_loop_enabled": False,
     "automation_oldcam_enabled": True,
-    "automation_oldcam_version": "v24",
+    # Canonical form is a LIST of versions (multi-select, 2026-06-11):
+    # ["v13", "v24"], ["all"] (symbolic — expanded at runtime), or [] (none).
+    # Legacy single-string values ("v24", "all") are coerced via
+    # automation.oldcam.normalize_oldcam_versions everywhere this is read.
+    # Default v13 per user mandate 2026-06-11 (quick-start "best results"
+    # combo is rPPG + oldcam v13; previous default was v24).
+    "automation_oldcam_version": ["v13"],
     "automation_oldcam_required": True,
     # rPPG injection (Phase E: Kling -> rPPG -> Loop -> Oldcam). Installs a
     # physiologically-correct, sub-perceptual pulse so Persona's passive rPPG
@@ -183,7 +193,10 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     #   v6 (2026-05-27, PR #54): rPPG landmark-stride default 3 -> 1
     #     (quality-first; v5 users carrying stride=3 from the v2.5
     #     speedup pass get prompted to refresh)
-    "automation_recommended_defaults_version": 6,
+    #   v7 (2026-06-11, CLI UX overhaul): rPPG recommended ON, oldcam
+    #     ["v13"] (multi-select list form), loop OFF (new step), provider
+    #     fal for both expand steps ("fal.ai for everything").
+    "automation_recommended_defaults_version": 7,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
     "automation_log_backup_count": 5,
@@ -228,6 +241,63 @@ class AutomationConfig:
         return [str(pat).lower() for pat in raw if str(pat).strip()]
 
 
+def resolve_cli_video_model(config: Mapping[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """(endpoint, display_name) of the video model the CLI automation
+    pipeline should use. Either element may be None on the fallback path —
+    identical to the raw ``config.get`` reads this replaced; callers
+    (FalAIKlingGenerator, displays) already handle None.
+
+    The CLI keeps its own selection (``cli_video_model`` /
+    ``cli_video_model_display_name``) so changing the automation model never
+    overwrites the GUI's ``current_model`` — and vice versa (per-surface
+    split, 2026-06-11). Configs from before the split fall back to the shared
+    GUI keys. When the CLI endpoint is set but its display name is not, the
+    endpoint doubles as the display — borrowing the GUI's display name would
+    label a DIFFERENT model.
+
+    DELIBERATELY not ``automation_*``-prefixed: the manifest fingerprints
+    every ``automation_*`` key and the model is deliberately
+    non-fingerprinted (resuming with a different model is legal — see the
+    ``--batch --model`` override).
+    """
+    endpoint = str(config.get("cli_video_model") or "").strip()
+    if endpoint:
+        display = str(config.get("cli_video_model_display_name") or "").strip()
+        return endpoint, (display or endpoint)
+    return config.get("current_model"), config.get("model_display_name")
+
+
+def resolve_cli_kling_prompt_slot(config: Mapping[str, Any], default: int = 1) -> int:
+    """The Kling prompt SLOT POINTER for the CLI pipeline (1-10).
+
+    Falls back to the GUI's ``current_prompt_slot`` for pre-split configs.
+    Only the pointer is per-surface — the slot CONTENT
+    (``saved_prompts`` / ``negative_prompts``) stays shared by design so a
+    prompt edited in the GUI is the same prompt the CLI runs.
+    """
+    raw = config.get("cli_kling_prompt_slot")
+    if raw in (None, ""):
+        raw = config.get("current_prompt_slot", default)
+    try:
+        slot = int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+    return slot if 1 <= slot <= 10 else int(default)
+
+
+def resolve_cli_video_duration(config: Mapping[str, Any], default: int = 10) -> int:
+    """Video duration (seconds) for the CLI pipeline, per-surface like the
+    model itself (a GUI model with a different native duration must not bleed
+    into automation runs). Falls back to the shared ``video_duration``."""
+    raw = config.get("cli_video_duration")
+    if raw in (None, ""):
+        raw = config.get("video_duration", default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(config)
     # Subagent CRITICAL on 286613c (2026-05-22): the GUI writes the
@@ -269,6 +339,15 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     if slot_int < 1 or slot_int > 10:
         slot_int = default_slot
     merged["automation_selfie_prompt_slot"] = slot_int
+    # Coerce legacy single-string oldcam selections ("v24", "all") to the
+    # canonical list form so every downstream consumer (pipeline, manifest
+    # fingerprint, UI) sees one shape. Import here keeps module import light
+    # and is cycle-safe (oldcam.py imports nothing from config).
+    from automation.oldcam import normalize_oldcam_versions
+
+    merged["automation_oldcam_version"] = normalize_oldcam_versions(
+        merged.get("automation_oldcam_version", AUTOMATION_DEFAULTS["automation_oldcam_version"])
+    )
     merged["outpaint_fal_timeout_seconds"] = get_outpaint_fal_timeout_seconds(merged)
     return merged
 

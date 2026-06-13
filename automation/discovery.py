@@ -53,6 +53,62 @@ def _find_first_existing(paths: Iterable[Path]) -> Optional[Path]:
     return None
 
 
+def _build_front_matcher(
+    front_names: Iterable[str],
+    front_globs: Optional[Iterable[str]] = None,
+) -> Callable[[str], bool]:
+    """The ONE front-image matcher, shared by the recursive batch walker and
+    the single-folder resolver so their semantics can never drift: exact
+    (lowercased) name match is trusted as-is; glob matches are restricted to
+    image suffixes (a loose '*front*' must not pick front.txt — Codex
+    review); fnmatchcase, not fnmatch, because names+patterns are already
+    lowercased and OS-specific normcase would rewrite slashes on Windows
+    (Gemini review, PR #94)."""
+    canonical_front_names = {name.lower() for name in front_names}
+    canonical_front_globs = [str(pat).lower() for pat in (front_globs or []) if str(pat).strip()]
+
+    def _matches(name_lower: str) -> bool:
+        if name_lower in canonical_front_names:
+            return True
+        if canonical_front_globs and not any(
+            name_lower.endswith(ext) for ext in _IMAGE_SUFFIXES
+        ):
+            return False
+        return any(fnmatch.fnmatchcase(name_lower, pat) for pat in canonical_front_globs)
+
+    return _matches
+
+
+def find_front_in_dir(
+    case_dir: Path,
+    front_names: Iterable[str],
+    front_globs: Optional[Iterable[str]] = None,
+    warn_cb: Optional[Callable[[str], None]] = None,
+) -> Optional[Path]:
+    """Single-folder variant of :func:`discover_case_folders`: the front
+    image directly inside ``case_dir`` (no recursion). Identical matching
+    semantics — first sorted match wins; multi-match warns once."""
+    _matches = _build_front_matcher(front_names, front_globs)
+    try:
+        children = sorted(case_dir.iterdir(), key=lambda item: item.name.lower())
+    except OSError:
+        return None
+    front_match: Optional[Path] = None
+    match_count = 0
+    for child in children:
+        if child.is_file() and _matches(child.name.lower()):
+            match_count += 1
+            if front_match is None:
+                front_match = child
+    if front_match is not None and match_count > 1 and warn_cb is not None:
+        warn_cb(
+            f"{match_count} files match the front pattern in "
+            f"{front_match.parent}; using '{front_match.name}' (first sorted). "
+            "Tighten --front-glob if this is the wrong file."
+        )
+    return front_match
+
+
 def discover_case_folders(
     root_dir: Path,
     front_names: Iterable[str],
@@ -77,26 +133,9 @@ def discover_case_folders(
     is invoked once for that folder so the operator can tighten the pattern.
     """
     root = root_dir.resolve()
-    canonical_front_names = {name.lower() for name in front_names}
-    canonical_front_globs = [str(pat).lower() for pat in (front_globs or []) if str(pat).strip()]
+    _matches = _build_front_matcher(front_names, front_globs)
     cases: List[CaseRecord] = []
     pending: List[Path] = [root]
-
-    def _matches(name_lower: str) -> bool:
-        if name_lower in canonical_front_names:
-            return True
-        # Glob matches are restricted to image files. A loose pattern like
-        # '*front*' must NOT pick up front.txt / front.mp4 / a sidecar before the
-        # actual image (Codex review). Exact front_names above are trusted as-is.
-        if canonical_front_globs and not any(
-            name_lower.endswith(ext) for ext in _IMAGE_SUFFIXES
-        ):
-            return False
-        # fnmatchcase (not fnmatch): name + patterns are already lowercased, so
-        # we don't want fnmatch's OS-specific os.path.normcase, which on Windows
-        # also rewrites slashes and would make matching non-deterministic across
-        # platforms (Gemini review, PR #94).
-        return any(fnmatch.fnmatchcase(name_lower, pat) for pat in canonical_front_globs)
 
     while pending:
         current = pending.pop()
@@ -142,7 +181,11 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
 
     selfie_candidates: List[Path] = []
     video_candidates: List[Path] = []
-    sim_token_re = re.compile(r"(^|[_\-. ])sim($|[_\-. ])")
+    # Matches the similarity token in generated-selfie names: bare "sim"
+    # AND the real-world scored form "sim88" (E2E round 0, 2026-06-11: the
+    # bare-token-only pattern never matched `..._sim88_001.png`, so existing
+    # selfies were silently REGENERATED — a paid API call — on every rerun).
+    sim_token_re = re.compile(r"(^|[_\-. ])sim\d*($|[_\-. ])")
     for base in (gen_images, top):
         if not base.exists() or not base.is_dir():
             continue
@@ -152,6 +195,13 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
             suffix = item.suffix.lower()
             lname = item.name.lower()
             sim_token = bool(sim_token_re.search(lname))
+            if "-expanded" in lname:
+                # Expansion outputs are Step-5 artifacts, not Step-3
+                # selfies. Ranking one as the reuse candidate made Step 5
+                # re-expand it (`...-expanded-expanded.png`) — one wasted
+                # paid outpaint + a wrong-geometry deliverable (E2E round
+                # 1b, 2026-06-11).
+                continue
             if suffix in {".png", ".jpg", ".jpeg", ".webp"} and ("selfie" in lname or sim_token):
                 selfie_candidates.append(item)
     # Prefer generated videos under gen-videos, and avoid oldcam artifacts.
@@ -174,11 +224,23 @@ def detect_existing_outputs(case_dir: Path) -> ExistingOutputs:
         if not candidates:
             return None
         now = max((c.stat().st_mtime for c in candidates if c.exists()), default=0.0)
+        score_re = re.compile(r"(?:^|[_\-. ])sim(\d+)(?:$|[_\-. ])", re.IGNORECASE)
+
+        def _embedded_score(p: Path) -> int:
+            match = score_re.search(p.name)
+            return int(match.group(1)) if match else -1
+
+        # Embedded similarity score ranks ABOVE mtime (Codex P2, PR #96):
+        # the reuse candidate gates the whole case, and a low-score selfie
+        # merely being NEWER must not beat a higher-scoring one — resume
+        # would route the case to manual_review despite a passing selfie
+        # sitting right next to it.
         ranked = sorted(
             candidates,
             key=lambda p: (
                 1 if p.parent == gen_images else 0,
                 1 if "selfie" in p.name.lower() else 0,
+                _embedded_score(p),
                 p.stat().st_mtime if p.exists() else now,
                 p.name.lower(),
             ),

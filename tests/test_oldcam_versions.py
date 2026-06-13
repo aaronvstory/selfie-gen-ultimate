@@ -1515,17 +1515,19 @@ def test_verbose_gui_mode_legacy_true_migrated_to_false_once():
 
 
 def test_default_oldcam_version_is_v24_across_all_layers():
-    """If someone adds a new default-version site and forgets to set v24,
-    this test fails. Locks the contract until the next intentional bump.
-    (V24 "Crush Laundromat" superseded V15 as the default — V15 stays
-    selectable but is no longer pre-selected anywhere. App version numbers
+    """Locks the default-version contract until the next intentional bump.
+
+    Split defaults (user mandate 2026-06-11): the CLI/automation default is
+    ``["v13"]`` (canonical multi-select list form; the quick-start "best
+    results" combo is rPPG + oldcam v13), while the GUI keeps shipping with
+    the v24 "Crush Laundromat" checkbox pre-selected. App version numbers
     skip v16-v23: those were rejected oldcam-testing bench experiments,
-    not app versions; see oldcam-testing/SCOREBOARD.md.)"""
-    # CLI / automation default
+    not app versions; see oldcam-testing/SCOREBOARD.md."""
+    # CLI / automation default (canonical list form)
     from automation.config import merge_automation_defaults
     merged = merge_automation_defaults({})
-    assert merged["automation_oldcam_version"] == "v24", (
-        f"automation/config.py default must be v24; got "
+    assert merged["automation_oldcam_version"] == ["v13"], (
+        f"automation/config.py default must be ['v13']; got "
         f"{merged['automation_oldcam_version']!r}"
     )
 
@@ -1548,12 +1550,11 @@ def test_default_oldcam_version_is_v24_across_all_layers():
         f"Expected at least 3 'v24' fallback strings in config_panel.py; got {fallback_v24_count}"
     )
 
-    # CLI fallback strings + choice list must include v24 and use it as default.
+    # CLI: the multi-select rework (2026-06-11) routes ALL fallbacks through
+    # AUTOMATION_DEFAULTS / normalize_oldcam_versions — no hardcoded per-site
+    # 'v24' fallbacks remain. The shared option list must still enumerate
+    # every selectable version (v24 + the demoted v7-v15) plus 'all'.
     cli_src = (ROOT / "kling_automation_ui.py").read_text(encoding="utf-8")
-    assert cli_src.count("'v24'") + cli_src.count('"v24"') >= 4, (
-        "Expected CLI to default to v24 in ≥3 get(..., 'v24') calls + choice list"
-    )
-    # The choice list must contain v24 (and still list v15 as a pickable option).
     assert '"v24"' in cli_src or "'v24'" in cli_src
     assert '"v15"' in cli_src or "'v15'" in cli_src, (
         "v15 must remain a selectable CLI option (demoted, not removed)"

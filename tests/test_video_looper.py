@@ -1,4 +1,7 @@
-"""Tests for kling_gui/video_looper.py.
+"""Tests for automation/video_loop.py (formerly kling_gui/video_looper.py —
+moved 2026-06-11 so the headless automation pipeline can loop without
+importing the tkinter-laden kling_gui package; the old module remains as a
+re-export shim for GUI call sites).
 
 Covers:
 - FFmpeg command structure for the visually-lossless idiom (-profile:v high
@@ -7,14 +10,27 @@ Covers:
   Oldcam re-encodes at CRF 14 downstream so lossless buys nothing.)
 - _summarize_ffmpeg_error: priority-ordered friendly one-liner for the panel.
 - Failure path: friendly message goes to panel ("error"), full stderr to file ("debug").
+- The kling_gui.video_looper shim re-exports the same callables.
 """
 from pathlib import Path
 from unittest import mock
 
-from kling_gui.video_looper import (
+from automation.video_loop import (
     _summarize_ffmpeg_error,
     create_looped_video,
 )
+
+
+def test_kling_gui_shim_reexports_same_objects():
+    """GUI call sites import from kling_gui.video_looper; the shim must
+    re-export the SAME callables (identity, not copies) so patching either
+    namespace stays predictable."""
+    import automation.video_loop as impl
+    import kling_gui.video_looper as shim
+
+    assert shim.create_looped_video is impl.create_looped_video
+    assert shim.check_ffmpeg_available is impl.check_ffmpeg_available
+    assert shim.get_video_duration is impl.get_video_duration
 
 
 # ---------------------------------------------------------------------------
@@ -90,9 +106,9 @@ def _captured_cmd(tmp_path: Path) -> list:
         return mock.MagicMock(returncode=0, stdout="", stderr="")
 
     with mock.patch(
-        "kling_gui.video_looper.check_ffmpeg_available",
+        "automation.video_loop.check_ffmpeg_available",
         return_value=(True, "ffmpeg 6.0"),
-    ), mock.patch("kling_gui.video_looper.subprocess.run", side_effect=fake_run):
+    ), mock.patch("automation.video_loop.subprocess.run", side_effect=fake_run):
         result = create_looped_video(str(input_file), str(output_file), overwrite=True)
 
     assert result == str(output_file)
@@ -185,10 +201,10 @@ def test_looper_failure_emits_friendly_error_and_debug_dump(tmp_path):
         captured_logs.append((msg, level))
 
     with mock.patch(
-        "kling_gui.video_looper.check_ffmpeg_available",
+        "automation.video_loop.check_ffmpeg_available",
         return_value=(True, "ffmpeg 6.0"),
     ), mock.patch(
-        "kling_gui.video_looper.subprocess.run",
+        "automation.video_loop.subprocess.run",
         return_value=mock.MagicMock(returncode=1, stdout="", stderr=fake_stderr),
     ):
         result = create_looped_video(

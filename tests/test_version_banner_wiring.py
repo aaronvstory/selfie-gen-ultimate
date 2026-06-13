@@ -39,28 +39,29 @@ def test_cli_imports_release_version():
 
 
 def test_cli_header_renders_release_version():
-    """display_header() must interpolate RELEASE_VERSION into the ASCII title.
+    """display_header() must interpolate RELEASE_VERSION into the Rich title.
 
-    Anchored on the distinct ``title_art =`` assignment (NOT the shared
-    ``SELFIE GEN ULTIMATE  {RELEASE_VERSION}`` substring) so this test can't
-    pass on the strength of display_configuration_menu()'s identical f-string
-    — code-reviewer MEDIUM, PR #56.
+    2026-06-11 restyle: the header is a single Rich panel (the old raw-ANSI
+    ``title_art`` banner is gone) and display_configuration_menu no longer
+    renders its own duplicate title — display_header is now the ONE place
+    the versioned branding appears, so this anchor is the whole guard.
     """
     src = _read_text("kling_automation_ui.py")
-    assert 'title_art = f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"' in src, (
-        "CLI display_header() dropped the version from the ASCII title."
+    assert '_RichText(f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"' in src, (
+        "CLI display_header() dropped the version from the Rich title panel."
     )
 
 
-def test_cli_config_menu_renders_release_version():
-    """display_configuration_menu() must interpolate RELEASE_VERSION into its header.
+def test_cli_config_menu_has_no_duplicate_banner():
+    """display_configuration_menu() must NOT render its own title banner.
 
-    Anchored on the distinct ``_menu_title =`` assignment so a regression in
-    THIS function alone is caught independently of display_header().
+    The doubled banner (Rich header panel + a second raw-ANSI title) was
+    part of the "initial menu looks like garbage" feedback (2026-06-11);
+    display_header() is the single branding surface now.
     """
     src = _read_text("kling_automation_ui.py")
-    assert '_menu_title = f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"' in src, (
-        "CLI config menu header dropped the version."
+    assert '_menu_title = f"SELFIE GEN ULTIMATE  {RELEASE_VERSION}"' not in src, (
+        "CLI config menu re-grew its duplicate title banner."
     )
 
 
