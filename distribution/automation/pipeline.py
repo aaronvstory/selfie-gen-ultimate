@@ -57,7 +57,7 @@ class AutomationAbort(Exception):
 
 class AutoPipelineRunner:
     _DEFAULT_OUTPAINT_COMPOSITE_MODE = "preserve_seamless"
-    _VALID_OUTPAINT_COMPOSITE_MODES = {"preserve_seamless", "feathered", "hard", "none"}
+    _VALID_OUTPAINT_COMPOSITE_MODES = {"preserve_seamless", "feathered", "hard", "none", "black_fill"}
 
     def __init__(
         self,
@@ -783,11 +783,11 @@ class AutoPipelineRunner:
         ).strip().lower()
         if raw_front_composite_mode not in self._VALID_OUTPAINT_COMPOSITE_MODES:
             issues.append(
-                "automation_front_expand_composite_mode must be one of: preserve_seamless, feathered, hard, none."
+                "automation_front_expand_composite_mode must be one of: preserve_seamless, feathered, hard, none, black_fill."
             )
         if raw_selfie_composite_mode not in self._VALID_OUTPAINT_COMPOSITE_MODES:
             issues.append(
-                "automation_selfie_expand_composite_mode must be one of: preserve_seamless, feathered, hard, none."
+                "automation_selfie_expand_composite_mode must be one of: preserve_seamless, feathered, hard, none, black_fill."
             )
         front_expand_percent = (
             self._read_int("automation_front_expand_percent", 30, issues, min_value=0)
@@ -1055,24 +1055,19 @@ class AutoPipelineRunner:
                 if reprocess_mode == "increment":
                     target_output = self._next_increment_path(target_output)
                 front_is_document = self.automation.get("automation_front_expand_mode") == "document_3x4"
-                front_expand_kwargs: Dict[str, Any] = {}
-                if not front_is_document:
-                    pct = self._read_int("automation_front_expand_percent", 30)
-                    with Image.open(case.front_path) as _img:
-                        width, height = ImageOps.exif_transpose(_img).size
-                    plan = compute_percent_expand_plan(
-                        width,
-                        height,
-                        pct,
-                        compute_provider_caps(resolved_front_provider),
+                front_pct = self._read_int("automation_front_expand_percent", 30)
+                # black_fill is a deterministic local paste onto a black
+                # canvas. A second pass would re-border the already-bordered
+                # image (a double black frame whose inner ring is pass-1
+                # black, not real content), so force a single pass. The
+                # 2-pass design only benefits AI outpaint, where each pass
+                # lets the model invent more plausible surrounding context.
+                if front_composite_mode == "black_fill" and front_passes != 1:
+                    self.logger.info(
+                        "case %s front expand: black_fill forces single pass (was %s)",
+                        case_key, front_passes,
                     )
-                    front_expand_kwargs = {
-                        "expand_left": int(plan["left"]),
-                        "expand_right": int(plan["right"]),
-                        "expand_top": int(plan["top"]),
-                        "expand_bottom": int(plan["bottom"]),
-                    }
-                    self.logger.info("case %s front expand geometry width=%s height=%s pct=%s plan=%s", case_key, width, height, pct, plan)
+                    front_passes = 1
                 self._set_active_step(case_entry, "front_expand")
                 self.manifest.update_step(case_key, "front_expand", "running")
                 result = None
@@ -1101,6 +1096,35 @@ class AutoPipelineRunner:
                         pass_output = _pass1_intermediate
                     else:
                         pass_output = None
+                    # Recompute the expand plan from THIS pass's actual input
+                    # dimensions. Pass 1 reads the original front; pass 2 reads
+                    # pass 1's (already-expanded) output. The previous code
+                    # computed the plan ONCE from the original dims and reused
+                    # the same absolute pixel margins on pass 2's larger image —
+                    # so pass 2 asked the provider to expand an already-portrait
+                    # canvas by margins sized for the small original, which the
+                    # model filled with black borders (the user-reported bug).
+                    # document_mode lets the provider plan its own 3:4 geometry.
+                    front_expand_kwargs: Dict[str, Any] = {}
+                    if not front_is_document:
+                        with Image.open(front_input_path) as _img:
+                            _pw, _ph = ImageOps.exif_transpose(_img).size
+                        _plan = compute_percent_expand_plan(
+                            _pw,
+                            _ph,
+                            front_pct,
+                            compute_provider_caps(resolved_front_provider),
+                        )
+                        front_expand_kwargs = {
+                            "expand_left": int(_plan["left"]),
+                            "expand_right": int(_plan["right"]),
+                            "expand_top": int(_plan["top"]),
+                            "expand_bottom": int(_plan["bottom"]),
+                        }
+                        self.logger.info(
+                            "case %s front expand pass %d/%d geometry width=%s height=%s pct=%s plan=%s",
+                            case_key, pass_index + 1, front_passes, _pw, _ph, front_pct, _plan,
+                        )
                     # Phase G of polish/v2.3 (2026-05-22): Step 0
                     # face-crop expand uses its OWN prompt key. Falls
                     # back to the legacy shared ``outpaint_prompt`` so
@@ -1153,36 +1177,33 @@ class AutoPipelineRunner:
                         return self._finalize_case(case_entry, "failed")
                     front_input_path = result
                     executed_passes += 1
-                # Clean up the pass-1 intermediate now that pass 2 has
-                # consumed it. Leaving it on disk pollutes the case dir
-                # AND triggers session_manager's outpaint-classifier on
-                # any later GUI load (the stage1 file would appear as a
-                # sibling generation in the carousel). Per subagent
-                # a659d166 M1 on PR #48 round 5. Best-effort delete:
-                # not fatal if it fails — the downstream contract
-                # depends only on `target_output`.
-                if front_passes == 2 and _pass1_intermediate:
-                    _stage1 = Path(_pass1_intermediate)
-                    if _stage1.exists():
-                        try:
-                            _stage1.unlink()
-                        except OSError:
-                            self.logger.debug(
-                                "case %s: failed to unlink stage1 intermediate %s",
-                                case_key,
-                                _pass1_intermediate,
-                            )
+                # Keep the pass-1 intermediate alongside the final output so
+                # both expansion stages are available for review (user
+                # request: "run 2x mode should save the expanded both
+                # steps"). It's named `<final-stem>-stage1<ext>` (e.g.
+                # front-expanded-stage1.png) next to front-expanded.png.
+                # Earlier code unlinked it to avoid session_manager's
+                # outpaint-classifier surfacing it as a sibling carousel
+                # generation; that tradeoff is now reversed per direct user
+                # direction. record its path in the manifest meta so callers
+                # can find it deterministically.
+                _stage1_kept: Optional[str] = None
+                if front_passes == 2 and _pass1_intermediate and Path(_pass1_intermediate).exists():
+                    _stage1_kept = _pass1_intermediate
+                _front_meta: Dict[str, Any] = {
+                    **self._policy_meta("front_expand", False, reprocess_mode),
+                    "configured_passes": front_passes,
+                    "executed_passes": executed_passes,
+                    "composite_mode": front_composite_mode,
+                }
+                if _stage1_kept:
+                    _front_meta["stage1_output"] = _stage1_kept
                 self.manifest.update_step(
                     case_key,
                     "front_expand",
                     "complete",
                     output=str(result),
-                    meta={
-                        **self._policy_meta("front_expand", False, reprocess_mode),
-                        "configured_passes": front_passes,
-                        "executed_passes": executed_passes,
-                        "composite_mode": front_composite_mode,
-                    },
+                    meta=_front_meta,
                 )
                 front_expanded = Path(result)
         else:

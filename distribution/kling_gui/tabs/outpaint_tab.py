@@ -293,7 +293,7 @@ class OutpaintTab(tk.Frame):
         ).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Combobox(
             fmt_frame, textvariable=self._composite_mode_var,
-            values=["preserve_seamless", "feathered", "hard", "none"], state="readonly", width=18,
+            values=["preserve_seamless", "feathered", "hard", "black_fill", "none"], state="readonly", width=18,
         ).pack(side=tk.LEFT, padx=5)
 
         # ── Expand button ───────────────────────────────────────────────

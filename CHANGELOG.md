@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-13 (unreleased) — black_fill expand mode + 2-pass front-expand geometry fix
+
+### Added
+
+- **`black_fill` composite mode** (Step 0 front expand, Step 2.5 selfie
+  expand, and the manual Outpaint tab). Instead of asking fal/BFL to generate
+  the expansion regions, it pastes the original onto a solid **black** canvas
+  with **NO API call** — instant, free, deterministic. The framing matches a
+  real expand (same canvas geometry); only the borders differ (pure black
+  instead of AI fill). Selectable in the CLI front/selfie composite pickers,
+  the GUI Step-0 / Step-2.5 expand pickers, and the manual Outpaint tab
+  dropdown. Default modes are unchanged (front=`preserve_seamless`,
+  selfie-expand=`none`); `black_fill` is strictly opt-in. Because it is
+  deterministic, a `black_fill` front expand is forced to a single pass (a 2nd
+  pass would re-border an already-bordered image).
+
+### Fixed
+
+- **2-pass front expand produced black borders** (user-reported). The expand
+  plan was computed ONCE from the original front dimensions and the same
+  absolute pixel margins were re-applied on pass 2 to the already-expanded
+  (much larger) pass-1 output — so pass 2 asked the provider to expand an
+  already-portrait canvas by margins sized for the small original, which came
+  back as black borders. Each pass now recomputes its own expand plan from its
+  actual input dimensions.
+- **Run 2x now keeps both expansion stages.** The pass-1 intermediate
+  (`front-expanded-stage1.png`) is retained alongside the final
+  `front-expanded.png` (previously deleted), and its path is recorded in the
+  front_expand manifest meta. Per user request: "run 2x mode should save the
+  expanded both steps."
+
 ## 2026-06-11 (unreleased) — CLI UX overhaul: settings visibility, multi-select oldcam, multi-model fan-out, live dashboard rebuild
 
 A real batch run executed ALL 10 oldcam versions with NO rPPG because the

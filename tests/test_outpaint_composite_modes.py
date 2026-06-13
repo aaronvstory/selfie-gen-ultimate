@@ -555,3 +555,108 @@ def test_bfl_pending_timeout_sets_reason_and_logs(monkeypatch, tmp_path: Path):
     assert "reason=pending_timeout" in detail
     assert "task=task-xyz" in detail
     assert any("BFL Expand timed out after" in message and "reason=pending_timeout" in message for _, message in logs)
+
+
+def _assert_no_network(monkeypatch):
+    """Make every fal/BFL network primitive explode if called.
+
+    black_fill must spend ZERO API credits, so any call into the upload /
+    queue / poll / download primitives is a contract violation.
+    """
+    import fal_utils
+
+    def boom(*_args, **_kwargs):  # pragma: no cover - only fires on a bug
+        raise AssertionError("black_fill must not call any network primitive")
+
+    monkeypatch.setattr(fal_utils, "upload_reference_image", boom)
+    monkeypatch.setattr(fal_utils, "fal_queue_submit", boom)
+    monkeypatch.setattr(fal_utils, "fal_queue_poll", boom)
+    monkeypatch.setattr(fal_utils, "fal_download_file", boom)
+
+
+def test_black_fill_no_api_black_margins_exact_center(monkeypatch, tmp_path: Path):
+    """black_fill pastes the original onto a solid black canvas with no
+    provider call. The center is the exact (preflight-sized) original and
+    the expansion margins are pure black."""
+    _assert_no_network(monkeypatch)
+    gen = OutpaintGenerator(api_key="x", freeimage_key="y", bfl_api_key="z")
+
+    src_path = tmp_path / "input.png"
+    # Small enough that preflight applies no scale → margins pass through.
+    _build_source_image(120, 90).save(src_path)
+    out_path = tmp_path / "bf.png"
+
+    margins = dict(expand_left=40, expand_right=40, expand_top=30, expand_bottom=30)
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        output_path=str(out_path),
+        provider="fal",
+        composite_mode="black_fill",
+        output_format="png",
+        **margins,
+    )
+    assert out == str(out_path)
+    result = Image.open(out_path).convert("RGB")
+    # No preflight scale at 120x90 → canvas is orig + margins exactly.
+    assert result.size == (120 + 80, 90 + 60)  # 200 x 150
+
+    # Center is the exact original (hard paste, no blend).
+    center = result.crop((40, 30, 40 + 120, 30 + 90))
+    assert center.tobytes() == _build_source_image(120, 90).tobytes()
+
+    # All four margins are pure black.
+    assert result.getpixel((0, 0)) == (0, 0, 0)
+    assert result.getpixel((result.width - 1, 0)) == (0, 0, 0)
+    assert result.getpixel((0, result.height - 1)) == (0, 0, 0)
+    assert result.getpixel((result.width - 1, result.height - 1)) == (0, 0, 0)
+    # A pixel just outside the center on each side is black.
+    assert result.getpixel((39, 75)) == (0, 0, 0)   # left margin
+    assert result.getpixel((160, 75)) == (0, 0, 0)  # right margin
+    assert result.getpixel((100, 29)) == (0, 0, 0)  # top margin
+    assert result.getpixel((100, 120)) == (0, 0, 0)  # bottom margin
+
+
+def test_black_fill_works_with_bfl_provider_without_api(monkeypatch, tmp_path: Path):
+    """Selecting provider='bfl' with black_fill still skips the network —
+    the short-circuit fires before any provider dispatch."""
+    _assert_no_network(monkeypatch)
+    gen = OutpaintGenerator(api_key="x", freeimage_key="y", bfl_api_key="z")
+    src_path = tmp_path / "in.png"
+    _build_source_image(64, 48).save(src_path)
+    out_path = tmp_path / "bf_bfl.png"
+
+    out = gen.outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        output_path=str(out_path),
+        provider="bfl",
+        composite_mode="black_fill",
+        output_format="png",
+        expand_left=20, expand_right=20, expand_top=16, expand_bottom=16,
+    )
+    assert out == str(out_path)
+    result = Image.open(out_path).convert("RGB")
+    assert result.size == (64 + 40, 48 + 32)
+    assert result.getpixel((0, 0)) == (0, 0, 0)
+
+
+def test_black_fill_direct_bfl_outpaint_stays_local(monkeypatch, tmp_path: Path):
+    """Defensive: a direct _bfl_outpaint(black_fill) caller also stays API-free."""
+    _assert_no_network(monkeypatch)
+    gen = OutpaintGenerator(api_key="x", bfl_api_key="z")
+    src_path = tmp_path / "in.png"
+    _build_source_image(50, 50).save(src_path)
+    out_path = tmp_path / "bf_direct.png"
+
+    out = gen._bfl_outpaint(
+        image_path=str(src_path),
+        output_folder=str(tmp_path),
+        expand_left=10, expand_right=10, expand_top=10, expand_bottom=10,
+        prompt="",
+        output_format="png",
+        composite_mode="black_fill",
+        output_path=str(out_path),
+    )
+    assert out == str(out_path)
+    assert Image.open(out_path).convert("RGB").getpixel((0, 0)) == (0, 0, 0)

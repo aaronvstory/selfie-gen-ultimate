@@ -1049,6 +1049,7 @@ class FaceCropTab(tk.Frame):
             "preserve_seamless": "Preserve Seamless",
             "feathered": "Feathered",
             "hard": "Hard",
+            "black_fill": "Black Fill (no AI)",
             "none": "None",
         }
         composite_value = self._outpaint_composite_var.get().strip()

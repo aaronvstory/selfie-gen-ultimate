@@ -75,6 +75,7 @@ def test_shared_option_constants_present_and_3x4_default():
     assert "3:4" in k._VIDEO_ASPECT_RATIO_OPTIONS
     assert k._REPROCESS_MODE_OPTIONS == ["skip", "overwrite", "increment"]
     assert "none" in k._COMPOSITE_MODE_OPTIONS
+    assert "black_fill" in k._COMPOSITE_MODE_OPTIONS
     assert k._PROMPT_SLOT_COUNT == 10
     assert 10 in k._COMMON_VIDEO_DURATIONS
 
