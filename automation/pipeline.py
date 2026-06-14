@@ -664,6 +664,43 @@ class AutoPipelineRunner:
             "step": step_name,
         }
 
+    @staticmethod
+    def _front_expand_stage1_path(output_path: Path) -> Path:
+        """The pass-1 intermediate sibling of a front-expand output:
+        ``<stem>-stage1<ext>`` (mirrors the producer at the 2-pass loop)."""
+        return output_path.with_name(
+            f"{output_path.stem}-stage1{output_path.suffix or '.png'}"
+        )
+
+    def _front_expand_reuse_satisfies_passes(self, output_path: Path, passes: int) -> bool:
+        """Whether reusing ``output_path`` actually satisfies the configured
+        pass count. A 2-pass front expand is only honored on disk when its
+        stage-1 sibling is ALSO present — a single-pass or pre-stage-1-retention
+        (pre-#98) output lacks it, so the configured 2-pass must actually RUN to
+        produce the larger fully-expanded result the user asked for (run-2x
+        reuse bug, 2026-06-14). Single-pass configs are always satisfiable."""
+        if passes != 2:
+            return True
+        return self._front_expand_stage1_path(output_path).exists()
+
+    def _front_expand_reuse_meta(
+        self, output_path: Path, passes: int, composite_mode: str, mode: str
+    ) -> Dict[str, Any]:
+        """Manifest meta for a SKIP-reused front-expand output. Records the
+        stage-1 sibling path for parity with the freshly-executed path when a
+        valid 2-pass output is reused."""
+        meta: Dict[str, Any] = {
+            **self._policy_meta("front_expand", True, mode),
+            "configured_passes": passes,
+            "executed_passes": 0,
+            "composite_mode": composite_mode,
+        }
+        if passes == 2:
+            stage1 = self._front_expand_stage1_path(output_path)
+            if stage1.exists():
+                meta["stage1_output"] = str(stage1)
+        return meta
+
     def _set_active_step(self, case_entry: Dict[str, Any], step_name: Optional[str]) -> None:
         # Abort checkpoint: every step transition is a safe stopping point
         # (no half-written outputs — each step finishes or is re-runnable).
@@ -1016,6 +1053,20 @@ class AutoPipelineRunner:
         configured_front_passes = self._read_int("automation_front_expand_passes", 2)
         front_passes = configured_front_passes if configured_front_passes in {1, 2} else 2
         if self.automation.get("automation_front_expand_enabled", True):
+            # black_fill is a deterministic local paste onto a black canvas; a
+            # 2nd pass would re-border the already-bordered image, so it is
+            # ALWAYS single-pass. Normalize the effective pass count BEFORE the
+            # skip-reuse check below so the 2-pass stage-1 reuse guard doesn't
+            # demand a stage-1 sibling that black_fill never produces (which
+            # would re-run black_fill on every skip-run). Kept INSIDE the
+            # enabled gate so a disabled front expand doesn't log spuriously.
+            # The 2-pass design only benefits AI outpaint.
+            if front_composite_mode == "black_fill" and front_passes != 1:
+                self.logger.info(
+                    "case %s front expand: black_fill forces single pass (was %s)",
+                    case_key, front_passes,
+                )
+                front_passes = 1
             current_step = self.manifest.get_step(case_key, "front_expand")
             existing_front_step_output = current_step.get("output")
             if (
@@ -1023,6 +1074,9 @@ class AutoPipelineRunner:
                 and current_step.get("status") == "complete"
                 and existing_front_step_output
                 and Path(existing_front_step_output).exists()
+                and self._front_expand_reuse_satisfies_passes(
+                    Path(existing_front_step_output), front_passes
+                )
             ):
                 front_expanded = Path(existing_front_step_output)
                 self.manifest.update_step(
@@ -1030,25 +1084,34 @@ class AutoPipelineRunner:
                     "front_expand",
                     "complete",
                     output=str(front_expanded),
-                    meta={
-                        **self._policy_meta("front_expand", True, reprocess_mode),
-                        "configured_passes": front_passes,
-                        "executed_passes": 0,
-                        "composite_mode": front_composite_mode,
-                    },
+                    meta=self._front_expand_reuse_meta(
+                        front_expanded, front_passes, front_composite_mode, reprocess_mode
+                    ),
                 )
-            elif reprocess_mode == "skip" and front_expanded and Path(front_expanded).exists():
+            elif (
+                reprocess_mode == "skip"
+                and front_expanded
+                and Path(front_expanded).exists()
+                # A prior attempt that was INTERRUPTED (status "running", e.g. a
+                # crash/kill mid-2-pass) or FAILED must not be reused off disk:
+                # a crash bypasses the orphaned-stage1 cleanup below, so an old
+                # stale final + orphan stage1 could otherwise fool the 2-pass
+                # reuse guard. Re-run instead (CodeRabbit Major, PR #99). A
+                # never-run case (status "pending") with files on disk is the
+                # legitimate disk-trust fallback and still reuses.
+                and current_step.get("status") not in {"running", "failed"}
+                and self._front_expand_reuse_satisfies_passes(
+                    Path(front_expanded), front_passes
+                )
+            ):
                 self.manifest.update_step(
                     case_key,
                     "front_expand",
                     "complete",
                     output=str(front_expanded),
-                    meta={
-                        **self._policy_meta("front_expand", True, reprocess_mode),
-                        "configured_passes": front_passes,
-                        "executed_passes": 0,
-                        "composite_mode": front_composite_mode,
-                    },
+                    meta=self._front_expand_reuse_meta(
+                        Path(front_expanded), front_passes, front_composite_mode, reprocess_mode
+                    ),
                 )
             else:
                 target_output = Path(front_expanded)
@@ -1056,18 +1119,10 @@ class AutoPipelineRunner:
                     target_output = self._next_increment_path(target_output)
                 front_is_document = self.automation.get("automation_front_expand_mode") == "document_3x4"
                 front_pct = self._read_int("automation_front_expand_percent", 30)
-                # black_fill is a deterministic local paste onto a black
-                # canvas. A second pass would re-border the already-bordered
-                # image (a double black frame whose inner ring is pass-1
-                # black, not real content), so force a single pass. The
-                # 2-pass design only benefits AI outpaint, where each pass
-                # lets the model invent more plausible surrounding context.
-                if front_composite_mode == "black_fill" and front_passes != 1:
-                    self.logger.info(
-                        "case %s front expand: black_fill forces single pass (was %s)",
-                        case_key, front_passes,
-                    )
-                    front_passes = 1
+                # NOTE: black_fill's single-pass force is applied earlier (right
+                # after front_passes is computed) so the skip-reuse guard sees
+                # the effective pass count; by here front_passes is already 1
+                # for black_fill.
                 self._set_active_step(case_entry, "front_expand")
                 self.manifest.update_step(case_key, "front_expand", "running")
                 result = None
@@ -1082,12 +1137,13 @@ class AutoPipelineRunner:
                 # retained on disk and the downstream contract
                 # (target_output = `front-expanded.png`) holds.
                 # PR #48 round 4 subagent M3.
+                # Shared stage-1 naming with the skip-reuse guard
+                # (_front_expand_reuse_satisfies_passes) so the producer and the
+                # reuse-validity check can never drift.
                 _pass1_intermediate: Optional[str] = None
                 if front_passes == 2:
-                    _stem = target_output.stem
-                    _ext = target_output.suffix or ".png"
                     _pass1_intermediate = str(
-                        target_output.with_name(f"{_stem}-stage1{_ext}")
+                        self._front_expand_stage1_path(target_output)
                     )
                 for pass_index in range(front_passes):
                     if pass_index == front_passes - 1:
@@ -1164,6 +1220,20 @@ class AutoPipelineRunner:
                         **front_expand_kwargs,
                     )
                     if not result:
+                        # A failed 2-pass attempt must NOT leave an orphaned
+                        # stage-1 sibling on disk: a later reprocess=skip run
+                        # would otherwise see (old stale final + orphan stage1)
+                        # and wrongly treat it as a satisfied 2-pass, reusing the
+                        # under-expanded final instead of re-running (CodeRabbit
+                        # Major, PR #99). Cleaning the orphan at the source is
+                        # robust to cross-OS folder copies, unlike an mtime
+                        # comparison (this project routinely moves case folders
+                        # between machines, scrambling mtimes).
+                        if _pass1_intermediate:
+                            try:
+                                Path(_pass1_intermediate).unlink(missing_ok=True)
+                            except OSError:
+                                pass
                         self.manifest.update_step(
                             case_key,
                             "front_expand",
