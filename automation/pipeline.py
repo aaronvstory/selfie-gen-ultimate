@@ -1052,19 +1052,21 @@ class AutoPipelineRunner:
         front_expanded = existing.front_expanded or (case_dir / self.automation.get("automation_front_output_name", "front-expanded.png"))
         configured_front_passes = self._read_int("automation_front_expand_passes", 2)
         front_passes = configured_front_passes if configured_front_passes in {1, 2} else 2
-        # black_fill is a deterministic local paste onto a black canvas; a 2nd
-        # pass would re-border the already-bordered image, so it is ALWAYS
-        # single-pass. Normalize the effective pass count BEFORE the skip-reuse
-        # check below so the 2-pass stage-1 reuse guard doesn't demand a stage-1
-        # sibling that black_fill never produces (which would re-run black_fill
-        # on every skip-run). The 2-pass design only benefits AI outpaint.
-        if front_composite_mode == "black_fill" and front_passes != 1:
-            self.logger.info(
-                "case %s front expand: black_fill forces single pass (was %s)",
-                case_key, front_passes,
-            )
-            front_passes = 1
         if self.automation.get("automation_front_expand_enabled", True):
+            # black_fill is a deterministic local paste onto a black canvas; a
+            # 2nd pass would re-border the already-bordered image, so it is
+            # ALWAYS single-pass. Normalize the effective pass count BEFORE the
+            # skip-reuse check below so the 2-pass stage-1 reuse guard doesn't
+            # demand a stage-1 sibling that black_fill never produces (which
+            # would re-run black_fill on every skip-run). Kept INSIDE the
+            # enabled gate so a disabled front expand doesn't log spuriously.
+            # The 2-pass design only benefits AI outpaint.
+            if front_composite_mode == "black_fill" and front_passes != 1:
+                self.logger.info(
+                    "case %s front expand: black_fill forces single pass (was %s)",
+                    case_key, front_passes,
+                )
+                front_passes = 1
             current_step = self.manifest.get_step(case_key, "front_expand")
             existing_front_step_output = current_step.get("output")
             if (
