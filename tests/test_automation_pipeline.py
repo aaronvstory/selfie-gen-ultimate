@@ -1386,7 +1386,14 @@ def test_pipeline_front_expand_runs_single_pass_when_configured(tmp_path: Path, 
     assert front_step["meta"]["executed_passes"] == 1
 
 
-def _front_expand_reuse_runner(tmp_path, monkeypatch, extra_config, *, pre_stage1, key):
+def _front_expand_reuse_runner(
+    tmp_path: Path,
+    monkeypatch,
+    extra_config: dict,
+    *,
+    pre_stage1: bool,
+    key: str,
+) -> tuple:
     """Shared setup: a case with an EXISTING front-expanded.png already
     recorded complete in the manifest (the skip-reuse precondition), optionally
     with its stage-1 sibling pre-created. Returns (runner, manifest, record,
@@ -1583,6 +1590,49 @@ def test_front_expand_2pass_failed_retry_cleans_orphan_stage1(tmp_path: Path, mo
     assert not (case_dir / "front-expanded-stage1.png").exists()
     # And the guard now correctly reports the stale final does NOT satisfy 2-pass.
     assert runner._front_expand_reuse_satisfies_passes(case_dir / "front-expanded.png", 2) is False
+
+
+def test_front_expand_2pass_interrupted_running_does_not_reuse_stale(tmp_path: Path, monkeypatch):
+    """A crash mid-2-pass bypasses the orphan cleanup, leaving status='running' +
+    an orphan stage-1 next to a stale old final. Branch 2 must NOT reuse that
+    off disk — it must re-run (CodeRabbit Major, PR #99; the crash variant the
+    orphan cleanup alone can't catch)."""
+    case_dir = tmp_path / "fe-crash"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (800, 600), (1, 2, 3)).save(front)
+    # Stale old single-stage final + an orphan stage-1 from the crashed attempt.
+    Image.new("RGB", (1200, 900), (4, 5, 6)).save(case_dir / "front-expanded.png")
+    Image.new("RGB", (1000, 750), (7, 8, 9)).save(case_dir / "front-expanded-stage1.png")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="fe-crash")
+
+    config = merge_automation_defaults(
+        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 2}
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    # Simulate an interrupted prior run: step left mid-flight as 'running'.
+    manifest.update_step(record.relative_key, "front_expand", "running")
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
+
+    outpaint = FakeOutpaint()
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: outpaint,
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    front_step = manifest.get_step(record.relative_key, "front_expand")
+    assert front_step["meta"]["executed_passes"] == 2  # re-ran, did not reuse stale
 
 
 def test_front_expand_2pass_reuses_when_stage1_present(tmp_path: Path, monkeypatch):

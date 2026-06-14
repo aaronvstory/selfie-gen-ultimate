@@ -1092,6 +1092,14 @@ class AutoPipelineRunner:
                 reprocess_mode == "skip"
                 and front_expanded
                 and Path(front_expanded).exists()
+                # A prior attempt that was INTERRUPTED (status "running", e.g. a
+                # crash/kill mid-2-pass) or FAILED must not be reused off disk:
+                # a crash bypasses the orphaned-stage1 cleanup below, so an old
+                # stale final + orphan stage1 could otherwise fool the 2-pass
+                # reuse guard. Re-run instead (CodeRabbit Major, PR #99). A
+                # never-run case (status "pending") with files on disk is the
+                # legitimate disk-trust fallback and still reuses.
+                and current_step.get("status") not in {"running", "failed"}
                 and self._front_expand_reuse_satisfies_passes(
                     Path(front_expanded), front_passes
                 )
