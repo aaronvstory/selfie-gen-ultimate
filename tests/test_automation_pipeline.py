@@ -1436,7 +1436,7 @@ def test_front_expand_2pass_reruns_when_stage1_missing(tmp_path: Path, monkeypat
     is a pre-#98 / single-stage output that does NOT satisfy a 2-pass config, so
     the front expand must actually RE-RUN (producing the larger result + both
     stage files) instead of reusing the smaller stale output."""
-    runner, manifest, record, outpaint, front_output = _front_expand_reuse_runner(
+    runner, manifest, record, _outpaint, front_output = _front_expand_reuse_runner(
         tmp_path, monkeypatch, {"automation_front_expand_passes": 2}, pre_stage1=False, key="fe-rerun"
     )
     stats = runner.run([record])
@@ -1536,10 +1536,59 @@ def test_front_expand_increment_mode_stage1_tracks_incremented_name(tmp_path: Pa
     assert front_step["meta"]["stage1_output"].endswith("front-expanded_v1-stage1.png")
 
 
+def test_front_expand_2pass_failed_retry_cleans_orphan_stage1(tmp_path: Path, monkeypatch):
+    """A 2-pass attempt that writes stage-1 then FAILS on pass 2 must not leave an
+    orphaned stage-1 sibling — otherwise a later reprocess=skip run would see
+    (stale old final + orphan stage1) and wrongly reuse the under-expanded final
+    instead of re-running (CodeRabbit Major, PR #99)."""
+    case_dir = tmp_path / "fe-failretry"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (800, 600), (1, 2, 3)).save(front)
+    # An OLD single-stage final from a prior run (no stage-1 sibling).
+    Image.new("RGB", (1200, 900), (4, 5, 6)).save(case_dir / "front-expanded.png")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="fe-failretry")
+
+    config = merge_automation_defaults(
+        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 2}
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
+
+    class _FailPass2Outpaint(FakeOutpaint):
+        def outpaint(self, image_path, output_folder, output_path=None, **kwargs):
+            # Pass 1 (writes -stage1.png) succeeds; pass 2 (target final) fails.
+            if output_path and str(output_path).endswith("front-expanded.png"):
+                return None
+            return super().outpaint(image_path, output_folder, output_path, **kwargs)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: _FailPass2Outpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    runner.run([record])
+    front_step = manifest.get_step(record.relative_key, "front_expand")
+    assert front_step["status"] == "failed"
+    # The orphaned stage-1 must have been cleaned up, so reuse cannot be fooled.
+    assert not (case_dir / "front-expanded-stage1.png").exists()
+    # And the guard now correctly reports the stale final does NOT satisfy 2-pass.
+    assert runner._front_expand_reuse_satisfies_passes(case_dir / "front-expanded.png", 2) is False
+
+
 def test_front_expand_2pass_reuses_when_stage1_present(tmp_path: Path, monkeypatch):
     """When the stage-1 sibling IS present, the existing 2-pass output is a valid
     current product and reuse is preserved (no re-run, no API cost)."""
-    runner, manifest, record, outpaint, front_output = _front_expand_reuse_runner(
+    runner, manifest, record, *_ = _front_expand_reuse_runner(
         tmp_path, monkeypatch, {"automation_front_expand_passes": 2}, pre_stage1=True, key="fe-reuse"
     )
     stats = runner.run([record])
@@ -1554,7 +1603,7 @@ def test_front_expand_blackfill_reuses_without_stage1(tmp_path: Path, monkeypatc
     """black_fill is always single-pass and never produces a stage-1 sibling, so
     the 2-pass stage-1 reuse guard must NOT force a spurious re-run for it (the
     single-pass normalization runs before the reuse check)."""
-    runner, manifest, record, outpaint, front_output = _front_expand_reuse_runner(
+    runner, manifest, record, *_ = _front_expand_reuse_runner(
         tmp_path,
         monkeypatch,
         {"automation_front_expand_passes": 2, "automation_front_expand_composite_mode": "black_fill"},
@@ -1572,7 +1621,7 @@ def test_front_expand_blackfill_reuses_without_stage1(tmp_path: Path, monkeypatc
 def test_front_expand_singlepass_reuses_without_stage1(tmp_path: Path, monkeypatch):
     """A single-pass config needs no stage-1 sibling, so an existing output is
     reused as before."""
-    runner, manifest, record, outpaint, front_output = _front_expand_reuse_runner(
+    runner, manifest, record, *_ = _front_expand_reuse_runner(
         tmp_path, monkeypatch, {"automation_front_expand_passes": 1}, pre_stage1=False, key="fe-1pass"
     )
     stats = runner.run([record])

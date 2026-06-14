@@ -1212,6 +1212,20 @@ class AutoPipelineRunner:
                         **front_expand_kwargs,
                     )
                     if not result:
+                        # A failed 2-pass attempt must NOT leave an orphaned
+                        # stage-1 sibling on disk: a later reprocess=skip run
+                        # would otherwise see (old stale final + orphan stage1)
+                        # and wrongly treat it as a satisfied 2-pass, reusing the
+                        # under-expanded final instead of re-running (CodeRabbit
+                        # Major, PR #99). Cleaning the orphan at the source is
+                        # robust to cross-OS folder copies, unlike an mtime
+                        # comparison (this project routinely moves case folders
+                        # between machines, scrambling mtimes).
+                        if _pass1_intermediate:
+                            try:
+                                Path(_pass1_intermediate).unlink(missing_ok=True)
+                            except OSError:
+                                pass
                         self.manifest.update_step(
                             case_key,
                             "front_expand",
