@@ -120,6 +120,15 @@ EXCLUDED_FILES: Set[str] = {
     "ui_config.json",
 } | PII_EXCLUDED_FILES | LOCAL_ANALYSIS_FILES
 
+# OS-junk files matched CASE-INSENSITIVELY (stored lowercased). release_prep
+# sweeps the WORKING TREE, and on macOS Finder constantly regenerates .DS_Store
+# (gitignored ≠ excluded) — these shipped into the v2.32 zip. Case-insensitive
+# because the macOS/Windows filesystems that create them are case-insensitive,
+# so a variant like Desktop.ini / thumbs.db can surface (cross-OS bounce trap:
+# OS-junk). Kept separate from the case-SENSITIVE EXCLUDED_FILES above (which
+# holds real config filenames that must match exactly).
+_OS_JUNK_FILENAMES: Set[str] = {".ds_store", "thumbs.db", "desktop.ini"}
+
 # Path-relative directory prefixes pruned from the release sweep. Unlike
 # EXCLUDED_DIRS (which matches a bare dir NAME anywhere in the tree), these are
 # anchored to a specific location so we don't over-prune a same-named dir
@@ -156,6 +165,8 @@ def _should_skip(path: Path) -> bool:
     if any(part.startswith(".scratch") for part in path.parts):
         return True
     if path.name in EXCLUDED_FILES:
+        return True
+    if path.name.lower() in _OS_JUNK_FILENAMES:
         return True
     if path.name.startswith("session-ses_") and path.suffix.lower() == ".md":
         return True
