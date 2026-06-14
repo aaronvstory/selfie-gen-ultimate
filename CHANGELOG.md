@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-15 — v2.32 — Step 0 2-pass front expand actually runs on resume
+
+### Fixed
+
+- **Run-2x (2-pass) front expand was a no-op on resume.** Under
+  `reprocess=skip`, the front-expand step reused any existing
+  `front-expanded.png` as if it satisfied a 2-pass config — even a single-stage
+  or pre-`black_fill`-release output. So a case carrying an older, smaller
+  expansion recorded `executed_passes=0` and the configured 2-pass @70%
+  (~5.76× linear / ~33× area) never actually ran. A 2-pass output is now only
+  reused when its `<stem>-stage1<ext>` sibling is also present (the hallmark of
+  a real 2-pass run); otherwise the step re-runs and produces both the pass-1
+  intermediate and the larger final.
+- **Stale-reuse hardening.** A graceful pass-2 failure now unlinks the orphaned
+  stage-1 file, and an interrupted (`running`) or `failed` prior attempt is not
+  reused off disk — both re-run instead of silently reusing an under-expanded
+  final. Chosen over an mtime comparison so it stays correct across the
+  cross-OS folder copies the project supports.
+
+### Notes
+
+- `black_fill` front expand remains single-pass (a 2nd pass would re-border it);
+  its single-pass normalization runs before the reuse check so it never forces a
+  spurious re-run.
+- Step 2.5 selfie expand is single-pass by design (no 2×); locked with a test.
+- An already-COMPLETE case is skipped at the case level under `reprocess=skip`;
+  re-expanding a finished case still needs a reprocess (force/increment or delete
+  its outputs). New/incomplete cases get the bigger expansion automatically.
+
 ## 2026-06-13 (unreleased) — black_fill expand mode + 2-pass front-expand geometry fix
 
 ### Added
