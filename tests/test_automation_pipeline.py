@@ -1386,6 +1386,156 @@ def test_pipeline_front_expand_runs_single_pass_when_configured(tmp_path: Path, 
     assert front_step["meta"]["executed_passes"] == 1
 
 
+def _front_expand_reuse_runner(tmp_path, monkeypatch, extra_config, *, pre_stage1, key):
+    """Shared setup: a case with an EXISTING front-expanded.png already
+    recorded complete in the manifest (the skip-reuse precondition), optionally
+    with its stage-1 sibling pre-created. Returns (runner, manifest, record,
+    outpaint, front_output)."""
+    case_dir = tmp_path / key
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (800, 600), (1, 2, 3)).save(front)
+    front_output = case_dir / "front-expanded.png"
+    Image.new("RGB", (1200, 900), (4, 5, 6)).save(front_output)
+    if pre_stage1:
+        Image.new("RGB", (1000, 750), (7, 8, 9)).save(case_dir / "front-expanded-stage1.png")
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key=key)
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            **extra_config,
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    manifest.update_step(record.relative_key, "front_expand", "complete", output=str(front_output))
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
+
+    outpaint = FakeOutpaint()
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: outpaint,
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    return runner, manifest, record, outpaint, front_output
+
+
+def test_front_expand_2pass_reruns_when_stage1_missing(tmp_path: Path, monkeypatch):
+    """run-2x reuse bug: an existing front-expanded.png with NO stage-1 sibling
+    is a pre-#98 / single-stage output that does NOT satisfy a 2-pass config, so
+    the front expand must actually RE-RUN (producing the larger result + both
+    stage files) instead of reusing the smaller stale output."""
+    runner, manifest, record, outpaint, front_output = _front_expand_reuse_runner(
+        tmp_path, monkeypatch, {"automation_front_expand_passes": 2}, pre_stage1=False, key="fe-rerun"
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    front_step = manifest.get_step(record.relative_key, "front_expand")
+    assert front_step["meta"]["executed_passes"] == 2          # actually re-ran 2 passes
+    assert front_step["meta"].get("reused_existing") is False  # not a reuse
+    assert front_step["meta"]["stage1_output"].endswith("-stage1.png")
+    assert (front_output.parent / "front-expanded-stage1.png").exists()
+
+
+def test_front_expand_2pass_reuses_when_stage1_present(tmp_path: Path, monkeypatch):
+    """When the stage-1 sibling IS present, the existing 2-pass output is a valid
+    current product and reuse is preserved (no re-run, no API cost)."""
+    runner, manifest, record, outpaint, front_output = _front_expand_reuse_runner(
+        tmp_path, monkeypatch, {"automation_front_expand_passes": 2}, pre_stage1=True, key="fe-reuse"
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    front_step = manifest.get_step(record.relative_key, "front_expand")
+    assert front_step["meta"]["executed_passes"] == 0          # reused, no passes run
+    assert front_step["meta"]["reused_existing"] is True
+    assert front_step["meta"]["stage1_output"].endswith("-stage1.png")
+
+
+def test_front_expand_blackfill_reuses_without_stage1(tmp_path: Path, monkeypatch):
+    """black_fill is always single-pass and never produces a stage-1 sibling, so
+    the 2-pass stage-1 reuse guard must NOT force a spurious re-run for it (the
+    single-pass normalization runs before the reuse check)."""
+    runner, manifest, record, outpaint, front_output = _front_expand_reuse_runner(
+        tmp_path,
+        monkeypatch,
+        {"automation_front_expand_passes": 2, "automation_front_expand_composite_mode": "black_fill"},
+        pre_stage1=False,
+        key="fe-blackfill",
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    front_step = manifest.get_step(record.relative_key, "front_expand")
+    assert front_step["meta"]["executed_passes"] == 0          # reused, not re-run
+    assert front_step["meta"]["configured_passes"] == 1        # black_fill -> effective single pass
+    assert front_step["meta"]["reused_existing"] is True
+
+
+def test_front_expand_singlepass_reuses_without_stage1(tmp_path: Path, monkeypatch):
+    """A single-pass config needs no stage-1 sibling, so an existing output is
+    reused as before."""
+    runner, manifest, record, outpaint, front_output = _front_expand_reuse_runner(
+        tmp_path, monkeypatch, {"automation_front_expand_passes": 1}, pre_stage1=False, key="fe-1pass"
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    front_step = manifest.get_step(record.relative_key, "front_expand")
+    assert front_step["meta"]["executed_passes"] == 0
+    assert front_step["meta"]["reused_existing"] is True
+
+
+def test_selfie_expand_always_single_pass_even_with_passes_key(tmp_path: Path, monkeypatch):
+    """Step 2.5 selfie expand has no 2x and must stay single-pass: a stray
+    automation_selfie_expand_passes key must NOT make it run twice. With front
+    expand pinned to 1 pass, the only outpaint calls are front(1) + selfie(1)."""
+    case_dir = tmp_path / "case-se1"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (256, 256), (11, 11, 11)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-se1")
+
+    config = merge_automation_defaults(
+        {
+            "falai_api_key": "x",
+            "bfl_api_key": "bfl-token",
+            "automation_oldcam_required": False,
+            "automation_front_expand_passes": 1,
+            "automation_selfie_expand_passes": 2,  # stray/unsupported key — must be ignored
+        }
+    )
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})
+    monkeypatch.setattr("automation.pipeline.compute_face_similarity_details", lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True})
+    monkeypatch.setattr("automation.pipeline.run_oldcam_all", lambda **kwargs: [])
+
+    outpaint = FakeOutpaint()
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: outpaint,
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    assert len(outpaint.calls) == 2  # front(1 pass) + selfie(1 pass); selfie did NOT run twice
+
+
 def test_pipeline_selfie_expand_reuse_skips_outpaint_call(tmp_path: Path, monkeypatch):
     case_dir = tmp_path / "case-o"
     case_dir.mkdir()
