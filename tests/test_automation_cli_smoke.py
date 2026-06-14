@@ -869,3 +869,56 @@ def test_automation_status_lines_include_facetrack_indicator(tmp_path):
     ft = [ln for ln in lines if "facetrack_gate=" in ln]
     assert ft, f"no facetrack indicator in {lines}"
     assert "on" in ft[0] and "96.0%" in ft[0] and "advisory" in ft[0]
+
+
+# ── PR #95 — EOF/degenerate-stdin safety for pause helpers ──────────────────
+
+def test_pause_review_eof_safe(monkeypatch):
+    """EOFError at a review pause must not crash — treat as Enter pressed."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: (_ for _ in ()).throw(EOFError()))
+    ui.pause_review()
+
+
+def test_pause_continue_eof_safe(monkeypatch):
+    """pause_continue with legacy pauses on must also swallow EOF."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = True
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: (_ for _ in ()).throw(EOFError()))
+    ui.pause_continue()
+
+
+def test_pause_review_propagates_keyboard_interrupt(monkeypatch):
+    """Ctrl-C at a pause must propagate — KeyboardInterrupt is NOT swallowed."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        ui.pause_review()
+
+
+def test_pause_review_stdin_none_safe(monkeypatch):
+    """RuntimeError('lost sys.stdin') when sys.stdin is None must not crash."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("input(): lost sys.stdin")))
+    ui.pause_review()
+
+
+def test_pause_review_closed_stdin_safe(monkeypatch):
+    """ValueError('I/O operation on closed file') must not crash."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: (_ for _ in ()).throw(ValueError("I/O operation on closed file")))
+    ui.pause_review()
+
+
+def test_pause_review_bad_fd_safe(monkeypatch):
+    """OSError (EBADF / BrokenPipeError) from a bad stdin fd must not crash."""
+    ui = KlingAutomationUI.__new__(KlingAutomationUI)
+    ui.legacy_pauses = False
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: (_ for _ in ()).throw(OSError(9, "Bad file descriptor")))
+    ui.pause_review()
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: (_ for _ in ()).throw(BrokenPipeError()))
+    ui.pause_review()

@@ -312,23 +312,42 @@ class KlingAutomationUI:
         self._startup_key_onboarding_done = False
         self.setup_logging()
 
+    @staticmethod
+    def _wait_for_enter(message: str) -> None:
+        """input() pause that treats a closed/piped stdin as 'Enter pressed'.
+
+        Swallows the full set of degenerate-stdin failures input() can raise:
+        EOFError (stdin at EOF — piped/exhausted/Ctrl-D), RuntimeError
+        ("lost sys.stdin" when sys.stdin is None — GUI wrappers, daemons,
+        Windows services), ValueError ("I/O operation on closed file" when the
+        stdin object is closed), and OSError (bad/closed underlying fd — EBADF,
+        or BrokenPipeError on a severed pipe). KeyboardInterrupt (Ctrl-C) is
+        deliberately NOT caught — main() handles it as a clean exit.
+        """
+        try:
+            input(message)
+        except (EOFError, RuntimeError, ValueError, OSError):
+            pass
+
     def pause_continue(self, message: str = "Press Enter to continue..."):
         """Pause only when legacy pause mode is enabled."""
         if self.legacy_pauses:
-            input(message)
+            self._wait_for_enter(message)
 
     def pause_review(self, message: str = "Press Enter to continue..."):
         """Pause for explicit review screens or actionable error surfaces."""
-        input(message)
+        self._wait_for_enter(message)
 
     @staticmethod
     def _safe_input(prompt: str = "", default: str = "") -> str:
         """input() that returns ``default`` on EOF/closed stdin instead of
         raising. Used by legacy sub-menus so a piped/closed stdin cancels the
-        action cleanly rather than crashing the menu loop."""
+        action cleanly rather than crashing the menu loop. Covers the full set
+        of degenerate-stdin failures: EOFError (EOF/piped), RuntimeError
+        (sys.stdin is None), ValueError (sys.stdin closed), OSError (bad fd)."""
         try:
             return input(prompt)
-        except EOFError:
+        except (EOFError, RuntimeError, ValueError, OSError):
             return default
 
     def load_config(self) -> Dict[str, Any]:
@@ -3464,7 +3483,7 @@ class KlingAutomationUI:
             table.add_row(key, _rich_markup_escape(sval))
         _RICH_CONSOLE.print(table)
         if self._use_legacy_prompt_ui():
-            self._safe_input("\nPress Enter to return to the section picker...")
+            self._wait_for_enter("\nPress Enter to return to the section picker...")
             return
         self._browse_all_settings()
 
