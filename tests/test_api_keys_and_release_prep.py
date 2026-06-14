@@ -538,6 +538,13 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     (src / ".scratch_codex_review.txt").write_text("private", encoding="utf-8")
     (src / ".scratch_probe_venv").mkdir(parents=True)
     (src / ".scratch_probe_venv" / "x.py").write_text("private", encoding="utf-8")
+    # OS-junk: macOS Finder/Windows Explorer metadata, including in subdirs —
+    # leaked into the v2.32 zip (gitignored ≠ excluded; release_prep walks the
+    # working tree).
+    (src / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    (src / "kling_gui").mkdir(parents=True)
+    (src / "kling_gui" / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    (src / "kling_gui" / "Thumbs.db").write_bytes(b"\x00")
     (src / "normal.py").write_text("ok", encoding="utf-8")
 
     copy_sanitized_tree(src, dst)
@@ -554,6 +561,9 @@ def test_copy_sanitized_tree_excludes_tests_and_scratch(tmp_path: Path):
     assert not (dst / ".scratch_probe_venv").exists(), (
         ".scratch_* dir leaked into release bundle"
     )
+    assert not (dst / ".DS_Store").exists(), ".DS_Store leaked into release bundle"
+    assert not (dst / "kling_gui" / ".DS_Store").exists(), "nested .DS_Store leaked"
+    assert not (dst / "kling_gui" / "Thumbs.db").exists(), "Thumbs.db leaked"
     assert (dst / "normal.py").exists()
 
 

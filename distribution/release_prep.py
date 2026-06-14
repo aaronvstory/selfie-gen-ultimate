@@ -118,6 +118,13 @@ EXCLUDED_FILES: Set[str] = {
     "kling_history.json",
     "crash_log.txt",
     "ui_config.json",
+    # OS-junk files: release_prep sweeps the WORKING TREE, and on macOS
+    # Finder constantly regenerates .DS_Store (gitignored ≠ excluded). They
+    # shipped into the v2.32 zip — strip them so the cross-OS bundle never
+    # carries macOS/Windows desktop metadata (cross-OS bounce trap: OS-junk).
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
 } | PII_EXCLUDED_FILES | LOCAL_ANALYSIS_FILES
 
 # Path-relative directory prefixes pruned from the release sweep. Unlike
