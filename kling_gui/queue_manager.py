@@ -1214,6 +1214,35 @@ class QueueManager:
                         )
                     return
 
+                # Re-Run: quality crush (Phase E: ... → Loop → Crush → Oldcam).
+                # Mirrors the main queue's Step 2b so crush_enabled=True applies
+                # consistently on both paths ("whatever post-processes are selected"
+                # mandate, user feedback 2026-05-22).
+                crush_produced = False
+                crush_attempted = False
+                if self._crush_enabled():
+                    crush_attempted = True
+                    self.log("Re-Run: quality-crushing (480p re-encode enabled)", "info")
+                    crushed_path = self._crush_video(str(source_video), QueueItem(str(source_video)))
+                    if crushed_path:
+                        source_video = Path(crushed_path).resolve()
+                        crush_produced = True
+                        self.log(f"Re-Run crush intermediate: {source_video.name}", "debug")
+                    else:
+                        self.log(
+                            "Re-Run: crush step failed; falling back to un-crushed source",
+                            "warning",
+                        )
+
+                # Abort guard after Crush.
+                if self._abort_requested():
+                    self.log("⛔ Re-Run aborted by user.", "warning")
+                    if completion_callback:
+                        completion_callback(
+                            False, str(source_video), None, "Aborted by user"
+                        )
+                    return
+
                 # No-Oldcam early-return path:
                 #   - SUCCESS when rPPG and/or Loop actually produced new
                 #     output (`source_video` now points at it).
@@ -1225,8 +1254,8 @@ class QueueManager:
                 #     file as the "rerun output" with success=True was
                 #     the bug subagent HIGH#3 on a17fb658 flagged.
                 if not versions_to_run:
-                    any_produced = rppg_produced or loop_produced
-                    any_attempted = rppg_attempted or loop_attempted
+                    any_produced = rppg_produced or loop_produced or crush_produced
+                    any_attempted = rppg_attempted or loop_attempted or crush_attempted
                     if any_produced:
                         self.log(
                             f"Re-run complete (no Oldcam selected): {source_video.name}",
@@ -1255,12 +1284,12 @@ class QueueManager:
                     if any_attempted:
                         message = (
                             "Re-run: every selected post-process "
-                            "(rPPG / Loop) failed — no output produced."
+                            "(rPPG / Loop / Crush) failed — no output produced."
                         )
                     else:
                         message = (
                             "Re-run: nothing to do — the picked video is "
-                            "already a rPPG artifact and Loop/Oldcam are "
+                            "already a rPPG artifact and Loop/Crush/Oldcam are "
                             "unselected."
                         )
                     self.log(message, "warning")

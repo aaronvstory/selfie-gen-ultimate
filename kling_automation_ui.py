@@ -4135,7 +4135,7 @@ class KlingAutomationUI:
         _loop_on = bool(self.config.get("automation_loop_enabled", False))
         _loop_seg = " -> loop" if _loop_on else " -> loop(off)"
         _crush_on = bool(self.config.get("automation_crush_enabled", False))
-        _crush_seg = " -> crush" if _crush_on else ""
+        _crush_seg = " -> crush" if _crush_on else " -> crush(off)"
         _steps_line = f"front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg}{_loop_seg}{_crush_seg} -> oldcam"
         if not self._use_legacy_prompt_ui():
             # Branded repaint + Rich layout (interactive only — the legacy

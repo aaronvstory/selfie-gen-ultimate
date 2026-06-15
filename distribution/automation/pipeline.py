@@ -29,6 +29,7 @@ from automation.oldcam import (
 )
 from automation.rppg import is_rppg_artifact, run_rppg
 from automation.video_loop import check_ffmpeg_available, create_looped_video
+from automation.video_crush import crush_video
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
@@ -859,17 +860,24 @@ class AutoPipelineRunner:
         # oldcam does.
         if self._read_bool("automation_rppg_required", False) and not self._read_bool("automation_rppg_enabled", False):
             issues.append("automation_rppg_required=true requires automation_rppg_enabled=true.")
-        if self._read_bool("automation_loop_enabled", False):
+        if self._read_bool("automation_crush_required", False) and not self._read_bool("automation_crush_enabled", False):
+            issues.append("automation_crush_required=true requires automation_crush_enabled=true.")
+        if self._read_bool("automation_loop_enabled", False) or self._read_bool("automation_crush_enabled", False):
             ffmpeg_ok, ffmpeg_msg = check_ffmpeg_available()
             if not ffmpeg_ok:
-                # Loop is graceful-skip at runtime; surface the problem at
-                # validation as a WARNING via progress so the user learns
-                # BEFORE a paid run that looping will be skipped. Not a
-                # hard issue: parity with rPPG's degrade-don't-crash rule.
-                self._report(
-                    f"Loop enabled but ffmpeg unavailable — loop step will be skipped ({ffmpeg_msg}).",
-                    "warning",
-                )
+                if self._read_bool("automation_crush_required", False):
+                    # Crush required but ffmpeg missing: hard-fail at validation
+                    # so the operator learns before any paid API calls are made.
+                    issues.append(
+                        f"automation_crush_required=true but ffmpeg unavailable: {ffmpeg_msg}"
+                    )
+                else:
+                    # Graceful-skip at runtime; surface as WARNING so the user
+                    # knows before a paid run that these steps will be skipped.
+                    self._report(
+                        f"Loop/Crush enabled but ffmpeg unavailable — those steps will be skipped ({ffmpeg_msg}).",
+                        "warning",
+                    )
         if self.automation.get("automation_oldcam_required", False):
             repo_root = Path(__file__).resolve().parent.parent
             versions = discover_oldcam_versions(repo_root)
@@ -2117,13 +2125,81 @@ class AutoPipelineRunner:
         else:
             self.manifest.update_step(case_key, "loop", "skipped", error="loop disabled")
 
+        # Step 7-pre-c: optional quality-crush pass (Phase E order:
+        # Kling -> rPPG -> Loop -> Crush -> Oldcam). Re-encodes at 480p /
+        # CRF 35, mimicking WhatsApp transcoding quality destruction.
+        # Graceful skip on failure — never hard-fails a case unless
+        # automation_crush_required=True.
+        crush_path: Optional[Path] = None
+        if self._read_bool("automation_crush_enabled", False):
+            # Prefer looped output; fall back to rPPG base or raw Kling.
+            crush_source: Optional[Path] = None
+            if loop_path is not None and loop_path.exists():
+                crush_source = loop_path
+            elif rppg_base_path is not None and rppg_base_path.exists():
+                crush_source = rppg_base_path
+            else:
+                _cvo = self.manifest.get_step(case_key, "video_generate").get("output")
+                _cc = Path(_cvo) if _cvo else None
+                if _cc and _cc.exists() and _cc.suffix.lower() == ".mp4":
+                    crush_source = _cc
+                elif existing.video_candidate:
+                    _cc2 = Path(existing.video_candidate)
+                    if _cc2.exists() and _cc2.suffix.lower() == ".mp4":
+                        crush_source = _cc2
+            if crush_source is None:
+                self.manifest.update_step(
+                    case_key, "crush", "skipped", error="no mp4 video to crush",
+                )
+                if self._read_bool("automation_crush_required", False):
+                    raise RuntimeError(
+                        f"case {case_key}: crush required but no mp4 source found"
+                    )
+            else:
+                self._set_active_step(case_entry, "crush")
+                self.manifest.update_step(case_key, "crush", "running")
+                crushed = crush_video(
+                    str(crush_source),
+                    suffix="_crush",
+                    overwrite=(reprocess_mode != "skip"),
+                    log_callback=self.progress_cb,
+                )
+                if crushed and Path(crushed).exists():
+                    crush_path = Path(crushed)
+                    self.logger.info(
+                        "case %s crush: %s -> %s",
+                        case_key, crush_source.name, crush_path.name,
+                    )
+                    self.manifest.update_step(
+                        case_key,
+                        "crush",
+                        "complete",
+                        output=str(crush_path),
+                        meta=self._policy_meta("crush", False, reprocess_mode),
+                    )
+                else:
+                    self.logger.warning("case %s crush failed; continuing uncrushed", case_key)
+                    self.manifest.update_step(
+                        case_key, "crush", "skipped", error="crush failed or ffmpeg unavailable",
+                    )
+                    if self._read_bool("automation_crush_required", False):
+                        raise RuntimeError(
+                            f"case {case_key}: crush required but failed"
+                        )
+        else:
+            self.manifest.update_step(case_key, "crush", "skipped", error="crush disabled")
+            if self._read_bool("automation_crush_required", False):
+                raise RuntimeError(
+                    f"case {case_key}: crush required but automation_crush_enabled=False"
+                )
+
         # Step 7: optional oldcam pass
         if self._oldcam_active():
-            # Source video for Oldcam: prefer the looped output (Phase E:
-            # Kling -> rPPG -> Loop -> Oldcam), else the rPPG-first
-            # injected base, else the raw video_generate output, else any
-            # existing candidate from disk.
-            if loop_path is not None and loop_path.exists():
+            # Source priority (Phase E: Kling -> rPPG -> Loop -> Crush -> Oldcam):
+            # crush output > looped > rPPG base > raw video_generate > disk candidate.
+            if crush_path is not None and crush_path.exists():
+                selected_video_path = crush_path
+            elif loop_path is not None and loop_path.exists():
                 selected_video_path = loop_path
             elif rppg_base_path is not None and rppg_base_path.exists():
                 selected_video_path = rppg_base_path
