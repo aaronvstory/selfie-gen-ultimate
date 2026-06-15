@@ -1236,6 +1236,13 @@ class KlingGUIWindow:
         self.sessions_dir = get_runtime_sessions_dir(self.workspace, self.instance_id)
         self._workspace_marker_path: Optional[str] = None  # set in __init__ tail
 
+        # Genuine first-run detection for the key-onboarding gate: an EXISTING
+        # config file means an established install, so the startup key boxes
+        # must NOT fire (the user already has keys). Captured BEFORE _load_config
+        # so a transient empty load — e.g. a read racing a concurrent instance's
+        # save — can't make the GUI nag for API keys it already has.
+        self._config_existed_at_startup = os.path.exists(self.config_path)
+
         self.config = self._load_config()
         if ensure_key_fields(self.config):
             self._save_config()
@@ -1696,15 +1703,39 @@ class KlingGUIWindow:
         except Exception:
             pass  # Template is cosmetic - never crash on missing defaults
 
-        # Layer 2: apply user's saved config (overrides everything)
-        try:
-            if os.path.exists(self.config_path):
+        # Layer 2: apply user's saved config (overrides everything).
+        # The read is RETRIED: a concurrent instance may be mid-rewrite of the
+        # shared config, and silently falling back to empty-key defaults would
+        # make the GUI nag for API keys the user already has AND disable
+        # generation for the session. The merge is kept OUTSIDE the read try so a
+        # successful read always applies even if an unrelated merge issue arises.
+        loaded_user_config = None
+        for _attempt in range(3):
+            try:
+                # EAFP: attempt the read directly rather than an os.path.exists
+                # pre-flight (which has a TOCTOU window and can itself raise on
+                # restricted filesystems). The genuine-fresh-install signal is
+                # captured separately in __init__ (_config_existed_at_startup).
                 with open(self.config_path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                    if isinstance(loaded, dict):
-                        self._deep_merge_dict(default_config, loaded)
-        except Exception as e:
-            _safe_print(f"Warning: Could not load config: {e}")
+                    loaded_user_config = json.load(f)
+                break
+            except FileNotFoundError:
+                break  # genuine fresh install — use defaults, no retry
+            except Exception as e:  # noqa: BLE001
+                # Broad by design: config-load must NEVER crash GUI startup
+                # (preserves the prior `except Exception` guarantee). Common
+                # transient cause is a partial/locked file mid-rewrite by a
+                # concurrent instance — retry briefly, then fall back to
+                # defaults rather than propagating.
+                if _attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                _safe_print(f"Warning: Could not load config after retries: {e}")
+        if isinstance(loaded_user_config, dict):
+            try:
+                self._deep_merge_dict(default_config, loaded_user_config)
+            except Exception as e:
+                _safe_print(f"Warning: Could not merge config: {e}")
 
         # Layer 3: sanitize prompt slot dicts — ensure all 10 slots exist as
         # strings, not None.  Shallow .update() above replaces the entire nested
@@ -4310,6 +4341,14 @@ class KlingGUIWindow:
 
     def _prompt_startup_provider_keys_on_first_run(self):
         """First-launch key onboarding (Fal.ai + BFL), never exits app."""
+        # Established install: a config file already existed at launch, so this
+        # is NOT a first run — never auto-pop the key boxes. Without this gate a
+        # transient empty config load (a read racing a concurrent instance's
+        # save) made missing_startup_specs report fal.ai missing and nagged for
+        # API keys (incl. OpenRouter) the user already has, every such launch.
+        # The bottom-bar key badges remain the always-available entry point.
+        if getattr(self, "_config_existed_at_startup", False):
+            return
         prompt_specs = startup_prompt_specs()
         missing = missing_startup_specs(self.config)
         if not missing:
