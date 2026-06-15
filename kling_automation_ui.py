@@ -2536,6 +2536,7 @@ class KlingAutomationUI:
             f"mode={'required(fail+skip oldcam)' if self.config.get('automation_facetrack_required', False) else 'advisory(manual_review)'}",
             f"rppg={'ON' if self.config.get('automation_rppg_enabled', False) else 'off'} "
             f"loop={'ON' if self.config.get('automation_loop_enabled', False) else 'off'} "
+            f"crush={'ON' if self.config.get('automation_crush_enabled', False) else 'off'} "
             f"oldcam versions={self._format_oldcam_versions()} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
             f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
             f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
@@ -3452,6 +3453,7 @@ class KlingAutomationUI:
             "oldcam": (
                 f"rppg={'ON' if c.get('automation_rppg_enabled') else 'off'}, "
                 f"loop={'ON' if c.get('automation_loop_enabled') else 'off'}, "
+                f"crush={'ON' if c.get('automation_crush_enabled') else 'off'}, "
                 f"versions={self._format_oldcam_versions(c.get('automation_oldcam_version'))}, "
                 f"required={'y' if c.get('automation_oldcam_required') else 'n'}"
             ),
@@ -4132,7 +4134,9 @@ class KlingAutomationUI:
         _rppg_seg = " -> rppg" if _rppg_on else " -> rppg(off)"
         _loop_on = bool(self.config.get("automation_loop_enabled", False))
         _loop_seg = " -> loop" if _loop_on else " -> loop(off)"
-        _steps_line = f"front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg}{_loop_seg} -> oldcam"
+        _crush_on = bool(self.config.get("automation_crush_enabled", False))
+        _crush_seg = " -> crush" if _crush_on else ""
+        _steps_line = f"front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg}{_loop_seg}{_crush_seg} -> oldcam"
         if not self._use_legacy_prompt_ui():
             # Branded repaint + Rich layout (interactive only — the legacy
             # prints below are asserted by non-TTY tests / cron logs).
@@ -4643,6 +4647,7 @@ class KlingAutomationUI:
 
         rppg_on = _flag("automation_rppg_enabled")
         loop_on = _flag("automation_loop_enabled")
+        crush_on = _flag("automation_crush_enabled")
         oldcam_required = _flag("automation_oldcam_required")
         oldcam_enabled = _flag("automation_oldcam_enabled", True)
         oldcam_display = self._format_oldcam_versions()
@@ -4667,6 +4672,7 @@ class KlingAutomationUI:
              "bold red" if (oldcam_display == "none selected" or not oldcam_enabled)
              else ("bold yellow" if oldcam_display.startswith("all") else "bold green")),
             ("Loop (ping-pong)", "ON" if loop_on else "off", "green" if loop_on else "dim"),
+            ("Quality crush (480p)", "ON" if crush_on else "off", "green" if crush_on else "dim"),
             ("Video model", f"{video_display or video_endpoint or '?'}  ·  kling prompt slot {resolve_cli_kling_prompt_slot(c, DEFAULT_KLING_PROMPT_SLOT)}", ""),
             ("Selfie model(s)", f"{', '.join(selfie_models) if selfie_models else '(none)'}"
              + ("  ·  FAN-OUT: one full chain per model" if len(selfie_models) > 1 else ""),
