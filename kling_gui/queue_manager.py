@@ -1838,6 +1838,21 @@ class QueueManager:
                         # at the top-of-loop pause check (gemini MEDIUM cosmetic).
                         return
 
+                    # Step 2b: Quality crush (Phase E: ... → Loop → Crush → Oldcam).
+                    # Re-encodes at 480p / CRF 35 to mimic WhatsApp transcoding.
+                    # Graceful skip on failure — never blocks Oldcam.
+                    if self._crush_enabled():
+                        item.stage = "crush"
+                        item.stage_percent = 0
+                        self.update_queue_display()
+                        crushed_video = self._crush_video(final_video, item)
+                        if crushed_video:
+                            final_video = crushed_video
+
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
+                        return
+
                     # Step 3: Oldcam runs EVERY selected version.
                     # _oldcam_video returns the highest version's path;
                     # _last_oldcam_run_summary["outputs"] holds ALL
@@ -2636,8 +2651,37 @@ class QueueManager:
             return None
 
     # ------------------------------------------------------------------
+    # Quality crush (2026-06-16): 480p / CRF 35 re-encode that mimics
+    # WhatsApp transcoding quality destruction. Associated with higher
+    # Persona pass rates. Runs between Loop and Oldcam (Phase E order:
+    # Kling -> rPPG -> Loop -> Crush -> Oldcam). Always graceful-skip.
+    # ------------------------------------------------------------------
+    def _crush_enabled(self) -> bool:
+        return bool(self.get_config().get("crush_enabled", False))
+
+    def _crush_video(self, video_path: str, item: "QueueItem") -> Optional[str]:
+        """Run quality-crush on video_path. Returns output path or None."""
+        self.log("Crush — 480p re-encode… (ffmpeg, please wait)", "progress_update")
+        try:
+            from automation.video_crush import crush_video
+            result = crush_video(
+                video_path,
+                suffix="_crush",
+                overwrite=True,
+                log_callback=self.log,
+            )
+            if result:
+                self.log(f"Crush saved: {Path(result).name}", "debug")
+            else:
+                self.log("Quality crush failed or was skipped", "warning")
+            return result
+        except Exception as exc:
+            self.log(f"Crush error: {exc}", "warning")
+            return None
+
+    # ------------------------------------------------------------------
     # rPPG injection (Phase E of polish/v2.3, 2026-05-22):
-    #     pipeline order is now Kling -> rPPG -> Loop -> Oldcam.
+    #     pipeline order is now Kling -> rPPG -> Loop -> Crush -> Oldcam.
     #
     # Earlier order was Kling -> Loop -> Oldcam -> rPPG. Inverted because
     # the user explicitly wants rPPG'd outputs as the primary deliverable

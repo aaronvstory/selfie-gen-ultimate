@@ -805,6 +805,44 @@ class ConfigPanel(tk.Frame):
         # Line 3: fanout checkbox on its own line under the inject row.
         self.rppg_per_oldcam_fanout_checkbox.pack(anchor="w", padx=(2, 0))
 
+        # Quality-crush frame — dark red, stacked under rPPG (Phase E order:
+        # Kling -> rPPG -> Loop -> Crush -> Oldcam). Mimics WhatsApp quality
+        # destruction: 480p re-encode at CRF 35. DEFAULT OFF / opt-in only.
+        _crush_bg = "#3A1F1F"
+        _crush_border = "#7D3A3A"
+        self.crush_controls_frame = tk.Frame(
+            _pp_stack,
+            bg=_crush_bg,
+            highlightthickness=1,
+            highlightbackground=_crush_border,
+            padx=6,
+            pady=2,
+        )
+        self.crush_controls_frame.pack(fill=tk.X, pady=(4, 0))
+        _crush_label_row = tk.Frame(self.crush_controls_frame, bg=_crush_bg)
+        _crush_label_row.pack(anchor="w")
+        tk.Label(
+            _crush_label_row,
+            text="Crush:",
+            bg=_crush_bg,
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 10),
+        ).pack(side=tk.LEFT)
+        self.crush_var = tk.BooleanVar(value=False)
+        self.crush_checkbox = tk.Checkbutton(
+            self.crush_controls_frame,
+            text="Quality-crush video  (480p re-encode · runs after Loop · default OFF)",
+            variable=self.crush_var,
+            bg=_crush_bg,
+            fg=COLORS["text_light"],
+            selectcolor=_crush_bg,
+            activebackground=_crush_bg,
+            activeforeground=COLORS["text_light"],
+            font=(FONT_FAMILY, 9),
+            command=self._on_crush_changed,
+        )
+        self.crush_checkbox.pack(anchor="w", padx=(2, 0))
+
         # ONE shared Re-Run column, packed into the band (rA) to the
         # RIGHT of the Oldcam/rPPG stack — applies to whatever is
         # selected: any Oldcam versions AND/OR rPPG, and re-loops first
@@ -1599,6 +1637,8 @@ class ConfigPanel(tk.Frame):
         self.rppg_per_oldcam_fanout_var.set(
             self.config.get("rppg_per_oldcam_fanout", False)
         )
+        # Quality crush (480p re-encode · default OFF)
+        self.crush_var.set(self.config.get("crush_enabled", False))
         self._check_ffmpeg_status()
         selected_versions = self._resolve_oldcam_versions_from_config()
         for version, var in self.oldcam_version_vars.items():
@@ -1990,6 +2030,12 @@ class ConfigPanel(tk.Frame):
         self.config["rppg_per_oldcam_fanout"] = value
         status = "enabled (slow path)" if value else "disabled"
         self._notify_change(f"rPPG per-Oldcam fan-out {status}")
+
+    def _on_crush_changed(self):
+        """Handle quality-crush checkbox change."""
+        self.config["crush_enabled"] = self.crush_var.get()
+        status = "enabled" if self.crush_var.get() else "disabled"
+        self._notify_change(f"Quality crush {status}")
 
     def _oldcam_version_key(self, version: str) -> int:
         try:

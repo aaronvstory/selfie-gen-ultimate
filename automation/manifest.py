@@ -19,11 +19,12 @@ STEP_NAMES = [
     "selfie_expand",
     "video_generate",
     "facetrack_gate",
-    # Post-processing order is Kling -> rPPG -> Loop -> Oldcam (Phase E,
-    # mirrored from the GUI queue). "loop" (ping-pong, 2026-06-11) sits
-    # between the rPPG-first injection and the oldcam fan-out; ensure_case
-    # setdefault()s it into pre-loop manifests.
+    # Post-processing order is Kling -> rPPG -> Loop -> Crush -> Oldcam
+    # (Phase E, mirrored from the GUI queue). "loop" sits between rPPG and
+    # crush; "crush" (480p quality-destroy, 2026-06-16) sits between loop and
+    # oldcam; ensure_case setdefault()s both into pre-existing manifests.
     "loop",
+    "crush",
     "oldcam",
     "rppg",
 ]

@@ -4960,6 +4960,7 @@ class KlingAutomationUI:
         # toggle disagree (code-reviewer MED, PR #96 round 2).
         rppg_on = _parse_bool_cfg(c.get("automation_rppg_enabled", False)) or False
         loop_on = _parse_bool_cfg(c.get("automation_loop_enabled", False)) or False
+        crush_on = _parse_bool_cfg(c.get("automation_crush_enabled", False)) or False
         video_endpoint, video_display = resolve_cli_video_model(c)
         kling_slot = resolve_cli_kling_prompt_slot(c, DEFAULT_KLING_PROMPT_SLOT)
         kling_text = str((c.get("saved_prompts") or {}).get(str(kling_slot), "") or "")
@@ -4992,9 +4993,10 @@ class KlingAutomationUI:
             # ── Step 3 · Video (Kling) ──
             (f"🎬 Video model: {video_display or video_endpoint or '(not set)'}", "video_model"),
             (f"📝 Kling prompt: slot {kling_slot} · \"{_preview(kling_text)}\"", "kling_prompt"),
-            # ── Post · rPPG → Loop → Oldcam ──
+            # ── Post · rPPG → Loop → Crush → Oldcam ──
             (f"💉 rPPG injection: {'ON' if rppg_on else 'OFF'} — toggle", "rppg"),
             (f"🔁 Loop (ping-pong): {'ON' if loop_on else 'off'} — toggle", "loop"),
+            (f"💥 Crush (480p quality-destroy): {'ON' if crush_on else 'off'} — toggle", "crush"),
             (f"📼 Oldcam versions: {self._format_oldcam_versions()} — pick (spacebar)", "oldcam"),
             # ── Run scope ──
             (f"📦 Max cases per run: {self._read_max_cases_setting()}", "batch_max"),
@@ -5015,7 +5017,7 @@ class KlingAutomationUI:
         ("Step 2 · Selfie", ("selfie_models", "selfie_prompt", "similarity")),
         ("Step 2.5 · Selfie expand", ("sexp_provider", "sexp_blend", "sexp_percent")),
         ("Step 3 · Video (Kling)", ("video_model", "kling_prompt")),
-        ("Post · rPPG → Loop → Oldcam", ("rppg", "loop", "oldcam")),
+        ("Post · rPPG → Loop → Crush → Oldcam", ("rppg", "loop", "crush", "oldcam")),
         ("Run scope", ("batch_max", "batch_reprocess", "root")),
         (None, ("prompts", "all", "done")),
     )
@@ -5074,6 +5076,7 @@ class KlingAutomationUI:
             c = self.config
             rppg_on = _parse_bool_cfg(c.get("automation_rppg_enabled", False)) or False
             loop_on = _parse_bool_cfg(c.get("automation_loop_enabled", False)) or False
+            crush_on = _parse_bool_cfg(c.get("automation_crush_enabled", False)) or False
             by_value = {v: label for label, v in self._quick_edit_choice_pairs()}
             # Control hints live on their OWN line below the title (a leading
             # Separator row — the only way to render text under a questionary
@@ -5139,13 +5142,16 @@ class KlingAutomationUI:
                     self._quick_pick_cli_video_model()
                 elif choice == "kling_prompt":
                     self._prompt_slot_browser("kling")
-                # ── Post · rPPG → Loop → Oldcam ──
+                # ── Post · rPPG → Loop → Crush → Oldcam ──
                 elif choice == "rppg":
                     c["automation_rppg_enabled"] = not rppg_on
                     print(f"  rPPG injection -> {'ON' if c['automation_rppg_enabled'] else 'OFF'}")
                 elif choice == "loop":
                     c["automation_loop_enabled"] = not loop_on
                     print(f"  Loop -> {'ON' if c['automation_loop_enabled'] else 'off'}")
+                elif choice == "crush":
+                    c["automation_crush_enabled"] = not crush_on
+                    print(f"  Crush (480p quality-destroy) -> {'ON' if c['automation_crush_enabled'] else 'off'}")
                 elif choice == "oldcam":
                     self._qs_pick_oldcam_versions()
                 # ── Run scope ──
