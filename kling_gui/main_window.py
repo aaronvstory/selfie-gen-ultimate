@@ -1716,7 +1716,12 @@ class KlingGUIWindow:
                     with open(self.config_path, "r", encoding="utf-8") as f:
                         loaded_user_config = json.load(f)
                     break
-                except (json.JSONDecodeError, OSError) as e:
+                except Exception as e:  # noqa: BLE001
+                    # Broad by design: config-load must NEVER crash GUI startup
+                    # (preserves the prior `except Exception` guarantee). Common
+                    # transient cause is a partial/locked file mid-rewrite by a
+                    # concurrent instance — retry briefly, then fall back to
+                    # defaults rather than propagating.
                     if _attempt < 2:
                         time.sleep(0.1)
                         continue
