@@ -1710,22 +1710,27 @@ class KlingGUIWindow:
         # generation for the session. The merge is kept OUTSIDE the read try so a
         # successful read always applies even if an unrelated merge issue arises.
         loaded_user_config = None
-        if os.path.exists(self.config_path):
-            for _attempt in range(3):
-                try:
-                    with open(self.config_path, "r", encoding="utf-8") as f:
-                        loaded_user_config = json.load(f)
-                    break
-                except Exception as e:  # noqa: BLE001
-                    # Broad by design: config-load must NEVER crash GUI startup
-                    # (preserves the prior `except Exception` guarantee). Common
-                    # transient cause is a partial/locked file mid-rewrite by a
-                    # concurrent instance — retry briefly, then fall back to
-                    # defaults rather than propagating.
-                    if _attempt < 2:
-                        time.sleep(0.1)
-                        continue
-                    _safe_print(f"Warning: Could not load config after retries: {e}")
+        for _attempt in range(3):
+            try:
+                # EAFP: attempt the read directly rather than an os.path.exists
+                # pre-flight (which has a TOCTOU window and can itself raise on
+                # restricted filesystems). The genuine-fresh-install signal is
+                # captured separately in __init__ (_config_existed_at_startup).
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    loaded_user_config = json.load(f)
+                break
+            except FileNotFoundError:
+                break  # genuine fresh install — use defaults, no retry
+            except Exception as e:  # noqa: BLE001
+                # Broad by design: config-load must NEVER crash GUI startup
+                # (preserves the prior `except Exception` guarantee). Common
+                # transient cause is a partial/locked file mid-rewrite by a
+                # concurrent instance — retry briefly, then fall back to
+                # defaults rather than propagating.
+                if _attempt < 2:
+                    time.sleep(0.1)
+                    continue
+                _safe_print(f"Warning: Could not load config after retries: {e}")
         if isinstance(loaded_user_config, dict):
             try:
                 self._deep_merge_dict(default_config, loaded_user_config)
