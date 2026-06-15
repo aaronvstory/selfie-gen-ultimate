@@ -68,6 +68,17 @@ class TestSummarizeFfmpegError:
         assert "conversion" in msg.lower()
 
 
+class TestCrushVideoMissingInputEdgeCases:
+    def test_directory_as_input_returns_none(self, tmp_path):
+        result = crush_video(str(tmp_path))
+        assert result is None
+
+    def test_directory_as_input_fires_log(self, tmp_path):
+        logs = []
+        crush_video(str(tmp_path), log_callback=lambda m, level: logs.append((m, level)))
+        assert any("not a file" in m.lower() or "error" in level for m, level in logs)
+
+
 class TestCheckFfmpegAvailable:
     def test_returns_tuple(self):
         ok, msg = check_ffmpeg_available()
@@ -88,8 +99,8 @@ class TestCrushVideoMissingInput:
 
     def test_nonexistent_input_fires_log(self):
         logs = []
-        crush_video("/nonexistent/path/clip.mp4", log_callback=lambda m, l: logs.append((m, l)))
-        assert any("not found" in m.lower() or "error" in l for m, l in logs)
+        crush_video("/nonexistent/path/clip.mp4", log_callback=lambda m, level: logs.append((m, level)))
+        assert any("not found" in m.lower() or "error" in level for m, level in logs)
 
 
 # ---------------------------------------------------------------------------

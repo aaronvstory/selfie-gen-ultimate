@@ -11,47 +11,12 @@ Oldcam runs on the crushed file so the compression artefact carries through.
 
 import subprocess
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
-
-def _summarize_ffmpeg_error(stderr: str) -> str:
-    """Reduce a multi-line FFmpeg stderr blob to one user-friendly line."""
-    if not stderr:
-        return "FFmpeg returned no output (encoder may have failed to start)"
-    lower = stderr.lower()
-    if "could not open encoder" in lower:
-        return "FFmpeg could not open the H.264 encoder (libx264 init failed)"
-    if "invalid argument" in lower:
-        return "FFmpeg rejected the encoder configuration (invalid argument)"
-    if "no such file" in lower or "no such directory" in lower:
-        return "FFmpeg could not find the input file"
-    if "permission denied" in lower:
-        return "FFmpeg permission denied (close any program holding the file open)"
-    if "conversion failed" in lower:
-        return "FFmpeg conversion failed (check logs for details)"
-    first_line = next((line.strip() for line in stderr.splitlines() if line.strip()), "")
-    if len(first_line) > 160:
-        return first_line[:160] + "…"
-    return first_line or "Unknown error (check logs for details)"
-
-
-def check_ffmpeg_available() -> Tuple[bool, str]:
-    """Check if FFmpeg is available in PATH."""
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-version"], capture_output=True, text=True,
-            errors="replace", timeout=10,
-        )
-        if result.returncode == 0:
-            version_line = result.stdout.split("\n")[0] if result.stdout else "FFmpeg found"
-            return True, version_line
-        return False, "FFmpeg found but returned error"
-    except FileNotFoundError:
-        return False, "FFmpeg not found in PATH. Please install FFmpeg."
-    except subprocess.TimeoutExpired:
-        return False, "FFmpeg check timed out"
-    except Exception as e:
-        return False, f"Error checking FFmpeg: {e}"
+from automation.video_loop import (
+    check_ffmpeg_available,
+    _summarize_ffmpeg_error,
+)
 
 
 def crush_video(
@@ -91,7 +56,7 @@ def crush_video(
         if log_callback:
             log_callback(msg, level)
 
-    input_file = Path(input_path)
+    input_file = Path(input_path).resolve()
     if not input_file.exists():
         log(f"Crush: input file not found: {input_path}", "error")
         return None
@@ -102,7 +67,7 @@ def crush_video(
     if output_path is None:
         output_file = input_file.parent / f"{input_file.stem}{suffix}{input_file.suffix}"
     else:
-        output_file = Path(output_path)
+        output_file = Path(output_path).resolve()
 
     try:
         output_file.parent.mkdir(parents=True, exist_ok=True)

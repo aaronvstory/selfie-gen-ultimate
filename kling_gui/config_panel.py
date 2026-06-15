@@ -2626,6 +2626,7 @@ class ConfigPanel(tk.Frame):
             "loop_video_var",
             "oldcam_version_vars",
             "rppg_var",
+            "crush_var",
             "reprocess_var",
             "reprocess_mode_var",
             "verbose_gui_var",

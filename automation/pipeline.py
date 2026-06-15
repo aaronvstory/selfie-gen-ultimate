@@ -860,16 +860,24 @@ class AutoPipelineRunner:
         # oldcam does.
         if self._read_bool("automation_rppg_required", False) and not self._read_bool("automation_rppg_enabled", False):
             issues.append("automation_rppg_required=true requires automation_rppg_enabled=true.")
+        if self._read_bool("automation_crush_required", False) and not self._read_bool("automation_crush_enabled", False):
+            issues.append("automation_crush_required=true requires automation_crush_enabled=true.")
         if self._read_bool("automation_loop_enabled", False) or self._read_bool("automation_crush_enabled", False):
             ffmpeg_ok, ffmpeg_msg = check_ffmpeg_available()
             if not ffmpeg_ok:
-                # Both loop and crush are graceful-skip at runtime; surface the
-                # problem at validation as a WARNING so the user learns BEFORE
-                # a paid run that these steps will be skipped.
-                self._report(
-                    f"Loop/Crush enabled but ffmpeg unavailable — those steps will be skipped ({ffmpeg_msg}).",
-                    "warning",
-                )
+                if self._read_bool("automation_crush_required", False):
+                    # Crush required but ffmpeg missing: hard-fail at validation
+                    # so the operator learns before any paid API calls are made.
+                    issues.append(
+                        f"automation_crush_required=true but ffmpeg unavailable: {ffmpeg_msg}"
+                    )
+                else:
+                    # Graceful-skip at runtime; surface as WARNING so the user
+                    # knows before a paid run that these steps will be skipped.
+                    self._report(
+                        f"Loop/Crush enabled but ffmpeg unavailable — those steps will be skipped ({ffmpeg_msg}).",
+                        "warning",
+                    )
         if self.automation.get("automation_oldcam_required", False):
             repo_root = Path(__file__).resolve().parent.parent
             versions = discover_oldcam_versions(repo_root)
@@ -2143,6 +2151,10 @@ class AutoPipelineRunner:
                 self.manifest.update_step(
                     case_key, "crush", "skipped", error="no mp4 video to crush",
                 )
+                if self._read_bool("automation_crush_required", False):
+                    raise RuntimeError(
+                        f"case {case_key}: crush required but no mp4 source found"
+                    )
             else:
                 self._set_active_step(case_entry, "crush")
                 self.manifest.update_step(case_key, "crush", "running")
@@ -2176,6 +2188,10 @@ class AutoPipelineRunner:
                         )
         else:
             self.manifest.update_step(case_key, "crush", "skipped", error="crush disabled")
+            if self._read_bool("automation_crush_required", False):
+                raise RuntimeError(
+                    f"case {case_key}: crush required but automation_crush_enabled=False"
+                )
 
         # Step 7: optional oldcam pass
         if self._oldcam_active():
