@@ -1214,6 +1214,35 @@ class QueueManager:
                         )
                     return
 
+                # Re-Run: quality crush (Phase E: ... → Loop → Crush → Oldcam).
+                # Mirrors the main queue's Step 2b so crush_enabled=True applies
+                # consistently on both paths ("whatever post-processes are selected"
+                # mandate, user feedback 2026-05-22).
+                crush_produced = False
+                crush_attempted = False
+                if self._crush_enabled():
+                    crush_attempted = True
+                    self.log("Re-Run: quality-crushing (480p re-encode enabled)", "info")
+                    crushed_path = self._crush_video(str(source_video), QueueItem(str(source_video)))
+                    if crushed_path:
+                        source_video = Path(crushed_path).resolve()
+                        crush_produced = True
+                        self.log(f"Re-Run crush intermediate: {source_video.name}", "debug")
+                    else:
+                        self.log(
+                            "Re-Run: crush step failed; falling back to un-crushed source",
+                            "warning",
+                        )
+
+                # Abort guard after Crush.
+                if self._abort_requested():
+                    self.log("⛔ Re-Run aborted by user.", "warning")
+                    if completion_callback:
+                        completion_callback(
+                            False, str(source_video), None, "Aborted by user"
+                        )
+                    return
+
                 # No-Oldcam early-return path:
                 #   - SUCCESS when rPPG and/or Loop actually produced new
                 #     output (`source_video` now points at it).
@@ -1225,8 +1254,8 @@ class QueueManager:
                 #     file as the "rerun output" with success=True was
                 #     the bug subagent HIGH#3 on a17fb658 flagged.
                 if not versions_to_run:
-                    any_produced = rppg_produced or loop_produced
-                    any_attempted = rppg_attempted or loop_attempted
+                    any_produced = rppg_produced or loop_produced or crush_produced
+                    any_attempted = rppg_attempted or loop_attempted or crush_attempted
                     if any_produced:
                         self.log(
                             f"Re-run complete (no Oldcam selected): {source_video.name}",
@@ -1255,12 +1284,12 @@ class QueueManager:
                     if any_attempted:
                         message = (
                             "Re-run: every selected post-process "
-                            "(rPPG / Loop) failed — no output produced."
+                            "(rPPG / Loop / Crush) failed — no output produced."
                         )
                     else:
                         message = (
                             "Re-run: nothing to do — the picked video is "
-                            "already a rPPG artifact and Loop/Oldcam are "
+                            "already a rPPG artifact and Loop/Crush/Oldcam are "
                             "unselected."
                         )
                     self.log(message, "warning")
@@ -1836,6 +1865,21 @@ class QueueManager:
                         # abort_current_job, so exit the worker cleanly instead of
                         # re-fetching the next item only to immediately re-queue it
                         # at the top-of-loop pause check (gemini MEDIUM cosmetic).
+                        return
+
+                    # Step 2b: Quality crush (Phase E: ... → Loop → Crush → Oldcam).
+                    # Re-encodes at 480p / CRF 35 to mimic WhatsApp transcoding.
+                    # Graceful skip on failure — never blocks Oldcam.
+                    if self._crush_enabled():
+                        item.stage = "crush"
+                        item.stage_percent = 0
+                        self.update_queue_display()
+                        crushed_video = self._crush_video(final_video, item)
+                        if crushed_video:
+                            final_video = crushed_video
+
+                    if self._abort_requested():
+                        self._handle_item_abort(item)
                         return
 
                     # Step 3: Oldcam runs EVERY selected version.
@@ -2636,8 +2680,37 @@ class QueueManager:
             return None
 
     # ------------------------------------------------------------------
+    # Quality crush (2026-06-16): 480p / CRF 35 re-encode that mimics
+    # WhatsApp transcoding quality destruction. Associated with higher
+    # Persona pass rates. Runs between Loop and Oldcam (Phase E order:
+    # Kling -> rPPG -> Loop -> Crush -> Oldcam). Always graceful-skip.
+    # ------------------------------------------------------------------
+    def _crush_enabled(self) -> bool:
+        return bool(self.get_config().get("crush_enabled", False))
+
+    def _crush_video(self, video_path: str, item: "QueueItem") -> Optional[str]:
+        """Run quality-crush on video_path. Returns output path or None."""
+        self.log("Crush — 480p re-encode… (ffmpeg, please wait)", "progress_update")
+        try:
+            from automation.video_crush import crush_video
+            result = crush_video(
+                video_path,
+                suffix="_crush",
+                overwrite=True,
+                log_callback=self.log,
+            )
+            if result:
+                self.log(f"Crush saved: {Path(result).name}", "debug")
+            else:
+                self.log("Quality crush failed or was skipped", "warning")
+            return result
+        except Exception as exc:
+            self.log(f"Crush error: {exc}", "warning")
+            return None
+
+    # ------------------------------------------------------------------
     # rPPG injection (Phase E of polish/v2.3, 2026-05-22):
-    #     pipeline order is now Kling -> rPPG -> Loop -> Oldcam.
+    #     pipeline order is now Kling -> rPPG -> Loop -> Crush -> Oldcam.
     #
     # Earlier order was Kling -> Loop -> Oldcam -> rPPG. Inverted because
     # the user explicitly wants rPPG'd outputs as the primary deliverable

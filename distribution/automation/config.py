@@ -107,10 +107,15 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_facetrack_min_pct": 96.0,
     "automation_facetrack_required": False,
     "automation_facetrack_sample_fps": 8.0,
-    # Ping-pong loop step (Kling -> rPPG -> Loop -> Oldcam, Phase E order
-    # mirrored from the GUI queue). DEFAULT OFF per user mandate 2026-06-11;
+    # Ping-pong loop step (Kling -> rPPG -> Loop -> Crush -> Oldcam, Phase E
+    # order mirrored from the GUI queue). DEFAULT OFF per user mandate 2026-06-11;
     # graceful-skip when ffmpeg is missing (never hard-fails a case).
     "automation_loop_enabled": False,
+    # Quality-crush step: re-encode at 480p / CRF 35 to mimic WhatsApp
+    # transcoding. Associated with higher Persona pass rates. Runs after Loop,
+    # before Oldcam, so the compression artefact carries through. DEFAULT OFF.
+    "automation_crush_enabled": False,
+    "automation_crush_required": False,
     "automation_oldcam_enabled": True,
     # Canonical form is a LIST of versions (multi-select, 2026-06-11):
     # ["v13", "v24"], ["all"] (symbolic — expanded at runtime), or [] (none).
