@@ -188,6 +188,46 @@ class GuiStartupKeyPromptTests(unittest.TestCase):
         self.assertEqual(updated, [])
         window._on_close.assert_not_called()
 
+    def test_established_install_never_shows_key_onboarding(self):
+        """An EXISTING config file at launch = established install: the startup
+        key boxes must NOT fire, even if THIS load came up with empty keys (a
+        read racing a concurrent instance's save). Otherwise the GUI nags for
+        keys (incl. OpenRouter) the user already has, every such launch."""
+        module = importlib.import_module("kling_gui.main_window")
+        window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)
+        # Empty keys (what a transient failed config read leaves behind)...
+        window.config = {"falai_api_key": "", "bfl_api_key": "", "openrouter_api_key": ""}
+        window.root = object()
+        window._config_existed_at_startup = True  # ...but the install is established
+        window._log = lambda *_a, **_k: None
+        window._save_config = lambda: None
+
+        with mock.patch.object(module.messagebox, "showinfo") as info_mock, \
+            mock.patch.object(module.simpledialog, "askstring") as ask_mock:
+            window._prompt_startup_provider_keys_on_first_run()
+
+        # No info box, no optional-keys box, no prompt: the badges are the entry.
+        info_mock.assert_not_called()
+        ask_mock.assert_not_called()
+
+    def test_genuine_first_run_still_shows_onboarding(self):
+        """A true fresh install (no prior config file) still gets the
+        informational onboarding box — the gate must not suppress that."""
+        module = importlib.import_module("kling_gui.main_window")
+        window = module.KlingGUIWindow.__new__(module.KlingGUIWindow)
+        window.config = {"falai_api_key": "", "bfl_api_key": ""}
+        window.root = object()
+        window._config_existed_at_startup = False  # genuine first run
+        window._log = lambda *_a, **_k: None
+        window._save_config = lambda: None
+        window._update_api_badge = lambda _k: None
+
+        with mock.patch.object(module.messagebox, "showinfo") as info_mock, \
+            mock.patch.object(module.simpledialog, "askstring"):
+            window._prompt_startup_provider_keys_on_first_run()
+
+        info_mock.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()
