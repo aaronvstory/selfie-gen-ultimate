@@ -200,7 +200,8 @@ class GuiStartupKeyPromptTests(unittest.TestCase):
         window.root = object()
         window._config_existed_at_startup = True  # ...but the install is established
         window._log = lambda *_a, **_k: None
-        window._save_config = lambda: None
+        save_mock = window._save_config = mock.Mock()
+        original_config = dict(window.config)
 
         with mock.patch.object(module.messagebox, "showinfo") as info_mock, \
             mock.patch.object(module.simpledialog, "askstring") as ask_mock:
@@ -209,6 +210,9 @@ class GuiStartupKeyPromptTests(unittest.TestCase):
         # No info box, no optional-keys box, no prompt: the badges are the entry.
         info_mock.assert_not_called()
         ask_mock.assert_not_called()
+        # Early return is side-effect free: no config writes, no mutations.
+        save_mock.assert_not_called()
+        self.assertEqual(original_config, window.config)
 
     def test_genuine_first_run_still_shows_onboarding(self):
         """A true fresh install (no prior config file) still gets the
