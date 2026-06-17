@@ -1983,6 +1983,7 @@ class QueueManager:
                         oldcam_sources = crushed_paths if crushed_paths else [crush_base]
                         item.stage = "oldcam"
                         _headline_set = False
+                        _primary_summary: Dict[str, object] = {}
                         for _src in oldcam_sources:
                             item.stage_percent = 0
                             self.update_queue_display()
@@ -1995,13 +1996,20 @@ class QueueManager:
                             # future early-return in that helper.
                             self._last_oldcam_run_summary = None
                             oldcam_video = self._oldcam_video(_src, item)
+                            summary = self._last_oldcam_run_summary or {}
                             # Headline = the highest-res crushed source's
                             # primary output (first source in the list).
                             if oldcam_video and not _headline_set:
                                 final_video = oldcam_video
                                 _headline_set = True
-                            summary = self._last_oldcam_run_summary or {}
+                                _primary_summary = summary
                             oldcam_outputs.extend(list(summary.get("outputs") or []))
+                        # Restore the PRIMARY (highest-res) source's summary so
+                        # external consumers of self._last_oldcam_run_summary
+                        # after this loop don't see the last (lowest-res) tier —
+                        # mirrors the re-run worker fix (gemini MEDIUM, round 3).
+                        if _primary_summary:
+                            self._last_oldcam_run_summary = _primary_summary
 
                     if self._abort_requested():
                         self._handle_item_abort(item)
