@@ -422,6 +422,45 @@ def test_rerun_rppg_only_succeeds_when_no_oldcam_versions(tmp_path):
     assert result["error"] is None
 
 
+def test_rerun_crush_only_succeeds_when_no_oldcam_versions(tmp_path):
+    """Regression (2026-06-17): with Crush enabled but rPPG/Loop/Oldcam
+    all unselected, re-run on a picked video must produce the crushed
+    output and report success. The early "nothing to apply" guard
+    predated the Crush step and rejected Crush-only re-runs with a
+    misleading "nothing selected" error even though Crush was ticked
+    (the exact symptom the user hit in the GUI log)."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    crush_output = tmp_path / "clip_crush.mp4"
+    crush_output.write_bytes(b"crushed")
+
+    # Crush enabled, no oldcam, no loop, no rPPG.
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "crush_enabled": True,
+    })
+
+    with mock.patch.object(manager, "_crush_video", return_value=str(crush_output)):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update(
+                {"success": success, "src": src, "output": output, "error": error}
+            )
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    assert result["success"] is True, f"expected success, got error: {result['error']!r}"
+    assert result["output"] == str(crush_output), (
+        f"expected crushed output as rerun result, got {result['output']!r}"
+    )
+    assert result["error"] is None
+
+
 def test_rerun_fails_when_rppg_only_but_input_already_rppg_artifact(tmp_path):
     """Subagent MEDIUM on a1c1b099: case (c) of the rerun worker —
     `rppg_on=True` but the picked video is already a rPPG artifact
