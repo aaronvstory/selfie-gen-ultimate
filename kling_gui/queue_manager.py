@@ -1232,6 +1232,11 @@ class QueueManager:
                 crush_produced = False
                 crush_attempted = False
                 crushed_paths: List[str] = []
+                # ONE tracked QueueItem reused across EVERY pass of this re-run
+                # (crush tiers + primary oldcam + extra oldcam tiers), so all
+                # per-pass progress reports against a single coherent item
+                # instead of throwaway items (gemini MEDIUM, PR #104 round 8).
+                _rerun_item = QueueItem(str(source_video))
                 crush_resolutions = self._get_crush_resolutions()
                 if crush_resolutions:
                     crush_attempted = True
@@ -1245,7 +1250,7 @@ class QueueManager:
                         if self._abort_requested():
                             break
                         _cp = self._crush_video(
-                            crush_base, QueueItem(crush_base),
+                            crush_base, _rerun_item,
                             target_height=_height,
                             suffix=crush_suffix(_label),
                         )
@@ -1384,12 +1389,9 @@ class QueueManager:
                     + f"{source_video.name}, versions={','.join(selected_versions)}",
                     "info",
                 )
-                # ONE tracked QueueItem reused across the primary AND every
-                # extra crushed tier below, so per-tier oldcam progress reports
-                # against a single coherent item instead of throwaway items
-                # (CodeRabbit Major, PR #104 round 5).
-                _rerun_oldcam_item = QueueItem(str(source_video))
-                output_path = self._oldcam_video(str(run_input), _rerun_oldcam_item)
+                # Reuse the unified _rerun_item created before the crush loop
+                # (gemini MEDIUM, PR #104 round 8) for the primary oldcam pass.
+                output_path = self._oldcam_video(str(run_input), _rerun_item)
                 # Abort guard after Oldcam (Codex P2, PR #73): _oldcam_video
                 # returns None on Abort like a failure; bail before the optional
                 # fan-out + completion so an aborted rerun doesn't report done.
@@ -1421,7 +1423,11 @@ class QueueManager:
                         f"Re-Run: oldcam fan-out on crushed tier {Path(_extra_src).name}",
                         "debug",
                     )
-                    _extra_out = self._oldcam_video(str(_extra_src), _rerun_oldcam_item)
+                    # Clear before each call so a failed extra tier can't leave
+                    # the prior tier's summary intact (hardening parity with the
+                    # main-queue loop; gemini MEDIUM, PR #104 round 8).
+                    self._last_oldcam_run_summary = None
+                    _extra_out = self._oldcam_video(str(_extra_src), _rerun_item)
                     # If the PRIMARY tier failed (output_path falsy) but this
                     # extra tier produced output, adopt it as the headline so
                     # the re-run reports SUCCESS and the summary reflects a real
