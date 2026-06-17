@@ -4699,18 +4699,22 @@ class KlingGUIWindow:
                 # label too — otherwise a Crush-only re-run reads "no-op
                 # (nothing selected)" even though the queue applies it
                 # (2026-06-17; multi-resolution 2026-06-18).
+                # Narrow catch (CodeRabbit): only the import can realistically
+                # fail (e.g. a stripped build) — a normalize error is a real
+                # bug we want surfaced, not swallowed into a misleading label.
                 try:
                     from automation.video_crush import (
                         normalize_crush_resolutions,
                     )
+                except ImportError:
+                    _crush_tiers = []
+                else:
                     _crush_kwargs = {}
                     if "crush_resolutions" in self.config:
                         _crush_kwargs["resolutions"] = self.config["crush_resolutions"]
                     if "crush_enabled" in self.config:
                         _crush_kwargs["legacy_enabled"] = self.config["crush_enabled"]
                     _crush_tiers = normalize_crush_resolutions(**_crush_kwargs)
-                except Exception:
-                    _crush_tiers = []
                 if _crush_tiers:
                     stages.append("Crush " + "/".join(_crush_tiers))
                 # CodeRabbit P1 (2026-05-22): distinguish "user

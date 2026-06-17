@@ -2059,7 +2059,7 @@ class ConfigPanel(tk.Frame):
         status = "enabled (slow path)" if value else "disabled"
         self._notify_change(f"rPPG per-Oldcam fan-out {status}")
 
-    def _resolve_crush_resolutions_from_config(self):
+    def _resolve_crush_resolutions_from_config(self) -> List[str]:
         """Resolve the effective crush-resolution labels from config.
 
         Single shape for the rest of the app: canonical ``crush_resolutions``
@@ -2078,7 +2078,7 @@ class ConfigPanel(tk.Frame):
         valid = tuple(self.crush_resolution_vars.keys())
         return [r for r in normalize_crush_resolutions(**kwargs) if r in valid]
 
-    def _on_crush_resolutions_changed(self):
+    def _on_crush_resolutions_changed(self) -> None:
         """Handle a quality-crush resolution checkbox toggle.
 
         Persists the canonical ``crush_resolutions`` list (highest-first) plus
@@ -2689,6 +2689,7 @@ class ConfigPanel(tk.Frame):
             "oldcam_version_vars",
             "rppg_var",
             "crush_resolution_vars",
+            "crush_resolution_checks",
             "reprocess_var",
             "reprocess_mode_var",
             "verbose_gui_var",

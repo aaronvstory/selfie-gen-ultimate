@@ -2217,15 +2217,22 @@ class AutoPipelineRunner:
                             "all_outputs": [str(p) for p in crush_paths],
                         },
                     )
+                elif self._read_bool("automation_crush_required", False):
+                    # Required + every tier failed → hard-fail (not "continuing
+                    # uncrushed"); mark the step failed so the contract is
+                    # unambiguous (gemini: the warning must not imply success).
+                    self.manifest.update_step(
+                        case_key, "crush", "failed",
+                        error="crush required but produced no output",
+                    )
+                    raise RuntimeError(
+                        f"case {case_key}: crush required but every tier failed"
+                    )
                 else:
                     self.logger.warning("case %s crush failed; continuing uncrushed", case_key)
                     self.manifest.update_step(
                         case_key, "crush", "skipped", error="crush failed or ffmpeg unavailable",
                     )
-                    if self._read_bool("automation_crush_required", False):
-                        raise RuntimeError(
-                            f"case {case_key}: crush required but failed"
-                        )
         else:
             self.manifest.update_step(case_key, "crush", "skipped", error="crush disabled")
             if self._read_bool("automation_crush_required", False):
@@ -2238,7 +2245,7 @@ class AutoPipelineRunner:
             # Build the list of sources for oldcam (Phase E order).
             # Multi-resolution crush fan-out (user direction 2026-06-18):
             # when crush produced files, EACH crushed tier is its own oldcam
-            # source — N crush × M oldcam = N×M finals. The pre-crush
+            # source — N crush x M oldcam = NxM finals. The pre-crush
             # originals (loop > rPPG > raw Kling) are NEVER deleted; they
             # simply aren't re-run through oldcam when crush is on (the
             # crushed variants are the intended Persona-pass deliverables).

@@ -1240,6 +1240,10 @@ class QueueManager:
                     _labels = ", ".join(lbl for lbl, _ in crush_resolutions)
                     self.log(f"Re-Run: quality-crushing ({_labels} re-encode enabled)", "info")
                     for _label, _height in crush_resolutions:
+                        # Abort-aware: stop launching further tiers on Abort
+                        # (CodeRabbit) — the post-crush guard below then bails.
+                        if self._abort_requested():
+                            break
                         _cp = self._crush_video(
                             crush_base, QueueItem(crush_base),
                             target_height=_height,
@@ -1404,7 +1408,7 @@ class QueueManager:
                 # (highest-res) crushed tier ran through the strict reprocess-
                 # aware path above; run EVERY selected oldcam version on the
                 # remaining crushed tier(s) too, so each crush resolution yields
-                # its own oldcam variant (N crush × M oldcam). Best-effort: a
+                # its own oldcam variant (N crush x M oldcam). Best-effort: a
                 # failed extra tier is logged, never fatal — the headline output
                 # stays the highest-res result. Outputs land on disk with their
                 # tier-specific stems (e.g. clip_crush480-oldcam-v24.mp4).
@@ -1416,6 +1420,11 @@ class QueueManager:
                         "debug",
                     )
                     self._oldcam_video(str(_extra_src), QueueItem(str(_extra_src)))
+                # Restore the PRIMARY tier's summary so any external consumer of
+                # self._last_oldcam_run_summary after this worker (e.g. the
+                # completion handler) sees the primary tier, not the last
+                # extra tier the loop just ran (gemini MEDIUM, PR #104).
+                self._last_oldcam_run_summary = summary
                 # OPTIONAL per-Oldcam rPPG fan-out (Phase E of
                 # polish/v2.3, 2026-05-22). The main rPPG pass already
                 # ran on ``source_video`` at the top of this worker
@@ -1940,6 +1949,11 @@ class QueueManager:
                         item.stage_percent = 0
                         self.update_queue_display()
                         for _label, _height in crush_resolutions:
+                            # Stop starting new tiers the instant the user
+                            # aborts — don't keep ffmpeg busy crushing 480p
+                            # after an Abort during the 720p pass (CodeRabbit).
+                            if self._abort_requested():
+                                break
                             _cp = self._crush_video(
                                 crush_base, item,
                                 target_height=_height,
@@ -1959,7 +1973,7 @@ class QueueManager:
                     # Step 3: Oldcam runs EVERY selected version on EVERY oldcam
                     # source. When crush produced files, the crushed variants
                     # ARE the oldcam sources (user direction 2026-06-18: N crush
-                    # × M oldcam fan-out → N×M finals); otherwise the single
+                    # x M oldcam fan-out -> NxM finals); otherwise the single
                     # pre-crush base. _oldcam_video returns the highest version's
                     # path and stashes ALL per-version outputs in
                     # _last_oldcam_run_summary["outputs"]; we aggregate across
@@ -2089,6 +2103,19 @@ class QueueManager:
                         )
                     if config.get("loop_videos", False):
                         summary_parts.append("LOOP")
+                    # Crush runs between Loop and Oldcam (Phase E). Surface the
+                    # tiers that actually produced a crushed file so a
+                    # crush-only item no longer reads "kling only" (CodeRabbit).
+                    if crushed_paths:
+                        _ct = []
+                        for _p in crushed_paths:
+                            _s = Path(_p).stem
+                            _ct.append(
+                                "720p" if _s.endswith("_crush720")
+                                else "480p" if _s.endswith("_crush480")
+                                else "crush"
+                            )
+                        summary_parts.append("CRUSH-" + "/".join(_ct))
                     oldcam_versions = self._get_oldcam_versions_to_run()
                     if oldcam_versions:
                         summary_parts.append(
