@@ -1392,6 +1392,14 @@ class QueueManager:
                         )
                     return
 
+                # Capture the PRIMARY (highest-res) tier's oldcam summary NOW,
+                # before the extra-tier loop below calls _oldcam_video again and
+                # overwrites self._last_oldcam_run_summary with a lower-res
+                # tier's result. The rPPG-fanout + summary log downstream must
+                # reflect the primary tier (the one `output_path`/`source_video`
+                # point at), not the last extra tier (reviewer MEDIUM, PR #104).
+                summary = self._last_oldcam_run_summary or {}
+
                 # Multi-resolution crush fan-out (2026-06-18): the primary
                 # (highest-res) crushed tier ran through the strict reprocess-
                 # aware path above; run EVERY selected oldcam version on the
@@ -1418,7 +1426,8 @@ class QueueManager:
                 # OFF — most workflows don't need it because Oldcam's
                 # resolution-crush attenuates the pulse and the
                 # already-rPPG'd base is the cleaner deliverable.
-                summary = self._last_oldcam_run_summary or {}
+                # NOTE: ``summary`` was captured above BEFORE the extra-tier
+                # loop, so it reflects the PRIMARY tier (not a lower-res one).
                 if (
                     self._rppg_enabled()
                     and config.get("rppg_per_oldcam_fanout", False)
@@ -1963,6 +1972,14 @@ class QueueManager:
                         for _src in oldcam_sources:
                             item.stage_percent = 0
                             self.update_queue_display()
+                            # Clear before each call so a source whose
+                            # _oldcam_video fails can't leave the PREVIOUS
+                            # source's summary intact and double-append its
+                            # outputs (gemini HIGH, PR #104). _oldcam_video
+                            # already resets this on every path, but the
+                            # explicit clear hardens the loop against any
+                            # future early-return in that helper.
+                            self._last_oldcam_run_summary = None
                             oldcam_video = self._oldcam_video(_src, item)
                             # Headline = the highest-res crushed source's
                             # primary output (first source in the list).

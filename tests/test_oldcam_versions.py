@@ -508,6 +508,72 @@ def test_rerun_crush_both_tiers_produces_two_files(tmp_path):
     assert result["output"] == str(tmp_path / "clip_crush720.mp4"), result["output"]
 
 
+def test_rerun_both_tiers_rppg_fanout_uses_primary_tier_summary(tmp_path):
+    """Reviewer MEDIUM (PR #104): with BOTH crush tiers + oldcam + the opt-in
+    rppg_per_oldcam_fanout, the rPPG fan-out must iterate the PRIMARY
+    (highest-res, 720p) tier's oldcam outputs — not the last extra tier's.
+    The extra-tier loop calls _oldcam_video again and overwrites
+    _last_oldcam_run_summary, so the summary used downstream must be captured
+    BEFORE that loop."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, _ = make_queue_manager({
+        "oldcam_versions": ["v7"],
+        "crush_resolutions": ["720p", "480p"],
+        "rppg_enabled": True,
+        "rppg_per_oldcam_fanout": True,
+        "allow_reprocess": True,
+        "reprocess_mode": "overwrite",
+    })
+
+    def fake_crush(video_path, item, target_height=480, suffix="_crush"):
+        out = tmp_path / f"clip{suffix}.mp4"
+        out.write_bytes(b"crushed")
+        return str(out)
+
+    def fake_oldcam(video_path, item):
+        stem = Path(video_path).stem
+        out = tmp_path / f"{stem}-oldcam-v7.mp4"
+        out.write_bytes(b"oc")
+        manager._last_oldcam_run_summary = {
+            "requested_versions": ["v7"],
+            "succeeded_versions": ["v7"],
+            "failed_versions": [],
+            "primary_output": str(out),
+            "outputs": [str(out)],
+        }
+        return str(out)
+
+    rppg_calls = []
+
+    def fake_rppg(video_path, item):
+        rppg_calls.append(video_path)
+        return video_path
+
+    with mock.patch.object(manager, "_crush_video", side_effect=fake_crush), \
+         mock.patch.object(manager, "_oldcam_video", side_effect=fake_oldcam), \
+         mock.patch.object(manager, "_rppg_video", side_effect=fake_rppg):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update({"success": success, "output": output, "error": error})
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(3)
+
+    assert result["success"] is True, result.get("error")
+    # rppg_calls[0] is the top-of-worker primary rPPG pass on the source.
+    # The per-oldcam fan-out must then run on the PRIMARY (720p) tier's oldcam
+    # output and NOT the 480p tier's — proving the summary was captured before
+    # the extra-tier loop overwrote it with the 480p result.
+    assert str(tmp_path / "clip_crush720-oldcam-v7.mp4") in rppg_calls, rppg_calls
+    assert str(tmp_path / "clip_crush480-oldcam-v7.mp4") not in rppg_calls, rppg_calls
+
+
 def test_rerun_crush_resolutions_empty_list_rejects_crush_only(tmp_path):
     """An explicit empty crush_resolutions list = crush OFF: a re-run with
     nothing else selected must fail with the 'nothing to apply' guard, NOT

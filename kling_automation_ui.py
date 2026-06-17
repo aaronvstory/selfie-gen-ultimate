@@ -4706,7 +4706,6 @@ class KlingAutomationUI:
 
         rppg_on = _flag("automation_rppg_enabled")
         loop_on = _flag("automation_loop_enabled")
-        crush_on = _flag("automation_crush_enabled")
         oldcam_required = _flag("automation_oldcam_required")
         oldcam_enabled = _flag("automation_oldcam_enabled", True)
         oldcam_display = self._format_oldcam_versions()
@@ -4731,7 +4730,8 @@ class KlingAutomationUI:
              "bold red" if (oldcam_display == "none selected" or not oldcam_enabled)
              else ("bold yellow" if oldcam_display.startswith("all") else "bold green")),
             ("Loop (ping-pong)", "ON" if loop_on else "off", "green" if loop_on else "dim"),
-            ("Quality crush", self._format_crush_resolutions(), "green" if crush_on else "dim"),
+            ("Quality crush", self._format_crush_resolutions(),
+             "green" if self._selected_crush_resolutions() else "dim"),
             ("Video model", f"{video_display or video_endpoint or '?'}  ·  kling prompt slot {resolve_cli_kling_prompt_slot(c, DEFAULT_KLING_PROMPT_SLOT)}", ""),
             ("Selfie model(s)", f"{', '.join(selfie_models) if selfie_models else '(none)'}"
              + ("  ·  FAN-OUT: one full chain per model" if len(selfie_models) > 1 else ""),
@@ -5025,7 +5025,6 @@ class KlingAutomationUI:
         # toggle disagree (code-reviewer MED, PR #96 round 2).
         rppg_on = _parse_bool_cfg(c.get("automation_rppg_enabled", False)) or False
         loop_on = _parse_bool_cfg(c.get("automation_loop_enabled", False)) or False
-        crush_on = _parse_bool_cfg(c.get("automation_crush_enabled", False)) or False
         video_endpoint, video_display = resolve_cli_video_model(c)
         kling_slot = resolve_cli_kling_prompt_slot(c, DEFAULT_KLING_PROMPT_SLOT)
         kling_text = str((c.get("saved_prompts") or {}).get(str(kling_slot), "") or "")
@@ -5141,7 +5140,6 @@ class KlingAutomationUI:
             c = self.config
             rppg_on = _parse_bool_cfg(c.get("automation_rppg_enabled", False)) or False
             loop_on = _parse_bool_cfg(c.get("automation_loop_enabled", False)) or False
-            crush_on = _parse_bool_cfg(c.get("automation_crush_enabled", False)) or False
             by_value = {v: label for label, v in self._quick_edit_choice_pairs()}
             # Control hints live on their OWN line below the title (a leading
             # Separator row — the only way to render text under a questionary
