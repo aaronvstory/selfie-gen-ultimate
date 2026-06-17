@@ -1995,6 +1995,13 @@ class QueueManager:
                         # ran yet.
                         _primary_summary: Optional[Dict[str, object]] = None
                         for _idx, _src in enumerate(oldcam_sources):
+                            # Stop fanning out to the next source the instant
+                            # the user aborts — don't start _oldcam_video on the
+                            # 480p tier after an Abort during the 720p tier. The
+                            # post-loop abort guard below handles the item
+                            # (gemini HIGH, PR #104 round 6).
+                            if self._abort_requested():
+                                break
                             item.stage_percent = 0
                             self.update_queue_display()
                             # Clear before each call so a source whose
