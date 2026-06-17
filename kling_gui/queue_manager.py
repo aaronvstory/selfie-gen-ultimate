@@ -1404,9 +1404,7 @@ class QueueManager:
                 # Capture the PRIMARY (highest-res) tier's oldcam summary NOW,
                 # before the extra-tier loop below calls _oldcam_video again and
                 # overwrites self._last_oldcam_run_summary with a lower-res
-                # tier's result. The rPPG-fanout + summary log downstream must
-                # reflect the primary tier (the one `output_path`/`source_video`
-                # point at), not the last extra tier (reviewer MEDIUM, PR #104).
+                # tier's result (reviewer MEDIUM, PR #104).
                 summary = self._last_oldcam_run_summary or {}
 
                 # Multi-resolution crush fan-out (2026-06-18): the primary
@@ -1414,9 +1412,8 @@ class QueueManager:
                 # aware path above; run EVERY selected oldcam version on the
                 # remaining crushed tier(s) too, so each crush resolution yields
                 # its own oldcam variant (N crush x M oldcam). Best-effort: a
-                # failed extra tier is logged, never fatal — the headline output
-                # stays the highest-res result. Outputs land on disk with their
-                # tier-specific stems (e.g. clip_crush480-oldcam-v24.mp4).
+                # failed extra tier is logged, never fatal. Outputs land on disk
+                # with their tier-specific stems (e.g. clip_crush480-oldcam-v24).
                 for _extra_src in crushed_paths[1:]:
                     if self._abort_requested():
                         break
@@ -1424,11 +1421,20 @@ class QueueManager:
                         f"Re-Run: oldcam fan-out on crushed tier {Path(_extra_src).name}",
                         "debug",
                     )
-                    self._oldcam_video(str(_extra_src), _rerun_oldcam_item)
-                # Restore the PRIMARY tier's summary so any external consumer of
-                # self._last_oldcam_run_summary after this worker (e.g. the
-                # completion handler) sees the primary tier, not the last
-                # extra tier the loop just ran (gemini MEDIUM, PR #104).
+                    _extra_out = self._oldcam_video(str(_extra_src), _rerun_oldcam_item)
+                    # If the PRIMARY tier failed (output_path falsy) but this
+                    # extra tier produced output, adopt it as the headline so
+                    # the re-run reports SUCCESS and the summary reflects a real
+                    # produced file instead of the failed primary — never hide a
+                    # successful tier behind a failed higher-res one (gemini
+                    # MEDIUM, round 7).
+                    if _extra_out and not output_path:
+                        output_path = _extra_out
+                        summary = self._last_oldcam_run_summary or {}
+                # Restore the HEADLINE tier's summary (primary if it succeeded,
+                # else the first successful extra tier, else the primary's
+                # failure) so external consumers stay consistent with
+                # output_path (gemini MEDIUM, PR #104 rounds 3/7).
                 self._last_oldcam_run_summary = summary
                 # OPTIONAL per-Oldcam rPPG fan-out (Phase E of
                 # polish/v2.3, 2026-05-22). The main rPPG pass already
@@ -1440,8 +1446,9 @@ class QueueManager:
                 # OFF — most workflows don't need it because Oldcam's
                 # resolution-crush attenuates the pulse and the
                 # already-rPPG'd base is the cleaner deliverable.
-                # NOTE: ``summary`` was captured above BEFORE the extra-tier
-                # loop, so it reflects the PRIMARY tier (not a lower-res one).
+                # NOTE: ``summary`` is the HEADLINE tier's (primary if it
+                # succeeded, else the first successful extra tier) — set above,
+                # consistent with ``output_path``.
                 if (
                     self._rppg_enabled()
                     and config.get("rppg_per_oldcam_fanout", False)
@@ -1988,13 +1995,14 @@ class QueueManager:
                         oldcam_sources = crushed_paths if crushed_paths else [crush_base]
                         item.stage = "oldcam"
                         _headline_set = False
-                        # Capture the PRIMARY (first/highest-res) source's
-                        # summary by INDEX, not by truthiness — a successful
-                        # primary with an (edge-case) empty summary must still
-                        # be restored (gemini MEDIUM, round 5). None = no source
-                        # ran yet.
-                        _primary_summary: Optional[Dict[str, object]] = None
-                        for _idx, _src in enumerate(oldcam_sources):
+                        # Track the HEADLINE tier's summary = the first source
+                        # that actually PRODUCED output (highest-res first). Not
+                        # the first source unconditionally: if the 720p tier
+                        # fails but 480p succeeds, restoring the failed 720p
+                        # summary would hide the real 480p result (gemini MEDIUM,
+                        # round 7). None until some tier succeeds.
+                        _headline_summary: Optional[Dict[str, object]] = None
+                        for _src in oldcam_sources:
                             # Stop fanning out to the next source the instant
                             # the user aborts — don't start _oldcam_video on the
                             # 480p tier after an Abort during the 720p tier. The
@@ -2014,20 +2022,20 @@ class QueueManager:
                             self._last_oldcam_run_summary = None
                             oldcam_video = self._oldcam_video(_src, item)
                             summary = self._last_oldcam_run_summary or {}
-                            if _idx == 0:
-                                _primary_summary = summary
-                            # Headline = the highest-res crushed source's
-                            # primary output (first source that produced one).
+                            # Headline = the highest-res crushed source that
+                            # produced output (first success).
                             if oldcam_video and not _headline_set:
                                 final_video = oldcam_video
                                 _headline_set = True
+                                _headline_summary = summary
                             oldcam_outputs.extend(list(summary.get("outputs") or []))
-                        # Restore the PRIMARY (highest-res) source's summary so
-                        # external consumers of self._last_oldcam_run_summary
-                        # after this loop don't see the last (lowest-res) tier —
-                        # mirrors the re-run worker fix (gemini MEDIUM, rounds 3+5).
-                        if _primary_summary is not None:
-                            self._last_oldcam_run_summary = _primary_summary
+                        # Restore the HEADLINE (first successful) tier's summary
+                        # so external consumers don't see the last (lowest-res)
+                        # tier, and a failed primary never hides a successful
+                        # later tier (gemini MEDIUM, rounds 3/5/7). If NO tier
+                        # succeeded, leave the loop's last (failure) summary.
+                        if _headline_summary is not None:
+                            self._last_oldcam_run_summary = _headline_summary
 
                     if self._abort_requested():
                         self._handle_item_abort(item)
