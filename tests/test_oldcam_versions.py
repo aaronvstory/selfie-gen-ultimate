@@ -532,7 +532,10 @@ def test_rerun_both_tiers_rppg_fanout_uses_primary_tier_summary(tmp_path):
         out.write_bytes(b"crushed")
         return str(out)
 
+    oldcam_items = []
+
     def fake_oldcam(video_path, item):
+        oldcam_items.append(item)
         stem = Path(video_path).stem
         out = tmp_path / f"{stem}-oldcam-v7.mp4"
         out.write_bytes(b"oc")
@@ -572,6 +575,11 @@ def test_rerun_both_tiers_rppg_fanout_uses_primary_tier_summary(tmp_path):
     # the extra-tier loop overwrote it with the 480p result.
     assert str(tmp_path / "clip_crush720-oldcam-v7.mp4") in rppg_calls, rppg_calls
     assert str(tmp_path / "clip_crush480-oldcam-v7.mp4") not in rppg_calls, rppg_calls
+    # Both tiers' oldcam runs must report against the SAME tracked QueueItem,
+    # not throwaway per-tier items, so re-run progress stays coherent
+    # (CodeRabbit Major, PR #104 round 5).
+    assert len(oldcam_items) == 2, oldcam_items
+    assert oldcam_items[0] is oldcam_items[1], "extra tier used a different QueueItem"
 
 
 def test_rerun_crush_resolutions_empty_list_rejects_crush_only(tmp_path):

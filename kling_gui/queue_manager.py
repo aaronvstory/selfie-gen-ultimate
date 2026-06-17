@@ -1384,7 +1384,12 @@ class QueueManager:
                     + f"{source_video.name}, versions={','.join(selected_versions)}",
                     "info",
                 )
-                output_path = self._oldcam_video(str(run_input), QueueItem(str(source_video)))
+                # ONE tracked QueueItem reused across the primary AND every
+                # extra crushed tier below, so per-tier oldcam progress reports
+                # against a single coherent item instead of throwaway items
+                # (CodeRabbit Major, PR #104 round 5).
+                _rerun_oldcam_item = QueueItem(str(source_video))
+                output_path = self._oldcam_video(str(run_input), _rerun_oldcam_item)
                 # Abort guard after Oldcam (Codex P2, PR #73): _oldcam_video
                 # returns None on Abort like a failure; bail before the optional
                 # fan-out + completion so an aborted rerun doesn't report done.
@@ -1419,7 +1424,7 @@ class QueueManager:
                         f"Re-Run: oldcam fan-out on crushed tier {Path(_extra_src).name}",
                         "debug",
                     )
-                    self._oldcam_video(str(_extra_src), QueueItem(str(_extra_src)))
+                    self._oldcam_video(str(_extra_src), _rerun_oldcam_item)
                 # Restore the PRIMARY tier's summary so any external consumer of
                 # self._last_oldcam_run_summary after this worker (e.g. the
                 # completion handler) sees the primary tier, not the last
@@ -1983,8 +1988,13 @@ class QueueManager:
                         oldcam_sources = crushed_paths if crushed_paths else [crush_base]
                         item.stage = "oldcam"
                         _headline_set = False
-                        _primary_summary: Dict[str, object] = {}
-                        for _src in oldcam_sources:
+                        # Capture the PRIMARY (first/highest-res) source's
+                        # summary by INDEX, not by truthiness — a successful
+                        # primary with an (edge-case) empty summary must still
+                        # be restored (gemini MEDIUM, round 5). None = no source
+                        # ran yet.
+                        _primary_summary: Optional[Dict[str, object]] = None
+                        for _idx, _src in enumerate(oldcam_sources):
                             item.stage_percent = 0
                             self.update_queue_display()
                             # Clear before each call so a source whose
@@ -1997,18 +2007,19 @@ class QueueManager:
                             self._last_oldcam_run_summary = None
                             oldcam_video = self._oldcam_video(_src, item)
                             summary = self._last_oldcam_run_summary or {}
+                            if _idx == 0:
+                                _primary_summary = summary
                             # Headline = the highest-res crushed source's
-                            # primary output (first source in the list).
+                            # primary output (first source that produced one).
                             if oldcam_video and not _headline_set:
                                 final_video = oldcam_video
                                 _headline_set = True
-                                _primary_summary = summary
                             oldcam_outputs.extend(list(summary.get("outputs") or []))
                         # Restore the PRIMARY (highest-res) source's summary so
                         # external consumers of self._last_oldcam_run_summary
                         # after this loop don't see the last (lowest-res) tier —
-                        # mirrors the re-run worker fix (gemini MEDIUM, round 3).
-                        if _primary_summary:
+                        # mirrors the re-run worker fix (gemini MEDIUM, rounds 3+5).
+                        if _primary_summary is not None:
                             self._last_oldcam_run_summary = _primary_summary
 
                     if self._abort_requested():
