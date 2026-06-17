@@ -2195,43 +2195,69 @@ class AutoPipelineRunner:
 
         # Step 7: optional oldcam pass
         if self._oldcam_active():
-            # Source priority (Phase E: Kling -> rPPG -> Loop -> Crush -> Oldcam):
-            # crush output > looped > rPPG base > raw video_generate > disk candidate.
-            if crush_path is not None and crush_path.exists():
-                selected_video_path = crush_path
-            elif loop_path is not None and loop_path.exists():
-                selected_video_path = loop_path
+            # Build the list of sources for oldcam (Phase E order).
+            # When crush produced a file we fan-out: oldcam runs on BOTH
+            # the pre-crush path (loop > rPPG > raw Kling) AND the crushed
+            # file, so the user keeps the original Kling chain AND gets the
+            # crushed variant — the originals are never deleted.
+            #
+            # Without crush the list has exactly one entry (legacy behaviour).
+            _raw_video_path: Optional[Path] = None
+            if loop_path is not None and loop_path.exists():
+                _raw_video_path = loop_path
             elif rppg_base_path is not None and rppg_base_path.exists():
-                selected_video_path = rppg_base_path
+                _raw_video_path = rppg_base_path
             else:
-                manifest_video = self.manifest.get_step(case_key, "video_generate").get("output")
-                manifest_video_path = Path(manifest_video) if manifest_video else None
-                if (
-                    manifest_video_path
-                    and manifest_video_path.exists()
-                    and manifest_video_path.suffix.lower() == ".mp4"
-                ):
-                    selected_video_path = manifest_video_path
+                _mv = self.manifest.get_step(case_key, "video_generate").get("output")
+                _mvp = Path(_mv) if _mv else None
+                if _mvp and _mvp.exists() and _mvp.suffix.lower() == ".mp4":
+                    _raw_video_path = _mvp
                 elif existing.video_candidate:
-                    selected_video_path = Path(existing.video_candidate)
-                else:
-                    selected_video_path = None
-            if selected_video_path and selected_video_path.exists() and selected_video_path.suffix.lower() == ".mp4":
-                self.logger.info("case %s oldcam readiness=ready version=%s required=%s", case_key, self.automation.get("automation_oldcam_version", "v12"), bool(self.automation.get("automation_oldcam_required", False)))
+                    _vc = Path(existing.video_candidate)
+                    if _vc.exists() and _vc.suffix.lower() == ".mp4":
+                        _raw_video_path = _vc
+
+            # Fan-out: [pre-crush, crushed] when crush ran; [raw] otherwise.
+            _oldcam_sources: List[Path] = []
+            if crush_path is not None and crush_path.exists():
+                if _raw_video_path is not None and _raw_video_path.exists():
+                    _oldcam_sources.append(_raw_video_path)
+                _oldcam_sources.append(crush_path)
+            elif _raw_video_path is not None and _raw_video_path.exists():
+                _oldcam_sources.append(_raw_video_path)
+
+            # Filter to valid mp4 paths (dedup by resolved path).
+            _seen_oldcam: set = set()
+            _valid_sources: List[Path] = []
+            for _src in _oldcam_sources:
+                _key = str(_src.resolve())
+                if _key not in _seen_oldcam and _src.suffix.lower() == ".mp4":
+                    _seen_oldcam.add(_key)
+                    _valid_sources.append(_src)
+
+            if _valid_sources:
+                self.logger.info(
+                    "case %s oldcam readiness=ready sources=%d version=%s required=%s",
+                    case_key, len(_valid_sources),
+                    self.automation.get("automation_oldcam_version", "v12"),
+                    bool(self.automation.get("automation_oldcam_required", False)),
+                )
                 self._set_active_step(case_entry, "oldcam")
                 self.manifest.update_step(case_key, "oldcam", "running")
-                # Run EVERY selected version (run_oldcam_all). The manifest
-                # step carries one canonical ``output`` (highest version,
-                # back-compat) but ALL per-version paths are stashed in
-                # meta["all_outputs"] so Step 8 can fan rPPG over each —
-                # there is no privileged "primary" (parity with the GUI
-                # queue). Plain -oldcam-vN files are kept (non-destructive).
-                oldcam_all = run_oldcam_all(
-                    video_path=selected_video_path,
-                    version_setting=self.automation.get("automation_oldcam_version", []),
-                    repo_root=Path(__file__).resolve().parent.parent,
-                    progress_cb=self.progress_cb,
-                )
+                # Run EVERY selected version (run_oldcam_all) for EACH source.
+                # The manifest step carries one canonical ``output`` (highest
+                # version from any source, back-compat) but ALL per-version
+                # paths are stashed in meta["all_outputs"] so Step 8 can fan
+                # rPPG over each. Plain -oldcam-vN files are kept (non-destructive).
+                oldcam_all: List = []
+                for _src in _valid_sources:
+                    _batch = run_oldcam_all(
+                        video_path=_src,
+                        version_setting=self.automation.get("automation_oldcam_version", []),
+                        repo_root=Path(__file__).resolve().parent.parent,
+                        progress_cb=self.progress_cb,
+                    )
+                    oldcam_all.extend(_batch)
                 oldcam_output = (
                     max(oldcam_all, key=lambda iv: _oldcam_version_key(iv[0]))[1]
                     if oldcam_all
