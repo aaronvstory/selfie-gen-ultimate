@@ -2200,6 +2200,13 @@ class AutoPipelineRunner:
                     )
                     if crushed and Path(crushed).exists():
                         crush_paths.append(Path(crushed))
+                    else:
+                        # Per-tier visibility: a single tier failing is
+                        # otherwise silent when another tier succeeds (gemini).
+                        self.logger.warning(
+                            "case %s crush tier %s failed; skipping that tier",
+                            case_key, _label,
+                        )
                 if crush_paths:
                     crush_path = crush_paths[0]  # highest-res tier is primary
                     self.logger.info(
