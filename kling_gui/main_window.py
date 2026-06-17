@@ -4693,6 +4693,13 @@ class KlingGUIWindow:
                     stages.append("rPPG")
                 if bool(self.config.get("loop_videos", False)):
                     stages.append("Loop")
+                # Crush (480p re-encode) runs after Loop and before Oldcam
+                # in the Phase E order. It is a valid stand-alone re-run
+                # post-process, so surface it in the stage label too —
+                # otherwise a Crush-only re-run reads "no-op (nothing
+                # selected)" even though the queue applies it (2026-06-17).
+                if bool(self.config.get("crush_enabled", False)):
+                    stages.append("Crush")
                 # CodeRabbit P1 (2026-05-22): distinguish "user
                 # explicitly cleared all Oldcam versions" (empty list)
                 # from "key never set / non-list value" (use the

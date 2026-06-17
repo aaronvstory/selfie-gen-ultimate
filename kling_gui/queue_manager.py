@@ -1083,16 +1083,22 @@ class QueueManager:
                 selected_versions = self._get_selected_oldcam_versions()
                 rppg_on = self._rppg_enabled()
                 loop_on = bool(config.get("loop_videos", False))
+                crush_on = self._crush_enabled()
 
                 # User feedback 2026-05-22: re-run on a picked video must
                 # apply WHATEVER post-processes are selected — not just
-                # Oldcam. So rPPG-only, Loop-only, or any combination is
-                # valid. Only error when NONE of (rPPG, Loop, Oldcam) are
-                # selected — genuinely nothing to apply.
-                if not (rppg_on or loop_on or versions_to_run):
+                # Oldcam. So rPPG-only, Loop-only, Crush-only, or any
+                # combination is valid. Only error when NONE of
+                # (rPPG, Loop, Crush, Oldcam) are selected — genuinely
+                # nothing to apply. (Crush added 2026-06-17: the guard
+                # predated the Crush step and silently rejected
+                # Crush-only re-runs with a misleading "nothing
+                # selected" error even though Crush was ticked.)
+                if not (rppg_on or loop_on or crush_on or versions_to_run):
                     message = (
-                        "Re-run: nothing to apply (rPPG, Loop, and Oldcam "
-                        "all unselected — pick at least one post-process)."
+                        "Re-run: nothing to apply (rPPG, Loop, Crush, and "
+                        "Oldcam all unselected — pick at least one "
+                        "post-process)."
                     )
                     self.log(message, "warning")
                     if completion_callback:
