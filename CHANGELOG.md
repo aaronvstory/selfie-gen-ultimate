@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-18 — v2.34 — Crush-only re-run no longer rejected as "nothing selected"
+
+### Fixed
+
+- **Crush-only re-run failed with a misleading "nothing selected" error.**
+  The standalone re-run worker (`QueueManager.rerun_oldcam_only`) gained a
+  Crush step (Phase E: `Kling → rPPG → Loop → Crush → Oldcam`), but its early
+  "nothing to apply" guard predated Crush and only checked rPPG / Loop /
+  Oldcam. A re-run with *only* the Quality-crush checkbox ticked tripped the
+  guard and bailed before reaching the crush step — even though the
+  downstream worker already fully handled crush-only. The GUI stage-label
+  builder had the same omission, so the log read `no-op (nothing selected)`.
+  Fixed both: the guard now accepts Crush as a stand-alone post-process and
+  the stage label surfaces `Crush`. Pure Python — identical on Windows +
+  macOS. The CLI pipeline was unaffected (it runs Crush as an ordered step
+  with no "nothing selected" gate).
+
 ## 2026-06-15 — v2.32 — Step 0 2-pass front expand actually runs on resume
 
 ### Fixed
