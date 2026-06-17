@@ -828,20 +828,40 @@ class ConfigPanel(tk.Frame):
             fg=COLORS["text_light"],
             font=(FONT_FAMILY, 10),
         ).pack(side=tk.LEFT)
-        self.crush_var = tk.BooleanVar(value=False)
-        self.crush_checkbox = tk.Checkbutton(
-            self.crush_controls_frame,
-            text="Quality-crush video  (480p re-encode · runs after Loop · default OFF)",
-            variable=self.crush_var,
+        tk.Label(
+            _crush_label_row,
+            text="  Quality-crush re-encode · runs after Loop · fans out like Oldcam",
             bg=_crush_bg,
-            fg=COLORS["text_light"],
-            selectcolor=_crush_bg,
-            activebackground=_crush_bg,
-            activeforeground=COLORS["text_light"],
-            font=(FONT_FAMILY, 9),
-            command=self._on_crush_changed,
-        )
-        self.crush_checkbox.pack(anchor="w", padx=(2, 0))
+            fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 8),
+        ).pack(side=tk.LEFT)
+        # Selectable resolution tiers (2026-06-18) — checkboxes like the
+        # Oldcam version list. 720p is the default (pre-checked on fresh
+        # installs); 480p is the original harsher tier. Choosing both fans
+        # out one crushed file per tier; choosing neither = crush OFF.
+        from automation.video_crush import CRUSH_RESOLUTIONS as _CRUSH_RES
+        _crush_row = tk.Frame(self.crush_controls_frame, bg=_crush_bg)
+        _crush_row.pack(anchor="w", padx=(2, 0))
+        self.crush_resolution_vars = {}
+        self.crush_resolution_checks = {}
+        # Highest-first so 720p reads left-to-right before 480p.
+        for label in sorted(_CRUSH_RES, key=lambda lbl: _CRUSH_RES[lbl], reverse=True):
+            var = tk.BooleanVar(value=False)
+            self.crush_resolution_vars[label] = var
+            check = tk.Checkbutton(
+                _crush_row,
+                text=label,
+                variable=var,
+                bg=_crush_bg,
+                fg=COLORS["text_light"],
+                selectcolor=_crush_bg,
+                activebackground=_crush_bg,
+                activeforeground=COLORS["text_light"],
+                font=(FONT_FAMILY, 9),
+                command=self._on_crush_resolutions_changed,
+            )
+            check.pack(side=tk.LEFT, padx=(0, 10))
+            self.crush_resolution_checks[label] = check
 
         # ONE shared Re-Run column, packed into the band (rA) to the
         # RIGHT of the Oldcam/rPPG stack — applies to whatever is
@@ -1637,8 +1657,16 @@ class ConfigPanel(tk.Frame):
         self.rppg_per_oldcam_fanout_var.set(
             self.config.get("rppg_per_oldcam_fanout", False)
         )
-        # Quality crush (480p re-encode · default OFF)
-        self.crush_var.set(self.config.get("crush_enabled", False))
+        # Quality crush — selectable 720p/480p tiers (2026-06-18). Resolve
+        # the effective list from the canonical key, migrating the legacy
+        # ``crush_enabled`` boolean (True → 480p) and defaulting fresh
+        # installs to 720p ON. Persist the canonical list back so the rest
+        # of the app reads one shape.
+        selected_crush = self._resolve_crush_resolutions_from_config()
+        for label, var in self.crush_resolution_vars.items():
+            var.set(label in selected_crush)
+        self.config["crush_resolutions"] = selected_crush
+        self.config["crush_enabled"] = bool(selected_crush)
         self._check_ffmpeg_status()
         selected_versions = self._resolve_oldcam_versions_from_config()
         for version, var in self.oldcam_version_vars.items():
@@ -2031,10 +2059,44 @@ class ConfigPanel(tk.Frame):
         status = "enabled (slow path)" if value else "disabled"
         self._notify_change(f"rPPG per-Oldcam fan-out {status}")
 
-    def _on_crush_changed(self):
-        """Handle quality-crush checkbox change."""
-        self.config["crush_enabled"] = self.crush_var.get()
-        status = "enabled" if self.crush_var.get() else "disabled"
+    def _resolve_crush_resolutions_from_config(self):
+        """Resolve the effective crush-resolution labels from config.
+
+        Single shape for the rest of the app: canonical ``crush_resolutions``
+        list wins; otherwise the legacy ``crush_enabled`` boolean migrates
+        (True → 480p, the pre-multi behaviour); a brand-new config (neither
+        key set) defaults to 720p ON. Mirrors
+        automation.video_crush.normalize_crush_resolutions exactly.
+        """
+        from automation.video_crush import normalize_crush_resolutions
+
+        kwargs = {}
+        if "crush_resolutions" in self.config:
+            kwargs["resolutions"] = self.config["crush_resolutions"]
+        if "crush_enabled" in self.config:
+            kwargs["legacy_enabled"] = self.config["crush_enabled"]
+        valid = tuple(self.crush_resolution_vars.keys())
+        return [r for r in normalize_crush_resolutions(**kwargs) if r in valid]
+
+    def _on_crush_resolutions_changed(self):
+        """Handle a quality-crush resolution checkbox toggle.
+
+        Persists the canonical ``crush_resolutions`` list (highest-first) plus
+        the back-compat ``crush_enabled`` boolean (True iff any tier is on)."""
+        from automation.video_crush import CRUSH_RESOLUTIONS as _CR
+
+        selected = [
+            label
+            for label, var in self.crush_resolution_vars.items()
+            if var.get()
+        ]
+        selected = sorted(selected, key=lambda lbl: _CR[lbl], reverse=True)
+        self.config["crush_resolutions"] = selected
+        self.config["crush_enabled"] = bool(selected)
+        if selected:
+            status = "enabled (" + ", ".join(selected) + ")"
+        else:
+            status = "disabled"
         self._notify_change(f"Quality crush {status}")
 
     def _oldcam_version_key(self, version: str) -> int:
@@ -2626,7 +2688,7 @@ class ConfigPanel(tk.Frame):
             "loop_video_var",
             "oldcam_version_vars",
             "rppg_var",
-            "crush_var",
+            "crush_resolution_vars",
             "reprocess_var",
             "reprocess_mode_var",
             "verbose_gui_var",

@@ -360,8 +360,10 @@ def test_rerun_fails_only_when_all_stages_unselected(tmp_path):
     test below for rPPG-only)."""
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")
-    # Nothing selected — rPPG off (default), loop_videos off, oldcam empty.
-    manager, _ = make_queue_manager({"oldcam_versions": []})
+    # Nothing selected — rPPG off (default), loop_videos off, oldcam empty,
+    # crush explicitly off (crush now defaults to 720p ON, so the "truly
+    # nothing selected" path must disable it explicitly).
+    manager, _ = make_queue_manager({"oldcam_versions": [], "crush_resolutions": []})
 
     done = threading.Event()
     result = {}
@@ -461,6 +463,76 @@ def test_rerun_crush_only_succeeds_when_no_oldcam_versions(tmp_path):
     assert result["error"] is None
 
 
+def test_rerun_crush_both_tiers_produces_two_files(tmp_path):
+    """Multi-resolution crush (2026-06-18): selecting BOTH 720p + 480p on a
+    Crush-only re-run produces ONE crushed file per tier. _crush_video is
+    invoked per tier with the matching target_height + suffix; both crushed
+    files exist on disk; the headline output is the highest-res (720p)."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    # crush_resolutions wins over the legacy boolean; both tiers selected.
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "crush_resolutions": ["720p", "480p"],
+    })
+
+    calls = []
+
+    def fake_crush(video_path, item, target_height=480, suffix="_crush"):
+        calls.append((target_height, suffix))
+        out = tmp_path / f"clip{suffix}.mp4"
+        out.write_bytes(b"crushed")
+        return str(out)
+
+    with mock.patch.object(manager, "_crush_video", side_effect=fake_crush):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update(
+                {"success": success, "src": src, "output": output, "error": error}
+            )
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    # One crush invocation per tier, highest-first (720 then 480).
+    assert calls == [(720, "_crush720"), (480, "_crush480")], calls
+    assert (tmp_path / "clip_crush720.mp4").exists()
+    assert (tmp_path / "clip_crush480.mp4").exists()
+    assert result["success"] is True, f"expected success, got error: {result['error']!r}"
+    # Headline = highest-res crushed tier.
+    assert result["output"] == str(tmp_path / "clip_crush720.mp4"), result["output"]
+
+
+def test_rerun_crush_resolutions_empty_list_rejects_crush_only(tmp_path):
+    """An explicit empty crush_resolutions list = crush OFF: a re-run with
+    nothing else selected must fail with the 'nothing to apply' guard, NOT
+    silently default 720p on (the list is authoritative once present)."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "crush_resolutions": [],
+    })
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update({"success": success, "error": error})
+        done.set()
+
+    started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+    assert started is True
+    assert done.wait(2)
+    assert result["success"] is False
+    assert "nothing to apply" in (result["error"] or "").lower(), result["error"]
+
+
 def test_rerun_fails_when_rppg_only_but_input_already_rppg_artifact(tmp_path):
     """Subagent MEDIUM on a1c1b099: case (c) of the rerun worker —
     `rppg_on=True` but the picked video is already a rPPG artifact
@@ -479,6 +551,10 @@ def test_rerun_fails_when_rppg_only_but_input_already_rppg_artifact(tmp_path):
         "oldcam_versions": [],
         "rppg_enabled": True,
         "loop_videos": False,
+        # Crush defaults to 720p ON; this test isolates the rPPG-only path so
+        # it must explicitly disable crush (else crush would run and change
+        # the failure reason).
+        "crush_resolutions": [],
     })
 
     done = threading.Event()

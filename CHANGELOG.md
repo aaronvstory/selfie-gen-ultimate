@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-18 — v2.35 — Selectable crush resolutions (720p + 480p, fan-out)
+
+### Added
+
+- **Quality-crush now has two selectable resolution tiers — 720p and 480p —
+  fanned out exactly like the Oldcam version list.** Pick one, both, or
+  neither (neither = crush off), and combine freely with rPPG / Loop /
+  Oldcam. When both tiers are selected, each produces its own crushed file
+  (`clip_crush720.mp4` + `clip_crush480.mp4`); when Oldcam is also on, every
+  crushed tier is fanned through every selected Oldcam version
+  (N crush × M oldcam finals). Wired across **GUI** (two checkboxes in the
+  config panel), **CLI** (spacebar multi-select picker, mirroring oldcam),
+  the **GUI queue** (main + re-run paths), and the **CLI automation
+  pipeline**.
+- **720p is the new default (ON for fresh installs).** Existing configs are
+  migrated by `automation.video_crush.normalize_crush_resolutions`: the
+  canonical `crush_resolutions` / `automation_crush_resolutions` list wins;
+  the legacy `crush_enabled` boolean migrates (`True` → `["480p"]` so prior
+  480p output is preserved exactly, explicit `False` → off); a brand-new
+  config defaults to `["720p"]`.
+
 ## 2026-06-18 — v2.34 — Crush-only re-run no longer rejected as "nothing selected"
 
 ### Fixed
