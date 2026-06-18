@@ -2109,6 +2109,12 @@ class SelfieTab(tk.Frame):
             if not endpoint:
                 continue
             label = model.get("label", endpoint)
+            # Surface the per-image price next to the model name so the user
+            # sees cost at a glance (2026-06-18). Models without a price_note
+            # (e.g. custom user-added) just show the plain label.
+            price_note = str(model.get("price_note", "")).strip()
+            if price_note:
+                label = f"{label}  ·  {price_note}"
             var = self._model_vars.get(endpoint)
             if var is None:
                 # New endpoint: custom models default ON; built-ins follow the

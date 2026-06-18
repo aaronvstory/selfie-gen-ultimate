@@ -657,8 +657,14 @@ class FalAIKlingGenerator:
             if camera_fixed:
                 payload_full["camera_fixed"] = True
 
-            if generate_audio:
-                payload_full["generate_audio"] = True
+            # Always send the EXPLICIT audio flag — not just when enabled — so
+            # audio-native models (Kling V3 / 2.6 / O-series) are told NO rather
+            # than falling back to fal's per-model default, which can be
+            # audio-ON (and ~2x the cost). validate_parameters() below drops
+            # this key for endpoints that don't expose it, so it's safe to send
+            # unconditionally. User mandate 2026-06-18: never generate audio
+            # unless the user explicitly turns it on (default OFF everywhere).
+            payload_full["generate_audio"] = bool(generate_audio)
 
             # End-frame: an explicit end_image_url wins; otherwise, when
             # lock_end_frame is requested AND the model exposes an

@@ -4104,6 +4104,19 @@ class KlingGUIWindow:
             font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=dnd_color,
         ).pack(side=tk.LEFT)
 
+        # Button linking to the offline model-pricing report
+        # (docs/model-pricing.html). Uses the standard create_action_button +
+        # TTK_BTN_PRIMARY style so it matches the app's button language (like
+        # the right-side controls) while staying prominent — no custom raw-Tk
+        # styling. Sits right of the API-key badges + DnD status.
+        self.pricing_btn = create_action_button(
+            control_frame,
+            text="💲 Model Pricing",
+            command=self._dbcmd("model_pricing", self._open_model_pricing),
+            style=TTK_BTN_PRIMARY,
+        )
+        self.pricing_btn.pack(side=tk.LEFT, padx=(16, 0))
+
         # Right side: Control buttons (flat styling, always visible via side=BOTTOM)
         self.close_btn = create_action_button(
             control_frame,
@@ -4801,6 +4814,30 @@ class KlingGUIWindow:
                 f"Re-run failed for {os.path.basename(source_video)}: {error or 'unknown error'}",
                 "error",
             )
+
+    def _open_model_pricing(self):
+        """Open the offline model-pricing report in the default browser.
+
+        Resolves docs/model-pricing.html from the bundled resource dir (frozen
+        build) and the app dir (running from source / the dist zip), opening
+        the first that exists. Logs a friendly note if it's missing.
+        """
+        from path_utils import get_resource_dir, get_app_dir
+
+        seen = set()
+        for base in (get_resource_dir(), get_app_dir()):
+            if not base or base in seen:
+                continue
+            seen.add(base)
+            candidate = os.path.join(base, "docs", "model-pricing.html")
+            if os.path.exists(candidate):
+                self._open_path_in_explorer(candidate)
+                self._log("Opened model-pricing report.", "info")
+                return
+        self._log(
+            "Model pricing report not found (docs/model-pricing.html).",
+            "warning",
+        )
 
     def _open_path_in_explorer(self, path: str):
         """Open a file or folder in the system's native file explorer.

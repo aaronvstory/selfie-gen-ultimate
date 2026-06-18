@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## 2026-06-18 — v2.36 — Kling 2.1 Standard + Pro as permanent Step 3 models
+
+### Added
+
+- **Kling 2.1 Standard** (`fal-ai/kling-video/v2.1/standard/image-to-video`) is
+  now a permanent Step 3 (Video) model — start-frame only (no end-frame),
+  keeps negative_prompt + cfg_scale. Verified pricing: **$0.056/sec → $0.28
+  per 5s, $0.56 per 10s** (audio off).
+- **Kling 2.1 Pro** (`fal-ai/kling-video/v2.1/pro/image-to-video`) was already
+  present but bare — now fully filled out with end-frame lock via
+  `tail_image_url`, verified pricing (**$0.098/sec → $0.49 per 5s, $0.98 per
+  10s**, audio off), and a complete info tooltip.
+- Both carry `pricing_fallback` + curated `user_notes`, are pinned in
+  `tests/test_kling_model_pricing.py`, and — being data-driven from
+  `models.json` — appear automatically in **both** the Tkinter GUI Step 3
+  picker and the **CLI** full-pipeline-automation video-model picker, and ship
+  in every distributable going forward.
+
 ## 2026-06-18 — v2.35 — Selectable crush resolutions (720p + 480p, fan-out)
 
 ### Added

@@ -53,6 +53,9 @@ class SelfieGenerator:
             "slug": "gpt-image-2-edit",
             "provider": "fal",
             "api_url": "https://fal.ai/models/openai/gpt-image-2/edit/api",
+            # Token-based pricing — ~$0.22 for a default high-quality 1024px
+            # edit; scales up with resolution/quality (verified 2026-06-18).
+            "price_note": "~$0.22/img",
         },
         {
             "endpoint": "fal-ai/nano-banana-2/edit",
@@ -60,6 +63,8 @@ class SelfieGenerator:
             "slug": "nano-banana-2-edit",
             "provider": "fal",
             "api_url": "https://fal.ai/models/fal-ai/nano-banana-2/edit/api",
+            # $0.08/image at 1K; 2K x1.5, 4K x2, 0.5K x0.75 (verified 2026-06-18).
+            "price_note": "$0.08/img",
         },
         {
             "endpoint": "fal-ai/flux-pro/kontext/max",
@@ -67,6 +72,8 @@ class SelfieGenerator:
             "slug": "kontext-max",
             "provider": "fal",
             "api_url": "https://fal.ai/models/fal-ai/flux-pro/kontext/max/api",
+            # Flat $0.08/image, any resolution (verified 2026-06-18).
+            "price_note": "$0.08/img",
         },
     ]
     _SELFIE_MODELS_FILE = Path(__file__).resolve().parent / "models.json"
@@ -111,15 +118,19 @@ class SelfieGenerator:
                 label = str(item.get("label", endpoint)).strip()
                 if not endpoint:
                     continue
-                validated.append(
-                    {
-                        "endpoint": endpoint,
-                        "label": label or endpoint,
-                        "slug": str(item.get("slug", "")).strip(),
-                        "provider": str(item.get("provider", "fal")).strip() or "fal",
-                        "api_url": str(item.get("api_url", "")).strip(),
-                    }
-                )
+                entry = {
+                    "endpoint": endpoint,
+                    "label": label or endpoint,
+                    "slug": str(item.get("slug", "")).strip(),
+                    "provider": str(item.get("provider", "fal")).strip() or "fal",
+                    "api_url": str(item.get("api_url", "")).strip(),
+                }
+                # Carry the optional per-image price note so the GUI can show
+                # it next to each model (2026-06-18). Absent/blank -> omitted.
+                price_note = str(item.get("price_note", "")).strip()
+                if price_note:
+                    entry["price_note"] = price_note
+                validated.append(entry)
             if validated:
                 cls.AVAILABLE_MODELS = validated
                 return
