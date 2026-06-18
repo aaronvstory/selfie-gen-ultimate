@@ -830,7 +830,7 @@ class ConfigPanel(tk.Frame):
         ).pack(side=tk.LEFT)
         tk.Label(
             _crush_label_row,
-            text="  Quality-crush re-encode · runs after Loop",
+            text="  WhatsApp-style 480p/720p quality-crush re-encode",
             bg=_crush_bg,
             fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 8),
@@ -918,7 +918,7 @@ class ConfigPanel(tk.Frame):
         )
         tk.Label(
             self.aa_controls_frame,
-            text="detector-evasion pass · runs after Crush",
+            text="adversarial detector-evasion re-encode",
             bg=_aa_bg,
             fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 8),
