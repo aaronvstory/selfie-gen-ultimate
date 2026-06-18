@@ -747,11 +747,16 @@ class ConfigPanel(tk.Frame):
             self.rppg_info_icon,
             lambda: (
                 "Sub-perceptual rPPG pulse injection.\n"
+                "\n"
                 "Installs a faint, physiologically-correct pulse into the\n"
                 "face so a passive-rPPG liveness check sees a real signal.\n"
-                "Runs FIRST in the chain: Kling → rPPG → Loop → Crush →\n"
-                "AA → Oldcam, so every later step builds on the rPPG'd base.\n"
+                "\n"
+                "Runs FIRST in the chain:\n"
+                "Kling → rPPG → Loop → Crush → AA → Oldcam,\n"
+                "so every later step builds on the rPPG'd base.\n"
+                "\n"
                 "Untested forward direction — off by default.\n"
+                "\n"
                 "Skips gracefully if the rPPG tool is missing or injection\n"
                 "fails (keeps the pre-rPPG video; never crashes the run)."
             ),
@@ -840,14 +845,18 @@ class ConfigPanel(tk.Frame):
             self.crush_info_icon,
             lambda: (
                 "Quality-crush re-encode.\n"
+                "\n"
                 "Re-compresses the video hard at 480p or 720p, low bitrate.\n"
-                "Mimics the quality loss of a WhatsApp / social upload-and-\n"
-                "redownload round-trip.\n"
+                "\n"
+                "Mimics the quality loss of a WhatsApp / social\n"
+                "upload-and-redownload round-trip.\n"
+                "\n"
                 "That destruction can strip the clean spatial fingerprint\n"
                 "that AI renders carry.\n"
                 "\n"
                 "Tick one or both tiers — each produces its own crushed file.\n"
                 "720p is lighter; 480p is harsher.\n"
+                "\n"
                 "Needs FFmpeg; skips gracefully if it's missing."
             ),
         )
@@ -1016,9 +1025,11 @@ class ConfigPanel(tk.Frame):
             self.rerun_info_icon,
             lambda: (
                 "Re-run post-processing — no new Kling generation.\n"
-                "Both buttons re-apply WHATEVER is ticked above (rPPG /\n"
-                "Loop / Crush / AA / Oldcam), in pipeline order, to an\n"
-                "EXISTING video.\n"
+                "\n"
+                "Both buttons re-apply WHATEVER is ticked above\n"
+                "(rPPG / Loop / Crush / AA / Oldcam), in pipeline order,\n"
+                "to an EXISTING video.\n"
+                "\n"
                 "So you can try different post-processing combos without\n"
                 "paying to re-generate from Kling.\n"
                 "\n"
@@ -1050,13 +1061,16 @@ class ConfigPanel(tk.Frame):
             self.oldcam_rerun_btn,
             lambda: (
                 "↻  Re-run on the ACTIVE video\n"
-                "──────────────────────────────\n"
-                "Re-applies the ticked post-processing (rPPG / Loop /\n"
-                "Crush / AA / Oldcam) to the video currently selected in\n"
-                "the carousel — or the latest completed one if none is\n"
-                "selected. NO new Kling generation: it reuses the\n"
-                "existing Kling output, so you can try different\n"
-                "post-processing combos without paying to re-generate.\n"
+                "\n"
+                "Re-applies the ticked post-processing\n"
+                "(rPPG / Loop / Crush / AA / Oldcam) to the video\n"
+                "currently selected in the carousel — or the latest\n"
+                "completed one if none is selected.\n"
+                "\n"
+                "NO new Kling generation: it reuses the existing\n"
+                "Kling output, so you can try different post-processing\n"
+                "combos without paying to re-generate.\n"
+                "\n"
                 "Needs a generated video already present."
             ),
         )
@@ -1072,14 +1086,17 @@ class ConfigPanel(tk.Frame):
             self.oldcam_pick_btn,
             lambda: (
                 "📂  Re-run on ANY file from disk\n"
-                "──────────────────────────────\n"
-                "Opens a file picker — choose any video on your drive and\n"
-                "run any combination of post-processing on it manually\n"
-                "(rPPG / Loop / Crush / AA / any Oldcam versions, in\n"
-                "Phase E order). The video doesn't need to come from this\n"
-                "app — drop in any clip. This is the manual workhorse for\n"
-                "post-processing existing footage. Respects Allow\n"
-                "reprocessing / Increment."
+                "\n"
+                "Opens a file picker — choose any video on your drive\n"
+                "and run any combination of post-processing on it\n"
+                "manually (rPPG / Loop / Crush / AA / any Oldcam\n"
+                "versions, in Phase E order).\n"
+                "\n"
+                "The video doesn't need to come from this app —\n"
+                "drop in any clip. This is the manual workhorse for\n"
+                "post-processing existing footage.\n"
+                "\n"
+                "Respects Allow reprocessing / Increment."
             ),
         )
 
