@@ -1,0 +1,13 @@
+# Isolated uv venv for this subproject (never committed; built on first launch).
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Per-input TSV parameter logs the tool writes next to its inputs.
+*.txt
+
+# Local scratch / sample media
+data/
+*.mp4

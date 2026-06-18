@@ -124,6 +124,20 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_crush_resolutions": ["720p"],
     "automation_crush_enabled": False,
     "automation_crush_required": False,
+    # Adversarial-attack (AA) step: re-encode through the aa-video subproject's
+    # ISOLATED uv venv (its deps conflict with the main numpy<2 stack — see
+    # automation/video_aa.py). Runs after Crush, before Oldcam, so each selected
+    # attack-pipeline's output fans through Oldcam (mirrors the crush-tier
+    # fan-out). ``automation_aa_attacks`` is the canonical LIST of selected
+    # pipelines (["prime"], ["prime","scenario1"], or [] for off); the legacy
+    # boolean ``automation_aa_enabled`` is honoured for back-compat via
+    # automation.video_aa.normalize_aa_attacks (True → ["prime"]). DEFAULT OFF
+    # (empty list) — opt-in, authorized detector-research use only.
+    "automation_aa_attacks": [],
+    "automation_aa_enabled": False,
+    "automation_aa_required": False,
+    "automation_aa_strength": 0.5,
+    "automation_aa_generator": "generic",
     "automation_oldcam_enabled": True,
     # Canonical form is a LIST of versions (multi-select, 2026-06-11):
     # ["v13", "v24"], ["all"] (symbolic — expanded at runtime), or [] (none).
@@ -348,6 +362,24 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     merged["automation_crush_resolutions"] = normalize_crush_resolutions(**_crush_kwargs)
     # Keep the legacy boolean coherent for any reader still gating on it.
     merged["automation_crush_enabled"] = bool(merged["automation_crush_resolutions"])
+    # AA attacks (2026-06-18): same list↔legacy-bool collapse as crush, via the
+    # single source of truth in automation.video_aa. A saved config carrying only
+    # the legacy ``automation_aa_enabled`` boolean migrates (True → ['prime']);
+    # absent stays [] (AA is opt-in, default off). Computed from ORIGINAL keys
+    # before the default-fill loop below.
+    from automation.video_aa import normalize_aa_attacks
+
+    _aa_kwargs: Dict[str, Any] = {}
+    if "automation_aa_attacks" in merged:
+        _aa_kwargs["attacks"] = merged["automation_aa_attacks"]
+    if "automation_aa_enabled" in merged:
+        _aa_kwargs["legacy_enabled"] = merged["automation_aa_enabled"]
+    # Only override when at least one source key was present; otherwise leave it
+    # to the default-fill loop (which sets the [] default) so a brand-new config
+    # doesn't get a spurious ['prime'] from normalize_aa_attacks's bare default.
+    if _aa_kwargs:
+        merged["automation_aa_attacks"] = normalize_aa_attacks(**_aa_kwargs)
+        merged["automation_aa_enabled"] = bool(merged["automation_aa_attacks"])
     for key, value in AUTOMATION_DEFAULTS.items():
         if key not in merged:
             merged[key] = value

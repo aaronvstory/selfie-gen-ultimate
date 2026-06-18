@@ -1,0 +1,52 @@
+[project]
+name = "aa-video"
+version = "3.1.0"
+description = "Adversarial-attack video re-encode toolkit (isolated side-venv subproject)"
+requires-python = ">=3.10,<3.13"
+# CPU-minimal default set. These deliberately DIFFER from the main repo
+# (numpy<2 / opencv<4.12): this subproject runs in its OWN isolated uv venv
+# (aa-video/.venv) so numpy 2.x / opencv 4.x here can never reach the main
+# face stack. The recommended `prime` pipeline needs only these + a system
+# ffmpeg binary (NOT torch/tensorflow/insightface/face-alignment).
+dependencies = [
+    "numpy>=2.0,<3",
+    "opencv-python>=4.10,<5",
+    "moviepy>=2.0,<3",
+    "scipy>=1.13,<2",
+    "imageio-ffmpeg>=0.5",
+]
+
+[project.optional-dependencies]
+# GPU / heavy attacks are opt-in only (NOT in the default lock). v1 ships
+# CPU-only — clips are 5-10s and `prime` never touches torch. If ever synced,
+# the [tool.uv.sources] marker below keeps CUDA wheels off macOS (darwin falls
+# through to the PyPI MPS/CPU wheel).
+gpu = [
+    "torch>=2.5,<3",
+    "torchvision",
+    "insightface>=0.7,<1",
+    "face-alignment>=1.4,<2",
+]
+
+[tool.uv]
+package = false
+# Force the lock to resolve for all three production OSes so a cross-OS wheel
+# gap is caught at lock time (mirrors the main repo's required-environments).
+# Intel macOS intentionally omitted (same as the main repo).
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.sources]
+# torch (only pulled by the optional `gpu` extra) routes to the CPU index on
+# Windows/Linux; the marker excludes darwin so macOS never tries a +cu wheel.
+torch = [
+    { index = "pytorch-cpu", extra = "gpu", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

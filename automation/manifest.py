@@ -20,13 +20,15 @@ STEP_NAMES = [
     "video_generate",
     "facetrack_gate",
     # Post-processing order mirrors Phase E execution:
-    # Kling -> rPPG -> Loop -> Crush -> Oldcam.
+    # Kling -> rPPG -> Loop -> Crush -> AA -> Oldcam.
     # "rppg" runs first (raw Kling frames); "loop" ping-pongs after rPPG;
-    # "crush" (480p quality-destroy, 2026-06-16) between loop and oldcam;
-    # ensure_case setdefault()s all four into pre-existing manifests.
+    # "crush" (480p/720p quality-destroy) between loop and AA; "aa"
+    # (adversarial-attack re-encode, 2026-06-18) between crush and oldcam;
+    # ensure_case setdefault()s all into pre-existing manifests.
     "rppg",
     "loop",
     "crush",
+    "aa",
     "oldcam",
 ]
 STEP_STATUSES = {"pending", "running", "complete", "failed", "manual_review", "skipped", "pending_not_implemented"}

@@ -4730,6 +4730,28 @@ class KlingGUIWindow:
                     _crush_tiers = normalize_crush_resolutions(**_crush_kwargs)
                 if _crush_tiers:
                     stages.append("Crush " + "/".join(_crush_tiers))
+                # AA attack-pipelines (Phase E: … → Crush → AA → Oldcam).
+                # Narrow ImportError catch mirrors crush above.
+                try:
+                    from automation.video_aa import normalize_aa_attacks
+                except ImportError:
+                    _aa_attacks_lbl = []
+                else:
+                    _aa_present = (
+                        self.config.get("aa_attacks") is not None
+                        or self.config.get("aa_enabled") is not None
+                    )
+                    if _aa_present:
+                        _aa_kwargs = {}
+                        if "aa_attacks" in self.config:
+                            _aa_kwargs["attacks"] = self.config["aa_attacks"]
+                        if "aa_enabled" in self.config:
+                            _aa_kwargs["legacy_enabled"] = self.config["aa_enabled"]
+                        _aa_attacks_lbl = normalize_aa_attacks(**_aa_kwargs)
+                    else:
+                        _aa_attacks_lbl = []
+                if _aa_attacks_lbl:
+                    stages.append("AA " + "/".join(_aa_attacks_lbl))
                 # CodeRabbit P1 (2026-05-22): distinguish "user
                 # explicitly cleared all Oldcam versions" (empty list)
                 # from "key never set / non-list value" (use the
