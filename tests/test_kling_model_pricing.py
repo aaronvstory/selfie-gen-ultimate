@@ -33,6 +33,13 @@ _EXPECTED_PRICE = {
     # Standard 5s $0.28 + $0.056/s; Pro 5s $0.49 + $0.098/s → flat per-second).
     "fal-ai/kling-video/v2.1/standard/image-to-video": 0.056,
     "fal-ai/kling-video/v2.1/pro/image-to-video": 0.098,
+    # Pricing audit 2026-06-18 — verified from each model's fal llms.txt
+    # (audio-off base rate for the audio-native tiers).
+    "fal-ai/kling-video/v2.6/pro/image-to-video": 0.07,    # $0.14/s with audio
+    "fal-ai/kling-video/v2/master/image-to-video": 0.28,
+    "fal-ai/kling-video/v1.6/pro/image-to-video": 0.098,
+    "fal-ai/kling-video/v1.5/pro/image-to-video": 0.1,
+    "fal-ai/kling-video/o3/standard/image-to-video": 0.084,
 }
 
 
