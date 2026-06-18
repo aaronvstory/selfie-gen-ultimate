@@ -4104,21 +4104,29 @@ class KlingGUIWindow:
             font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=dnd_color,
         ).pack(side=tk.LEFT)
 
-        # Clickable link to the offline model-pricing report (docs/model-pricing.html).
-        # Sits in the open space to the right of the API-key badges + DnD status.
+        # Clickable chip linking to the offline model-pricing report
+        # (docs/model-pricing.html). Styled as a filled accent pill so it
+        # stands out from the API-key badges instead of getting lost as a
+        # plain link. Sits in the open space right of the badges + DnD status.
+        _price_bg = COLORS["accent_blue"]
+        _price_hover = "#8FB8FF"  # lighter blue on hover (brightened accent)
         pricing_link = tk.Label(
             control_frame,
-            text="💲 Model Pricing",
-            font=(FONT_FAMILY, 9, "underline"),
-            bg=COLORS["bg_main"],
-            fg=COLORS["accent_blue"],
+            text=" 💲 Model Pricing ▸ ",
+            font=(FONT_FAMILY, 9, "bold"),
+            bg=_price_bg,
+            fg=COLORS["text_dark"],
             cursor="hand2",
+            padx=8,
+            pady=2,
+            relief=tk.RAISED,
+            bd=1,
         )
-        pricing_link.pack(side=tk.LEFT, padx=(16, 0))
+        pricing_link.pack(side=tk.LEFT, padx=(18, 0), pady=2)
         pricing_link.bind("<Button-1>", lambda _e: self._open_model_pricing())
-        # Subtle hover affordance: brighten on enter, restore on leave.
-        pricing_link.bind("<Enter>", lambda _e: pricing_link.config(fg=COLORS["text_light"]))
-        pricing_link.bind("<Leave>", lambda _e: pricing_link.config(fg=COLORS["accent_blue"]))
+        # Hover affordance: brighten the chip.
+        pricing_link.bind("<Enter>", lambda _e: pricing_link.config(bg=_price_hover))
+        pricing_link.bind("<Leave>", lambda _e: pricing_link.config(bg=_price_bg))
 
         # Right side: Control buttons (flat styling, always visible via side=BOTTOM)
         self.close_btn = create_action_button(
