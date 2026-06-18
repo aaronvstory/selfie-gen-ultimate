@@ -911,6 +911,7 @@ class ConfigPanel(tk.Frame):
                 "    (generic AI-vs-real classifiers)\n"
                 "  • Scenario1 — replay/pre-recorded evasion\n"
                 "  • Scenario3 — smoothing/puppeteering evasion\n"
+                "All run on CPU (a GPU just makes them faster).\n"
                 "Runs in an ISOLATED venv (auto-provisioned on\n"
                 "first use). Authorized detector-research only.\n"
                 "Off by default; graceful-skip if unavailable."
@@ -927,6 +928,9 @@ class ConfigPanel(tk.Frame):
         # scenario3 (matching AA_PIPELINES display order). Prime pre-checked is
         # applied in apply_config from the saved aa_attacks; constructed unchecked.
         from automation.video_aa import AA_PIPELINES as _AA_PIPES
+        # All three pipelines run on CPU (torch is bundled in the AA venv; the
+        # scenario modules dispatch to their _cpu variants when no GPU is
+        # present, and prime never needs torch). A GPU just makes them faster.
         _aa_labels = {
             "prime": "Prime",
             "scenario1": "Scenario1",

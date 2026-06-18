@@ -14,15 +14,21 @@ dependencies = [
     "moviepy>=2.0,<3",
     "scipy>=1.13,<2",
     "imageio-ffmpeg>=0.5",
+    # torch (CPU build) is a DEFAULT dep so the scenario1/scenario3 attack
+    # modules (micro_jitter/analog_simulation/camera_recapture/sensor_noise/
+    # motion_modulation) IMPORT cleanly everywhere. They still HARD-REQUIRE a
+    # CUDA GPU at runtime (`torch.cuda.is_available()` → else RuntimeError), so
+    # on a CPU box they graceful-skip with a clear "needs NVIDIA GPU" message
+    # instead of a confusing import failure. On an NVIDIA box the user can
+    # install a CUDA torch build into this venv to actually run them. The
+    # `prime` pipeline never touches torch (it has CPU-optimized fallbacks).
+    "torch>=2.5,<3",
 ]
 
 [project.optional-dependencies]
-# GPU / heavy attacks are opt-in only (NOT in the default lock). v1 ships
-# CPU-only — clips are 5-10s and `prime` never touches torch. If ever synced,
-# the [tool.uv.sources] marker below keeps CUDA wheels off macOS (darwin falls
-# through to the PyPI MPS/CPU wheel).
+# Heavy GPU-only attribution/face deps used by some scenario internals — opt-in
+# only (NOT in the default lock; large + CUDA-leaning).
 gpu = [
-    "torch>=2.5,<3",
     "torchvision",
     "insightface>=0.7,<1",
     "face-alignment>=1.4,<2",
@@ -40,10 +46,13 @@ required-environments = [
 ]
 
 [tool.uv.sources]
-# torch (only pulled by the optional `gpu` extra) routes to the CPU index on
-# Windows/Linux; the marker excludes darwin so macOS never tries a +cu wheel.
+# torch (default dep) routes to the CPU index on Windows/Linux so the lock
+# pins the small CPU build (no CUDA wheels — keeps the cross-OS lock resolvable
+# and the venv light). The marker excludes darwin, where uv falls through to
+# the PyPI macOS wheel (MPS/CPU). A user who wants scenario1/3 to actually run
+# installs a CUDA torch build into this venv separately (NVIDIA box only).
 torch = [
-    { index = "pytorch-cpu", extra = "gpu", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+    { index = "pytorch-cpu", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
 ]
 
 [[tool.uv.index]]

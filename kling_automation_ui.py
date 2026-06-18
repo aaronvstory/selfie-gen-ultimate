@@ -3900,7 +3900,9 @@ class KlingAutomationUI:
         changed. Authorized detector-research use only.
         """
         current = self._selected_aa_attacks()
-        # Display order: prime, scenario1, scenario3.
+        # Display order: prime, scenario1, scenario3. All run on CPU (torch is
+        # bundled in the AA venv; scenario modules use their _cpu variants when
+        # no GPU is present); a GPU just speeds them up.
         known = [k for k in ("prime", "scenario1", "scenario3") if k in AA_PIPELINES]
         choices = [
             questionary.Choice(label, value=label, checked=(label in current))
