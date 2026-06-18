@@ -1380,10 +1380,11 @@ class KlingGUIWindow:
             self._layout_corrections_pending = True
 
         # Pre-sanitize sash values against initial window size before widgets render.
-        # v5.2 fallback values match new defaults (carousel 25% / log_drop 71%
+        # Fallback values match new defaults (carousel 25% / log_drop 80%
         # of right section) — see layout_utils.sanitize_sash_layout for the
         # canonical clamp logic. Computed for ~1621px window (the user's tested
-        # size): sash_queue=405, sash_log_drop_split=863.
+        # size): sash_queue=405, sash_log_drop_split=973 (wider log / squarer
+        # drop zone, 2026-06-18).
         #
         # CRITICAL: clamp against the ACTUAL geometry the window is about to
         # open at (`sanitized_geometry`, e.g. "1331x950+97+52"), NOT against
@@ -1404,7 +1405,7 @@ class KlingGUIWindow:
             sash_prompt_split=self.config.get("sash_prompt_split", 1167),
             sash_queue=self.config.get("sash_queue", 405),
             sash_log=self.config.get("sash_log", 150),
-            sash_log_drop_split=self.config.get("sash_log_drop_split", 863),
+            sash_log_drop_split=self.config.get("sash_log_drop_split", 973),
             root_width=pre_sash_w,
             root_height=pre_sash_h,
         )
@@ -1688,7 +1689,7 @@ class KlingGUIWindow:
             "sash_dropzone": 500,  # Height of top pane
             "sash_queue": 405,  # Width of left bottom pane (carousel 25%, user-tested at 1621w)
             "sash_log": 150,  # Height of log pane (before history)
-            "sash_log_drop_split": 863,  # Width of LOG pane (~71% of right section, user-tested at 1621w)
+            "sash_log_drop_split": 973,  # Width of LOG pane (~80% of right section — wider log / squarer drop zone)
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)
@@ -5911,7 +5912,7 @@ class KlingGUIWindow:
                 sash_prompt_split=self.config.get("sash_prompt_split", 1167),
                 sash_queue=self.config.get("sash_queue", 405),
                 sash_log=self.config.get("sash_log", 150),
-                sash_log_drop_split=self.config.get("sash_log_drop_split", 863),
+                sash_log_drop_split=self.config.get("sash_log_drop_split", 973),
                 root_width=self.root.winfo_width(),
                 root_height=self.root.winfo_height(),
             )
