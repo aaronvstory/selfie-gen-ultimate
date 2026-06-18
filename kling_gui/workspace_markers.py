@@ -252,7 +252,7 @@ def _is_safe_orphan_runtime_path(runtime_dir: str, workspace: str) -> bool:
     attacker-controlled in the cross-machine sense — a marker rsynced from
     another box, or a hand-edited / corrupted marker, can point at any path.
     Without this check, ``_safe_rmtree_orphan_runtime`` would happily rmtree
-    e.g. ``C:\\Users\\d0nbxx\\Desktop\\sessions`` if that path coincidentally
+    e.g. ``C:\\Users\\username\\Desktop\\sessions`` if that path coincidentally
     contained only files matching ``_ORPHAN_EXPECTED_NAMES``.
 
     Two gates: (1) ``commonpath`` containment under the expected

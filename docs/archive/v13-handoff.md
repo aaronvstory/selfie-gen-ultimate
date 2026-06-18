@@ -223,6 +223,6 @@ gh pr view 17 --json mergeable,mergeStateStatus
 ## 6. Pointer to Original Plan
 
 Detailed line-level execution plan with explanatory text lives at:
-`C:\Users\d0nbxx\.claude\plans\radiant-wishing-rain.md`
+`~/.claude/plans/radiant-wishing-rain.md`
 
 That plan is local-only (not in repo). This hand-off doc is the canonical committed version for future sessions / reviewers.
