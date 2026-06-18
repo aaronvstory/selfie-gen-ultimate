@@ -6,15 +6,15 @@
 <title>Ultimate-Selfie-Gen — Model Pricing</title>
 <style>
   :root{
-    --bg:#14110f; --panel:#1f1a16; --row:#241e19; --row2:#1b1612;
+    --bg:#14110f; --panel:#1f1a16; --row2:#1b1612;
     --border:#3a2f26; --text:#ece5dd; --dim:#a99e92; --accent:#e0a16a;
-    --good:#6fbf73; --warn:#d98f4e; --bad:#d96b6b; --head:#2a221c;
+    --good:#6fbf73; --warn:#d98f4e; --head:#2a221c;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
     font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     padding:32px 20px 64px}
-  .wrap{max-width:1040px;margin:0 auto}
+  .wrap{max-width:1080px;margin:0 auto}
   h1{font-size:26px;margin:0 0 4px;letter-spacing:.3px}
   h1 .v{color:var(--accent);font-size:15px;font-weight:600;vertical-align:middle}
   .sub{color:var(--dim);margin:0 0 26px;font-size:13px}
@@ -24,7 +24,14 @@
     border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:10px}
   th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
   th{background:var(--head);color:var(--dim);font-size:11px;text-transform:uppercase;
-    letter-spacing:.6px;font-weight:700}
+    letter-spacing:.6px;font-weight:700;cursor:pointer;user-select:none;white-space:nowrap;
+    position:sticky;top:0}
+  th:hover{color:var(--text)}
+  th .arrow{opacity:.35;font-size:10px;margin-left:4px}
+  th.sorted-asc .arrow,th.sorted-desc .arrow{opacity:1;color:var(--accent)}
+  th.sorted-asc .arrow::after{content:"\25B2"}
+  th.sorted-desc .arrow::after{content:"\25BC"}
+  th .arrow::after{content:"\21C5"}
   tr:nth-child(even) td{background:var(--row2)}
   tr:last-child td{border-bottom:none}
   td.cost{font-weight:700;color:var(--accent);white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -40,6 +47,7 @@
   .ok{background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--good);
     border-radius:8px;padding:12px 16px;margin:14px 0;color:var(--dim);font-size:13px}
   .ok b{color:var(--good)}
+  .hint{color:var(--dim);font-size:12px;font-style:italic;margin:6px 2px 0}
   .muted{color:var(--dim)}
   footer{margin-top:40px;color:var(--dim);font-size:12px;text-align:center}
   code{background:#000;padding:1px 5px;border-radius:4px;color:var(--accent);font-size:12px}
@@ -50,62 +58,124 @@
 
   <h1>Ultimate-Selfie-Gen — Model Pricing <span class="v">v2.36</span></h1>
   <p class="sub">Every model the app uses, by category. Verified from each provider's <code>llms.txt</code> on 2026-06-18. Video shown at a <b>10-second</b> clip, <b>audio off</b>.</p>
+  <p class="hint">↕ Click any column header to sort (Name, Cost, Release year…). Click again to reverse.</p>
 
   <div class="ok">
-    <b>🔇 No audio, always.</b> Audio generation is <b>OFF by default</b> everywhere (GUI, CLI, pipeline) and the app now sends an explicit <code>generate_audio: false</code> to audio-native models (Kling&nbsp;V3 / 2.6 / O-series) — so you never pay the audio premium and never get an audio track. The prices below are the audio-off rates.
+    <b>🔇 No audio, always.</b> Audio generation is <b>OFF by default</b> everywhere (GUI, CLI, pipeline) and the app now sends an explicit <code>generate_audio: false</code> to audio-native models (Kling&nbsp;V3 / 2.6 / O-series) — so you never pay the audio premium and never get an audio track. Prices below are audio-off.
   </div>
 
   <!-- ───────────── IMAGE → IMAGE ───────────── -->
   <h2>🖼️ Image → Image <span class="tag">Step 2 · Selfie generation · priced per image</span></h2>
-  <table>
-    <thead><tr><th>Model</th><th>Endpoint</th><th>Cost / image</th><th>Notes</th></tr></thead>
+  <table class="sortable">
+    <thead><tr>
+      <th>Model<span class="arrow"></span></th>
+      <th>Release<span class="arrow"></span></th>
+      <th data-type="num">Cost / image<span class="arrow"></span></th>
+      <th>Endpoint<span class="arrow"></span></th>
+      <th>Notes<span class="arrow"></span></th>
+    </tr></thead>
     <tbody>
-      <tr><td>Nano Banana 2 Edit</td><td class="muted"><code>fal-ai/nano-banana-2/edit</code></td><td class="cost">$0.08</td><td>1K base · 2K ×1.5 · 4K ×2 · 0.5K ×0.75</td></tr>
-      <tr><td>Flux Pro Kontext Max</td><td class="muted"><code>fal-ai/flux-pro/kontext/max</code></td><td class="cost">$0.08</td><td>Flat — any resolution</td></tr>
-      <tr><td>GPT Image 2 Edit</td><td class="muted"><code>openai/gpt-image-2/edit</code></td><td class="cost">~$0.22</td><td>High-quality 1024² default; token-based, scales with resolution/quality</td></tr>
+      <tr><td>Nano Banana 2 Edit</td><td data-sort="2026.0">2026</td><td class="cost" data-sort="0.08">$0.08</td><td class="muted"><code>fal-ai/nano-banana-2/edit</code></td><td>1K base · 2K ×1.5 · 4K ×2 · 0.5K ×0.75</td></tr>
+      <tr><td>Flux Pro Kontext Max</td><td data-sort="2025.0">2025</td><td class="cost" data-sort="0.08">$0.08</td><td class="muted"><code>fal-ai/flux-pro/kontext/max</code></td><td>Flat — any resolution</td></tr>
+      <tr><td>GPT Image 2 Edit</td><td data-sort="2026.0">2026</td><td class="cost" data-sort="0.22">~$0.22</td><td class="muted"><code>openai/gpt-image-2/edit</code></td><td>High-quality 1024² default; token-based, scales with res/quality</td></tr>
     </tbody>
   </table>
 
   <!-- ───────────── IMAGE → VIDEO ───────────── -->
   <h2>🎬 Image → Video <span class="tag">Step 3 · Kling + Seedance · cost per 10 s clip, audio off</span></h2>
-  <table>
-    <thead><tr><th>Model</th><th>10 s</th><th>$ / sec</th><th>End-frame</th><th>neg / cfg</th><th>Notes</th></tr></thead>
+  <table class="sortable">
+    <thead><tr>
+      <th>Model<span class="arrow"></span></th>
+      <th>Release<span class="arrow"></span></th>
+      <th data-type="num">10 s<span class="arrow"></span></th>
+      <th data-type="num">$ / sec<span class="arrow"></span></th>
+      <th>End-frame<span class="arrow"></span></th>
+      <th>neg / cfg<span class="arrow"></span></th>
+      <th>Notes<span class="arrow"></span></th>
+    </tr></thead>
     <tbody>
-      <tr><td>Kling 2.5 Turbo Standard</td><td class="cost">$0.42</td><td class="num">0.042</td><td class="no">—</td><td class="yes">✓ / ✓</td><td>Cheapest Kling; fast drafts</td></tr>
-      <tr><td>Kling 2.1 Standard</td><td class="cost">$0.56</td><td class="num">0.056</td><td class="no">—</td><td class="yes">✓ / ✓</td><td>Cost-efficient 2.1</td></tr>
-      <tr><td>Kling 2.5 Turbo Pro <span class="pill hot">★ recommended</span></td><td class="cost">$0.70</td><td class="num">0.07</td><td class="yes">✓ tail</td><td class="yes">✓ / ✓</td><td>Best value for selfie / head-turn</td></tr>
-      <tr><td>Kling 2.6 Pro</td><td class="cost">$0.70</td><td class="num">0.07</td><td class="yes">✓ end</td><td>✓ / ✗</td><td>Audio-native (audio kept OFF)</td></tr>
-      <tr><td>Kling 3.0 Standard</td><td class="cost">$0.84</td><td class="num">0.084</td><td class="yes">✓ end</td><td class="yes">✓ / ✓</td><td>Tends to beautify faces — test realism</td></tr>
-      <tr><td>Kling O3 Standard</td><td class="cost">$0.84</td><td class="num">0.084</td><td class="yes">✓ end</td><td>✗ / ✗</td><td>Start/end-frame interpolation</td></tr>
-      <tr><td>Kling 2.1 Pro</td><td class="cost">$0.98</td><td class="num">0.098</td><td class="yes">✓ tail</td><td class="yes">✓ / ✓</td><td>Cinematic + end-frame lock</td></tr>
-      <tr><td>Kling 1.6 Pro</td><td class="cost">$0.98</td><td class="num">0.098</td><td class="yes">✓ tail</td><td class="yes">✓ / ✓</td><td>Legacy</td></tr>
-      <tr><td>Kling 1.5 Pro</td><td class="cost">$1.00</td><td class="num">0.10</td><td class="yes">✓ tail</td><td class="yes">✓ / ✓</td><td>Legacy (oldest)</td></tr>
-      <tr><td>Kling 3.0 Pro</td><td class="cost">$1.12</td><td class="num">0.112</td><td class="yes">✓ end</td><td class="yes">✓ / ✓</td><td>Premium 3.0</td></tr>
-      <tr><td>Kling O1</td><td class="cost">$1.12</td><td class="num">0.112</td><td class="yes">✓ FFLF</td><td>✗ / ✗</td><td>Superseded by V3</td></tr>
-      <tr><td>Kling 2.0 Master</td><td class="cost">$2.80</td><td class="num">0.28</td><td class="no">—</td><td class="yes">✓ / ✓</td><td>Pricey legacy flagship</td></tr>
-      <tr><td>Seedance 2.0 <span class="pill">hidden</span></td><td class="cost">$3.03</td><td class="num">0.3034</td><td class="yes">✓ end</td><td>✗ / ✗</td><td>720p; <b>$6.82 @ 1080p</b> + ~$0.014 / 1k prompt tokens</td></tr>
+      <tr><td>Kling 2.5 Turbo Standard</td><td data-sort="2025.5">Mid 2025</td><td class="cost" data-sort="0.42">$0.42</td><td class="num" data-sort="0.042">0.042</td><td class="no">—</td><td class="yes">✓ / ✓</td><td>Cheapest Kling; fast drafts</td></tr>
+      <tr><td>Kling 2.1 Standard</td><td data-sort="2025.0">2025</td><td class="cost" data-sort="0.56">$0.56</td><td class="num" data-sort="0.056">0.056</td><td class="no">—</td><td class="yes">✓ / ✓</td><td>Cost-efficient 2.1</td></tr>
+      <tr><td>Kling 2.5 Turbo Pro <span class="pill hot">★ recommended</span></td><td data-sort="2025.5">Mid 2025</td><td class="cost" data-sort="0.70">$0.70</td><td class="num" data-sort="0.07">0.07</td><td class="yes">✓ tail</td><td class="yes">✓ / ✓</td><td>Best value for selfie / head-turn</td></tr>
+      <tr><td>Kling 2.6 Pro</td><td data-sort="2025.0">2025</td><td class="cost" data-sort="0.70">$0.70</td><td class="num" data-sort="0.07">0.07</td><td class="yes">✓ end</td><td>✓ / ✗</td><td>Audio-native (audio kept OFF)</td></tr>
+      <tr><td>Kling 3.0 Standard</td><td data-sort="2026.17">Feb 2026</td><td class="cost" data-sort="0.84">$0.84</td><td class="num" data-sort="0.084">0.084</td><td class="yes">✓ end</td><td class="yes">✓ / ✓</td><td>Tends to beautify faces — test realism</td></tr>
+      <tr><td>Kling O3 Standard</td><td data-sort="2026.33">Apr 2026</td><td class="cost" data-sort="0.84">$0.84</td><td class="num" data-sort="0.084">0.084</td><td class="yes">✓ end</td><td>✗ / ✗</td><td>Start/end-frame interpolation</td></tr>
+      <tr><td>Kling 2.1 Pro</td><td data-sort="2025.0">2025</td><td class="cost" data-sort="0.98">$0.98</td><td class="num" data-sort="0.098">0.098</td><td class="yes">✓ tail</td><td class="yes">✓ / ✓</td><td>Cinematic + end-frame lock</td></tr>
+      <tr><td>Kling 1.6 Pro</td><td data-sort="2024.0">2024</td><td class="cost" data-sort="0.98">$0.98</td><td class="num" data-sort="0.098">0.098</td><td class="yes">✓ tail</td><td class="yes">✓ / ✓</td><td>Legacy</td></tr>
+      <tr><td>Kling 1.5 Pro</td><td data-sort="2024.0">2024</td><td class="cost" data-sort="1.00">$1.00</td><td class="num" data-sort="0.10">0.10</td><td class="yes">✓ tail</td><td class="yes">✓ / ✓</td><td>Legacy (oldest)</td></tr>
+      <tr><td>Kling 3.0 Pro</td><td data-sort="2026.17">Feb 2026</td><td class="cost" data-sort="1.12">$1.12</td><td class="num" data-sort="0.112">0.112</td><td class="yes">✓ end</td><td class="yes">✓ / ✓</td><td>Premium 3.0</td></tr>
+      <tr><td>Kling O1</td><td data-sort="2025.92">Dec 2025</td><td class="cost" data-sort="1.12">$1.12</td><td class="num" data-sort="0.112">0.112</td><td class="yes">✓ FFLF</td><td>✗ / ✗</td><td>Superseded by V3</td></tr>
+      <tr><td>Kling 2.0 Master</td><td data-sort="2024.0">2024</td><td class="cost" data-sort="2.80">$2.80</td><td class="num" data-sort="0.28">0.28</td><td class="no">—</td><td class="yes">✓ / ✓</td><td>Pricey legacy flagship</td></tr>
+      <tr><td>Seedance 2.0 <span class="pill">hidden</span></td><td data-sort="2026.0">2026</td><td class="cost" data-sort="3.03">$3.03</td><td class="num" data-sort="0.3034">0.3034</td><td class="yes">✓ end</td><td>✗ / ✗</td><td>720p; <b>$6.82 @ 1080p</b> + ~$0.014 / 1k tok</td></tr>
     </tbody>
   </table>
 
   <!-- ───────────── EXPAND ───────────── -->
   <h2>↔️ Expand / Outpaint <span class="tag">Step 2.5 · priced per image / megapixel</span></h2>
-  <table>
-    <thead><tr><th>Provider</th><th>Endpoint</th><th>Cost</th><th>Notes</th></tr></thead>
+  <table class="sortable">
+    <thead><tr>
+      <th>Provider<span class="arrow"></span></th>
+      <th>Release<span class="arrow"></span></th>
+      <th data-type="num">Cost<span class="arrow"></span></th>
+      <th>Endpoint<span class="arrow"></span></th>
+      <th>Notes<span class="arrow"></span></th>
+    </tr></thead>
     <tbody>
-      <tr><td>fal outpaint</td><td class="muted"><code>fal-ai/image-apps-v2/outpaint</code></td><td class="cost">~$0.035 / MP</td><td>~$0.035 for a 1&nbsp;MP result; scales with output megapixels</td></tr>
-      <tr><td>BFL Flux Expand</td><td class="muted"><code>flux-pro-1.0-expand</code></td><td class="cost">$0.05 / img</td><td>Flat per op; used when a BFL key is set (allows larger expands)</td></tr>
+      <tr><td>fal outpaint</td><td data-sort="2025.0">2025</td><td class="cost" data-sort="0.035">~$0.035 / MP</td><td class="muted"><code>fal-ai/image-apps-v2/outpaint</code></td><td>~$0.035 for a 1 MP result; scales with output megapixels</td></tr>
+      <tr><td>BFL Flux Expand</td><td data-sort="2024.0">2024</td><td class="cost" data-sort="0.05">$0.05 / img</td><td class="muted"><code>flux-pro-1.0-expand</code></td><td>Flat per op; used when a BFL key is set</td></tr>
     </tbody>
   </table>
 
   <div class="note">
     <b>Audio-on premium (informational — not used by this app):</b> the audio-native tiers cost ~2× with audio enabled — Kling&nbsp;2.6&nbsp;Pro $1.40/10s, V3&nbsp;Standard $1.26, V3&nbsp;Pro $1.68. The app keeps audio off, so you always pay the lower rate above.
   </div>
-
   <div class="note">
     <b>Cheapest full pipeline (per case):</b> Nano Banana / Kontext selfie&nbsp;<b>$0.08</b> + outpaint&nbsp;<b>~$0.035</b> + Kling 2.5 Turbo Standard video&nbsp;<b>$0.42</b> ≈ <b>$0.54</b>. rPPG, Loop, Crush and Oldcam are local ffmpeg/GPU steps — <b>no API cost.</b>
   </div>
+  <p class="hint">Release years are approximate for the image / expand models (provider pages don't always state a date).</p>
 
   <footer>Prices subject to change by the providers · regenerate this report after a pricing audit · Ultimate-Selfie-Gen</footer>
 </div>
+
+<script>
+(function () {
+  // Lightweight click-to-sort for every <table class="sortable">.
+  // Sort key: a cell's data-sort attribute when present, else its text.
+  // Columns whose header carries data-type="num" sort numerically.
+  function cellKey(row, idx, numeric) {
+    var cell = row.children[idx];
+    if (!cell) return numeric ? 0 : "";
+    var raw = cell.getAttribute("data-sort");
+    if (raw === null) raw = cell.textContent.trim();
+    if (numeric) {
+      var n = parseFloat(String(raw).replace(/[^0-9.\-]/g, ""));
+      return isNaN(n) ? -Infinity : n;
+    }
+    return String(raw).toLowerCase();
+  }
+  document.querySelectorAll("table.sortable").forEach(function (table) {
+    var headers = table.tHead.rows[0].cells;
+    Array.prototype.forEach.call(headers, function (th, idx) {
+      var numeric = th.getAttribute("data-type") === "num";
+      th.addEventListener("click", function () {
+        var asc = !th.classList.contains("sorted-asc");
+        Array.prototype.forEach.call(headers, function (h) {
+          h.classList.remove("sorted-asc", "sorted-desc");
+        });
+        th.classList.add(asc ? "sorted-asc" : "sorted-desc");
+        var tbody = table.tBodies[0];
+        var rows = Array.prototype.slice.call(tbody.rows);
+        rows.sort(function (a, b) {
+          var ka = cellKey(a, idx, numeric), kb = cellKey(b, idx, numeric);
+          if (ka < kb) return asc ? -1 : 1;
+          if (ka > kb) return asc ? 1 : -1;
+          return 0;
+        });
+        rows.forEach(function (r) { tbody.appendChild(r); });
+      });
+    });
+  });
+})();
+</script>
 </body>
 </html>
