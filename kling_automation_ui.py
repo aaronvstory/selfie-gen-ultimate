@@ -1911,7 +1911,8 @@ class KlingAutomationUI:
     _MODEL_PRESETS = [
         ("Kling 2.5 Turbo Standard", "fal-ai/kling-video/v2.5-turbo/standard/image-to-video", 10),
         ("Kling 2.5 Turbo Pro", "fal-ai/kling-video/v2.5-turbo/pro/image-to-video", 10),
-        ("Kling 2.1 Professional", "fal-ai/kling-video/v2.1/pro/image-to-video", 10),
+        ("Kling 2.1 Standard", "fal-ai/kling-video/v2.1/standard/image-to-video", 10),
+        ("Kling 2.1 Pro", "fal-ai/kling-video/v2.1/pro/image-to-video", 10),
         ("Wan 2.5", "fal-ai/wan-25-preview/image-to-video", 5),
         ("Veo 3", "fal-ai/veo3/image-to-video", 8),
         ("Ovi", "fal-ai/ovi/image-to-video", 5),
