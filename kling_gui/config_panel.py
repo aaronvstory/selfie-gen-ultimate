@@ -828,6 +828,29 @@ class ConfigPanel(tk.Frame):
             fg=COLORS["text_light"],
             font=(FONT_FAMILY, 10),
         ).pack(side=tk.LEFT)
+        self.crush_info_icon = tk.Label(
+            _crush_label_row,
+            text="ⓘ",
+            font=(FONT_FAMILY, 11),
+            cursor="question_arrow",
+            bg=_crush_bg,
+            fg=COLORS["text_dim"],
+        )
+        self.crush_info_icon.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(
+            self.crush_info_icon,
+            lambda: (
+                "Quality-crush re-encode.\n"
+                "──────────────────────────────\n"
+                "Re-compresses the video hard (low bitrate, 480p or\n"
+                "720p) to mimic the quality loss of a WhatsApp / social\n"
+                "upload-and-redownload. That destruction can strip the\n"
+                "clean spatial fingerprint AI renders carry.\n\n"
+                "Tick one or both tiers — each ticked tier produces its\n"
+                "own crushed file. 720p = lighter, 480p = harsher.\n"
+                "Needs FFmpeg; skips gracefully if it's missing."
+            ),
+        )
         tk.Label(
             _crush_label_row,
             text="  WhatsApp-style 480p/720p quality-crush re-encode",
@@ -967,13 +990,40 @@ class ConfigPanel(tk.Frame):
         # (queue_manager.rerun_oldcam_only handles the full Phase E ordering).
         _shared_rerun_col = tk.Frame(_aa_col, bg=COLORS["bg_input"])
         _shared_rerun_col.pack(anchor="w", pady=(6, 0))
+        _rerun_label_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
+        _rerun_label_row.pack(anchor="w")
         tk.Label(
-            _shared_rerun_col,
+            _rerun_label_row,
             text="Re-Run:",
             font=(FONT_FAMILY, 10),
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
-        ).pack(anchor="w")
+        ).pack(side=tk.LEFT)
+        self.rerun_info_icon = tk.Label(
+            _rerun_label_row,
+            text="ⓘ",
+            font=(FONT_FAMILY, 11),
+            cursor="question_arrow",
+            bg=COLORS["bg_input"],
+            fg=COLORS["text_dim"],
+        )
+        self.rerun_info_icon.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(
+            self.rerun_info_icon,
+            lambda: (
+                "Re-run post-processing — no new Kling generation.\n"
+                "──────────────────────────────\n"
+                "Both buttons re-apply WHATEVER is ticked above (rPPG /\n"
+                "Loop / Crush / AA / Oldcam), in pipeline order, to an\n"
+                "EXISTING video — so you can try different post-processing\n"
+                "combos without paying to re-generate from Kling.\n\n"
+                "↻ Active — runs on the video currently shown in the\n"
+                "    carousel (or the latest completed one).\n"
+                "📂 File… — opens a picker so you can run on ANY video\n"
+                "    file on disk, even one not made by this app.\n\n"
+                "Respects Allow reprocessing / Increment."
+            ),
+        )
         _shared_rerun_btn_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
         _shared_rerun_btn_row.pack(anchor="w", pady=(2, 0))
         # Two distinct re-run buttons (labelled so the difference is obvious
@@ -2852,6 +2902,8 @@ class ConfigPanel(tk.Frame):
             "aa_attack_vars",
             "aa_attack_checks",
             "aa_info_icon",
+            "crush_info_icon",
+            "rerun_info_icon",
             "reprocess_var",
             "reprocess_mode_var",
             "verbose_gui_var",

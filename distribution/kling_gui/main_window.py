@@ -4104,20 +4104,20 @@ class KlingGUIWindow:
             font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=dnd_color,
         ).pack(side=tk.LEFT)
 
-        # Button linking to the offline model-pricing report
-        # (docs/model-pricing.html). Uses the standard create_action_button +
-        # TTK_BTN_PRIMARY style so it matches the app's button language (like
-        # the right-side controls) while staying prominent — no custom raw-Tk
-        # styling. Sits right of the API-key badges + DnD status.
+        # Right side: Control buttons (flat styling, always visible via side=BOTTOM)
+        # Model-pricing report link (docs/model-pricing.html). Grouped with the
+        # right-side action buttons (NOT left-aligned with the API-key badges)
+        # and given the dark SECONDARY style — the readable dark-bg/light-text
+        # treatment (the old white-on-accent_blue PRIMARY was low-contrast). The
+        # 💲 glyph keeps it scannable; packed first (rightmost-but-one of the
+        # info controls) so it reads as a reference link, not a queue action.
         self.pricing_btn = create_action_button(
             control_frame,
             text="💲 Model Pricing",
             command=self._dbcmd("model_pricing", self._open_model_pricing),
-            style=TTK_BTN_PRIMARY,
+            style=TTK_BTN_SECONDARY,
         )
-        self.pricing_btn.pack(side=tk.LEFT, padx=(16, 0))
-
-        # Right side: Control buttons (flat styling, always visible via side=BOTTOM)
+        self.pricing_btn.pack(side=tk.RIGHT, padx=4)
         self.close_btn = create_action_button(
             control_frame,
             text="Close",
