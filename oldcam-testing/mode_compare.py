@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import html as _html
 import shutil
 import subprocess
 import sys
@@ -134,8 +135,8 @@ def _video_dims(path: Path) -> Optional[tuple]:
 
 def _human_size(nbytes: int) -> str:
     f = float(nbytes)
-    for unit in ("B", "KB", "MB", "GB"):
-        if f < 1024 or unit == "GB":
+    for unit in ("B", "KB", "MB"):
+        if f < 1024:
             return f"{f:.0f} {unit}" if unit == "B" else f"{f:.1f} {unit}"
         f /= 1024
     return f"{f:.1f} GB"
@@ -155,28 +156,39 @@ def _file_meta(path: Path) -> str:
 
 def _midpoint_frame_b64(path: Path, target_size: Optional[tuple] = None) -> Optional[str]:
     """Extract the mid-point frame. When target_size=(W,H) is given, scale the
-    frame to those exact dims with NEAREST-neighbour so a lower-res variant
-    (e.g. 480p crush) is upscaled to the original's size WITHOUT smoothing —
-    every frame ends up the same pixel dimensions, so the slider/lightbox
-    overlay is a true 1:1 spatial comparison and the crush's blockiness shows
-    honestly instead of being hidden by a size mismatch or smooth interpolation.
+    frame to those exact dims so every variant ends up the same pixel
+    dimensions and the slider/lightbox overlay is a true 1:1 spatial
+    comparison. Uses the DEFAULT (bicubic) scaler — i.e. how a video player
+    actually upscales a lower-res clip (e.g. 480p crush) — so the frame looks
+    the way it really would on screen (soft/low-detail), not artificially
+    blocky. We compare the videos as they ARE, not a synthetic pixel grid.
     """
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, errors="replace", timeout=30)
         t = max(0.1, float(r.stdout.strip()) / 2.0)
     except Exception:
         t = 1.0
     png = path.with_name(path.stem + "_mid.png")
+    # Delete any prior frame FIRST so a failed/timed-out ffmpeg can't silently
+    # reuse a stale frame from an earlier run (CodeRabbit). Only accept the
+    # output when ffmpeg actually returns 0 and writes the file.
+    try:
+        png.unlink(missing_ok=True)
+    except OSError:
+        pass
     cmd = ["ffmpeg", "-y", "-ss", f"{t:.3f}", "-i", str(path), "-frames:v", "1"]
     if target_size:
         w, h = target_size
-        cmd += ["-vf", f"scale={w}:{h}:flags=neighbor"]
+        cmd += ["-vf", f"scale={w}:{h}"]  # default (bicubic) — true on-screen look
     cmd += ["-q:v", "2", str(png)]
-    subprocess.run(cmd, capture_output=True, timeout=60)
-    if not png.exists():
+    try:
+        cp = subprocess.run(cmd, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return None
+    if cp.returncode != 0 or not png.exists():
         return None
     return base64.b64encode(png.read_bytes()).decode("ascii")
 
@@ -187,6 +199,9 @@ def build_html(source: Path, results: List[dict], out_dir: Path) -> Path:
     # variant (480p/720p crush) is upscaled to the original's size and overlays
     # 1:1 — a real pixel-for-pixel comparison, not a size mismatch.
     target = _video_dims(source)
+    # Aspect ratio from the actual source (fall back to 3/4) so the viewers
+    # match the clip and don't crop/letterbox a non-3:4 video (CodeRabbit).
+    ar = f"{target[0]}/{target[1]}" if target else "3/4"
     frames = {}
     for r in results:
         if r["path"] and Path(r["path"]).exists():
@@ -196,6 +211,7 @@ def build_html(source: Path, results: List[dict], out_dir: Path) -> Path:
     orig = next((r for r in results if r["label"] == "original"), None)
     orig_b64 = frames.get("original", "")
     orig_meta = _file_meta(Path(orig["path"])) if orig and orig.get("path") else "original"
+    orig_meta_e = _html.escape(orig_meta, quote=True)
 
     cards = []
     for r in results:
@@ -209,22 +225,26 @@ def build_html(source: Path, results: List[dict], out_dir: Path) -> Path:
                      f"({'+' if dc >= 0 else ''}{dc:.2f}) · {m['verdict']}")
         if r.get("seconds") is not None:
             delta += f" · ⏱ {r['seconds']:.0f}s"
-        var_meta = _file_meta(Path(r["path"]))
+        # Escape everything filename-derived before it goes into HTML
+        # attributes/text — a quote or < in a clip name would otherwise break
+        # the data-* attrs or inject markup (CodeRabbit).
+        disp = _html.escape(str(r["display"]), quote=True)
+        var_meta_e = _html.escape(_file_meta(Path(r["path"])), quote=True)
         cards.append(f"""
     <div class="card">
-      <h2>Kling original <span class="vs">vs</span> {r['display']}
-        <button class="zoom-btn" data-label="{r['display']}"
+      <h2>Kling original <span class="vs">vs</span> {disp}
+        <button class="zoom-btn" data-label="{disp}"
           data-after="data:image/png;base64,{frames[r['label']]}"
           data-before="data:image/png;base64,{orig_b64}"
-          data-ameta="{orig_meta}" data-bmeta="{var_meta}">⛶ zoom</button></h2>
-      <div class="slider" style="--split:50%">
+          data-ameta="{orig_meta_e}" data-bmeta="{var_meta_e}">⛶ zoom</button></h2>
+      <div class="slider" style="--ar:{ar};--split:50%">
         <img class="after" src="data:image/png;base64,{frames[r['label']]}">
         <img class="before" src="data:image/png;base64,{orig_b64}">
         <div class="handle"></div>
-        <span class="lbl lbl-l">original</span><span class="lbl lbl-r">{r['display']}</span>
+        <span class="lbl lbl-l">original</span><span class="lbl lbl-r">{disp}</span>
       </div>
       <p class="delta">{delta}</p>
-      <p class="meta"><span class="meta-o">◀ {orig_meta}</span><span class="meta-v">{var_meta} ▶</span></p>
+      <p class="meta"><span class="meta-o">◀ {orig_meta_e}</span><span class="meta-v">{var_meta_e} ▶</span></p>
     </div>""")
 
     def trow(r):
@@ -248,13 +268,15 @@ h1{{font-size:22px;margin:0 0 4px}}.sub{{color:var(--dim);margin:0 0 24px;font-s
 .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:22px}}
 .card{{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px}}
 .card h2{{font-size:15px;margin:0 0 12px;font-weight:600}}.vs{{color:var(--accent);font-weight:700;padding:0 4px}}
-.slider{{position:relative;width:100%;aspect-ratio:3/4;overflow:hidden;border-radius:8px;
+.slider{{position:relative;width:100%;aspect-ratio:var(--ar,3/4);overflow:hidden;border-radius:8px;
 user-select:none;cursor:ew-resize;background:#000}}
 /* Both images are IDENTICAL full-size overlays of the slider — same width,
    height, object-fit, position — so they line up pixel-for-pixel. The
    "before" (original) is clipped to the left of the --split line via
-   clip-path; nothing is rescaled, so dragging is a true wipe comparison. */
-.slider img{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none}}
+   clip-path; nothing is rescaled, so dragging is a true wipe comparison.
+   object-fit:contain (not cover) + matching aspect-ratio means no edge pixels
+   are cropped, so the comparison covers the whole frame. */
+.slider img{{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}}
 .slider .before{{clip-path:inset(0 calc(100% - var(--split)) 0 0);
 border-right:2px solid var(--accent)}}
 .handle{{position:absolute;top:0;left:var(--split);width:2px;height:100%;background:var(--accent);transform:translateX(-1px);pointer-events:none}}
@@ -284,15 +306,22 @@ background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:7px 
    .zoomwrap holds both full images and is scaled+panned together via
    transform, so the WIPE (clip-path on .before) and the ZOOM/PAN stay in
    sync — you can drag the divider AND be zoomed in at the same time. */
-#lb .lbslider{{position:relative;height:82vh;aspect-ratio:3/4;overflow:hidden;border-radius:8px;
+#lb .lbslider{{position:relative;height:82vh;aspect-ratio:var(--ar,3/4);overflow:hidden;border-radius:8px;
 user-select:none;cursor:ew-resize;background:#000;--split:50%}}
+/* Two stacked LAYERS, each clipped in the slider's FIXED viewport space. The
+   "before" layer is clipped to the left of --split (a viewport %) so the wipe
+   is always correct REGARDLESS of zoom. Inside each layer a .zoomwrap holds
+   the image and gets the SAME transform, so both images pan/zoom together. */
+#lb .layer{{position:absolute;inset:0;overflow:hidden}}
+#lb .layer.before{{clip-path:inset(0 calc(100% - var(--split)) 0 0);border-right:2px solid var(--accent)}}
 #lb .zoomwrap{{position:absolute;inset:0;transform-origin:0 0;
 transform:translate(var(--px,0px),var(--py,0px)) scale(var(--zoom,1))}}
 #lb .zoomwrap img{{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}}
-#lb .zoomwrap img[image-rendering]{{image-rendering:pixelated}}
-#lb .zoomwrap .before{{clip-path:inset(0 calc(100% - var(--split)) 0 0);border-right:2px solid var(--accent)}}
 #lb .lbslider .h{{position:absolute;top:0;left:var(--split);width:2px;height:100%;
 background:var(--accent);transform:translateX(-1px);pointer-events:none;z-index:2}}
+#lb .lbslider .h::after{{content:'⇄';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+background:var(--accent);color:#000;font-size:14px;width:30px;height:30px;border-radius:50%;
+display:flex;align-items:center;justify-content:center}}
 #lb .lbl{{z-index:2}}
 #lb .footer{{position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;
 gap:26px;color:var(--dim);font:12px/1.3 ui-monospace,monospace}}
@@ -318,19 +347,17 @@ Per resemble-score/FORENSICS.md.</p>
     <span id="lb-title"></span>
     <button id="lb-zoomout">−</button><span id="lb-zlvl">100%</span><button id="lb-zoomin">+</button>
     <button id="lb-reset">Fit</button>
-    <button id="lb-px">Pixelated</button>
   </div>
   <button class="close" id="lb-close">✕</button>
   <div class="stage">
-    <div class="lbslider" id="lbsl" style="--split:50%">
-      <div class="zoomwrap" id="lbzw">
-        <img class="after" id="lb-after"><img class="before" id="lb-before">
-      </div>
+    <div class="lbslider" id="lbsl" style="--ar:{ar};--split:50%">
+      <div class="layer after"><div class="zoomwrap"><img id="lb-after"></div></div>
+      <div class="layer before"><div class="zoomwrap"><img id="lb-before"></div></div>
       <div class="h"></div>
       <span class="lbl lbl-l">original</span><span class="lbl lbl-r" id="lb-rlbl"></span>
     </div>
   </div>
-  <div class="zhint">drag = wipe · scroll or +/− = zoom · drag while zoomed = pan · Fit resets</div>
+  <div class="zhint">grab the ⇄ divider = wipe · drag elsewhere = pan (when zoomed) · scroll / +− = zoom · Fit resets</div>
   <div class="footer">
     <span><b>◀ original</b> · <span id="lb-ameta"></span></span>
     <span><span id="lb-bmeta"></span> · <b id="lb-bname">mode ▶</b></span>
@@ -352,12 +379,14 @@ document.querySelectorAll('.slider').forEach(function(s){{
 // Lightbox: ONE zoomable slider. Wipe (clip-path --split) + zoom/pan
 // (transform on .zoomwrap) stay in sync, so you can be zoomed in AND wipe.
 var lb=document.getElementById('lb'),lbsl=document.getElementById('lbsl'),
- zw=document.getElementById('lbzw'),zlvl=document.getElementById('lb-zlvl'),
- bPx=document.getElementById('lb-px');
-var zoom=1, px=0, py=0, pixelated=false;
+ zlvl=document.getElementById('lb-zlvl');
+var zoom=1, px=0, py=0;
 function applyZoom(){{
- zw.style.setProperty('--zoom',zoom); zw.style.setProperty('--px',px+'px');
- zw.style.setProperty('--py',py+'px'); zlvl.textContent=Math.round(zoom*100)+'%';
+ // Set the transform vars on the SLIDER; both .zoomwrap layers inherit them,
+ // so the after + before images pan/zoom identically while the before stays
+ // clipped in viewport space (correct wipe at any zoom).
+ lbsl.style.setProperty('--zoom',zoom); lbsl.style.setProperty('--px',px+'px');
+ lbsl.style.setProperty('--py',py+'px'); zlvl.textContent=Math.round(zoom*100)+'%';
  lbsl.style.cursor = zoom>1 ? 'move' : 'ew-resize';
 }}
 function resetZoom(){{zoom=1;px=0;py=0;applyZoom();}}
@@ -387,23 +416,28 @@ document.querySelectorAll('.zoom-btn').forEach(function(btn){{
 document.getElementById('lb-zoomin').onclick=function(){{var r=lbsl.getBoundingClientRect();setZoom(zoom*1.4,r.left+r.width/2,r.top+r.height/2);}};
 document.getElementById('lb-zoomout').onclick=function(){{var r=lbsl.getBoundingClientRect();setZoom(zoom/1.4,r.left+r.width/2,r.top+r.height/2);}};
 document.getElementById('lb-reset').onclick=resetZoom;
-bPx.onclick=function(){{pixelated=!pixelated;bPx.classList.toggle('on',pixelated);
- zw.querySelectorAll('img').forEach(function(im){{im.style.imageRendering=pixelated?'pixelated':'auto';}});}};
 // scroll to zoom toward cursor
 lbsl.addEventListener('wheel',function(e){{e.preventDefault();
  setZoom(zoom*(e.deltaY<0?1.2:1/1.2),e.clientX,e.clientY);}},{{passive:false}});
-// drag: pan when zoomed, wipe when not
-(function(){{var d=false,sx=0,sy=0,spx=0,spy=0,moved=false;
+// Drag routing so you can do BOTH at any zoom:
+//   • grab ON/near the divider line  -> WIPE (move the split)
+//   • drag anywhere else             -> PAN (when zoomed) / WIPE (when 1x)
+// A ~22px grab band around the divider makes it easy to catch.
+(function(){{var mode=null,sx=0,sy=0,spx=0,spy=0;
  function wipe(x){{var r=lbsl.getBoundingClientRect();var p=Math.max(0,Math.min(1,(x-r.left)/r.width));
   lbsl.style.setProperty('--split',(p*100)+'%');}}
- lbsl.addEventListener('mousedown',function(e){{d=true;moved=false;sx=e.clientX;sy=e.clientY;spx=px;spy=py;
-  if(zoom<=1)wipe(e.clientX);}});
- window.addEventListener('mousemove',function(e){{if(!d)return;
-  if(zoom>1){{px=spx+(e.clientX-sx);py=spy+(e.clientY-sy);
+ function splitX(){{var r=lbsl.getBoundingClientRect();
+  return r.left + r.width * (parseFloat(lbsl.style.getPropertyValue('--split'))||50)/100;}}
+ lbsl.addEventListener('mousedown',function(e){{sx=e.clientX;sy=e.clientY;spx=px;spy=py;
+  var nearDivider = Math.abs(e.clientX - splitX()) <= 22;
+  if(nearDivider || zoom<=1){{mode='wipe';wipe(e.clientX);}} else {{mode='pan';}}
+  e.preventDefault();}});
+ window.addEventListener('mousemove',function(e){{if(!mode)return;
+  if(mode==='pan'){{px=spx+(e.clientX-sx);py=spy+(e.clientY-sy);
    var r=lbsl.getBoundingClientRect();
    px=Math.max(r.width-r.width*zoom,Math.min(0,px));py=Math.max(r.height-r.height*zoom,Math.min(0,py));
    applyZoom();}} else {{wipe(e.clientX);}} }});
- window.addEventListener('mouseup',function(){{d=false;}});}})();
+ window.addEventListener('mouseup',function(){{mode=null;}});}})();
 function lbClose(){{lb.classList.remove('open');}}
 document.getElementById('lb-close').onclick=lbClose;
 lb.addEventListener('click',function(e){{if(e.target===lb)lbClose();}});
