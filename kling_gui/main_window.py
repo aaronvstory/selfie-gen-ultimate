@@ -4104,6 +4104,22 @@ class KlingGUIWindow:
             font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=dnd_color,
         ).pack(side=tk.LEFT)
 
+        # Clickable link to the offline model-pricing report (docs/model-pricing.html).
+        # Sits in the open space to the right of the API-key badges + DnD status.
+        pricing_link = tk.Label(
+            control_frame,
+            text="💲 Model Pricing",
+            font=(FONT_FAMILY, 9, "underline"),
+            bg=COLORS["bg_main"],
+            fg=COLORS["accent_blue"],
+            cursor="hand2",
+        )
+        pricing_link.pack(side=tk.LEFT, padx=(16, 0))
+        pricing_link.bind("<Button-1>", lambda _e: self._open_model_pricing())
+        # Subtle hover affordance: brighten on enter, restore on leave.
+        pricing_link.bind("<Enter>", lambda _e: pricing_link.config(fg=COLORS["text_light"]))
+        pricing_link.bind("<Leave>", lambda _e: pricing_link.config(fg=COLORS["accent_blue"]))
+
         # Right side: Control buttons (flat styling, always visible via side=BOTTOM)
         self.close_btn = create_action_button(
             control_frame,
@@ -4801,6 +4817,30 @@ class KlingGUIWindow:
                 f"Re-run failed for {os.path.basename(source_video)}: {error or 'unknown error'}",
                 "error",
             )
+
+    def _open_model_pricing(self):
+        """Open the offline model-pricing report in the default browser.
+
+        Resolves docs/model-pricing.html from the bundled resource dir (frozen
+        build) and the app dir (running from source / the dist zip), opening
+        the first that exists. Logs a friendly note if it's missing.
+        """
+        from path_utils import get_resource_dir, get_app_dir
+
+        seen = set()
+        for base in (get_resource_dir(), get_app_dir()):
+            if not base or base in seen:
+                continue
+            seen.add(base)
+            candidate = os.path.join(base, "docs", "model-pricing.html")
+            if os.path.exists(candidate):
+                self._open_path_in_explorer(candidate)
+                self._log("Opened model-pricing report.", "info")
+                return
+        self._log(
+            "Model pricing report not found (docs/model-pricing.html).",
+            "warning",
+        )
 
     def _open_path_in_explorer(self, path: str):
         """Open a file or folder in the system's native file explorer.
