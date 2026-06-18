@@ -830,7 +830,7 @@ class ConfigPanel(tk.Frame):
         ).pack(side=tk.LEFT)
         tk.Label(
             _crush_label_row,
-            text="  Quality-crush re-encode · runs after Loop · fans out like Oldcam",
+            text="  Quality-crush re-encode · runs after Loop",
             bg=_crush_bg,
             fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 8),
@@ -918,7 +918,7 @@ class ConfigPanel(tk.Frame):
         )
         tk.Label(
             self.aa_controls_frame,
-            text="adversarial pass · fans out like Oldcam",
+            text="detector-evasion pass · runs after Crush",
             bg=_aa_bg,
             fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 8),
