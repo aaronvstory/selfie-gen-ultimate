@@ -41,21 +41,24 @@
       "label": "GPT Image 2 Edit",
       "slug": "gpt-image-2-edit",
       "provider": "fal",
-      "api_url": "https://fal.ai/models/openai/gpt-image-2/edit/api"
+      "api_url": "https://fal.ai/models/openai/gpt-image-2/edit/api",
+      "price_note": "~$0.22/img"
     },
     {
       "endpoint": "fal-ai/nano-banana-2/edit",
       "label": "Nano Banana 2 Edit",
       "slug": "nano-banana-2-edit",
       "provider": "fal",
-      "api_url": "https://fal.ai/models/fal-ai/nano-banana-2/edit/api"
+      "api_url": "https://fal.ai/models/fal-ai/nano-banana-2/edit/api",
+      "price_note": "$0.08/img"
     },
     {
       "endpoint": "fal-ai/flux-pro/kontext/max",
       "label": "Flux Pro Kontext Max",
       "slug": "kontext-max",
       "provider": "fal",
-      "api_url": "https://fal.ai/models/fal-ai/flux-pro/kontext/max/api"
+      "api_url": "https://fal.ai/models/fal-ai/flux-pro/kontext/max/api",
+      "price_note": "$0.08/img"
     }
   ]
 }

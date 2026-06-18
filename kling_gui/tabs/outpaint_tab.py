@@ -85,6 +85,21 @@ class OutpaintTab(tk.Frame):
             font=(FONT_FAMILY, 9),
         ).pack(side=tk.LEFT, padx=(15, 0))
 
+        # Expand cost — shown clearly so the user knows the per-image charge
+        # before running (2026-06-18). The generator uses BFL Flux Expand when
+        # a BFL key is set (allows larger expands) and falls back to the fal
+        # outpaint endpoint otherwise; surface both rates.
+        tk.Label(
+            mode_frame,
+            text="\U0001F4B2  Cost: ~$0.035 / megapixel (fal outpaint)  ·  "
+                 "$0.05 / image (BFL Flux Expand, used when a BFL key is set)",
+            font=(FONT_FAMILY, 8),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+            anchor="w",
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=5, pady=(0, 4))
+
         # ── Percentage Controls ─────────────────────────────────────────
         self._pct_frame = tk.Frame(self, bg=COLORS["bg_panel"])
 
