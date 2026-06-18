@@ -4104,6 +4104,19 @@ class KlingGUIWindow:
             font=(FONT_FAMILY, 9), bg=COLORS["bg_main"], fg=dnd_color,
         ).pack(side=tk.LEFT)
 
+        # Button linking to the offline model-pricing report
+        # (docs/model-pricing.html). Uses the standard create_action_button +
+        # TTK_BTN_PRIMARY style so it matches the app's button language (like
+        # the right-side controls) while staying prominent — no custom raw-Tk
+        # styling. Sits right of the API-key badges + DnD status.
+        self.pricing_btn = create_action_button(
+            control_frame,
+            text="💲 Model Pricing",
+            command=self._dbcmd("model_pricing", self._open_model_pricing),
+            style=TTK_BTN_PRIMARY,
+        )
+        self.pricing_btn.pack(side=tk.LEFT, padx=(16, 0))
+
         # Right side: Control buttons (flat styling, always visible via side=BOTTOM)
         self.close_btn = create_action_button(
             control_frame,
@@ -4693,6 +4706,52 @@ class KlingGUIWindow:
                     stages.append("rPPG")
                 if bool(self.config.get("loop_videos", False)):
                     stages.append("Loop")
+                # Crush (720p/480p re-encode) runs after Loop and before Oldcam
+                # in the Phase E order. It is a valid stand-alone re-run
+                # post-process, so surface the selected tier(s) in the stage
+                # label too — otherwise a Crush-only re-run reads "no-op
+                # (nothing selected)" even though the queue applies it
+                # (2026-06-17; multi-resolution 2026-06-18).
+                # Narrow catch (CodeRabbit): only the import can realistically
+                # fail (e.g. a stripped build) — a normalize error is a real
+                # bug we want surfaced, not swallowed into a misleading label.
+                try:
+                    from automation.video_crush import (
+                        normalize_crush_resolutions,
+                    )
+                except ImportError:
+                    _crush_tiers = []
+                else:
+                    _crush_kwargs = {}
+                    if "crush_resolutions" in self.config:
+                        _crush_kwargs["resolutions"] = self.config["crush_resolutions"]
+                    if "crush_enabled" in self.config:
+                        _crush_kwargs["legacy_enabled"] = self.config["crush_enabled"]
+                    _crush_tiers = normalize_crush_resolutions(**_crush_kwargs)
+                if _crush_tiers:
+                    stages.append("Crush " + "/".join(_crush_tiers))
+                # AA attack-pipelines (Phase E: … → Crush → AA → Oldcam).
+                # Narrow ImportError catch mirrors crush above.
+                try:
+                    from automation.video_aa import normalize_aa_attacks
+                except ImportError:
+                    _aa_attacks_lbl = []
+                else:
+                    _aa_present = (
+                        self.config.get("aa_attacks") is not None
+                        or self.config.get("aa_enabled") is not None
+                    )
+                    if _aa_present:
+                        _aa_kwargs = {}
+                        if "aa_attacks" in self.config:
+                            _aa_kwargs["attacks"] = self.config["aa_attacks"]
+                        if "aa_enabled" in self.config:
+                            _aa_kwargs["legacy_enabled"] = self.config["aa_enabled"]
+                        _aa_attacks_lbl = normalize_aa_attacks(**_aa_kwargs)
+                    else:
+                        _aa_attacks_lbl = []
+                if _aa_attacks_lbl:
+                    stages.append("AA " + "/".join(_aa_attacks_lbl))
                 # CodeRabbit P1 (2026-05-22): distinguish "user
                 # explicitly cleared all Oldcam versions" (empty list)
                 # from "key never set / non-list value" (use the
@@ -4777,6 +4836,30 @@ class KlingGUIWindow:
                 f"Re-run failed for {os.path.basename(source_video)}: {error or 'unknown error'}",
                 "error",
             )
+
+    def _open_model_pricing(self):
+        """Open the offline model-pricing report in the default browser.
+
+        Resolves docs/model-pricing.html from the bundled resource dir (frozen
+        build) and the app dir (running from source / the dist zip), opening
+        the first that exists. Logs a friendly note if it's missing.
+        """
+        from path_utils import get_resource_dir, get_app_dir
+
+        seen = set()
+        for base in (get_resource_dir(), get_app_dir()):
+            if not base or base in seen:
+                continue
+            seen.add(base)
+            candidate = os.path.join(base, "docs", "model-pricing.html")
+            if os.path.exists(candidate):
+                self._open_path_in_explorer(candidate)
+                self._log("Opened model-pricing report.", "info")
+                return
+        self._log(
+            "Model pricing report not found (docs/model-pricing.html).",
+            "warning",
+        )
 
     def _open_path_in_explorer(self, path: str):
         """Open a file or folder in the system's native file explorer.

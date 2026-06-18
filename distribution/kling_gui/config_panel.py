@@ -58,7 +58,10 @@ COLORS = {
     "text_dim": "#B4B4B4",
     "accent_blue": "#6496FF",
     "border": "#5A5A5E",
-    "warning": "#FFB347",
+    # Reconciled with theme.py's single source of truth (#FFA500) — this local
+    # copy had drifted to #FFB347, rendering a visibly different warning color
+    # than the rest of the app (G1).
+    "warning": "#FFA500",
     "success": "#64FF64",
     "error": "#FF6464",
     "text_unsupported": "#666666",
@@ -802,14 +805,164 @@ class ConfigPanel(tk.Frame):
         # Line 3: fanout checkbox on its own line under the inject row.
         self.rppg_per_oldcam_fanout_checkbox.pack(anchor="w", padx=(2, 0))
 
-        # ONE shared Re-Run column, packed into the band (rA) to the
-        # RIGHT of the Oldcam/rPPG stack — applies to whatever is
-        # selected: any Oldcam versions AND/OR rPPG, and re-loops first
-        # when Loop Video is on (queue_manager.rerun_oldcam_only already
-        # handles loop → oldcam → rPPG ordering). Top-anchored so it
-        # aligns with the top of the stack, not its vertical centre.
-        _shared_rerun_col = tk.Frame(rA, bg=COLORS["bg_input"])
-        _shared_rerun_col.pack(side=tk.LEFT, anchor="n", padx=(12, 0))
+        # Quality-crush frame — dark red, stacked under rPPG (Phase E order:
+        # Kling -> rPPG -> Loop -> Crush -> Oldcam). Mimics WhatsApp quality
+        # destruction: 480p re-encode at CRF 35. DEFAULT OFF / opt-in only.
+        _crush_bg = "#3A1F1F"
+        _crush_border = "#7D3A3A"
+        self.crush_controls_frame = tk.Frame(
+            _pp_stack,
+            bg=_crush_bg,
+            highlightthickness=1,
+            highlightbackground=_crush_border,
+            padx=6,
+            pady=2,
+        )
+        self.crush_controls_frame.pack(fill=tk.X, pady=(4, 0))
+        _crush_label_row = tk.Frame(self.crush_controls_frame, bg=_crush_bg)
+        _crush_label_row.pack(anchor="w")
+        tk.Label(
+            _crush_label_row,
+            text="Crush:",
+            bg=_crush_bg,
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 10),
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            _crush_label_row,
+            text="  Quality-crush re-encode · runs after Loop · fans out like Oldcam",
+            bg=_crush_bg,
+            fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 8),
+        ).pack(side=tk.LEFT)
+        # Selectable resolution tiers (2026-06-18) — checkboxes like the
+        # Oldcam version list. 720p is the default (pre-checked on fresh
+        # installs); 480p is the original harsher tier. Choosing both fans
+        # out one crushed file per tier; choosing neither = crush OFF.
+        from automation.video_crush import CRUSH_RESOLUTIONS as _CRUSH_RES
+        _crush_row = tk.Frame(self.crush_controls_frame, bg=_crush_bg)
+        _crush_row.pack(anchor="w", padx=(2, 0))
+        self.crush_resolution_vars = {}
+        self.crush_resolution_checks = {}
+        # Highest-first so 720p reads left-to-right before 480p.
+        for label in sorted(_CRUSH_RES, key=lambda lbl: _CRUSH_RES[lbl], reverse=True):
+            var = tk.BooleanVar(value=False)
+            self.crush_resolution_vars[label] = var
+            check = tk.Checkbutton(
+                _crush_row,
+                text=label,
+                variable=var,
+                bg=_crush_bg,
+                fg=COLORS["text_light"],
+                selectcolor=_crush_bg,
+                activebackground=_crush_bg,
+                activeforeground=COLORS["text_light"],
+                font=(FONT_FAMILY, 9),
+                command=self._on_crush_resolutions_changed,
+            )
+            check.pack(side=tk.LEFT, padx=(0, 10))
+            self.crush_resolution_checks[label] = check
+
+        # AA (adversarial-attack) column — a NEW column in the band (rA) to the
+        # RIGHT of the Oldcam/rPPG/Crush stack. Step 3 is vertically busy, so AA
+        # goes HORIZONTALLY here (user direction 2026-06-18) and the shared
+        # Re-Run buttons move BENEATH this column. Dark-green box (distinct from
+        # oldcam purple / rPPG brown / crush red). Three attack-pipeline
+        # checkboxes fan out like the crush tiers; Prime is the default ON.
+        _aa_col = tk.Frame(rA, bg=COLORS["bg_input"])
+        _aa_col.pack(side=tk.LEFT, anchor="n", padx=(12, 0))
+        _aa_bg = "#1F3A1F"
+        _aa_border = "#3A7D3A"
+        self.aa_controls_frame = tk.Frame(
+            _aa_col,
+            bg=_aa_bg,
+            highlightthickness=1,
+            highlightbackground=_aa_border,
+            padx=6,
+            pady=2,
+        )
+        self.aa_controls_frame.pack(fill=tk.X)
+        _aa_label_row = tk.Frame(self.aa_controls_frame, bg=_aa_bg)
+        _aa_label_row.pack(anchor="w")
+        tk.Label(
+            _aa_label_row,
+            text="AA:",
+            bg=_aa_bg,
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 10),
+        ).pack(side=tk.LEFT)
+        self.aa_info_icon = tk.Label(
+            _aa_label_row,
+            text="ⓘ",
+            font=(FONT_FAMILY, 11),
+            cursor="question_arrow",
+            bg=_aa_bg,
+            fg=COLORS["text_dim"],
+        )
+        self.aa_info_icon.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(
+            self.aa_info_icon,
+            lambda: (
+                "Adversarial-attack re-encode (detector evasion).\n"
+                "Phase E: … → Crush → AA → Oldcam. Each ticked\n"
+                "pipeline produces its own output that then fans\n"
+                "through Oldcam (like the crush tiers):\n"
+                "  • Prime — pixel+temporal+trace+recompress\n"
+                "    (generic AI-vs-real classifiers)\n"
+                "  • Scenario1 — replay/pre-recorded evasion\n"
+                "  • Scenario3 — smoothing/puppeteering evasion\n"
+                "Runs in an ISOLATED venv (auto-provisioned on\n"
+                "first use). Authorized detector-research only.\n"
+                "Off by default; graceful-skip if unavailable."
+            ),
+        )
+        tk.Label(
+            self.aa_controls_frame,
+            text="adversarial pass · fans out like Oldcam",
+            bg=_aa_bg,
+            fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 8),
+        ).pack(anchor="w")
+        # Attack-pipeline checkboxes (fan-out). Order = prime, scenario1,
+        # scenario3 (matching AA_PIPELINES display order). Prime pre-checked is
+        # applied in apply_config from the saved aa_attacks; constructed unchecked.
+        from automation.video_aa import AA_PIPELINES as _AA_PIPES
+        _aa_labels = {
+            "prime": "Prime",
+            "scenario1": "Scenario1",
+            "scenario3": "Scenario3",
+        }
+        _aa_row = tk.Frame(self.aa_controls_frame, bg=_aa_bg)
+        _aa_row.pack(anchor="w", padx=(2, 0))
+        self.aa_attack_vars = {}
+        self.aa_attack_checks = {}
+        for _key in ("prime", "scenario1", "scenario3"):
+            if _key not in _AA_PIPES:
+                continue
+            var = tk.BooleanVar(value=False)
+            self.aa_attack_vars[_key] = var
+            check = tk.Checkbutton(
+                _aa_row,
+                text=_aa_labels.get(_key, _key),
+                variable=var,
+                bg=_aa_bg,
+                fg=COLORS["text_light"],
+                selectcolor=_aa_bg,
+                activebackground=_aa_bg,
+                activeforeground=COLORS["text_light"],
+                font=(FONT_FAMILY, 9),
+                command=self._on_aa_attacks_changed,
+            )
+            check.pack(side=tk.LEFT, padx=(0, 8))
+            self.aa_attack_checks[_key] = check
+
+        # ONE shared Re-Run column, now packed BENEATH the AA box (inside
+        # _aa_col) per user direction 2026-06-18 (was a sibling column in rA).
+        # Applies to whatever is selected: any Oldcam versions AND/OR rPPG /
+        # Crush / AA, and re-loops first when Loop Video is on
+        # (queue_manager.rerun_oldcam_only handles the full Phase E ordering).
+        _shared_rerun_col = tk.Frame(_aa_col, bg=COLORS["bg_input"])
+        _shared_rerun_col.pack(anchor="w", pady=(6, 0))
         tk.Label(
             _shared_rerun_col,
             text="Re-Run:",
@@ -1596,6 +1749,23 @@ class ConfigPanel(tk.Frame):
         self.rppg_per_oldcam_fanout_var.set(
             self.config.get("rppg_per_oldcam_fanout", False)
         )
+        # Quality crush — selectable 720p/480p tiers (2026-06-18). Resolve
+        # the effective list from the canonical key, migrating the legacy
+        # ``crush_enabled`` boolean (True → 480p) and defaulting fresh
+        # installs to 720p ON. Persist the canonical list back so the rest
+        # of the app reads one shape.
+        selected_crush = self._resolve_crush_resolutions_from_config()
+        for label, var in self.crush_resolution_vars.items():
+            var.set(label in selected_crush)
+        self.config["crush_resolutions"] = selected_crush
+        self.config["crush_enabled"] = bool(selected_crush)
+        # AA attack-pipelines (opt-in, default OFF). normalize_aa_attacks returns
+        # [] when neither key is present, so a fresh config leaves all unchecked.
+        selected_aa = self._resolve_aa_attacks_from_config()
+        for key, var in self.aa_attack_vars.items():
+            var.set(key in selected_aa)
+        self.config["aa_attacks"] = selected_aa
+        self.config["aa_enabled"] = bool(selected_aa)
         self._check_ffmpeg_status()
         selected_versions = self._resolve_oldcam_versions_from_config()
         for version, var in self.oldcam_version_vars.items():
@@ -1645,8 +1815,9 @@ class ConfigPanel(tk.Frame):
         self.folder_pattern_var.set(self.config.get("folder_filter_pattern", ""))
         self.folder_match_mode_var.set(self.config.get("folder_match_mode", "partial"))
 
-        # Advanced video settings
-        self.aspect_ratio_var.set(self.config.get("aspect_ratio", "9:16"))
+        # Advanced video settings (3:4 is the canonical portrait default — the
+        # selfie chain generates 864x1152 = 3:4 and this keeps video to match).
+        self.aspect_ratio_var.set(self.config.get("aspect_ratio", "3:4"))
         self.resolution_var.set(self.config.get("resolution", "720p"))
 
         # Seed settings
@@ -1986,6 +2157,87 @@ class ConfigPanel(tk.Frame):
         self.config["rppg_per_oldcam_fanout"] = value
         status = "enabled (slow path)" if value else "disabled"
         self._notify_change(f"rPPG per-Oldcam fan-out {status}")
+
+    def _resolve_crush_resolutions_from_config(self) -> List[str]:
+        """Resolve the effective crush-resolution labels from config.
+
+        Single shape for the rest of the app: canonical ``crush_resolutions``
+        list wins; otherwise the legacy ``crush_enabled`` boolean migrates
+        (True → 480p, the pre-multi behaviour); a brand-new config (neither
+        key set) defaults to 720p ON. Mirrors
+        automation.video_crush.normalize_crush_resolutions exactly.
+        """
+        from automation.video_crush import normalize_crush_resolutions
+
+        kwargs = {}
+        if "crush_resolutions" in self.config:
+            kwargs["resolutions"] = self.config["crush_resolutions"]
+        if "crush_enabled" in self.config:
+            kwargs["legacy_enabled"] = self.config["crush_enabled"]
+        valid = tuple(self.crush_resolution_vars.keys())
+        return [r for r in normalize_crush_resolutions(**kwargs) if r in valid]
+
+    def _resolve_aa_attacks_from_config(self) -> List[str]:
+        """Resolve the effective AA attack-pipeline labels from config.
+
+        AA is opt-in (default OFF): unlike crush, when NEITHER key is present we
+        return [] rather than normalize's bare default. Mirrors the pipeline /
+        queue resolvers.
+        """
+        from automation.video_aa import normalize_aa_attacks
+
+        attacks = self.config.get("aa_attacks")
+        legacy = self.config.get("aa_enabled")
+        if attacks is None and legacy is None:
+            return []
+        kwargs = {}
+        if attacks is not None:
+            kwargs["attacks"] = attacks
+        if legacy is not None:
+            kwargs["legacy_enabled"] = legacy
+        valid = tuple(self.aa_attack_vars.keys())
+        return [a for a in normalize_aa_attacks(**kwargs) if a in valid]
+
+    def _on_crush_resolutions_changed(self) -> None:
+        """Handle a quality-crush resolution checkbox toggle.
+
+        Persists the canonical ``crush_resolutions`` list (highest-first) plus
+        the back-compat ``crush_enabled`` boolean (True iff any tier is on)."""
+        from automation.video_crush import CRUSH_RESOLUTIONS as _CR
+
+        selected = [
+            label
+            for label, var in self.crush_resolution_vars.items()
+            if var.get()
+        ]
+        selected = sorted(selected, key=lambda lbl: _CR[lbl], reverse=True)
+        self.config["crush_resolutions"] = selected
+        self.config["crush_enabled"] = bool(selected)
+        if selected:
+            status = "enabled (" + ", ".join(selected) + ")"
+        else:
+            status = "disabled"
+        self._notify_change(f"Quality crush {status}")
+
+    def _on_aa_attacks_changed(self) -> None:
+        """Handle an AA attack-pipeline checkbox toggle.
+
+        Persists the canonical ``aa_attacks`` list (display order) plus the
+        back-compat ``aa_enabled`` boolean (True iff any pipeline is on)."""
+        from automation.video_aa import normalize_aa_attacks
+
+        selected = [
+            key for key, var in self.aa_attack_vars.items() if var.get()
+        ]
+        # Route through normalize for canonical ordering + dedup.
+        selected = normalize_aa_attacks(attacks=selected)
+        self.config["aa_attacks"] = selected
+        self.config["aa_enabled"] = bool(selected)
+        if selected:
+            status = "enabled (" + ", ".join(selected) + ")"
+        else:
+            status = "disabled"
+        self._notify_change(f"AA adversarial pass {status}")
 
     def _oldcam_version_key(self, version: str) -> int:
         try:
@@ -2576,6 +2828,11 @@ class ConfigPanel(tk.Frame):
             "loop_video_var",
             "oldcam_version_vars",
             "rppg_var",
+            "crush_resolution_vars",
+            "crush_resolution_checks",
+            "aa_attack_vars",
+            "aa_attack_checks",
+            "aa_info_icon",
             "reprocess_var",
             "reprocess_mode_var",
             "verbose_gui_var",
