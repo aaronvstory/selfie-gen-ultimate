@@ -3025,11 +3025,18 @@ class QueueManager:
         try:
             from automation.video_aa import run_aa
             cfg = self.get_config()
+            # Strength/generator have no dedicated GUI widget in v1, so read the
+            # bare GUI key first, then fall back to the automation_-prefixed key
+            # the CLI quick-settings writes — otherwise a value the user set in
+            # the CLI would be silently ignored when AA runs from the GUI
+            # (code-reviewer HIGH). Final fallback: the documented defaults.
+            _strength_raw = cfg.get("aa_strength", cfg.get("automation_aa_strength", 0.5))
             try:
-                strength = max(0.1, min(1.0, float(cfg.get("aa_strength", 0.5))))
+                strength = max(0.1, min(1.0, float(_strength_raw)))
             except (TypeError, ValueError):
                 strength = 0.5
-            generator = str(cfg.get("aa_generator", "generic") or "") or None
+            _generator_raw = cfg.get("aa_generator", cfg.get("automation_aa_generator", "generic"))
+            generator = str(_generator_raw or "") or None
             result = run_aa(
                 video_path,
                 attack=attack,
