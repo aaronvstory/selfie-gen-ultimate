@@ -11,12 +11,99 @@ Oldcam runs on the crushed file so the compression artefact carries through.
 
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from automation.video_loop import (
     check_ffmpeg_available,
     _summarize_ffmpeg_error,
 )
+
+# ---------------------------------------------------------------------------
+# Selectable crush resolutions (2026-06-18). Crush gained a second tier so
+# the user can fan out one or both quality-destroy passes, exactly like the
+# Oldcam version checkboxes. 720p is the default for fresh installs; 480p is
+# the original (harsher) tier. Ordered highest-first so the headline output
+# is the higher-quality variant.
+#
+#   label -> target height (px)
+# ---------------------------------------------------------------------------
+CRUSH_RESOLUTIONS = {
+    "720p": 720,
+    "480p": 480,
+}
+
+# Fresh-install default: 720p ON (per user direction 2026-06-18).
+DEFAULT_CRUSH_RESOLUTIONS: List[str] = ["720p"]
+
+# Distinct stem suffix per resolution so the two crushed files never collide
+# (e.g. clip_crush720.mp4 + clip_crush480.mp4).
+CRUSH_SUFFIXES = {
+    "720p": "_crush720",
+    "480p": "_crush480",
+}
+
+# Sentinel distinguishing "key absent" from an explicit None/False so the
+# legacy-migration branch can tell a brand-new config from one where the user
+# deliberately turned crush off.
+_UNSET = object()
+
+
+def _canon_resolution(value) -> Optional[str]:
+    """Map a loose resolution token to a canonical label or None.
+
+    Accepts ``"720p"``, ``"720"``, ``720`` → ``"720p"`` (same for 480).
+    """
+    if value is None:
+        return None
+    token = str(value).strip().lower().rstrip("p")
+    for label, height in CRUSH_RESOLUTIONS.items():
+        if token == str(height):
+            return label
+    return None
+
+
+def normalize_crush_resolutions(resolutions=_UNSET, legacy_enabled=_UNSET) -> List[str]:
+    """Resolve the effective ordered list of crush resolution labels.
+
+    Single source of truth shared by the GUI queue, the CLI pipeline, and the
+    config panel so the legacy-key migration behaves identically everywhere.
+
+    Precedence:
+      1. ``resolutions`` present (list/tuple/str) → filter to valid labels,
+         dedup, order highest-first. An explicit empty list means "crush off".
+      2. else fall back on the legacy boolean ``crush_enabled``:
+           True  → ['480p']  (preserve pre-2026-06-18 behaviour — crush was 480p)
+           False → []        (user deliberately disabled crush; stay off)
+      3. else (neither key present — a brand-new config) → DEFAULT (['720p']).
+
+    Args:
+        resolutions:    The ``crush_resolutions`` config value, or ``_UNSET``
+                        when the key is absent.
+        legacy_enabled: The legacy ``crush_enabled`` boolean, or ``_UNSET``
+                        when that key is absent.
+    """
+    if resolutions is not _UNSET and resolutions is not None:
+        if isinstance(resolutions, str):
+            resolutions = [resolutions]
+        if isinstance(resolutions, (list, tuple)):
+            seen: set = set()
+            valid: List[str] = []
+            for raw in resolutions:
+                label = _canon_resolution(raw)
+                if label and label not in seen:
+                    seen.add(label)
+                    valid.append(label)
+            # Order highest-first (720 before 480) for deterministic headline.
+            return sorted(valid, key=lambda lbl: CRUSH_RESOLUTIONS[lbl], reverse=True)
+        # Unknown type → treat as "not set".
+    if legacy_enabled is not _UNSET and legacy_enabled is not None:
+        return ["480p"] if bool(legacy_enabled) else []
+    return list(DEFAULT_CRUSH_RESOLUTIONS)
+
+
+def crush_suffix(label: str) -> str:
+    """Return the stem suffix for a resolution label (``"720p"`` → ``_crush720``)."""
+    return CRUSH_SUFFIXES.get(label, "_crush")
 
 
 def crush_video(

@@ -166,7 +166,9 @@ def sanitize_sash_layout(
     right_section_w = max(400, safe_w - clamped_queue)
     log_drop_min = 150
     log_drop_max = max(log_drop_min, right_section_w - 150)
-    log_drop_default = int(right_section_w * 0.71)
+    # 0.80 (2026-06-18): widen Processing Log, narrow Drop Zone toward a
+    # roughly-square drop target (per user direction). Was 0.71.
+    log_drop_default = int(right_section_w * 0.80)
 
     sanitized = {
         "sash_dropzone": _clamp_int(sash_dropzone, drop_min, drop_max, drop_default),

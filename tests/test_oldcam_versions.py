@@ -463,6 +463,80 @@ def test_rerun_crush_only_succeeds_when_no_oldcam_versions(tmp_path):
     assert result["error"] is None
 
 
+def test_rerun_aa_only_succeeds_when_no_oldcam_versions(tmp_path):
+    """AA (2026-06-18): with AA enabled but rPPG/Loop/Crush/Oldcam all
+    unselected, re-run on a picked video must produce the AA output and report
+    success — same bug class as the Crush-only fix (PR #103). The "nothing to
+    apply" guard must include aa_on."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    aa_output = tmp_path / "clip_aa-prime.mp4"
+    aa_output.write_bytes(b"adversarial")
+
+    # AA enabled (prime), no oldcam, no loop, no rPPG, no crush.
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "aa_attacks": ["prime"],
+    })
+
+    with mock.patch.object(manager, "_aa_video", return_value=str(aa_output)):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update(
+                {"success": success, "src": src, "output": output, "error": error}
+            )
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    assert result["success"] is True, f"expected success, got error: {result['error']!r}"
+    assert result["output"] == str(aa_output), (
+        f"expected AA output as rerun result, got {result['output']!r}"
+    )
+    assert result["error"] is None
+
+
+def test_rerun_aa_multi_pipeline_invokes_each(tmp_path):
+    """Selecting prime + scenario1 on an AA-only re-run invokes _aa_video once
+    per pipeline; the headline output is the first (prime)."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "aa_attacks": ["prime", "scenario1"],
+    })
+
+    calls = []
+
+    def fake_aa(video_path, item, attack="prime"):
+        calls.append(attack)
+        out = tmp_path / f"clip_aa-{attack}.mp4"
+        out.write_bytes(b"adversarial")
+        return str(out)
+
+    with mock.patch.object(manager, "_aa_video", side_effect=fake_aa):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update({"success": success, "output": output, "error": error})
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    assert result["success"] is True, f"error: {result['error']!r}"
+    assert calls == ["prime", "scenario1"], f"expected both pipelines, got {calls}"
+    # Headline = first (prime) variant.
+    assert result["output"] == str(tmp_path / "clip_aa-prime.mp4")
+
+
 def test_rerun_crush_both_tiers_produces_two_files(tmp_path):
     """Multi-resolution crush (2026-06-18): selecting BOTH 720p + 480p on a
     Crush-only re-run produces ONE crushed file per tier. _crush_video is

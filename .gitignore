@@ -129,3 +129,6 @@ polish-evidence
 # Local test configs and session artifacts (may contain API keys or usernames)
 kling_config*.BAK
 map-codebase-session-*.md
+
+# Mode-comparison harness outputs (variant videos + frames + HTML report)
+oldcam-testing/mode_compare_out/

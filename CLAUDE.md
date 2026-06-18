@@ -323,7 +323,7 @@ log_drop_default = int(right_section_w * 0.71)
 |------|--------|-------|
 | `sash_prompt_split` (left tabs width) | 72% of window | 400px–82% |
 | `sash_queue` (carousel width) | 25% of window | 22–32% |
-| `sash_log_drop_split` (log width within right section) | 71% of right section | 55–82% |
+| `sash_log_drop_split` (log width within right section) | 80% of right section | 55–82% |
 
 > Note on `sash_prompt_split`: bumped from 60% → 72% on 2026-05-22 per user
 > feedback that the Step 3 (Video) horizontal controls — model row + output

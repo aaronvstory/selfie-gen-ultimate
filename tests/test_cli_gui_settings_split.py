@@ -519,7 +519,7 @@ def test_quick_edit_choices_cover_every_field_and_groups_are_consistent():
                      "selfie_models", "selfie_prompt", "similarity",
                      "sexp_provider", "sexp_blend", "sexp_percent",
                      "video_model", "kling_prompt",
-                     "rppg", "loop", "crush", "oldcam",
+                     "rppg", "loop", "crush", "aa", "oldcam",
                      "batch_max", "batch_reprocess", "root",
                      "prompts", "all", "done"):
         assert expected in values, f"quick edit lost {expected!r}"

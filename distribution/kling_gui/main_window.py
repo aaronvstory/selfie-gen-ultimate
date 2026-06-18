@@ -1380,10 +1380,11 @@ class KlingGUIWindow:
             self._layout_corrections_pending = True
 
         # Pre-sanitize sash values against initial window size before widgets render.
-        # v5.2 fallback values match new defaults (carousel 25% / log_drop 71%
+        # Fallback values match new defaults (carousel 25% / log_drop 80%
         # of right section) — see layout_utils.sanitize_sash_layout for the
         # canonical clamp logic. Computed for ~1621px window (the user's tested
-        # size): sash_queue=405, sash_log_drop_split=863.
+        # size): sash_queue=405, sash_log_drop_split=973 (wider log / squarer
+        # drop zone, 2026-06-18).
         #
         # CRITICAL: clamp against the ACTUAL geometry the window is about to
         # open at (`sanitized_geometry`, e.g. "1331x950+97+52"), NOT against
@@ -1404,7 +1405,7 @@ class KlingGUIWindow:
             sash_prompt_split=self.config.get("sash_prompt_split", 1167),
             sash_queue=self.config.get("sash_queue", 405),
             sash_log=self.config.get("sash_log", 150),
-            sash_log_drop_split=self.config.get("sash_log_drop_split", 863),
+            sash_log_drop_split=self.config.get("sash_log_drop_split", 973),
             root_width=pre_sash_w,
             root_height=pre_sash_h,
         )
@@ -1688,7 +1689,7 @@ class KlingGUIWindow:
             "sash_dropzone": 500,  # Height of top pane
             "sash_queue": 405,  # Width of left bottom pane (carousel 25%, user-tested at 1621w)
             "sash_log": 150,  # Height of log pane (before history)
-            "sash_log_drop_split": 863,  # Width of LOG pane (~71% of right section, user-tested at 1621w)
+            "sash_log_drop_split": 973,  # Width of LOG pane (~80% of right section — wider log / squarer drop zone)
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)
@@ -2208,6 +2209,22 @@ class KlingGUIWindow:
         style.map(
             TTK_BTN_SUCCESS,
             background=[("active", "#3CAD3C"), ("pressed", "#267826"), ("disabled", "#3E3E3E")],
+            foreground=[("disabled", "#9D9D9D")],
+        )
+        # Dedicated style for the Model Pricing link: a distinct TEAL so it
+        # stands out from the blue/red/grey of the queue controls without the
+        # low-contrast white-on-light-blue problem (teal + white reads cleanly).
+        style.configure(
+            "Pricing.TButton",
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground="white",
+            background="#1B9E8A",
+            borderwidth=1,
+            padding=(10, 6),
+        )
+        style.map(
+            "Pricing.TButton",
+            background=[("active", "#23BFA6"), ("pressed", "#157A6B"), ("disabled", "#3E3E3E")],
             foreground=[("disabled", "#9D9D9D")],
         )
         style.configure(
@@ -4147,6 +4164,21 @@ class KlingGUIWindow:
             style=TTK_BTN_DANGER,
         )
         self.abort_btn.pack(side=tk.RIGHT, padx=4)
+
+        # Model-pricing report link (docs/model-pricing.html). Packed AFTER Abort
+        # so it sits leftmost of the right-hand control group — next to Abort but
+        # slightly offset (extra left pad) so it reads as a separate reference
+        # link, not a queue action. Distinct TEAL style (Pricing.TButton) so it
+        # stands out from the blue/red/grey controls and the white-on-teal text
+        # is readable (the old white-on-light-blue PRIMARY was not).
+        self.pricing_btn = create_action_button(
+            control_frame,
+            text="💲 Model Pricing",
+            command=self._dbcmd("model_pricing", self._open_model_pricing),
+            style="Pricing.TButton",
+        )
+        self.pricing_btn.pack(side=tk.RIGHT, padx=(24, 12))
+
         # Enable the queue controls now that the queue manager exists
         # (_init_generator runs before _setup_controls). Every handler
         # (_toggle_pause / _abort_current_job / _retry_failed / _clear_queue)
@@ -4693,6 +4725,52 @@ class KlingGUIWindow:
                     stages.append("rPPG")
                 if bool(self.config.get("loop_videos", False)):
                     stages.append("Loop")
+                # Crush (720p/480p re-encode) runs after Loop and before Oldcam
+                # in the Phase E order. It is a valid stand-alone re-run
+                # post-process, so surface the selected tier(s) in the stage
+                # label too — otherwise a Crush-only re-run reads "no-op
+                # (nothing selected)" even though the queue applies it
+                # (2026-06-17; multi-resolution 2026-06-18).
+                # Narrow catch (CodeRabbit): only the import can realistically
+                # fail (e.g. a stripped build) — a normalize error is a real
+                # bug we want surfaced, not swallowed into a misleading label.
+                try:
+                    from automation.video_crush import (
+                        normalize_crush_resolutions,
+                    )
+                except ImportError:
+                    _crush_tiers = []
+                else:
+                    _crush_kwargs = {}
+                    if "crush_resolutions" in self.config:
+                        _crush_kwargs["resolutions"] = self.config["crush_resolutions"]
+                    if "crush_enabled" in self.config:
+                        _crush_kwargs["legacy_enabled"] = self.config["crush_enabled"]
+                    _crush_tiers = normalize_crush_resolutions(**_crush_kwargs)
+                if _crush_tiers:
+                    stages.append("Crush " + "/".join(_crush_tiers))
+                # AA attack-pipelines (Phase E: … → Crush → AA → Oldcam).
+                # Narrow ImportError catch mirrors crush above.
+                try:
+                    from automation.video_aa import normalize_aa_attacks
+                except ImportError:
+                    _aa_attacks_lbl = []
+                else:
+                    _aa_present = (
+                        self.config.get("aa_attacks") is not None
+                        or self.config.get("aa_enabled") is not None
+                    )
+                    if _aa_present:
+                        _aa_kwargs = {}
+                        if "aa_attacks" in self.config:
+                            _aa_kwargs["attacks"] = self.config["aa_attacks"]
+                        if "aa_enabled" in self.config:
+                            _aa_kwargs["legacy_enabled"] = self.config["aa_enabled"]
+                        _aa_attacks_lbl = normalize_aa_attacks(**_aa_kwargs)
+                    else:
+                        _aa_attacks_lbl = []
+                if _aa_attacks_lbl:
+                    stages.append("AA " + "/".join(_aa_attacks_lbl))
                 # CodeRabbit P1 (2026-05-22): distinguish "user
                 # explicitly cleared all Oldcam versions" (empty list)
                 # from "key never set / non-list value" (use the
@@ -4777,6 +4855,30 @@ class KlingGUIWindow:
                 f"Re-run failed for {os.path.basename(source_video)}: {error or 'unknown error'}",
                 "error",
             )
+
+    def _open_model_pricing(self):
+        """Open the offline model-pricing report in the default browser.
+
+        Resolves docs/model-pricing.html from the bundled resource dir (frozen
+        build) and the app dir (running from source / the dist zip), opening
+        the first that exists. Logs a friendly note if it's missing.
+        """
+        from path_utils import get_resource_dir, get_app_dir
+
+        seen = set()
+        for base in (get_resource_dir(), get_app_dir()):
+            if not base or base in seen:
+                continue
+            seen.add(base)
+            candidate = os.path.join(base, "docs", "model-pricing.html")
+            if os.path.exists(candidate):
+                self._open_path_in_explorer(candidate)
+                self._log("Opened model-pricing report.", "info")
+                return
+        self._log(
+            "Model pricing report not found (docs/model-pricing.html).",
+            "warning",
+        )
 
     def _open_path_in_explorer(self, path: str):
         """Open a file or folder in the system's native file explorer.
@@ -5810,7 +5912,7 @@ class KlingGUIWindow:
                 sash_prompt_split=self.config.get("sash_prompt_split", 1167),
                 sash_queue=self.config.get("sash_queue", 405),
                 sash_log=self.config.get("sash_log", 150),
-                sash_log_drop_split=self.config.get("sash_log_drop_split", 863),
+                sash_log_drop_split=self.config.get("sash_log_drop_split", 973),
                 root_width=self.root.winfo_width(),
                 root_height=self.root.winfo_height(),
             )

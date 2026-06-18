@@ -82,6 +82,11 @@ LOCAL_ONLY_RESEARCH_DIRS: Set[str] = {
                                  # shield it from the working-tree release sweep
                                  # (Codex P1 PR #72 — same leak class as the
                                  # PR #51 PII + PR #61 analysis-file leaks).
+    "aa-video",                  # adversarial-attack subproject (sensitive
+                                 # detector-evasion tool + heavy isolated venv).
+                                 # The committed automation/video_aa.py wrapper
+                                 # graceful-skips when this dir is absent, so the
+                                 # shipped build runs without it (2026-06-18).
 }
 # Note: oldcam-testing/ itself is kept (frozen A/B oldcam_v*.py files are
 # tracked + ship). Only the byproduct subdir + the gitignored *.mp4 / reports/

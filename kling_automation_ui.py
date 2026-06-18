@@ -124,6 +124,10 @@ from automation.video_crush import (
     CRUSH_RESOLUTIONS,
     normalize_crush_resolutions,
 )
+from automation.video_aa import (
+    AA_PIPELINES,
+    normalize_aa_attacks,
+)
 from selfie_generator import SelfieGenerator
 from tk_dialogs import (
     select_directory,
@@ -140,6 +144,15 @@ from face_similarity import _parse_bool as _parse_bool_cfg
 # Distinguishes "no argument supplied" from an explicit None/empty value in
 # helpers whose argument legitimately accepts falsy values.
 _SENTINEL_UNSET = object()
+
+
+def _aa_strength_valid(value: str) -> bool:
+    """True when *value* parses to a float in the AA strength range 0.1–1.0."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return False
+    return 0.1 <= f <= 1.0
 
 # v2 (2026-05-19): added automation_rppg_* recommended defaults (all OFF —
 # rPPG is the untested forward direction, opt-in only).
@@ -2520,6 +2533,28 @@ class KlingAutomationUI:
         selected = self._selected_crush_resolutions()
         return ", ".join(selected) if selected else "off"
 
+    def _selected_aa_attacks(self) -> List[str]:
+        """Canonical AA attack-pipeline labels from config.
+
+        AA is opt-in (default OFF): unlike crush, when NEITHER key is present we
+        return [] rather than normalize_aa_attacks's bare default (['prime']).
+        """
+        attacks = self.config.get("automation_aa_attacks")
+        legacy = self.config.get("automation_aa_enabled")
+        if attacks is None and legacy is None:
+            return []
+        kwargs = {}
+        if attacks is not None:
+            kwargs["attacks"] = attacks
+        if legacy is not None:
+            kwargs["legacy_enabled"] = legacy
+        return normalize_aa_attacks(**kwargs)
+
+    def _format_aa_attacks(self) -> str:
+        """Human display for the AA selection (e.g. ``prime, scenario1`` / ``off``)."""
+        selected = self._selected_aa_attacks()
+        return ", ".join(selected) if selected else "off"
+
     def _automation_status_lines(self) -> List[str]:
         model_labels = self._selfie_model_label_map()
         selfie_models = [model_labels.get(x, x) for x in list(self.config.get("automation_selfie_models", []))]
@@ -2561,6 +2596,7 @@ class KlingAutomationUI:
             f"rppg={'ON' if self.config.get('automation_rppg_enabled', False) else 'off'} "
             f"loop={'ON' if self.config.get('automation_loop_enabled', False) else 'off'} "
             f"crush={self._format_crush_resolutions()} "
+            f"aa={self._format_aa_attacks()} "
             f"oldcam versions={self._format_oldcam_versions()} required={self.config.get('automation_oldcam_required', False)} readiness={self._oldcam_readiness_status()}",
             f"recommended_defaults_version={self.config.get('automation_recommended_defaults_version', 0)} target={RECOMMENDED_DEFAULTS_VERSION}",
             f"automation_verbose_logging={bool(self.config.get('automation_verbose_logging', self.config.get('verbose_logging', True)))} log_path={resolve_automation_log_path(self.config, self.automation_root_folder)}",
@@ -3478,6 +3514,7 @@ class KlingAutomationUI:
                 f"rppg={'ON' if c.get('automation_rppg_enabled') else 'off'}, "
                 f"loop={'ON' if c.get('automation_loop_enabled') else 'off'}, "
                 f"crush={self._format_crush_resolutions()}, "
+                f"aa={self._format_aa_attacks()}, "
                 f"versions={self._format_oldcam_versions(c.get('automation_oldcam_version'))}, "
                 f"required={'y' if c.get('automation_oldcam_required') else 'n'}"
             ),
@@ -3853,6 +3890,81 @@ class KlingAutomationUI:
             print(f"  Crush will run: {self._format_crush_resolutions()}")
         return changed
 
+    def _qs_pick_aa_attacks(self) -> bool:
+        """Spacebar multi-select of AA attack-pipelines + strength + generator.
+
+        Mirrors _qs_pick_crush_resolutions: each selected pipeline fans out one
+        AA output file. Persists ``automation_aa_attacks`` (canonical list) and
+        keeps the legacy ``automation_aa_enabled`` boolean coherent. Also prompts
+        for strength (0.1–1.0) and generator profile. Returns True if anything
+        changed. Authorized detector-research use only.
+        """
+        current = self._selected_aa_attacks()
+        # Display order: prime, scenario1, scenario3. All run on CPU (torch is
+        # bundled in the AA venv; scenario modules use their _cpu variants when
+        # no GPU is present); a GPU just speeds them up.
+        known = [k for k in ("prime", "scenario1", "scenario3") if k in AA_PIPELINES]
+        choices = [
+            questionary.Choice(label, value=label, checked=(label in current))
+            for label in known
+        ]
+        answer = questionary.checkbox(
+            "AA attack-pipelines to run (none selected = AA off):",
+            qmark="◆",
+            instruction="(space toggles · Enter applies · Ctrl+C keeps current)",
+            choices=choices,
+            style=KLING_QUESTIONARY_STYLE,
+        ).ask()
+        if answer is None:
+            raise _QuestionarySectionAbort()
+        new_value = normalize_aa_attacks(attacks=answer)
+        changed = new_value != current
+        self.config["automation_aa_attacks"] = new_value
+        self.config["automation_aa_enabled"] = bool(new_value)
+
+        if not new_value:
+            self.print_yellow("0 AA attacks selected — the AA step will be skipped.")
+            return changed
+
+        # Strength (0.1–1.0).
+        cur_strength = self.config.get("automation_aa_strength", 0.5)
+        s_answer = questionary.text(
+            "AA strength (0.1–1.0):",
+            qmark="◆",
+            default=str(cur_strength),
+            validate=lambda v: _aa_strength_valid(v) or "Enter a number 0.1–1.0",
+            style=KLING_QUESTIONARY_STYLE,
+        ).ask()
+        if s_answer is None:
+            raise _QuestionarySectionAbort()
+        try:
+            new_strength = max(0.1, min(1.0, float(s_answer)))
+        except (TypeError, ValueError):
+            new_strength = 0.5
+        if new_strength != cur_strength:
+            changed = True
+        self.config["automation_aa_strength"] = new_strength
+
+        # Generator profile.
+        cur_gen = str(self.config.get("automation_aa_generator", "generic") or "generic")
+        gen_choices = ["generic", "kling", "seedance", "runway"]
+        g_answer = questionary.select(
+            "AA generator profile (tunes attack strength to the source model):",
+            qmark="◆",
+            default=cur_gen if cur_gen in gen_choices else "generic",
+            choices=gen_choices,
+            style=KLING_QUESTIONARY_STYLE,
+        ).ask()
+        if g_answer is None:
+            raise _QuestionarySectionAbort()
+        if g_answer != cur_gen:
+            changed = True
+        self.config["automation_aa_generator"] = g_answer
+
+        print(f"  AA will run: {self._format_aa_attacks()} "
+              f"(strength {new_strength}, generator {g_answer})")
+        return changed
+
     def _qs_directory(self, message: str, current_value: Optional[str],
                       picker_title: str) -> Optional[str]:
         """Pick a directory.
@@ -4196,7 +4308,9 @@ class KlingAutomationUI:
         _loop_seg = " -> loop" if _loop_on else " -> loop(off)"
         _crush_tiers = self._selected_crush_resolutions()
         _crush_seg = (" -> crush(" + "/".join(_crush_tiers) + ")") if _crush_tiers else " -> crush(off)"
-        _steps_line = f"front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg}{_loop_seg}{_crush_seg} -> oldcam"
+        _aa_attacks = self._selected_aa_attacks()
+        _aa_seg = (" -> aa(" + "/".join(_aa_attacks) + ")") if _aa_attacks else " -> aa(off)"
+        _steps_line = f"front_expand -> extract -> selfie -> similarity -> selfie_expand -> video{_rppg_seg}{_loop_seg}{_crush_seg}{_aa_seg} -> oldcam"
         if not self._use_legacy_prompt_ui():
             # Branded repaint + Rich layout (interactive only — the legacy
             # prints below are asserted by non-TTY tests / cron logs).
@@ -4733,6 +4847,8 @@ class KlingAutomationUI:
             ("Loop (ping-pong)", "ON" if loop_on else "off", "green" if loop_on else "dim"),
             ("Quality crush", self._format_crush_resolutions(),
              "green" if self._selected_crush_resolutions() else "dim"),
+            ("AA (adversarial)", self._format_aa_attacks(),
+             "green" if self._selected_aa_attacks() else "dim"),
             ("Video model", f"{video_display or video_endpoint or '?'}  ·  kling prompt slot {resolve_cli_kling_prompt_slot(c, DEFAULT_KLING_PROMPT_SLOT)}", ""),
             ("Selfie model(s)", f"{', '.join(selfie_models) if selfie_models else '(none)'}"
              + ("  ·  FAN-OUT: one full chain per model" if len(selfie_models) > 1 else ""),
@@ -5062,6 +5178,7 @@ class KlingAutomationUI:
             (f"💉 rPPG injection: {'ON' if rppg_on else 'OFF'} — toggle", "rppg"),
             (f"🔁 Loop (ping-pong): {'ON' if loop_on else 'off'} — toggle", "loop"),
             (f"💥 Crush (quality-destroy): {self._format_crush_resolutions()} — pick (spacebar)", "crush"),
+            (f"🛡️  AA (adversarial pass): {self._format_aa_attacks()} — pick (spacebar)", "aa"),
             (f"📼 Oldcam versions: {self._format_oldcam_versions()} — pick (spacebar)", "oldcam"),
             # ── Run scope ──
             (f"📦 Max cases per run: {self._read_max_cases_setting()}", "batch_max"),
@@ -5082,7 +5199,7 @@ class KlingAutomationUI:
         ("Step 2 · Selfie", ("selfie_models", "selfie_prompt", "similarity")),
         ("Step 2.5 · Selfie expand", ("sexp_provider", "sexp_blend", "sexp_percent")),
         ("Step 3 · Video (Kling)", ("video_model", "kling_prompt")),
-        ("Post · rPPG → Loop → Crush → Oldcam", ("rppg", "loop", "crush", "oldcam")),
+        ("Post · rPPG → Loop → Crush → AA → Oldcam", ("rppg", "loop", "crush", "aa", "oldcam")),
         ("Run scope", ("batch_max", "batch_reprocess", "root")),
         (None, ("prompts", "all", "done")),
     )
@@ -5215,6 +5332,8 @@ class KlingAutomationUI:
                     print(f"  Loop -> {'ON' if c['automation_loop_enabled'] else 'off'}")
                 elif choice == "crush":
                     self._qs_pick_crush_resolutions()
+                elif choice == "aa":
+                    self._qs_pick_aa_attacks()
                 elif choice == "oldcam":
                     self._qs_pick_oldcam_versions()
                 # ── Run scope ──
