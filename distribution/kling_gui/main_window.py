@@ -2210,6 +2210,22 @@ class KlingGUIWindow:
             background=[("active", "#3CAD3C"), ("pressed", "#267826"), ("disabled", "#3E3E3E")],
             foreground=[("disabled", "#9D9D9D")],
         )
+        # Dedicated style for the Model Pricing link: a distinct TEAL so it
+        # stands out from the blue/red/grey of the queue controls without the
+        # low-contrast white-on-light-blue problem (teal + white reads cleanly).
+        style.configure(
+            "Pricing.TButton",
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground="white",
+            background="#1B9E8A",
+            borderwidth=1,
+            padding=(10, 6),
+        )
+        style.map(
+            "Pricing.TButton",
+            background=[("active", "#23BFA6"), ("pressed", "#157A6B"), ("disabled", "#3E3E3E")],
+            foreground=[("disabled", "#9D9D9D")],
+        )
         style.configure(
             TTK_BTN_SUCCESS_COMPACT,
             font=(FONT_FAMILY, 9, "bold"),
@@ -4105,19 +4121,6 @@ class KlingGUIWindow:
         ).pack(side=tk.LEFT)
 
         # Right side: Control buttons (flat styling, always visible via side=BOTTOM)
-        # Model-pricing report link (docs/model-pricing.html). Grouped with the
-        # right-side action buttons (NOT left-aligned with the API-key badges)
-        # and given the dark SECONDARY style — the readable dark-bg/light-text
-        # treatment (the old white-on-accent_blue PRIMARY was low-contrast). The
-        # 💲 glyph keeps it scannable; packed first (rightmost-but-one of the
-        # info controls) so it reads as a reference link, not a queue action.
-        self.pricing_btn = create_action_button(
-            control_frame,
-            text="💲 Model Pricing",
-            command=self._dbcmd("model_pricing", self._open_model_pricing),
-            style=TTK_BTN_SECONDARY,
-        )
-        self.pricing_btn.pack(side=tk.RIGHT, padx=4)
         self.close_btn = create_action_button(
             control_frame,
             text="Close",
@@ -4160,6 +4163,21 @@ class KlingGUIWindow:
             style=TTK_BTN_DANGER,
         )
         self.abort_btn.pack(side=tk.RIGHT, padx=4)
+
+        # Model-pricing report link (docs/model-pricing.html). Packed AFTER Abort
+        # so it sits leftmost of the right-hand control group — next to Abort but
+        # slightly offset (extra left pad) so it reads as a separate reference
+        # link, not a queue action. Distinct TEAL style (Pricing.TButton) so it
+        # stands out from the blue/red/grey controls and the white-on-teal text
+        # is readable (the old white-on-light-blue PRIMARY was not).
+        self.pricing_btn = create_action_button(
+            control_frame,
+            text="💲 Model Pricing",
+            command=self._dbcmd("model_pricing", self._open_model_pricing),
+            style="Pricing.TButton",
+        )
+        self.pricing_btn.pack(side=tk.RIGHT, padx=(24, 12))
+
         # Enable the queue controls now that the queue manager exists
         # (_init_generator runs before _setup_controls). Every handler
         # (_toggle_pause / _abort_current_job / _retry_failed / _clear_queue)

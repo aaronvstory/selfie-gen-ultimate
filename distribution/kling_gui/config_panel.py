@@ -532,7 +532,7 @@ class ConfigPanel(tk.Frame):
         self.model_info_icon = tk.Label(
             row1, text="\u24D8", font=(FONT_FAMILY, 14),
             cursor="question_arrow",
-            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+            bg=COLORS["bg_input"], fg=COLORS["accent_blue"],
         )
         self.model_info_icon.pack(side=tk.RIGHT, padx=(6, 0))
         HoverTooltip(self.model_info_icon, self._get_current_model_notes)
@@ -654,7 +654,7 @@ class ConfigPanel(tk.Frame):
             font=(FONT_FAMILY, 11),
             cursor="question_arrow",
             bg="#2A1F34",
-            fg=COLORS["text_dim"],
+            fg=COLORS["accent_blue"],
         )
         self.oldcam_info_icon.pack(side=tk.LEFT, padx=(4, 0))
         HoverTooltip(self.oldcam_info_icon, self._get_oldcam_version_notes)
@@ -740,21 +740,20 @@ class ConfigPanel(tk.Frame):
             font=(FONT_FAMILY, 11),
             cursor="question_arrow",
             bg="#3A2A1F",
-            fg=COLORS["text_dim"],
+            fg=COLORS["accent_blue"],
         )
         self.rppg_info_icon.pack(side=tk.LEFT, padx=(4, 0))
         HoverTooltip(
             self.rppg_info_icon,
             lambda: (
-                "Sub-perceptual rPPG pulse injection. As of v2.3\n"
-                "(2026-05-22) it runs FIRST — Kling → rPPG → Loop\n"
-                "→ Oldcam — so every Oldcam version derives from a\n"
-                "single rPPG'd base. Aims to give Persona's passive\n"
-                "rPPG stage a physiologically-correct signal.\n"
+                "Sub-perceptual rPPG pulse injection.\n"
+                "Installs a faint, physiologically-correct pulse into the\n"
+                "face so a passive-rPPG liveness check sees a real signal.\n"
+                "Runs FIRST in the chain: Kling → rPPG → Loop → Crush →\n"
+                "AA → Oldcam, so every later step builds on the rPPG'd base.\n"
                 "Untested forward direction — off by default.\n"
-                "Skips gracefully if the rPPG tool is absent or\n"
-                "injection fails (keeps the pre-rPPG video; never\n"
-                "crashes the run)."
+                "Skips gracefully if the rPPG tool is missing or injection\n"
+                "fails (keeps the pre-rPPG video; never crashes the run)."
             ),
         )
         # Line 2: "Inject rPPG pulse" checkbox + its inline desc, wrapped in
@@ -834,20 +833,21 @@ class ConfigPanel(tk.Frame):
             font=(FONT_FAMILY, 11),
             cursor="question_arrow",
             bg=_crush_bg,
-            fg=COLORS["text_dim"],
+            fg=COLORS["accent_blue"],
         )
         self.crush_info_icon.pack(side=tk.LEFT, padx=(4, 0))
         HoverTooltip(
             self.crush_info_icon,
             lambda: (
                 "Quality-crush re-encode.\n"
-                "──────────────────────────────\n"
-                "Re-compresses the video hard (low bitrate, 480p or\n"
-                "720p) to mimic the quality loss of a WhatsApp / social\n"
-                "upload-and-redownload. That destruction can strip the\n"
-                "clean spatial fingerprint AI renders carry.\n\n"
-                "Tick one or both tiers — each ticked tier produces its\n"
-                "own crushed file. 720p = lighter, 480p = harsher.\n"
+                "Re-compresses the video hard at 480p or 720p, low bitrate.\n"
+                "Mimics the quality loss of a WhatsApp / social upload-and-\n"
+                "redownload round-trip.\n"
+                "That destruction can strip the clean spatial fingerprint\n"
+                "that AI renders carry.\n"
+                "\n"
+                "Tick one or both tiers — each produces its own crushed file.\n"
+                "720p is lighter; 480p is harsher.\n"
                 "Needs FFmpeg; skips gracefully if it's missing."
             ),
         )
@@ -920,33 +920,37 @@ class ConfigPanel(tk.Frame):
             font=(FONT_FAMILY, 11),
             cursor="question_arrow",
             bg=_aa_bg,
-            fg=COLORS["text_dim"],
+            fg=COLORS["accent_blue"],
         )
         self.aa_info_icon.pack(side=tk.LEFT, padx=(4, 0))
+        # Inline description on the same row as "AA: ⓘ" to save vertical space.
+        tk.Label(
+            _aa_label_row,
+            text="  adversarial detector-evasion re-encode",
+            bg=_aa_bg,
+            fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 8),
+        ).pack(side=tk.LEFT)
         HoverTooltip(
             self.aa_info_icon,
             lambda: (
                 "Adversarial-attack re-encode (detector evasion).\n"
-                "Phase E: … → Crush → AA → Oldcam. Each ticked\n"
-                "pipeline produces its own output that then fans\n"
-                "through Oldcam (like the crush tiers):\n"
-                "  • Prime — pixel+temporal+trace+recompress\n"
-                "    (generic AI-vs-real classifiers)\n"
-                "  • Scenario1 — replay/pre-recorded evasion\n"
-                "  • Scenario3 — smoothing/puppeteering evasion\n"
-                "All run on CPU (a GPU just makes them faster).\n"
-                "Runs in an ISOLATED venv (auto-provisioned on\n"
-                "first use). Authorized detector-research only.\n"
-                "Off by default; graceful-skip if unavailable."
+                "Adds perturbations engineered to fool AI-video detectors.\n"
+                "Each ticked pipeline produces its own output file.\n"
+                "Each output then fans through Oldcam (like the crush tiers).\n"
+                "Phase E order: … → Crush → AA → Oldcam.\n"
+                "\n"
+                "  • Prime — pixel + temporal + trace + recompress\n"
+                "      (targets generic AI-vs-real classifiers).\n"
+                "  • Scenario1 — replay / pre-recorded evasion.\n"
+                "  • Scenario3 — smoothing / puppeteering evasion.\n"
+                "\n"
+                "All three run on CPU (a GPU just makes them faster).\n"
+                "Runs in an isolated venv, auto-provisioned on first use.\n"
+                "Authorized detector-research use only.\n"
+                "Off by default; skips gracefully if unavailable."
             ),
         )
-        tk.Label(
-            self.aa_controls_frame,
-            text="adversarial detector-evasion re-encode",
-            bg=_aa_bg,
-            fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 8),
-        ).pack(anchor="w")
         # Attack-pipeline checkboxes (fan-out). Order = prime, scenario1,
         # scenario3 (matching AA_PIPELINES display order). Prime pre-checked is
         # applied in apply_config from the saved aa_attacks; constructed unchecked.
@@ -1005,22 +1009,24 @@ class ConfigPanel(tk.Frame):
             font=(FONT_FAMILY, 11),
             cursor="question_arrow",
             bg=COLORS["bg_input"],
-            fg=COLORS["text_dim"],
+            fg=COLORS["accent_blue"],
         )
         self.rerun_info_icon.pack(side=tk.LEFT, padx=(4, 0))
         HoverTooltip(
             self.rerun_info_icon,
             lambda: (
                 "Re-run post-processing — no new Kling generation.\n"
-                "──────────────────────────────\n"
                 "Both buttons re-apply WHATEVER is ticked above (rPPG /\n"
                 "Loop / Crush / AA / Oldcam), in pipeline order, to an\n"
-                "EXISTING video — so you can try different post-processing\n"
-                "combos without paying to re-generate from Kling.\n\n"
+                "EXISTING video.\n"
+                "So you can try different post-processing combos without\n"
+                "paying to re-generate from Kling.\n"
+                "\n"
                 "↻ Active — runs on the video currently shown in the\n"
                 "    carousel (or the latest completed one).\n"
-                "📂 File… — opens a picker so you can run on ANY video\n"
-                "    file on disk, even one not made by this app.\n\n"
+                "📂 File… — opens a picker to run on ANY video on disk,\n"
+                "    even one not made by this app.\n"
+                "\n"
                 "Respects Allow reprocessing / Increment."
             ),
         )
@@ -1215,7 +1221,7 @@ class ConfigPanel(tk.Frame):
         self.filter_info_icon = tk.Label(
             rD, text="ⓘ", font=(FONT_FAMILY, 11),
             cursor="question_arrow",
-            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+            bg=COLORS["bg_input"], fg=COLORS["accent_blue"],
         )
         self.filter_info_icon.pack(side=tk.LEFT, padx=(6, 0))
         HoverTooltip(
