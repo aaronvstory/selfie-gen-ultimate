@@ -134,6 +134,20 @@ class TestResolveProducedOutput:
         requested = tmp_path / "missing_aa-prime.mp4"
         assert resolve_produced_aa_output(requested, "prime", 0.5) is None
 
+    def test_glob_metachar_filename_is_literal(self, tmp_path):
+        # A base stem with glob metacharacters ([, ], *, ?) must NOT be
+        # interpreted as a glob pattern (codex WARNING). The literal
+        # iterdir() scan finds the real produced file.
+        requested = tmp_path / "clip[01]_aa-prime.mp4"
+        produced = tmp_path / "clip[01]_prime_0.5.mp4"
+        produced.write_bytes(b"x")
+        # A decoy that a naive glob ("clip[01]_prime*") would wrongly match
+        # (glob treats [01] as a char class → matches "clip0..."/"clip1...").
+        decoy = tmp_path / "clip0_prime_0.5.mp4"
+        decoy.write_bytes(b"y")
+        result = resolve_produced_aa_output(requested, "prime", 0.5)
+        assert result == produced, f"literal match expected {produced}, got {result}"
+
 
 # ---------------------------------------------------------------------------
 # resolve_aa_launcher

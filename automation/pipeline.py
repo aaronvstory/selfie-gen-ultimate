@@ -2333,6 +2333,15 @@ class AutoPipelineRunner:
                 _aa_generator = str(self.automation.get("automation_aa_generator", "generic") or "")
                 for _aa_src in aa_sources:
                     for _attack in aa_attacks:
+                        # Abort between variants so a multi-attack / multi-source
+                        # fan-out stops promptly instead of launching the next
+                        # AA pass after the user aborts (codex HIGH). Each
+                        # variant is an independent, re-runnable unit, so this is
+                        # a safe stopping point.
+                        if self.abort_event.is_set():
+                            raise AutomationAbort(
+                                f"aborted before AA variant {_attack} on {_aa_src.name}"
+                            )
                         produced = run_aa(
                             str(_aa_src),
                             attack=_attack,

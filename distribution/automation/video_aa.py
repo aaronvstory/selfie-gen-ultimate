@@ -25,6 +25,7 @@ unless the caller enforces a ``required`` flag at its own layer.
 import os
 import re
 import subprocess
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -211,12 +212,21 @@ def resolve_produced_aa_output(
         base_stem = requested.stem
         if base_stem.endswith(suffix_token):
             base_stem = base_stem[: -len(suffix_token)]
-        ext = requested.suffix
+        ext = requested.suffix.lower()
         # Tool default-naming forms: {base}_{attack}_{strength}{ext} and the
-        # numbered-collision {base}_{attack}N_{strength}{ext}.
-        glob_pat = f"{base_stem}_{attack}*{ext}"
+        # numbered-collision {base}_{attack}N_{strength}{ext}. Match with a
+        # LITERAL prefix/suffix scan via iterdir() rather than Path.glob() —
+        # a base_stem containing glob metacharacters ([, ], *, ?) would
+        # mis-match or match the wrong files under glob (codex WARNING).
+        prefix = f"{base_stem}_{attack}"
         try:
-            candidates = [p for p in parent.glob(glob_pat) if p.is_file()]
+            for p in parent.iterdir():
+                if (
+                    p.is_file()
+                    and p.name.startswith(prefix)
+                    and p.suffix.lower() == ext
+                ):
+                    candidates.append(p)
         except OSError:
             candidates = []
     if not candidates:
@@ -339,17 +349,35 @@ def run_aa(
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         assert process.stdout is not None
-        for line in process.stdout:
-            line_text = line.rstrip()
-            if line_text:
-                output_lines.append(line_text)
-                log(line_text, "info")
-        returncode = process.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        if "process" in locals() and process.poll() is None:
-            process.kill()
-        log(f"AA {attack_label} timed out after {timeout_seconds}s", "warning")
-        return None
+        # Watchdog: a hung/noisy child can block forever inside the
+        # `for line in process.stdout` read loop, so `process.wait(timeout=)`
+        # AFTER the loop would never be reached (codex CRITICAL). Arm a timer
+        # that kills the process at the deadline; the read loop then sees EOF
+        # and exits, and `timed_out` flags the result as a timeout.
+        timed_out = {"hit": False}
+
+        def _kill_on_timeout() -> None:
+            timed_out["hit"] = True
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+        watchdog = threading.Timer(timeout_seconds, _kill_on_timeout)
+        watchdog.daemon = True
+        watchdog.start()
+        try:
+            for line in process.stdout:
+                line_text = line.rstrip()
+                if line_text:
+                    output_lines.append(line_text)
+                    log(line_text, "info")
+            returncode = process.wait()
+        finally:
+            watchdog.cancel()
+        if timed_out["hit"]:
+            log(f"AA {attack_label} timed out after {timeout_seconds}s", "warning")
+            return None
     except Exception as exc:
         log(f"AA {attack_label} launcher error: {exc}", "warning")
         return None
