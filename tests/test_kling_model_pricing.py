@@ -29,6 +29,10 @@ _EXPECTED_PRICE = {
     "fal-ai/kling-video/v3/standard/image-to-video": 0.084,
     "fal-ai/kling-video/v3/pro/image-to-video": 0.112,
     "fal-ai/kling-video/o1/image-to-video": 0.112,
+    # Kling 2.1 (added 2026-06-18, verified from the fal sandbox calculator:
+    # Standard 5s $0.28 + $0.056/s; Pro 5s $0.49 + $0.098/s → flat per-second).
+    "fal-ai/kling-video/v2.1/standard/image-to-video": 0.056,
+    "fal-ai/kling-video/v2.1/pro/image-to-video": 0.098,
 }
 
 
@@ -56,10 +60,23 @@ def test_v3_keeps_negative_prompt_and_cfg():
 
 
 def test_end_frame_params_correct():
-    """2.5 Pro uses tail_image_url; V3 uses end_image_url; 2.5 Standard has none."""
+    """2.5 Pro uses tail_image_url; V3 uses end_image_url; 2.5 Standard has none.
+    2.1 Pro uses tail_image_url; 2.1 Standard has no end-frame param."""
     assert _BY_EP["fal-ai/kling-video/v2.5-turbo/pro/image-to-video"]["end_image_param"] == "tail_image_url"
     assert _BY_EP["fal-ai/kling-video/v3/standard/image-to-video"]["end_image_param"] == "end_image_url"
     assert _BY_EP["fal-ai/kling-video/v2.5-turbo/standard/image-to-video"]["end_image_param"] is None
+    assert _BY_EP["fal-ai/kling-video/v2.1/pro/image-to-video"]["end_image_param"] == "tail_image_url"
+    assert _BY_EP["fal-ai/kling-video/v2.1/standard/image-to-video"]["end_image_param"] is None
+
+
+def test_kling_21_keeps_negative_prompt_and_cfg():
+    """Both Kling 2.1 tiers keep negative_prompt + cfg_scale (full control set)."""
+    for ep in (
+        "fal-ai/kling-video/v2.1/standard/image-to-video",
+        "fal-ai/kling-video/v2.1/pro/image-to-video",
+    ):
+        assert _BY_EP[ep]["supports_negative_prompt"] is True, ep
+        assert _BY_EP[ep]["supports_cfg_scale"] is True, ep
 
 
 def test_user_notes_carry_verified_prices():
@@ -68,6 +85,9 @@ def test_user_notes_carry_verified_prices():
     un = _MODELS["user_notes"]
     assert "$0.70 per 10s" in un["fal-ai/kling-video/v2.5-turbo/pro/image-to-video"]
     assert "$0.84 per 10s" in un["fal-ai/kling-video/v3/standard/image-to-video"]
+    # Kling 2.1 tooltips carry their verified 10s prices.
+    assert "$0.56 per 10s" in un["fal-ai/kling-video/v2.1/standard/image-to-video"]
+    assert "$0.98 per 10s" in un["fal-ai/kling-video/v2.1/pro/image-to-video"]
 
 
 def _import_config_panel():
