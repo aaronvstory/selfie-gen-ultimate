@@ -238,8 +238,11 @@ def main() -> int:
     ap.add_argument("--source", required=True, help="source video (a Kling original)")
     ap.add_argument("--modes", default=DEFAULT_MODES,
                     help=f"comma list of modes (default: {DEFAULT_MODES})")
-    ap.add_argument("--out", default=str(REPO_ROOT / "oldcam-testing" / "mode_compare_out"),
-                    help="output dir (gitignored)")
+    ap.add_argument("--out", default=None,
+                    help="output dir. Default: test-material/mode-comparisons/"
+                         "<YYYY-MM-DD>_<source-stem>/ — a permanent, dated, "
+                         "self-describing folder holding the variant videos, "
+                         "mid-point frames, and the HTML report together.")
     ap.add_argument("--strength", type=float, default=0.5, help="AA strength 0.1-1.0")
     ap.add_argument("--generator", default="kling", help="AA generator profile")
     ap.add_argument("--skip-existing", action="store_true",
@@ -251,7 +254,15 @@ def main() -> int:
     src = Path(args.source).expanduser().resolve()
     if not src.is_file():
         raise SystemExit(f"source not found: {src}")
-    out_dir = Path(args.out).expanduser().resolve()
+    if args.out:
+        out_dir = Path(args.out).expanduser().resolve()
+    else:
+        # Permanent, dated, self-describing home so runs are never treated as
+        # throwaway scratch: test-material/mode-comparisons/<date>_<source-stem>/.
+        # Same date+source reuses the same folder (pairs with --skip-existing).
+        day = datetime.now().strftime("%Y-%m-%d")
+        out_dir = (REPO_ROOT / "test-material" / "mode-comparisons"
+                   / f"{day}_{src.stem}")
     out_dir.mkdir(parents=True, exist_ok=True)
     modes = parse_modes(args.modes)
 
