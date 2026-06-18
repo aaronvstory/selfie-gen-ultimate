@@ -360,8 +360,10 @@ def test_rerun_fails_only_when_all_stages_unselected(tmp_path):
     test below for rPPG-only)."""
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"video")
-    # Nothing selected — rPPG off (default), loop_videos off, oldcam empty.
-    manager, _ = make_queue_manager({"oldcam_versions": []})
+    # Nothing selected — rPPG off (default), loop_videos off, oldcam empty,
+    # crush explicitly off (crush now defaults to 720p ON, so the "truly
+    # nothing selected" path must disable it explicitly).
+    manager, _ = make_queue_manager({"oldcam_versions": [], "crush_resolutions": []})
 
     done = threading.Event()
     result = {}
@@ -461,6 +463,212 @@ def test_rerun_crush_only_succeeds_when_no_oldcam_versions(tmp_path):
     assert result["error"] is None
 
 
+def test_rerun_crush_both_tiers_produces_two_files(tmp_path):
+    """Multi-resolution crush (2026-06-18): selecting BOTH 720p + 480p on a
+    Crush-only re-run produces ONE crushed file per tier. _crush_video is
+    invoked per tier with the matching target_height + suffix; both crushed
+    files exist on disk; the headline output is the highest-res (720p)."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    # crush_resolutions wins over the legacy boolean; both tiers selected.
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "crush_resolutions": ["720p", "480p"],
+    })
+
+    calls = []
+
+    def fake_crush(video_path, item, target_height=480, suffix="_crush"):
+        calls.append((target_height, suffix))
+        out = tmp_path / f"clip{suffix}.mp4"
+        out.write_bytes(b"crushed")
+        return str(out)
+
+    with mock.patch.object(manager, "_crush_video", side_effect=fake_crush):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update(
+                {"success": success, "src": src, "output": output, "error": error}
+            )
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(2)
+
+    # One crush invocation per tier, highest-first (720 then 480).
+    assert calls == [(720, "_crush720"), (480, "_crush480")], calls
+    assert (tmp_path / "clip_crush720.mp4").exists()
+    assert (tmp_path / "clip_crush480.mp4").exists()
+    assert result["success"] is True, f"expected success, got error: {result['error']!r}"
+    # Headline = highest-res crushed tier.
+    assert result["output"] == str(tmp_path / "clip_crush720.mp4"), result["output"]
+
+
+def test_rerun_both_tiers_rppg_fanout_uses_primary_tier_summary(tmp_path):
+    """Reviewer MEDIUM (PR #104): with BOTH crush tiers + oldcam + the opt-in
+    rppg_per_oldcam_fanout, the rPPG fan-out must iterate the PRIMARY
+    (highest-res, 720p) tier's oldcam outputs — not the last extra tier's.
+    The extra-tier loop calls _oldcam_video again and overwrites
+    _last_oldcam_run_summary, so the summary used downstream must be captured
+    BEFORE that loop."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, _ = make_queue_manager({
+        "oldcam_versions": ["v7"],
+        "crush_resolutions": ["720p", "480p"],
+        "rppg_enabled": True,
+        "rppg_per_oldcam_fanout": True,
+        "allow_reprocess": True,
+        "reprocess_mode": "overwrite",
+    })
+
+    def fake_crush(video_path, item, target_height=480, suffix="_crush"):
+        out = tmp_path / f"clip{suffix}.mp4"
+        out.write_bytes(b"crushed")
+        return str(out)
+
+    oldcam_items = []
+
+    def fake_oldcam(video_path, item):
+        oldcam_items.append(item)
+        stem = Path(video_path).stem
+        out = tmp_path / f"{stem}-oldcam-v7.mp4"
+        out.write_bytes(b"oc")
+        manager._last_oldcam_run_summary = {
+            "requested_versions": ["v7"],
+            "succeeded_versions": ["v7"],
+            "failed_versions": [],
+            "primary_output": str(out),
+            "outputs": [str(out)],
+        }
+        return str(out)
+
+    rppg_calls = []
+
+    def fake_rppg(video_path, item):
+        rppg_calls.append(video_path)
+        return video_path
+
+    with mock.patch.object(manager, "_crush_video", side_effect=fake_crush), \
+         mock.patch.object(manager, "_oldcam_video", side_effect=fake_oldcam), \
+         mock.patch.object(manager, "_rppg_video", side_effect=fake_rppg):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update({"success": success, "output": output, "error": error})
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(3)
+
+    assert result["success"] is True, result.get("error")
+    # rppg_calls[0] is the top-of-worker primary rPPG pass on the source.
+    # The per-oldcam fan-out must then run on the PRIMARY (720p) tier's oldcam
+    # output and NOT the 480p tier's — proving the summary was captured before
+    # the extra-tier loop overwrote it with the 480p result.
+    assert str(tmp_path / "clip_crush720-oldcam-v7.mp4") in rppg_calls, rppg_calls
+    assert str(tmp_path / "clip_crush480-oldcam-v7.mp4") not in rppg_calls, rppg_calls
+    # Both tiers' oldcam runs must report against the SAME tracked QueueItem,
+    # not throwaway per-tier items, so re-run progress stays coherent
+    # (CodeRabbit Major, PR #104 round 5).
+    assert len(oldcam_items) == 2, oldcam_items
+    assert oldcam_items[0] is oldcam_items[1], "extra tier used a different QueueItem"
+
+
+def test_rerun_primary_tier_fails_but_extra_tier_succeeds_reports_success(tmp_path):
+    """Gemini MEDIUM (PR #104 round 7): if the PRIMARY (720p) crushed tier's
+    oldcam run fails but an extra (480p) tier succeeds, the re-run must adopt
+    the surviving tier as the headline — report SUCCESS with its output and a
+    summary reflecting the real produced file — never hide a successful tier
+    behind a failed higher-res one."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+
+    manager, _ = make_queue_manager({
+        "oldcam_versions": ["v7"],
+        "crush_resolutions": ["720p", "480p"],
+        "allow_reprocess": True,
+        "reprocess_mode": "overwrite",
+    })
+
+    def fake_crush(video_path, item, target_height=480, suffix="_crush"):
+        out = tmp_path / f"clip{suffix}.mp4"
+        out.write_bytes(b"crushed")
+        return str(out)
+
+    def fake_oldcam(video_path, item):
+        stem = Path(video_path).stem
+        if "crush720" in stem:
+            # Primary (highest-res) tier fails.
+            manager._last_oldcam_run_summary = {
+                "requested_versions": ["v7"],
+                "succeeded_versions": [],
+                "failed_versions": [("v7", "boom")],
+                "primary_output": "",
+            }
+            return None
+        out = tmp_path / f"{stem}-oldcam-v7.mp4"
+        out.write_bytes(b"oc")
+        manager._last_oldcam_run_summary = {
+            "requested_versions": ["v7"],
+            "succeeded_versions": ["v7"],
+            "failed_versions": [],
+            "primary_output": str(out),
+            "outputs": [str(out)],
+        }
+        return str(out)
+
+    with mock.patch.object(manager, "_crush_video", side_effect=fake_crush), \
+         mock.patch.object(manager, "_oldcam_video", side_effect=fake_oldcam):
+        done = threading.Event()
+        result = {}
+
+        def callback(success, src, output, error):
+            result.update({"success": success, "output": output, "error": error})
+            done.set()
+
+        started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+        assert started is True
+        assert done.wait(3)
+
+    assert result["success"] is True, f"expected success, got: {result.get('error')!r}"
+    assert result["output"] == str(tmp_path / "clip_crush480-oldcam-v7.mp4"), result["output"]
+    # The restored headline summary must reflect the SUCCESSFUL 480p tier.
+    assert manager._last_oldcam_run_summary.get("succeeded_versions") == ["v7"]
+
+
+def test_rerun_crush_resolutions_empty_list_rejects_crush_only(tmp_path):
+    """An explicit empty crush_resolutions list = crush OFF: a re-run with
+    nothing else selected must fail with the 'nothing to apply' guard, NOT
+    silently default 720p on (the list is authoritative once present)."""
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"video")
+    manager, _ = make_queue_manager({
+        "oldcam_versions": [],
+        "crush_resolutions": [],
+    })
+
+    done = threading.Event()
+    result = {}
+
+    def callback(success, src, output, error):
+        result.update({"success": success, "error": error})
+        done.set()
+
+    started = manager.rerun_oldcam_only(str(source), completion_callback=callback)
+    assert started is True
+    assert done.wait(2)
+    assert result["success"] is False
+    assert "nothing to apply" in (result["error"] or "").lower(), result["error"]
+
+
 def test_rerun_fails_when_rppg_only_but_input_already_rppg_artifact(tmp_path):
     """Subagent MEDIUM on a1c1b099: case (c) of the rerun worker —
     `rppg_on=True` but the picked video is already a rPPG artifact
@@ -479,6 +687,10 @@ def test_rerun_fails_when_rppg_only_but_input_already_rppg_artifact(tmp_path):
         "oldcam_versions": [],
         "rppg_enabled": True,
         "loop_videos": False,
+        # Crush defaults to 720p ON; this test isolates the rPPG-only path so
+        # it must explicitly disable crush (else crush would run and change
+        # the failure reason).
+        "crush_resolutions": [],
     })
 
     done = threading.Event()

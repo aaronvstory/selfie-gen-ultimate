@@ -29,7 +29,7 @@ from automation.oldcam import (
 )
 from automation.rppg import is_rppg_artifact, run_rppg
 from automation.video_loop import check_ffmpeg_available, create_looped_video
-from automation.video_crush import crush_video
+from automation.video_crush import CRUSH_RESOLUTIONS, crush_suffix, crush_video
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
@@ -188,6 +188,26 @@ class AutoPipelineRunner:
     def _oldcam_versions(self) -> List[str]:
         """Canonical (normalized list) oldcam selection from config."""
         return normalize_oldcam_versions(self.automation.get("automation_oldcam_version", []))
+
+    def _crush_resolutions(self) -> List[str]:
+        """Canonical crush-resolution labels from config.
+
+        Robust whether or not the config went through
+        merge_automation_defaults: re-applies normalize_crush_resolutions so a
+        raw config carrying only the legacy ``automation_crush_enabled``
+        boolean still resolves correctly (True → ['480p'], absent → ['720p']).
+        """
+        from automation.video_crush import normalize_crush_resolutions
+
+        # ``self.automation`` is an AutomationConfig (``.get`` but no ``in``).
+        # A merged config always carries ``automation_crush_resolutions``; a
+        # raw one returns None here, which normalize_crush_resolutions treats
+        # as "unset" and falls back to the legacy boolean (also None → 720p
+        # default), so both shapes resolve correctly.
+        return normalize_crush_resolutions(
+            self.automation.get("automation_crush_resolutions"),
+            legacy_enabled=self.automation.get("automation_crush_enabled"),
+        )
 
     def _oldcam_active(self) -> bool:
         """Oldcam runs only when enabled AND at least one version is selected.
@@ -860,9 +880,10 @@ class AutoPipelineRunner:
         # oldcam does.
         if self._read_bool("automation_rppg_required", False) and not self._read_bool("automation_rppg_enabled", False):
             issues.append("automation_rppg_required=true requires automation_rppg_enabled=true.")
-        if self._read_bool("automation_crush_required", False) and not self._read_bool("automation_crush_enabled", False):
-            issues.append("automation_crush_required=true requires automation_crush_enabled=true.")
-        if self._read_bool("automation_loop_enabled", False) or self._read_bool("automation_crush_enabled", False):
+        _crush_on = bool(self._crush_resolutions())
+        if self._read_bool("automation_crush_required", False) and not _crush_on:
+            issues.append("automation_crush_required=true requires at least one crush resolution selected.")
+        if self._read_bool("automation_loop_enabled", False) or _crush_on:
             ffmpeg_ok, ffmpeg_msg = check_ffmpeg_available()
             if not ffmpeg_ok:
                 if self._read_bool("automation_crush_required", False):
@@ -2126,12 +2147,20 @@ class AutoPipelineRunner:
             self.manifest.update_step(case_key, "loop", "skipped", error="loop disabled")
 
         # Step 7-pre-c: optional quality-crush pass (Phase E order:
-        # Kling -> rPPG -> Loop -> Crush -> Oldcam). Re-encodes at 480p /
-        # CRF 35, mimicking WhatsApp transcoding quality destruction.
-        # Graceful skip on failure — never hard-fails a case unless
-        # automation_crush_required=True.
-        crush_path: Optional[Path] = None
-        if self._read_bool("automation_crush_enabled", False):
+        # Kling -> rPPG -> Loop -> Crush -> Oldcam). Re-encodes at CRF 35,
+        # mimicking WhatsApp transcoding quality destruction.
+        #
+        # Multi-resolution (2026-06-18): ``automation_crush_resolutions`` is a
+        # LIST of tiers (["720p"], ["480p"], ["720p","480p"], or []) fanned out
+        # exactly like the Oldcam version list — one crushed file per tier.
+        # The list is normalized + ordered highest-first by
+        # merge_automation_defaults (legacy ``automation_crush_enabled``=True
+        # already migrated to ["480p"] there). Graceful skip on failure — never
+        # hard-fails a case unless automation_crush_required=True.
+        crush_path: Optional[Path] = None  # primary (highest-res) for back-compat
+        crush_paths: List[Path] = []
+        crush_resolutions = self._crush_resolutions()
+        if crush_resolutions:
             # Prefer looped output; fall back to rPPG base or raw Kling.
             crush_source: Optional[Path] = None
             if loop_path is not None and loop_path.exists():
@@ -2158,50 +2187,77 @@ class AutoPipelineRunner:
             else:
                 self._set_active_step(case_entry, "crush")
                 self.manifest.update_step(case_key, "crush", "running")
-                crushed = crush_video(
-                    str(crush_source),
-                    suffix="_crush",
-                    overwrite=(reprocess_mode != "skip"),
-                    log_callback=self.progress_cb,
-                )
-                if crushed and Path(crushed).exists():
-                    crush_path = Path(crushed)
+                for _label in crush_resolutions:
+                    _height = CRUSH_RESOLUTIONS.get(_label)
+                    if not _height:
+                        continue
+                    crushed = crush_video(
+                        str(crush_source),
+                        suffix=crush_suffix(_label),
+                        target_height=_height,
+                        overwrite=(reprocess_mode != "skip"),
+                        log_callback=self.progress_cb,
+                    )
+                    if crushed and Path(crushed).exists():
+                        crush_paths.append(Path(crushed))
+                    else:
+                        # Per-tier visibility: a single tier failing is
+                        # otherwise silent when another tier succeeds (gemini).
+                        self.logger.warning(
+                            "case %s crush tier %s failed; skipping that tier",
+                            case_key, _label,
+                        )
+                if crush_paths:
+                    crush_path = crush_paths[0]  # highest-res tier is primary
                     self.logger.info(
-                        "case %s crush: %s -> %s",
-                        case_key, crush_source.name, crush_path.name,
+                        "case %s crush: %s -> %d tier(s): %s",
+                        case_key, crush_source.name, len(crush_paths),
+                        ", ".join(p.name for p in crush_paths),
                     )
                     self.manifest.update_step(
                         case_key,
                         "crush",
                         "complete",
                         output=str(crush_path),
-                        meta=self._policy_meta("crush", False, reprocess_mode),
+                        meta={
+                            **self._policy_meta("crush", False, reprocess_mode),
+                            "all_outputs": [str(p) for p in crush_paths],
+                        },
+                    )
+                elif self._read_bool("automation_crush_required", False):
+                    # Required + every tier failed → hard-fail (not "continuing
+                    # uncrushed"); mark the step failed so the contract is
+                    # unambiguous (gemini: the warning must not imply success).
+                    self.manifest.update_step(
+                        case_key, "crush", "failed",
+                        error="crush required but produced no output",
+                    )
+                    raise RuntimeError(
+                        f"case {case_key}: crush required but every tier failed"
                     )
                 else:
                     self.logger.warning("case %s crush failed; continuing uncrushed", case_key)
                     self.manifest.update_step(
                         case_key, "crush", "skipped", error="crush failed or ffmpeg unavailable",
                     )
-                    if self._read_bool("automation_crush_required", False):
-                        raise RuntimeError(
-                            f"case {case_key}: crush required but failed"
-                        )
         else:
             self.manifest.update_step(case_key, "crush", "skipped", error="crush disabled")
             if self._read_bool("automation_crush_required", False):
                 raise RuntimeError(
-                    f"case {case_key}: crush required but automation_crush_enabled=False"
+                    f"case {case_key}: crush required but no resolutions selected"
                 )
 
         # Step 7: optional oldcam pass
         if self._oldcam_active():
             # Build the list of sources for oldcam (Phase E order).
-            # When crush produced a file we fan-out: oldcam runs on BOTH
-            # the pre-crush path (loop > rPPG > raw Kling) AND the crushed
-            # file, so the user keeps the original Kling chain AND gets the
-            # crushed variant — the originals are never deleted.
+            # Multi-resolution crush fan-out (user direction 2026-06-18):
+            # when crush produced files, EACH crushed tier is its own oldcam
+            # source — N crush x M oldcam = NxM finals. The pre-crush
+            # originals (loop > rPPG > raw Kling) are NEVER deleted; they
+            # simply aren't re-run through oldcam when crush is on (the
+            # crushed variants are the intended Persona-pass deliverables).
             #
-            # Without crush the list has exactly one entry (legacy behaviour).
+            # Without crush the list has exactly one entry: the raw chain.
             _raw_video_path: Optional[Path] = None
             if loop_path is not None and loop_path.exists():
                 _raw_video_path = loop_path
@@ -2217,12 +2273,10 @@ class AutoPipelineRunner:
                     if _vc.exists() and _vc.suffix.lower() == ".mp4":
                         _raw_video_path = _vc
 
-            # Fan-out: [pre-crush, crushed] when crush ran; [raw] otherwise.
+            # Fan-out: each crushed tier when crush ran; else the raw chain.
             _oldcam_sources: List[Path] = []
-            if crush_path is not None and crush_path.exists():
-                if _raw_video_path is not None and _raw_video_path.exists():
-                    _oldcam_sources.append(_raw_video_path)
-                _oldcam_sources.append(crush_path)
+            if crush_paths:
+                _oldcam_sources.extend(p for p in crush_paths if p.exists())
             elif _raw_video_path is not None and _raw_video_path.exists():
                 _oldcam_sources.append(_raw_video_path)
 

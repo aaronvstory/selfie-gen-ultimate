@@ -111,9 +111,17 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     # order mirrored from the GUI queue). DEFAULT OFF per user mandate 2026-06-11;
     # graceful-skip when ffmpeg is missing (never hard-fails a case).
     "automation_loop_enabled": False,
-    # Quality-crush step: re-encode at 480p / CRF 35 to mimic WhatsApp
+    # Quality-crush step: re-encode at 720p/480p / CRF 35 to mimic WhatsApp
     # transcoding. Associated with higher Persona pass rates. Runs after Loop,
-    # before Oldcam, so the compression artefact carries through. DEFAULT OFF.
+    # before Oldcam, so the compression artefact carries through.
+    #
+    # Multi-resolution (2026-06-18): ``automation_crush_resolutions`` is the
+    # canonical LIST of selected tiers (["720p"], ["480p"], ["720p","480p"],
+    # or [] for off), fanned out exactly like the Oldcam version list. The
+    # legacy boolean ``automation_crush_enabled`` is still honoured for
+    # back-compat via automation.video_crush.normalize_crush_resolutions
+    # (True → ["480p"], the pre-multi behaviour). Fresh default: 720p ON.
+    "automation_crush_resolutions": ["720p"],
     "automation_crush_enabled": False,
     "automation_crush_required": False,
     "automation_oldcam_enabled": True,
@@ -322,6 +330,24 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
         merged["automation_rppg_per_oldcam_fanout"] = bool(
             merged["rppg_per_oldcam_fanout"]
         )
+    # Multi-resolution crush (2026-06-18): collapse the canonical list +
+    # legacy boolean into the single canonical ``automation_crush_resolutions``
+    # list BEFORE the default-fill loop, so a saved config that only carries
+    # the legacy ``automation_crush_enabled`` boolean migrates correctly
+    # (True → ['480p'] preserves its old 480p output; absent → fresh ['720p']
+    # default). Computed from the ORIGINAL config keys (merged is still a copy
+    # of `config` at this point — the default-fill below would otherwise mask
+    # "key absent"). Import here keeps module import light + cycle-safe.
+    from automation.video_crush import normalize_crush_resolutions
+
+    _crush_kwargs: Dict[str, Any] = {}
+    if "automation_crush_resolutions" in merged:
+        _crush_kwargs["resolutions"] = merged["automation_crush_resolutions"]
+    if "automation_crush_enabled" in merged:
+        _crush_kwargs["legacy_enabled"] = merged["automation_crush_enabled"]
+    merged["automation_crush_resolutions"] = normalize_crush_resolutions(**_crush_kwargs)
+    # Keep the legacy boolean coherent for any reader still gating on it.
+    merged["automation_crush_enabled"] = bool(merged["automation_crush_resolutions"])
     for key, value in AUTOMATION_DEFAULTS.items():
         if key not in merged:
             merged[key] = value

@@ -1221,19 +1221,53 @@ class QueueManager:
                     return
 
                 # Re-Run: quality crush (Phase E: ... → Loop → Crush → Oldcam).
-                # Mirrors the main queue's Step 2b so crush_enabled=True applies
-                # consistently on both paths ("whatever post-processes are selected"
-                # mandate, user feedback 2026-05-22).
+                # Mirrors the main queue's Step 2b so crush applies consistently
+                # on both paths ("whatever post-processes are selected" mandate,
+                # user feedback 2026-05-22). Multi-resolution (2026-06-18):
+                # produces ONE crushed file per selected tier (720p/480p). The
+                # highest-res tier becomes the primary source that the
+                # oldcam/no-oldcam logic below operates on; any additional
+                # tier(s) stay on disk and get their own oldcam fan-out (see the
+                # extra-tier loop after the primary oldcam run).
                 crush_produced = False
                 crush_attempted = False
-                if self._crush_enabled():
+                crushed_paths: List[str] = []
+                # ONE tracked QueueItem reused across EVERY pass of this re-run
+                # (crush tiers + primary oldcam + extra oldcam tiers), so all
+                # per-pass progress reports against a single coherent item
+                # instead of throwaway items (gemini MEDIUM, PR #104 round 8).
+                _rerun_item = QueueItem(str(source_video))
+                crush_resolutions = self._get_crush_resolutions()
+                if crush_resolutions:
                     crush_attempted = True
-                    self.log("Re-Run: quality-crushing (480p re-encode enabled)", "info")
-                    crushed_path = self._crush_video(str(source_video), QueueItem(str(source_video)))
-                    if crushed_path:
-                        source_video = Path(crushed_path).resolve()
+                    from automation.video_crush import crush_suffix
+                    crush_base = str(source_video)
+                    _labels = ", ".join(lbl for lbl, _ in crush_resolutions)
+                    self.log(f"Re-Run: quality-crushing ({_labels} re-encode enabled)", "info")
+                    for _label, _height in crush_resolutions:
+                        # Abort-aware: stop launching further tiers on Abort
+                        # (CodeRabbit) — the post-crush guard below then bails.
+                        if self._abort_requested():
+                            break
+                        _cp = self._crush_video(
+                            crush_base, _rerun_item,
+                            target_height=_height,
+                            suffix=crush_suffix(_label),
+                        )
+                        if _cp:
+                            crushed_paths.append(_cp)
+                    if crushed_paths:
                         crush_produced = True
+                        # Highest-res crushed (first in the highest-first order)
+                        # is the primary source for the strict oldcam path below.
+                        source_video = Path(crushed_paths[0]).resolve()
                         self.log(f"Re-Run crush intermediate: {source_video.name}", "debug")
+                        if len(crushed_paths) > 1:
+                            self.log(
+                                "Re-Run crush tiers: "
+                                + ", ".join(Path(p).name for p in crushed_paths),
+                                "debug",
+                            )
                     else:
                         self.log(
                             "Re-Run: crush step failed; falling back to un-crushed source",
@@ -1355,7 +1389,9 @@ class QueueManager:
                     + f"{source_video.name}, versions={','.join(selected_versions)}",
                     "info",
                 )
-                output_path = self._oldcam_video(str(run_input), QueueItem(str(source_video)))
+                # Reuse the unified _rerun_item created before the crush loop
+                # (gemini MEDIUM, PR #104 round 8) for the primary oldcam pass.
+                output_path = self._oldcam_video(str(run_input), _rerun_item)
                 # Abort guard after Oldcam (Codex P2, PR #73): _oldcam_video
                 # returns None on Abort like a failure; bail before the optional
                 # fan-out + completion so an aborted rerun doesn't report done.
@@ -1366,6 +1402,46 @@ class QueueManager:
                             False, str(source_video), None, "Aborted by user"
                         )
                     return
+
+                # Capture the PRIMARY (highest-res) tier's oldcam summary NOW,
+                # before the extra-tier loop below calls _oldcam_video again and
+                # overwrites self._last_oldcam_run_summary with a lower-res
+                # tier's result (reviewer MEDIUM, PR #104).
+                summary = self._last_oldcam_run_summary or {}
+
+                # Multi-resolution crush fan-out (2026-06-18): the primary
+                # (highest-res) crushed tier ran through the strict reprocess-
+                # aware path above; run EVERY selected oldcam version on the
+                # remaining crushed tier(s) too, so each crush resolution yields
+                # its own oldcam variant (N crush x M oldcam). Best-effort: a
+                # failed extra tier is logged, never fatal. Outputs land on disk
+                # with their tier-specific stems (e.g. clip_crush480-oldcam-v24).
+                for _extra_src in crushed_paths[1:]:
+                    if self._abort_requested():
+                        break
+                    self.log(
+                        f"Re-Run: oldcam fan-out on crushed tier {Path(_extra_src).name}",
+                        "debug",
+                    )
+                    # Clear before each call so a failed extra tier can't leave
+                    # the prior tier's summary intact (hardening parity with the
+                    # main-queue loop; gemini MEDIUM, PR #104 round 8).
+                    self._last_oldcam_run_summary = None
+                    _extra_out = self._oldcam_video(str(_extra_src), _rerun_item)
+                    # If the PRIMARY tier failed (output_path falsy) but this
+                    # extra tier produced output, adopt it as the headline so
+                    # the re-run reports SUCCESS and the summary reflects a real
+                    # produced file instead of the failed primary — never hide a
+                    # successful tier behind a failed higher-res one (gemini
+                    # MEDIUM, round 7).
+                    if _extra_out and not output_path:
+                        output_path = _extra_out
+                        summary = self._last_oldcam_run_summary or {}
+                # Restore the HEADLINE tier's summary (primary if it succeeded,
+                # else the first successful extra tier, else the primary's
+                # failure) so external consumers stay consistent with
+                # output_path (gemini MEDIUM, PR #104 rounds 3/7).
+                self._last_oldcam_run_summary = summary
                 # OPTIONAL per-Oldcam rPPG fan-out (Phase E of
                 # polish/v2.3, 2026-05-22). The main rPPG pass already
                 # ran on ``source_video`` at the top of this worker
@@ -1376,7 +1452,9 @@ class QueueManager:
                 # OFF — most workflows don't need it because Oldcam's
                 # resolution-crush attenuates the pulse and the
                 # already-rPPG'd base is the cleaner deliverable.
-                summary = self._last_oldcam_run_summary or {}
+                # NOTE: ``summary`` is the HEADLINE tier's (primary if it
+                # succeeded, else the first successful extra tier) — set above,
+                # consistent with ``output_path``.
                 if (
                     self._rppg_enabled()
                     and config.get("rppg_per_oldcam_fanout", False)
@@ -1874,36 +1952,96 @@ class QueueManager:
                         return
 
                     # Step 2b: Quality crush (Phase E: ... → Loop → Crush → Oldcam).
-                    # Re-encodes at 480p / CRF 35 to mimic WhatsApp transcoding.
-                    # Graceful skip on failure — never blocks Oldcam.
-                    if self._crush_enabled():
+                    # Multi-resolution (2026-06-18): produces ONE crushed file
+                    # per selected tier (720p/480p) — fanned out exactly like
+                    # the Oldcam version list. Each tier is CRF 35 at its target
+                    # height, mimicking WhatsApp transcoding. Per-tier failure is
+                    # a graceful skip; the pre-crush base (looped/rPPG/raw) stays
+                    # on disk untouched.
+                    crush_base = final_video
+                    crushed_paths: List[str] = []
+                    crush_resolutions = self._get_crush_resolutions()
+                    if crush_resolutions:
+                        from automation.video_crush import crush_suffix
                         item.stage = "crush"
                         item.stage_percent = 0
                         self.update_queue_display()
-                        crushed_video = self._crush_video(final_video, item)
-                        if crushed_video:
-                            final_video = crushed_video
+                        for _label, _height in crush_resolutions:
+                            # Stop starting new tiers the instant the user
+                            # aborts — don't keep ffmpeg busy crushing 480p
+                            # after an Abort during the 720p pass (CodeRabbit).
+                            if self._abort_requested():
+                                break
+                            _cp = self._crush_video(
+                                crush_base, item,
+                                target_height=_height,
+                                suffix=crush_suffix(_label),
+                            )
+                            if _cp:
+                                crushed_paths.append(_cp)
+                        # Headline points at the highest-res crushed variant
+                        # (first in the highest-first ordering) when crush ran.
+                        if crushed_paths:
+                            final_video = crushed_paths[0]
 
                     if self._abort_requested():
                         self._handle_item_abort(item)
                         return
 
-                    # Step 3: Oldcam runs EVERY selected version.
-                    # _oldcam_video returns the highest version's path;
-                    # _last_oldcam_run_summary["outputs"] holds ALL
-                    # per-version outputs. The plain pre-Oldcam files
-                    # (raw Kling, rPPG'd, looped) remain on disk
-                    # alongside — non-destructive.
+                    # Step 3: Oldcam runs EVERY selected version on EVERY oldcam
+                    # source. When crush produced files, the crushed variants
+                    # ARE the oldcam sources (user direction 2026-06-18: N crush
+                    # x M oldcam fan-out -> NxM finals); otherwise the single
+                    # pre-crush base. _oldcam_video returns the highest version's
+                    # path and stashes ALL per-version outputs in
+                    # _last_oldcam_run_summary["outputs"]; we aggregate across
+                    # every source. Plain pre-Oldcam files remain on disk.
                     oldcam_outputs: List[str] = []
                     if self._get_oldcam_versions_to_run():
+                        oldcam_sources = crushed_paths if crushed_paths else [crush_base]
                         item.stage = "oldcam"
-                        item.stage_percent = 0
-                        self.update_queue_display()
-                        oldcam_video = self._oldcam_video(final_video, item)
-                        if oldcam_video:
-                            final_video = oldcam_video
-                        summary = self._last_oldcam_run_summary or {}
-                        oldcam_outputs = list(summary.get("outputs") or [])
+                        _headline_set = False
+                        # Track the HEADLINE tier's summary = the first source
+                        # that actually PRODUCED output (highest-res first). Not
+                        # the first source unconditionally: if the 720p tier
+                        # fails but 480p succeeds, restoring the failed 720p
+                        # summary would hide the real 480p result (gemini MEDIUM,
+                        # round 7). None until some tier succeeds.
+                        _headline_summary: Optional[Dict[str, object]] = None
+                        for _src in oldcam_sources:
+                            # Stop fanning out to the next source the instant
+                            # the user aborts — don't start _oldcam_video on the
+                            # 480p tier after an Abort during the 720p tier. The
+                            # post-loop abort guard below handles the item
+                            # (gemini HIGH, PR #104 round 6).
+                            if self._abort_requested():
+                                break
+                            item.stage_percent = 0
+                            self.update_queue_display()
+                            # Clear before each call so a source whose
+                            # _oldcam_video fails can't leave the PREVIOUS
+                            # source's summary intact and double-append its
+                            # outputs (gemini HIGH, PR #104). _oldcam_video
+                            # already resets this on every path, but the
+                            # explicit clear hardens the loop against any
+                            # future early-return in that helper.
+                            self._last_oldcam_run_summary = None
+                            oldcam_video = self._oldcam_video(_src, item)
+                            summary = self._last_oldcam_run_summary or {}
+                            # Headline = the highest-res crushed source that
+                            # produced output (first success).
+                            if oldcam_video and not _headline_set:
+                                final_video = oldcam_video
+                                _headline_set = True
+                                _headline_summary = summary
+                            oldcam_outputs.extend(list(summary.get("outputs") or []))
+                        # Restore the HEADLINE (first successful) tier's summary
+                        # so external consumers don't see the last (lowest-res)
+                        # tier, and a failed primary never hides a successful
+                        # later tier (gemini MEDIUM, rounds 3/5/7). If NO tier
+                        # succeeded, leave the loop's last (failure) summary.
+                        if _headline_summary is not None:
+                            self._last_oldcam_run_summary = _headline_summary
 
                     if self._abort_requested():
                         self._handle_item_abort(item)
@@ -2005,6 +2143,19 @@ class QueueManager:
                         )
                     if config.get("loop_videos", False):
                         summary_parts.append("LOOP")
+                    # Crush runs between Loop and Oldcam (Phase E). Surface the
+                    # tiers that actually produced a crushed file so a
+                    # crush-only item no longer reads "kling only" (CodeRabbit).
+                    if crushed_paths:
+                        _ct = []
+                        for _p in crushed_paths:
+                            _s = Path(_p).stem
+                            _ct.append(
+                                "720p" if _s.endswith("_crush720")
+                                else "480p" if _s.endswith("_crush480")
+                                else "crush"
+                            )
+                        summary_parts.append("CRUSH-" + "/".join(_ct))
                     oldcam_versions = self._get_oldcam_versions_to_run()
                     if oldcam_versions:
                         summary_parts.append(
@@ -2691,17 +2842,47 @@ class QueueManager:
     # Persona pass rates. Runs between Loop and Oldcam (Phase E order:
     # Kling -> rPPG -> Loop -> Crush -> Oldcam). Always graceful-skip.
     # ------------------------------------------------------------------
-    def _crush_enabled(self) -> bool:
-        return bool(self.get_config().get("crush_enabled", False))
+    def _get_crush_resolutions(self) -> List[Tuple[str, int]]:
+        """Return ordered ``[(label, height)]`` of the selected crush tiers.
 
-    def _crush_video(self, video_path: str, item: "QueueItem") -> Optional[str]:
+        Single source of truth shared with the CLI/config-panel: the
+        canonical ``crush_resolutions`` list wins; otherwise the legacy
+        ``crush_enabled`` boolean migrates (True → 480p) and a brand-new
+        config defaults to 720p ON. Empty list = crush OFF.
+        """
+        from automation.video_crush import (
+            normalize_crush_resolutions,
+            CRUSH_RESOLUTIONS,
+        )
+        cfg = self.get_config()
+        kwargs = {}
+        if "crush_resolutions" in cfg:
+            kwargs["resolutions"] = cfg["crush_resolutions"]
+        if "crush_enabled" in cfg:
+            kwargs["legacy_enabled"] = cfg["crush_enabled"]
+        return [(lbl, CRUSH_RESOLUTIONS[lbl]) for lbl in normalize_crush_resolutions(**kwargs)]
+
+    def _crush_enabled(self) -> bool:
+        return bool(self._get_crush_resolutions())
+
+    def _crush_video(
+        self,
+        video_path: str,
+        item: "QueueItem",
+        target_height: int = 480,
+        suffix: str = "_crush",
+    ) -> Optional[str]:
         """Run quality-crush on video_path. Returns output path or None."""
-        self.log("Crush — 480p re-encode… (ffmpeg, please wait)", "progress_update")
+        self.log(
+            f"Crush — {target_height}p re-encode… (ffmpeg, please wait)",
+            "progress_update",
+        )
         try:
             from automation.video_crush import crush_video
             result = crush_video(
                 video_path,
-                suffix="_crush",
+                suffix=suffix,
+                target_height=target_height,
                 overwrite=True,
                 log_callback=self.log,
             )
