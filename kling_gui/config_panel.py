@@ -895,60 +895,6 @@ class ConfigPanel(tk.Frame):
             check.pack(side=tk.LEFT, padx=(0, 10))
             self.crush_resolution_checks[label] = check
 
-        # Output-mode + pipeline preview (2026-06-19). Output mode picks how the
-        # enabled modifiers combine: "Separate + combined" (powerset — every
-        # subset) vs "Combined only" (one cumulative chain). The preview line
-        # shows the resulting plan live, derived from the SAME shared planner the
-        # queue uses (automation.postproc_plan) so it can never disagree.
-        _mode_bg = "#1F2A3A"
-        _mode_border = "#3A5E7D"
-        self.fanout_controls_frame = tk.Frame(
-            _pp_stack,
-            bg=_mode_bg,
-            highlightthickness=1,
-            highlightbackground=_mode_border,
-            padx=6,
-            pady=2,
-        )
-        self.fanout_controls_frame.pack(fill=tk.X, pady=(4, 0))
-        _mode_row = tk.Frame(self.fanout_controls_frame, bg=_mode_bg)
-        _mode_row.pack(anchor="w", fill=tk.X)
-        tk.Label(
-            _mode_row,
-            text="Output mode:",
-            bg=_mode_bg,
-            fg=COLORS["text_light"],
-            font=(FONT_FAMILY, 10),
-        ).pack(side=tk.LEFT)
-        self.fanout_mode_var = tk.StringVar(value="separate_and_combined")
-        self.fanout_mode_combo = ttk.Combobox(
-            _mode_row,
-            state="readonly",
-            width=34,
-            textvariable=self.fanout_mode_var,
-            values=[
-                "Separate + combined (powerset)",
-                "Combined only (one chain)",
-            ],
-            font=(FONT_FAMILY, 9),
-        )
-        self.fanout_mode_combo.pack(side=tk.LEFT, padx=(6, 0))
-        self.fanout_mode_combo.bind(
-            "<<ComboboxSelected>>", lambda _e: self._on_fanout_mode_changed()
-        )
-        # Live read-only plan preview.
-        self.pipeline_preview_label = tk.Label(
-            self.fanout_controls_frame,
-            text="",
-            bg=_mode_bg,
-            fg=COLORS["accent_blue"],
-            font=(FONT_FAMILY, 8),
-            justify=tk.LEFT,
-            anchor="w",
-            wraplength=360,
-        )
-        self.pipeline_preview_label.pack(anchor="w", fill=tk.X, pady=(2, 0))
-
         # AA (adversarial-attack) column — a NEW column in the band (rA) to the
         # RIGHT of the Oldcam/rPPG/Crush stack. Step 3 is vertically busy, so AA
         # goes HORIZONTALLY here (user direction 2026-06-18) and the shared
@@ -1050,13 +996,81 @@ class ConfigPanel(tk.Frame):
             check.pack(side=tk.LEFT, padx=(0, 8))
             self.aa_attack_checks[_key] = check
 
+        # Output-mode + pipeline preview (2026-06-19). Placed in the AA column
+        # BENEATH the green AA box (and ABOVE the Re-Run column, which shifts
+        # down) to conserve scarce vertical space in the left Oldcam/rPPG/Crush
+        # stack (user direction 2026-06-19). Output mode picks how the enabled
+        # modifiers combine: "Separate + combined" (powerset — every subset) vs
+        # "Combined only" (one cumulative chain). The preview line shows the
+        # resulting plan live, from the SAME shared planner the queue uses
+        # (automation.postproc_plan) so it can never disagree.
+        _mode_bg = "#1F2A3A"
+        _mode_border = "#3A5E7D"
+        self.fanout_controls_frame = tk.Frame(
+            _aa_col,
+            bg=_mode_bg,
+            highlightthickness=1,
+            highlightbackground=_mode_border,
+            padx=6,
+            pady=2,
+        )
+        self.fanout_controls_frame.pack(fill=tk.X, pady=(6, 0))
+        _mode_row = tk.Frame(self.fanout_controls_frame, bg=_mode_bg)
+        _mode_row.pack(anchor="w", fill=tk.X)
+        tk.Label(
+            _mode_row,
+            text="Output mode:",
+            bg=_mode_bg,
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 10),
+        ).pack(side=tk.LEFT)
+        self.fanout_mode_var = tk.StringVar(value="separate_and_combined")
+        self.fanout_mode_combo = ttk.Combobox(
+            _mode_row,
+            state="readonly",
+            width=30,
+            textvariable=self.fanout_mode_var,
+            values=[
+                "Separate + combined (powerset)",
+                "Combined only (one chain)",
+            ],
+            font=(FONT_FAMILY, 9),
+        )
+        self.fanout_mode_combo.pack(side=tk.LEFT, padx=(6, 0))
+        self.fanout_mode_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._on_fanout_mode_changed()
+        )
+        # Live read-only plan preview.
+        self.pipeline_preview_label = tk.Label(
+            self.fanout_controls_frame,
+            text="",
+            bg=_mode_bg,
+            fg=COLORS["accent_blue"],
+            font=(FONT_FAMILY, 8),
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=320,
+        )
+        self.pipeline_preview_label.pack(anchor="w", fill=tk.X, pady=(2, 0))
+
         # ONE shared Re-Run column, now packed BENEATH the AA box (inside
         # _aa_col) per user direction 2026-06-18 (was a sibling column in rA).
         # Applies to whatever is selected: any Oldcam versions AND/OR rPPG /
         # Crush / AA, and re-loops first when Loop Video is on
         # (queue_manager.rerun_oldcam_only handles the full Phase E ordering).
-        _shared_rerun_col = tk.Frame(_aa_col, bg=COLORS["bg_input"])
-        _shared_rerun_col.pack(anchor="w", pady=(6, 0))
+        # Distinct GROOVE border (beveled, not the flat coloured highlight the
+        # stage boxes use) so the Re-Run actions read as a different KIND of
+        # control — they re-apply the stages above, they aren't one of them
+        # (user direction 2026-06-19).
+        _shared_rerun_col = tk.Frame(
+            _aa_col,
+            bg=COLORS["bg_input"],
+            relief=tk.GROOVE,
+            bd=2,
+            padx=6,
+            pady=4,
+        )
+        _shared_rerun_col.pack(anchor="w", fill=tk.X, pady=(6, 0))
         _rerun_label_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
         _rerun_label_row.pack(anchor="w")
         tk.Label(
