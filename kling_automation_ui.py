@@ -209,6 +209,19 @@ _EXPAND_MODE_OPTIONS = ["document_3x4", "percent"]
 _SELFIE_EXPAND_MODE_OPTIONS = ["percent", "centered_3x4"]
 _COMPOSITE_MODE_OPTIONS = ["preserve_seamless", "feathered", "hard", "black_fill", "none"]
 _REPROCESS_MODE_OPTIONS = ["skip", "overwrite", "increment"]
+# Explicit "turn this step OFF" row shared by the crush / AA / oldcam checkbox
+# pickers (2026-06-19). Ticking it clears the whole selection — a discoverable
+# alternative to the previously-invisible "deselect everything" gesture. The
+# value is a sentinel that can never collide with a real tier/attack/version.
+_OFF_CHOICE_VALUE = "__off__"
+_OFF_CHOICE_LABEL = "✖ OFF — skip this step"
+# Post-processing fan-out modes (mirrors automation.postproc_plan.VALID_MODES;
+# duplicated as (value, label) here so the quick-edit picker stays a single
+# source without importing the planner at module load).
+_FANOUT_MODE_OPTIONS = [
+    ("separate_and_combined", "Separate + combined (powerset — every subset)"),
+    ("combined_only", "Combined only (one cumulative chain)"),
+]
 _VIDEO_RESOLUTION_OPTIONS = ["480p", "720p"]
 _VIDEO_ASPECT_RATIO_OPTIONS = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]
 # Common video durations (seconds) most fal video models accept. Used to warn
@@ -2555,6 +2568,13 @@ class KlingAutomationUI:
         selected = self._selected_aa_attacks()
         return ", ".join(selected) if selected else "off"
 
+    def _format_fanout_mode(self) -> str:
+        """Human display for the post-processing fan-out mode."""
+        from automation.postproc_plan import normalize_mode
+
+        mode = normalize_mode(self.config.get("automation_postproc_fanout_mode"))
+        return "powerset (separate + combined)" if mode == "separate_and_combined" else "combined only"
+
     def _automation_status_lines(self) -> List[str]:
         model_labels = self._selfie_model_label_map()
         selfie_models = [model_labels.get(x, x) for x in list(self.config.get("automation_selfie_models", []))]
@@ -3564,6 +3584,10 @@ class KlingAutomationUI:
         "automation_selfie_model_policy": ["first_pass", "all"],
         "automation_max_cases_per_run": ["1", "5", "10", "all"],
         "automation_rppg_mode": ["iterative", "inject"],
+        # Offer the fan-out mode as a choice (not free text) in the all-settings
+        # editor so a typo can't be saved and silently normalized to the default
+        # (CodeRabbit). Values mirror _FANOUT_MODE_OPTIONS / postproc_plan.
+        "automation_postproc_fanout_mode": [v for v, _label in _FANOUT_MODE_OPTIONS],
     }
 
     def _browse_all_settings(self) -> None:
@@ -3814,10 +3838,13 @@ class KlingAutomationUI:
         run_all = current == ["all"]
         choices = [
             questionary.Choice(
+                _OFF_CHOICE_LABEL, value=_OFF_CHOICE_VALUE, checked=not current,
+            ),
+            questionary.Choice(
                 "ALL versions (every discovered oldcam)",
                 value="all",
                 checked=run_all,
-            )
+            ),
         ]
         for version in known:
             missing = version not in discovered
@@ -3830,7 +3857,7 @@ class KlingAutomationUI:
                 )
             )
         answer = questionary.checkbox(
-            "Oldcam versions to run (none selected = oldcam off):",
+            "Oldcam versions to run (tick ✖ OFF, or none, to disable):",
             qmark="◆",
             instruction="(space toggles · Enter applies · Ctrl+C keeps current)",
             choices=choices,
@@ -3838,7 +3865,11 @@ class KlingAutomationUI:
         ).ask()
         if answer is None:
             raise _QuestionarySectionAbort()
-        new_value = normalize_oldcam_versions(answer)
+        # OFF wins over any co-ticked versions (and over the ALL row).
+        if _OFF_CHOICE_VALUE in (answer or []):
+            new_value = []
+        else:
+            new_value = normalize_oldcam_versions(answer)
         changed = new_value != current
         self.config["automation_oldcam_version"] = new_value
         if not new_value:
@@ -3866,12 +3897,19 @@ class KlingAutomationUI:
         current = self._selected_crush_resolutions()
         # Highest-first so 720p reads before 480p.
         known = sorted(CRUSH_RESOLUTIONS, key=lambda lbl: CRUSH_RESOLUTIONS[lbl], reverse=True)
+        # Explicit OFF row (2026-06-19): "deselect everything" was an invisible
+        # way to turn a step off. Ticking this clears the whole selection.
         choices = [
+            questionary.Choice(
+                _OFF_CHOICE_LABEL, value=_OFF_CHOICE_VALUE, checked=not current,
+            )
+        ]
+        choices += [
             questionary.Choice(label, value=label, checked=(label in current))
             for label in known
         ]
         answer = questionary.checkbox(
-            "Crush resolutions to run (none selected = crush off):",
+            "Crush resolutions to run (tick ✖ OFF, or none, to disable):",
             qmark="◆",
             instruction="(space toggles · Enter applies · Ctrl+C keeps current)",
             choices=choices,
@@ -3879,7 +3917,8 @@ class KlingAutomationUI:
         ).ask()
         if answer is None:
             raise _QuestionarySectionAbort()
-        new_value = normalize_crush_resolutions(answer)
+        # OFF wins over any co-ticked tiers.
+        new_value = [] if _OFF_CHOICE_VALUE in (answer or []) else normalize_crush_resolutions(answer)
         changed = new_value != current
         self.config["automation_crush_resolutions"] = new_value
         # Keep the legacy boolean coherent for any reader still gating on it.
@@ -3905,11 +3944,16 @@ class KlingAutomationUI:
         # no GPU is present); a GPU just speeds them up.
         known = [k for k in ("prime", "scenario1", "scenario3") if k in AA_PIPELINES]
         choices = [
+            questionary.Choice(
+                _OFF_CHOICE_LABEL, value=_OFF_CHOICE_VALUE, checked=not current,
+            )
+        ]
+        choices += [
             questionary.Choice(label, value=label, checked=(label in current))
             for label in known
         ]
         answer = questionary.checkbox(
-            "AA attack-pipelines to run (none selected = AA off):",
+            "AA attack-pipelines to run (tick ✖ OFF, or none, to disable):",
             qmark="◆",
             instruction="(space toggles · Enter applies · Ctrl+C keeps current)",
             choices=choices,
@@ -3917,7 +3961,8 @@ class KlingAutomationUI:
         ).ask()
         if answer is None:
             raise _QuestionarySectionAbort()
-        new_value = normalize_aa_attacks(attacks=answer)
+        # OFF wins over any co-ticked pipelines.
+        new_value = [] if _OFF_CHOICE_VALUE in (answer or []) else normalize_aa_attacks(attacks=answer)
         changed = new_value != current
         self.config["automation_aa_attacks"] = new_value
         self.config["automation_aa_enabled"] = bool(new_value)
@@ -3963,6 +4008,36 @@ class KlingAutomationUI:
 
         print(f"  AA will run: {self._format_aa_attacks()} "
               f"(strength {new_strength}, generator {g_answer})")
+        return changed
+
+    def _qs_pick_fanout_mode(self) -> bool:
+        """Arrow-key select for the post-processing fan-out mode.
+
+        ``powerset`` (separate + combined) produces every non-empty subset of
+        the enabled modifiers; ``combined only`` produces a single cumulative
+        chain. Persists ``automation_postproc_fanout_mode``. Returns True when
+        the value changed.
+        """
+        from automation.postproc_plan import normalize_mode
+
+        current = normalize_mode(self.config.get("automation_postproc_fanout_mode"))
+        choices = [
+            questionary.Choice(label, value=value, checked=(value == current))
+            for value, label in _FANOUT_MODE_OPTIONS
+        ]
+        answer = questionary.select(
+            "Output mode (how enabled modifiers combine):",
+            qmark="◆",
+            instruction=f"(current: {self._format_fanout_mode()})",
+            choices=choices,
+            default=current,
+            style=KLING_QUESTIONARY_STYLE,
+        ).ask()
+        if answer is None:
+            raise _QuestionarySectionAbort()
+        changed = answer != current
+        self.config["automation_postproc_fanout_mode"] = answer
+        print(f"  Output mode -> {self._format_fanout_mode()}")
         return changed
 
     def _qs_directory(self, message: str, current_value: Optional[str],
@@ -4803,6 +4878,33 @@ class KlingAutomationUI:
     # the option-1 flow surfaced those settings before approval).
     # ------------------------------------------------------------------
 
+    def _pipeline_preview_text(self) -> str:
+        """Read-only one-line summary of the resulting post-processing plan.
+
+        Derived from the SAME shared planner the orchestrator uses
+        (automation.postproc_plan) so the preview can never disagree with what
+        actually runs. Example::
+
+            Kling → rPPG → AA(prime) → Oldcam(v13)  ·  + 6 more variants (powerset)
+        """
+        from automation.postproc_plan import build_plan, plan_preview_line
+
+        c = self.config
+        rppg_on = _parse_bool_cfg(c.get("automation_rppg_enabled", False)) or False
+        loop_on = _parse_bool_cfg(c.get("automation_loop_enabled", False)) or False
+        oldcam_enabled = _parse_bool_cfg(c.get("automation_oldcam_enabled", True))
+        oldcam_enabled = True if oldcam_enabled is None else oldcam_enabled
+        oldcam_versions = self._selected_oldcam_versions() if oldcam_enabled else []
+        plan = build_plan(
+            rppg_enabled=rppg_on,
+            loop_enabled=loop_on,
+            crush_resolutions=self._selected_crush_resolutions(),
+            aa_attacks=self._selected_aa_attacks(),
+            oldcam_versions=oldcam_versions,
+            mode=str(c.get("automation_postproc_fanout_mode", "separate_and_combined")),
+        )
+        return plan_preview_line(plan)
+
     def _run_settings_rows(self) -> List[Tuple[str, str, str]]:
         """(label, value, rich-style) rows for the MAIN run settings — the
         single source for the Rich table, the plain headless variant, and
@@ -4849,6 +4951,7 @@ class KlingAutomationUI:
              "green" if self._selected_crush_resolutions() else "dim"),
             ("AA (adversarial)", self._format_aa_attacks(),
              "green" if self._selected_aa_attacks() else "dim"),
+            ("Pipeline plan", self._pipeline_preview_text(), "cyan"),
             ("Video model", f"{video_display or video_endpoint or '?'}  ·  kling prompt slot {resolve_cli_kling_prompt_slot(c, DEFAULT_KLING_PROMPT_SLOT)}", ""),
             ("Selfie model(s)", f"{', '.join(selfie_models) if selfie_models else '(none)'}"
              + ("  ·  FAN-OUT: one full chain per model" if len(selfie_models) > 1 else ""),
@@ -4902,7 +5005,7 @@ class KlingAutomationUI:
     # the table draws a divider, grouping: stage toggles / models+prompts /
     # image prep / scoring+scope. Labels (not indexes) so _run_settings_rows
     # can evolve without silently mis-grouping.
-    _SETTINGS_TABLE_SECTION_AFTER = {"Loop (ping-pong)", "Selfie prompt", "Step 2.5 selfie expand"}
+    _SETTINGS_TABLE_SECTION_AFTER = {"Loop (ping-pong)", "Pipeline plan", "Selfie prompt", "Step 2.5 selfie expand"}
 
     def _render_run_settings_table(self, title: str = "Main run settings",
                                    caption: "Optional[str]" = None) -> None:
@@ -5180,6 +5283,7 @@ class KlingAutomationUI:
             (f"💥 Crush (quality-destroy): {self._format_crush_resolutions()} — pick (spacebar)", "crush"),
             (f"🛡️  AA (adversarial pass): {self._format_aa_attacks()} — pick (spacebar)", "aa"),
             (f"📼 Oldcam versions: {self._format_oldcam_versions()} — pick (spacebar)", "oldcam"),
+            (f"🧩 Output mode: {self._format_fanout_mode()} — toggle", "fanout_mode"),
             # ── Run scope ──
             (f"📦 Max cases per run: {self._read_max_cases_setting()}", "batch_max"),
             (f"📦 Reprocess mode: {c.get('automation_reprocess_mode', 'skip')}", "batch_reprocess"),
@@ -5199,7 +5303,7 @@ class KlingAutomationUI:
         ("Step 2 · Selfie", ("selfie_models", "selfie_prompt", "similarity")),
         ("Step 2.5 · Selfie expand", ("sexp_provider", "sexp_blend", "sexp_percent")),
         ("Step 3 · Video (Kling)", ("video_model", "kling_prompt")),
-        ("Post · rPPG → Loop → Crush → AA → Oldcam", ("rppg", "loop", "crush", "aa", "oldcam")),
+        ("Post · rPPG → Loop → Crush → AA → Oldcam", ("rppg", "loop", "crush", "aa", "oldcam", "fanout_mode")),
         ("Run scope", ("batch_max", "batch_reprocess", "root")),
         (None, ("prompts", "all", "done")),
     )
@@ -5336,6 +5440,8 @@ class KlingAutomationUI:
                     self._qs_pick_aa_attacks()
                 elif choice == "oldcam":
                     self._qs_pick_oldcam_versions()
+                elif choice == "fanout_mode":
+                    self._qs_pick_fanout_mode()
                 # ── Run scope ──
                 elif choice == "batch_max":
                     self._qs_choice("Max cases per run:", "automation_max_cases_per_run",

@@ -996,13 +996,86 @@ class ConfigPanel(tk.Frame):
             check.pack(side=tk.LEFT, padx=(0, 8))
             self.aa_attack_checks[_key] = check
 
+        # Output-mode + pipeline preview (2026-06-19). Placed in the AA column
+        # BENEATH the green AA box (and ABOVE the Re-Run column, which shifts
+        # down) to conserve scarce vertical space in the left Oldcam/rPPG/Crush
+        # stack (user direction 2026-06-19). Output mode picks how the enabled
+        # modifiers combine: "Separate + combined" (powerset — every subset) vs
+        # "Combined only" (one cumulative chain). The preview line shows the
+        # resulting plan live, from the SAME shared planner the queue uses
+        # (automation.postproc_plan) so it can never disagree.
+        _mode_bg = "#1F2A3A"
+        _mode_border = "#3A5E7D"
+        self.fanout_controls_frame = tk.Frame(
+            _aa_col,
+            bg=_mode_bg,
+            highlightthickness=1,
+            highlightbackground=_mode_border,
+            padx=6,
+            pady=2,
+        )
+        self.fanout_controls_frame.pack(fill=tk.X, pady=(6, 0))
+        _mode_row = tk.Frame(self.fanout_controls_frame, bg=_mode_bg)
+        _mode_row.pack(anchor="w", fill=tk.X)
+        tk.Label(
+            _mode_row,
+            text="Output mode:",
+            bg=_mode_bg,
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 10),
+        ).pack(side=tk.LEFT)
+        # Initialize with the user-facing DISPLAY string (not the internal key)
+        # so the combobox never shows a raw "separate_and_combined" if
+        # apply_config hasn't run yet (gemini MEDIUM).
+        self.fanout_mode_var = tk.StringVar(
+            value=self._FANOUT_DISPLAY["separate_and_combined"]
+        )
+        self.fanout_mode_combo = ttk.Combobox(
+            _mode_row,
+            state="readonly",
+            width=30,
+            textvariable=self.fanout_mode_var,
+            values=[
+                "Separate + combined (powerset)",
+                "Combined only (one chain)",
+            ],
+            font=(FONT_FAMILY, 9),
+        )
+        self.fanout_mode_combo.pack(side=tk.LEFT, padx=(6, 0))
+        self.fanout_mode_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._on_fanout_mode_changed()
+        )
+        # Live read-only plan preview.
+        self.pipeline_preview_label = tk.Label(
+            self.fanout_controls_frame,
+            text="",
+            bg=_mode_bg,
+            fg=COLORS["accent_blue"],
+            font=(FONT_FAMILY, 8),
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=320,
+        )
+        self.pipeline_preview_label.pack(anchor="w", fill=tk.X, pady=(2, 0))
+
         # ONE shared Re-Run column, now packed BENEATH the AA box (inside
         # _aa_col) per user direction 2026-06-18 (was a sibling column in rA).
         # Applies to whatever is selected: any Oldcam versions AND/OR rPPG /
         # Crush / AA, and re-loops first when Loop Video is on
         # (queue_manager.rerun_oldcam_only handles the full Phase E ordering).
-        _shared_rerun_col = tk.Frame(_aa_col, bg=COLORS["bg_input"])
-        _shared_rerun_col.pack(anchor="w", pady=(6, 0))
+        # Distinct GROOVE border (beveled, not the flat coloured highlight the
+        # stage boxes use) so the Re-Run actions read as a different KIND of
+        # control — they re-apply the stages above, they aren't one of them
+        # (user direction 2026-06-19).
+        _shared_rerun_col = tk.Frame(
+            _aa_col,
+            bg=COLORS["bg_input"],
+            relief=tk.GROOVE,
+            bd=2,
+            padx=6,
+            pady=4,
+        )
+        _shared_rerun_col.pack(anchor="w", fill=tk.X, pady=(6, 0))
         _rerun_label_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
         _rerun_label_row.pack(anchor="w")
         tk.Label(
@@ -1865,6 +1938,24 @@ class ConfigPanel(tk.Frame):
         self.config["oldcam_versions"] = selected_versions
         self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v24"
 
+        # Output (fan-out) mode + live pipeline preview (2026-06-19). Bridge the
+        # automation_-prefixed key the CLI writes so a mode chosen in the CLI
+        # shows here too. Default = powerset.
+        from automation.postproc_plan import normalize_mode as _norm_fanout
+        # Prefer the CANONICAL automation_ key (the fingerprinted one the CLI
+        # writes) over the GUI alias so a mode set in the CLI is honoured here,
+        # then write BOTH back in lockstep so neither surface can drift
+        # (CodeRabbit Major — same class as the rppg_per_oldcam_fanout bridge).
+        _fanout_mode = _norm_fanout(
+            self.config.get("automation_postproc_fanout_mode",
+                            self.config.get("postproc_fanout_mode", "separate_and_combined"))
+        )
+        self.config["automation_postproc_fanout_mode"] = _fanout_mode
+        self.config["postproc_fanout_mode"] = _fanout_mode
+        if hasattr(self, "fanout_mode_var"):
+            self.fanout_mode_var.set(self._FANOUT_DISPLAY.get(_fanout_mode, self._FANOUT_DISPLAY["separate_and_combined"]))
+        self._refresh_pipeline_preview()
+
         # Reprocess options
         self.reprocess_var.set(self.config.get("allow_reprocess", False))
         self.reprocess_mode_var.set(self.config.get("reprocess_mode", "increment"))
@@ -2228,12 +2319,14 @@ class ConfigPanel(tk.Frame):
         """Handle loop video checkbox change."""
         self.config["loop_videos"] = self.loop_video_var.get()
         status = "enabled" if self.loop_video_var.get() else "disabled"
+        self._refresh_pipeline_preview()
         self._notify_change(f"Loop video {status}")
 
     def _on_rppg_changed(self):
         """Handle rPPG injection checkbox change."""
         self.config["rppg_enabled"] = self.rppg_var.get()
         status = "enabled" if self.rppg_var.get() else "disabled"
+        self._refresh_pipeline_preview()
         self._notify_change(f"rPPG injection {status}")
 
     def _on_rppg_per_oldcam_fanout_changed(self):
@@ -2309,6 +2402,7 @@ class ConfigPanel(tk.Frame):
             status = "enabled (" + ", ".join(selected) + ")"
         else:
             status = "disabled"
+        self._refresh_pipeline_preview()
         self._notify_change(f"Quality crush {status}")
 
     def _on_aa_attacks_changed(self) -> None:
@@ -2329,6 +2423,7 @@ class ConfigPanel(tk.Frame):
             status = "enabled (" + ", ".join(selected) + ")"
         else:
             status = "disabled"
+        self._refresh_pipeline_preview()
         self._notify_change(f"AA adversarial pass {status}")
 
     def _oldcam_version_key(self, version: str) -> int:
@@ -2371,10 +2466,88 @@ class ConfigPanel(tk.Frame):
         self.config["oldcam_versions"] = selected_versions
         # Legacy compatibility key: highest selected version, or v24 default when empty.
         self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v24"
+        self._refresh_pipeline_preview()
         if selected_versions:
             self._notify_change("Oldcam versions set to " + ", ".join(selected_versions))
         else:
             self._notify_change("Oldcam disabled (no versions selected)")
+
+    # Display labels for the output-mode combobox (value <-> friendly text).
+    _FANOUT_DISPLAY = {
+        "separate_and_combined": "Separate + combined (powerset)",
+        "combined_only": "Combined only (one chain)",
+    }
+    _FANOUT_DISPLAY_TO_VALUE = {v: k for k, v in _FANOUT_DISPLAY.items()}
+
+    def _pipeline_preview_text(self) -> str:
+        """Read-only one-line summary of the resulting post-processing plan.
+
+        Built from the SAME shared planner the queue executor uses
+        (automation.postproc_plan) so the preview can never disagree with what
+        actually runs. Reads config directly via the canonical normalizers so it
+        is testable without live Tk widgets.
+        """
+        from automation.postproc_plan import build_plan, plan_preview_line
+        from automation.video_crush import normalize_crush_resolutions
+        from automation.video_aa import normalize_aa_attacks
+        from automation.oldcam import normalize_oldcam_versions
+
+        # Defensive: a corrupted/hand-edited config could be a non-dict; treat
+        # it as empty rather than crashing the preview render (gemini HIGH).
+        cfg = self.config if isinstance(self.config, dict) else {}
+        ckwargs = {}
+        if "crush_resolutions" in cfg:
+            ckwargs["resolutions"] = cfg["crush_resolutions"]
+        if "crush_enabled" in cfg:
+            ckwargs["legacy_enabled"] = cfg["crush_enabled"]
+        crush = normalize_crush_resolutions(**ckwargs)
+
+        aa_present = ("aa_attacks" in cfg) or ("aa_enabled" in cfg)
+        akwargs = {}
+        if "aa_attacks" in cfg:
+            akwargs["attacks"] = cfg["aa_attacks"]
+        if "aa_enabled" in cfg:
+            akwargs["legacy_enabled"] = cfg["aa_enabled"]
+        aa = normalize_aa_attacks(**akwargs) if aa_present else []
+
+        oldcam = normalize_oldcam_versions(
+            cfg.get("oldcam_versions", cfg.get("oldcam_version", []))
+        )
+        plan = build_plan(
+            rppg_enabled=bool(cfg.get("rppg_enabled", False)),
+            loop_enabled=bool(cfg.get("loop_videos", False)),
+            crush_resolutions=crush,
+            aa_attacks=aa,
+            oldcam_versions=oldcam,
+            mode=str(cfg.get("postproc_fanout_mode", "separate_and_combined")),
+        )
+        return plan_preview_line(plan)
+
+    def _refresh_pipeline_preview(self) -> None:
+        """Update the live preview label (no-op if the widget isn't built yet)."""
+        label = getattr(self, "pipeline_preview_label", None)
+        if label is None:
+            return
+        try:
+            label.config(text=self._pipeline_preview_text())
+        except Exception:
+            # Don't crash the UI on a preview build error, but log it so
+            # planner/normalizer wiring breakage is debuggable (CodeRabbit).
+            logger.debug("Failed to refresh pipeline preview", exc_info=True)
+
+    def _on_fanout_mode_changed(self) -> None:
+        """Persist the chosen output (fan-out) mode and refresh the preview."""
+        display = self.fanout_mode_var.get()
+        value = self._FANOUT_DISPLAY_TO_VALUE.get(display, "separate_and_combined")
+        # Write BOTH keys so the GUI alias and the canonical CLI key stay in
+        # lockstep (CodeRabbit Major — no cross-surface drift).
+        self.config["postproc_fanout_mode"] = value
+        self.config["automation_postproc_fanout_mode"] = value
+        self._refresh_pipeline_preview()
+        self._notify_change(
+            "Output mode: "
+            + ("powerset (separate + combined)" if value == "separate_and_combined" else "combined only")
+        )
 
     def _on_oldcam_rerun_clicked(self):
         """Trigger Oldcam-only rerun callback from the host window."""

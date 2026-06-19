@@ -22,10 +22,12 @@ from automation.logger import build_safe_config_snapshot, create_automation_logg
 from automation.manifest import AutomationManifest, now_iso
 from automation.oldcam import (
     _version_key as _oldcam_version_key,
+    build_oldcam_output_path,
     discover_oldcam_versions,
     ensure_oldcam_dependencies,
     normalize_oldcam_versions,
     run_oldcam_all,
+    run_oldcam_version,
 )
 from automation.rppg import is_rppg_artifact, run_rppg
 from automation.video_loop import check_ffmpeg_available, create_looped_video
@@ -802,6 +804,207 @@ class AutoPipelineRunner:
             prompt = DEFAULT_SELFIE_PROMPT
             source = "default_seeded_prompt"
         return {"slot": slot, "prompt": prompt, "source": source}
+
+    def _apply_one_postproc_step(self, step, current: Path, repo_root: Path,
+                                 overwrite: bool) -> Optional[Path]:
+        """Apply ONE post-processing step to ``current`` and return its output.
+
+        Reuses the exact per-step processors the cascade calls. Returns the
+        produced Path, the unchanged input when the step is a no-op (rPPG on an
+        already-injected file), or ``None`` on a graceful skip (tool missing /
+        encode failure) so the caller abandons that variant. In skip mode
+        (``overwrite=False``) deterministic siblings are reused instead of
+        re-encoded — this is what gives the powerset prefix-sharing for free.
+        """
+        from automation.postproc_plan import Modifier
+
+        m = step.modifier
+        if m is Modifier.RPPG:
+            if is_rppg_artifact(current):
+                return current
+            sibling = current.with_name(f"{current.stem}-rppg{current.suffix}")
+            if not overwrite and sibling.exists():
+                return sibling
+            rppg_mode = str(self.automation.get("automation_rppg_mode") or "iterative").strip().lower()
+            out = run_rppg(
+                video_path=current,
+                repo_root=repo_root,
+                progress_cb=self.progress_cb,
+                keep_metrics=self._read_bool("automation_rppg_metrics_in_filename", False),
+                iterative=(rppg_mode == "iterative"),
+                iterate_from_baseline=self._read_bool("automation_rppg_iterate_from_baseline", True),
+                skip_diagnosis=self._read_bool("automation_rppg_skip_diagnosis", True),
+                skip_kinematic_gate=self._read_bool("automation_rppg_skip_kinematic_gate", True),
+                landmark_stride=self._read_int("automation_rppg_landmark_stride", 1, min_value=1),
+                verbose=self.verbose_logging,
+            )
+            return Path(out) if (out and Path(out).exists()) else None
+        if m is Modifier.LOOP:
+            looped = create_looped_video(
+                str(current), suffix="_looped", overwrite=overwrite,
+                log_callback=self.progress_cb,
+            )
+            return Path(looped) if (looped and Path(looped).exists()) else None
+        if m is Modifier.CRUSH:
+            height = CRUSH_RESOLUTIONS.get(step.option or "")
+            if not height:
+                return None
+            crushed = crush_video(
+                str(current), suffix=crush_suffix(step.option or ""),
+                target_height=height, overwrite=overwrite,
+                log_callback=self.progress_cb,
+            )
+            return Path(crushed) if (crushed and Path(crushed).exists()) else None
+        if m is Modifier.AA:
+            # Skip-mode reuse, like the other steps (CodeRabbit Major): the AA
+            # output stem is deterministic, so in skip mode reuse an existing
+            # sibling instead of re-running the (slow, isolated-venv) attack.
+            expected = current.with_name(
+                f"{current.stem}{aa_suffix(step.option or '')}{current.suffix}"
+            )
+            if not overwrite and expected.exists():
+                return expected
+            generator = str(self.automation.get("automation_aa_generator", "generic") or "")
+            produced = run_aa(
+                str(current), attack=step.option,
+                strength=self._read_float("automation_aa_strength", 0.5),
+                generator=generator or None,
+                log_callback=self.progress_cb, repo_root=repo_root,
+            )
+            return Path(produced) if (produced and Path(produced).exists()) else None
+        if m is Modifier.OLDCAM:
+            expected = build_oldcam_output_path(current, step.option or "")
+            if not overwrite and expected.exists():
+                return expected
+            out = run_oldcam_version(
+                video_path=current, version=step.option or "",
+                repo_root=repo_root, progress_cb=self.progress_cb,
+            )
+            return Path(out) if (out and Path(out).exists()) else None
+        return None
+
+    def _run_powerset_extras(self, *, case_key: str,
+                             rppg_base_path: Optional[Path],
+                             reprocess_mode: str) -> List[Path]:
+        """Produce the proper-subset (powerset) post-processing variants.
+
+        Only runs in ``separate_and_combined`` fan-out mode. The existing
+        cascade already produced the FULL combined chain (every enabled
+        modifier) + its sub-fan-out; this adds every PROPER subset of the
+        enabled modifier types so the user also gets each modifier — and each
+        intermediate combo — standalone, every variant sequenced in the
+        canonical order from the raw Kling base.
+
+        Variants are written to disk + logged but NOT manifest-tracked as
+        deliverables: the cascade's full-chain output remains the primary
+        deliverable, so the resume / finished_at contract is untouched. On
+        resume the variants are re-derived cheaply (skip-mode on-disk reuse).
+        Graceful-skip per step; aborts promptly between variants.
+        """
+        from automation.postproc_plan import build_plan, normalize_mode
+
+        mode = normalize_mode(self.automation.get("automation_postproc_fanout_mode"))
+        if mode != "separate_and_combined":
+            return []
+        # Abort already pending → add nothing and let the existing post-chain
+        # abort checkpoints (_run_extra_branches) handle the revert. Powerset
+        # extras are BONUS outputs; they must never raise their own abort that
+        # would bypass branch-metadata registration (the finally in
+        # _run_extra_branches), which resume depends on.
+        if self.abort_event.is_set():
+            return []
+        # The raw Kling output is every variant's starting point. rPPG-prefixed
+        # recipes inject on these clean frames (the load-bearing constraint).
+        video_step = self.manifest.get_step(case_key, "video_generate")
+        video_out = video_step.get("output") if isinstance(video_step, dict) else None
+        raw_base = Path(video_out) if video_out else None
+        if raw_base is None or not raw_base.exists() or raw_base.suffix.lower() != ".mp4":
+            return []
+        # On a resume path the reused video_generate output can ITSELF already be
+        # an rPPG artifact (pre-injected upstream). Powerset's non-rPPG subsets
+        # must derive from clean frames, so skip the fan-out rather than build
+        # variants off an rPPG'd base (code-reviewer LOW; rare edge).
+        if is_rppg_artifact(raw_base):
+            self.logger.info(
+                "case %s powerset skipped: base %s is already an rPPG artifact",
+                case_key, raw_base.name,
+            )
+            return []
+
+        repo_root = Path(__file__).resolve().parent.parent
+        oldcam_versions = self._oldcam_versions() if self._oldcam_active() else []
+        if oldcam_versions == ["all"]:
+            # Expand the symbolic "all" so each version is a concrete variant.
+            oldcam_versions = discover_oldcam_versions(repo_root)
+
+        plan = build_plan(
+            rppg_enabled=self._read_bool("automation_rppg_enabled", False),
+            loop_enabled=self._read_bool("automation_loop_enabled", False),
+            crush_resolutions=self._crush_resolutions(),
+            aa_attacks=self._aa_attacks(),
+            oldcam_versions=oldcam_versions,
+            mode="separate_and_combined",
+        )
+        enabled = set(plan.enabled_modifiers)
+        if len(enabled) < 2:
+            # Powerset == the single full chain; the cascade already produced it.
+            return []
+
+        overwrite = reprocess_mode != "skip"
+        # Prefix-memo cache (key = tuple of (modifier, option) for the applied
+        # prefix). Seed the rPPG-on-raw prefix with the cascade's already-
+        # injected base so we never re-run the expensive GPU injection.
+        cache: Dict[tuple, Path] = {}
+        if rppg_base_path is not None and Path(rppg_base_path).exists():
+            cache[(("rppg", None),)] = Path(rppg_base_path)
+
+        produced: List[Path] = []
+        raw_base = Path(raw_base)
+        # Surface the fan-out size up front — powerset is bounded but can be
+        # large (2^N-1 x sub-options); the count is the user's cost guardrail
+        # (code-reviewer LOW; no silent caps).
+        extra_count = sum(1 for r in plan.recipes if set(r.modifiers()) != enabled)
+        self.logger.info(
+            "case %s powerset fan-out: producing %d extra variant(s)",
+            case_key, extra_count,
+        )
+        for recipe in plan.recipes:
+            if set(recipe.modifiers()) == enabled:
+                continue  # the full chain — cascade already produced it.
+            if self.abort_event.is_set():
+                # Stop producing bonus variants promptly; do NOT raise (see the
+                # entry guard above) — the downstream checkpoint reverts the case.
+                break
+            current = raw_base
+            prefix: tuple = ()
+            ok = True
+            for step in recipe.steps:
+                if self.abort_event.is_set():
+                    ok = False
+                    break
+                prefix = prefix + ((step.modifier.value, step.option),)
+                if prefix in cache:
+                    current = cache[prefix]
+                    continue
+                nxt = self._apply_one_postproc_step(step, current, repo_root, overwrite)
+                if nxt is None:
+                    ok = False
+                    break
+                cache[prefix] = nxt
+                current = nxt
+            if ok and current != raw_base and current.exists():
+                produced.append(current)
+
+        if produced:
+            self.logger.info(
+                "case %s powerset extras: %d variant(s): %s",
+                case_key, len(produced), ", ".join(p.name for p in produced),
+            )
+            self._report(
+                f"[{case_key}] Powerset fan-out: {len(produced)} extra variant(s) produced",
+                "info",
+            )
+        return produced
 
     def _finalize_case(self, case_entry: Dict[str, Any], final_status: str) -> str:
         status_value = "complete" if final_status == "completed" else final_status
@@ -2632,6 +2835,11 @@ class AutoPipelineRunner:
                         output=final,
                         meta={**self._policy_meta("rppg", True, reprocess_mode), "already_injected": True},
                     )
+                self._run_powerset_extras(
+                    case_key=case_key,
+                    rppg_base_path=rppg_base_path,
+                    reprocess_mode=reprocess_mode,
+                )
                 self._run_extra_branches(
                     case_key=case_key,
                     case_dir=case_dir,
@@ -2781,6 +2989,11 @@ class AutoPipelineRunner:
         else:
             self.manifest.update_step(case_key, "rppg", "skipped", error="rPPG disabled")
 
+        self._run_powerset_extras(
+            case_key=case_key,
+            rppg_base_path=rppg_base_path,
+            reprocess_mode=reprocess_mode,
+        )
         self._run_extra_branches(
             case_key=case_key,
             case_dir=case_dir,

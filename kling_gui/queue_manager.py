@@ -1978,6 +1978,17 @@ class QueueManager:
                         # at the top-of-loop pause check (gemini MEDIUM cosmetic).
                         return
 
+                    # Capture the powerset fan-out base = the raw Kling frames
+                    # as they exist on disk NOW, BEFORE Loop/Crush/AA mutate
+                    # ``final_video``. When rPPG was requested-but-failed,
+                    # ``result`` was renamed to ``<stem>-NORPPG`` (line ~1964)
+                    # and no longer exists; fall back to the current
+                    # ``final_video`` (the -NORPPG file) so the non-rPPG subsets
+                    # still get produced (code-reviewer MEDIUM: otherwise the
+                    # GUI silently makes ZERO powerset variants on rPPG failure,
+                    # a parity gap vs the CLI which never renames).
+                    powerset_base = result if (result and Path(result).exists()) else final_video
+
                     # Step 2: Loop on the rPPG'd (or raw if rPPG was
                     # OFF/skipped) base. After this step, ``final_video``
                     # is the single source every Oldcam version + the
@@ -2194,6 +2205,17 @@ class QueueManager:
                                 str(preferred) if preferred.exists()
                                 else last_rppg
                             )
+
+                    # Step 5: powerset fan-out (2026-06-19). In
+                    # ``separate_and_combined`` mode, additionally produce every
+                    # PROPER subset of the enabled modifiers (each modifier and
+                    # intermediate combo standalone) from the raw Kling base, so
+                    # the user gets e.g. rPPG-only AND oldcam-only AND the combo.
+                    # No-op in ``combined_only`` mode. ``result`` is the raw
+                    # Kling output (final_video has been mutated through the
+                    # cascade). Variants land on disk; the cascade's full-chain
+                    # ``final_video`` stays the headline deliverable.
+                    self._run_powerset_extras_gui(powerset_base, item)
 
                     # Final abort guard before marking the item done — an abort
                     # during the fan-out loop must not fall through to "done".
@@ -2919,6 +2941,133 @@ class QueueManager:
             self.log(f"Error applying Oldcam Finish: {e}", "warning")
             self._last_oldcam_run_summary = None
             return None
+
+    # ------------------------------------------------------------------
+    # Powerset post-processing fan-out (2026-06-19). Mirrors the CLI
+    # AutoPipelineRunner._run_powerset_extras. The cascade above already
+    # produced the FULL combined chain + its sub-fan-out; this adds every
+    # PROPER subset of the enabled modifier types so the user also gets each
+    # modifier (and intermediate combo) standalone, each sequenced in the
+    # canonical order from the raw Kling base. Only runs in
+    # ``separate_and_combined`` mode. Variants land on disk + are logged;
+    # graceful-skip per step; aborts promptly between variants.
+    # ------------------------------------------------------------------
+    def _postproc_fanout_mode(self) -> str:
+        from automation.postproc_plan import normalize_mode
+
+        return normalize_mode(self.get_config().get("postproc_fanout_mode"))
+
+    def _apply_one_postproc_step_gui(self, step, current: str, item) -> Optional[str]:
+        """Apply ONE recipe step via the existing GUI per-stage helpers."""
+        from automation.postproc_plan import Modifier
+        from automation.video_crush import CRUSH_RESOLUTIONS, crush_suffix
+
+        m = step.modifier
+        if m is Modifier.RPPG:
+            try:
+                from automation.rppg import is_rppg_artifact
+                if is_rppg_artifact(Path(current)):
+                    return current
+            except Exception:
+                pass
+            return self._rppg_video(current, item)
+        if m is Modifier.LOOP:
+            return self._loop_video(current, item)
+        if m is Modifier.CRUSH:
+            height = CRUSH_RESOLUTIONS.get(step.option or "")
+            if not height:
+                return None
+            return self._crush_video(
+                current, item, target_height=height,
+                suffix=crush_suffix(step.option or ""),
+            )
+        if m is Modifier.AA:
+            return self._aa_video(current, item, attack=step.option or "prime")
+        if m is Modifier.OLDCAM:
+            # Always re-run (like the cascade's _oldcam_video and this module's
+            # _crush_video / _aa_video, which never short-circuit) so an explicit
+            # re-run / overwrite regenerates instead of silently reusing a stale
+            # file (gemini MEDIUM). Within a single powerset pass the prefix
+            # cache still prevents producing the same variant twice.
+            return self._run_oldcam_version(current, step.option or "", item)
+        return None
+
+    def _run_powerset_extras_gui(self, raw_base: str, item) -> List[str]:
+        """Produce the proper-subset (powerset) variants for one queue item."""
+        from automation.postproc_plan import build_plan
+
+        if self._postproc_fanout_mode() != "separate_and_combined":
+            return []
+        if not raw_base or not Path(raw_base).exists():
+            return []
+        if self._abort_requested():
+            return []
+        # Non-rPPG subsets must derive from clean frames — skip if the base is
+        # itself already an rPPG artifact (code-reviewer LOW; rare resume edge).
+        try:
+            from automation.rppg import is_rppg_artifact
+            if is_rppg_artifact(Path(raw_base)):
+                return []
+        except Exception:
+            pass
+
+        crush_resolutions = [lbl for lbl, _h in self._get_crush_resolutions()]
+        oldcam_versions = self._get_oldcam_versions_to_run()
+        plan = build_plan(
+            rppg_enabled=self._rppg_enabled(),
+            loop_enabled=bool(self.get_config().get("loop_videos", False)),
+            crush_resolutions=crush_resolutions,
+            aa_attacks=self._get_aa_attacks(),
+            oldcam_versions=oldcam_versions,
+            mode="separate_and_combined",
+        )
+        enabled = set(plan.enabled_modifiers)
+        if len(enabled) < 2:
+            return []
+
+        # Seed the rPPG-on-raw prefix with the cascade's already-injected base
+        # (``<stem>-rppg.mp4`` next to the raw Kling output) so we never re-run
+        # the expensive GPU injection for the standalone / combo rPPG variants.
+        cache: Dict[tuple, str] = {}
+        rppg_base = self._build_rppg_output_path(Path(raw_base))
+        if rppg_base.exists():
+            cache[(("rppg", None),)] = str(rppg_base)
+
+        produced: List[str] = []
+        # Surface the fan-out size up front (cost guardrail; no silent caps).
+        extra_count = sum(1 for r in plan.recipes if set(r.modifiers()) != enabled)
+        self.log(f"Powerset fan-out: producing {extra_count} extra variant(s)", "info")
+        for recipe in plan.recipes:
+            if set(recipe.modifiers()) == enabled:
+                continue  # full chain — the cascade already produced it.
+            if self._abort_requested():
+                break
+            current = raw_base
+            prefix: tuple = ()
+            ok = True
+            for step in recipe.steps:
+                if self._abort_requested():
+                    ok = False
+                    break
+                prefix = prefix + ((step.modifier.value, step.option),)
+                if prefix in cache:
+                    current = cache[prefix]
+                    continue
+                nxt = self._apply_one_postproc_step_gui(step, current, item)
+                if not nxt:
+                    ok = False
+                    break
+                cache[prefix] = nxt
+                current = nxt
+            if ok and current and current != raw_base and Path(current).exists():
+                produced.append(current)
+
+        if produced:
+            self.log(
+                f"Powerset fan-out: {len(produced)} extra variant(s) produced",
+                "info",
+            )
+        return produced
 
     # ------------------------------------------------------------------
     # Quality crush (2026-06-16): 480p / CRF 35 re-encode that mimics

@@ -921,3 +921,93 @@ def test_banner_ascii_fits_a_79_column_terminal():
     lines = _BANNER_ASCII.splitlines()
     assert lines, "banner must not be empty"
     assert all(len(line) <= 79 for line in lines), "banner must fit 79 cols"
+
+
+# ---------------------------------------------------------------------------
+# Post-processing OFF affordance + pipeline preview + fan-out mode (2026-06-19).
+# ---------------------------------------------------------------------------
+
+
+def test_run_settings_rows_includes_pipeline_plan():
+    cfg = dict(AUTOMATION_DEFAULTS)
+    cfg.update({
+        "automation_rppg_enabled": True,
+        "automation_aa_attacks": ["prime"],
+        "automation_oldcam_enabled": True,
+        "automation_oldcam_version": ["v13"],
+        "automation_crush_resolutions": [],
+        "automation_loop_enabled": False,
+        "automation_postproc_fanout_mode": "separate_and_combined",
+    })
+    ui = _bare_ui(cfg)
+    rows = {label: value for label, value, _ in ui._run_settings_rows()}
+    assert "Pipeline plan" in rows
+    plan = rows["Pipeline plan"]
+    assert plan.startswith("Kling → ")
+    assert "powerset" in plan
+    # 7 variants -> 6 extra beyond the headline.
+    assert "+ 6 more variants" in plan
+
+
+def test_pipeline_plan_empty_when_no_modifiers():
+    cfg = dict(AUTOMATION_DEFAULTS)
+    cfg.update({
+        "automation_rppg_enabled": False,
+        "automation_aa_attacks": [],
+        "automation_oldcam_enabled": False,
+        "automation_oldcam_version": [],
+        "automation_crush_resolutions": [],
+        "automation_loop_enabled": False,
+    })
+    ui = _bare_ui(cfg)
+    rows = {label: value for label, value, _ in ui._run_settings_rows()}
+    assert rows["Pipeline plan"] == "Kling (no post-processing)"
+
+
+@pytest.mark.parametrize(
+    "picker,config_key",
+    [
+        ("_qs_pick_crush_resolutions", "automation_crush_resolutions"),
+        ("_qs_pick_aa_attacks", "automation_aa_attacks"),
+        ("_qs_pick_oldcam_versions", "automation_oldcam_version"),
+    ],
+)
+def test_off_choice_clears_selection(picker, config_key, monkeypatch):
+    import kling_automation_ui as kmod
+
+    cfg = dict(AUTOMATION_DEFAULTS)
+    cfg.update({
+        "automation_crush_resolutions": ["720p"],
+        "automation_aa_attacks": ["prime"],
+        "automation_oldcam_version": ["v13"],
+        "automation_oldcam_enabled": True,
+    })
+    ui = _bare_ui(cfg)
+    ui.print_yellow = lambda *a, **k: None
+
+    class _Ask:
+        # Simulate the user ticking the explicit OFF row (plus a stray real
+        # selection, which OFF must override).
+        def ask(self):
+            return [kmod._OFF_CHOICE_VALUE, "720p"]
+
+    monkeypatch.setattr(kmod.questionary, "checkbox", lambda *a, **k: _Ask())
+    getattr(ui, picker)()
+    assert ui.config[config_key] == []
+
+
+def test_fanout_mode_toggle_persists(monkeypatch):
+    import kling_automation_ui as kmod
+
+    cfg = dict(AUTOMATION_DEFAULTS)
+    cfg["automation_postproc_fanout_mode"] = "separate_and_combined"
+    ui = _bare_ui(cfg)
+
+    class _Ask:
+        def ask(self):
+            return "combined_only"
+
+    monkeypatch.setattr(kmod.questionary, "select", lambda *a, **k: _Ask())
+    changed = ui._qs_pick_fanout_mode()
+    assert changed is True
+    assert ui.config["automation_postproc_fanout_mode"] == "combined_only"
