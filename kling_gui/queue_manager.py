@@ -1987,7 +1987,7 @@ class QueueManager:
                     # still get produced (code-reviewer MEDIUM: otherwise the
                     # GUI silently makes ZERO powerset variants on rPPG failure,
                     # a parity gap vs the CLI which never renames).
-                    powerset_base = result if Path(result).exists() else final_video
+                    powerset_base = result if (result and Path(result).exists()) else final_video
 
                     # Step 2: Loop on the rPPG'd (or raw if rPPG was
                     # OFF/skipped) base. After this step, ``final_video``

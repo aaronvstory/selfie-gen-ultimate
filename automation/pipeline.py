@@ -915,7 +915,8 @@ class AutoPipelineRunner:
             return []
         # The raw Kling output is every variant's starting point. rPPG-prefixed
         # recipes inject on these clean frames (the load-bearing constraint).
-        video_out = self.manifest.get_step(case_key, "video_generate").get("output")
+        video_step = self.manifest.get_step(case_key, "video_generate")
+        video_out = video_step.get("output") if isinstance(video_step, dict) else None
         raw_base = Path(video_out) if video_out else None
         if raw_base is None or not raw_base.exists() or raw_base.suffix.lower() != ".mp4":
             return []
