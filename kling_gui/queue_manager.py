@@ -1978,6 +1978,17 @@ class QueueManager:
                         # at the top-of-loop pause check (gemini MEDIUM cosmetic).
                         return
 
+                    # Capture the powerset fan-out base = the raw Kling frames
+                    # as they exist on disk NOW, BEFORE Loop/Crush/AA mutate
+                    # ``final_video``. When rPPG was requested-but-failed,
+                    # ``result`` was renamed to ``<stem>-NORPPG`` (line ~1964)
+                    # and no longer exists; fall back to the current
+                    # ``final_video`` (the -NORPPG file) so the non-rPPG subsets
+                    # still get produced (code-reviewer MEDIUM: otherwise the
+                    # GUI silently makes ZERO powerset variants on rPPG failure,
+                    # a parity gap vs the CLI which never renames).
+                    powerset_base = result if Path(result).exists() else final_video
+
                     # Step 2: Loop on the rPPG'd (or raw if rPPG was
                     # OFF/skipped) base. After this step, ``final_video``
                     # is the single source every Oldcam version + the
@@ -2204,7 +2215,7 @@ class QueueManager:
                     # Kling output (final_video has been mutated through the
                     # cascade). Variants land on disk; the cascade's full-chain
                     # ``final_video`` stays the headline deliverable.
-                    self._run_powerset_extras_gui(result, item)
+                    self._run_powerset_extras_gui(powerset_base, item)
 
                     # Final abort guard before marking the item done — an abort
                     # during the fan-out loop must not fall through to "done".
@@ -2989,6 +3000,14 @@ class QueueManager:
             return []
         if self._abort_requested():
             return []
+        # Non-rPPG subsets must derive from clean frames — skip if the base is
+        # itself already an rPPG artifact (code-reviewer LOW; rare resume edge).
+        try:
+            from automation.rppg import is_rppg_artifact
+            if is_rppg_artifact(Path(raw_base)):
+                return []
+        except Exception:
+            pass
 
         crush_resolutions = [lbl for lbl, _h in self._get_crush_resolutions()]
         oldcam_versions = self._get_oldcam_versions_to_run()
@@ -3013,6 +3032,9 @@ class QueueManager:
             cache[(("rppg", None),)] = str(rppg_base)
 
         produced: List[str] = []
+        # Surface the fan-out size up front (cost guardrail; no silent caps).
+        extra_count = sum(1 for r in plan.recipes if set(r.modifiers()) != enabled)
+        self.log(f"Powerset fan-out: producing {extra_count} extra variant(s)", "info")
         for recipe in plan.recipes:
             if set(recipe.modifiers()) == enabled:
                 continue  # full chain — the cascade already produced it.

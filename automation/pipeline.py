@@ -911,6 +911,16 @@ class AutoPipelineRunner:
         raw_base = Path(video_out) if video_out else None
         if raw_base is None or not raw_base.exists() or raw_base.suffix.lower() != ".mp4":
             return []
+        # On a resume path the reused video_generate output can ITSELF already be
+        # an rPPG artifact (pre-injected upstream). Powerset's non-rPPG subsets
+        # must derive from clean frames, so skip the fan-out rather than build
+        # variants off an rPPG'd base (code-reviewer LOW; rare edge).
+        if is_rppg_artifact(raw_base):
+            self.logger.info(
+                "case %s powerset skipped: base %s is already an rPPG artifact",
+                case_key, raw_base.name,
+            )
+            return []
 
         repo_root = Path(__file__).resolve().parent.parent
         oldcam_versions = self._oldcam_versions() if self._oldcam_active() else []
@@ -941,6 +951,14 @@ class AutoPipelineRunner:
 
         produced: List[Path] = []
         raw_base = Path(raw_base)
+        # Surface the fan-out size up front — powerset is bounded but can be
+        # large (2^N-1 x sub-options); the count is the user's cost guardrail
+        # (code-reviewer LOW; no silent caps).
+        extra_count = sum(1 for r in plan.recipes if set(r.modifiers()) != enabled)
+        self.logger.info(
+            "case %s powerset fan-out: producing %d extra variant(s)",
+            case_key, extra_count,
+        )
         for recipe in plan.recipes:
             if set(recipe.modifiers()) == enabled:
                 continue  # the full chain — cascade already produced it.
