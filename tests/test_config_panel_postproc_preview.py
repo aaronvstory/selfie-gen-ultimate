@@ -5,10 +5,6 @@ mode methods directly — the same pattern as test_config_panel_ui_height_sync.
 """
 
 import importlib
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def _panel(config: dict):

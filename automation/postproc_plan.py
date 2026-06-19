@@ -248,7 +248,7 @@ def recipe_label(recipe: Recipe) -> str:
     return " → ".join(["Kling"] + [step_label(s) for s in recipe.steps])
 
 
-def plan_preview_line(plan: PostProcPlan, *, max_variants_shown: int = 1) -> str:
+def plan_preview_line(plan: PostProcPlan) -> str:
     """Render the read-only one-line summary shown in the CLI table + GUI panel.
 
     Examples::

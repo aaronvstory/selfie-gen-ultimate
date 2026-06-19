@@ -856,6 +856,14 @@ class AutoPipelineRunner:
             )
             return Path(crushed) if (crushed and Path(crushed).exists()) else None
         if m is Modifier.AA:
+            # Skip-mode reuse, like the other steps (CodeRabbit Major): the AA
+            # output stem is deterministic, so in skip mode reuse an existing
+            # sibling instead of re-running the (slow, isolated-venv) attack.
+            expected = current.with_name(
+                f"{current.stem}{aa_suffix(step.option or '')}{current.suffix}"
+            )
+            if not overwrite and expected.exists():
+                return expected
             generator = str(self.automation.get("automation_aa_generator", "generic") or "")
             produced = run_aa(
                 str(current), attack=step.option,

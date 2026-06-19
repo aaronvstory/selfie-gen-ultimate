@@ -1942,10 +1942,15 @@ class ConfigPanel(tk.Frame):
         # automation_-prefixed key the CLI writes so a mode chosen in the CLI
         # shows here too. Default = powerset.
         from automation.postproc_plan import normalize_mode as _norm_fanout
+        # Prefer the CANONICAL automation_ key (the fingerprinted one the CLI
+        # writes) over the GUI alias so a mode set in the CLI is honoured here,
+        # then write BOTH back in lockstep so neither surface can drift
+        # (CodeRabbit Major — same class as the rppg_per_oldcam_fanout bridge).
         _fanout_mode = _norm_fanout(
-            self.config.get("postproc_fanout_mode",
-                            self.config.get("automation_postproc_fanout_mode", "separate_and_combined"))
+            self.config.get("automation_postproc_fanout_mode",
+                            self.config.get("postproc_fanout_mode", "separate_and_combined"))
         )
+        self.config["automation_postproc_fanout_mode"] = _fanout_mode
         self.config["postproc_fanout_mode"] = _fanout_mode
         if hasattr(self, "fanout_mode_var"):
             self.fanout_mode_var.set(self._FANOUT_DISPLAY.get(_fanout_mode, self._FANOUT_DISPLAY["separate_and_combined"]))
@@ -2526,13 +2531,18 @@ class ConfigPanel(tk.Frame):
         try:
             label.config(text=self._pipeline_preview_text())
         except Exception:
-            pass
+            # Don't crash the UI on a preview build error, but log it so
+            # planner/normalizer wiring breakage is debuggable (CodeRabbit).
+            logger.debug("Failed to refresh pipeline preview", exc_info=True)
 
     def _on_fanout_mode_changed(self) -> None:
         """Persist the chosen output (fan-out) mode and refresh the preview."""
         display = self.fanout_mode_var.get()
         value = self._FANOUT_DISPLAY_TO_VALUE.get(display, "separate_and_combined")
+        # Write BOTH keys so the GUI alias and the canonical CLI key stay in
+        # lockstep (CodeRabbit Major — no cross-surface drift).
         self.config["postproc_fanout_mode"] = value
+        self.config["automation_postproc_fanout_mode"] = value
         self._refresh_pipeline_preview()
         self._notify_change(
             "Output mode: "

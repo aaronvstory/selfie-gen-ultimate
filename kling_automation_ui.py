@@ -3584,6 +3584,10 @@ class KlingAutomationUI:
         "automation_selfie_model_policy": ["first_pass", "all"],
         "automation_max_cases_per_run": ["1", "5", "10", "all"],
         "automation_rppg_mode": ["iterative", "inject"],
+        # Offer the fan-out mode as a choice (not free text) in the all-settings
+        # editor so a typo can't be saved and silently normalized to the default
+        # (CodeRabbit). Values mirror _FANOUT_MODE_OPTIONS / postproc_plan.
+        "automation_postproc_fanout_mode": [v for v, _label in _FANOUT_MODE_OPTIONS],
     }
 
     def _browse_all_settings(self) -> None:
