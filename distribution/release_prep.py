@@ -461,6 +461,12 @@ def build_sanitized_config(
     config["rppg_per_oldcam_fanout"] = bool(
         template.get("rppg_per_oldcam_fanout", False)
     )
+    # Post-processing fan-out mode (2026-06-19): seed the bundle from the
+    # template (powerset default) so a dev kling_config.json's mode never
+    # leaks into the release.
+    config["postproc_fanout_mode"] = str(
+        template.get("postproc_fanout_mode", "separate_and_combined")
+    )
     # Subagent HIGH on 286613c (2026-05-22): Phase G per-section
     # expand prompts (face_crop_expand_prompt, selfie_expand_prompt,
     # outpaint_tab_prompt) were filled via the earlier setdefault

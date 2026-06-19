@@ -34,6 +34,12 @@ def _build_runner(tmp_path: Path, monkeypatch, extra_config=None, oldcam_capture
         "automation_oldcam_required": False,
         "saved_prompts": {"1": "prompt"},
         "current_prompt_slot": 1,
+        # These tests assert the CASCADE's single-chain ordering / invocation
+        # counts, which is the combined_only path. The default powerset mode
+        # (2026-06-19) additionally fans out proper subsets, changing those
+        # counts; pin combined_only so the cascade is tested in isolation.
+        # Powerset behaviour has its own coverage in test_automation_pipeline.
+        "automation_postproc_fanout_mode": "combined_only",
         **(extra_config or {}),
     })
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})

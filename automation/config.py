@@ -138,6 +138,22 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_aa_required": False,
     "automation_aa_strength": 0.5,
     "automation_aa_generator": "generic",
+    # Post-processing fan-out mode (2026-06-19). Controls how the optional
+    # post-processing modifiers (rPPG / Loop / Crush / AA / Oldcam) combine when
+    # more than one is enabled:
+    #   "combined_only"        — a single cumulative chain of every enabled
+    #                            modifier (the historical behaviour).
+    #   "separate_and_combined" — the POWERSET: every non-empty subset of the
+    #                            enabled modifier types, each sequenced in the
+    #                            canonical order, so the user gets both the
+    #                            individual variants AND the combined one(s).
+    # DEFAULT is the powerset per user direction. The GUI writes the
+    # non-prefixed alias ``postproc_fanout_mode``, bridged in
+    # merge_automation_defaults below. Enumeration lives in
+    # automation.postproc_plan (single source of truth for both orchestrators
+    # and the read-only pipeline preview). This key changes OUTPUTS, so it is
+    # deliberately FINGERPRINTED (not in manifest._FINGERPRINT_EXCLUDED_KEYS).
+    "automation_postproc_fanout_mode": "separate_and_combined",
     "automation_oldcam_enabled": True,
     # Canonical form is a LIST of versions (multi-select, 2026-06-11):
     # ["v13", "v24"], ["all"] (symbolic — expanded at runtime), or [] (none).
@@ -343,6 +359,19 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     if "automation_rppg_per_oldcam_fanout" not in merged and "rppg_per_oldcam_fanout" in merged:
         merged["automation_rppg_per_oldcam_fanout"] = bool(
             merged["rppg_per_oldcam_fanout"]
+        )
+    # Same GUI-alias bridge for the post-processing fan-out mode (2026-06-19):
+    # the GUI config_panel writes the non-prefixed ``postproc_fanout_mode``;
+    # the CLI pipeline reads ``automation_postproc_fanout_mode``. Without this
+    # the GUI's mode choice is silently ignored by the CLI. Route through
+    # normalize_mode so a hand-edited/unknown value coerces to the default.
+    from automation.postproc_plan import normalize_mode as _normalize_fanout_mode
+
+    if "automation_postproc_fanout_mode" not in merged and "postproc_fanout_mode" in merged:
+        merged["automation_postproc_fanout_mode"] = merged["postproc_fanout_mode"]
+    if "automation_postproc_fanout_mode" in merged:
+        merged["automation_postproc_fanout_mode"] = _normalize_fanout_mode(
+            merged["automation_postproc_fanout_mode"]
         )
     # Multi-resolution crush (2026-06-18): collapse the canonical list +
     # legacy boolean into the single canonical ``automation_crush_resolutions``

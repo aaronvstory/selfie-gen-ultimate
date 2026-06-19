@@ -32,6 +32,7 @@
   "cli_video_duration": 10,
   "loop_videos": false,
   "rppg_per_oldcam_fanout": false,
+  "postproc_fanout_mode": "separate_and_combined",
   "oldcam_version": "v9",
   "oldcam_versions": [
     "v9"

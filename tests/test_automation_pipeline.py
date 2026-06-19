@@ -3543,3 +3543,133 @@ def test_reset_case_if_front_changed_registers_force_regen(tmp_path):
         CaseRecord(case_dir=case_dir, front_path=new, relative_key="a")
     )
     assert not runner._force_regen_cases
+
+
+# ---------------------------------------------------------------------------
+# Powerset post-processing fan-out (2026-06-19).
+# ---------------------------------------------------------------------------
+
+
+def _make_variant(input_path, token: str) -> str:
+    """Stub processor output: append a token to the stem, write a tiny mp4."""
+    p = Path(input_path)
+    out = p.with_name(f"{p.stem}{token}{p.suffix}")
+    out.write_bytes(b"mp4")
+    return str(out)
+
+
+def _stub_postproc(monkeypatch):
+    """Replace every post-processing processor with a deterministic file stub
+    so the fan-out wiring can be asserted without ffmpeg / GPU / subprocesses."""
+    monkeypatch.setattr(
+        "automation.pipeline.extract_portrait_crop",
+        lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"},
+    )
+    monkeypatch.setattr(
+        "automation.pipeline.compute_face_similarity_details",
+        lambda *args, **kwargs: {"score": 90, "pass": True, "error": None, "match": True},
+    )
+    monkeypatch.setattr(
+        "automation.pipeline.run_rppg",
+        lambda *, video_path, **kw: Path(_make_variant(video_path, "-rppg")),
+    )
+    monkeypatch.setattr(
+        "automation.pipeline.create_looped_video",
+        lambda input_path, suffix="_looped", overwrite=True, log_callback=None, **kw: _make_variant(input_path, suffix),
+    )
+    monkeypatch.setattr(
+        "automation.pipeline.crush_video",
+        lambda input_path, suffix="_crush", target_height=480, overwrite=True, log_callback=None, **kw: _make_variant(input_path, suffix),
+    )
+    monkeypatch.setattr(
+        "automation.pipeline.run_aa",
+        lambda input_path, attack="prime", strength=0.5, generator=None, log_callback=None, repo_root=None, **kw: _make_variant(input_path, f"_aa-{attack}"),
+    )
+    monkeypatch.setattr(
+        "automation.pipeline.run_oldcam_version",
+        lambda *, video_path, version, repo_root=None, progress_cb=None, **kw: Path(_make_variant(video_path, f"-oldcam-{version}")),
+    )
+    monkeypatch.setattr(
+        "automation.pipeline.run_oldcam_all",
+        lambda *, video_path, version_setting, repo_root=None, progress_cb=None, **kw: [
+            (v, Path(_make_variant(video_path, f"-oldcam-{v}")))
+            for v in (version_setting if isinstance(version_setting, (list, tuple)) else [version_setting])
+        ],
+    )
+
+
+def _run_postproc_case(tmp_path, monkeypatch, mode):
+    case_dir = tmp_path / "case-a"
+    case_dir.mkdir()
+    front = case_dir / "front.png"
+    Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
+    record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-a")
+
+    config = merge_automation_defaults({
+        "falai_api_key": "x",
+        "bfl_api_key": "bfl-token",
+        "saved_prompts": {"1": "prompt"},
+        "current_prompt_slot": 1,
+        # rPPG + AA + Oldcam ON; Crush + Loop OFF -> 3 enabled modifiers.
+        "automation_rppg_enabled": True,
+        "automation_aa_attacks": ["prime"],
+        "automation_oldcam_enabled": True,
+        "automation_oldcam_version": ["v13"],
+        "automation_oldcam_required": False,
+        "automation_crush_resolutions": [],
+        "automation_loop_enabled": False,
+        "automation_postproc_fanout_mode": mode,
+    })
+    manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
+    manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
+    _stub_postproc(monkeypatch)
+
+    runner = AutoPipelineRunner(
+        config=config,
+        automation_config=from_app_config(config),
+        manifest=manifest,
+        progress_cb=lambda msg, level="info": None,
+        deps=PipelineDeps(
+            outpaint_factory=lambda: FakeOutpaint(),
+            selfie_factory=lambda: FakeSelfie(),
+            video_factory=lambda: FakeVideo(),
+        ),
+    )
+    stats = runner.run([record])
+    assert stats["completed"] == 1
+    variants = {p.name for p in case_dir.rglob("*.mp4") if p.name != "video.mp4"}
+    return variants
+
+
+def test_pipeline_powerset_produces_every_subset(tmp_path: Path, monkeypatch):
+    variants = _run_postproc_case(tmp_path, monkeypatch, "separate_and_combined")
+    # rPPG + AA(prime) + Oldcam(v13) -> 2**3 - 1 = 7 distinct variant files.
+    expected = {
+        "video-rppg.mp4",                              # {rppg}
+        "video_aa-prime.mp4",                          # {aa}
+        "video-oldcam-v13.mp4",                        # {oldcam}
+        "video-rppg_aa-prime.mp4",                     # {rppg, aa}
+        "video-rppg-oldcam-v13.mp4",                   # {rppg, oldcam}
+        "video_aa-prime-oldcam-v13.mp4",               # {aa, oldcam}
+        "video-rppg_aa-prime-oldcam-v13.mp4",          # {rppg, aa, oldcam} (cascade)
+    }
+    assert variants == expected, f"got {sorted(variants)}"
+
+
+def test_pipeline_combined_only_single_chain(tmp_path: Path, monkeypatch):
+    variants = _run_postproc_case(tmp_path, monkeypatch, "combined_only")
+    # combined_only = only the cumulative chain + its intermediates; NO
+    # standalone subsets (oldcam-alone / aa-alone must NOT appear).
+    assert "video-oldcam-v13.mp4" not in variants
+    assert "video_aa-prime.mp4" not in variants
+    # The full combined deliverable is still produced.
+    assert "video-rppg_aa-prime-oldcam-v13.mp4" in variants
+
+
+def test_pipeline_fanout_mode_is_fingerprinted(tmp_path: Path):
+    from automation.manifest import _build_config_fingerprint, _FINGERPRINT_EXCLUDED_KEYS
+
+    assert "automation_postproc_fanout_mode" not in _FINGERPRINT_EXCLUDED_KEYS
+    a = _build_config_fingerprint(merge_automation_defaults({"automation_postproc_fanout_mode": "combined_only"}))
+    b = _build_config_fingerprint(merge_automation_defaults({"automation_postproc_fanout_mode": "separate_and_combined"}))
+    assert a["automation_postproc_fanout_mode"] != b["automation_postproc_fanout_mode"]
