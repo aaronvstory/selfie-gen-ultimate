@@ -838,7 +838,7 @@ class AutoPipelineRunner:
                 landmark_stride=self._read_int("automation_rppg_landmark_stride", 1, min_value=1),
                 verbose=self.verbose_logging,
             )
-            return out if (out and Path(out).exists()) else None
+            return Path(out) if (out and Path(out).exists()) else None
         if m is Modifier.LOOP:
             looped = create_looped_video(
                 str(current), suffix="_looped", overwrite=overwrite,
