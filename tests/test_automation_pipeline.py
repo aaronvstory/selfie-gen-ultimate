@@ -3598,14 +3598,14 @@ def _stub_postproc(monkeypatch):
     )
 
 
-def _run_postproc_case(tmp_path, monkeypatch, mode):
+def _run_postproc_case(tmp_path, monkeypatch, mode, config_overrides=None):
     case_dir = tmp_path / "case-a"
     case_dir.mkdir()
     front = case_dir / "front.png"
     Image.new("RGB", (64, 64), (1, 1, 1)).save(front)
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-a")
 
-    config = merge_automation_defaults({
+    base = {
         "falai_api_key": "x",
         "bfl_api_key": "bfl-token",
         "saved_prompts": {"1": "prompt"},
@@ -3619,7 +3619,9 @@ def _run_postproc_case(tmp_path, monkeypatch, mode):
         "automation_crush_resolutions": [],
         "automation_loop_enabled": False,
         "automation_postproc_fanout_mode": mode,
-    })
+    }
+    base.update(config_overrides or {})
+    config = merge_automation_defaults(base)
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     _stub_postproc(monkeypatch)
@@ -3673,3 +3675,27 @@ def test_pipeline_fanout_mode_is_fingerprinted(tmp_path: Path):
     a = _build_config_fingerprint(merge_automation_defaults({"automation_postproc_fanout_mode": "combined_only"}))
     b = _build_config_fingerprint(merge_automation_defaults({"automation_postproc_fanout_mode": "separate_and_combined"}))
     assert a["automation_postproc_fanout_mode"] != b["automation_postproc_fanout_mode"]
+
+
+def test_pipeline_powerset_rppg_disabled_with_crush_oldcam(tmp_path: Path, monkeypatch):
+    """Regression for two Gemini false-positives on PR #108:
+
+    (1) powerset with rPPG DISABLED must not UnboundLocalError on
+        rppg_base_path, and (2) the CRUSH branch of _apply_one_postproc_step
+        must resolve CRUSH_RESOLUTIONS / crush_suffix (module-level imports).
+    crush + oldcam enabled, rPPG/AA/loop off -> 2 modifiers -> 3 recipes.
+    """
+    variants = _run_postproc_case(
+        tmp_path, monkeypatch, "separate_and_combined",
+        config_overrides={
+            "automation_rppg_enabled": False,
+            "automation_aa_attacks": [],
+            "automation_crush_resolutions": ["720p"],
+            "automation_oldcam_version": ["v13"],
+        },
+    )
+    # {crush}, {oldcam}, {crush,oldcam} -> standalone oldcam + standalone crush
+    # both present (powerset), plus the combined chain.
+    assert "video-oldcam-v13.mp4" in variants          # {oldcam} standalone
+    assert "video_crush720.mp4" in variants            # {crush} standalone
+    assert "video_crush720-oldcam-v13.mp4" in variants  # {crush, oldcam} combined

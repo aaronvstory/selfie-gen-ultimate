@@ -2984,9 +2984,11 @@ class QueueManager:
         if m is Modifier.AA:
             return self._aa_video(current, item, attack=step.option or "prime")
         if m is Modifier.OLDCAM:
-            expected = self._build_oldcam_output_path(Path(current), step.option or "")
-            if expected.exists():
-                return str(expected)
+            # Always re-run (like the cascade's _oldcam_video and this module's
+            # _crush_video / _aa_video, which never short-circuit) so an explicit
+            # re-run / overwrite regenerates instead of silently reusing a stale
+            # file (gemini MEDIUM). Within a single powerset pass the prefix
+            # cache still prevents producing the same variant twice.
             return self._run_oldcam_version(current, step.option or "", item)
         return None
 

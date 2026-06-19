@@ -1024,7 +1024,12 @@ class ConfigPanel(tk.Frame):
             fg=COLORS["text_light"],
             font=(FONT_FAMILY, 10),
         ).pack(side=tk.LEFT)
-        self.fanout_mode_var = tk.StringVar(value="separate_and_combined")
+        # Initialize with the user-facing DISPLAY string (not the internal key)
+        # so the combobox never shows a raw "separate_and_combined" if
+        # apply_config hasn't run yet (gemini MEDIUM).
+        self.fanout_mode_var = tk.StringVar(
+            value=self._FANOUT_DISPLAY["separate_and_combined"]
+        )
         self.fanout_mode_combo = ttk.Combobox(
             _mode_row,
             state="readonly",
@@ -2482,7 +2487,9 @@ class ConfigPanel(tk.Frame):
         from automation.video_aa import normalize_aa_attacks
         from automation.oldcam import normalize_oldcam_versions
 
-        cfg = self.config
+        # Defensive: a corrupted/hand-edited config could be a non-dict; treat
+        # it as empty rather than crashing the preview render (gemini HIGH).
+        cfg = self.config if isinstance(self.config, dict) else {}
         ckwargs = {}
         if "crush_resolutions" in cfg:
             ckwargs["resolutions"] = cfg["crush_resolutions"]
