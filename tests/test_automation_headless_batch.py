@@ -151,10 +151,10 @@ def test_headless_rejects_file_as_root(tmp_path, monkeypatch):
 
 
 def test_main_batch_rejects_invalid_limit_with_exit_1(monkeypatch):
-    """--limit only accepts 1/5/10/all; an out-of-set value is validated INSIDE
-    run_automation_headless and exits 1 -- NOT argparse exit 2, which would
-    collide with the 'exit 2 = ran-but-needs-attention' contract (code-review
-    Codex P2, PR #69)."""
+    """--limit accepts a positive integer or 'all'; a non-numeric value like
+    'abc' is validated INSIDE run_automation_headless and exits 1 -- NOT
+    argparse exit 2, which would collide with the 'exit 2 = ran-but-needs-
+    attention' contract (code-review Codex P2, PR #69)."""
     monkeypatch.setenv("KLING_SKIP_PY_STARTUP_DEP_CHECK", "1")
     monkeypatch.setattr("builtins.input", _forbid_input)
     monkeypatch.setattr(KlingAutomationUI, "_run_startup_key_onboarding", lambda self: None, raising=False)
@@ -164,19 +164,20 @@ def test_main_batch_rejects_invalid_limit_with_exit_1(monkeypatch):
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("validated limit too late")),
     )
     with pytest.raises(SystemExit) as exc:
-        kling_automation_ui.main(["--batch", "/r", "--limit", "3"])
+        kling_automation_ui.main(["--batch", "/r", "--limit", "abc"])
     assert exc.value.code == 1
 
 
 def test_headless_invalid_limit_returns_1(tmp_path, monkeypatch):
-    """Direct call: an invalid --limit returns 1 before discovery."""
+    """Direct call: an invalid --limit (non-numeric, not 'all') returns 1
+    before discovery. Positive integers like '7' are now valid."""
     monkeypatch.setattr("builtins.input", _forbid_input)
     monkeypatch.setattr(
         kling_automation_ui, "discover_case_folders",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("validated limit too late")),
     )
     ui = _bare_ui(tmp_path)
-    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True, max_cases_override="7")
+    rc = ui.run_automation_headless(str(tmp_path), auto_approve=True, max_cases_override="abc")
     assert rc == 1
 
 

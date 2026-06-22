@@ -3077,6 +3077,10 @@ class KlingAutomationUI:
             new_val = _coerce(raw)
             if new_val:
                 self.config["automation_max_cases_per_run"] = new_val
+            elif new_val == "":
+                # Non-empty but invalid (sentinel "") — warn like other legacy
+                # settings prompts instead of silently keeping the old value.
+                self.print_red("Invalid max cases value. Keeping previous value.")
             return
 
         def _validate(text: str):
@@ -3104,11 +3108,13 @@ class KlingAutomationUI:
         case instead of a bare "." (which reads as "no folder")."""
         key = str(getattr(rec, "relative_key", rec))
         if key == ".":
+            # .resolve() so a relative case_dir/root ("." / "..") still yields a
+            # real folder name — Path(".").name is "" (Gemini review).
             case_dir = getattr(rec, "case_dir", None)
             if case_dir is not None:
-                return Path(case_dir).name
+                return Path(case_dir).resolve().name
             if root is not None:
-                return Path(root).name
+                return Path(root).resolve().name
         return key
 
     def _planned_action_for_case(self, case_entry: Dict[str, Any], existing: Any, is_complete: bool) -> str:
@@ -3180,6 +3186,9 @@ class KlingAutomationUI:
                 runnable.append(record)
             row = {
                 "case": record.relative_key,
+                # Friendly name for confirmation tables: "." (case dir == root)
+                # renders as the root basename instead of a bare dot.
+                "display": self._case_display_name(record),
                 "front": record.front_path.name,
                 "front_expanded": "yes" if existing.front_expanded else "-",
                 "extracted": "yes" if existing.extracted else "-",
@@ -6049,7 +6058,12 @@ class KlingAutomationUI:
             self.print_yellow("No runnable cases for this batch.")
             self.pause_review("Press Enter to continue...")
             return
-        if not self._confirm("Approve batch run?", default=False):
+        # Same folder-level breakdown (process / deferred / skipped) the
+        # interactive path shows — legacy users must see WHICH folders run
+        # before any API call (CodeRabbit). _confirm_batch_folders renders a
+        # plain-text list + y/N in legacy mode; "back" can't occur here (no
+        # settings screen to return to), so treat anything but "run" as cancel.
+        if self._confirm_batch_folders(rows, runnable_cases, root) != "run":
             print("Run cancelled.")
             self.pause_review("Press Enter to continue...")
             return
@@ -6161,7 +6175,7 @@ class KlingAutomationUI:
             # action == "run" (Approve & run): one final folder-level
             # confirmation showing exactly what will process / defer / skip
             # before any API call. Back -> re-render approval; Cancel -> abort.
-            decision = self._confirm_batch_folders(rows, counts, runnable_cases, root)
+            decision = self._confirm_batch_folders(rows, runnable_cases, root)
             if decision == "back":
                 continue
             if decision != "run":
@@ -6198,7 +6212,6 @@ class KlingAutomationUI:
     def _confirm_batch_folders(
         self,
         rows: List[Dict[str, Any]],
-        counts: Dict[str, int],
         runnable_cases: List[Any],
         root: Any,
     ) -> str:
@@ -6213,10 +6226,35 @@ class KlingAutomationUI:
         process_names = [self._case_display_name(rec, root) for rec in runnable_cases]
         n_run = len(process_names)
 
-        legacy = self._use_legacy_prompt_ui()
-        if not legacy:
-            self.display_header()
+        def _row_name(r: "Dict[str, Any]") -> str:
+            return str(r.get("display") or r.get("case", "?"))
 
+        # Legacy / non-TTY: plain text only, NO Rich styling — gate all
+        # styled output on not _use_legacy_prompt_ui() to keep legacy logs
+        # byte-stable (CodeRabbit; repo guideline).
+        if self._use_legacy_prompt_ui():
+            print(f"\nWill process ({n_run}):")
+            for idx, name in enumerate(process_names, 1):
+                print(f"  {idx}. {name}")
+            if not process_names:
+                print("  (none)")
+            if deferred_rows:
+                print(f"Deferred — over max-cases cap (max {self._read_max_cases_setting()}) ({len(deferred_rows)}):")
+                for idx, r in enumerate(deferred_rows, 1):
+                    print(f"  {idx}. {_row_name(r)}")
+            if skipped_rows:
+                print(f"Skipped ({len(skipped_rows)}):")
+                for r in skipped_rows:
+                    print(f"  - {_row_name(r)}  [{skip_reasons.get(r.get('planned'), r.get('planned'))}]")
+            if n_run == 0:
+                self.print_yellow("Nothing to process — all discovered folders are skipped or deferred.")
+                self.pause_review("Press Enter to continue...")
+                return "back"
+            proceed = self._confirm(f"Proceed with these {n_run} folder(s)?", default=False)
+            return "run" if proceed else "cancel"
+
+        # Interactive (questionary/Rich) path.
+        self.display_header()
         _RICH_CONSOLE.print(f"[bold white]✅ Will process ({n_run})[/bold white]")
         proc_table = Table(
             show_header=False, expand=False, box=_rich_box.ROUNDED,
@@ -6246,7 +6284,7 @@ class KlingAutomationUI:
             def_table.add_column("#", style="dim", no_wrap=True)
             def_table.add_column("Folder", min_width=24)
             for idx, r in enumerate(deferred_rows[:30], 1):
-                def_table.add_row(str(idx), _rich_markup_escape(str(r.get("case", "?"))))
+                def_table.add_row(str(idx), _rich_markup_escape(str(r.get("display") or r.get("case", "?"))))
             if len(deferred_rows) > 30:
                 def_table.add_row("…", f"[dim]+{len(deferred_rows) - 30} more[/dim]")
             _RICH_CONSOLE.print(def_table)
@@ -6264,7 +6302,7 @@ class KlingAutomationUI:
             skip_table.add_column("Reason", style="dim")
             for r in skipped_rows[:30]:
                 skip_table.add_row(
-                    _rich_markup_escape(str(r.get("case", "?"))),
+                    _rich_markup_escape(str(r.get("display") or r.get("case", "?"))),
                     skip_reasons.get(r.get("planned"), str(r.get("planned"))),
                 )
             if len(skipped_rows) > 30:
@@ -6276,10 +6314,6 @@ class KlingAutomationUI:
             self.print_yellow("Nothing to process — all discovered folders are skipped or deferred.")
             self.pause_review("Press Enter to continue...")
             return "back"
-
-        if legacy:
-            proceed = self._confirm(f"Proceed with these {n_run} folder(s)?", default=True)
-            return "run" if proceed else "cancel"
 
         decision = self._q_select(
             "Proceed with this batch?",
