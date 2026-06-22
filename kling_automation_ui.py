@@ -3077,9 +3077,11 @@ class KlingAutomationUI:
             if new_val:
                 self.config["automation_max_cases_per_run"] = new_val
             elif new_val == "":
-                # Non-empty but invalid (sentinel "") — warn like other legacy
-                # settings prompts instead of silently keeping the old value.
-                self.print_red("Invalid max cases value. Keeping previous value.")
+                # Non-empty but invalid — warn, but with plain print() (no
+                # ANSI): this legacy branch can run under a non-TTY stdin where
+                # escape codes pollute logs (Gemini round 4; mirrors the
+                # headless "no \033[" invariant).
+                print("Invalid max cases value. Keeping previous value.")
             return
 
         def _validate(text: str):
@@ -3375,7 +3377,9 @@ class KlingAutomationUI:
                     "all" if max_cases_raw == "all" else str(int(max_cases_raw))
                 )
             else:
-                self.print_red("Invalid max cases value. Keeping previous value.")
+                # Plain print() (no ANSI) — legacy settings editor may run on a
+                # non-TTY stdin; keep status output escape-free (Gemini round 4).
+                print("Invalid max cases value. Keeping previous value.")
 
         print("\n[Discovery Flags]")
         _ask_bool("Skip completed", "automation_skip_completed")
@@ -6254,9 +6258,11 @@ class KlingAutomationUI:
                 for r in skipped_rows:
                     print(f"  - {_row_name(r)}  [{skip_reasons.get(r.get('planned'), r.get('planned'))}]")
             if n_run == 0:
-                # No pause here: the legacy caller pauses on a non-"run" result,
-                # so pausing again would double-prompt (Gemini round 3).
-                self.print_yellow("Nothing to process — all discovered folders are skipped or deferred.")
+                # Plain print() (no ANSI) inside this explicitly plain-text
+                # legacy block (Gemini round 4). No pause here: the legacy caller
+                # pauses on a non-"run" result, so pausing again would
+                # double-prompt (Gemini round 3).
+                print("Nothing to process — all discovered folders are skipped or deferred.")
                 return "back"
             proceed = self._confirm(f"Proceed with these {n_run} folder(s)?", default=False)
             return "run" if proceed else "cancel"

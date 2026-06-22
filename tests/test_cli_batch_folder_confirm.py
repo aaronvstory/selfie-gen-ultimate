@@ -227,16 +227,17 @@ def test_prompt_max_cases_legacy_blank_keeps(monkeypatch) -> None:
     assert ui.config["automation_max_cases_per_run"] == "7"
 
 
-def test_prompt_max_cases_legacy_invalid_warns(monkeypatch) -> None:
-    # Invalid (non-empty) input must warn, not silently keep (Gemini review).
+def test_prompt_max_cases_legacy_invalid_warns(monkeypatch, capsys) -> None:
+    # Invalid (non-empty) input must warn (plain print, no ANSI) and keep the
+    # current value (Gemini rounds 1 & 4).
     ui = _bare_ui({"automation_max_cases_per_run": "5"})
     ui._use_legacy_prompt_ui = lambda: True   # type: ignore[assignment]
-    warned = []
-    ui.print_red = lambda msg: warned.append(msg)   # type: ignore[assignment]
     monkeypatch.setattr("builtins.input", lambda *a, **k: "abc")
     ui._prompt_max_cases()
+    out = capsys.readouterr().out
     assert ui.config["automation_max_cases_per_run"] == "5"  # unchanged
-    assert warned                                            # user was warned
+    assert "Invalid max cases value" in out                  # warned
+    assert "\033[" not in out                                # no ANSI in non-TTY
 
 
 def test_case_display_name_uses_root_when_case_dir_missing() -> None:
