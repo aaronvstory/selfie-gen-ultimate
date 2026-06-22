@@ -3068,12 +3068,11 @@ class KlingAutomationUI:
             return ""  # sentinel: invalid
 
         if self._use_legacy_prompt_ui():
-            try:
-                raw = input(
-                    f"Max cases per run [{current}] (positive integer or 'all'): "
-                )
-            except EOFError:
-                return
+            # _safe_input (not raw input): returns "" on EOF/closed/None stdin
+            # instead of raising, matching every other legacy editor.
+            raw = self._safe_input(
+                f"Max cases per run [{current}] (positive integer or 'all'): "
+            )
             new_val = _coerce(raw)
             if new_val:
                 self.config["automation_max_cases_per_run"] = new_val
@@ -6255,8 +6254,9 @@ class KlingAutomationUI:
                 for r in skipped_rows:
                     print(f"  - {_row_name(r)}  [{skip_reasons.get(r.get('planned'), r.get('planned'))}]")
             if n_run == 0:
+                # No pause here: the legacy caller pauses on a non-"run" result,
+                # so pausing again would double-prompt (Gemini round 3).
                 self.print_yellow("Nothing to process — all discovered folders are skipped or deferred.")
-                self.pause_review("Press Enter to continue...")
                 return "back"
             proceed = self._confirm(f"Proceed with these {n_run} folder(s)?", default=False)
             return "run" if proceed else "cancel"

@@ -165,6 +165,19 @@ def test_confirm_batch_folders_legacy_no_cancels() -> None:
     assert out == "cancel"
 
 
+def test_confirm_batch_folders_legacy_nothing_to_run_no_double_pause() -> None:
+    # Legacy n_run==0 returns "back" WITHOUT pausing — the caller pauses on a
+    # non-"run" result, so pausing here too would double-prompt (Gemini r3).
+    ui = _bare_ui({"automation_max_cases_per_run": "2"})
+    ui._use_legacy_prompt_ui = lambda: True    # type: ignore[assignment]
+    paused = []
+    ui.print_yellow = lambda msg: None                       # type: ignore[assignment]
+    ui.pause_review = lambda *a, **k: paused.append(1)       # type: ignore[assignment]
+    out = ui._confirm_batch_folders(_rows(), [], "/root")
+    assert out == "back"
+    assert paused == []   # did NOT pause
+
+
 # ---------------------------------------------------------------------------
 # 5. quick-edit menu still wires the max-cases field
 # ---------------------------------------------------------------------------
@@ -235,13 +248,17 @@ def test_case_display_name_uses_root_when_case_dir_missing() -> None:
 
 def test_case_display_name_resolve_oserror_falls_back(monkeypatch) -> None:
     # .resolve() can raise OSError on restricted filesystems — fall back to the
-    # unresolved basename instead of crawling the batch (Gemini round 2).
+    # unresolved basename. Patch the module's Path NAME with a subclass (not
+    # pathlib.Path.resolve globally) so pytest's own path handling is untouched
+    # (Gemini round 3).
+    import pathlib
     import kling_automation_ui as kui
 
-    def _boom(self, *a, **k):
-        raise OSError("restricted fs")
+    class _MockPath(type(pathlib.Path())):  # concrete PosixPath/WindowsPath
+        def resolve(self, *a, **k):
+            raise OSError("restricted fs")
 
-    monkeypatch.setattr(kui.Path, "resolve", _boom)
+    monkeypatch.setattr(kui, "Path", _MockPath)
     rec = _Rec(".", case_dir="/data/Subject_front")
     assert KlingAutomationUI._case_display_name(rec) == "Subject_front"
 
