@@ -2634,10 +2634,14 @@ class KlingAutomationUI:
         Single source shared by the explicit ⭐ reset AND the silent one-time
         startup migration so the two can never drift. Caller saves.
         Returns the max-cases status line for the ⭐ report."""
-        valid_max_cases = {"1", "5", "10", "all"}
         current_max_cases = str(self.config.get("automation_max_cases_per_run", "")).strip().lower()
-        if current_max_cases in valid_max_cases:
-            max_cases_status = f"preserved ({current_max_cases})"
+        if self._is_valid_max_cases(current_max_cases):
+            # Preserve ANY valid cap (incl. a custom number like "20") — the
+            # recommended baseline must not silently reset the operator's batch
+            # size to 1.
+            normalized = "all" if current_max_cases == "all" else str(int(current_max_cases))
+            self.config["automation_max_cases_per_run"] = normalized
+            max_cases_status = f"preserved ({normalized})"
         else:
             self.config["automation_max_cases_per_run"] = "1"
             max_cases_status = "set to 1 (invalid/missing previous value)"
@@ -3015,20 +3019,97 @@ class KlingAutomationUI:
         self._commit_automation_root(selected_path)
 
     def _normalize_max_cases(self, value: Any) -> Optional[int]:
+        # "all" -> no cap; any positive integer -> that cap. The old {1,5,10}
+        # whitelist was dropped so the user can pick an arbitrary batch size
+        # (e.g. 3, 20) from the approval screen or quick editor.
         raw = str(value).strip().lower()
         if raw == "all":
             return None
         if raw.isdigit():
             parsed = int(raw)
-            if parsed in {1, 5, 10}:
+            if parsed >= 1:
                 return parsed
         return 5
 
     def _read_max_cases_setting(self) -> str:
+        # Returns a normalized string ("all" or a positive-int string). Strips
+        # leading zeros so "05" displays as "5" and matches the cap math.
         raw = str(self.config.get("automation_max_cases_per_run", 5)).strip().lower()
-        if raw in {"1", "5", "10", "all"}:
-            return raw
+        if raw == "all":
+            return "all"
+        if raw.isdigit() and int(raw) >= 1:
+            return str(int(raw))
         return "5"
+
+    @staticmethod
+    def _is_valid_max_cases(value: Any) -> bool:
+        """A max-cases value is valid iff it's the word "all" or a positive
+        whole number. Single source of truth for every editor/validator so the
+        custom-number contract can't drift between surfaces."""
+        t = str(value).strip().lower()
+        return t == "all" or (t.isdigit() and int(t) >= 1)
+
+    def _prompt_max_cases(self) -> None:
+        """Free-text editor for `automation_max_cases_per_run`: a positive whole
+        number or the word "all". Shared by the quick editor and the one-tap
+        "change" action on the approval screen. Raises _QuestionarySectionAbort
+        on Esc/Ctrl-C so the quick-edit loop treats it like any other field.
+        Empty input keeps the current value."""
+        current = self._read_max_cases_setting()
+
+        def _coerce(text: str) -> Optional[str]:
+            t = text.strip().lower()
+            if not t:
+                return None  # keep current
+            if t == "all":
+                return "all"
+            if t.isdigit() and int(t) >= 1:
+                return str(int(t))
+            return ""  # sentinel: invalid
+
+        if self._use_legacy_prompt_ui():
+            try:
+                raw = input(
+                    f"Max cases per run [{current}] (positive integer or 'all'): "
+                )
+            except EOFError:
+                return
+            new_val = _coerce(raw)
+            if new_val:
+                self.config["automation_max_cases_per_run"] = new_val
+            return
+
+        def _validate(text: str):
+            t = text.strip().lower()
+            if not t or t == "all" or (t.isdigit() and int(t) >= 1):
+                return True
+            return "Enter a positive whole number (e.g. 5) or 'all'."
+
+        answer = self._q_text(
+            "Max cases per run (positive integer or 'all'):",
+            default="",
+            validate=_validate,
+            instruction=f"(current: {current} · Enter keeps)",
+        )
+        if answer is None:
+            raise _QuestionarySectionAbort()
+        new_val = _coerce(answer)
+        if new_val:
+            self.config["automation_max_cases_per_run"] = new_val
+
+    @staticmethod
+    def _case_display_name(rec: Any, root: Any = None) -> str:
+        """Human-readable folder name for a discovered case. `relative_key` is
+        "." when the case dir IS the root; show the root's basename in that
+        case instead of a bare "." (which reads as "no folder")."""
+        key = str(getattr(rec, "relative_key", rec))
+        if key == ".":
+            case_dir = getattr(rec, "case_dir", None)
+            if case_dir is not None:
+                return Path(case_dir).name
+            if root is not None:
+                return Path(root).name
+        return key
 
     def _planned_action_for_case(self, case_entry: Dict[str, Any], existing: Any, is_complete: bool) -> str:
         status = str(case_entry.get("status", "pending"))
@@ -3270,11 +3351,13 @@ class KlingAutomationUI:
             lambda v: len(v) > 0 and v.endswith(".json") and Path(v).name == v,
         )
         max_cases_raw = self._safe_input(
-            f"Max cases per run [1/5/10/all] (current: {self._read_max_cases_setting()}) [Enter keep]: "
+            f"Max cases per run [positive integer or 'all'] (current: {self._read_max_cases_setting()}) [Enter keep]: "
         ).strip().lower()
         if max_cases_raw:
-            if max_cases_raw in {"1", "5", "10", "all"}:
-                self.config["automation_max_cases_per_run"] = max_cases_raw
+            if self._is_valid_max_cases(max_cases_raw):
+                self.config["automation_max_cases_per_run"] = (
+                    "all" if max_cases_raw == "all" else str(int(max_cases_raw))
+                )
             else:
                 self.print_red("Invalid max cases value. Keeping previous value.")
 
@@ -3582,7 +3665,9 @@ class KlingAutomationUI:
         "automation_selfie_expand_composite_mode": _COMPOSITE_MODE_OPTIONS,
         "automation_reprocess_mode": _REPROCESS_MODE_OPTIONS,
         "automation_selfie_model_policy": ["first_pass", "all"],
-        "automation_max_cases_per_run": ["1", "5", "10", "all"],
+        # automation_max_cases_per_run is intentionally NOT a fixed-choice entry:
+        # it accepts any positive integer (or "all") via _prompt_max_cases, which
+        # _qs_section_one_setting special-cases before this map is consulted.
         "automation_rppg_mode": ["iterative", "inject"],
         # Offer the fan-out mode as a choice (not free text) in the all-settings
         # editor so a typo can't be saved and silently normalized to the default
@@ -3627,6 +3712,11 @@ class KlingAutomationUI:
             return
         if key == "automation_selfie_prompts":
             self._qs_section_selfie_prompt_only()
+            return
+        if key == "automation_max_cases_per_run":
+            # Free-text (positive int or "all") — not a fixed dropdown, so a
+            # custom cap like "20" is editable here too.
+            self._prompt_max_cases()
             return
         defaults = merge_automation_defaults({})
         reference = defaults.get(key, self.config.get(key))
@@ -4113,12 +4203,11 @@ class KlingAutomationUI:
             default="automation_manifest.json",
             validator=lambda v: len(v) > 0 and v.endswith(".json") and Path(v).name == v,
         )
-        self._qs_choice(
-            "Max cases per run:",
-            "automation_max_cases_per_run",
-            choices=["1", "5", "10", "all"],
-            default="all",
-        )
+        # Free-text editor (positive int or "all") so a custom cap like "20" is
+        # accepted in the full editor too — mirrors the quick editor + approval
+        # screen. _prompt_max_cases raises _QuestionarySectionAbort on Esc, the
+        # same control-flow contract as the _qs_* helpers around it.
+        self._prompt_max_cases()
         # Extra front-image glob patterns (comma-separated) for folders whose
         # front image is not literally front.jpg (e.g. *id_photo*.jpg). Empty
         # keeps exact-name-only discovery. Mirrors the --front-glob CLI flag.
@@ -4565,10 +4654,10 @@ class KlingAutomationUI:
         # (code-review Codex P2, PR #69).
         if max_cases_override is not None:
             norm_limit = str(max_cases_override).strip().lower()
-            if norm_limit not in {"1", "5", "10", "all"}:
-                _err(f"[batch] Invalid --limit '{max_cases_override}'; use 1, 5, 10, or all.")
+            if not self._is_valid_max_cases(norm_limit):
+                _err(f"[batch] Invalid --limit '{max_cases_override}'; use a positive integer or 'all'.")
                 return 1
-            max_cases_override = norm_limit
+            max_cases_override = "all" if norm_limit == "all" else str(int(norm_limit))
         # Validate --reprocess HERE too (same reasoning as --limit: argparse
         # choices= would exit 2, colliding with the contract; and a direct Python
         # caller could pass a bogus value that _effective_reprocess_mode() then
@@ -5444,8 +5533,7 @@ class KlingAutomationUI:
                     self._qs_pick_fanout_mode()
                 # ── Run scope ──
                 elif choice == "batch_max":
-                    self._qs_choice("Max cases per run:", "automation_max_cases_per_run",
-                                    choices=["1", "5", "10", "all"], default="5")
+                    self._prompt_max_cases()
                 elif choice == "batch_reprocess":
                     self._qs_choice("Reprocess mode:", "automation_reprocess_mode",
                                     choices=_REPROCESS_MODE_OPTIONS, default="skip")
@@ -6001,13 +6089,31 @@ class KlingAutomationUI:
                 # money is spent (round 7: "it should clearly show which of
                 # the 5 it will work on"). The live dashboard then tracks the
                 # same list with ok/>>/pending glyphs during the run.
-                batch_table = self._styled_table(f"🗂  Cases in this batch ({len(runnable_cases)})")
+                #
+                # The heading is printed as its OWN line (not the Rich Table
+                # title): a table title wraps to the table's CONTENT width, so a
+                # single short folder (e.g. ".") shrank the table to ~7 chars and
+                # folded "🗂 Cases in this batch (1)" onto 3 lines. A console line
+                # only wraps at the terminal width. min_width keeps short rows
+                # readable.
+                batch_count = len(runnable_cases)
+                _RICH_CONSOLE.print(f"[bold white]🗂  Cases in this batch ({batch_count})[/bold white]")
+                batch_table = Table(
+                    show_header=False,
+                    expand=False,
+                    box=_rich_box.ROUNDED,
+                    border_style="blue",
+                    padding=(0, 1),
+                )
                 batch_table.add_column("#", style="dim", no_wrap=True)
-                batch_table.add_column("Folder", style="cyan")
+                batch_table.add_column("Folder", style="cyan", min_width=24)
                 for idx, rec in enumerate(runnable_cases[:15], 1):
-                    batch_table.add_row(str(idx), _rich_markup_escape(str(getattr(rec, "relative_key", rec))))
-                if len(runnable_cases) > 15:
-                    batch_table.add_row("…", f"[dim]+{len(runnable_cases) - 15} more[/dim]")
+                    batch_table.add_row(
+                        str(idx),
+                        _rich_markup_escape(self._case_display_name(rec, root)),
+                    )
+                if batch_count > 15:
+                    batch_table.add_row("…", f"[dim]+{batch_count - 15} more[/dim]")
                 _RICH_CONSOLE.print(batch_table)
                 print()
             self._render_run_settings_table(title="Main run settings — review before approving")
@@ -6020,6 +6126,7 @@ class KlingAutomationUI:
                 "Start the batch with these settings?",
                 [
                     (f"✅ Approve & run ({counts['will_run']} case(s))", "run"),
+                    (f"🔢 Max cases per run: {self._read_max_cases_setting()}  ·  change", "edit_max"),
                     ("🧪 Dry run first (no API calls)", "dry_run"),
                     ("🔧 Quick edit settings first", "edit"),
                     ("📜 View FULL prompts (selfie + video)", "prompts"),
@@ -6029,6 +6136,15 @@ class KlingAutomationUI:
             if action in (None, "cancel"):
                 print("Run cancelled.")
                 return
+            if action == "edit_max":
+                # One-tap cap edit straight from the approval screen, then
+                # re-loop so the preview + "will run" reflect it immediately.
+                try:
+                    self._prompt_max_cases()
+                    self.save_config()
+                except _QuestionarySectionAbort:
+                    pass
+                continue
             if action == "dry_run":
                 # Moved here from the main menu (round 3) — dry run is a
                 # pre-flight check, not a top-level destination. Loops back
@@ -6042,8 +6158,138 @@ class KlingAutomationUI:
                 self._show_full_prompts()
                 self.pause_review("Press Enter to continue...")
                 continue
+            # action == "run" (Approve & run): one final folder-level
+            # confirmation showing exactly what will process / defer / skip
+            # before any API call. Back -> re-render approval; Cancel -> abort.
+            decision = self._confirm_batch_folders(rows, counts, runnable_cases, root)
+            if decision == "back":
+                continue
+            if decision != "run":
+                print("Run cancelled.")
+                return
             break
         self._execute_automation_run(manifest, records, runnable_cases)
+
+    # planned-action -> human reason for the "Skipped" group. Runnable actions
+    # (run_pending / run_front_changed / skip_video_exists / skip_selfie_exists)
+    # are deliberately absent: they DO flow to the runner (re-run), so they
+    # belong in "Will process", not here.
+    _RUNNABLE_PLANNED = frozenset(
+        {"run_pending", "run_front_changed", "skip_video_exists", "skip_selfie_exists"}
+    )
+    _SKIP_REASON_LABELS = {
+        "skip_complete": "already complete",
+        "manual_review": "manual review",
+        "failed": "failed",
+    }
+
+    @classmethod
+    def _partition_batch_rows(
+        cls, rows: List[Dict[str, Any]], n_will_run: int
+    ) -> "Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]":
+        """Split snapshot rows into (deferred_over_cap, skipped). Runnable rows
+        are appended in discovery order and the cap takes the first N, so any
+        runnable row past index n_will_run is deferred by the max-cases cap."""
+        runnable_rows = [r for r in rows if r.get("planned") in cls._RUNNABLE_PLANNED]
+        deferred_rows = runnable_rows[n_will_run:]
+        skipped_rows = [r for r in rows if r.get("planned") in cls._SKIP_REASON_LABELS]
+        return deferred_rows, skipped_rows
+
+    def _confirm_batch_folders(
+        self,
+        rows: List[Dict[str, Any]],
+        counts: Dict[str, int],
+        runnable_cases: List[Any],
+        root: Any,
+    ) -> str:
+        """Post-approval folder confirmation. Lists exactly which folders will
+        be processed, which are deferred by the max-cases cap, and which are
+        skipped (and why) — then asks Proceed / Back / Cancel.
+
+        Returns one of "run" | "back" | "cancel". Degrades to a plain numbered
+        list + yes/no confirm in legacy / non-TTY mode."""
+        skip_reasons = self._SKIP_REASON_LABELS
+        deferred_rows, skipped_rows = self._partition_batch_rows(rows, len(runnable_cases))
+        process_names = [self._case_display_name(rec, root) for rec in runnable_cases]
+        n_run = len(process_names)
+
+        legacy = self._use_legacy_prompt_ui()
+        if not legacy:
+            self.display_header()
+
+        _RICH_CONSOLE.print(f"[bold white]✅ Will process ({n_run})[/bold white]")
+        proc_table = Table(
+            show_header=False, expand=False, box=_rich_box.ROUNDED,
+            border_style="green", padding=(0, 1),
+        )
+        proc_table.add_column("#", style="dim", no_wrap=True)
+        proc_table.add_column("Folder", style="cyan", min_width=24)
+        if process_names:
+            for idx, name in enumerate(process_names[:30], 1):
+                proc_table.add_row(str(idx), _rich_markup_escape(name))
+            if n_run > 30:
+                proc_table.add_row("…", f"[dim]+{n_run - 30} more[/dim]")
+        else:
+            proc_table.add_row("-", "[dim](none)[/dim]")
+        _RICH_CONSOLE.print(proc_table)
+        print()
+
+        if deferred_rows:
+            _RICH_CONSOLE.print(
+                f"[bold yellow]⏭  Deferred — over max-cases cap "
+                f"(max {self._read_max_cases_setting()}) ({len(deferred_rows)})[/bold yellow]"
+            )
+            def_table = Table(
+                show_header=False, expand=False, box=_rich_box.ROUNDED,
+                border_style="yellow", padding=(0, 1),
+            )
+            def_table.add_column("#", style="dim", no_wrap=True)
+            def_table.add_column("Folder", min_width=24)
+            for idx, r in enumerate(deferred_rows[:30], 1):
+                def_table.add_row(str(idx), _rich_markup_escape(str(r.get("case", "?"))))
+            if len(deferred_rows) > 30:
+                def_table.add_row("…", f"[dim]+{len(deferred_rows) - 30} more[/dim]")
+            _RICH_CONSOLE.print(def_table)
+            print()
+
+        if skipped_rows:
+            _RICH_CONSOLE.print(
+                f"[bold]⤫ Skipped ({len(skipped_rows)})[/bold]"
+            )
+            skip_table = Table(
+                show_header=True, expand=False, box=_rich_box.ROUNDED,
+                border_style="blue", padding=(0, 1),
+            )
+            skip_table.add_column("Folder", style="dim", min_width=24)
+            skip_table.add_column("Reason", style="dim")
+            for r in skipped_rows[:30]:
+                skip_table.add_row(
+                    _rich_markup_escape(str(r.get("case", "?"))),
+                    skip_reasons.get(r.get("planned"), str(r.get("planned"))),
+                )
+            if len(skipped_rows) > 30:
+                skip_table.add_row("…", f"+{len(skipped_rows) - 30} more")
+            _RICH_CONSOLE.print(skip_table)
+            print()
+
+        if n_run == 0:
+            self.print_yellow("Nothing to process — all discovered folders are skipped or deferred.")
+            self.pause_review("Press Enter to continue...")
+            return "back"
+
+        if legacy:
+            proceed = self._confirm(f"Proceed with these {n_run} folder(s)?", default=True)
+            return "run" if proceed else "cancel"
+
+        decision = self._q_select(
+            "Proceed with this batch?",
+            [
+                (f"▶  Proceed ({n_run} folder(s))", "run"),
+                ("◀  Back to settings", "back"),
+                ("✗  Cancel", "cancel"),
+            ],
+        )
+        return decision if decision in {"run", "back", "cancel"} else "cancel"
 
     def _execute_automation_run(self, manifest: AutomationManifest, records, runnable_cases) -> None:
         """Shared validate -> preflight echo -> live run -> summary tail."""
@@ -7395,7 +7641,7 @@ def main(argv=None):
             # with status 2, which collides with our "exit 2 = ran-but-needs-
             # attention" contract. run_automation_headless validates --limit and
             # returns 1 on a bad value instead (code-review Codex P2, PR #69).
-            help="Headless --batch only: cap cases per run (1, 5, 10, or 'all'). "
+            help="Headless --batch only: cap cases per run (a positive integer or 'all'). "
             "Overrides automation_max_cases_per_run. An invalid value exits 1.",
         )
         parser.add_argument(
