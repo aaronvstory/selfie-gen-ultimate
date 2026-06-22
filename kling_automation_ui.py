@@ -3108,13 +3108,21 @@ class KlingAutomationUI:
         case instead of a bare "." (which reads as "no folder")."""
         key = str(getattr(rec, "relative_key", rec))
         if key == ".":
-            # .resolve() so a relative case_dir/root ("." / "..") still yields a
-            # real folder name — Path(".").name is "" (Gemini review).
-            case_dir = getattr(rec, "case_dir", None)
-            if case_dir is not None:
-                return Path(case_dir).resolve().name
-            if root is not None:
-                return Path(root).resolve().name
+            # case dir IS the root → use its basename instead of a bare ".".
+            target = getattr(rec, "case_dir", None)
+            if target is None:
+                target = root
+            if target is not None:
+                # .resolve() so a relative "." / ".." still yields a real folder
+                # name (Path(".").name is ""). resolve() can raise OSError on
+                # restricted/containerized filesystems — fall back to the
+                # unresolved .name, then to the raw key (Gemini review).
+                try:
+                    name = Path(target).resolve().name
+                except OSError:
+                    name = Path(target).name
+                if name:
+                    return name
         return key
 
     def _planned_action_for_case(self, case_entry: Dict[str, Any], existing: Any, is_complete: bool) -> str:

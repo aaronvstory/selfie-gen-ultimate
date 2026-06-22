@@ -233,6 +233,19 @@ def test_case_display_name_uses_root_when_case_dir_missing() -> None:
     assert KlingAutomationUI._case_display_name(rec, root="/data/rootdir") == "rootdir"
 
 
+def test_case_display_name_resolve_oserror_falls_back(monkeypatch) -> None:
+    # .resolve() can raise OSError on restricted filesystems — fall back to the
+    # unresolved basename instead of crawling the batch (Gemini round 2).
+    import kling_automation_ui as kui
+
+    def _boom(self, *a, **k):
+        raise OSError("restricted fs")
+
+    monkeypatch.setattr(kui.Path, "resolve", _boom)
+    rec = _Rec(".", case_dir="/data/Subject_front")
+    assert KlingAutomationUI._case_display_name(rec) == "Subject_front"
+
+
 def test_recommended_defaults_preserve_custom_max_cases() -> None:
     # The ⭐ recommended-defaults reset must NOT clobber a custom cap. Drive the
     # REAL baseline writer (not just the validity gate) so a clobber-to-"1"
