@@ -18,7 +18,7 @@ from datetime import datetime
 from path_utils import (
     VALID_EXTENSIONS,
     get_app_dir,
-    get_gen_images_folder,
+    get_gen_videos_folder,
     get_resource_dir,
     sanitize_stem,
 )
@@ -1771,17 +1771,19 @@ class QueueManager:
                     )
                     self._last_logged_prompt_slot = prompt_slot
 
-                # Determine output folder
+                # Determine output folder. Video output lives in gen-videos/
+                # (matches the CLI automation pipeline, which uses
+                # case_dir/gen-videos). Still images stay in gen-images/.
                 if use_source_folder:
-                    actual_output = get_gen_images_folder(item.path)
+                    actual_output = get_gen_videos_folder(item.path)
                     os.makedirs(actual_output, exist_ok=True)
-                    self.log_verbose("  Output: gen-images/", "debug")
+                    self.log_verbose("  Output: gen-videos/", "debug")
                 elif not output_folder or not os.path.isdir(output_folder):
-                    # Custom folder selected but not set or invalid - use gen-images/
-                    actual_output = get_gen_images_folder(item.path)
+                    # Custom folder selected but not set or invalid - use gen-videos/
+                    actual_output = get_gen_videos_folder(item.path)
                     os.makedirs(actual_output, exist_ok=True)
                     self.log(
-                        "No valid output folder set - saving to gen-images/",
+                        "No valid output folder set - saving to gen-videos/",
                         "warning",
                     )
                 else:
@@ -1901,7 +1903,7 @@ class QueueManager:
                         actual_output,
                         prompt,
                         negative_prompt,
-                        False,  # always False — we already computed gen-images/ path
+                        False,  # always False — we already computed the output path
                         custom_output_path,
                         skip_duplicate_check=skip_check,
                         video_duration=video_duration,
