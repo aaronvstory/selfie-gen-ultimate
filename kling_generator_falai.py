@@ -569,6 +569,11 @@ class FalAIKlingGenerator:
                 os.makedirs(actual_output_folder, exist_ok=True)
             elif output_folder is not None:
                 actual_output_folder = output_folder
+                # Defense-in-depth: a caller-supplied folder (e.g. gen-images/
+                # computed but not yet created) may not exist. The write site
+                # also mkdir's, but create it here too so duplicate-check and
+                # any intermediate writes are safe.
+                os.makedirs(actual_output_folder, exist_ok=True)
             else:
                 actual_output_folder = self.downloads_folder
 
@@ -1138,9 +1143,12 @@ class FalAIKlingGenerator:
                                         time.sleep(5)
                                         continue
                                     else:
-                                        logger.error(
-                                            f"✗ Failed to download after {max_download_retries} attempts: {video_response.status_code}"
+                                        error_msg = (
+                                            f"Failed to download after {max_download_retries} "
+                                            f"attempts: HTTP {video_response.status_code}"
                                         )
+                                        self._set_last_error(error_msg)
+                                        logger.error(f"✗ {error_msg}")
                                         return None
 
                                 # Save video with enhanced filename (model, prompt, date)
@@ -1163,6 +1171,13 @@ class FalAIKlingGenerator:
                                 output_path = (
                                     Path(actual_output_folder) / output_filename
                                 )
+
+                                # Auto-heal: the output dir (e.g. gen-images/) may
+                                # not exist yet for this caller/path. Create it at
+                                # the write site so a raw open() never fails with
+                                # FileNotFoundError — matches what fal_download_file
+                                # and the sibling generators already do.
+                                output_path.parent.mkdir(parents=True, exist_ok=True)
 
                                 with open(output_path, "wb") as f:
                                     f.write(video_response.content)
@@ -1192,9 +1207,12 @@ class FalAIKlingGenerator:
                                     )
                                     time.sleep(5)
                                 else:
-                                    logger.error(
-                                        f"✗ Download failed after {max_download_retries} attempts: {download_error}"
+                                    error_msg = (
+                                        f"Download failed after {max_download_retries} "
+                                        f"attempts: {download_error}"
                                     )
+                                    self._set_last_error(error_msg)
+                                    logger.error(f"✗ {error_msg}")
                                     return None
 
                     elif status in ["FAILED", "ERROR"]:
