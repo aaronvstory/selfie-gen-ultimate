@@ -209,7 +209,9 @@ class SimilarityEngineTests(unittest.TestCase):
         self.assertEqual(raw.MODE_EXISTING, "existing")
         self.assertEqual(raw.secondary_model_name, "Facenet512")
         self.assertTrue(raw.use_ensemble)
-        self.assertTrue(raw.anti_spoofing)
+        # FAS now defaults OFF (advisory-only feature; sole consumer of torch,
+        # which the project no longer needs by default). See FaceEngine.anti_spoofing.
+        self.assertFalse(raw.anti_spoofing)
 
     def test_polynomial_curve_at_distance_zero_returns_100(self):
         engine = se.FaceEngine()

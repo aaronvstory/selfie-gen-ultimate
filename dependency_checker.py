@@ -117,7 +117,7 @@ PYTHON_DEPENDENCIES = [
         import_name="torch",
         pip_name="torch>=2.2,<3",
         required=False,
-        description="Required by DeepFace anti-spoofing (MiniFASNetV2). Without it FAS fails."
+        description="Only used by DeepFace anti-spoofing (MiniFASNetV2), which is OFF by default. Similarity (ArcFace/Facenet512) uses TensorFlow, not torch. Safe to omit."
     ),
     Dependency(
         name="Questionary",
@@ -381,6 +381,20 @@ class DependencyChecker:
 
         return required_ok, required_missing, optional_ok, optional_missing
 
+    def _tier_label(self, required: bool) -> str:
+        """Human-facing dependency tier label.
+
+        The ``required`` flag drives launch behavior (a missing REQUIRED dep
+        fails the launcher). Everything else is still installed automatically by
+        the launcher's ``uv sync`` / pip step — "optional" never meant "skipped".
+        Label it ``[auto-installed]`` so the report is honest: these are present
+        on every normal install, and the app only *degrades gracefully* (rather
+        than refusing to launch) on the rare occasion one is missing.
+        """
+        if required:
+            return f"{self.RED}[REQUIRED]{self.RESET}"
+        return f"{self.GRAY}[auto-installed]{self.RESET}"
+
     def display_status(self):
         """Display the status of all dependencies."""
         self.print_header("DEPENDENCY CHECK")
@@ -398,7 +412,7 @@ class DependencyChecker:
         self.print_section("Python Packages")
 
         for dep in self.python_deps:
-            req_label = f"{self.RED}[REQUIRED]{self.RESET}" if dep.required else f"{self.GRAY}[optional]{self.RESET}"
+            req_label = self._tier_label(dep.required)
 
             if dep.installed and not dep.runtime_issue:
                 version_str = f" v{dep.version}" if dep.version and dep.version != "unknown" else ""
@@ -420,7 +434,7 @@ class DependencyChecker:
         self.print_section("External Tools")
 
         for tool in self.external_tools:
-            req_label = f"{self.RED}[REQUIRED]{self.RESET}" if tool.required else f"{self.GRAY}[optional]{self.RESET}"
+            req_label = self._tier_label(tool.required)
 
             if tool.installed:
                 print(f"  {self.GREEN}✓{self.RESET} {tool.name} {req_label}")
