@@ -254,7 +254,11 @@ def test_settings_editor_rejects_invalid_max_cases(tmp_path, monkeypatch):
     ui.automation_root_folder = str(tmp_path)
     ui.print_red = lambda _x: None
     ui.save_config = lambda: None
-    responses = iter([str(tmp_path), "", "8"] + [""] * 40)
+    # "abc" is genuinely invalid (not a positive integer, not "all"); the editor
+    # must reject it and keep the prior value. Custom positive integers like
+    # "20" ARE now accepted — that path is covered in
+    # test_cli_batch_folder_confirm.py.
+    responses = iter([str(tmp_path), "", "abc"] + [""] * 40)
     monkeypatch.setattr("builtins.input", lambda *args, **kwargs: next(responses, ""))
     ui._edit_automation_settings()
     assert ui.config["automation_max_cases_per_run"] == "5"
