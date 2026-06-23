@@ -138,7 +138,18 @@ class KlingDownloadErrorSurfacingTests(unittest.TestCase):
                 return _FakeResponse(200, content=b"bytes")
 
             generator = _build_generator()
-            # Force the write to fail on every attempt so the retry loop exhausts.
+
+            # Fail ONLY the binary-write open (the video download write), so the
+            # mock precisely targets the write site and never intercepts any
+            # incidental open() elsewhere in the path. mkdir is a separate syscall
+            # and still runs first, so this exercises the real failure sequence.
+            real_open = open
+
+            def failing_open(file, mode="r", *args, **kwargs):
+                if "w" in mode and "b" in mode:
+                    raise OSError("disk on fire")
+                return real_open(file, mode, *args, **kwargs)
+
             with mock.patch.object(
                 generator, "upload_to_freeimage",
                 return_value="https://v3.fal.media/files/test.jpg",
@@ -149,7 +160,7 @@ class KlingDownloadErrorSurfacingTests(unittest.TestCase):
             ), mock.patch(
                 "kling_generator_falai.time.sleep", return_value=None
             ), mock.patch(
-                "builtins.open", side_effect=OSError("disk on fire")
+                "builtins.open", side_effect=failing_open
             ):
                 result = generator.create_kling_generation(
                     character_image_path=image_path,

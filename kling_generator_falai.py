@@ -575,6 +575,8 @@ class FalAIKlingGenerator:
                 # any intermediate writes are safe.
                 os.makedirs(actual_output_folder, exist_ok=True)
             else:
+                # ~/Downloads is guaranteed to exist; the write-site mkdir
+                # covers it regardless, so no early makedirs is needed here.
                 actual_output_folder = self.downloads_folder
 
             if not skip_duplicate_check and self.check_duplicate_exists(
