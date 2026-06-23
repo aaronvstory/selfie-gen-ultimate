@@ -569,11 +569,19 @@ class FalAIKlingGenerator:
                 os.makedirs(actual_output_folder, exist_ok=True)
             elif output_folder is not None:
                 actual_output_folder = output_folder
-                # Defense-in-depth: a caller-supplied folder (e.g. gen-images/
+                # Defense-in-depth: a caller-supplied folder (e.g. gen-videos/
                 # computed but not yet created) may not exist. The write site
                 # also mkdir's, but create it here too so duplicate-check and
-                # any intermediate writes are safe.
-                os.makedirs(actual_output_folder, exist_ok=True)
+                # any intermediate writes are safe. Best-effort (EAFP): the
+                # authoritative mkdir is at the write site, so an odd/restricted
+                # path here must not abort folder resolution — if it's truly
+                # unwritable the write-site mkdir/open surfaces the real error.
+                try:
+                    os.makedirs(actual_output_folder, exist_ok=True)
+                except OSError as mk_err:
+                    logger.debug(
+                        f"Early makedirs skipped for {actual_output_folder}: {mk_err}"
+                    )
             else:
                 # ~/Downloads is guaranteed to exist; the write-site mkdir
                 # covers it regardless, so no early makedirs is needed here.

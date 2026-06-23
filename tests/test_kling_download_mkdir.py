@@ -119,6 +119,50 @@ class KlingDownloadMkdirTests(unittest.TestCase):
             with open(result, "rb") as fh:
                 self.assertEqual(fh.read(), fake_video_bytes)
 
+    def test_download_creates_missing_downloads_folder(self):
+        """output_folder=None falls back to downloads_folder, which is also
+        auto-created at the write site (covers the third branch)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = _make_source_image(tmpdir)
+            missing_downloads = os.path.join(tmpdir, "Downloads-does-not-exist")
+            self.assertFalse(os.path.isdir(missing_downloads))
+
+            fake_video_bytes = b"FAKE-MP4-BYTES" * 8
+
+            def fake_get(url, *_args, **_kwargs):
+                if url == "https://queue.fal.run/test/status":
+                    return _FakeResponse(200, payload={"status": "COMPLETED"})
+                if url == "https://queue.fal.run/test/result":
+                    return _FakeResponse(
+                        200, payload={"video": {"url": "https://media.test/v.mp4"}}
+                    )
+                return _FakeResponse(200, content=fake_video_bytes)
+
+            generator = _build_generator()
+            generator.downloads_folder = missing_downloads
+            with mock.patch.object(
+                generator, "upload_to_freeimage",
+                return_value="https://v3.fal.media/files/test.jpg",
+            ), mock.patch(
+                "kling_generator_falai.requests.post", side_effect=_fake_post_submit
+            ), mock.patch(
+                "kling_generator_falai.requests.get", side_effect=fake_get
+            ), mock.patch(
+                "kling_generator_falai.time.sleep", return_value=None
+            ):
+                result = generator.create_kling_generation(
+                    character_image_path=image_path,
+                    output_folder=None,
+                    custom_prompt="turn head left then right",
+                    skip_duplicate_check=True,
+                    duration=5,
+                )
+
+            self.assertTrue(os.path.isdir(missing_downloads))
+            self.assertIsNotNone(result)
+            self.assertTrue(os.path.isfile(result))
+            self.assertEqual(os.path.dirname(result), missing_downloads)
+
 
 class KlingDownloadErrorSurfacingTests(unittest.TestCase):
     """Edit B/B2: a download failure surfaces a real error, not the generic one."""
@@ -139,10 +183,12 @@ class KlingDownloadErrorSurfacingTests(unittest.TestCase):
 
             generator = _build_generator()
 
-            # Fail ONLY the binary-write open (the video download write), so the
-            # mock precisely targets the write site and never intercepts any
-            # incidental open() elsewhere in the path. mkdir is a separate syscall
-            # and still runs first, so this exercises the real failure sequence.
+            # Fail ONLY the binary-write open (the video download write), and
+            # patch the open binding IN THE MODULE UNDER TEST rather than
+            # builtins, so the mock never leaks into the stdlib / test runner /
+            # coverage tooling (per Sourcery + Gemini review). mkdir is a
+            # separate syscall and still runs first, so this exercises the real
+            # failure sequence.
             real_open = open
 
             def failing_open(file, mode="r", *args, **kwargs):
@@ -160,7 +206,7 @@ class KlingDownloadErrorSurfacingTests(unittest.TestCase):
             ), mock.patch(
                 "kling_generator_falai.time.sleep", return_value=None
             ), mock.patch(
-                "builtins.open", side_effect=failing_open
+                "kling_generator_falai.open", side_effect=failing_open, create=True
             ):
                 result = generator.create_kling_generation(
                     character_image_path=image_path,
@@ -230,6 +276,27 @@ class KlingDownloadErrorSurfacingTests(unittest.TestCase):
         # And when empty, it falls back to the generic string (unchanged behavior).
         generator.last_error_message = None
         self.assertEqual(manager._get_generation_error_message(), "Generation failed")
+
+
+class GuiVideoOutputFolderTests(unittest.TestCase):
+    """The GUI queue now writes video output to gen-videos/ (matching the CLI
+    automation pipeline), not gen-images/. Guards the helper the GUI uses."""
+
+    def test_gui_uses_gen_videos_helper(self):
+        # The GUI queue_manager imports get_gen_videos_folder (not _images_).
+        from kling_gui import queue_manager as qm
+
+        self.assertTrue(hasattr(qm, "get_gen_videos_folder"))
+        self.assertFalse(hasattr(qm, "get_gen_images_folder"))
+
+    def test_gen_videos_helper_returns_gen_videos_path(self):
+        from path_utils import get_gen_videos_folder
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = os.path.join(tmpdir, "selfie-expanded.png")
+            Image.new("RGB", (16, 16)).save(source)
+            folder = get_gen_videos_folder(source)
+            self.assertEqual(os.path.basename(folder), "gen-videos")
 
 
 if __name__ == "__main__":
