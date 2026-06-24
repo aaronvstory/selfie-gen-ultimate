@@ -182,7 +182,16 @@ def _aa_strength_valid(value: str) -> bool:
 # for BOTH expand steps ("fal.ai for everything"), composites unchanged
 # (front preserve_seamless / selfie-expand none). The GUI keeps its own
 # opt-in rPPG default — this preset is CLI-automation only.
-RECOMMENDED_DEFAULTS_VERSION = 7
+# v8 (2026-06-25): anti-spoofing (FAS) flipped OFF in the recommended
+# baseline. FAS is advisory-only (never gated similarity output unless
+# automation_similarity_require_fas_pass=true, which defaults false) and is
+# the SOLE consumer of PyTorch, which the project is moving off by default.
+# The class/instance default already became False; this migration pushes the
+# new default to EXISTING configs that still carry the old "true" — without
+# it the flip only ever reached fresh installs. A user who deliberately
+# re-enables FAS afterward keeps it (their config is now at the current
+# version, so this one-time migration won't re-flip it).
+RECOMMENDED_DEFAULTS_VERSION = 8
 # rPPG default in the v7 recommended preset (user decision 2026-06-11:
 # ON). Single flip point should that decision change.
 RECOMMENDED_RPPG_ENABLED_V7 = True
@@ -2719,6 +2728,15 @@ class KlingAutomationUI:
         self.config["cli_video_duration"] = 10
         self.config["cli_kling_prompt_slot"] = DEFAULT_KLING_PROMPT_SLOT
         self.config["automation_similarity_threshold"] = 80
+        # v8: FAS (anti-spoofing) OFF in the recommended baseline. Advisory-only
+        # (never gates the verdict unless require_fas_pass=true, default false)
+        # and the sole torch consumer the project is dropping by default. This
+        # one-time write flips EXISTING configs still carrying the legacy "true";
+        # afterward the user is free to re-enable it and it sticks (config now at
+        # the current recommended version). The torch-guard in
+        # similarity_engine._anti_spoofing_active() means a stale "true" never
+        # crashes even before this migration runs.
+        self.config["automation_similarity_anti_spoofing"] = False
         self.config["automation_video_enabled"] = True
         # Face-track gate is DIAGNOSTIC-ONLY and OFF by default. A large
         # balanced corpus showed face-track % does NOT separate Persona
