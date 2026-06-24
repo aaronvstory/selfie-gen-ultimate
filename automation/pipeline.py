@@ -62,10 +62,11 @@ def _with_outpaint_detail(base_message: str, outpaint: "OutpaintGenerator") -> s
             detail = (getter() or "").strip()
     except Exception:
         detail = ""
-    if not detail:
+    # Skip the generic timeout/failure sentinel — it adds no information beyond
+    # the base message and just clutters the case summary (Gemini round 2). Only
+    # a REAL provider detail (the fal 422 text, etc.) is worth appending.
+    if not detail or "fal_failed_or_timed_out" in detail:
         return base_message
-    # Avoid a redundant "(reason=fal_failed_or_timed_out)"-only tail adding no
-    # information beyond the base message.
     return f"{base_message}: {detail}"
 
 

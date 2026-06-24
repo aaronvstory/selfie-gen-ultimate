@@ -169,3 +169,38 @@ def test_non_retryable_failure_surfaces_detail_no_resubmit(monkeypatch):
     assert final is None
     assert submits["n"] == 1  # no resubmit on a deterministic failure
     assert fal_utils.CONTENT_POLICY_PREFIX in gen.get_last_outpaint_error_detail()
+
+
+# --- pipeline detail surfacing ---------------------------------------------
+
+class _FakeOutpaint:
+    def __init__(self, detail):
+        self._detail = detail
+
+    def get_last_outpaint_error_detail(self):
+        return self._detail
+
+
+def test_with_outpaint_detail_appends_real_detail():
+    from automation.pipeline import _with_outpaint_detail
+    out = _with_outpaint_detail(
+        "selfie expand failed",
+        _FakeOutpaint("image_url: Failed to generate outpainted image"),
+    )
+    assert out == "selfie expand failed: image_url: Failed to generate outpainted image"
+
+
+def test_with_outpaint_detail_skips_generic_sentinel():
+    """The generic 'reason=fal_failed_or_timed_out' tail adds nothing and must
+    NOT be appended (Gemini round 2)."""
+    from automation.pipeline import _with_outpaint_detail
+    out = _with_outpaint_detail(
+        "selfie expand failed",
+        _FakeOutpaint("reason=fal_failed_or_timed_out"),
+    )
+    assert out == "selfie expand failed"
+
+
+def test_with_outpaint_detail_handles_missing_getter():
+    from automation.pipeline import _with_outpaint_detail
+    assert _with_outpaint_detail("front expansion failed", object()) == "front expansion failed"
