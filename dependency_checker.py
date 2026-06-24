@@ -381,18 +381,27 @@ class DependencyChecker:
 
         return required_ok, required_missing, optional_ok, optional_missing
 
-    def _tier_label(self, required: bool) -> str:
+    def _tier_label(self, required: bool, kind: str = "python") -> str:
         """Human-facing dependency tier label.
 
         The ``required`` flag drives launch behavior (a missing REQUIRED dep
-        fails the launcher). Everything else is still installed automatically by
-        the launcher's ``uv sync`` / pip step — "optional" never meant "skipped".
-        Label it ``[auto-installed]`` so the report is honest: these are present
-        on every normal install, and the app only *degrades gracefully* (rather
-        than refusing to launch) on the rare occasion one is missing.
+        fails the launcher). For non-required deps the honest label depends on
+        how they are provisioned:
+
+        - ``kind="python"`` — pip/uv-managed packages. These are installed
+          automatically by the launcher's ``uv sync`` / pip step on every normal
+          install ("optional" never meant "skipped"), so label them
+          ``[auto-installed]``; the app only *degrades gracefully* on the rare
+          occasion one is missing.
+        - ``kind="external"`` — external tools (e.g. ffmpeg) provisioned
+          separately, NOT by uv/pip. Labeling these ``[auto-installed]`` would
+          wrongly imply the installer puts them on the box, so label them
+          ``[optional]`` (app degrades gracefully if absent).
         """
         if required:
             return f"{self.RED}[REQUIRED]{self.RESET}"
+        if kind == "external":
+            return f"{self.GRAY}[optional]{self.RESET}"
         return f"{self.GRAY}[auto-installed]{self.RESET}"
 
     def display_status(self):
@@ -434,7 +443,7 @@ class DependencyChecker:
         self.print_section("External Tools")
 
         for tool in self.external_tools:
-            req_label = self._tier_label(tool.required)
+            req_label = self._tier_label(tool.required, kind="external")
 
             if tool.installed:
                 print(f"  {self.GREEN}✓{self.RESET} {tool.name} {req_label}")

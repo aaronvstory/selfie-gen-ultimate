@@ -213,6 +213,93 @@ class SimilarityEngineTests(unittest.TestCase):
         # which the project no longer needs by default). See FaceEngine.anti_spoofing.
         self.assertFalse(raw.anti_spoofing)
 
+    @staticmethod
+    def _reset_torch_cache():
+        """Clear the per-process cached torch probe so each test is deterministic."""
+        if hasattr(se.FaceEngine, "_torch_available"):
+            delattr(se.FaceEngine, "_torch_available")
+
+    def test_anti_spoofing_active_false_when_flag_off(self):
+        engine = se.FaceEngine()
+        engine.anti_spoofing = False
+        self._reset_torch_cache()
+        # Flag off short-circuits before any torch probe.
+        with mock.patch("builtins.__import__") as imp:
+            self.assertFalse(engine._anti_spoofing_active())
+            torch_imports = [c for c in imp.call_args_list if c.args and c.args[0] == "torch"]
+            self.assertEqual(torch_imports, [])
+
+    def test_anti_spoofing_active_true_when_torch_importable(self):
+        engine = se.FaceEngine()
+        engine.anti_spoofing = True
+        self._reset_torch_cache()
+        real_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "torch":
+                return object()  # pretend torch imports fine, no real dependency
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=fake_import):
+            self.assertTrue(engine._anti_spoofing_active())
+        self.assertTrue(se.FaceEngine._torch_available)
+
+    def test_anti_spoofing_active_false_and_cached_on_importerror(self):
+        engine = se.FaceEngine()
+        engine.anti_spoofing = True
+        self._reset_torch_cache()
+        real_import = __import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "torch":
+                raise ImportError("No module named 'torch'")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=failing_import):
+            self.assertFalse(engine._anti_spoofing_active())
+        self.assertIs(se.FaceEngine._torch_available, False)
+
+        # Second call uses the cache — no further import attempt.
+        with mock.patch("builtins.__import__") as imp2:
+            self.assertFalse(engine._anti_spoofing_active())
+            torch_imports = [c for c in imp2.call_args_list if c.args and c.args[0] == "torch"]
+            self.assertEqual(torch_imports, [])
+
+    def test_anti_spoofing_active_degrades_on_broken_torch(self):
+        # torch present but import raises something other than ImportError
+        # (e.g. broken CUDA DLLs) -> degrade to OFF, do not propagate.
+        engine = se.FaceEngine()
+        engine.anti_spoofing = True
+        self._reset_torch_cache()
+        real_import = __import__
+
+        def broken_import(name, *args, **kwargs):
+            if name == "torch":
+                raise OSError("DLL load failed: torch_cuda")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=broken_import):
+            self.assertFalse(engine._anti_spoofing_active())
+        self.assertIs(se.FaceEngine._torch_available, False)
+
+    def test_extract_faces_omits_anti_spoofing_kwarg_when_inactive(self):
+        engine = se.FaceEngine()
+        with mock.patch.object(engine, "_anti_spoofing_active", return_value=False), \
+                mock.patch.object(se, "DeepFace") as mock_df:
+            mock_df.extract_faces.return_value = []
+            engine._extract_faces("img.png")
+            _, kwargs = mock_df.extract_faces.call_args
+            self.assertNotIn("anti_spoofing", kwargs)
+
+    def test_extract_faces_passes_anti_spoofing_kwarg_when_active(self):
+        engine = se.FaceEngine()
+        with mock.patch.object(engine, "_anti_spoofing_active", return_value=True), \
+                mock.patch.object(se, "DeepFace") as mock_df:
+            mock_df.extract_faces.return_value = []
+            engine._extract_faces("img.png")
+            _, kwargs = mock_df.extract_faces.call_args
+            self.assertEqual(kwargs.get("anti_spoofing"), True)
+
     def test_polynomial_curve_at_distance_zero_returns_100(self):
         engine = se.FaceEngine()
         score, match = engine._score_from_distance(0.0)

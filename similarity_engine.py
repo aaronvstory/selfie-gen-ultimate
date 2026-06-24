@@ -686,7 +686,19 @@ class FaceEngine:
             try:
                 import torch  # noqa: F401
                 cached = True
-            except Exception:
+            except ImportError:
+                # torch simply isn't installed — the expected, quiet case.
+                cached = False
+            except Exception as exc:
+                # torch IS present but failed to import (e.g. broken CUDA DLLs,
+                # ABI mismatch). Degrade FAS to OFF so similarity scoring still
+                # works, but surface the real error instead of misreporting it
+                # as "torch not installed".
+                logger.warning(
+                    "torch is installed but failed to import; anti-spoofing "
+                    "disabled for this process: %s",
+                    exc,
+                )
                 cached = False
             FaceEngine._torch_available = cached
         return bool(cached)
