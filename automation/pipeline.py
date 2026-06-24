@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import gc
 import math
+import os
 import re
 import threading
 from pathlib import Path
@@ -42,6 +44,30 @@ from selfie_generator import SelfieGenerator
 
 
 ProgressCB = Optional[Callable[[str, str], None]]
+
+
+def _with_outpaint_detail(base_message: str, outpaint: "OutpaintGenerator") -> str:
+    """Append the generator's real last-error detail to a case error message.
+
+    The outpaint generator captures the actual provider failure (e.g. a fal
+    HTTP 422 ``image_url: Failed to generate outpainted image: ...``) in
+    ``get_last_outpaint_error_detail``. Surfacing it here means the case
+    summary / live "Issue" line shows the real cause instead of the opaque
+    "selfie expand failed". Best-effort + defensive: stub generators in tests
+    may not implement the getter."""
+    detail = ""
+    try:
+        getter = getattr(outpaint, "get_last_outpaint_error_detail", None)
+        if callable(getter):
+            detail = (getter() or "").strip()
+    except Exception:
+        detail = ""
+    # Skip the generic timeout/failure sentinel — it adds no information beyond
+    # the base message and just clutters the case summary (Gemini round 2). Only
+    # a REAL provider detail (the fal 422 text, etc.) is worth appending.
+    if not detail or "fal_failed_or_timed_out" in detail:
+        return base_message
+    return f"{base_message}: {detail}"
 
 
 @dataclass
@@ -568,7 +594,9 @@ class AutoPipelineRunner:
                     prompt=expand_prompt,
                 )
                 if not expanded_result:
-                    result["error"] = "branch selfie expand failed"
+                    result["error"] = _with_outpaint_detail(
+                        "branch selfie expand failed", outpaint
+                    )
                     return result
                 final_still = expanded_result
         result["expanded"] = final_still
@@ -994,6 +1022,24 @@ class AutoPipelineRunner:
                 current = nxt
             if ok and current != raw_base and current.exists():
                 produced.append(current)
+
+        # Mirror of the GUI fan-out cleanup (kling_gui/queue_manager.py): reclaim
+        # memory after the fan-out and prune STRICT intermediates (cached step
+        # outputs no recipe claimed as a deliverable). No-op in full powerset
+        # mode; preserves deliverables, the raw base, and the rPPG seed. Opt out
+        # with KLING_KEEP_POSTPROC_INTERMEDIATES=1.
+        if os.environ.get("KLING_KEEP_POSTPROC_INTERMEDIATES") != "1":
+            from automation.postproc_cleanup import prune_strict_intermediates
+            keep = set(produced) | {raw_base}
+            if rppg_base_path is not None:
+                keep.add(Path(rppg_base_path))
+            prune_strict_intermediates(
+                cache.values(), keep,
+                on_pruned=lambda name: self.logger.debug(
+                    "pruned post-proc intermediate: %s", name
+                ),
+            )
+        gc.collect()
 
         if produced:
             self.logger.info(
@@ -1510,7 +1556,10 @@ class AutoPipelineRunner:
                             case_key,
                             "front_expand",
                             "failed",
-                            error=f"front expansion failed on pass {pass_index + 1}",
+                            error=_with_outpaint_detail(
+                                f"front expansion failed on pass {pass_index + 1}",
+                                outpaint,
+                            ),
                             meta={
                                 "configured_passes": front_passes,
                                 "executed_passes": executed_passes,
@@ -2026,7 +2075,10 @@ class AutoPipelineRunner:
                         },
                     )
                 else:
-                    self.manifest.update_step(case_key, "selfie_expand", "failed", error="selfie expand failed")
+                    self.manifest.update_step(
+                        case_key, "selfie_expand", "failed",
+                        error=_with_outpaint_detail("selfie expand failed", outpaint),
+                    )
                     return self._finalize_case(case_entry, "failed")
         else:
             self.manifest.update_step(

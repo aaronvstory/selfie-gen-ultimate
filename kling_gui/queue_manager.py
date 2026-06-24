@@ -4,6 +4,7 @@ Queue Manager - Thread-safe queue for processing images with status tracking.
 
 import threading
 import os
+import gc
 import logging
 import re
 import subprocess
@@ -3063,6 +3064,26 @@ class QueueManager:
                 current = nxt
             if ok and current and current != raw_base and Path(current).exists():
                 produced.append(current)
+
+        # Reclaim memory after a long fan-out (many subprocess round-trips +
+        # path bookkeeping) — the run that motivated this PR was SIGKILL'd by
+        # macOS jetsam right after a 14-variant fan-out. Also prune any STRICT
+        # intermediates: cached step outputs that no recipe claimed as a final
+        # deliverable. In full powerset mode every prefix is itself a recipe
+        # output so this is typically a no-op; it only reclaims true
+        # stepping-stone files in reduced configs. Deliverables (`produced`),
+        # the raw Kling base, and the rPPG seed are ALWAYS preserved. Opt out
+        # with KLING_KEEP_POSTPROC_INTERMEDIATES=1.
+        if os.environ.get("KLING_KEEP_POSTPROC_INTERMEDIATES") != "1":
+            from automation.postproc_cleanup import prune_strict_intermediates
+            prune_strict_intermediates(
+                cache.values(),
+                set(produced) | {raw_base, str(rppg_base)},
+                on_pruned=lambda name: self.log(
+                    f"Pruned post-processing intermediate: {name}", "debug"
+                ),
+            )
+        gc.collect()
 
         if produced:
             self.log(

@@ -16,6 +16,11 @@ from outpaint_geometry import (
     compute_provider_caps,
 )
 from automation.config import get_outpaint_fal_timeout_seconds
+# Imported as a module (not `from fal_utils import ...`) so _poll_outpaint_with_retry
+# resolves fal_queue_submit/poll through the module at call time — tests
+# monkeypatch ``fal_utils.fal_queue_submit`` etc., and that must take effect.
+# fal_utils does NOT import outpaint_generator, so there is no import cycle.
+import fal_utils
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +96,80 @@ _BFL_EXPAND_URL = "https://api.bfl.ai/v1/flux-pro-1.0-expand"
 # Override via env: BFL_EXPAND_MAX_DIM, BFL_EXPAND_MAX_MP
 _BFL_MAX_CANVAS_DIM = _read_single_env_int("BFL_EXPAND_MAX_DIM", 2048)
 _BFL_MAX_CANVAS_MP = _read_single_env_float("BFL_EXPAND_MAX_MP", 1.5)
+
+
+def _poll_outpaint_with_retry(
+    gen,
+    *,
+    endpoint: str,
+    payload: dict,
+    timeout_seconds: int,
+    cancel_event=None,
+    adj: Tuple[int, int, int, int] = (0, 0, 0, 0),
+    max_submit_attempts: int = 2,
+):
+    """Submit an outpaint job + poll, resubmitting ONCE on a transient failure.
+
+    Module-level (not a method) so it can be unit-tested in isolation by
+    monkeypatching ``fal_queue_submit`` / ``fal_queue_poll``. On terminal
+    failure it stores the REAL provider detail on
+    ``gen._last_outpaint_error_detail`` and reports it; on user cancel it
+    returns ``None`` silently. Returns the poll result (a truthy dict, possibly
+    the aspect-ratio sentinel) on success, else ``None``.
+    """
+    adj_left, adj_right, adj_top, adj_bottom = adj
+    for submit_attempt in range(1, max_submit_attempts + 1):
+        gen._report(
+            f"Submitting outpaint (L={adj_left} R={adj_right} "
+            f"T={adj_top} B={adj_bottom})...",
+            "task",
+        )
+        result = fal_utils.fal_queue_submit(
+            gen.api_key, endpoint, payload, gen._progress_callback
+        )
+        if not result:
+            gen._report("Failed to submit outpaint job", "error")
+            return None
+        status_url = result.get("status_url")
+        if not status_url:
+            gen._report("No status URL in response", "error")
+            return None
+        request_id = str(result.get("request_id", "") or "")
+        safe_request = request_id[-8:] if request_id else "unknown"
+        gen._report(
+            f"Queue watch: provider=fal endpoint={endpoint} "
+            f"req=*{safe_request} timeout={timeout_seconds}s",
+            "debug",
+        )
+        gen._report("Waiting for outpaint...", "progress")
+        poll_error: dict = {}
+        final = fal_utils.fal_queue_poll(
+            gen.api_key,
+            status_url,
+            gen._progress_callback,
+            max_wait_seconds=timeout_seconds,
+            cancel_event=cancel_event,
+            provider="fal",
+            endpoint=endpoint,
+            request_id=request_id,
+            operation_name="Outpaint",
+            error_sink=poll_error,
+        )
+        if final:
+            return final
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        detail = poll_error.get("detail") or "reason=fal_failed_or_timed_out"
+        if poll_error.get("retryable") and submit_attempt < max_submit_attempts:
+            gen._report(
+                f"Outpaint attempt {submit_attempt} failed ({detail}); retrying once...",
+                "warning",
+            )
+            continue
+        gen._set_last_outpaint_error_detail(detail)
+        gen._report(f"Outpaint failed: {detail}", "error")
+        return None
+    return None
 
 
 class OutpaintGenerator:
@@ -385,8 +464,6 @@ class OutpaintGenerator:
 
         from fal_utils import (
             upload_reference_image,
-            fal_queue_submit,
-            fal_queue_poll,
             fal_download_file,
         )
 
@@ -490,52 +567,26 @@ class OutpaintGenerator:
         if prompt.strip():
             payload["prompt"] = prompt.strip()
 
-        self._report(
-            f"Submitting outpaint (L={adj_left} R={adj_right} "
-            f"T={adj_top} B={adj_bottom})...",
-            "task",
-        )
-
-        # Submit to queue
-        result = fal_queue_submit(
-            self.api_key, self.ENDPOINT, payload, self._progress_callback
-        )
-        if not result:
-            self._report("Failed to submit outpaint job", "error")
-            return None
-
-        status_url = result.get("status_url")
-        if not status_url:
-            self._report("No status URL in response", "error")
-            return None
-        request_id = str(result.get("request_id", "") or "")
-        safe_request = request_id[-8:] if request_id else "unknown"
         timeout_seconds = get_outpaint_fal_timeout_seconds(
             {"outpaint_fal_timeout_seconds": poll_timeout_seconds}
         )
-        self._report(
-            f"Queue watch: provider=fal endpoint={self.ENDPOINT} req=*{safe_request} timeout={timeout_seconds}s",
-            "debug",
-        )
 
-        self._report("Waiting for outpaint...", "progress")
-        final = fal_queue_poll(
-            self.api_key,
-            status_url,
-            self._progress_callback,
-            max_wait_seconds=timeout_seconds,
-            cancel_event=cancel_event,
-            provider="fal",
+        # Submit + poll, with ONE automatic resubmit on a transient provider
+        # failure (5xx / fal's generic "Failed to generate ..." 422). The real
+        # error detail is carried out of fal_queue_poll via error_sink and
+        # surfaced verbatim instead of the old generic
+        # "reason=fal_failed_or_timed_out" (which discarded the actual cause).
+        final = _poll_outpaint_with_retry(
+            self,
             endpoint=self.ENDPOINT,
-            request_id=request_id,
-            operation_name="Outpaint",
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+            cancel_event=cancel_event,
+            adj=(adj_left, adj_right, adj_top, adj_bottom),
         )
         if not final:
-            if cancel_event is not None and cancel_event.is_set():
-                return None
-            detail = "reason=fal_failed_or_timed_out"
-            self._set_last_outpaint_error_detail(detail)
-            self._report(f"Outpaint failed or timed out ({detail})", "error")
+            # The helper already reported the failure and stored the real
+            # detail (or returned silently on user cancel).
             return None
 
         # v2.28: SelfieGenerator's aspect-ratio self-heal sentinel

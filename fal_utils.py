@@ -36,7 +36,40 @@ _BALANCE_LOCK_MARKERS = (
 )
 
 
-def _extract_http_error_detail(resp: requests.Response, limit: int = 500) -> str:
+CONTENT_POLICY_PREFIX = "Content policy violation"
+
+
+def _format_validation_detail_list(detail_list: list) -> str:
+    """Assemble a readable message from a FastAPI/fal validation `detail` list.
+
+    Each entry is typically ``{"loc": ["body", "image_url"], "msg": "...",
+    "type": "..."}``. We join the per-entry ``msg`` (prefixed with the offending
+    field) instead of ``str(dict)`` so the actual human-readable cause survives
+    — the old ``str(data["detail"])[:500]`` dumped the raw repr and truncated it
+    mid-string, which is exactly how the real fal 422 reason got lost.
+    """
+    parts = []
+    for entry in detail_list:
+        if not isinstance(entry, dict):
+            parts.append(str(entry))
+            continue
+        msg = entry.get("msg") or entry.get("message") or ""
+        loc = entry.get("loc")
+        field = ""
+        if isinstance(loc, list) and loc:
+            # Drop the leading scope token ("body"/"query"/"path") for clarity.
+            tail = [str(x) for x in loc if str(x) not in ("body", "query", "path")]
+            field = ".".join(tail) if tail else str(loc[-1])
+        if msg and field:
+            parts.append(f"{field}: {msg}")
+        elif msg:
+            parts.append(str(msg))
+        else:
+            parts.append(str(entry))
+    return "; ".join(p for p in parts if p)
+
+
+def _extract_http_error_detail(resp: requests.Response, limit: int = 1500) -> str:
     """Return a readable error detail from an HTTP response.
 
     Detects fal.ai's `content_policy_violation` 422 and replaces the
@@ -45,6 +78,12 @@ def _extract_http_error_detail(resp: requests.Response, limit: int = 500) -> str
     `type == "content_policy_violation"` entry triggers it (GPT Image 2
     Edit is the typical hit; other models that adopt the same checker
     payload will work too).
+
+    For any OTHER structured `detail` list (e.g. fal's generic
+    ``image_url: Failed to generate outpainted image: ...`` 422), the
+    per-entry ``msg`` is extracted and joined so the real cause is shown
+    in full rather than truncated mid-repr. ``limit`` is applied only to
+    the FINAL assembled string.
     """
     try:
         data = resp.json()
@@ -62,7 +101,7 @@ def _extract_http_error_detail(resp: requests.Response, limit: int = 500) -> str
                         field = str(last)
                 target = f" in `{field}`" if field else ""
                 return (
-                    f"Content policy violation{target}: the model's "
+                    f"{CONTENT_POLICY_PREFIX}{target}: the model's "
                     "content checker flagged the request. Edit the "
                     "Selfie prompt (or the input image) to remove the "
                     "language it objected to -- common triggers are "
@@ -71,6 +110,9 @@ def _extract_http_error_detail(resp: requests.Response, limit: int = 500) -> str
                     "selfie models with softer checkers may still "
                     "accept the same prompt."
                 )[:limit]
+            assembled = _format_validation_detail_list(data["detail"])
+            if assembled:
+                return assembled[:limit]
         if isinstance(data, dict):
             if "detail" in data:
                 return str(data["detail"])[:limit]
@@ -81,6 +123,29 @@ def _extract_http_error_detail(resp: requests.Response, limit: int = 500) -> str
         return str(data)[:limit]
     except Exception:
         return (resp.text or "").strip()[:limit]
+
+
+def _classify_http_retryable(status_code: int, detail: str) -> bool:
+    """Whether an HTTP failure is worth one automatic resubmit.
+
+    Retryable: 5xx server errors and fal's generic generation 422
+    (``Failed to generate ...`` — a transient provider hiccup). NOT
+    retryable: content-policy 422s (deterministic — a resubmit fails the
+    same way) and other 4xx client/validation errors.
+    """
+    if status_code >= 500:
+        return True
+    if status_code == 422:
+        # Only fal's GENERIC generation hiccup is transient. A deterministic
+        # field-validation 422 (bad URL, out-of-range margin) or a content-
+        # policy block fails identically on resubmit — retrying just wastes a
+        # paid call (sourcery bug_risk). Match the transient signatures
+        # explicitly rather than retrying every non-content-policy 422.
+        if not detail or detail.startswith(CONTENT_POLICY_PREFIX):
+            return False
+        low = detail.lower()
+        return "failed to generate" in low or "try again" in low
+    return False
 
 
 def _sleep_with_cancel(
@@ -427,6 +492,7 @@ def fal_queue_poll(
     endpoint: str = "",
     request_id: str = "",
     operation_name: str = "Operation",
+    error_sink: "Optional[dict]" = None,
 ) -> Optional[dict]:
     """Poll fal.ai queue until completion.
 
@@ -600,12 +666,17 @@ def fal_queue_poll(
                     progress_cb("Generation complete", "success")
 
                 # Try to extract result — handle response_url indirection
-                result = _extract_result(data, status_headers, progress_cb)
+                result = _extract_result(data, status_headers, progress_cb, error_sink=error_sink)
                 return result
 
             elif status in ("FAILED", "ERROR"):
                 error_msg = data.get("error", "Unknown error")
                 logger.error("Generation failed: %s", error_msg)
+                if error_sink is not None:
+                    error_sink.update(
+                        detail=str(error_msg), status_code=0,
+                        kind="provider_failed", retryable=True,
+                    )
                 if progress_cb:
                     progress_cb(f"Generation failed: {error_msg}", "error")
                 return None
@@ -630,6 +701,11 @@ def fal_queue_poll(
                 return None
 
     logger.error("Polling timed out after %d attempts", max_attempts)
+    if error_sink is not None:
+        error_sink.update(
+            detail=f"timed out after {int(max_wait_seconds)}s (last status: {last_status})",
+            status_code=0, kind="timeout", retryable=False,
+        )
     if progress_cb:
         progress_cb("Polling timed out", "error")
     return None
@@ -656,6 +732,7 @@ def _extract_result(
     status_result: dict,
     status_headers: dict,
     progress_cb: ProgressCallback = None,
+    error_sink: "Optional[dict]" = None,
 ) -> Optional[dict]:
     """Extract the final result payload from a COMPLETED status response.
 
@@ -683,18 +760,29 @@ def _extract_result(
                 # Check for API-level errors inside result
                 if "error" in result_data:
                     logger.error("API error in response_url: %s", result_data["error"])
+                    err_detail = str(result_data["error"])
                     if progress_cb:
-                        progress_cb(f"API error: {result_data['error']}", "error")
+                        progress_cb(f"API error: {err_detail}", "error")
+                    if error_sink is not None:
+                        error_sink.update(
+                            detail=err_detail, status_code=200,
+                            kind="api_error", retryable=False,
+                        )
                     return None
                 if "detail" in result_data:
-                    detail = result_data["detail"]
-                    if isinstance(detail, list):
-                        for err in detail:
-                            logger.error("Validation error: %s", err.get("msg", err))
+                    detail_field = result_data["detail"]
+                    if isinstance(detail_field, list):
+                        detail = _format_validation_detail_list(detail_field) or "validation error"
                     else:
-                        logger.error("API detail: %s", detail)
+                        detail = str(detail_field)
+                    logger.error("API detail: %s", detail)
                     if progress_cb:
-                        progress_cb("API validation error in result", "error")
+                        progress_cb(f"API validation error: {detail}", "error")
+                    if error_sink is not None:
+                        error_sink.update(
+                            detail=detail, status_code=200,
+                            kind="validation_error", retryable=False,
+                        )
                     return None
                 # Unwrap nested wrappers in the fetched result too
                 return _unwrap_payload(result_data)
@@ -718,6 +806,13 @@ def _extract_result(
                         "allowed": sorted(aspect_allowed),
                         "detail": detail,
                     }
+                if error_sink is not None:
+                    error_sink.update(
+                        detail=detail,
+                        status_code=r.status_code,
+                        kind="http_error",
+                        retryable=_classify_http_retryable(r.status_code, detail),
+                    )
                 if progress_cb:
                     progress_cb(
                         f"response_url failed: HTTP {r.status_code} — {detail}",
@@ -726,11 +821,21 @@ def _extract_result(
                 return None
         except Exception as e:
             logger.warning("Failed to fetch response_url: %s", e)
+            if error_sink is not None:
+                error_sink.update(
+                    detail=f"could not fetch result: {e}", status_code=0,
+                    kind="fetch_error", retryable=True,
+                )
             if progress_cb:
                 progress_cb(f"Failed to fetch result: {e}", "error")
             return None
 
     logger.error("Could not extract result from COMPLETED response")
+    if error_sink is not None:
+        error_sink.update(
+            detail="completed response carried no images/video", status_code=200,
+            kind="empty_result", retryable=False,
+        )
     if progress_cb:
         progress_cb("Could not extract result from completed response", "error")
     return None
