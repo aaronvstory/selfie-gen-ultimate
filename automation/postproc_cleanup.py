@@ -18,6 +18,21 @@ from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
 
+def _norm_key(pathlike) -> str:
+    """Canonical comparison key for a path, robust across OSes.
+
+    The GUI caches paths as ``str`` (possibly with forward slashes) while the
+    CLI caches ``Path`` (backslashes on Windows). Comparing raw ``str(k)`` would
+    miss a match between the two forms and could delete a real deliverable.
+    ``resolve()`` normalizes separators, case-folds on case-insensitive
+    filesystems, and reconciles relative/absolute forms; ``absolute()`` is the
+    fallback when the path can't be resolved (restricted FS)."""
+    try:
+        return str(Path(pathlike).resolve())
+    except OSError:
+        return str(Path(pathlike).absolute())
+
+
 def prune_strict_intermediates(
     cache_values: Iterable,
     keep: Iterable,
@@ -27,25 +42,30 @@ def prune_strict_intermediates(
     """Delete cached step outputs not present in ``keep``.
 
     Accepts ``str`` or ``Path`` for both arguments (the GUI caches ``str``, the
-    CLI caches ``Path``). Best-effort: never raises — a file already gone or
-    locked is skipped. Returns the basenames actually deleted.
+    CLI caches ``Path``); both are normalized to a canonical key before
+    comparison so a forward-slash string and a backslash ``Path`` to the SAME
+    file still match — a real deliverable is never deleted on a separator/case
+    mismatch. Best-effort + EAFP: a file already gone or locked is skipped.
+    Returns the basenames actually deleted.
 
     In full powerset mode every cached prefix is itself a recipe's final output,
     so ``keep`` covers everything and this is a no-op; it only reclaims true
     stepping-stone files that appear in reduced configurations.
     """
-    keep_resolved = {str(k) for k in keep}
+    keep_keys = {_norm_key(k) for k in keep}
     pruned: List[str] = []
-    for value in {str(v) for v in cache_values}:
-        if value in keep_resolved:
+    seen: set = set()
+    for value in cache_values:
+        key = _norm_key(value)
+        if key in keep_keys or key in seen:
             continue
+        seen.add(key)
+        p = Path(value)
         try:
-            p = Path(value)
-            if p.exists():
-                p.unlink()
-                pruned.append(p.name)
-                if on_pruned is not None:
-                    on_pruned(p.name)
+            p.unlink()  # EAFP: don't pre-check exists() (TOCTOU + restricted FS)
         except OSError:
-            pass
+            continue
+        pruned.append(p.name)
+        if on_pruned is not None:
+            on_pruned(p.name)
     return pruned

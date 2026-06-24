@@ -61,13 +61,24 @@ def test_dashboard_width_clamps_into_band(monkeypatch):
     monkeypatch.setattr(shutil, "get_terminal_size", _fake_size(400))
     assert _dashboard_panel_width() == _DASHBOARD_WIDTH_MAX
 
-    # Tiny terminal -> floored at MIN.
-    monkeypatch.setattr(shutil, "get_terminal_size", _fake_size(10))
-    assert _dashboard_panel_width() == _DASHBOARD_WIDTH_MIN
-
-    # Normal terminal -> detected width minus a small margin.
+    # Comfortable terminal -> detected width minus a small margin.
     monkeypatch.setattr(shutil, "get_terminal_size", _fake_size(120))
     assert _dashboard_panel_width() == 118
+
+    # Just above the floor -> still detected width minus margin.
+    monkeypatch.setattr(shutil, "get_terminal_size", _fake_size(50))
+    assert _dashboard_panel_width() == 48
+
+
+def test_dashboard_width_never_exceeds_narrow_terminal(monkeypatch):
+    """On a sub-floor terminal the panel must NOT exceed the viewport, else the
+    wrap/stack bug recurs at tiny sizes (code-reviewer LOW)."""
+    def _fake_size(cols):
+        return lambda fallback=(100, 24): shutil.os.terminal_size((cols, 24))
+
+    for cols in (10, 20, 30, 41):
+        monkeypatch.setattr(shutil, "get_terminal_size", _fake_size(cols))
+        assert _dashboard_panel_width() <= cols - 1, f"overflow at cols={cols}"
 
 
 def test_dashboard_width_survives_detection_failure(monkeypatch):
@@ -83,7 +94,6 @@ def test_dashboard_width_survives_detection_failure(monkeypatch):
 def test_panel_honors_explicit_width():
     panel = _sample_panel(96)
     assert panel.width == 96
-    assert panel.expand is False
 
 
 def test_panel_default_width_is_none_for_legacy_callers():

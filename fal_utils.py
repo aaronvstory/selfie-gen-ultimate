@@ -136,9 +136,15 @@ def _classify_http_retryable(status_code: int, detail: str) -> bool:
     if status_code >= 500:
         return True
     if status_code == 422:
-        if detail and detail.startswith(CONTENT_POLICY_PREFIX):
+        # Only fal's GENERIC generation hiccup is transient. A deterministic
+        # field-validation 422 (bad URL, out-of-range margin) or a content-
+        # policy block fails identically on resubmit — retrying just wastes a
+        # paid call (sourcery bug_risk). Match the transient signatures
+        # explicitly rather than retrying every non-content-policy 422.
+        if not detail or detail.startswith(CONTENT_POLICY_PREFIX):
             return False
-        return True
+        low = detail.lower()
+        return "failed to generate" in low or "try again" in low
     return False
 
 

@@ -459,7 +459,7 @@ if !EXIT_CODE! neq 0 (
     echo   pressure. Trim the fan-out ^(fewer Oldcam versions / AA attacks /
     echo   crush tiers^) or close other memory-heavy apps, then re-run.
     echo   Paused/aborted runs resume from the menu where they left off.
-    echo   Check crash_log.txt and the launch log: %LOG_FILE%
+    echo   Check crash_log.txt and the launch log: !LOG_FILE!
     echo(
 )
 
