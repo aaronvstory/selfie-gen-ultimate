@@ -453,8 +453,13 @@ set "EXIT_CODE=!errorlevel!"
 
 echo(
 if !EXIT_CODE! neq 0 (
-    echo   [%LAUNCH_TS%] CRASH -- exit code: !EXIT_CODE!
-    echo   Check crash_log.txt for details.
+    echo   [%LAUNCH_TS%] The GUI exited unexpectedly -- exit code: !EXIT_CODE!
+    echo   If this happened during heavy post-processing ^(rPPG / AA / Oldcam /
+    echo   the powerset fan-out^), Windows may have terminated it under memory
+    echo   pressure. Trim the fan-out ^(fewer Oldcam versions / AA attacks /
+    echo   crush tiers^) or close other memory-heavy apps, then re-run.
+    echo   Paused/aborted runs resume from the menu where they left off.
+    echo   Check crash_log.txt and the launch log: %LOG_FILE%
     echo(
 )
 

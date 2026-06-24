@@ -27,13 +27,28 @@ set -e
 
 LAUNCH_ELAPSED="$(( $(date +%s) - LAUNCH_STARTED_AT ))"
 if [[ ${status} -ne 0 || ${LAUNCH_ELAPSED} -lt 5 ]]; then
-  if [[ ${status} -ne 0 ]]; then
+  # Exit 137 = 128+9 (SIGKILL), 143 = 128+15 (SIGTERM). When the GUI had
+  # already been running for a while (>=5s) and is then killed by a signal,
+  # it was almost certainly terminated by the OS under memory pressure
+  # (macOS jetsam) DURING a run -- NOT a startup failure. Diagnose honestly
+  # so the user gets an actionable message instead of a misleading
+  # "GUI startup failed".
+  if [[ ${status} -ne 0 && ${LAUNCH_ELAPSED} -ge 5 && ( ${status} -eq 137 || ${status} -eq 143 ) ]]; then
+    printf '\nThe GUI ran for %ss and was then terminated by the system (exit %d).\n' "${LAUNCH_ELAPSED}" "${status}" >&2
+    printf 'This is almost always the OS reclaiming memory during heavy post-processing.\n' >&2
+    printf 'To avoid it: trim the powerset fan-out (fewer Oldcam versions / AA attacks /\n' >&2
+    printf 'crush tiers) or close other memory-heavy apps, then re-run. Paused/aborted\n' >&2
+    printf 'runs resume from the menu where they left off.\n' >&2
+    printf 'Review this log for details: %s\n' "${LOG_FILE}" >&2
+  elif [[ ${status} -ne 0 ]]; then
     printf '\nGUI startup failed (exit %d).\n' "${status}" >&2
+    printf 'Set KLING_VERBOSE_STARTUP=1 and retry for full startup diagnostics.\n' >&2
+    printf 'Review this log for details: %s\n' "${LOG_FILE}" >&2
   else
     printf '\nGUI launcher exited in %ss, which usually means startup failed before the window opened.\n' "${LAUNCH_ELAPSED}" >&2
+    printf 'Set KLING_VERBOSE_STARTUP=1 and retry for full startup diagnostics.\n' >&2
+    printf 'Review this log for details: %s\n' "${LOG_FILE}" >&2
   fi
-  printf 'Set KLING_VERBOSE_STARTUP=1 and retry for full startup diagnostics.\n' >&2
-  printf 'Review this log for details: %s\n' "${LOG_FILE}" >&2
   read -r -p "Press Enter to close..."
 fi
 

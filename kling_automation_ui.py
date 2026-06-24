@@ -4,6 +4,7 @@ import faulthandler
 import io
 import os
 import re
+import shutil
 import signal
 import sys
 import json
@@ -200,6 +201,31 @@ _BANNER_ASCII = """\
      ██ ██      ██      ██      ██ ██          ██    ██ ██      ██  ██ ██
 ███████ ███████ ███████ ██      ██ ███████      ██████  ███████ ██   ████"""
 _BANNER_MIN_WIDTH = 76
+
+# Live dashboard render-width band. The pinned panel MUST be rendered at a
+# width <= the *actual* terminal width: if it renders wider, the terminal
+# soft-wraps each line while rich.Live counts only the logical (unwrapped)
+# lines for its cursor-up, miscounts the panel height, fails to overwrite the
+# previous frame, and stacks overlapping copies at shrinking widths (the
+# "garbled CLI" bug). We recompute the live terminal size every render tick
+# (shutil.get_terminal_size re-queries the OS, so a mid-run resize is handled)
+# and clamp into this band. -2 leaves a margin so an off-by-one in a terminal's
+# reported width can't trigger a wrap.
+_DASHBOARD_WIDTH_MIN = 40
+_DASHBOARD_WIDTH_MAX = 160
+
+
+def _dashboard_panel_width() -> int:
+    """Clamped width (cols) for the live dashboard panel, recomputed per tick.
+
+    Reads the CURRENT terminal size (not a value cached at import) so resizing
+    the window mid-run is honored. Falls back to a sane width when the size
+    can't be determined (e.g. stdout briefly detached)."""
+    try:
+        cols = shutil.get_terminal_size(fallback=(100, 24)).columns
+    except Exception:
+        cols = 100
+    return max(_DASHBOARD_WIDTH_MIN, min(int(cols) - 2, _DASHBOARD_WIDTH_MAX))
 
 # Single-source option lists shared by the questionary AND legacy settings
 # editors so the two paths can never drift (review theme D). Edit here only.
@@ -6521,6 +6547,7 @@ class KlingAutomationUI:
         next_step: str = "",
         step_pos: str = "",
         step_progress: str = "",
+        width: "Optional[int]" = None,
     ) -> Panel:
         """Pure renderable builder (unit-testable without threads). ASCII
         body — conhost wobbles on emoji width inside panels.
@@ -6587,7 +6614,17 @@ class KlingAutomationUI:
                         style = "dim"
                 lines.append(f"[dim]{ts}[/dim] [{style}]{_esc(message)}[/{style}]")
         lines.append(f"[dim]{_esc(footer)}[/dim]")
-        return Panel("\n".join(lines), title="Automation Live Progress", border_style="cyan")
+        # width + expand=False pin the panel to the live terminal width so
+        # rich.Live's height accounting matches what the terminal actually
+        # draws (no wider-than-viewport soft-wrap → no stacked frames). width
+        # stays None for legacy callers/tests (sizes to content as before).
+        return Panel(
+            "\n".join(lines),
+            title="Automation Live Progress",
+            border_style="cyan",
+            width=width,
+            expand=False,
+        )
 
     # Live case-queue glyphs: (markup color, 4-char ASCII tag). ASCII tags —
     # emoji width wobbles inside Live panels on conhost.
@@ -6796,6 +6833,7 @@ class KlingAutomationUI:
                 next_step=next_step,
                 step_pos=step_pos,
                 step_progress=step_progress,
+                width=_dashboard_panel_width(),
             )
 
         try:
