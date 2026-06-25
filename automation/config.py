@@ -345,6 +345,19 @@ def resolve_cli_video_duration(config: Mapping[str, Any], default: int = 10) -> 
         return int(default)
 
 
+def resolve_cli_video_resolution(config: Mapping[str, Any], default: str = "720p") -> str:
+    """Video resolution for the CLI pipeline, per-surface like the model +
+    duration (so a GUI model with a different native resolution does not bleed
+    into automation runs). Falls back to the shared ``resolution`` key for
+    pre-split configs, then to ``default``. Token-priced models (Seedance) use
+    this to drive native low-res generation (a cheaper alternative to crush)."""
+    raw = config.get("cli_video_resolution")
+    if raw in (None, ""):
+        raw = config.get("resolution", default)
+    text = str(raw).strip()
+    return text or default
+
+
 def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(config)
     # Subagent CRITICAL on 286613c (2026-05-22): the GUI writes the
