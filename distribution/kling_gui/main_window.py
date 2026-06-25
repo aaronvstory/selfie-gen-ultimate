@@ -2244,6 +2244,23 @@ class KlingGUIWindow:
             background=[("active", "#7AA7FF"), ("pressed", "#4A79D8"), ("disabled", "#4B4B4B")],
             foreground=[("disabled", "#9D9D9D")],
         )
+        # "Open Folder" header button: an EXACT clone of TTK_BTN_PRIMARY (same
+        # font/padding/border, so it sizes + fits identically to Sessions) but a
+        # warm Windows-Explorer amber/orange instead of blue — the ONLY thing
+        # that differs is the color (user request 2026-06-26).
+        style.configure(
+            "OpenFolder.TButton",
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground="white",
+            background="#E8A33D",
+            borderwidth=1,
+            padding=(10, 6),
+        )
+        style.map(
+            "OpenFolder.TButton",
+            background=[("active", "#F2B65C"), ("pressed", "#C9842A"), ("disabled", "#4B4B4B")],
+            foreground=[("disabled", "#9D9D9D")],
+        )
         style.configure(
             TTK_BTN_SUCCESS,
             font=(FONT_FAMILY, 9, "bold"),
@@ -3907,17 +3924,15 @@ class KlingGUIWindow:
         )
         sessions_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
 
-        # One-click "open a folder as a new session" — the most common entry
-        # point (same load-folder flow as Sessions ▸ Load Folder, top-level).
-        # The WORKFLOW accent (bright #1F4FB8 blue, like the Expand Image button)
-        # so it stands out, BUT with width=12 — the explicit width is what keeps
-        # the wider Workflow padding from overflowing the tight RIGHT-packed
-        # header row and clipping the label (user report 2026-06-26).
+        # One-click "open a folder as a new session". IDENTICAL to the Sessions
+        # button (PRIMARY-clone style + width=12, same pack) so it sizes + fits
+        # the same — the ONLY difference is the warm amber/orange color
+        # (OpenFolder.TButton, Windows-Explorer folder vibe).
         open_folder_btn = create_action_button(
             header,
             text="Open Folder",
             command=self._dbcmd("header_open_folder", self._on_open_folder_as_session),
-            style=TTK_BTN_WORKFLOW,
+            style="OpenFolder.TButton",
             width=12,
         )
         open_folder_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
@@ -3939,7 +3954,7 @@ class KlingGUIWindow:
         # Extra LEFT pad creates a visual gap between the session-management group
         # (New Session / Save / Open Folder / Sessions, to the right) and the
         # tool/utility group (Sanitize / Similarity / Drop Zone, to the left).
-        new_session_btn.pack(side=tk.RIGHT, padx=(18, 6), pady=4)
+        new_session_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
 
         sanitize_folder_btn = create_action_button(
             header,
