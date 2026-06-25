@@ -408,7 +408,10 @@ class SessionManagerTests(unittest.TestCase):
             dead_rec = self._write_record(
                 app_dir, "dead.json",
                 images=[os.path.join(work, "Gone", "x.png")])
-            result = sm.maybe_autoprune_on_launch(app_dir, {})
+            # Auto-prune defaults ON (2026-06-25), so "disabled" must now be set
+            # EXPLICITLY to False — an empty config now means ENABLED.
+            result = sm.maybe_autoprune_on_launch(
+                app_dir, {"session_autoprune_enabled": False})
             self.assertEqual(
                 result, {"ran": False, "relinked": 0, "pruned": 0, "collapsed": 0})
             self.assertTrue(os.path.exists(live_rec))

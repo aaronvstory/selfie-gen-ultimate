@@ -814,10 +814,12 @@ class SessionManagerDialog(tk.Toplevel):
         # Auto-Prune: when on, the app cleans up dead sessions at every launch
         # (re-links renamed folders first so they're never swept, then prunes
         # sessions whose folder is genuinely gone, then collapses duplicate
-        # autosaves). Opt-in, default off; state persists across launches on
-        # both OSes via kling_config.json.
+        # autosaves). Default ON (2026-06-25 user mandate) — only removes
+        # orphaned session records whose folder no longer exists, never user
+        # files; the user can opt out via the checkbox. State persists across
+        # launches on both OSes via kling_config.json.
         self._autoprune_var = tk.BooleanVar(
-            value=self._config.get("session_autoprune_enabled", False)
+            value=self._config.get("session_autoprune_enabled", True)
         )
         autoprune_cb = ttk.Checkbutton(
             autosave_frame, text="Auto-Prune", variable=self._autoprune_var,
@@ -3892,14 +3894,30 @@ class KlingGUIWindow:
         version_chip.pack(side=tk.LEFT, padx=(0, 8), pady=6)
 
         # Session management buttons
+        # Header semantic colors (2026-06-25 scannability pass): open/load
+        # actions are blue (Open Folder = brightest hero, Sessions = primary),
+        # save is green, neutral utilities (New Session, Sanitize) stay gray,
+        # and tool launchers (Similarity/Drop Zone) keep their distinct accents.
         sessions_btn = create_action_button(
             header,
             text="Sessions",
             command=self._dbcmd("header_sessions", self._on_open_sessions),
-            style=TTK_BTN_SECONDARY,
+            style=TTK_BTN_PRIMARY,
             width=12,
         )
         sessions_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
+
+        # Prominent one-click "open a folder as a new session" — the most common
+        # entry point (same load-folder flow as Sessions ▸ Load Folder, but
+        # top-level). Accent-styled so it stands out from the gray session row.
+        open_folder_btn = create_action_button(
+            header,
+            text="📂 Open Folder",
+            command=self._dbcmd("header_open_folder", self._on_open_folder_as_session),
+            style=TTK_BTN_WORKFLOW,
+            width=14,
+        )
+        open_folder_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
 
         save_session_btn = create_action_button(
             header,
@@ -4190,11 +4208,15 @@ class KlingGUIWindow:
         )
         self.retry_btn.pack(side=tk.RIGHT, padx=4)
 
+        # Control-bar semantic colors (2026-06-25 scannability pass): the main
+        # run-control (Pause/Resume) is green so it reads as the active control;
+        # destructive actions (Abort, Close) are red; neutral queue ops (Clear,
+        # Retry) stay gray.
         self.pause_btn = create_action_button(
             control_frame,
             text="Pause",
             command=self._dbcmd("controls_pause", self._toggle_pause),
-            style=TTK_BTN_TAB_NAV,
+            style=TTK_BTN_SUCCESS,
         )
         self.pause_btn.pack(side=tk.RIGHT, padx=4)
 
@@ -6207,6 +6229,51 @@ class KlingGUIWindow:
                 record_path=getattr(dialog, "_loaded_session_path", None),
             )
 
+    def _on_open_folder_as_session(self):
+        """Top-level 'Open Folder' button: pick a folder and load its images as
+        a new session in one step — the same scan-folder flow as
+        Sessions ▸ Load Folder (SessionManagerDialog._on_load_folder), but
+        without opening the dialog. This is the most common entry point when the
+        user just wants to start working on a fresh folder of inputs."""
+        from .session_manager import build_session_from_folder
+        # Anchor the picker to the window — on macOS an unparented Tk dialog can
+        # hang or open BEHIND the main window (Gemini PR #115; same fix the other
+        # main-window pickers use via _best_picker_parent).
+        folder = select_directory(
+            parent=self._best_picker_parent(),
+            title="Open a folder to load its images as a new session",
+        )
+        if not folder:
+            return
+        try:
+            data = build_session_from_folder(folder)
+        except (OSError, ValueError) as e:
+            # Expected failure modes (unreadable folder, malformed images).
+            self._log(f"Folder scan failed: {e}", "error")
+            return
+        except Exception as e:  # noqa: BLE001 — surface the real error type
+            # An unexpected bug must not masquerade as a generic scan failure.
+            self._log(
+                f"Folder scan failed unexpectedly ({type(e).__name__}): {e}",
+                "error",
+            )
+            return
+        if not data:
+            self._log("No recognized images in that folder", "warning")
+            return
+        count = len(data.get("session", {}).get("images", []))
+        if data.get("_folder_scan_truncated"):
+            self._log(
+                f"Folder has many images — loading the first {count}", "warning"
+            )
+        self._log(
+            f"Loaded {count} image(s) from folder: {data.get('name', '?')}",
+            "success",
+        )
+        # record_path=folder so a later rename can re-anchor paths, same as the
+        # dialog's load-folder path.
+        self._on_session_loaded(data, record_path=folder)
+
     def _on_session_loaded(self, data: dict, record_path: Optional[str] = None):
         """Restore session from loaded data."""
         # Rename rescue on the DEFAULT load path (Codex P2 #1): if this session's
@@ -6428,7 +6495,9 @@ class KlingGUIWindow:
         updates are marshalled back to the main thread via root.after(0).
         """
         # Cheap, thread-safe pre-check so we don't spawn a thread when off.
-        if not self.config.get("session_autoprune_enabled", False):
+        # Default ON (2026-06-25 user mandate): prune stale sessions
+        # automatically unless the user explicitly turns it off.
+        if not self.config.get("session_autoprune_enabled", True):
             return
 
         def _worker():
