@@ -1286,6 +1286,12 @@ class ConfigPanel(tk.Frame):
         )
         self.resolution_combo.pack(side=tk.LEFT, padx=(0, 8))
         self.resolution_combo.bind("<<ComboboxSelected>>", self._on_resolution_changed)
+        # Live token-cost estimate for the current model+resolution+duration
+        # (token-priced models only, e.g. Seedance — empty for flat-priced ones).
+        self.cost_estimate_label = tk.Label(
+            rE, text="", font=(FONT_FAMILY, 9), bg=COLORS["bg_input"], fg=COLORS["accent_blue"],
+        )
+        self.cost_estimate_label.pack(side=tk.LEFT, padx=(0, 8))
         self.schema_diagnostic_label = tk.Label(
             rE, text="", font=(FONT_FAMILY, 9), bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
@@ -1937,6 +1943,10 @@ class ConfigPanel(tk.Frame):
         # Motion row showed its construction-time state until the user
         # manually switched models (code-review finding, PR #41).
         self._update_motion_controls(current_model)
+        # Sync resolution combo + live cost estimate to the saved model on
+        # startup (same rationale as the motion-controls sync above).
+        self._sync_resolution_to_model(current_model)
+        self._update_cost_estimate()
 
     def _start_api_enrichment(self):
         """Background: fetch schema metadata + pricing for all models, then refresh UI."""
@@ -2061,6 +2071,9 @@ class ConfigPanel(tk.Frame):
                 self.duration_var.set(f"{current_duration}s")
                 self.config["video_duration"] = current_duration
 
+        # Keep resolution choices aligned with the model (mirrors duration).
+        self._sync_resolution_to_model(model_endpoint)
+
         self.update_parameter_visibility(model_endpoint)
         self._update_motion_controls(model_endpoint)
 
@@ -2069,6 +2082,7 @@ class ConfigPanel(tk.Frame):
             self.config["video_duration"] = int(duration_text)
 
         self._update_model_info_icon(selected_model)
+        self._update_cost_estimate()
         self._notify_change(f"Model changed to {self.config['model_display_name']}")
 
     def _get_current_model_notes(self) -> str:
@@ -2594,7 +2608,53 @@ class ConfigPanel(tk.Frame):
         """Handle resolution combobox change."""
         resolution = self.resolution_var.get()
         self.config["resolution"] = resolution
+        self._update_cost_estimate()
         self._notify_change(f"Resolution set to {resolution}")
+
+    def _update_cost_estimate(self):
+        """Refresh the live token-cost estimate label for the current
+        model + resolution + duration + audio. Token-priced models (Seedance)
+        show e.g. "≈ $3.02 / 10s @ 720p"; flat-priced models clear the label."""
+        label = getattr(self, "cost_estimate_label", None)
+        if label is None:
+            return
+        try:
+            from model_metadata import estimate_cost_usd
+            endpoint = str(self.config.get("current_model") or "")
+            resolution = self.resolution_var.get() or self.config.get("resolution")
+            dur_text = self.duration_var.get().rstrip("s").strip()
+            duration = int(dur_text) if dur_text.isdigit() else self.config.get("video_duration", 10)
+            audio = bool(self.config.get("generate_audio", False))
+            cost = estimate_cost_usd(endpoint, resolution, duration, audio=audio)
+            if cost is not None:
+                label.config(text=f"≈ ${cost:.2f} / {duration}s @ {resolution}")
+            else:
+                label.config(text="")
+        except Exception:
+            label.config(text="")
+
+    def _sync_resolution_to_model(self, endpoint):
+        """Set the resolution combo values + enabled state from the model's
+        resolution_options (empty/absent → disabled). Sets
+        _resolution_model_aware so update_parameter_visibility defers to this
+        disabled state (else a Kling model shows stale Seedance options)."""
+        try:
+            from model_metadata import get_resolution_options, get_resolution_default
+            options = get_resolution_options(endpoint)
+            if options:
+                self._resolution_model_aware = True
+                self.resolution_combo.config(values=options, state="readonly")
+                current = self.resolution_var.get()
+                if current not in options:
+                    current = get_resolution_default(endpoint)
+                self.resolution_var.set(current)
+                self.config["resolution"] = current
+            else:
+                self._resolution_model_aware = False
+                self.resolution_combo.config(values=["—"], state="disabled")
+                self.resolution_var.set("—")
+        except Exception:
+            pass
 
     def _on_duration_changed(self, event=None):
         """Handle duration selection change with validation."""
@@ -2614,6 +2674,9 @@ class ConfigPanel(tk.Frame):
 
             # Update config
             self.config["video_duration"] = duration
+
+            # Refresh the live cost estimate (duration scales token cost).
+            self._update_cost_estimate()
 
             # Notify parent window of change
             self._notify_change(f"Duration set to {duration}s")
@@ -2673,6 +2736,8 @@ class ConfigPanel(tk.Frame):
     def _on_generate_audio_changed(self):
         """Handle generate audio checkbox change."""
         self.config["generate_audio"] = self.generate_audio_var.get()
+        # Audio affects cost on models with an audio_rate_multiplier (1.5 Pro).
+        self._update_cost_estimate()
         status = "enabled" if self.generate_audio_var.get() else "disabled"
         self._notify_change(f"Generate audio {status}")
 
@@ -3005,6 +3070,11 @@ class ConfigPanel(tk.Frame):
                     for control in controls:
                         if control is None:
                             continue
+                        if (
+                            control is self.resolution_combo
+                            and not getattr(self, "_resolution_model_aware", True)
+                        ):
+                            continue
                         try:
                             if isinstance(control, ttk.Combobox):
                                 control.config(state="readonly")
@@ -3107,6 +3177,11 @@ class ConfigPanel(tk.Frame):
 
                 for control in controls:
                     if control is None:
+                        continue
+                    if (
+                        control is self.resolution_combo
+                        and not getattr(self, "_resolution_model_aware", True)
+                    ):
                         continue
                     try:
                         # Handle different widget types

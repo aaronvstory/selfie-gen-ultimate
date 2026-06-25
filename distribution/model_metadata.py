@@ -12,6 +12,7 @@ import json
 import os
 import logging
 import re
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +238,110 @@ def get_duration_default(endpoint: str) -> int:
     if model:
         return model.get("duration_default", 10)
     return 10
+
+
+# Standard 16:9 pixel dimensions per resolution label. Used by the token-cost
+# estimator. 720p (1280x720) and 1080p (1920x1080) reproduce fal's published
+# per-second prices exactly; 480p (854x480) is the standard 16:9 480 and is
+# accurate to ~2% (fal does not publish exact 480p dims). aspect_ratio="auto"
+# can pick non-16:9 dims at runtime, so this is an ESTIMATE — the real bill uses
+# the actual returned frame size.
+_RESOLUTION_DIMS = {
+    "480p": (854, 480),
+    "720p": (1280, 720),
+    "1080p": (1920, 1080),
+    "4k": (3840, 2160),
+}
+
+
+def get_resolution_options(endpoint: str) -> list:
+    """Valid resolution labels for the endpoint, or [] when the model exposes
+    no user-selectable resolution (callers should then hide/disable the control
+    rather than send a `resolution` the live schema would just drop)."""
+    model = get_model_by_endpoint(endpoint)
+    if model:
+        options = model.get("resolution_options")
+        if isinstance(options, list):
+            return [str(o) for o in options]
+    return []
+
+
+def get_resolution_default(endpoint: str) -> str:
+    """Default resolution label for the endpoint (falls back to '720p')."""
+    model = get_model_by_endpoint(endpoint)
+    if model:
+        default = model.get("resolution_default")
+        if default:
+            return str(default)
+        options = model.get("resolution_options")
+        if isinstance(options, list) and options:
+            return str(options[0])
+    return "720p"
+
+
+def get_token_pricing(endpoint: str) -> Optional[dict]:
+    """The model's token_pricing block, or None for flat per-second/clip models."""
+    model = get_model_by_endpoint(endpoint)
+    if model:
+        tp = model.get("token_pricing")
+        if isinstance(tp, dict):
+            return tp
+    return None
+
+
+def estimate_cost_usd(
+    endpoint: str,
+    resolution: Optional[str] = None,
+    duration: Optional[int] = None,
+    audio: bool = False,
+) -> Optional[float]:
+    """Estimated USD cost of one clip for a token-priced model.
+
+    tokens = (width * height * fps * duration) / 1024 ; cost = tokens/1e6 * rate.
+    The 4k rate (rate_per_million_4k) applies for resolution == "4k" when set;
+    audio_rate_multiplier applies when ``audio`` is True and the model defines it
+    (only Seedance 1.5 Pro). Returns None when the model has no token_pricing OR
+    the resolution dims are unknown — callers then fall back to the flat
+    pricing_fallback (e.g. unit_price * duration).
+    """
+    tp = get_token_pricing(endpoint)
+    if not tp:
+        return None
+    res = str(resolution or get_resolution_default(endpoint))
+    # Clamp to what THIS model actually offers: estimating e.g. 1080p on a
+    # 720p-capped Seedance tier (Fast/Mini) would quote a price the model can't
+    # produce (CodeRabbit, PR #114). When the requested res isn't in the model's
+    # options, return None so callers fall back / show nothing rather than lie.
+    options = get_resolution_options(endpoint)
+    if options and res not in options:
+        return None
+    dims = _RESOLUTION_DIMS.get(res)
+    if not dims:
+        return None
+    try:
+        dur = int(duration) if duration is not None else get_duration_default(endpoint)
+    except (TypeError, ValueError):
+        dur = get_duration_default(endpoint)
+    try:
+        dur = int(dur)
+    except (TypeError, ValueError):
+        dur = 10
+    if dur <= 0:
+        dur = get_duration_default(endpoint) or 10
+    fps = tp.get("fps", 24) or 24
+    width, height = dims
+    tokens = (width * height * fps * dur) / 1024.0
+    rate = tp.get("rate_per_million")
+    if res == "4k" and tp.get("rate_per_million_4k") is not None:
+        rate = tp.get("rate_per_million_4k")
+    if rate is None:
+        return None
+    cost = (tokens / 1_000_000.0) * float(rate)
+    if audio:
+        mult = tp.get("audio_rate_multiplier")
+        if mult:
+            cost *= float(mult)
+    return round(cost, 2)
 
 
 # Conservative defaults for any model whose capability flags are absent

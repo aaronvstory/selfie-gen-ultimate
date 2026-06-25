@@ -30,6 +30,7 @@
   "cli_video_model_display_name": "Kling 2.5 Turbo Standard",
   "cli_kling_prompt_slot": 4,
   "cli_video_duration": 10,
+  "cli_video_resolution": "720p",
   "loop_videos": false,
   "rppg_per_oldcam_fanout": false,
   "postproc_fanout_mode": "separate_and_combined",

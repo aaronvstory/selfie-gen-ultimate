@@ -18,6 +18,7 @@ from automation.config import (
     resolve_cli_kling_prompt_slot,
     resolve_cli_video_duration,
     resolve_cli_video_model,
+    resolve_cli_video_resolution,
 )
 from automation.discovery import CaseRecord, detect_existing_outputs
 from automation.logger import build_safe_config_snapshot, create_automation_logger
@@ -319,7 +320,7 @@ class AutoPipelineRunner:
             else None,
             duration=resolve_cli_video_duration(self.config),
             aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
-            resolution=self.config.get("resolution", "720p"),
+            resolution=resolve_cli_video_resolution(self.config),
             seed=_seed_val,
             camera_fixed=bool(self.config.get("camera_fixed", False)),
             generate_audio=bool(self.config.get("generate_audio", False)),
