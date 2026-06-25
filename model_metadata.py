@@ -308,6 +308,13 @@ def estimate_cost_usd(
     if not tp:
         return None
     res = str(resolution or get_resolution_default(endpoint))
+    # Clamp to what THIS model actually offers: estimating e.g. 1080p on a
+    # 720p-capped Seedance tier (Fast/Mini) would quote a price the model can't
+    # produce (CodeRabbit, PR #114). When the requested res isn't in the model's
+    # options, return None so callers fall back / show nothing rather than lie.
+    options = get_resolution_options(endpoint)
+    if options and res not in options:
+        return None
     dims = _RESOLUTION_DIMS.get(res)
     if not dims:
         return None

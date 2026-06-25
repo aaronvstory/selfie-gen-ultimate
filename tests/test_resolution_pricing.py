@@ -88,6 +88,19 @@ class EstimateCostTests(unittest.TestCase):
         ep = "bytedance/seedance-2.0/image-to-video"
         self.assertLess(self._cost(ep, "480p", 10), self._cost(ep, "720p", 10))
 
+    def test_seedance_2_0_fast_and_mini_tiers(self):
+        # 2.0 Fast = $11.2/1M (20% cheaper than base $14); Mini = $7/1M.
+        # Pins the descending tier ladder base > Fast > Mini so a copy-paste of
+        # the base rate onto Fast (the bug code-review caught) can't return.
+        fast = "bytedance/seedance-2.0/fast/image-to-video"
+        mini = "bytedance/seedance-2.0/mini/image-to-video"
+        base = "bytedance/seedance-2.0/image-to-video"
+        self.assertAlmostEqual(self._cost(fast, "720p", 10), 2.42, delta=0.05)
+        self.assertAlmostEqual(self._cost(mini, "720p", 10), 1.51, delta=0.05)
+        # Tier ladder at a fixed res: base > Fast > Mini.
+        self.assertGreater(self._cost(base, "720p", 10), self._cost(fast, "720p", 10))
+        self.assertGreater(self._cost(fast, "720p", 10), self._cost(mini, "720p", 10))
+
     def test_1_5_pro_audio_doubles_cost(self):
         ep = "fal-ai/bytedance/seedance/v1.5/pro/image-to-video"
         off = self._cost(ep, "720p", 10, audio=False)
@@ -127,6 +140,32 @@ class CliResolutionResolverTests(unittest.TestCase):
     def test_blank_values_fall_through(self):
         from automation.config import resolve_cli_video_resolution
         self.assertEqual(resolve_cli_video_resolution({"cli_video_resolution": "", "resolution": ""}), "720p")
+
+    def test_explicit_null_resolution_returns_default_not_none_string(self):
+        # Gemini PR #114: a JSON null -> None; str(None) == "None" is a truthy
+        # bogus value. Must return the default, not "None".
+        from automation.config import resolve_cli_video_resolution
+        self.assertEqual(resolve_cli_video_resolution({"resolution": None}), "720p")
+        self.assertEqual(resolve_cli_video_resolution({"cli_video_resolution": None, "resolution": None}), "720p")
+
+
+class EstimateClampTests(unittest.TestCase):
+    """estimate_cost_usd must not quote a price for a resolution the model
+    can't produce (CodeRabbit PR #114)."""
+
+    def _cost(self, ep, res, dur=10):
+        from model_metadata import estimate_cost_usd
+        return estimate_cost_usd(ep, res, dur)
+
+    def test_1080p_on_720p_capped_model_returns_none(self):
+        # Fast + Mini cap at 720p.
+        self.assertIsNone(self._cost("bytedance/seedance-2.0/fast/image-to-video", "1080p"))
+        self.assertIsNone(self._cost("bytedance/seedance-2.0/mini/image-to-video", "1080p"))
+
+    def test_4k_only_on_base_2_0(self):
+        self.assertIsNotNone(self._cost("bytedance/seedance-2.0/image-to-video", "4k"))
+        self.assertIsNone(self._cost("bytedance/seedance-2.0/fast/image-to-video", "4k"))
+        self.assertIsNone(self._cost("fal-ai/bytedance/seedance/v1.5/pro/image-to-video", "4k"))
 
 
 class RootDistParityTests(unittest.TestCase):

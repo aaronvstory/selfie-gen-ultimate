@@ -354,6 +354,10 @@ def resolve_cli_video_resolution(config: Mapping[str, Any], default: str = "720p
     raw = config.get("cli_video_resolution")
     if raw in (None, ""):
         raw = config.get("resolution", default)
+    # A JSON null reaches here as None -> str(None) == "None" (a truthy non-empty
+    # string that is NOT a real resolution). Guard it so we return the default.
+    if raw is None:
+        return default
     text = str(raw).strip()
     return text or default
 

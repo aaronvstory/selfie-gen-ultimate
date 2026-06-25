@@ -2045,11 +2045,18 @@ class ConfigPanel(tk.Frame):
     def _sync_resolution_to_model(self, endpoint):
         """Set the resolution combo's values + enabled state from the model's
         resolution_options (empty/absent → disabled). Preserves the saved
-        resolution when it's valid for the model, else uses the model default."""
+        resolution when it's valid for the model, else uses the model default.
+
+        Sets ``self._resolution_model_aware`` so update_parameter_visibility
+        (which otherwise unconditionally re-enables every combo) defers to this
+        method's disabled state for models with no selectable resolution — else
+        a Kling model would show the previous Seedance's stale 480p/720p/1080p/4k
+        options as selectable (code-reviewer, PR #114)."""
         try:
             from model_metadata import get_resolution_options, get_resolution_default
             options = get_resolution_options(endpoint)
             if options:
+                self._resolution_model_aware = True
                 self.resolution_combo.config(values=options, state="readonly")
                 current = self.resolution_var.get()
                 if current not in options:
@@ -2057,7 +2064,13 @@ class ConfigPanel(tk.Frame):
                 self.resolution_var.set(current)
                 self.config["resolution"] = current
             else:
-                self.resolution_combo.config(state="disabled")
+                # No selectable resolution — clear the stale option list AND the
+                # displayed value (Gemini PR #114: a leftover "1080p" on a model
+                # that ignores resolution is misleading), then disable so
+                # update_parameter_visibility leaves it alone.
+                self._resolution_model_aware = False
+                self.resolution_combo.config(values=["—"], state="disabled")
+                self.resolution_var.set("—")
         except Exception:
             pass
 
@@ -3248,6 +3261,14 @@ class ConfigPanel(tk.Frame):
                     for control in controls:
                         if control is None:
                             continue
+                        # The resolution combo's enabled state is OWNED by
+                        # _sync_resolution_to_model (per-model options); don't
+                        # re-enable it here when that method disabled it.
+                        if (
+                            control is self.resolution_combo
+                            and not getattr(self, "_resolution_model_aware", True)
+                        ):
+                            continue
                         try:
                             if isinstance(control, ttk.Combobox):
                                 control.config(state="readonly")
@@ -3350,6 +3371,14 @@ class ConfigPanel(tk.Frame):
 
                 for control in controls:
                     if control is None:
+                        continue
+                    # The resolution combo's enabled state is OWNED by
+                    # _sync_resolution_to_model; skip it here when it was
+                    # disabled for a model with no selectable resolution.
+                    if (
+                        control is self.resolution_combo
+                        and not getattr(self, "_resolution_model_aware", True)
+                    ):
                         continue
                     try:
                         # Handle different widget types

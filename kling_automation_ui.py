@@ -1370,6 +1370,9 @@ class KlingAutomationUI:
         """Configure advanced video generation settings"""
         while True:
             aspect_ratio = self.config.get("aspect_ratio", "3:4")
+            # This is the SHARED video-settings menu — resolution is the shared
+            # key (consumed by the interactive gen paths + GUI). The automation
+            # pipeline's resolve_cli_video_resolution falls back to it.
             resolution = self.config.get("resolution", "720p")
             seed = self.config.get("seed", -1)
             camera_fixed = self.config.get("camera_fixed", False)
@@ -1441,13 +1444,14 @@ class KlingAutomationUI:
     def _set_resolution(self):
         """Set video resolution — model-aware.
 
-        Reads the CURRENT CLI video model's resolution_options from models.json
+        Reads the CURRENT video model's resolution_options from models.json
         (Seedance models expose 480p/720p/1080p/4k; most Kling tiers have a
         fixed resolution and expose none). Each choice shows the live token-cost
         estimate so the user sees the cost trade-off (e.g. 480p is ~56% cheaper
-        than 720p on Seedance 2.0). Writes the per-surface ``cli_video_resolution``
-        key. Falls back to the legacy static list when the model has no options
-        OR metadata is unavailable.
+        than 720p on Seedance 2.0). Writes the SHARED ``resolution`` key (this is
+        the shared video-settings menu; the automation pipeline's
+        resolve_cli_video_resolution falls back to it). Falls back to the legacy
+        static list when the model has no options OR metadata is unavailable.
         """
         try:
             from automation.config import (
@@ -1466,18 +1470,16 @@ class KlingAutomationUI:
 
         if not options:
             # Model has a fixed resolution (or metadata missing) — keep the old
-            # static editor against the shared key for back-compat.
+            # static editor against the shared resolution key for back-compat.
             self._edit_indexed_choice_setting(
-                "cli_video_resolution", "Video resolution",
+                "resolution", "Video resolution",
                 _VIDEO_RESOLUTION_OPTIONS, default="720p",
             )
             return
 
         duration = resolve_cli_video_duration(self.config)
         audio = bool(self.config.get("generate_audio", False))
-        current = self.config.get("cli_video_resolution") or self.config.get(
-            "resolution"
-        ) or get_resolution_default(endpoint)
+        current = self.config.get("resolution") or get_resolution_default(endpoint)
 
         # Build "720p — ≈ $3.02/10s" style labels mapped back to the bare value.
         labelled = []
@@ -1498,7 +1500,7 @@ class KlingAutomationUI:
             )
             if picked:
                 selected = value_by_label.get(picked, picked)
-                self.config["cli_video_resolution"] = selected
+                self.config["resolution"] = selected
                 self.save_config()
                 self.print_green(f"✓ Video resolution set to {selected}")
                 time.sleep(0.6)
@@ -1515,7 +1517,7 @@ class KlingAutomationUI:
         choice = self._safe_input("\033[92mSelect: \033[0m").strip()
         if choice.isdigit() and 1 <= int(choice) <= len(labelled):
             selected = value_by_label[labelled[int(choice) - 1]]
-            self.config["cli_video_resolution"] = selected
+            self.config["resolution"] = selected
             self.save_config()
             print(f"\n\033[92m✓ Video resolution set to {selected}\033[0m")
             time.sleep(0.8)
@@ -2085,9 +2087,17 @@ class KlingAutomationUI:
         # 2026-06-11); target="gui" is the manual-tools/GUI-shared selection.
         # On model switch, reset the resolution to the NEW model's default so a
         # stale 1080p can't survive a switch to a 720p-capped model (Fast/Mini).
+        # ONLY when the new model actually exposes resolution options — else
+        # get_resolution_default returns "720p" for every Kling tier and would
+        # pollute the per-surface key on models that ignore resolution entirely
+        # (Gemini/CodeRabbit, PR #114).
         try:
-            from model_metadata import get_resolution_default
-            new_resolution = get_resolution_default(endpoint)
+            from model_metadata import get_resolution_options, get_resolution_default
+            new_resolution = (
+                get_resolution_default(endpoint)
+                if get_resolution_options(endpoint)
+                else None
+            )
         except Exception:
             new_resolution = None
         if target == "cli":

@@ -2635,11 +2635,14 @@ class ConfigPanel(tk.Frame):
 
     def _sync_resolution_to_model(self, endpoint):
         """Set the resolution combo values + enabled state from the model's
-        resolution_options (empty/absent → disabled)."""
+        resolution_options (empty/absent → disabled). Sets
+        _resolution_model_aware so update_parameter_visibility defers to this
+        disabled state (else a Kling model shows stale Seedance options)."""
         try:
             from model_metadata import get_resolution_options, get_resolution_default
             options = get_resolution_options(endpoint)
             if options:
+                self._resolution_model_aware = True
                 self.resolution_combo.config(values=options, state="readonly")
                 current = self.resolution_var.get()
                 if current not in options:
@@ -2647,7 +2650,9 @@ class ConfigPanel(tk.Frame):
                 self.resolution_var.set(current)
                 self.config["resolution"] = current
             else:
-                self.resolution_combo.config(state="disabled")
+                self._resolution_model_aware = False
+                self.resolution_combo.config(values=["—"], state="disabled")
+                self.resolution_var.set("—")
         except Exception:
             pass
 
@@ -3065,6 +3070,11 @@ class ConfigPanel(tk.Frame):
                     for control in controls:
                         if control is None:
                             continue
+                        if (
+                            control is self.resolution_combo
+                            and not getattr(self, "_resolution_model_aware", True)
+                        ):
+                            continue
                         try:
                             if isinstance(control, ttk.Combobox):
                                 control.config(state="readonly")
@@ -3167,6 +3177,11 @@ class ConfigPanel(tk.Frame):
 
                 for control in controls:
                     if control is None:
+                        continue
+                    if (
+                        control is self.resolution_combo
+                        and not getattr(self, "_resolution_model_aware", True)
+                    ):
                         continue
                     try:
                         # Handle different widget types
