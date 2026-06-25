@@ -2252,13 +2252,13 @@ class KlingGUIWindow:
             "OpenFolder.TButton",
             font=(FONT_FAMILY, 9, "bold"),
             foreground="white",
-            background="#E8A33D",
+            background="#A6680F",
             borderwidth=1,
             padding=(10, 6),
         )
         style.map(
             "OpenFolder.TButton",
-            background=[("active", "#F2B65C"), ("pressed", "#C9842A"), ("disabled", "#4B4B4B")],
+            background=[("active", "#C27D1C"), ("pressed", "#855209"), ("disabled", "#4B4B4B")],
             foreground=[("disabled", "#9D9D9D")],
         )
         style.configure(
