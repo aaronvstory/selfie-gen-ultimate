@@ -1320,10 +1320,12 @@ def prune_dead_sessions(
 
 
 def maybe_autoprune_on_launch(app_dir: str, config: dict) -> dict:
-    """Opt-in startup cleanup, gated on ``config['session_autoprune_enabled']``.
+    """Startup cleanup, gated on ``config['session_autoprune_enabled']`` (default
+    ON as of 2026-06-25; the gate default here MUST match main_window's outer
+    pre-check or the feature silently no-ops for existing users).
 
-    When disabled (the default), returns immediately with zeroed counts and does
-    NO disk I/O — the off path is free. When enabled, runs, in order:
+    When disabled, returns immediately with zeroed counts and does NO disk I/O —
+    the off path is free. When enabled (the default), runs, in order:
 
       1. ``relink_renamed_sessions`` — rescue sessions whose folder was renamed
          BEFORE pruning, so a renamed (still-present) folder is never swept.
@@ -1337,7 +1339,11 @@ def maybe_autoprune_on_launch(app_dir: str, config: dict) -> dict:
     never block app launch.
     """
     result = {"ran": False, "relinked": 0, "pruned": 0, "collapsed": 0}
-    if not config.get("session_autoprune_enabled", False):
+    # Default ON (2026-06-25) — MUST match the outer pre-check gate in
+    # main_window. Defaulting this to False while the outer gate defaults True
+    # would silently neutralize auto-prune for every existing user (the UI shows
+    # it ON + logs "success" but the prune never runs). code-reviewer PR #115.
+    if not config.get("session_autoprune_enabled", True):
         return result
     result["ran"] = True
     try:

@@ -35,6 +35,31 @@ class AutoPruneDefaultTests(unittest.TestCase):
         self.assertNotIn('get("session_autoprune_enabled", False)', src)
         self.assertGreaterEqual(src.count('get("session_autoprune_enabled", True)'), 2)
 
+    def test_session_manager_inner_gate_defaults_true(self):
+        # code-reviewer PR #115: a SECOND gate in session_manager.maybe_autoprune
+        # _on_launch must also default True, else the prune silently no-ops for
+        # existing users (whose config lacks the key) even though the UI shows ON.
+        for rel in ("kling_gui/session_manager.py", "distribution/kling_gui/session_manager.py"):
+            src = self._read(rel)
+            self.assertNotIn('get("session_autoprune_enabled", False)', src, rel)
+
+    def test_autoprune_actually_runs_when_key_absent(self):
+        # BEHAVIORAL guard (not just source text): with NO key in config, the
+        # function must set ran=True (i.e. not early-return). This is the exact
+        # bug the source-text tests alone would miss.
+        import tempfile
+        from kling_gui.session_manager import maybe_autoprune_on_launch
+        with tempfile.TemporaryDirectory() as d:
+            # Empty config (no session_autoprune_enabled key) -> must RUN.
+            result = maybe_autoprune_on_launch(d, {})
+            self.assertTrue(
+                result.get("ran"),
+                "auto-prune must run by default when the config key is absent",
+            )
+            # Explicit False still disables it.
+            result_off = maybe_autoprune_on_launch(d, {"session_autoprune_enabled": False})
+            self.assertFalse(result_off.get("ran"))
+
 
 class OpenFolderButtonTests(unittest.TestCase):
     """The top-bar 'Open Folder' button + its handler must exist and be wired to
@@ -57,7 +82,7 @@ class OpenFolderButtonTests(unittest.TestCase):
         )
         self.assertRegex(
             src,
-            r"_on_open_folder_as_session[\s\S]{0,2000}?_on_session_loaded\(",
+            r"_on_open_folder_as_session[\s\S]{0,2400}?_on_session_loaded\(",
         )
 
     def test_button_and_handler_present_dist(self):

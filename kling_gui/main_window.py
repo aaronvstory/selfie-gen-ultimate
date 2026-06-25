@@ -814,8 +814,10 @@ class SessionManagerDialog(tk.Toplevel):
         # Auto-Prune: when on, the app cleans up dead sessions at every launch
         # (re-links renamed folders first so they're never swept, then prunes
         # sessions whose folder is genuinely gone, then collapses duplicate
-        # autosaves). Opt-in, default off; state persists across launches on
-        # both OSes via kling_config.json.
+        # autosaves). Default ON (2026-06-25 user mandate) — only removes
+        # orphaned session records whose folder no longer exists, never user
+        # files; the user can opt out via the checkbox. State persists across
+        # launches on both OSes via kling_config.json.
         self._autoprune_var = tk.BooleanVar(
             value=self._config.get("session_autoprune_enabled", True)
         )
@@ -6234,15 +6236,27 @@ class KlingGUIWindow:
         without opening the dialog. This is the most common entry point when the
         user just wants to start working on a fresh folder of inputs."""
         from .session_manager import build_session_from_folder
+        # Anchor the picker to the window — on macOS an unparented Tk dialog can
+        # hang or open BEHIND the main window (Gemini PR #115; same fix the other
+        # main-window pickers use via _best_picker_parent).
         folder = select_directory(
-            title="Open a folder to load its images as a new session"
+            parent=self._best_picker_parent(),
+            title="Open a folder to load its images as a new session",
         )
         if not folder:
             return
         try:
             data = build_session_from_folder(folder)
-        except Exception as e:
+        except (OSError, ValueError) as e:
+            # Expected failure modes (unreadable folder, malformed images).
             self._log(f"Folder scan failed: {e}", "error")
+            return
+        except Exception as e:  # noqa: BLE001 — surface the real error type
+            # An unexpected bug must not masquerade as a generic scan failure.
+            self._log(
+                f"Folder scan failed unexpectedly ({type(e).__name__}): {e}",
+                "error",
+            )
             return
         if not data:
             self._log("No recognized images in that folder", "warning")
