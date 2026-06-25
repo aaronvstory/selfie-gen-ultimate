@@ -117,7 +117,7 @@ PYTHON_DEPENDENCIES = [
         import_name="torch",
         pip_name="torch>=2.2,<3",
         required=False,
-        description="Required by DeepFace anti-spoofing (MiniFASNetV2). Without it FAS fails."
+        description="Only used by DeepFace anti-spoofing (MiniFASNetV2), which is OFF by default. Similarity (ArcFace/Facenet512) uses TensorFlow, not torch. Safe to omit."
     ),
     Dependency(
         name="Questionary",
@@ -381,6 +381,29 @@ class DependencyChecker:
 
         return required_ok, required_missing, optional_ok, optional_missing
 
+    def _tier_label(self, required: bool, kind: str = "python") -> str:
+        """Human-facing dependency tier label.
+
+        The ``required`` flag drives launch behavior (a missing REQUIRED dep
+        fails the launcher). For non-required deps the honest label depends on
+        how they are provisioned:
+
+        - ``kind="python"`` — pip/uv-managed packages. These are installed
+          automatically by the launcher's ``uv sync`` / pip step on every normal
+          install ("optional" never meant "skipped"), so label them
+          ``[auto-installed]``; the app only *degrades gracefully* on the rare
+          occasion one is missing.
+        - ``kind="external"`` — external tools (e.g. ffmpeg) provisioned
+          separately, NOT by uv/pip. Labeling these ``[auto-installed]`` would
+          wrongly imply the installer puts them on the box, so label them
+          ``[optional]`` (app degrades gracefully if absent).
+        """
+        if required:
+            return f"{self.RED}[REQUIRED]{self.RESET}"
+        if kind == "external":
+            return f"{self.GRAY}[optional]{self.RESET}"
+        return f"{self.GRAY}[auto-installed]{self.RESET}"
+
     def display_status(self):
         """Display the status of all dependencies."""
         self.print_header("DEPENDENCY CHECK")
@@ -398,7 +421,7 @@ class DependencyChecker:
         self.print_section("Python Packages")
 
         for dep in self.python_deps:
-            req_label = f"{self.RED}[REQUIRED]{self.RESET}" if dep.required else f"{self.GRAY}[optional]{self.RESET}"
+            req_label = self._tier_label(dep.required)
 
             if dep.installed and not dep.runtime_issue:
                 version_str = f" v{dep.version}" if dep.version and dep.version != "unknown" else ""
@@ -420,7 +443,7 @@ class DependencyChecker:
         self.print_section("External Tools")
 
         for tool in self.external_tools:
-            req_label = f"{self.RED}[REQUIRED]{self.RESET}" if tool.required else f"{self.GRAY}[optional]{self.RESET}"
+            req_label = self._tier_label(tool.required, kind="external")
 
             if tool.installed:
                 print(f"  {self.GREEN}✓{self.RESET} {tool.name} {req_label}")

@@ -40,7 +40,12 @@ class FaceEngine:
     threshold = 0.68
     secondary_model_name = "Facenet512"
     use_ensemble = True
-    anti_spoofing = True
+    # Anti-spoofing (FAS / MiniFASNetV2) is OFF by default. It is advisory-only
+    # (never gated similarity output) and is the SOLE reason DeepFace would pull
+    # in PyTorch. Disabling it by default lets the project ship without torch.
+    # A stale config can still set it True, but _anti_spoofing_active() degrades
+    # gracefully to OFF when torch is unavailable (no hard ValueError).
+    anti_spoofing = False
     normalized_face_size = (224, 224)
     normalized_face_padding = 0.30
     models_dir = ""
@@ -71,7 +76,8 @@ class FaceEngine:
         self.threshold = 0.68
         self.secondary_model_name = "Facenet512"
         self.use_ensemble = True
-        self.anti_spoofing = True
+        # OFF by default — see class attribute comment above.
+        self.anti_spoofing = False
         self.normalized_face_size = (224, 224)
         self.normalized_face_padding = 0.30
 
@@ -298,7 +304,7 @@ class FaceEngine:
             enforce_detection=True,
             align=True,
         )
-        if self.anti_spoofing:
+        if self._anti_spoofing_active():
             kwargs["anti_spoofing"] = True
         reps = DeepFace.represent(**kwargs) or []
         # Normalize: some DeepFace builds return List[List[Dict]] when multiple embeddings/models.
@@ -664,6 +670,39 @@ class FaceEngine:
         fail_score = max(0.0, 79.0 * (1.0 - math.pow(fail_ratio, self.FAIL_CURVE_EXPONENT)))
         return fail_score, False
 
+    def _anti_spoofing_active(self) -> bool:
+        """True only if FAS is requested AND torch is importable.
+
+        FAS (DeepFace's MiniFASNetV2) is the only consumer of PyTorch, which the
+        project no longer ships by default. If a stale config still requests FAS
+        but torch is absent, degrade gracefully to OFF instead of letting
+        DeepFace raise ``ValueError("You must install torch ...")``. The torch
+        probe result is cached so it runs at most once per process.
+        """
+        if not self.anti_spoofing:
+            return False
+        cached = getattr(FaceEngine, "_torch_available", None)
+        if cached is None:
+            try:
+                import torch  # noqa: F401
+                cached = True
+            except ImportError:
+                # torch simply isn't installed — the expected, quiet case.
+                cached = False
+            except Exception as exc:
+                # torch IS present but failed to import (e.g. broken CUDA DLLs,
+                # ABI mismatch). Degrade FAS to OFF so similarity scoring still
+                # works, but surface the real error instead of misreporting it
+                # as "torch not installed".
+                logger.warning(
+                    "torch is installed but failed to import; anti-spoofing "
+                    "disabled for this process: %s",
+                    exc,
+                )
+                cached = False
+            FaceEngine._torch_available = cached
+        return bool(cached)
+
     def _extract_faces(self, img_path: str) -> List[Dict[str, Any]]:
         kwargs: Dict[str, Any] = dict(
             img_path=img_path,
@@ -671,7 +710,7 @@ class FaceEngine:
             enforce_detection=True,
             align=True,
         )
-        if self.anti_spoofing:
+        if self._anti_spoofing_active():
             kwargs["anti_spoofing"] = True
         faces = DeepFace.extract_faces(**kwargs) or []
         # Normalize: some DeepFace builds may wrap in nested lists.

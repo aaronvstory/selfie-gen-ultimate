@@ -182,7 +182,16 @@ def _aa_strength_valid(value: str) -> bool:
 # for BOTH expand steps ("fal.ai for everything"), composites unchanged
 # (front preserve_seamless / selfie-expand none). The GUI keeps its own
 # opt-in rPPG default — this preset is CLI-automation only.
-RECOMMENDED_DEFAULTS_VERSION = 7
+# v8 (2026-06-25): anti-spoofing (FAS) flipped OFF in the recommended
+# baseline. FAS is advisory-only (never gated similarity output unless
+# automation_similarity_require_fas_pass=true, which defaults false) and is
+# the SOLE consumer of PyTorch, which the project is moving off by default.
+# The class/instance default already became False; this migration pushes the
+# new default to EXISTING configs that still carry the old "true" — without
+# it the flip only ever reached fresh installs. A user who deliberately
+# re-enables FAS afterward keeps it (their config is now at the current
+# version, so this one-time migration won't re-flip it).
+RECOMMENDED_DEFAULTS_VERSION = 8
 # rPPG default in the v7 recommended preset (user decision 2026-06-11:
 # ON). Single flip point should that decision change.
 RECOMMENDED_RPPG_ENABLED_V7 = True
@@ -1137,7 +1146,7 @@ class KlingAutomationUI:
             print(f"  {line}")
         print()
         print("  \033[93m1\033[0m   End-to-End Auto Pipeline")
-        print("  \033[93m2\033[0m   Scan automation root / preview cases")
+        print("  \033[93m2\033[0m   Scan automation root / preview cases (folders)")
         print("  \033[93m3\033[0m   Run/resume automation batch")
         print("  \033[93m4\033[0m   Automation settings")
         print("  \033[93m5\033[0m   Manual Kling video tools")
@@ -2291,7 +2300,7 @@ class KlingAutomationUI:
         return [
             ("🚀  Run / resume end-to-end pipeline", "run"),
             ("🎯  Run ONE folder / image…", "single"),
-            ("🔍  Scan / preview cases", "scan"),
+            ("🔍  Scan / preview cases (folders)", "scan"),
             # Dry run intentionally NOT top-level — it's offered at the
             # pre-run approval inside Run (user feedback, round 3).
             # 🔧 not ⚡ — U+26A1 renders as a broken narrow glyph in cmd.exe.
@@ -2636,7 +2645,7 @@ class KlingAutomationUI:
             ]
         )
         lines = [
-            f"root={self.automation_root_folder or '(not set)'} max_cases={self._read_max_cases_setting()}",
+            f"root={self.automation_root_folder or '(not set)'} max_cases(folders)={self._read_max_cases_setting()}",
             f"keys fal={key_status(self.config, 'falai_api_key')} bfl={key_status(self.config, 'bfl_api_key')}",
             front_status,
             selfie_status,
@@ -2719,6 +2728,15 @@ class KlingAutomationUI:
         self.config["cli_video_duration"] = 10
         self.config["cli_kling_prompt_slot"] = DEFAULT_KLING_PROMPT_SLOT
         self.config["automation_similarity_threshold"] = 80
+        # v8: FAS (anti-spoofing) OFF in the recommended baseline. Advisory-only
+        # (never gates the verdict unless require_fas_pass=true, default false)
+        # and the sole torch consumer the project is dropping by default. This
+        # one-time write flips EXISTING configs still carrying the legacy "true";
+        # afterward the user is free to re-enable it and it sticks (config now at
+        # the current recommended version). The torch-guard in
+        # similarity_engine._anti_spoofing_active() means a stale "true" never
+        # crashes even before this migration runs.
+        self.config["automation_similarity_anti_spoofing"] = False
         self.config["automation_video_enabled"] = True
         # Face-track gate is DIAGNOSTIC-ONLY and OFF by default. A large
         # balanced corpus showed face-track % does NOT separate Persona
@@ -2924,7 +2942,7 @@ class KlingAutomationUI:
         )
         print(f"  rPPG: {'ON' if before.get('rppg') else 'off'} -> {'ON' if RECOMMENDED_RPPG_ENABLED_V7 else 'off'} (iterative + from-baseline + skip-diag/kinematic)")
         print(f"  loop: {'ON' if before.get('loop') else 'off'} -> off")
-        print(f"  max cases per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
+        print(f"  max cases (folders) per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
         print("\nCurrent recommended state:")
         print("  front expand: fal / percent / 70 / preserve_seamless")
         print("  selfie expand: fal / percent / 30 / none")
@@ -2933,7 +2951,7 @@ class KlingAutomationUI:
         print("  selfie prompt slot: 3")
         print("  Kling prompt slot: 4")
         print(f"  oldcam: v13 / required   ·   rPPG: {'ON' if RECOMMENDED_RPPG_ENABLED_V7 else 'off'}   ·   loop: off")
-        print(f"  max cases per run: {self._read_max_cases_setting()}")
+        print(f"  max cases (folders) per run: {self._read_max_cases_setting()}")
         self.pause_continue("\nPress Enter to continue...")
 
     def _display_automation_menu(self):
@@ -2951,7 +2969,7 @@ class KlingAutomationUI:
             print(f"  \033[93mRecommendation:\033[0m apply recommended defaults (target version {RECOMMENDED_DEFAULTS_VERSION}).")
         print()
         print("  \033[93m1\033[0m   Select automation root folder")
-        print("  \033[93m2\033[0m   Scan / preview cases")
+        print("  \033[93m2\033[0m   Scan / preview cases (folders)")
         print("  \033[93m3\033[0m   Apply recommended automation defaults")
         print("  \033[93m4\033[0m   Edit automation settings")
         print("  \033[93m5\033[0m   Dry run")
@@ -3103,7 +3121,7 @@ class KlingAutomationUI:
             # _safe_input (not raw input): returns "" on EOF/closed/None stdin
             # instead of raising, matching every other legacy editor.
             raw = self._safe_input(
-                f"Max cases per run [{current}] (positive integer or 'all'): "
+                f"Max cases (folders) per run [{current}] (positive integer or 'all'): "
             )
             new_val = _coerce(raw)
             if new_val:
@@ -3123,7 +3141,7 @@ class KlingAutomationUI:
             return "Enter a positive whole number (e.g. 5) or 'all'."
 
         answer = self._q_text(
-            "Max cases per run (positive integer or 'all'):",
+            "Max cases (folders) per run (positive integer or 'all'):",
             default="",
             validate=_validate,
             instruction=f"(current: {current} · Enter keeps)",
@@ -3307,7 +3325,7 @@ class KlingAutomationUI:
             totals.add_row("Will run this batch", f"[bold green]{counts['will_run']}[/bold green]")
             totals.add_row("Manual review / failed", f"{counts['manual_review']} / {counts['failed']}")
             totals.add_row("Existing videos+selfies", str(counts["existing_videos_selfies"]))
-            totals.add_row("Max cases per run", str(self._read_max_cases_setting()))
+            totals.add_row("Max cases (folders) per run", str(self._read_max_cases_setting()))
             _RICH_CONSOLE.print(totals)
             self.pause_review("\nPress Enter to continue...")
             return
@@ -3320,7 +3338,7 @@ class KlingAutomationUI:
         print(f"  manual review: {counts['manual_review']}")
         print(f"  failed: {counts['failed']}")
         print(f"  existing videos/selfies: {counts['existing_videos_selfies']}")
-        print(f"  max cases per run: {self._read_max_cases_setting()}")
+        print(f"  max cases (folders) per run: {self._read_max_cases_setting()}")
         self.pause_review("\nPress Enter to continue...")
 
     def _edit_automation_settings(self):
@@ -3401,7 +3419,7 @@ class KlingAutomationUI:
             lambda v: len(v) > 0 and v.endswith(".json") and Path(v).name == v,
         )
         max_cases_raw = self._safe_input(
-            f"Max cases per run [positive integer or 'all'] (current: {self._read_max_cases_setting()}) [Enter keep]: "
+            f"Max cases (folders) per run [positive integer or 'all'] (current: {self._read_max_cases_setting()}) [Enter keep]: "
         ).strip().lower()
         if max_cases_raw:
             if self._is_valid_max_cases(max_cases_raw):
@@ -5426,7 +5444,7 @@ class KlingAutomationUI:
             (f"📼 Oldcam versions: {self._format_oldcam_versions()} — pick (spacebar)", "oldcam"),
             (f"🧩 Output mode: {self._format_fanout_mode()} — toggle", "fanout_mode"),
             # ── Run scope ──
-            (f"📦 Max cases per run: {self._read_max_cases_setting()}", "batch_max"),
+            (f"📦 Max cases (folders) per run: {self._read_max_cases_setting()}", "batch_max"),
             (f"📦 Reprocess mode: {c.get('automation_reprocess_mode', 'skip')}", "batch_reprocess"),
             (f"📂 Root folder: {self._elide_path(self.automation_root_folder, 44) if self.automation_root_folder else '(not set)'}", "root"),
             # ── ungrouped actions ──
@@ -6183,7 +6201,7 @@ class KlingAutomationUI:
                 "Start the batch with these settings?",
                 [
                     (f"✅ Approve & run ({counts['will_run']} case(s))", "run"),
-                    (f"🔢 Max cases per run: {self._read_max_cases_setting()}  ·  change", "edit_max"),
+                    (f"🔢 Max cases (folders) per run: {self._read_max_cases_setting()}  ·  change", "edit_max"),
                     ("🧪 Dry run first (no API calls)", "dry_run"),
                     ("🔧 Quick edit settings first", "edit"),
                     ("📜 View FULL prompts (selfie + video)", "prompts"),
