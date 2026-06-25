@@ -3910,12 +3910,15 @@ class KlingGUIWindow:
         # Prominent one-click "open a folder as a new session" — the most common
         # entry point (same load-folder flow as Sessions ▸ Load Folder, but
         # top-level). Accent-styled so it stands out from the gray session row.
+        # Plain text, NO emoji + NO fixed width: the 📂 glyph renders wider than
+        # Tk measures it (clam theme), so the label clipped mid-word no matter
+        # what width was set (user report 2026-06-26). A pure-ASCII auto-sizing
+        # button can never clip.
         open_folder_btn = create_action_button(
             header,
-            text="📂 Open Folder",
+            text="Open Folder",
             command=self._dbcmd("header_open_folder", self._on_open_folder_as_session),
             style=TTK_BTN_WORKFLOW,
-            width=14,
         )
         open_folder_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
 
@@ -3933,7 +3936,10 @@ class KlingGUIWindow:
             command=self._dbcmd("header_new_session", self._on_new_session),
             style=TTK_BTN_SECONDARY,
         )
-        new_session_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
+        # Extra LEFT pad creates a visual gap between the session-management group
+        # (New Session / Save / Open Folder / Sessions, to the right) and the
+        # tool/utility group (Sanitize / Similarity / Drop Zone, to the left).
+        new_session_btn.pack(side=tk.RIGHT, padx=(18, 6), pady=4)
 
         sanitize_folder_btn = create_action_button(
             header,
