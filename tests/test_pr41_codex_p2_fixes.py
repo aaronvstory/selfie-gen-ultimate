@@ -391,5 +391,93 @@ class ConfigPanelCustomModelMotionTests(unittest.TestCase):
         )
 
 
+class DefaultModelStandardMigrationTests(unittest.TestCase):
+    """2026-06-25: ship default flipped Kling 2.5 Turbo Pro -> Standard.
+    KlingGUIWindow._migrate_legacy_defaults must move EXISTING configs that
+    still carry the old Pro default to Standard exactly once, while leaving a
+    user's deliberate non-Pro selection untouched (Sourcery PR #113)."""
+
+    @staticmethod
+    def _migrate(cfg):
+        from kling_gui.main_window import KlingGUIWindow
+        KlingGUIWindow._migrate_legacy_defaults(cfg)
+        return cfg
+
+    _PRO = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+    _STD = "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+
+    def test_old_pro_default_migrates_to_standard_and_sets_flag(self):
+        cfg = self._migrate({"current_model": self._PRO})
+        self.assertEqual(cfg["current_model"], self._STD)
+        self.assertEqual(cfg["model_display_name"], "Kling 2.5 Turbo Standard")
+        self.assertTrue(cfg["default_model_standard_migrated_v241"])
+
+    def test_deliberate_non_pro_selection_is_preserved(self):
+        # A user who picked Seedance must keep it; flag still set so we never
+        # re-check (and never override their choice later).
+        seed = "fal-ai/bytedance/seedance/v1.5/pro/image-to-video"
+        cfg = self._migrate({"current_model": seed})
+        self.assertEqual(cfg["current_model"], seed)
+        self.assertTrue(cfg["default_model_standard_migrated_v241"])
+
+    def test_migration_does_not_refire_when_flag_already_set(self):
+        # Flag already set + still on Pro (e.g. user re-selected Pro after a
+        # prior migration) -> must NOT be flipped back to Standard.
+        cfg = self._migrate(
+            {
+                "current_model": self._PRO,
+                "default_model_standard_migrated_v241": True,
+            }
+        )
+        self.assertEqual(cfg["current_model"], self._PRO)
+
+    def test_empty_current_model_backfills_to_standard(self):
+        cfg = self._migrate({"current_model": ""})
+        self.assertEqual(cfg["current_model"], self._STD)
+
+
+class GetModelDisplayNamePricingTests(unittest.TestCase):
+    """get_model_display_name pricing priority: live pricing_info ->
+    curated pricing_fallback -> legacy est_cost_10s (pricing_fallback tier
+    added 2026-06-25 so Seedance/token-priced models show a price offline)."""
+
+    def _label(self, model):
+        from model_metadata import get_model_display_name
+        return get_model_display_name(model)
+
+    def test_live_pricing_info_second_wins_over_fallback(self):
+        label = self._label(
+            {
+                "name": "M",
+                "pricing_info": {"unit": "second", "unit_price": 0.05},
+                "pricing_fallback": {"unit": "second", "unit_price": 0.99},
+            }
+        )
+        self.assertIn("$0.50/10s", label)  # 0.05 * 10, from pricing_info
+
+    def test_pricing_fallback_used_when_no_live_info_second(self):
+        label = self._label(
+            {"name": "M", "pricing_fallback": {"unit": "second", "unit_price": 0.052}}
+        )
+        self.assertIn("$0.52/10s", label)
+
+    def test_pricing_fallback_video_and_image_units(self):
+        v = self._label(
+            {"name": "V", "pricing_fallback": {"unit": "video", "unit_price": 0.4}}
+        )
+        self.assertIn("$0.40/video", v)
+        i = self._label(
+            {"name": "I", "pricing_fallback": {"unit": "image", "unit_price": 0.03}}
+        )
+        self.assertIn("$0.03/image", i)
+
+    def test_est_cost_10s_legacy_fallback_when_no_pricing_dicts(self):
+        label = self._label({"name": "L", "est_cost_10s": "$1.23"})
+        self.assertIn("~$1.23", label)
+
+    def test_no_price_sources_renders_name_only(self):
+        self.assertEqual(self._label({"name": "Bare", "release": ""}), "Bare")
+
+
 if __name__ == "__main__":
     unittest.main()
