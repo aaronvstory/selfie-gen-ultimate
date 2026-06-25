@@ -239,7 +239,11 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     #   v7 (2026-06-11, CLI UX overhaul): rPPG recommended ON, oldcam
     #     ["v13"] (multi-select list form), loop OFF (new step), provider
     #     fal for both expand steps ("fal.ai for everything").
-    "automation_recommended_defaults_version": 7,
+    #   v8 (2026-06-25): default video model -> Kling 2.5 Turbo Standard. Must
+    #     stay in lockstep with kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION
+    #     (a fresh-install config seeded at N-1 would immediately trip the
+    #     "apply recommended defaults?" prompt — guard in test_automation_cli_smoke).
+    "automation_recommended_defaults_version": 8,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
     "automation_log_backup_count": 5,

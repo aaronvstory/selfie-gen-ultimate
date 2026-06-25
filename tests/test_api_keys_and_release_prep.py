@@ -477,8 +477,10 @@ def test_release_forces_active_slot_prompt_and_overrides_cfg(tmp_path: Path):
     assert cfg["current_prompt_slot"] == 3
     # Stale 0.5 OVERRIDDEN, not preserved.
     assert cfg["cfg_scale_value"] == 0.7
-    # Other forced defaults still hold.
-    assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+    # Other forced defaults still hold. Ship default is Kling 2.5 Turbo
+    # Standard as of 2026-06-25 (this template omits current_model, so
+    # release_prep's fallback applies).
+    assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
     assert cfg["lock_end_frame"] is True
 
 
@@ -1067,7 +1069,7 @@ def test_bundle_release_creates_universal_zip_with_top_level_launchers(tmp_path:
         # stale); current_model + lock_end_frame are forced project
         # defaults too.
         assert cfg["saved_prompts"]["1"] == "kling prompt"
-        assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+        assert cfg["current_model"] == "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
         assert cfg["lock_end_frame"] is True
         assert cfg["automation_selfie_prompts"]["1"] == "selfie auto prompt"
         assert cfg["selfie_prompt_template"] == "selfie template"

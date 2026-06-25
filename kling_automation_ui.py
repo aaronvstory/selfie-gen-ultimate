@@ -191,6 +191,12 @@ def _aa_strength_valid(value: str) -> bool:
 # it the flip only ever reached fresh installs. A user who deliberately
 # re-enables FAS afterward keeps it (their config is now at the current
 # version, so this one-time migration won't re-flip it).
+# v9 (2026-06-25): default video model -> Kling 2.5 Turbo STANDARD everywhere
+# (user mandate; was Pro on the GUI side, split from CLI). The CLI baseline
+# already wrote cli_video_model=Standard; bumping the version makes the
+# one-time upgrade re-apply it to existing CLI configs in lockstep with the
+# GUI-side Pro->Standard migration (default_model_standard_migrated_v241 in
+# main_window._migrate_legacy_defaults).
 RECOMMENDED_DEFAULTS_VERSION = 8
 # rPPG default in the v7 recommended preset (user decision 2026-06-11:
 # ON). Single flip point should that decision change.
@@ -1980,6 +1986,16 @@ class KlingAutomationUI:
         ("Kling 2.5 Turbo Pro", "fal-ai/kling-video/v2.5-turbo/pro/image-to-video", 10),
         ("Kling 2.1 Standard", "fal-ai/kling-video/v2.1/standard/image-to-video", 10),
         ("Kling 2.1 Pro", "fal-ai/kling-video/v2.1/pro/image-to-video", 10),
+        # Seedance i2v family (ByteDance). NOTE the 2.0 endpoints intentionally
+        # have NO `fal-ai/` prefix — that is fal.ai's actual routing for the 2.0
+        # wave (verified). Kept in CLI/GUI parity with models.json. Default 5s
+        # (Seedance's own default) since none default to 10.
+        ("Seedance 1.0 Pro", "fal-ai/bytedance/seedance/v1/pro/image-to-video", 5),
+        ("Seedance 1.0 Pro Fast", "fal-ai/bytedance/seedance/v1/pro/fast/image-to-video", 5),
+        ("Seedance 1.5 Pro", "fal-ai/bytedance/seedance/v1.5/pro/image-to-video", 5),
+        ("Seedance 2.0", "bytedance/seedance-2.0/image-to-video", 5),
+        ("Seedance 2.0 Fast", "bytedance/seedance-2.0/fast/image-to-video", 5),
+        ("Seedance 2.0 Mini", "bytedance/seedance-2.0/mini/image-to-video", 5),
         ("Wan 2.5", "fal-ai/wan-25-preview/image-to-video", 5),
         ("Veo 3", "fal-ai/veo3/image-to-video", 8),
         ("Ovi", "fal-ai/ovi/image-to-video", 5),

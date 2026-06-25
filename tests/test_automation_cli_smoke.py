@@ -710,12 +710,15 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
         "v6 apply-defaults must reset landmark_stride to 1 — that's "
         "the entire reason the version bumped from 5 to 6"
     )
-    # Version bumped 6 -> 7 in the 2026-06-11 CLI UX overhaul (rPPG ON,
-    # oldcam ["v13"], loop OFF, fal everywhere). Drives the "apply
-    # recommended defaults" yellow prompt for v6 users.
+    # Version bumped over time (6->7 CLI UX overhaul 2026-06-11; 7->8
+    # 2026-06-25 default model -> Kling 2.5 Turbo Standard). Drives the
+    # "apply recommended defaults" yellow prompt for older configs. Assert
+    # against the imported constant so a future bump only needs the constant
+    # changed, not this number, but keep a floor so a regression that
+    # silently RESETS the version is still caught.
     from kling_automation_ui import RECOMMENDED_DEFAULTS_VERSION
-    assert RECOMMENDED_DEFAULTS_VERSION == 7
-    assert ui.config["automation_recommended_defaults_version"] == 7
+    assert RECOMMENDED_DEFAULTS_VERSION >= 8
+    assert ui.config["automation_recommended_defaults_version"] == RECOMMENDED_DEFAULTS_VERSION
     # Round-3 review fix (PR #54): catch the lockstep miss where
     # `kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION` was bumped
     # but `automation.config.AUTOMATION_DEFAULTS` stayed stale. Both

@@ -21,34 +21,33 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 
-class SeedanceHiddenFlagTests(unittest.TestCase):
-    def test_seedance_is_hidden_from_fresh_config_dropdown(self):
+class SeedanceVisibilityTests(unittest.TestCase):
+    # 2026-06-25 (user mandate): ALL i2v Seedance models are now first-class
+    # VISIBLE entries in models.json (1.0 Pro, 1.0 Pro Fast, 1.5 Pro, 2.0,
+    # 2.0 Fast, 2.0 Mini). The earlier hidden:true on Seedance 2.0 was removed.
+    # The hidden-model *mechanism* itself is still covered by
+    # test_user_hidden_models_still_filtered below (via hidden_models config).
+    def test_all_seedance_models_visible_in_fresh_config_dropdown(self):
         from kling_gui.config_panel import ModelFetcher
 
-        models = ModelFetcher.get_merged_models({})
-        endpoints = {m.get("endpoint") for m in models}
-        self.assertNotIn(
-            "bytedance/seedance-2.0/image-to-video",
-            endpoints,
-            "Seedance has hidden:true in models.json and must not "
-            "appear in the default merged roster",
-        )
-        # Sanity: a normal visible model is still present.
-        self.assertIn(
-            "fal-ai/kling-video/v2.5-turbo/pro/image-to-video", endpoints
-        )
-
-    def test_persisted_seedance_selection_is_preserved(self):
-        """A user who deliberately persisted Seedance as current_model
-        must still see it (selection keeps working) — only the *default*
-        roster hides it."""
-        from kling_gui.config_panel import ModelFetcher
-
-        cfg = {"current_model": "bytedance/seedance-2.0/image-to-video"}
         endpoints = {
-            m.get("endpoint") for m in ModelFetcher.get_merged_models(cfg)
+            m.get("endpoint") for m in ModelFetcher.get_merged_models({})
         }
-        self.assertIn("bytedance/seedance-2.0/image-to-video", endpoints)
+        for ep in (
+            "fal-ai/bytedance/seedance/v1/pro/image-to-video",
+            "fal-ai/bytedance/seedance/v1/pro/fast/image-to-video",
+            "fal-ai/bytedance/seedance/v1.5/pro/image-to-video",
+            "bytedance/seedance-2.0/image-to-video",
+            "bytedance/seedance-2.0/fast/image-to-video",
+            "bytedance/seedance-2.0/mini/image-to-video",
+        ):
+            self.assertIn(
+                ep, endpoints, f"Seedance model {ep} should be visible by default"
+            )
+        # Sanity: a normal Kling model is still present.
+        self.assertIn(
+            "fal-ai/kling-video/v2.5-turbo/standard/image-to-video", endpoints
+        )
 
     def test_user_hidden_models_still_filtered(self):
         """The pre-existing config["hidden_models"] mechanism still

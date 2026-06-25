@@ -1856,7 +1856,7 @@ class ConfigPanel(tk.Frame):
         if not self.models:
             self.models = [
                 {
-                    "name": self.config.get("model_display_name", "Kling 2.5 Turbo Pro"),
+                    "name": self.config.get("model_display_name", "Kling 2.5 Turbo Standard"),
                     "endpoint": self.config.get("current_model", ""),
                     "duration_default": self.config.get("video_duration", 10),
                 }

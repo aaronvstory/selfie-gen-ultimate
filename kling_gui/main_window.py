@@ -1619,8 +1619,8 @@ class KlingGUIWindow:
             "saved_prompts": {str(i): "" for i in range(1, 11)},
             "negative_prompts": {str(i): "" for i in range(1, 11)},
             "model_capabilities": {},
-            "current_model": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
-            "model_display_name": "Kling 2.5 Turbo Pro",
+            "current_model": "fal-ai/kling-video/v2.5-turbo/standard/image-to-video",
+            "model_display_name": "Kling 2.5 Turbo Standard",
             "video_duration": 10,
             "loop_videos": False,  # Loop videos OFF by default (changed 2026-05-22 — most workflows don't need looping)
             "rppg_per_oldcam_fanout": False,  # Phase E of polish/v2.3: legacy "rPPG on every Oldcam" fan-out, opt-in (slower)
@@ -1839,6 +1839,29 @@ class KlingGUIWindow:
                 )
             config["verbose_gui_mode_reset_v222"] = True
 
+        # Default video model: Kling 2.5 Turbo Pro -> Standard (2026-06-25,
+        # user mandate). Standard is now the ship default everywhere (GUI + CLI
+        # + template). Existing configs that still carry the OLD Pro default are
+        # migrated ONCE to Standard; a user who has switched to ANY other model
+        # is left untouched (we only move configs sitting on the exact old
+        # default). After the flag is set we never re-flip, so a user who
+        # deliberately re-selects Pro afterward keeps it.
+        if not config.get("default_model_standard_migrated_v241"):
+            if (
+                str(config.get("current_model", "")).strip()
+                == "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+            ):
+                config["current_model"] = (
+                    "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+                )
+                config["model_display_name"] = "Kling 2.5 Turbo Standard"
+                _safe_print(
+                    "Migrated default model: Kling 2.5 Turbo Pro -> Standard "
+                    "(2026-06-25 ship default). Re-select Pro in the model "
+                    "dropdown if you prefer it."
+                )
+            config["default_model_standard_migrated_v241"] = True
+
         # Slot 3 defaults backfill (2026-05-21): older saved configs
         # carry empty slot 3 prompt + negative because the template
         # values were added after the user's install. Backfill from the
@@ -1888,16 +1911,16 @@ class KlingGUIWindow:
                 neg["4"] = canonical_neg
                 config["negative_prompts"] = neg
                 _safe_print("Backfilled negative_prompts slot 4 (was empty)")
-            # If current_model drifted off the canonical Kling 2.5 Pro
-            # Turbo AND the user hasn't explicitly set model_display_name,
-            # leave it alone — user may have switched intentionally.
-            # Only backfill if model field is empty/missing.
+            # If current_model is empty/missing, seed the canonical ship
+            # default (Kling 2.5 Turbo Standard as of 2026-06-25). A user who
+            # deliberately switched models keeps their choice — we only backfill
+            # an empty field, never override a non-empty selection.
             if not str(config.get("current_model", "")).strip():
                 config["current_model"] = (
-                    "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+                    "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
                 )
-                config["model_display_name"] = "Kling 2.5 Turbo Pro"
-                _safe_print("Backfilled current_model: Kling 2.5 Turbo Pro")
+                config["model_display_name"] = "Kling 2.5 Turbo Standard"
+                _safe_print("Backfilled current_model: Kling 2.5 Turbo Standard")
             config["slot3_defaults_backfilled_v21"] = True
 
         # Force-update slot 3 positive if it matches a known stale

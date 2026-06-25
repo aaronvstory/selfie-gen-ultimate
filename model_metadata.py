@@ -25,7 +25,8 @@ _VAGUE_NAMES = frozenset({"kling video", "minimax video", "hunyuan video"})
 # Hardcoded fallback — used ONLY when models.json is missing
 # ---------------------------------------------------------------------------
 _FALLBACK_MODELS = [
-    {"name": "Kling v2.5 Turbo Pro", "endpoint": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video", "duration_default": 10},
+    {"name": "Kling 2.5 Turbo Standard", "endpoint": "fal-ai/kling-video/v2.5-turbo/standard/image-to-video", "duration_default": 10},
+    {"name": "Kling 2.5 Turbo Pro", "endpoint": "fal-ai/kling-video/v2.5-turbo/pro/image-to-video", "duration_default": 10},
     {"name": "MiniMax Video", "endpoint": "fal-ai/minimax-video/image-to-video", "duration_default": 10},
 ]
 
@@ -173,21 +174,28 @@ def get_model_display_name(model: dict) -> str:
 
     release = model.get("release", "")
 
-    # Pricing: prefer live API, fall back to est_cost_10s
-    cost_str = ""
-    pricing = model.get("pricing_info", {})
-    if pricing and pricing.get("unit_price"):
-        unit = pricing.get("unit", "")
-        price = pricing["unit_price"]
+    # Pricing: prefer live API → curated models.json pricing_fallback →
+    # legacy est_cost_10s. The pricing_fallback tier (added 2026-06-25) means
+    # curated models (e.g. Seedance, which is token-priced and converted to a
+    # per-second figure in models.json) show their price in the dropdown even
+    # BEFORE the live fal API enriches pricing_info — and offline.
+    def _fmt_price(p: dict) -> str:
+        if not (p and p.get("unit_price")):
+            return ""
+        unit = p.get("unit", "")
+        price = p["unit_price"]
         if unit == "second":
-            cost_str = f"${price * 10:.2f}/10s"
-        elif unit == "video":
-            cost_str = f"${price:.2f}/video"
-        elif unit == "image":
-            cost_str = f"${price:.2f}/image"
-        else:
-            cost_str = f"${price:.2f}/{unit}" if unit else f"${price:.2f}"
-    elif model.get("est_cost_10s"):
+            return f"${price * 10:.2f}/10s"
+        if unit == "video":
+            return f"${price:.2f}/video"
+        if unit == "image":
+            return f"${price:.2f}/image"
+        return f"${price:.2f}/{unit}" if unit else f"${price:.2f}"
+
+    cost_str = _fmt_price(model.get("pricing_info", {}))
+    if not cost_str:
+        cost_str = _fmt_price(model.get("pricing_fallback", {}))
+    if not cost_str and model.get("est_cost_10s"):
         cost_str = f"~{model['est_cost_10s']}"
 
     # Assemble: "Name (release), cost"
