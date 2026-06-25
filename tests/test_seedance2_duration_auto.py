@@ -167,5 +167,37 @@ class SeedanceAutoDurationTest(unittest.TestCase):
         self.assertTrue(caps["supports_audio"])
 
 
+class DistributionMirrorSyncTest(unittest.TestCase):
+    """The fix is mirrored into the committed ``distribution/`` tree. That
+    copy uses package-relative imports and can't be imported standalone, so
+    instead of duplicating the behavioral test we assert the EAFP duration
+    filter is present in BOTH trees — a drift guard (Sourcery suggestion).
+    """
+
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def _read(self, rel):
+        return (self.ROOT / rel).read_text(encoding="utf-8", errors="replace")
+
+    def test_config_panel_filter_mirrored(self):
+        markers = [
+            "numeric_durations.append(int(_d))",
+            "except (TypeError, ValueError):",
+            "numeric_durations.sort()",
+        ]
+        for tree in ("kling_gui/config_panel.py",
+                     "distribution/kling_gui/config_panel.py"):
+            src = self._read(tree)
+            for m in markers:
+                self.assertIn(m, src, f"{tree} missing EAFP duration filter: {m!r}")
+
+    def test_schema_manager_filter_mirrored(self):
+        markers = ['_numeric.append(int(_d))', 'caps["duration_options"] = sorted(_numeric)']
+        for tree in ("model_schema_manager.py", "distribution/model_schema_manager.py"):
+            src = self._read(tree)
+            for m in markers:
+                self.assertIn(m, src, f"{tree} missing EAFP duration filter: {m!r}")
+
+
 if __name__ == "__main__":
     unittest.main()

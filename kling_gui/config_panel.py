@@ -3315,9 +3315,12 @@ class ConfigPanel(tk.Frame):
             # ValueError and get mislabeled as a "Schema fetch failed" error.
             numeric_durations = []
             if duration_param and getattr(duration_param, 'enum', None):
-                numeric_durations = [
-                    int(d) for d in duration_param.enum if str(d).strip().isdigit()
-                ]
+                for _d in duration_param.enum:
+                    try:
+                        numeric_durations.append(int(_d))
+                    except (TypeError, ValueError):
+                        continue
+                numeric_durations.sort()
             if numeric_durations:
                 duration_values = [f"{d}s" for d in numeric_durations]
                 logger.debug(f"Model {model_endpoint} supports durations: {duration_values}")
