@@ -197,7 +197,7 @@ def _aa_strength_valid(value: str) -> bool:
 # one-time upgrade re-apply it to existing CLI configs in lockstep with the
 # GUI-side Pro->Standard migration (default_model_standard_migrated_v241 in
 # main_window._migrate_legacy_defaults).
-RECOMMENDED_DEFAULTS_VERSION = 8
+RECOMMENDED_DEFAULTS_VERSION = 9
 # rPPG default in the v7 recommended preset (user decision 2026-06-11:
 # ON). Single flip point should that decision change.
 RECOMMENDED_RPPG_ENABLED_V7 = True

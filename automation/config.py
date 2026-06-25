@@ -243,7 +243,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     #     stay in lockstep with kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION
     #     (a fresh-install config seeded at N-1 would immediately trip the
     #     "apply recommended defaults?" prompt — guard in test_automation_cli_smoke).
-    "automation_recommended_defaults_version": 8,
+    "automation_recommended_defaults_version": 9,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
     "automation_log_backup_count": 5,
