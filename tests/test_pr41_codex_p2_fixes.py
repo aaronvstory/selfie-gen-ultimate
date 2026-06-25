@@ -442,6 +442,25 @@ class DefaultModelStandardMigrationTests(unittest.TestCase):
         cfg = self._migrate({"current_model": None})
         self.assertEqual(cfg["current_model"], self._STD)
 
+    def test_null_on_established_install_seeds_standard(self):
+        # CodeRabbit PR #113: an ESTABLISHED install already has
+        # slot3_defaults_backfilled_v21=True, which skips the later backfill
+        # block entirely — so an empty/null current_model must be seeded in the
+        # always-runs migration block, not only the slot3 backfill.
+        for cm in (None, ""):
+            cfg = self._migrate(
+                {"current_model": cm, "slot3_defaults_backfilled_v21": True}
+            )
+            self.assertEqual(cfg["current_model"], self._STD)
+            self.assertEqual(cfg["model_display_name"], "Kling 2.5 Turbo Standard")
+
+    def test_deliberate_pick_preserved_on_established_install(self):
+        seed = "fal-ai/bytedance/seedance/v1.5/pro/image-to-video"
+        cfg = self._migrate(
+            {"current_model": seed, "slot3_defaults_backfilled_v21": True}
+        )
+        self.assertEqual(cfg["current_model"], seed)
+
 
 class GetModelDisplayNamePricingTests(unittest.TestCase):
     """get_model_display_name pricing priority: live pricing_info ->

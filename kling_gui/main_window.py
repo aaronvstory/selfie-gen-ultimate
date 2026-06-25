@@ -1865,6 +1865,19 @@ class KlingGUIWindow:
                     "(2026-06-25 ship default). Re-select Pro in the model "
                     "dropdown if you prefer it."
                 )
+            elif current_model is None or not str(current_model).strip():
+                # Empty/null current_model on an ESTABLISHED install whose
+                # slot3_defaults_backfilled_v21 flag is already True skips the
+                # later backfill block entirely (CodeRabbit, PR #113) — so seed
+                # the Standard default here, in the always-runs migration block.
+                config["current_model"] = (
+                    "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+                )
+                config["model_display_name"] = "Kling 2.5 Turbo Standard"
+                _safe_print(
+                    "Seeded default model: Kling 2.5 Turbo Standard "
+                    "(current_model was empty/null)."
+                )
             config["default_model_standard_migrated_v241"] = True
 
         # Slot 3 defaults backfill (2026-05-21): older saved configs
