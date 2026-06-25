@@ -3909,15 +3909,15 @@ class KlingGUIWindow:
 
         # One-click "open a folder as a new session" — the most common entry
         # point (same load-folder flow as Sessions ▸ Load Folder, top-level).
-        # Styled EXACTLY like the other header buttons (PRIMARY + width=12, like
-        # Sessions) — the previous WORKFLOW style's glow-border padding clipped
-        # the label, and the emoji rendered wider than Tk measured (user report).
+        # Styled like the "Expand Image" button: the distinct WORKFLOW accent
+        # (bright blue) so it stands out, but NO fixed width — letting it
+        # auto-size to its text is what keeps the label from clipping (a fixed
+        # width was the real culprit, not the style; user report 2026-06-26).
         open_folder_btn = create_action_button(
             header,
             text="Open Folder",
             command=self._dbcmd("header_open_folder", self._on_open_folder_as_session),
-            style=TTK_BTN_PRIMARY,
-            width=12,
+            style=TTK_BTN_WORKFLOW,
         )
         open_folder_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
 
