@@ -3907,18 +3907,17 @@ class KlingGUIWindow:
         )
         sessions_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
 
-        # Prominent one-click "open a folder as a new session" — the most common
-        # entry point (same load-folder flow as Sessions ▸ Load Folder, but
-        # top-level). Accent-styled so it stands out from the gray session row.
-        # Plain text, NO emoji + NO fixed width: the 📂 glyph renders wider than
-        # Tk measures it (clam theme), so the label clipped mid-word no matter
-        # what width was set (user report 2026-06-26). A pure-ASCII auto-sizing
-        # button can never clip.
+        # One-click "open a folder as a new session" — the most common entry
+        # point (same load-folder flow as Sessions ▸ Load Folder, top-level).
+        # Styled EXACTLY like the other header buttons (PRIMARY + width=12, like
+        # Sessions) — the previous WORKFLOW style's glow-border padding clipped
+        # the label, and the emoji rendered wider than Tk measured (user report).
         open_folder_btn = create_action_button(
             header,
             text="Open Folder",
             command=self._dbcmd("header_open_folder", self._on_open_folder_as_session),
-            style=TTK_BTN_WORKFLOW,
+            style=TTK_BTN_PRIMARY,
+            width=12,
         )
         open_folder_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
 
