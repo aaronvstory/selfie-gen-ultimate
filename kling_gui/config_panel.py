@@ -3308,9 +3308,21 @@ class ConfigPanel(tk.Frame):
 
             # Get duration options from schema
             duration_param = schema_manager.get_parameter_info(model_endpoint, "duration")
-            if duration_param and hasattr(duration_param, 'enum') and duration_param.enum:
-                # Model specifies exact allowed durations
-                duration_values = [f"{int(d)}s" for d in duration_param.enum]
+            # Some live schemas (e.g. Seedance 2.0) list non-numeric duration
+            # enum values like "auto" next to the numeric seconds. The dropdown
+            # and the downstream cost/payload logic are numeric-only, so keep
+            # just the integer options here -- int("auto") would otherwise raise
+            # ValueError and get mislabeled as a "Schema fetch failed" error.
+            numeric_durations = []
+            if duration_param and getattr(duration_param, 'enum', None):
+                for _d in duration_param.enum:
+                    try:
+                        numeric_durations.append(int(_d))
+                    except (TypeError, ValueError):
+                        continue
+                numeric_durations.sort()
+            if numeric_durations:
+                duration_values = [f"{d}s" for d in numeric_durations]
                 logger.debug(f"Model {model_endpoint} supports durations: {duration_values}")
             else:
                 # Fallback: use model_metadata.py duration_options

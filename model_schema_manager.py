@@ -540,7 +540,15 @@ class ModelSchemaManager:
         dur = schema.get("duration")
         if dur:
             if dur.enum:
-                caps["duration_options"] = sorted(int(d) for d in dur.enum)
+                # Drop non-numeric enum values (e.g. Seedance 2.0's "auto")
+                # via EAFP -- more robust than isdigit() for signed/odd formats.
+                _numeric = []
+                for _d in dur.enum:
+                    try:
+                        _numeric.append(int(_d))
+                    except (TypeError, ValueError):
+                        continue
+                caps["duration_options"] = sorted(_numeric)
             if dur.default is not None:
                 try:
                     caps["duration_default"] = int(dur.default)
