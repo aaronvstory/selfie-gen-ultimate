@@ -180,7 +180,10 @@ def get_model_display_name(model: dict) -> str:
     # per-second figure in models.json) show their price in the dropdown even
     # BEFORE the live fal API enriches pricing_info — and offline.
     def _fmt_price(p: dict) -> str:
-        if not (p and p.get("unit_price")):
+        # Use `is None`, not falsiness: a genuine $0.00 (free) model has
+        # unit_price == 0, which is falsy — `not p.get(...)` would drop its
+        # price and render the model with no cost label.
+        if not p or p.get("unit_price") is None:
             return ""
         unit = p.get("unit", "")
         price = p["unit_price"]

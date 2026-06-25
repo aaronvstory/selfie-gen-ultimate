@@ -1783,7 +1783,10 @@ class ConfigPanel(tk.Frame):
         if not self.models:
             self.models = [
                 {
-                    "name": self.config.get("model_display_name", "Kling 2.5 Turbo Standard"),
+                    # `or` (not a .get default): a JSON null model_display_name
+                    # would return None with .get(key, default); fall through to
+                    # the label instead.
+                    "name": self.config.get("model_display_name") or "Kling 2.5 Turbo Standard",
                     "endpoint": self.config.get("current_model", ""),
                     "duration_default": self.config.get("video_duration", 10),
                 }

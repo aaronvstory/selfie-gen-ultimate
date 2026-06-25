@@ -435,6 +435,13 @@ class DefaultModelStandardMigrationTests(unittest.TestCase):
         cfg = self._migrate({"current_model": ""})
         self.assertEqual(cfg["current_model"], self._STD)
 
+    def test_null_current_model_backfills_to_standard(self):
+        # Gemini PR #113: a JSON null -> None. str(None) == "None" is truthy,
+        # so without the explicit None guard the migration AND the empty-field
+        # backfill would both skip it, stranding the config on a bad value.
+        cfg = self._migrate({"current_model": None})
+        self.assertEqual(cfg["current_model"], self._STD)
+
 
 class GetModelDisplayNamePricingTests(unittest.TestCase):
     """get_model_display_name pricing priority: live pricing_info ->
@@ -477,6 +484,48 @@ class GetModelDisplayNamePricingTests(unittest.TestCase):
 
     def test_no_price_sources_renders_name_only(self):
         self.assertEqual(self._label({"name": "Bare", "release": ""}), "Bare")
+
+    def test_zero_price_renders_not_dropped(self):
+        # Gemini PR #113: unit_price == 0 is falsy; a $0 (free) model must
+        # still render "$0.00/..." rather than being silently dropped.
+        label = self._label(
+            {"name": "Free", "pricing_fallback": {"unit": "second", "unit_price": 0}}
+        )
+        self.assertIn("$0.00/10s", label)
+
+    def test_explicit_none_unit_price_renders_no_cost(self):
+        label = self._label(
+            {"name": "NoPrice", "pricing_fallback": {"unit": "second", "unit_price": None}}
+        )
+        self.assertNotIn("$", label)
+
+
+class DistRootVersionLockstepTests(unittest.TestCase):
+    """The distribution/ mirror must carry the SAME
+    automation_recommended_defaults_version as root — else a fresh install
+    run from the dist tree seeds an N-1 version and nags on first launch.
+    The in-tree lockstep test imports from root only, so it can't see dist
+    drift; this test reads BOTH files directly (subagent finding, PR #113)."""
+
+    import re as _re
+
+    def _version(self, rel_path):
+        text = (_ROOT / rel_path).read_text(encoding="utf-8")
+        m = self._re.search(
+            r'"automation_recommended_defaults_version"\s*:\s*(\d+)', text
+        )
+        self.assertIsNotNone(m, f"version key not found in {rel_path}")
+        return int(m.group(1))
+
+    def test_root_and_distribution_defaults_version_match(self):
+        root_v = self._version("automation/config.py")
+        dist_v = self._version("distribution/automation/config.py")
+        self.assertEqual(
+            root_v,
+            dist_v,
+            "automation/config.py and distribution/automation/config.py "
+            "must agree on automation_recommended_defaults_version",
+        )
 
 
 if __name__ == "__main__":

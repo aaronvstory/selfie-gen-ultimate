@@ -1847,8 +1847,13 @@ class KlingGUIWindow:
         # default). After the flag is set we never re-flip, so a user who
         # deliberately re-selects Pro afterward keeps it.
         if not config.get("default_model_standard_migrated_v241"):
+            # Read defensively: a JSON null would make current_model None, and
+            # str(None) == "None" (truthy) — which would neither match Pro here
+            # nor trip the empty-field backfill below, stranding the config.
+            current_model = config.get("current_model")
             if (
-                str(config.get("current_model", "")).strip()
+                current_model is not None
+                and str(current_model).strip()
                 == "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
             ):
                 config["current_model"] = (
@@ -1911,11 +1916,14 @@ class KlingGUIWindow:
                 neg["4"] = canonical_neg
                 config["negative_prompts"] = neg
                 _safe_print("Backfilled negative_prompts slot 4 (was empty)")
-            # If current_model is empty/missing, seed the canonical ship
+            # If current_model is empty/missing/null, seed the canonical ship
             # default (Kling 2.5 Turbo Standard as of 2026-06-25). A user who
             # deliberately switched models keeps their choice — we only backfill
-            # an empty field, never override a non-empty selection.
-            if not str(config.get("current_model", "")).strip():
+            # an empty field, never override a non-empty selection. Treat a JSON
+            # null (None) as empty too: str(None) == "None" is truthy, so guard
+            # the None case explicitly or a null value would never be backfilled.
+            _cm = config.get("current_model")
+            if _cm is None or not str(_cm).strip():
                 config["current_model"] = (
                     "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
                 )
