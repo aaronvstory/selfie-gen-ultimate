@@ -21,34 +21,33 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 
-class SeedanceHiddenFlagTests(unittest.TestCase):
-    def test_seedance_is_hidden_from_fresh_config_dropdown(self):
+class SeedanceVisibilityTests(unittest.TestCase):
+    # 2026-06-25 (user mandate): ALL i2v Seedance models are now first-class
+    # VISIBLE entries in models.json (1.0 Pro, 1.0 Pro Fast, 1.5 Pro, 2.0,
+    # 2.0 Fast, 2.0 Mini). The earlier hidden:true on Seedance 2.0 was removed.
+    # The hidden-model *mechanism* itself is still covered by
+    # test_user_hidden_models_still_filtered below (via hidden_models config).
+    def test_all_seedance_models_visible_in_fresh_config_dropdown(self):
         from kling_gui.config_panel import ModelFetcher
 
-        models = ModelFetcher.get_merged_models({})
-        endpoints = {m.get("endpoint") for m in models}
-        self.assertNotIn(
-            "bytedance/seedance-2.0/image-to-video",
-            endpoints,
-            "Seedance has hidden:true in models.json and must not "
-            "appear in the default merged roster",
-        )
-        # Sanity: a normal visible model is still present.
-        self.assertIn(
-            "fal-ai/kling-video/v2.5-turbo/pro/image-to-video", endpoints
-        )
-
-    def test_persisted_seedance_selection_is_preserved(self):
-        """A user who deliberately persisted Seedance as current_model
-        must still see it (selection keeps working) — only the *default*
-        roster hides it."""
-        from kling_gui.config_panel import ModelFetcher
-
-        cfg = {"current_model": "bytedance/seedance-2.0/image-to-video"}
         endpoints = {
-            m.get("endpoint") for m in ModelFetcher.get_merged_models(cfg)
+            m.get("endpoint") for m in ModelFetcher.get_merged_models({})
         }
-        self.assertIn("bytedance/seedance-2.0/image-to-video", endpoints)
+        for ep in (
+            "fal-ai/bytedance/seedance/v1/pro/image-to-video",
+            "fal-ai/bytedance/seedance/v1/pro/fast/image-to-video",
+            "fal-ai/bytedance/seedance/v1.5/pro/image-to-video",
+            "bytedance/seedance-2.0/image-to-video",
+            "bytedance/seedance-2.0/fast/image-to-video",
+            "bytedance/seedance-2.0/mini/image-to-video",
+        ):
+            self.assertIn(
+                ep, endpoints, f"Seedance model {ep} should be visible by default"
+            )
+        # Sanity: a normal Kling model is still present.
+        self.assertIn(
+            "fal-ai/kling-video/v2.5-turbo/standard/image-to-video", endpoints
+        )
 
     def test_user_hidden_models_still_filtered(self):
         """The pre-existing config["hidden_models"] mechanism still
@@ -389,6 +388,162 @@ class ConfigPanelCustomModelMotionTests(unittest.TestCase):
         self.assertRegex(
             src,
             r'has_end\s*=\s*caps\.get\("end_image_param"\)\s*is not None',
+        )
+
+
+class DefaultModelStandardMigrationTests(unittest.TestCase):
+    """2026-06-25: ship default flipped Kling 2.5 Turbo Pro -> Standard.
+    KlingGUIWindow._migrate_legacy_defaults must move EXISTING configs that
+    still carry the old Pro default to Standard exactly once, while leaving a
+    user's deliberate non-Pro selection untouched (Sourcery PR #113)."""
+
+    @staticmethod
+    def _migrate(cfg):
+        from kling_gui.main_window import KlingGUIWindow
+        KlingGUIWindow._migrate_legacy_defaults(cfg)
+        return cfg
+
+    _PRO = "fal-ai/kling-video/v2.5-turbo/pro/image-to-video"
+    _STD = "fal-ai/kling-video/v2.5-turbo/standard/image-to-video"
+
+    def test_old_pro_default_migrates_to_standard_and_sets_flag(self):
+        cfg = self._migrate({"current_model": self._PRO})
+        self.assertEqual(cfg["current_model"], self._STD)
+        self.assertEqual(cfg["model_display_name"], "Kling 2.5 Turbo Standard")
+        self.assertTrue(cfg["default_model_standard_migrated_v241"])
+
+    def test_deliberate_non_pro_selection_is_preserved(self):
+        # A user who picked Seedance must keep it; flag still set so we never
+        # re-check (and never override their choice later).
+        seed = "fal-ai/bytedance/seedance/v1.5/pro/image-to-video"
+        cfg = self._migrate({"current_model": seed})
+        self.assertEqual(cfg["current_model"], seed)
+        self.assertTrue(cfg["default_model_standard_migrated_v241"])
+
+    def test_migration_does_not_refire_when_flag_already_set(self):
+        # Flag already set + still on Pro (e.g. user re-selected Pro after a
+        # prior migration) -> must NOT be flipped back to Standard.
+        cfg = self._migrate(
+            {
+                "current_model": self._PRO,
+                "default_model_standard_migrated_v241": True,
+            }
+        )
+        self.assertEqual(cfg["current_model"], self._PRO)
+
+    def test_empty_current_model_backfills_to_standard(self):
+        cfg = self._migrate({"current_model": ""})
+        self.assertEqual(cfg["current_model"], self._STD)
+
+    def test_null_current_model_backfills_to_standard(self):
+        # Gemini PR #113: a JSON null -> None. str(None) == "None" is truthy,
+        # so without the explicit None guard the migration AND the empty-field
+        # backfill would both skip it, stranding the config on a bad value.
+        cfg = self._migrate({"current_model": None})
+        self.assertEqual(cfg["current_model"], self._STD)
+
+    def test_null_on_established_install_seeds_standard(self):
+        # CodeRabbit PR #113: an ESTABLISHED install already has
+        # slot3_defaults_backfilled_v21=True, which skips the later backfill
+        # block entirely — so an empty/null current_model must be seeded in the
+        # always-runs migration block, not only the slot3 backfill.
+        for cm in (None, ""):
+            cfg = self._migrate(
+                {"current_model": cm, "slot3_defaults_backfilled_v21": True}
+            )
+            self.assertEqual(cfg["current_model"], self._STD)
+            self.assertEqual(cfg["model_display_name"], "Kling 2.5 Turbo Standard")
+
+    def test_deliberate_pick_preserved_on_established_install(self):
+        seed = "fal-ai/bytedance/seedance/v1.5/pro/image-to-video"
+        cfg = self._migrate(
+            {"current_model": seed, "slot3_defaults_backfilled_v21": True}
+        )
+        self.assertEqual(cfg["current_model"], seed)
+
+
+class GetModelDisplayNamePricingTests(unittest.TestCase):
+    """get_model_display_name pricing priority: live pricing_info ->
+    curated pricing_fallback -> legacy est_cost_10s (pricing_fallback tier
+    added 2026-06-25 so Seedance/token-priced models show a price offline)."""
+
+    def _label(self, model):
+        from model_metadata import get_model_display_name
+        return get_model_display_name(model)
+
+    def test_live_pricing_info_second_wins_over_fallback(self):
+        label = self._label(
+            {
+                "name": "M",
+                "pricing_info": {"unit": "second", "unit_price": 0.05},
+                "pricing_fallback": {"unit": "second", "unit_price": 0.99},
+            }
+        )
+        self.assertIn("$0.50/10s", label)  # 0.05 * 10, from pricing_info
+
+    def test_pricing_fallback_used_when_no_live_info_second(self):
+        label = self._label(
+            {"name": "M", "pricing_fallback": {"unit": "second", "unit_price": 0.052}}
+        )
+        self.assertIn("$0.52/10s", label)
+
+    def test_pricing_fallback_video_and_image_units(self):
+        v = self._label(
+            {"name": "V", "pricing_fallback": {"unit": "video", "unit_price": 0.4}}
+        )
+        self.assertIn("$0.40/video", v)
+        i = self._label(
+            {"name": "I", "pricing_fallback": {"unit": "image", "unit_price": 0.03}}
+        )
+        self.assertIn("$0.03/image", i)
+
+    def test_est_cost_10s_legacy_fallback_when_no_pricing_dicts(self):
+        label = self._label({"name": "L", "est_cost_10s": "$1.23"})
+        self.assertIn("~$1.23", label)
+
+    def test_no_price_sources_renders_name_only(self):
+        self.assertEqual(self._label({"name": "Bare", "release": ""}), "Bare")
+
+    def test_zero_price_renders_not_dropped(self):
+        # Gemini PR #113: unit_price == 0 is falsy; a $0 (free) model must
+        # still render "$0.00/..." rather than being silently dropped.
+        label = self._label(
+            {"name": "Free", "pricing_fallback": {"unit": "second", "unit_price": 0}}
+        )
+        self.assertIn("$0.00/10s", label)
+
+    def test_explicit_none_unit_price_renders_no_cost(self):
+        label = self._label(
+            {"name": "NoPrice", "pricing_fallback": {"unit": "second", "unit_price": None}}
+        )
+        self.assertNotIn("$", label)
+
+
+class DistRootVersionLockstepTests(unittest.TestCase):
+    """The distribution/ mirror must carry the SAME
+    automation_recommended_defaults_version as root — else a fresh install
+    run from the dist tree seeds an N-1 version and nags on first launch.
+    The in-tree lockstep test imports from root only, so it can't see dist
+    drift; this test reads BOTH files directly (subagent finding, PR #113)."""
+
+    import re as _re
+
+    def _version(self, rel_path):
+        text = (_ROOT / rel_path).read_text(encoding="utf-8")
+        m = self._re.search(
+            r'"automation_recommended_defaults_version"\s*:\s*(\d+)', text
+        )
+        self.assertIsNotNone(m, f"version key not found in {rel_path}")
+        return int(m.group(1))
+
+    def test_root_and_distribution_defaults_version_match(self):
+        root_v = self._version("automation/config.py")
+        dist_v = self._version("distribution/automation/config.py")
+        self.assertEqual(
+            root_v,
+            dist_v,
+            "automation/config.py and distribution/automation/config.py "
+            "must agree on automation_recommended_defaults_version",
         )
 
 

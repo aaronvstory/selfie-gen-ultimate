@@ -612,12 +612,13 @@ class TemplateDrivenShipModelTests(unittest.TestCase):
             with open(l, "w", encoding="utf-8") as fp:
                 fp.write(_j.dumps({}))
             cfg = build_sanitized_config(Path(t), Path(l))
-        # Hardcoded fallback is the current ship target.
+        # Hardcoded fallback is the current ship target — Kling 2.5 Turbo
+        # Standard as of 2026-06-25.
         self.assertEqual(
             cfg["current_model"],
-            "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+            "fal-ai/kling-video/v2.5-turbo/standard/image-to-video",
         )
-        self.assertEqual(cfg["model_display_name"], "Kling 2.5 Turbo Pro")
+        self.assertEqual(cfg["model_display_name"], "Kling 2.5 Turbo Standard")
 
 
 class CustomEndpointEndImageUrlFallbackTests(unittest.TestCase):

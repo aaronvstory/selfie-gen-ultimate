@@ -297,7 +297,7 @@ def build_sanitized_config(
     # A handful of keys are FORCED to the project's new desired
     # defaults even if the dev machine still carries an older value
     # (user 2026-05-19: ship the new minimal-motion prompt + negative,
-    # default model = Kling 2.5 Turbo Pro, end-frame lock on). Sourced
+    # default model = Kling 2.5 Turbo Standard, end-frame lock on). Sourced
     # from the template so there is ONE definition of the new defaults.
     _t_saved = template.get("saved_prompts")
     _t_neg = template.get("negative_prompts")
@@ -353,11 +353,11 @@ def build_sanitized_config(
     config["current_model"] = str(
         template.get(
             "current_model",
-            "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
+            "fal-ai/kling-video/v2.5-turbo/standard/image-to-video",
         )
     ).strip()
     config["model_display_name"] = str(
-        template.get("model_display_name", "Kling 2.5 Turbo Pro")
+        template.get("model_display_name", "Kling 2.5 Turbo Standard")
     ).strip()
     # CLI-owned per-surface video selection (PR #96 v2.31 split): the CLI
     # pipeline ships Kling 2.5 Turbo STANDARD on prompt slot 4 at 10s —
