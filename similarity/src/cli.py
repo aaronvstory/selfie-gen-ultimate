@@ -23,11 +23,17 @@ console = Console()
 # copy them through verbatim and compound them on each run. Kept byte-for-byte in
 # step with the cleanup sweep used on the synced folders so a name resolves to the
 # SAME result no matter which side fixes it (no rename churn between the two).
-_RESERVED_FILENAME_CHARS = '<>"|?*'  # ':' -> '-' separately; control chars dropped
+_RESERVED_FILENAME_CHARS = '<>"|?*\\/'  # ':' -> '-' separately; control chars dropped
 
 
 def _sanitize_folder_name(name: str, default: str = "untitled") -> str:
-    """Make a single path component safe on Windows/NTFS (and cross-OS sync)."""
+    """Make a single path component safe on Windows/NTFS (and cross-OS sync).
+
+    macOS permits ``\\`` and ``/`` inside a single component; Windows treats both
+    as path separators, so they're mapped to ``_`` alongside the other reserved
+    glyphs. C0 controls are dropped; ``:`` becomes ``-``; trailing space/dot are
+    trimmed (Windows silently strips them, which also breaks sync).
+    """
     s = "".join("" if ord(c) < 32 else c for c in str(name or ""))  # drop \r \n \t etc.
     s = s.replace(":", "-")
     for c in _RESERVED_FILENAME_CHARS:
@@ -536,7 +542,11 @@ class ProCLI:
 
     def _get_new_folder_name(self, old_folder_path: str, score: float) -> str:
         parent_dir = os.path.dirname(old_folder_path)
-        folder_name = os.path.basename(old_folder_path)
+        # Sanitize FIRST, before the " - " split below. Sanitizing afterwards let a
+        # spaced colon ("Foo : Bar") map to " - " and be misread as the name/suffix
+        # separator on the next pass, duplicating the score token and re-triggering
+        # the rename (breaking the idempotency this feature promises).
+        folder_name = _sanitize_folder_name(os.path.basename(old_folder_path))
         rounded_score = int(score)
 
         # Remove one trailing score token so we overwrite rather than append.
@@ -551,10 +561,10 @@ class ProCLI:
             base = strip_score_token(folder_name) or folder_name.strip()
             new_name = f"{base} {rounded_score}"
 
-        # Sanitize before it reaches os.rename(): strips \r\n / trailing spaces /
-        # colons / reserved chars that macOS allows but Windows can't sync. Also
-        # cleans pre-existing bad input names on the next pass (sanitized name !=
-        # original, so the rename fires instead of "Skip (Same)").
+        # Belt-and-suspenders: new_name is already built from sanitized parts, but
+        # re-sanitize before os.rename() in case the formatting reintroduces an
+        # unsafe char. Pre-existing bad input names are cleaned on the next pass too
+        # (sanitized != original, so the rename fires instead of "Skip (Same)").
         return os.path.join(parent_dir, _sanitize_folder_name(new_name))
 
     def _run_batch_processing(self):
