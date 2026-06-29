@@ -221,6 +221,36 @@ class TestProCLI(unittest.TestCase):
 
         self.assertEqual(Path(new_folder).name, "DASHER 88 - Jane Doe (123)_front")
 
+    def test_sanitize_folder_name_strips_windows_illegal_chars(self) -> None:
+        sanitize = self.cli_module._sanitize_folder_name
+        self.assertEqual(sanitize('John: Doe <test>'), "John- Doe _test_")
+        self.assertEqual(sanitize('a"b|c?d*e'), "a_b_c_d_e")
+        # control chars (\r \n \t) dropped, trailing space/dot trimmed
+        self.assertEqual(sanitize("line\r\nbreak  "), "linebreak")
+        self.assertEqual(sanitize("trailing.dots..."), "trailing.dots")
+        # empty / all-trimmed input falls back to the default token
+        self.assertEqual(sanitize("   "), "untitled")
+        self.assertEqual(sanitize(""), "untitled")
+        # unicode that Windows allows is preserved
+        self.assertEqual(sanitize("café señor"), "café señor")
+
+    def test_get_new_folder_name_sanitizes_illegal_chars(self) -> None:
+        old_folder = str(Path("/tmp") / "Bad: Name <x>  ")
+
+        new_folder = self.cli._get_new_folder_name(old_folder, 92.0)
+
+        name = Path(new_folder).name
+        self.assertNotIn(":", name)
+        self.assertFalse(any(c in name for c in '<>"|?*'))
+        self.assertFalse(name.endswith((" ", ".")))
+        self.assertEqual(name, "Bad- Name _x_ 92")
+
+    def test_get_new_folder_name_is_idempotent_after_sanitize(self) -> None:
+        old_folder = str(Path("/tmp") / "Bad: Name <x>  ")
+        once = self.cli._get_new_folder_name(old_folder, 92.0)
+        twice = self.cli._get_new_folder_name(once, 92.0)
+        self.assertEqual(Path(once).name, Path(twice).name)
+
     def test_run_dispatches_top_level_sections(self) -> None:
         section_to_handler = {
             "1": "_run_similarity_menu",

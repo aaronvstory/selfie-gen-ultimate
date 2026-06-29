@@ -17,6 +17,25 @@ from src.engine import FaceEngine
 console = Console()
 
 
+# Characters macOS allows in filenames but Windows/NTFS rejects. Folders named
+# with any of these (or a control char / trailing space / dot) silently fail to
+# sync to the Windows box via Syncthing — and this CLI's renamer would otherwise
+# copy them through verbatim and compound them on each run. Kept byte-for-byte in
+# step with the cleanup sweep used on the synced folders so a name resolves to the
+# SAME result no matter which side fixes it (no rename churn between the two).
+_RESERVED_FILENAME_CHARS = '<>"|?*'  # ':' -> '-' separately; control chars dropped
+
+
+def _sanitize_folder_name(name: str, default: str = "untitled") -> str:
+    """Make a single path component safe on Windows/NTFS (and cross-OS sync)."""
+    s = "".join("" if ord(c) < 32 else c for c in str(name or ""))  # drop \r \n \t etc.
+    s = s.replace(":", "-")
+    for c in _RESERVED_FILENAME_CHARS:
+        s = s.replace(c, "_")
+    s = s.rstrip(" .")  # no trailing space/period
+    return s or default
+
+
 def _format_conf_pct(pct: float) -> str:
     """Adaptive precision: ≥99.9% gets 2 decimals so '99.99%' isn't lost to
     rounding ('100.0%' obscures how confident the model was)."""
@@ -532,7 +551,11 @@ class ProCLI:
             base = strip_score_token(folder_name) or folder_name.strip()
             new_name = f"{base} {rounded_score}"
 
-        return os.path.join(parent_dir, new_name)
+        # Sanitize before it reaches os.rename(): strips \r\n / trailing spaces /
+        # colons / reserved chars that macOS allows but Windows can't sync. Also
+        # cleans pre-existing bad input names on the next pass (sanitized name !=
+        # original, so the rename fires instead of "Skip (Same)").
+        return os.path.join(parent_dir, _sanitize_folder_name(new_name))
 
     def _run_batch_processing(self):
         self.run_batch_similarity()
