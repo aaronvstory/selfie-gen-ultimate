@@ -25,6 +25,14 @@ console = Console()
 # SAME result no matter which side fixes it (no rename churn between the two).
 _RESERVED_FILENAME_CHARS = '<>"|?*\\/'  # ':' -> '-' separately; control chars dropped
 
+# Names Windows reserves for legacy DOS devices — illegal as a file/folder name
+# (with or without an extension), case-insensitive. macOS allows them.
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
 
 def _sanitize_folder_name(name: str, default: str = "untitled") -> str:
     """Make a single path component safe on Windows/NTFS (and cross-OS sync).
@@ -32,13 +40,17 @@ def _sanitize_folder_name(name: str, default: str = "untitled") -> str:
     macOS permits ``\\`` and ``/`` inside a single component; Windows treats both
     as path separators, so they're mapped to ``_`` alongside the other reserved
     glyphs. C0 controls are dropped; ``:`` becomes ``-``; trailing space/dot are
-    trimmed (Windows silently strips them, which also breaks sync).
+    trimmed (Windows silently strips them, which also breaks sync). A reserved DOS
+    device name (CON, NUL, COM1, …) is prefixed with ``_`` so it stays usable.
     """
     s = "".join("" if ord(c) < 32 else c for c in str(name or ""))  # drop \r \n \t etc.
     s = s.replace(":", "-")
     for c in _RESERVED_FILENAME_CHARS:
         s = s.replace(c, "_")
     s = s.rstrip(" .")  # no trailing space/period
+    # Reserved even with an extension ("CON.txt"), so test the stem, case-insensitive.
+    if s.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        s = "_" + s
     return s or default
 
 

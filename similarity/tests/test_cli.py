@@ -236,6 +236,12 @@ class TestProCLI(unittest.TestCase):
         self.assertEqual(sanitize(""), "untitled")
         # unicode that Windows allows is preserved
         self.assertEqual(sanitize("café señor"), "café señor")
+        # Windows reserved DOS device names get an underscore prefix (case-insensitive,
+        # with or without extension); ordinary names containing them are untouched.
+        self.assertEqual(sanitize("CON"), "_CON")
+        self.assertEqual(sanitize("nul.txt"), "_nul.txt")
+        self.assertEqual(sanitize("COM1"), "_COM1")
+        self.assertEqual(sanitize("CONSOLE"), "CONSOLE")
 
     def test_get_new_folder_name_sanitizes_illegal_chars(self) -> None:
         old_folder = str(Path("/tmp") / "Bad: Name <x>  ")
