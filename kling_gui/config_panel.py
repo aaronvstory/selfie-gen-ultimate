@@ -1181,6 +1181,35 @@ class ConfigPanel(tk.Frame):
             ),
         )
 
+        # Logging / Verbose Mode — moved here UNDER the Re-Run buttons (user
+        # request 2026-06-29) to free a row from the left column's option
+        # stack. Same var/handler as before, just a new parent frame.
+        _logging_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
+        _logging_row.pack(anchor="w", pady=(4, 0))
+        tk.Label(
+            _logging_row, text="Logging:", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_light"],
+        ).pack(side=tk.LEFT)
+        self.verbose_gui_var = tk.BooleanVar(value=False)
+        self.verbose_checkbox = tk.Checkbutton(
+            _logging_row, text="Verbose Mode", variable=self.verbose_gui_var,
+            font=(FONT_FAMILY, 9), bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"], command=self._on_verbose_changed,
+        )
+        self.verbose_checkbox.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(self.verbose_checkbox, lambda: (
+            "Verbose Mode — show the detailed processing log (raw ffmpeg / "
+            "subprocess output). Off keeps the log panel clean."
+        ))
+        # rPPG metrics-in-filename var is still created (hidden control) so
+        # config save/load + the injector naming code keep working.
+        self.rppg_metrics_var = tk.BooleanVar(value=False)
+        self.verbose_info_label = tk.Label(
+            _logging_row, text="", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+
         # NOTE: The face-track gate GUI controls were removed (2026-05-19).
         # A large balanced corpus (21 PASS / 23 FAIL, all Kling-from-real-
         # selfie) showed face-track % does NOT separate Persona PASS from
@@ -1238,48 +1267,10 @@ class ConfigPanel(tk.Frame):
         )
         self.loop_info_label.pack(side=tk.LEFT, padx=4)
 
-        # Logging
-        rC = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rC.pack(fill=tk.X, pady=_ROW_PADY)
-        tk.Label(rC, text="Logging:", font=(FONT_FAMILY, 10),
-                 bg=COLORS["bg_input"], fg=COLORS["text_light"],
-                 width=lbl_w, anchor="w").pack(side=tk.LEFT)
-        self.verbose_gui_var = tk.BooleanVar(value=False)
-        self.verbose_checkbox = tk.Checkbutton(
-            rC, text="Verbose Mode", variable=self.verbose_gui_var,
-            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
-            activeforeground=COLORS["text_light"], command=self._on_verbose_changed,
-        )
-        self.verbose_checkbox.pack(side=tk.LEFT)
-        self.verbose_info_label = tk.Label(
-            rC, text="(detailed processing log)", font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
-        )
-        self.verbose_info_label.pack(side=tk.LEFT, padx=4)
-
-        # rPPG metric-suffix toggle (shares the Logging: row). When OFF
-        # (default) the injector's "{stem}-rppg - <SNR>-<Phase>-..." name
-        # is stripped to a clean "{stem}-rppg" and the metrics go to a
-        # .metrics.json sidecar (automation/rppg.finalize_rppg_output).
-        # rPPG metrics-in-filename toggle — HIDDEN (user request 2026-06-29:
-        # unused, reclaims horizontal room on the Logging row). The var +
-        # widgets are still CREATED (just never packed) so config save/load and
-        # the injector-naming code that reads rppg_metrics_var keep working.
-        self.rppg_metrics_var = tk.BooleanVar(value=False)
-        self.rppg_metrics_checkbox = tk.Checkbutton(
-            rC, text="rPPG metrics in filename", variable=self.rppg_metrics_var,
-            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
-            activeforeground=COLORS["text_light"],
-            command=self._on_rppg_metrics_changed,
-        )
-        # NOTE: rppg_metrics_checkbox + info label intentionally NOT packed.
-        self.rppg_metrics_info_label = tk.Label(
-            rC, text="(off = clean name + .metrics.json sidecar)",
-            font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
-        )
+        # Logging / Verbose Mode now lives UNDER the Re-Run buttons (built
+        # above inside _shared_rerun_col) — moved out of the left-column option
+        # stack to save vertical space (user request 2026-06-29). The verbose_*
+        # + rppg_metrics_var widgets/vars are created there.
 
         # File Filter — HIDDEN (user request 2026-06-29: unused, reclaims a
         # full row of vertical space on Step 3). The widgets + vars are still
@@ -1411,84 +1402,28 @@ class ConfigPanel(tk.Frame):
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.video_settings_info.pack(side=tk.LEFT, padx=2)
-
-        # Motion control: end-frame lock + cfg_scale. Capability is the
-        # single source of truth (model_metadata.get_model_capabilities —
-        # the dispatcher + queue_manager read the SAME flags, so UI and
-        # payload never disagree). Per the user's chosen UX: the
-        # end-frame checkbox is ALWAYS visible but GRAYED OUT
-        # (state=disabled) for models that don't expose an end-frame
-        # param, and toggle-checkable for those that do (e.g. Kling 2.5
-        # Pro). When locked the SAME image is used for both start and
-        # end. Widgets are created ONCE; only their `state` changes —
-        # never destroyed/recreated — so values survive model switches.
-        rEF = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rEF.pack(fill=tk.X, pady=_ROW_PADY)
-        self._motion_row = rEF
-        tk.Label(rEF, text="Motion:", font=(FONT_FAMILY, 10),
-                 bg=COLORS["bg_input"], fg=COLORS["text_light"],
-                 width=lbl_w, anchor="w").pack(side=tk.LEFT)
-        self.lock_end_frame_var = tk.BooleanVar(value=True)
-        self.lock_end_frame_checkbox = tk.Checkbutton(
-            rEF, text="Lock End Frame to Start Image",
-            variable=self.lock_end_frame_var, font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
-            activeforeground=COLORS["text_light"],
-            disabledforeground=COLORS["text_dim"],
-            command=self._on_lock_end_frame_changed,
-        )
-        self.lock_end_frame_checkbox.pack(side=tk.LEFT, padx=(0, 12))
-        HoverTooltip(self.lock_end_frame_checkbox, lambda: (
-            "Lock End Frame — force the video to end on (or very near) "
-            "the start image. Pairs with the ping-pong Loop step:\n\n"
-            "ON (default): start = end natively, so the clip plays "
-            "forward and STOPS cleanly at the source. Looping is "
-            "NOT needed (and adds nothing — the forward clip alone "
-            "already returns to source).\n"
-            "OFF: model decides the end freely (better motion realism). "
-            "Use the Loop step to seamlessly play forward + reverse, "
-            "which hides any start-to-end mismatch via ping-pong."
-        ))
-        self.cfg_scale_label = tk.Label(
-            rEF, text="cfg:", font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
-        )
-        self.cfg_scale_label.pack(side=tk.LEFT, padx=(0, 3))
-        _cfg_tip = lambda: (
-            "CFG (Classifier-Free Guidance) — how strictly the model "
-            "follows the prompt vs. exercises its own \"taste\".\n\n"
-            "0.0 = loose, model improvises (best for vague prompts)\n"
-            "0.5 = fal.ai default (balanced)\n"
-            "0.7 = recommended for our pipeline (sticks to head-turn\n"
-            "      prompt closely, low surprise)\n"
-            "1.0 = max adherence, can over-tighten\n\n"
-            "If subjects drift off-prompt: raise. If outputs feel "
-            "robotic: lower."
-        )
-        HoverTooltip(self.cfg_scale_label, _cfg_tip)
-        self.cfg_scale_var = tk.StringVar(value="0.7")
-        self.cfg_scale_entry = tk.Entry(
-            rEF, textvariable=self.cfg_scale_var, font=(FONT_FAMILY, 10),
-            bg=COLORS["bg_main"], fg=COLORS["text_light"],
-            insertbackground=COLORS["text_light"], width=5,
-            borderwidth=0, highlightthickness=1,
-            highlightbackground=COLORS["border"],
-            disabledbackground=COLORS["bg_input"],
-            disabledforeground=COLORS["text_dim"],
-        )
-        self.cfg_scale_entry.pack(side=tk.LEFT, padx=(0, 8))
-        self.cfg_scale_entry.bind("<FocusOut>", self._on_cfg_scale_changed)
-        self.cfg_scale_entry.bind("<Return>", self._on_cfg_scale_changed)
+        # Model-capability shorthand (negative · end-frame · cfg) — moved onto
+        # the SAME line as the dur/asp/res/see/cam indicators (user request
+        # 2026-06-29). Right-aligned so it trails the Video-row controls.
         self.model_caps_label = tk.Label(
-            rEF, text="", font=(FONT_FAMILY, 9),
+            rE, text="", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.model_caps_label.pack(side=tk.RIGHT, padx=4)
 
-        # Seed & misc options
+        # Motion controls (end-frame lock + cfg) used to be their own "Motion:"
+        # row; they now live INLINE on the "Options:" row to reclaim a row of
+        # vertical space (user request 2026-06-29). The widgets are created in
+        # the rF block below. `_motion_row` is kept (now pointing at rF) since
+        # some capability-update code references it for show/hide.
+        # Capability is still the single source of truth
+        # (model_metadata.get_model_capabilities) — the end-frame checkbox is
+        # ALWAYS visible but GRAYED OUT for models that don't expose it.
+
+        # Seed & misc options (+ inlined Motion: end-frame lock + cfg)
         rF = tk.Frame(left_col, bg=COLORS["bg_input"])
         rF.pack(fill=tk.X, pady=_ROW_PADY)
+        self._motion_row = rF
         tk.Label(rF, text="Options:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
                  width=lbl_w, anchor="w").pack(side=tk.LEFT)
@@ -1528,6 +1463,62 @@ class ConfigPanel(tk.Frame):
             command=self._on_generate_audio_changed,
         )
         self.generate_audio_checkbox.pack(side=tk.LEFT)
+
+        # ── Inlined Motion controls (end-frame lock + cfg) ────────────
+        # Moved here from the former "Motion:" row to save vertical space.
+        # Right-aligned so they trail the Options controls.
+        self.cfg_scale_var = tk.StringVar(value="0.7")
+        self.cfg_scale_entry = tk.Entry(
+            rF, textvariable=self.cfg_scale_var, font=(FONT_FAMILY, 10),
+            bg=COLORS["bg_main"], fg=COLORS["text_light"],
+            insertbackground=COLORS["text_light"], width=5,
+            borderwidth=0, highlightthickness=1,
+            highlightbackground=COLORS["border"],
+            disabledbackground=COLORS["bg_input"],
+            disabledforeground=COLORS["text_dim"],
+        )
+        self.cfg_scale_entry.pack(side=tk.RIGHT, padx=(0, 4))
+        self.cfg_scale_entry.bind("<FocusOut>", self._on_cfg_scale_changed)
+        self.cfg_scale_entry.bind("<Return>", self._on_cfg_scale_changed)
+        self.cfg_scale_label = tk.Label(
+            rF, text="cfg:", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.cfg_scale_label.pack(side=tk.RIGHT, padx=(8, 3))
+        _cfg_tip = lambda: (
+            "CFG (Classifier-Free Guidance) — how strictly the model "
+            "follows the prompt vs. exercises its own \"taste\".\n\n"
+            "0.0 = loose, model improvises (best for vague prompts)\n"
+            "0.5 = fal.ai default (balanced)\n"
+            "0.7 = recommended for our pipeline (sticks to head-turn\n"
+            "      prompt closely, low surprise)\n"
+            "1.0 = max adherence, can over-tighten\n\n"
+            "If subjects drift off-prompt: raise. If outputs feel "
+            "robotic: lower."
+        )
+        HoverTooltip(self.cfg_scale_label, _cfg_tip)
+        self.lock_end_frame_var = tk.BooleanVar(value=True)
+        self.lock_end_frame_checkbox = tk.Checkbutton(
+            rF, text="Lock End Frame",
+            variable=self.lock_end_frame_var, font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            disabledforeground=COLORS["text_dim"],
+            command=self._on_lock_end_frame_changed,
+        )
+        self.lock_end_frame_checkbox.pack(side=tk.RIGHT, padx=(8, 4))
+        HoverTooltip(self.lock_end_frame_checkbox, lambda: (
+            "Lock End Frame — force the video to end on (or very near) "
+            "the start image. Pairs with the ping-pong Loop step:\n\n"
+            "ON (default): start = end natively, so the clip plays "
+            "forward and STOPS cleanly at the source. Looping is "
+            "NOT needed (and adds nothing — the forward clip alone "
+            "already returns to source).\n"
+            "OFF: model decides the end freely (better motion realism). "
+            "Use the Loop step to seamlessly play forward + reverse, "
+            "which hides any start-to-end mismatch via ping-pong."
+        ))
         self._update_seed_entry_state()
 
         # ── RIGHT COLUMN: built inline or externally via build_prompt_panel() ──
@@ -3489,7 +3480,7 @@ class ConfigPanel(tk.Frame):
                     status_text = "All params supported"
                     status_color = COLORS["success"]
                 elif supported_count == 0:
-                    status_text = "Limited params"
+                    status_text = "Limited"
                     status_color = COLORS["warning"]
                 else:
                     status_text = f"{supported_count}/{len(key_params)} params"

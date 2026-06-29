@@ -1004,13 +1004,86 @@ class ConfigPanel(tk.Frame):
             check.pack(side=tk.LEFT, padx=(0, 8))
             self.aa_attack_checks[_key] = check
 
+        # Output-mode + pipeline preview (2026-06-19). Placed in the AA column
+        # BENEATH the green AA box (and ABOVE the Re-Run column, which shifts
+        # down) to conserve scarce vertical space in the left Oldcam/rPPG/Crush
+        # stack (user direction 2026-06-19). Output mode picks how the enabled
+        # modifiers combine: "Separate + combined" (powerset — every subset) vs
+        # "Combined only" (one cumulative chain). The preview line shows the
+        # resulting plan live, from the SAME shared planner the queue uses
+        # (automation.postproc_plan) so it can never disagree.
+        _mode_bg = "#1F2A3A"
+        _mode_border = "#3A5E7D"
+        self.fanout_controls_frame = tk.Frame(
+            _aa_col,
+            bg=_mode_bg,
+            highlightthickness=1,
+            highlightbackground=_mode_border,
+            padx=6,
+            pady=2,
+        )
+        self.fanout_controls_frame.pack(fill=tk.X, pady=(6, 0))
+        _mode_row = tk.Frame(self.fanout_controls_frame, bg=_mode_bg)
+        _mode_row.pack(anchor="w", fill=tk.X)
+        tk.Label(
+            _mode_row,
+            text="Output mode:",
+            bg=_mode_bg,
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 10),
+        ).pack(side=tk.LEFT)
+        # Initialize with the user-facing DISPLAY string (not the internal key)
+        # so the combobox never shows a raw "separate_and_combined" if
+        # apply_config hasn't run yet (gemini MEDIUM).
+        self.fanout_mode_var = tk.StringVar(
+            value=self._FANOUT_DISPLAY["separate_and_combined"]
+        )
+        self.fanout_mode_combo = ttk.Combobox(
+            _mode_row,
+            state="readonly",
+            width=30,
+            textvariable=self.fanout_mode_var,
+            values=[
+                "Separate + combined (powerset)",
+                "Combined only (one chain)",
+            ],
+            font=(FONT_FAMILY, 9),
+        )
+        self.fanout_mode_combo.pack(side=tk.LEFT, padx=(6, 0))
+        self.fanout_mode_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._on_fanout_mode_changed()
+        )
+        # Live read-only plan preview.
+        self.pipeline_preview_label = tk.Label(
+            self.fanout_controls_frame,
+            text="",
+            bg=_mode_bg,
+            fg=COLORS["accent_blue"],
+            font=(FONT_FAMILY, 8),
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=320,
+        )
+        self.pipeline_preview_label.pack(anchor="w", fill=tk.X, pady=(2, 0))
+
         # ONE shared Re-Run column, now packed BENEATH the AA box (inside
         # _aa_col) per user direction 2026-06-18 (was a sibling column in rA).
         # Applies to whatever is selected: any Oldcam versions AND/OR rPPG /
         # Crush / AA, and re-loops first when Loop Video is on
         # (queue_manager.rerun_oldcam_only handles the full Phase E ordering).
-        _shared_rerun_col = tk.Frame(_aa_col, bg=COLORS["bg_input"])
-        _shared_rerun_col.pack(anchor="w", pady=(6, 0))
+        # Distinct GROOVE border (beveled, not the flat coloured highlight the
+        # stage boxes use) so the Re-Run actions read as a different KIND of
+        # control — they re-apply the stages above, they aren't one of them
+        # (user direction 2026-06-19).
+        _shared_rerun_col = tk.Frame(
+            _aa_col,
+            bg=COLORS["bg_input"],
+            relief=tk.GROOVE,
+            bd=2,
+            padx=6,
+            pady=4,
+        )
+        _shared_rerun_col.pack(anchor="w", fill=tk.X, pady=(6, 0))
         _rerun_label_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
         _rerun_label_row.pack(anchor="w")
         tk.Label(
@@ -1108,6 +1181,35 @@ class ConfigPanel(tk.Frame):
             ),
         )
 
+        # Logging / Verbose Mode — moved here UNDER the Re-Run buttons (user
+        # request 2026-06-29) to free a row from the left column's option
+        # stack. Same var/handler as before, just a new parent frame.
+        _logging_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
+        _logging_row.pack(anchor="w", pady=(4, 0))
+        tk.Label(
+            _logging_row, text="Logging:", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_light"],
+        ).pack(side=tk.LEFT)
+        self.verbose_gui_var = tk.BooleanVar(value=False)
+        self.verbose_checkbox = tk.Checkbutton(
+            _logging_row, text="Verbose Mode", variable=self.verbose_gui_var,
+            font=(FONT_FAMILY, 9), bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"], command=self._on_verbose_changed,
+        )
+        self.verbose_checkbox.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(self.verbose_checkbox, lambda: (
+            "Verbose Mode — show the detailed processing log (raw ffmpeg / "
+            "subprocess output). Off keeps the log panel clean."
+        ))
+        # rPPG metrics-in-filename var is still created (hidden control) so
+        # config save/load + the injector naming code keep working.
+        self.rppg_metrics_var = tk.BooleanVar(value=False)
+        self.verbose_info_label = tk.Label(
+            _logging_row, text="", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+
         # NOTE: The face-track gate GUI controls were removed (2026-05-19).
         # A large balanced corpus (21 PASS / 23 FAIL, all Kling-from-real-
         # selfie) showed face-track % does NOT separate Persona PASS from
@@ -1165,49 +1267,17 @@ class ConfigPanel(tk.Frame):
         )
         self.loop_info_label.pack(side=tk.LEFT, padx=4)
 
-        # Logging
-        rC = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rC.pack(fill=tk.X, pady=_ROW_PADY)
-        tk.Label(rC, text="Logging:", font=(FONT_FAMILY, 10),
-                 bg=COLORS["bg_input"], fg=COLORS["text_light"],
-                 width=lbl_w, anchor="w").pack(side=tk.LEFT)
-        self.verbose_gui_var = tk.BooleanVar(value=False)
-        self.verbose_checkbox = tk.Checkbutton(
-            rC, text="Verbose Mode", variable=self.verbose_gui_var,
-            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
-            activeforeground=COLORS["text_light"], command=self._on_verbose_changed,
-        )
-        self.verbose_checkbox.pack(side=tk.LEFT)
-        self.verbose_info_label = tk.Label(
-            rC, text="(detailed processing log)", font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
-        )
-        self.verbose_info_label.pack(side=tk.LEFT, padx=4)
+        # Logging / Verbose Mode now lives UNDER the Re-Run buttons (built
+        # above inside _shared_rerun_col) — moved out of the left-column option
+        # stack to save vertical space (user request 2026-06-29). The verbose_*
+        # + rppg_metrics_var widgets/vars are created there.
 
-        # rPPG metric-suffix toggle (shares the Logging: row). When OFF
-        # (default) the injector's "{stem}-rppg - <SNR>-<Phase>-..." name
-        # is stripped to a clean "{stem}-rppg" and the metrics go to a
-        # .metrics.json sidecar (automation/rppg.finalize_rppg_output).
-        self.rppg_metrics_var = tk.BooleanVar(value=False)
-        self.rppg_metrics_checkbox = tk.Checkbutton(
-            rC, text="rPPG metrics in filename", variable=self.rppg_metrics_var,
-            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
-            activeforeground=COLORS["text_light"],
-            command=self._on_rppg_metrics_changed,
-        )
-        # rPPG metrics checkbox HIDDEN (unused) - not packed; var still created.
-        self.rppg_metrics_info_label = tk.Label(
-            rC, text="(off = clean name + .metrics.json sidecar)",
-            font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
-        )
-        # rPPG metrics info label HIDDEN (unused) - not packed.
-
-        # File Filter — replaces the old "Folder:" row with clearer labeling
+        # File Filter — HIDDEN (user request 2026-06-29: unused, reclaims a
+        # full row of vertical space on Step 3). The widgets + vars are still
+        # CREATED (just never packed) so config save/load and any code that
+        # reads folder_pattern_var / folder_match_mode_var keep working.
         rD = tk.Frame(left_col, bg=COLORS["bg_input"])
-        # Filter row HIDDEN (unused) - not packed; widgets/vars still created.
+        # NOTE: rD is intentionally NOT packed.
         tk.Label(rD, text="Filter:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
                  width=lbl_w, anchor="w").pack(side=tk.LEFT)
@@ -1304,8 +1374,9 @@ class ConfigPanel(tk.Frame):
             rE, text="", font=(FONT_FAMILY, 9), bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.schema_diagnostic_label.pack(side=tk.LEFT, padx=2)
-        # Blue (i) that decodes the cryptic capability indicators on this
-        # row + the Motion row (user request 2026-06-29).
+        # Blue ⓘ that decodes the cryptic capability indicators on this row +
+        # the Motion row (user request 2026-06-29 — the ✓dur|✗cam / negative
+        # · end-frame · cfg shorthand is hard to read at a glance).
         self.caps_info_icon = tk.Label(
             rE, text="ⓘ", font=(FONT_FAMILY, 11), cursor="question_arrow",
             bg=COLORS["bg_input"], fg=COLORS["accent_blue"],
@@ -1331,84 +1402,28 @@ class ConfigPanel(tk.Frame):
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.video_settings_info.pack(side=tk.LEFT, padx=2)
-
-        # Motion control: end-frame lock + cfg_scale. Capability is the
-        # single source of truth (model_metadata.get_model_capabilities —
-        # the dispatcher + queue_manager read the SAME flags, so UI and
-        # payload never disagree). Per the user's chosen UX: the
-        # end-frame checkbox is ALWAYS visible but GRAYED OUT
-        # (state=disabled) for models that don't expose an end-frame
-        # param, and toggle-checkable for those that do (e.g. Kling 2.5
-        # Pro). When locked the SAME image is used for both start and
-        # end. Widgets are created ONCE; only their `state` changes —
-        # never destroyed/recreated — so values survive model switches.
-        rEF = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rEF.pack(fill=tk.X, pady=_ROW_PADY)
-        self._motion_row = rEF
-        tk.Label(rEF, text="Motion:", font=(FONT_FAMILY, 10),
-                 bg=COLORS["bg_input"], fg=COLORS["text_light"],
-                 width=lbl_w, anchor="w").pack(side=tk.LEFT)
-        self.lock_end_frame_var = tk.BooleanVar(value=True)
-        self.lock_end_frame_checkbox = tk.Checkbutton(
-            rEF, text="Lock End Frame to Start Image",
-            variable=self.lock_end_frame_var, font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
-            activeforeground=COLORS["text_light"],
-            disabledforeground=COLORS["text_dim"],
-            command=self._on_lock_end_frame_changed,
-        )
-        self.lock_end_frame_checkbox.pack(side=tk.LEFT, padx=(0, 12))
-        HoverTooltip(self.lock_end_frame_checkbox, lambda: (
-            "Lock End Frame — force the video to end on (or very near) "
-            "the start image. Pairs with the ping-pong Loop step:\n\n"
-            "ON (default): start = end natively, so the clip plays "
-            "forward and STOPS cleanly at the source. Looping is "
-            "NOT needed (and adds nothing — the forward clip alone "
-            "already returns to source).\n"
-            "OFF: model decides the end freely (better motion realism). "
-            "Use the Loop step to seamlessly play forward + reverse, "
-            "which hides any start-to-end mismatch via ping-pong."
-        ))
-        self.cfg_scale_label = tk.Label(
-            rEF, text="cfg:", font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
-        )
-        self.cfg_scale_label.pack(side=tk.LEFT, padx=(0, 3))
-        _cfg_tip = lambda: (
-            "CFG (Classifier-Free Guidance) — how strictly the model "
-            "follows the prompt vs. exercises its own \"taste\".\n\n"
-            "0.0 = loose, model improvises (best for vague prompts)\n"
-            "0.5 = fal.ai default (balanced)\n"
-            "0.7 = recommended for our pipeline (sticks to head-turn\n"
-            "      prompt closely, low surprise)\n"
-            "1.0 = max adherence, can over-tighten\n\n"
-            "If subjects drift off-prompt: raise. If outputs feel "
-            "robotic: lower."
-        )
-        HoverTooltip(self.cfg_scale_label, _cfg_tip)
-        self.cfg_scale_var = tk.StringVar(value="0.7")
-        self.cfg_scale_entry = tk.Entry(
-            rEF, textvariable=self.cfg_scale_var, font=(FONT_FAMILY, 10),
-            bg=COLORS["bg_main"], fg=COLORS["text_light"],
-            insertbackground=COLORS["text_light"], width=5,
-            borderwidth=0, highlightthickness=1,
-            highlightbackground=COLORS["border"],
-            disabledbackground=COLORS["bg_input"],
-            disabledforeground=COLORS["text_dim"],
-        )
-        self.cfg_scale_entry.pack(side=tk.LEFT, padx=(0, 8))
-        self.cfg_scale_entry.bind("<FocusOut>", self._on_cfg_scale_changed)
-        self.cfg_scale_entry.bind("<Return>", self._on_cfg_scale_changed)
+        # Model-capability shorthand (negative · end-frame · cfg) — moved onto
+        # the SAME line as the dur/asp/res/see/cam indicators (user request
+        # 2026-06-29). Right-aligned so it trails the Video-row controls.
         self.model_caps_label = tk.Label(
-            rEF, text="", font=(FONT_FAMILY, 9),
+            rE, text="", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.model_caps_label.pack(side=tk.RIGHT, padx=4)
 
-        # Seed & misc options
+        # Motion controls (end-frame lock + cfg) used to be their own "Motion:"
+        # row; they now live INLINE on the "Options:" row to reclaim a row of
+        # vertical space (user request 2026-06-29). The widgets are created in
+        # the rF block below. `_motion_row` is kept (now pointing at rF) since
+        # some capability-update code references it for show/hide.
+        # Capability is still the single source of truth
+        # (model_metadata.get_model_capabilities) — the end-frame checkbox is
+        # ALWAYS visible but GRAYED OUT for models that don't expose it.
+
+        # Seed & misc options (+ inlined Motion: end-frame lock + cfg)
         rF = tk.Frame(left_col, bg=COLORS["bg_input"])
         rF.pack(fill=tk.X, pady=_ROW_PADY)
+        self._motion_row = rF
         tk.Label(rF, text="Options:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
                  width=lbl_w, anchor="w").pack(side=tk.LEFT)
@@ -1448,6 +1463,62 @@ class ConfigPanel(tk.Frame):
             command=self._on_generate_audio_changed,
         )
         self.generate_audio_checkbox.pack(side=tk.LEFT)
+
+        # ── Inlined Motion controls (end-frame lock + cfg) ────────────
+        # Moved here from the former "Motion:" row to save vertical space.
+        # Right-aligned so they trail the Options controls.
+        self.cfg_scale_var = tk.StringVar(value="0.7")
+        self.cfg_scale_entry = tk.Entry(
+            rF, textvariable=self.cfg_scale_var, font=(FONT_FAMILY, 10),
+            bg=COLORS["bg_main"], fg=COLORS["text_light"],
+            insertbackground=COLORS["text_light"], width=5,
+            borderwidth=0, highlightthickness=1,
+            highlightbackground=COLORS["border"],
+            disabledbackground=COLORS["bg_input"],
+            disabledforeground=COLORS["text_dim"],
+        )
+        self.cfg_scale_entry.pack(side=tk.RIGHT, padx=(0, 4))
+        self.cfg_scale_entry.bind("<FocusOut>", self._on_cfg_scale_changed)
+        self.cfg_scale_entry.bind("<Return>", self._on_cfg_scale_changed)
+        self.cfg_scale_label = tk.Label(
+            rF, text="cfg:", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
+        self.cfg_scale_label.pack(side=tk.RIGHT, padx=(8, 3))
+        _cfg_tip = lambda: (
+            "CFG (Classifier-Free Guidance) — how strictly the model "
+            "follows the prompt vs. exercises its own \"taste\".\n\n"
+            "0.0 = loose, model improvises (best for vague prompts)\n"
+            "0.5 = fal.ai default (balanced)\n"
+            "0.7 = recommended for our pipeline (sticks to head-turn\n"
+            "      prompt closely, low surprise)\n"
+            "1.0 = max adherence, can over-tighten\n\n"
+            "If subjects drift off-prompt: raise. If outputs feel "
+            "robotic: lower."
+        )
+        HoverTooltip(self.cfg_scale_label, _cfg_tip)
+        self.lock_end_frame_var = tk.BooleanVar(value=True)
+        self.lock_end_frame_checkbox = tk.Checkbutton(
+            rF, text="Lock End Frame",
+            variable=self.lock_end_frame_var, font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
+            disabledforeground=COLORS["text_dim"],
+            command=self._on_lock_end_frame_changed,
+        )
+        self.lock_end_frame_checkbox.pack(side=tk.RIGHT, padx=(8, 4))
+        HoverTooltip(self.lock_end_frame_checkbox, lambda: (
+            "Lock End Frame — force the video to end on (or very near) "
+            "the start image. Pairs with the ping-pong Loop step:\n\n"
+            "ON (default): start = end natively, so the clip plays "
+            "forward and STOPS cleanly at the source. Looping is "
+            "NOT needed (and adds nothing — the forward clip alone "
+            "already returns to source).\n"
+            "OFF: model decides the end freely (better motion realism). "
+            "Use the Loop step to seamlessly play forward + reverse, "
+            "which hides any start-to-end mismatch via ping-pong."
+        ))
         self._update_seed_entry_state()
 
         # ── RIGHT COLUMN: built inline or externally via build_prompt_panel() ──
@@ -1904,6 +1975,24 @@ class ConfigPanel(tk.Frame):
         self.config["oldcam_versions"] = selected_versions
         self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v24"
 
+        # Output (fan-out) mode + live pipeline preview (2026-06-19). Bridge the
+        # automation_-prefixed key the CLI writes so a mode chosen in the CLI
+        # shows here too. Default = powerset.
+        from automation.postproc_plan import normalize_mode as _norm_fanout
+        # Prefer the CANONICAL automation_ key (the fingerprinted one the CLI
+        # writes) over the GUI alias so a mode set in the CLI is honoured here,
+        # then write BOTH back in lockstep so neither surface can drift
+        # (CodeRabbit Major — same class as the rppg_per_oldcam_fanout bridge).
+        _fanout_mode = _norm_fanout(
+            self.config.get("automation_postproc_fanout_mode",
+                            self.config.get("postproc_fanout_mode", "separate_and_combined"))
+        )
+        self.config["automation_postproc_fanout_mode"] = _fanout_mode
+        self.config["postproc_fanout_mode"] = _fanout_mode
+        if hasattr(self, "fanout_mode_var"):
+            self.fanout_mode_var.set(self._FANOUT_DISPLAY.get(_fanout_mode, self._FANOUT_DISPLAY["separate_and_combined"]))
+        self._refresh_pipeline_preview()
+
         # Reprocess options
         self.reprocess_var.set(self.config.get("allow_reprocess", False))
         self.reprocess_mode_var.set(self.config.get("reprocess_mode", "increment"))
@@ -1973,10 +2062,45 @@ class ConfigPanel(tk.Frame):
         # Motion row showed its construction-time state until the user
         # manually switched models (code-review finding, PR #41).
         self._update_motion_controls(current_model)
-        # Sync resolution combo + live cost estimate to the saved model on
-        # startup (same rationale as the motion-controls sync above).
+        # Sync the resolution combo (per-model options + enabled state) and the
+        # live cost estimate to the SAVED model on startup — same rationale as
+        # the motion-controls sync above (these are otherwise only wired to
+        # _on_model_changed, so a fresh launch would show the construction-time
+        # static ["480p","720p"] list + a blank cost until the user switches).
         self._sync_resolution_to_model(current_model)
         self._update_cost_estimate()
+
+    def _sync_resolution_to_model(self, endpoint):
+        """Set the resolution combo's values + enabled state from the model's
+        resolution_options (empty/absent → disabled). Preserves the saved
+        resolution when it's valid for the model, else uses the model default.
+
+        Sets ``self._resolution_model_aware`` so update_parameter_visibility
+        (which otherwise unconditionally re-enables every combo) defers to this
+        method's disabled state for models with no selectable resolution — else
+        a Kling model would show the previous Seedance's stale 480p/720p/1080p/4k
+        options as selectable (code-reviewer, PR #114)."""
+        try:
+            from model_metadata import get_resolution_options, get_resolution_default
+            options = get_resolution_options(endpoint)
+            if options:
+                self._resolution_model_aware = True
+                self.resolution_combo.config(values=options, state="readonly")
+                current = self.resolution_var.get()
+                if current not in options:
+                    current = get_resolution_default(endpoint)
+                self.resolution_var.set(current)
+                self.config["resolution"] = current
+            else:
+                # No selectable resolution — clear the stale option list AND the
+                # displayed value (Gemini PR #114: a leftover "1080p" on a model
+                # that ignores resolution is misleading), then disable so
+                # update_parameter_visibility leaves it alone.
+                self._resolution_model_aware = False
+                self.resolution_combo.config(values=["—"], state="disabled")
+                self.resolution_var.set("—")
+        except Exception:
+            pass
 
     def _start_api_enrichment(self):
         """Background: fetch schema metadata + pricing for all models, then refresh UI."""
@@ -2101,7 +2225,11 @@ class ConfigPanel(tk.Frame):
                 self.duration_var.set(f"{current_duration}s")
                 self.config["video_duration"] = current_duration
 
-        # Keep resolution choices aligned with the model (mirrors duration).
+        # Keep resolution choices aligned with the model (mirrors the duration
+        # block above). A model with a non-empty resolution_options list gets a
+        # per-model enabled combo; a model with none (most Kling tiers — fal
+        # fixes their res) gets the combo DISABLED so we never offer a value the
+        # live schema would just drop. Shared with the startup sync.
         self._sync_resolution_to_model(model_endpoint)
 
         self.update_parameter_visibility(model_endpoint)
@@ -2275,12 +2403,14 @@ class ConfigPanel(tk.Frame):
         """Handle loop video checkbox change."""
         self.config["loop_videos"] = self.loop_video_var.get()
         status = "enabled" if self.loop_video_var.get() else "disabled"
+        self._refresh_pipeline_preview()
         self._notify_change(f"Loop video {status}")
 
     def _on_rppg_changed(self):
         """Handle rPPG injection checkbox change."""
         self.config["rppg_enabled"] = self.rppg_var.get()
         status = "enabled" if self.rppg_var.get() else "disabled"
+        self._refresh_pipeline_preview()
         self._notify_change(f"rPPG injection {status}")
 
     def _on_rppg_per_oldcam_fanout_changed(self):
@@ -2356,6 +2486,7 @@ class ConfigPanel(tk.Frame):
             status = "enabled (" + ", ".join(selected) + ")"
         else:
             status = "disabled"
+        self._refresh_pipeline_preview()
         self._notify_change(f"Quality crush {status}")
 
     def _on_aa_attacks_changed(self) -> None:
@@ -2376,6 +2507,7 @@ class ConfigPanel(tk.Frame):
             status = "enabled (" + ", ".join(selected) + ")"
         else:
             status = "disabled"
+        self._refresh_pipeline_preview()
         self._notify_change(f"AA adversarial pass {status}")
 
     def _oldcam_version_key(self, version: str) -> int:
@@ -2418,10 +2550,88 @@ class ConfigPanel(tk.Frame):
         self.config["oldcam_versions"] = selected_versions
         # Legacy compatibility key: highest selected version, or v24 default when empty.
         self.config["oldcam_version"] = selected_versions[-1] if selected_versions else "v24"
+        self._refresh_pipeline_preview()
         if selected_versions:
             self._notify_change("Oldcam versions set to " + ", ".join(selected_versions))
         else:
             self._notify_change("Oldcam disabled (no versions selected)")
+
+    # Display labels for the output-mode combobox (value <-> friendly text).
+    _FANOUT_DISPLAY = {
+        "separate_and_combined": "Separate + combined (powerset)",
+        "combined_only": "Combined only (one chain)",
+    }
+    _FANOUT_DISPLAY_TO_VALUE = {v: k for k, v in _FANOUT_DISPLAY.items()}
+
+    def _pipeline_preview_text(self) -> str:
+        """Read-only one-line summary of the resulting post-processing plan.
+
+        Built from the SAME shared planner the queue executor uses
+        (automation.postproc_plan) so the preview can never disagree with what
+        actually runs. Reads config directly via the canonical normalizers so it
+        is testable without live Tk widgets.
+        """
+        from automation.postproc_plan import build_plan, plan_preview_line
+        from automation.video_crush import normalize_crush_resolutions
+        from automation.video_aa import normalize_aa_attacks
+        from automation.oldcam import normalize_oldcam_versions
+
+        # Defensive: a corrupted/hand-edited config could be a non-dict; treat
+        # it as empty rather than crashing the preview render (gemini HIGH).
+        cfg = self.config if isinstance(self.config, dict) else {}
+        ckwargs = {}
+        if "crush_resolutions" in cfg:
+            ckwargs["resolutions"] = cfg["crush_resolutions"]
+        if "crush_enabled" in cfg:
+            ckwargs["legacy_enabled"] = cfg["crush_enabled"]
+        crush = normalize_crush_resolutions(**ckwargs)
+
+        aa_present = ("aa_attacks" in cfg) or ("aa_enabled" in cfg)
+        akwargs = {}
+        if "aa_attacks" in cfg:
+            akwargs["attacks"] = cfg["aa_attacks"]
+        if "aa_enabled" in cfg:
+            akwargs["legacy_enabled"] = cfg["aa_enabled"]
+        aa = normalize_aa_attacks(**akwargs) if aa_present else []
+
+        oldcam = normalize_oldcam_versions(
+            cfg.get("oldcam_versions", cfg.get("oldcam_version", []))
+        )
+        plan = build_plan(
+            rppg_enabled=bool(cfg.get("rppg_enabled", False)),
+            loop_enabled=bool(cfg.get("loop_videos", False)),
+            crush_resolutions=crush,
+            aa_attacks=aa,
+            oldcam_versions=oldcam,
+            mode=str(cfg.get("postproc_fanout_mode", "separate_and_combined")),
+        )
+        return plan_preview_line(plan)
+
+    def _refresh_pipeline_preview(self) -> None:
+        """Update the live preview label (no-op if the widget isn't built yet)."""
+        label = getattr(self, "pipeline_preview_label", None)
+        if label is None:
+            return
+        try:
+            label.config(text=self._pipeline_preview_text())
+        except Exception:
+            # Don't crash the UI on a preview build error, but log it so
+            # planner/normalizer wiring breakage is debuggable (CodeRabbit).
+            logger.debug("Failed to refresh pipeline preview", exc_info=True)
+
+    def _on_fanout_mode_changed(self) -> None:
+        """Persist the chosen output (fan-out) mode and refresh the preview."""
+        display = self.fanout_mode_var.get()
+        value = self._FANOUT_DISPLAY_TO_VALUE.get(display, "separate_and_combined")
+        # Write BOTH keys so the GUI alias and the canonical CLI key stay in
+        # lockstep (CodeRabbit Major — no cross-surface drift).
+        self.config["postproc_fanout_mode"] = value
+        self.config["automation_postproc_fanout_mode"] = value
+        self._refresh_pipeline_preview()
+        self._notify_change(
+            "Output mode: "
+            + ("powerset (separate + combined)" if value == "separate_and_combined" else "combined only")
+        )
 
     def _on_oldcam_rerun_clicked(self):
         """Trigger Oldcam-only rerun callback from the host window."""
@@ -2644,7 +2854,8 @@ class ConfigPanel(tk.Frame):
     def _update_cost_estimate(self):
         """Refresh the live token-cost estimate label for the current
         model + resolution + duration + audio. Token-priced models (Seedance)
-        show e.g. "≈ $3.02 / 10s @ 720p"; flat-priced models clear the label."""
+        show e.g. "≈ $3.02 / 10s @ 720p"; flat-priced models clear the label
+        (their default-res price already shows in the dropdown name)."""
         label = getattr(self, "cost_estimate_label", None)
         if label is None:
             return
@@ -2661,30 +2872,8 @@ class ConfigPanel(tk.Frame):
             else:
                 label.config(text="")
         except Exception:
+            # A cost estimate must never break the config panel.
             label.config(text="")
-
-    def _sync_resolution_to_model(self, endpoint):
-        """Set the resolution combo values + enabled state from the model's
-        resolution_options (empty/absent → disabled). Sets
-        _resolution_model_aware so update_parameter_visibility defers to this
-        disabled state (else a Kling model shows stale Seedance options)."""
-        try:
-            from model_metadata import get_resolution_options, get_resolution_default
-            options = get_resolution_options(endpoint)
-            if options:
-                self._resolution_model_aware = True
-                self.resolution_combo.config(values=options, state="readonly")
-                current = self.resolution_var.get()
-                if current not in options:
-                    current = get_resolution_default(endpoint)
-                self.resolution_var.set(current)
-                self.config["resolution"] = current
-            else:
-                self._resolution_model_aware = False
-                self.resolution_combo.config(values=["—"], state="disabled")
-                self.resolution_var.set("—")
-        except Exception:
-            pass
 
     def _on_duration_changed(self, event=None):
         """Handle duration selection change with validation."""
@@ -3100,6 +3289,9 @@ class ConfigPanel(tk.Frame):
                     for control in controls:
                         if control is None:
                             continue
+                        # The resolution combo's enabled state is OWNED by
+                        # _sync_resolution_to_model (per-model options); don't
+                        # re-enable it here when that method disabled it.
                         if (
                             control is self.resolution_combo
                             and not getattr(self, "_resolution_model_aware", True)
@@ -3220,6 +3412,9 @@ class ConfigPanel(tk.Frame):
                 for control in controls:
                     if control is None:
                         continue
+                    # The resolution combo's enabled state is OWNED by
+                    # _sync_resolution_to_model; skip it here when it was
+                    # disabled for a model with no selectable resolution.
                     if (
                         control is self.resolution_combo
                         and not getattr(self, "_resolution_model_aware", True)
@@ -3285,7 +3480,7 @@ class ConfigPanel(tk.Frame):
                     status_text = "All params supported"
                     status_color = COLORS["success"]
                 elif supported_count == 0:
-                    status_text = "Limited params"
+                    status_text = "Limited"
                     status_color = COLORS["warning"]
                 else:
                     status_text = f"{supported_count}/{len(key_params)} params"
