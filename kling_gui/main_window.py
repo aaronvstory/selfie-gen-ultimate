@@ -2771,7 +2771,10 @@ class KlingGUIWindow:
                 "drop_valid": "#6A58C6",
             },
         )
-        self.log_drop_paned.add(self.drop_zone, minsize=220)
+        # minsize 170 (was 220): the drop zone is a compact square; a 220 floor
+        # was part of why it kept rendering too wide. The layout clamp keeps it
+        # in a ~170–230px band so it never hogs width from the Processing Log.
+        self.log_drop_paned.add(self.drop_zone, minsize=170)
         self.right_paned.add(log_frame, minsize=100)
 
         # History panel (bottom right pane)

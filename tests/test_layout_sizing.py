@@ -78,17 +78,20 @@ class LayoutSizingTests(unittest.TestCase):
         self.assertEqual(window["min_height"], 620)
         self.assertEqual(geometry, "1100x880+300+20")
 
-        # v5.2 ranges at root_width=1100:
+        # Ranges at root_width=1100:
         #   queue: 22-32% = 242-352, default 25% = 275
         #   prompt_split: 54-64% of 1100 = 594-704
-        #   log_drop_split: right_section = 1100 - clamped_queue
-        #     at queue=286 → right=814 → 55-82% = 447-667, default 71%
+        #   log_drop_split (= LOG width; drop zone = remainder): the drop zone
+        #     is now bounded to a narrow 170–230px band so it can't hog width.
+        #     At queue=286 → right_section=814 → log must be in
+        #     [814-230, 814-170] = [584, 644], default 814-190 = 624.
+        # Pick a log_drop_split already inside the band so nothing changes.
         sash, changed_sash = sanitize_sash_layout(
             sash_dropzone=500,
             sash_prompt_split=620,
             sash_queue=286,
             sash_log=150,
-            sash_log_drop_split=520,
+            sash_log_drop_split=624,
             root_width=1100,
             root_height=900,
         )
@@ -97,7 +100,22 @@ class LayoutSizingTests(unittest.TestCase):
         self.assertEqual(sash["sash_prompt_split"], 620)
         self.assertEqual(sash["sash_queue"], 286)
         self.assertEqual(sash["sash_log"], 150)
-        self.assertEqual(sash["sash_log_drop_split"], 520)
+        self.assertEqual(sash["sash_log_drop_split"], 624)
+
+        # And a too-small log_drop_split (drop zone too WIDE) gets clamped up
+        # into the band — this is the recurring "drop zone too wide" fix.
+        wide_drop, wide_changed = sanitize_sash_layout(
+            sash_dropzone=500,
+            sash_prompt_split=620,
+            sash_queue=286,
+            sash_log=150,
+            sash_log_drop_split=400,  # would make drop zone 814-400=414px wide
+            root_width=1100,
+            root_height=900,
+        )
+        self.assertTrue(wide_changed)
+        self.assertGreaterEqual(wide_drop["sash_log_drop_split"], 584)
+        self.assertLessEqual(814 - wide_drop["sash_log_drop_split"], 230)
 
 
 class ParseGeometrySizeTests(unittest.TestCase):

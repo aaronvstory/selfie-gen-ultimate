@@ -406,7 +406,7 @@ class ImageCarousel(tk.Frame):
 
         tk.Label(
             header,
-            text="IMAGE CAROUSEL",
+            text="CAROUSEL",
             font=(FONT_FAMILY, 9, "bold"),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
@@ -425,6 +425,18 @@ class ImageCarousel(tk.Frame):
         # recalc button (v5.2 per user request) — see meta_frame build below.
         controls = tk.Frame(header, bg=COLORS["bg_panel"])
         controls.pack(side=tk.RIGHT)
+
+        # Browse-all (file list) modal \u2014 leftmost, before the prev arrow.
+        self.browse_list_btn = ttk.Button(
+            controls,
+            text="\u2630",  # \u2630 list icon
+            style=TTK_BTN_COMPACT,
+            command=debounce_command(
+                self._open_file_browser, key="carousel_browse_list", interval_ms=200
+            ),
+            width=2,
+        )
+        self.browse_list_btn.pack(side=tk.LEFT, padx=(0, 4))
 
         # Prev/next + remove/add controls
         self.prev_btn = ttk.Button(
@@ -1307,6 +1319,192 @@ class ImageCarousel(tk.Frame):
                 continue
             self.image_session.add_image(p, "input")
             self.log(f"Added to carousel session: {os.path.basename(p)}", "info")
+
+    def _open_file_browser(self):
+        """Modal file browser: pick a carousel entry from a list + preview.
+
+        Left: scrollable list of all carousel files (filename + size). Right:
+        a preview of the selected entry (image fit-to-canvas, or a video's
+        first frame with a Play button). OK jumps the carousel to the chosen
+        entry; Cancel leaves the carousel untouched.
+        """
+        entries = list(self.image_session.images)
+        if not entries:
+            self.log("Carousel is empty — nothing to browse.", "info")
+            return
+
+        try:
+            from PIL import Image, ImageOps, ImageTk
+        except Exception:
+            self.log("Pillow unavailable — cannot open the file browser.", "error")
+            return
+
+        top = tk.Toplevel(self)
+        top.title("Carousel — Browse Files")
+        top.configure(bg=COLORS["bg_panel"])
+        top.geometry("900x560")
+        top.transient(self.winfo_toplevel())
+        top.grab_set()
+
+        state = {"selected": self.image_session.current_index, "photo": None}
+
+        body = tk.Frame(top, bg=COLORS["bg_panel"])
+        body.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        # Left: file list.
+        left = tk.Frame(body, bg=COLORS["bg_panel"])
+        left.pack(side=tk.LEFT, fill=tk.Y)
+        tk.Label(
+            left, text="Files", bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 9, "bold"),
+        ).pack(anchor="w")
+        list_wrap = tk.Frame(left, bg=COLORS["bg_panel"])
+        list_wrap.pack(fill=tk.Y, expand=True)
+        listbox = tk.Listbox(
+            list_wrap, width=42, height=24,
+            bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectbackground=COLORS["accent_blue"], highlightthickness=0,
+            font=(FONT_FAMILY, 9), activestyle="none", exportselection=False,
+        )
+        lb_scroll = ttk.Scrollbar(list_wrap, orient="vertical", command=listbox.yview)
+        listbox.config(yscrollcommand=lb_scroll.set)
+        lb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox.pack(side=tk.LEFT, fill=tk.Y, expand=True)
+
+        for idx, entry in enumerate(entries):
+            tag, _color = derive_display_tag(entry)
+            size = ""
+            try:
+                kb = os.path.getsize(entry.path) / 1024
+                size = f"{kb/1024:.1f} MB" if kb >= 1024 else f"{kb:.0f} KB"
+            except Exception:
+                pass
+            vid = " ▶" if entry.is_video else ""
+            label = f"{idx + 1}. {tag} {entry.filename}{vid}"
+            if size:
+                label += f"  [{size}]"
+            listbox.insert(tk.END, label)
+
+        # Right: preview + details.
+        right = tk.Frame(body, bg=COLORS["bg_panel"])
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
+        preview_canvas = tk.Canvas(
+            right, bg=COLORS["bg_input"], highlightthickness=0
+        )
+        preview_canvas.pack(fill=tk.BOTH, expand=True)
+        detail_label = tk.Label(
+            right, text="", bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 9), anchor="w", justify="left",
+        )
+        detail_label.pack(fill=tk.X, pady=(4, 0))
+        play_btn = ttk.Button(
+            right, text="▶ Play Video", style=TTK_BTN_SECONDARY,
+            state=tk.DISABLED,
+        )
+        play_btn.pack(anchor="w", pady=(4, 0))
+
+        def _render_preview(idx):
+            preview_canvas.delete("all")
+            state["photo"] = None
+            if not (0 <= idx < len(entries)):
+                return
+            entry = entries[idx]
+            pil = None
+            try:
+                if entry.is_video:
+                    pil = _extract_video_first_frame(entry.path)
+                else:
+                    with Image.open(entry.path) as src:
+                        pil = ImageOps.exif_transpose(src)
+                        if pil.mode not in ("RGB", "RGBA"):
+                            pil = pil.convert("RGB")
+                        pil.load()
+            except Exception:
+                pil = None
+            if pil is not None:
+                preview_canvas.update_idletasks()
+                cw = max(preview_canvas.winfo_width(), 100)
+                ch = max(preview_canvas.winfo_height(), 100)
+                img = pil.copy()
+                img.thumbnail((cw, ch))
+                state["photo"] = ImageTk.PhotoImage(img)
+                preview_canvas.create_image(
+                    cw // 2, ch // 2, image=state["photo"], anchor="center"
+                )
+                if entry.is_video:
+                    preview_canvas.create_text(
+                        cw // 2, ch // 2, text="▶", fill="#FFFFFF",
+                        font=(FONT_FAMILY, 44, "bold"),
+                    )
+            else:
+                preview_canvas.create_text(
+                    preview_canvas.winfo_width() // 2 or 200,
+                    preview_canvas.winfo_height() // 2 or 150,
+                    text="(no preview)", fill=COLORS["text_dim"],
+                    font=(FONT_FAMILY, 11),
+                )
+            info = _format_image_info(entry.path)
+            detail_label.config(
+                text=f"{entry.filename}\n{info}".strip()
+            )
+            if entry.is_video:
+                play_btn.config(
+                    state=tk.NORMAL,
+                    command=lambda p=entry.path: self._open_path_external(p),
+                )
+            else:
+                play_btn.config(state=tk.DISABLED, command=lambda: None)
+
+        def _on_select(event=None):
+            sel = listbox.curselection()
+            if sel:
+                state["selected"] = sel[0]
+                _render_preview(sel[0])
+
+        listbox.bind("<<ListboxSelect>>", _on_select)
+        preview_canvas.bind("<Configure>", lambda e: _render_preview(state["selected"]))
+
+        def _confirm():
+            idx = state["selected"]
+            top.destroy()
+            if 0 <= idx < len(entries):
+                self.image_session.navigate_to(idx)
+
+        def _double(event=None):
+            _confirm()
+
+        listbox.bind("<Double-Button-1>", _double)
+
+        # Buttons.
+        btn_row = tk.Frame(top, bg=COLORS["bg_panel"])
+        btn_row.pack(fill=tk.X, padx=8, pady=(0, 8))
+        ttk.Button(
+            btn_row, text="OK", style=TTK_BTN_SECONDARY, command=_confirm
+        ).pack(side=tk.RIGHT)
+        ttk.Button(
+            btn_row, text="Cancel", style=TTK_BTN_SECONDARY, command=top.destroy
+        ).pack(side=tk.RIGHT, padx=(0, 4))
+        top.bind("<Escape>", lambda e: top.destroy())
+        top.bind("<Return>", lambda e: _confirm())
+
+        # Preselect the current carousel entry.
+        cur = self.image_session.current_index
+        if 0 <= cur < len(entries):
+            listbox.selection_set(cur)
+            listbox.see(cur)
+        self.after(60, lambda: _render_preview(state["selected"]))
+
+    def _open_path_external(self, path):
+        """Open a file with the OS default app (used to play videos)."""
+        try:
+            if platform.system() == "Windows":
+                os.startfile(path)  # type: ignore[attr-defined]
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as exc:
+            self.log(f"Could not open file: {exc}", "error")
 
     def _on_remove_image(self):
         """Remove the currently active image from the carousel."""
