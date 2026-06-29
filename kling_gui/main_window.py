@@ -2261,6 +2261,22 @@ class KlingGUIWindow:
             background=[("active", "#C27D1C"), ("pressed", "#855209"), ("disabled", "#4B4B4B")],
             foreground=[("disabled", "#9D9D9D")],
         )
+        # "Sanitize Folder" header button: steel-slate, visually distinct from
+        # the neutral-gray New Session so the tool/utility group reads apart
+        # from the session group (user request 2026-06-26).
+        style.configure(
+            "Sanitize.TButton",
+            font=(FONT_FAMILY, 9, "bold"),
+            foreground="white",
+            background="#4A6785",
+            borderwidth=1,
+            padding=(10, 6),
+        )
+        style.map(
+            "Sanitize.TButton",
+            background=[("active", "#58789A"), ("pressed", "#3A5168"), ("disabled", "#4B4B4B")],
+            foreground=[("disabled", "#9D9D9D")],
+        )
         style.configure(
             TTK_BTN_SUCCESS,
             font=(FONT_FAMILY, 9, "bold"),
@@ -3910,24 +3926,18 @@ class KlingGUIWindow:
         )
         version_chip.pack(side=tk.LEFT, padx=(0, 8), pady=6)
 
-        # Session management buttons
-        # Header semantic colors (2026-06-25 scannability pass): open/load
-        # actions are blue (Open Folder = brightest hero, Sessions = primary),
-        # save is green, neutral utilities (New Session, Sanitize) stay gray,
-        # and tool launchers (Similarity/Drop Zone) keep their distinct accents.
-        sessions_btn = create_action_button(
-            header,
-            text="Sessions",
-            command=self._dbcmd("header_sessions", self._on_open_sessions),
-            style=TTK_BTN_PRIMARY,
-            width=12,
-        )
-        sessions_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
+        # Session-management + tool/utility launchers, split into two visually
+        # separated groups. Header semantic colors (2026-06-26 pass): Sessions =
+        # blue (primary), Open Folder = warm amber hero, Save Session = green,
+        # New Session = neutral gray, Sanitize Folder = steel-slate; tool
+        # launchers Similarity = blue, Drop Zone = purple keep their accents.
+        # All buttons pack side=RIGHT (created right-to-left here), giving the
+        # on-screen order:
+        #   tools:    Drop Zone | Similarity | Sanitize Folder    (left)
+        #   <gap>
+        #   sessions: Sessions | New Session | Save Session | Open Folder (right)
 
-        # One-click "open a folder as a new session". IDENTICAL to the Sessions
-        # button (PRIMARY-clone style + width=12, same pack) so it sizes + fits
-        # the same — the ONLY difference is the warm amber/orange color
-        # (OpenFolder.TButton, Windows-Explorer folder vibe).
+        # --- Session group (right) ---
         open_folder_btn = create_action_button(
             header,
             text="Open Folder",
@@ -3951,16 +3961,26 @@ class KlingGUIWindow:
             command=self._dbcmd("header_new_session", self._on_new_session),
             style=TTK_BTN_SECONDARY,
         )
-        # Extra LEFT pad creates a visual gap between the session-management group
-        # (New Session / Save / Open Folder / Sessions, to the right) and the
-        # tool/utility group (Sanitize / Similarity / Drop Zone, to the left).
         new_session_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
 
+        sessions_btn = create_action_button(
+            header,
+            text="Sessions",
+            command=self._dbcmd("header_sessions", self._on_open_sessions),
+            style=TTK_BTN_PRIMARY,
+            width=12,
+        )
+        # Sessions is the LEFT edge of the session group; its extra LEFT pad (24)
+        # opens the visual gap that separates the session group (right) from the
+        # tool/utility group (Sanitize / Similarity / Drop Zone, to the left).
+        sessions_btn.pack(side=tk.RIGHT, padx=(24, 6), pady=4)
+
+        # --- Tool / utility group (left) ---
         sanitize_folder_btn = create_action_button(
             header,
             text="Sanitize Folder",
             command=self._dbcmd("header_sanitize_folder", self._on_sanitize_folder_clicked),
-            style=TTK_BTN_SECONDARY,
+            style="Sanitize.TButton",
         )
         sanitize_folder_btn.pack(side=tk.RIGHT, padx=(0, 6), pady=4)
 

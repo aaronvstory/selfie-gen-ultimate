@@ -17,6 +17,43 @@ from src.engine import FaceEngine
 console = Console()
 
 
+# Characters macOS allows in filenames but Windows/NTFS rejects. Folders named
+# with any of these (or a control char / trailing space / dot) silently fail to
+# sync to the Windows box via Syncthing — and this CLI's renamer would otherwise
+# copy them through verbatim and compound them on each run. Kept byte-for-byte in
+# step with the cleanup sweep used on the synced folders so a name resolves to the
+# SAME result no matter which side fixes it (no rename churn between the two).
+_RESERVED_FILENAME_CHARS = '<>"|?*\\/'  # ':' -> '-' separately; control chars dropped
+
+# Names Windows reserves for legacy DOS devices — illegal as a file/folder name
+# (with or without an extension), case-insensitive. macOS allows them.
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
+def _sanitize_folder_name(name: str, default: str = "untitled") -> str:
+    """Make a single path component safe on Windows/NTFS (and cross-OS sync).
+
+    macOS permits ``\\`` and ``/`` inside a single component; Windows treats both
+    as path separators, so they're mapped to ``_`` alongside the other reserved
+    glyphs. C0 controls are dropped; ``:`` becomes ``-``; trailing space/dot are
+    trimmed (Windows silently strips them, which also breaks sync). A reserved DOS
+    device name (CON, NUL, COM1, …) is prefixed with ``_`` so it stays usable.
+    """
+    s = "".join("" if ord(c) < 32 else c for c in str(name or ""))  # drop \r \n \t etc.
+    s = s.replace(":", "-")
+    for c in _RESERVED_FILENAME_CHARS:
+        s = s.replace(c, "_")
+    s = s.rstrip(" .")  # no trailing space/period
+    # Reserved even with an extension ("CON.txt"), so test the stem, case-insensitive.
+    if s.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        s = "_" + s
+    return s or default
+
+
 def _format_conf_pct(pct: float) -> str:
     """Adaptive precision: ≥99.9% gets 2 decimals so '99.99%' isn't lost to
     rounding ('100.0%' obscures how confident the model was)."""
@@ -517,7 +554,11 @@ class ProCLI:
 
     def _get_new_folder_name(self, old_folder_path: str, score: float) -> str:
         parent_dir = os.path.dirname(old_folder_path)
-        folder_name = os.path.basename(old_folder_path)
+        # Sanitize FIRST, before the " - " split below. Sanitizing afterwards let a
+        # spaced colon ("Foo : Bar") map to " - " and be misread as the name/suffix
+        # separator on the next pass, duplicating the score token and re-triggering
+        # the rename (breaking the idempotency this feature promises).
+        folder_name = _sanitize_folder_name(os.path.basename(old_folder_path))
         rounded_score = int(score)
 
         # Remove one trailing score token so we overwrite rather than append.
@@ -532,7 +573,11 @@ class ProCLI:
             base = strip_score_token(folder_name) or folder_name.strip()
             new_name = f"{base} {rounded_score}"
 
-        return os.path.join(parent_dir, new_name)
+        # Belt-and-suspenders: new_name is already built from sanitized parts, but
+        # re-sanitize before os.rename() in case the formatting reintroduces an
+        # unsafe char. Pre-existing bad input names are cleaned on the next pass too
+        # (sanitized != original, so the rename fires instead of "Skip (Same)").
+        return os.path.join(parent_dir, _sanitize_folder_name(new_name))
 
     def _run_batch_processing(self):
         self.run_batch_similarity()
