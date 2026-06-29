@@ -1562,7 +1562,7 @@ class FaceCropTab(tk.Frame):
             self.log("OpenRouter API key required — set it in the bottom bar", "error")
             return
         image_path = self.image_session.active_image_path
-        if not image_path:
+        if not image_path or not os.path.isfile(image_path):
             self.log("No image selected in carousel", "warning")
             return
 
@@ -1571,6 +1571,18 @@ class FaceCropTab(tk.Frame):
         model = self._analysis_selected_model_endpoint()
         system_prompt = self._analysis_system_prompt()
         self._save_config_now()
+
+        # Resolve the toplevel in the MAIN thread — Tkinter is not thread-safe,
+        # so the worker must not call self.winfo_toplevel(). It dispatches UI
+        # work back through this guarded helper.
+        toplevel = self.winfo_toplevel()
+
+        def _safe_after(func):
+            try:
+                if toplevel.winfo_exists():
+                    toplevel.after(0, func)
+            except Exception:
+                pass
 
         def _run():
             try:
@@ -1587,21 +1599,17 @@ class FaceCropTab(tk.Frame):
                     api_key, model, system_prompt=effective_prompt
                 )
                 analyzer.set_progress_callback(
-                    lambda msg, lvl: self.winfo_toplevel().after(
-                        0, lambda m=msg, l=lvl: self.log(m, l)
+                    lambda msg, lvl: _safe_after(
+                        lambda m=msg, l=lvl: self.log(m, l)
                     )
                 )
                 result = analyzer.analyze_image(image_path)
-                self.winfo_toplevel().after(
-                    0, lambda: self._on_analyze_complete(result)
-                )
+                _safe_after(lambda: self._on_analyze_complete(result))
             except Exception as e:
                 from log_utils import format_exception_detail
 
                 err = format_exception_detail(e)
-                self.winfo_toplevel().after(
-                    0, lambda: self._on_analyze_error(err)
-                )
+                _safe_after(lambda: self._on_analyze_error(err))
 
         threading.Thread(target=_run, daemon=True).start()
 

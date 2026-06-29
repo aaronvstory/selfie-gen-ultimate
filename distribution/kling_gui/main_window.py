@@ -1905,9 +1905,16 @@ class KlingGUIWindow:
                     _safe_print(
                         "Seeded AI Studio edit presets (curated defaults)."
                     )
+                    # Only stamp the flag on a SUCCESSFUL seed, so a transient
+                    # import failure retries on the next launch instead of
+                    # permanently leaving presets unseeded. (code-review MEDIUM)
+                    config["ai_studio_presets_seeded_v1"] = True
                 except Exception as exc:
                     _safe_print(f"AI Studio preset seed skipped: {exc}")
-            config["ai_studio_presets_seeded_v1"] = True
+            else:
+                # Presets already present (e.g. from the template) — nothing to
+                # seed; mark done so we don't re-check every launch.
+                config["ai_studio_presets_seeded_v1"] = True
 
         # Slot 3 defaults backfill (2026-05-21): older saved configs
         # carry empty slot 3 prompt + negative because the template

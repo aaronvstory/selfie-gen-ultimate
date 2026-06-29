@@ -138,6 +138,10 @@ class AIStudioTab(tk.Frame):
         self._busy = False  # read by main_window._on_close — keep it.
         self._abort_event: Optional[threading.Event] = None
         self._before_path: Optional[str] = None
+        # Tracks the carousel's active path we last followed, so we only sync
+        # the Before pane on a genuine user navigation — not on every session
+        # mutation (which would clobber a "Use Result as Input" chain).
+        self._last_synced_carousel_path: Optional[str] = None
         self._after_path: Optional[str] = None
         self._after_pil = None
         self._before_pil = None
@@ -436,14 +440,18 @@ class AIStudioTab(tk.Frame):
 
     def _load_pil(self, path: str):
         """EXIF-safe load to RGB PIL image, or None on failure."""
-        if not (HAS_PIL and path and os.path.isfile(path)):
+        if not (HAS_PIL and path):
             return None
         try:
-            img = Image.open(path)
-            img = ImageOps.exif_transpose(img)
-            if img.mode not in ("RGB", "RGBA"):
-                img = img.convert("RGB")
-            return img
+            # ``with`` + load() closes the source file handle promptly;
+            # exif_transpose / convert return new in-memory images so the
+            # handle is no longer needed after the block.
+            with Image.open(path) as src:
+                img = ImageOps.exif_transpose(src)
+                if img.mode not in ("RGB", "RGBA"):
+                    img = img.convert("RGB")
+                img.load()
+                return img
         except Exception:
             return None
 
@@ -482,10 +490,20 @@ class AIStudioTab(tk.Frame):
             return
         if path == self._before_path:
             return
+        # Only follow the carousel when its ACTIVE image actually changed (the
+        # user navigated/selected). _on_session_change fires on every session
+        # mutation, including adds from OTHER tabs and our own — without this
+        # guard, "Use Result as Input" (which sets _before_path to the edit
+        # result WITHOUT touching the carousel) would be silently undone the
+        # next time any tab notifies the session. (code-review CRITICAL)
+        if path == self._last_synced_carousel_path:
+            return
         # Don't pull videos into the editor.
         entry = self.image_session.active_entry
         if entry is not None and getattr(entry, "is_video", False):
+            self._last_synced_carousel_path = path
             return
+        self._last_synced_carousel_path = path
         self._set_before(path)
 
     # ── Run edit ──────────────────────────────────────────────────────
@@ -524,6 +542,15 @@ class AIStudioTab(tk.Frame):
             self.log(f"Could not resolve output folder: {exc}", "error")
             return
 
+        # Derive width/height from the actual input so the edit preserves the
+        # image's aspect ratio. generate() feeds these to the model payload
+        # (aspect_ratio / image_size); the hardcoded 864x1152 default would
+        # force landscape/square inputs into portrait. (code-review HIGH)
+        if self._before_pil is not None:
+            in_w, in_h = self._before_pil.width, self._before_pil.height
+        else:
+            in_w, in_h = 864, 1152
+
         self._save_config_now()
         self._set_busy(True)
         self._abort_event = threading.Event()
@@ -531,6 +558,18 @@ class AIStudioTab(tk.Frame):
         freeimage_key = cfg.get("freeimage_api_key")
         bfl_api_key = cfg.get("bfl_api_key")
         poll_timeout = cfg.get("selfie_poll_timeout_seconds")
+
+        # Resolve the toplevel in the MAIN thread — Tkinter is not thread-safe,
+        # so the worker must not call self.winfo_toplevel(). It dispatches all
+        # UI work back via this guarded helper instead.
+        toplevel = self.winfo_toplevel()
+
+        def _safe_after(func):
+            try:
+                if toplevel.winfo_exists():
+                    toplevel.after(0, func)
+            except Exception:
+                pass
 
         def _run():
             try:
@@ -542,8 +581,8 @@ class AIStudioTab(tk.Frame):
                     bfl_api_key=bfl_api_key,
                 )
                 gen.set_progress_callback(
-                    lambda msg, lvl: self.winfo_toplevel().after(
-                        0, lambda m=msg, l=lvl: self.log(m, l)
+                    lambda msg, lvl: _safe_after(
+                        lambda m=msg, l=lvl: self.log(m, l)
                     )
                 )
                 if self._abort_event is not None:
@@ -552,23 +591,22 @@ class AIStudioTab(tk.Frame):
                     image_path=image_path,
                     prompt=prompt,
                     output_folder=output_folder,
+                    width=in_w,
+                    height=in_h,
                     model_endpoint=endpoint,
                     model_label=label,
                     poll_timeout_seconds=poll_timeout,
                 )
-                self.winfo_toplevel().after(
-                    0, lambda: self._on_run_done(result)
-                )
+                _safe_after(lambda: self._on_run_done(result))
             except Exception as e:
                 err = format_exception_detail(e)
-                self.winfo_toplevel().after(
-                    0, lambda: self._on_run_error(err)
-                )
+                _safe_after(lambda: self._on_run_error(err))
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _on_run_done(self, result_path: Optional[str]):
         self._set_busy(False)
+        self._abort_event = None  # run finished — don't let a stale Abort fire
         if not result_path or not os.path.isfile(result_path):
             self.log("Edit failed — see the reason logged above.", "error")
             return
@@ -593,6 +631,7 @@ class AIStudioTab(tk.Frame):
 
     def _on_run_error(self, error: str):
         self._set_busy(False)
+        self._abort_event = None  # run finished — don't let a stale Abort fire
         self.log(f"Edit error: {error}", "error")
 
     def _on_abort(self):
@@ -628,6 +667,10 @@ class AIStudioTab(tk.Frame):
     def _on_add_to_carousel(self):
         if not (self._after_path and os.path.isfile(self._after_path)):
             return
+        # add_image(make_active=True) makes the result the active carousel
+        # image, which fires _on_session_change. Pre-record it as already-synced
+        # so the Before pane doesn't jump to the just-added result.
+        self._last_synced_carousel_path = self._after_path
         self.image_session.add_image(
             self._after_path,
             "edit",
@@ -719,21 +762,28 @@ class AIStudioTab(tk.Frame):
             ih = max(before_img.height, after_img.height, 1)
             return min(cw / iw, ch / ih)
 
-        def _redraw():
-            top._zoom_photos = []
+        def _redraw(recreate=True):
+            # Panning doesn't change scale, so resizing (LANCZOS) on every
+            # mouse-motion event would lag badly on large images. Re-resize
+            # only when scale/canvas-size actually change (recreate=True);
+            # pan just repositions the cached PhotoImage (recreate=False).
             base = _fit_base_scale()
             eff = base * state["scale"]
-            for canvas, src in (
-                (left_canvas, before_img),
-                (right_canvas, after_img),
+            cache_key = (round(eff, 4),)
+            if recreate or state.get("photo_key") != cache_key or not top._zoom_photos:
+                top._zoom_photos = []
+                for src in (before_img, after_img):
+                    nw = max(int(src.width * eff), 1)
+                    nh = max(int(src.height * eff), 1)
+                    resized = src.resize((nw, nh), Image.LANCZOS)
+                    top._zoom_photos.append(ImageTk.PhotoImage(resized))
+                state["photo_key"] = cache_key
+            for canvas, photo in (
+                (left_canvas, top._zoom_photos[0]),
+                (right_canvas, top._zoom_photos[1]),
             ):
                 cw = max(canvas.winfo_width(), 100)
                 ch = max(canvas.winfo_height(), 100)
-                nw = max(int(src.width * eff), 1)
-                nh = max(int(src.height * eff), 1)
-                resized = src.resize((nw, nh), Image.LANCZOS)
-                photo = ImageTk.PhotoImage(resized)
-                top._zoom_photos.append(photo)
                 canvas.delete("all")
                 canvas.create_image(
                     cw / 2 + state["ox"],
@@ -773,7 +823,7 @@ class AIStudioTab(tk.Frame):
             state["drag"] = (event.x, event.y)
             state["ox"] += dx
             state["oy"] += dy
-            _redraw()
+            _redraw(recreate=False)  # pan only — reuse cached photos
 
         def _on_release(event):
             state["drag"] = None
@@ -988,15 +1038,22 @@ class AIStudioTab(tk.Frame):
 
     def get_config_updates(self) -> dict:
         """Return AI Studio config values to persist."""
-        return {
+        updates = {
             "ai_studio_model_endpoint": self._selected_model().get(
                 "endpoint", "fal-ai/nano-banana-2/edit"
             ),
             "ai_studio_presets": [dict(p) for p in self._presets],
-            "ai_studio_last_custom_prompt": self._prompt_text.get(
-                "1.0", tk.END
-            ).strip(),
         }
+        # Guard the Text read: this can run during window teardown (config is
+        # saved on close), after the widget has been destroyed -> TclError.
+        try:
+            if self._prompt_text.winfo_exists():
+                updates["ai_studio_last_custom_prompt"] = self._prompt_text.get(
+                    "1.0", tk.END
+                ).strip()
+        except Exception:
+            pass
+        return updates
 
     def _save_config_now(self):
         try:
