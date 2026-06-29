@@ -167,13 +167,14 @@ def sanitize_sash_layout(
     # sash_log_drop_split is the LOG panel's width (drop zone = the remainder).
     # The drop zone is a small fixed-ish square — bound it to a narrow band so
     # it can NEVER hog width again (recurring user complaint). We size the LOG
-    # to fill everything except a ~190px drop column, and clamp the drop column
-    # to 170–230px (i.e. log width is pinned to right_section_w - [170,230]).
-    # This means even a stale persisted value can't widen the drop zone past
-    # ~230px, and the log always gets the lion's share.
-    _DROP_ZONE_TARGET = 190
-    _DROP_ZONE_MIN = 170
-    _DROP_ZONE_MAX = 230
+    # to fill everything except a ~210px drop column, and clamp the drop column
+    # to 190–250px (i.e. log width is pinned to right_section_w - [190,250]).
+    # The ~210 target leaves a few px of breathing room so the drop frame's
+    # left/right border isn't clipped (user feedback), while the log still
+    # gets the lion's share and a stale value can't widen it past ~250px.
+    _DROP_ZONE_TARGET = 210
+    _DROP_ZONE_MIN = 190
+    _DROP_ZONE_MAX = 250
     log_drop_min = max(150, right_section_w - _DROP_ZONE_MAX)
     log_drop_max = max(log_drop_min, right_section_w - _DROP_ZONE_MIN)
     log_drop_default = max(log_drop_min, right_section_w - _DROP_ZONE_TARGET)

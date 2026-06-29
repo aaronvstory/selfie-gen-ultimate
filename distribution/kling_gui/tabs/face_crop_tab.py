@@ -1641,7 +1641,9 @@ class FaceCropTab(tk.Frame):
         if self._selfie_prompt_writer:
             self._selfie_prompt_writer(description)
             self.log("Prompt sent to Selfie Gen", "success")
-            if self._notebook_switcher_selfie:
+            # Honor the same "Auto-switch after send" preference as the
+            # Send-to-2 button (CodeRabbit) — don't jump tabs if it's off.
+            if self._auto_switch_var.get() and self._notebook_switcher_selfie:
                 self._notebook_switcher_selfie()
         else:
             self.log("Step 2 is not available to receive the prompt", "warning")
