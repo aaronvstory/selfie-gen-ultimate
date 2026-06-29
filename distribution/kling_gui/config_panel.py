@@ -1181,11 +1181,12 @@ class ConfigPanel(tk.Frame):
             ),
         )
 
-        # Logging / Verbose Mode — moved here UNDER the Re-Run buttons (user
-        # request 2026-06-29) to free a row from the left column's option
-        # stack. Same var/handler as before, just a new parent frame.
-        _logging_row = tk.Frame(_shared_rerun_col, bg=COLORS["bg_input"])
-        _logging_row.pack(anchor="w", pady=(4, 0))
+        # Logging / Verbose Mode — sits BELOW the Re-Run box (a sibling in
+        # _aa_col, NOT inside the Re-Run groove — it's unrelated to Re-Run).
+        # Moved out of the left-column option stack to save a row (user
+        # request 2026-06-29). Same var/handler, new parent frame.
+        _logging_row = tk.Frame(_aa_col, bg=COLORS["bg_input"])
+        _logging_row.pack(anchor="w", pady=(6, 0))
         tk.Label(
             _logging_row, text="Logging:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_light"],
@@ -1466,25 +1467,35 @@ class ConfigPanel(tk.Frame):
 
         # ── Inlined Motion controls (end-frame lock + cfg) ────────────
         # Moved here from the former "Motion:" row to save vertical space.
-        # Right-aligned so they trail the Options controls.
-        self.cfg_scale_var = tk.StringVar(value="0.7")
-        self.cfg_scale_entry = tk.Entry(
-            rF, textvariable=self.cfg_scale_var, font=(FONT_FAMILY, 10),
-            bg=COLORS["bg_main"], fg=COLORS["text_light"],
-            insertbackground=COLORS["text_light"], width=5,
-            borderwidth=0, highlightthickness=1,
-            highlightbackground=COLORS["border"],
-            disabledbackground=COLORS["bg_input"],
+        # LEFT-aligned so they flow contiguously after the Options controls
+        # (right-aligning left a floating gap before the cfg box).
+        self.lock_end_frame_var = tk.BooleanVar(value=True)
+        self.lock_end_frame_checkbox = tk.Checkbutton(
+            rF, text="Lock End Frame",
+            variable=self.lock_end_frame_var, font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"],
             disabledforeground=COLORS["text_dim"],
+            command=self._on_lock_end_frame_changed,
         )
-        self.cfg_scale_entry.pack(side=tk.RIGHT, padx=(0, 4))
-        self.cfg_scale_entry.bind("<FocusOut>", self._on_cfg_scale_changed)
-        self.cfg_scale_entry.bind("<Return>", self._on_cfg_scale_changed)
+        self.lock_end_frame_checkbox.pack(side=tk.LEFT, padx=(12, 4))
+        HoverTooltip(self.lock_end_frame_checkbox, lambda: (
+            "Lock End Frame — force the video to end on (or very near) "
+            "the start image. Pairs with the ping-pong Loop step:\n\n"
+            "ON (default): start = end natively, so the clip plays "
+            "forward and STOPS cleanly at the source. Looping is "
+            "NOT needed (and adds nothing — the forward clip alone "
+            "already returns to source).\n"
+            "OFF: model decides the end freely (better motion realism). "
+            "Use the Loop step to seamlessly play forward + reverse, "
+            "which hides any start-to-end mismatch via ping-pong."
+        ))
         self.cfg_scale_label = tk.Label(
             rF, text="cfg:", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
-        self.cfg_scale_label.pack(side=tk.RIGHT, padx=(8, 3))
+        self.cfg_scale_label.pack(side=tk.LEFT, padx=(12, 3))
         _cfg_tip = lambda: (
             "CFG (Classifier-Free Guidance) — how strictly the model "
             "follows the prompt vs. exercises its own \"taste\".\n\n"
@@ -1497,28 +1508,19 @@ class ConfigPanel(tk.Frame):
             "robotic: lower."
         )
         HoverTooltip(self.cfg_scale_label, _cfg_tip)
-        self.lock_end_frame_var = tk.BooleanVar(value=True)
-        self.lock_end_frame_checkbox = tk.Checkbutton(
-            rF, text="Lock End Frame",
-            variable=self.lock_end_frame_var, font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
-            activeforeground=COLORS["text_light"],
+        self.cfg_scale_var = tk.StringVar(value="0.7")
+        self.cfg_scale_entry = tk.Entry(
+            rF, textvariable=self.cfg_scale_var, font=(FONT_FAMILY, 10),
+            bg=COLORS["bg_main"], fg=COLORS["text_light"],
+            insertbackground=COLORS["text_light"], width=5,
+            borderwidth=0, highlightthickness=1,
+            highlightbackground=COLORS["border"],
+            disabledbackground=COLORS["bg_input"],
             disabledforeground=COLORS["text_dim"],
-            command=self._on_lock_end_frame_changed,
         )
-        self.lock_end_frame_checkbox.pack(side=tk.RIGHT, padx=(8, 4))
-        HoverTooltip(self.lock_end_frame_checkbox, lambda: (
-            "Lock End Frame — force the video to end on (or very near) "
-            "the start image. Pairs with the ping-pong Loop step:\n\n"
-            "ON (default): start = end natively, so the clip plays "
-            "forward and STOPS cleanly at the source. Looping is "
-            "NOT needed (and adds nothing — the forward clip alone "
-            "already returns to source).\n"
-            "OFF: model decides the end freely (better motion realism). "
-            "Use the Loop step to seamlessly play forward + reverse, "
-            "which hides any start-to-end mismatch via ping-pong."
-        ))
+        self.cfg_scale_entry.pack(side=tk.LEFT)
+        self.cfg_scale_entry.bind("<FocusOut>", self._on_cfg_scale_changed)
+        self.cfg_scale_entry.bind("<Return>", self._on_cfg_scale_changed)
         self._update_seed_entry_state()
 
         # ── RIGHT COLUMN: built inline or externally via build_prompt_panel() ──
