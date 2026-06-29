@@ -1181,35 +1181,10 @@ class ConfigPanel(tk.Frame):
             ),
         )
 
-        # Logging / Verbose Mode — sits BELOW the Re-Run box (a sibling in
-        # _aa_col, NOT inside the Re-Run groove — it's unrelated to Re-Run).
-        # Moved out of the left-column option stack to save a row (user
-        # request 2026-06-29). Same var/handler, new parent frame.
-        _logging_row = tk.Frame(_aa_col, bg=COLORS["bg_input"])
-        _logging_row.pack(anchor="w", pady=(6, 0))
-        tk.Label(
-            _logging_row, text="Logging:", font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_light"],
-        ).pack(side=tk.LEFT)
-        self.verbose_gui_var = tk.BooleanVar(value=False)
-        self.verbose_checkbox = tk.Checkbutton(
-            _logging_row, text="Verbose Mode", variable=self.verbose_gui_var,
-            font=(FONT_FAMILY, 9), bg=COLORS["bg_input"], fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
-            activeforeground=COLORS["text_light"], command=self._on_verbose_changed,
-        )
-        self.verbose_checkbox.pack(side=tk.LEFT, padx=(4, 0))
-        HoverTooltip(self.verbose_checkbox, lambda: (
-            "Verbose Mode — show the detailed processing log (raw ffmpeg / "
-            "subprocess output). Off keeps the log panel clean."
-        ))
-        # rPPG metrics-in-filename var is still created (hidden control) so
-        # config save/load + the injector naming code keep working.
-        self.rppg_metrics_var = tk.BooleanVar(value=False)
-        self.verbose_info_label = tk.Label(
-            _logging_row, text="", font=(FONT_FAMILY, 9),
-            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
-        )
+        # Logging / Verbose Mode now lives on the "Allow reprocessing / Loop
+        # Video" row (rB), to the LEFT of the Loop Video checkbox (user request
+        # 2026-06-29). The verbose_* + rppg_metrics_var widgets/vars are
+        # created there.
 
         # NOTE: The face-track gate GUI controls were removed (2026-05-19).
         # A large balanced corpus (21 PASS / 23 FAIL, all Kling-from-real-
@@ -1252,6 +1227,27 @@ class ConfigPanel(tk.Frame):
         )
         self.increment_radio.pack(side=tk.LEFT, padx=2)
         self._update_reprocess_mode_visibility()
+        # Logging / Verbose Mode — sits inline on this row, to the LEFT of the
+        # Loop Video checkbox (user request 2026-06-29). Same var/handler;
+        # placement-only. rppg_metrics_var is still created (hidden control)
+        # so config save/load + the injector naming code keep working.
+        self.verbose_gui_var = tk.BooleanVar(value=False)
+        self.verbose_checkbox = tk.Checkbutton(
+            rB, text="Verbose Log", variable=self.verbose_gui_var,
+            font=(FONT_FAMILY, 10), bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_main"], activebackground=COLORS["bg_input"],
+            activeforeground=COLORS["text_light"], command=self._on_verbose_changed,
+        )
+        self.verbose_checkbox.pack(side=tk.LEFT, padx=(16, 0))
+        HoverTooltip(self.verbose_checkbox, lambda: (
+            "Verbose Log — show the detailed processing log (raw ffmpeg / "
+            "subprocess output). Off keeps the log panel clean."
+        ))
+        self.rppg_metrics_var = tk.BooleanVar(value=False)
+        self.verbose_info_label = tk.Label(
+            rB, text="", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_input"], fg=COLORS["text_dim"],
+        )
         # Loop Video moved here (was on the old Options row) — inline
         # right after "Increment (_2, _3…)". Attr names + callback
         # unchanged; only the parent/placement moved.
