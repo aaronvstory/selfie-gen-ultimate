@@ -1680,7 +1680,23 @@ class ImageCarousel(tk.Frame):
             _persist_sash()
             _stop_video()
             top.destroy()
-            if 0 <= idx < len(entries):
+            if not (0 <= idx < len(entries)):
+                return
+            # `entries` is a snapshot from when the modal opened, but the live
+            # session may have changed (another tab added/removed images) while
+            # it was open. Navigate by the selected entry's PATH against the
+            # CURRENT session so we jump to the right file, not a stale index.
+            # (CodeRabbit Major)
+            target_path = entries[idx].path
+            live = self.image_session.images
+            live_idx = next(
+                (i for i, e in enumerate(live) if e.path == target_path), None
+            )
+            if live_idx is not None:
+                self.image_session.navigate_to(live_idx)
+            elif idx < len(live):
+                # Path gone (removed) — fall back to the snapshot position,
+                # clamped to the current length.
                 self.image_session.navigate_to(idx)
 
         listbox.bind("<Double-Button-1>", lambda e: _confirm())

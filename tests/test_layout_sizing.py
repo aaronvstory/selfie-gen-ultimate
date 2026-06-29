@@ -117,6 +117,21 @@ class LayoutSizingTests(unittest.TestCase):
         self.assertGreaterEqual(wide_drop["sash_log_drop_split"], 600)
         self.assertLessEqual(814 - wide_drop["sash_log_drop_split"], 214)
 
+        # Opposite edge: a too-LARGE log_drop_split (drop zone too NARROW, e.g.
+        # the log eats almost everything) gets clamped DOWN so the drop zone
+        # stays >= 184px. Proves both edges of the 184-214px band (CodeRabbit).
+        narrow_drop, narrow_changed = sanitize_sash_layout(
+            sash_dropzone=500,
+            sash_prompt_split=620,
+            sash_queue=286,
+            sash_log=150,
+            sash_log_drop_split=790,  # would leave drop zone 814-790=24px
+            root_width=1100,
+            root_height=900,
+        )
+        self.assertTrue(narrow_changed)
+        self.assertGreaterEqual(814 - narrow_drop["sash_log_drop_split"], 184)
+
 
 class ParseGeometrySizeTests(unittest.TestCase):
     """Guards on the geometry parser used by main_window's pre-sash clamp.
