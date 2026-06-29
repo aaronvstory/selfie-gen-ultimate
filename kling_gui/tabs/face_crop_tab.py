@@ -173,12 +173,12 @@ class FaceCropTab(tk.Frame):
     """Tab 0: Detect face in ID card photo and produce a 3:4 passport crop."""
 
     # Vision (OpenRouter) models for the AI Analysis accordion section.
-    _ANALYSIS_BUILTIN_MODELS = [
+    _ANALYSIS_BUILTIN_MODELS = (
         ("Seed 1.6 Flash", "bytedance-seed/seed-1.6-flash"),
         ("GPT-4o Mini", "openai/gpt-4o-mini"),
         ("Claude 3.5 Haiku", "anthropic/claude-3.5-haiku"),
         ("Gemini 2.0 Flash", "google/gemini-2.0-flash-001"),
-    ]
+    )
     _ANALYSIS_DEFAULT_VISION_PROMPT = (
         "You are a portrait photo analyzer for AI image generation. "
         "Analyze the provided portrait image and generate a detailed prompt that "
@@ -702,7 +702,7 @@ class FaceCropTab(tk.Frame):
 
     # ── Right Pane Tools Panel (built by main_window) ────────────────
 
-    _SECTIONS = ["polish", "expand", "upscale", "ai_analysis"]  # accordion section names
+    _SECTIONS = ("polish", "expand", "upscale", "ai_analysis")  # accordion section names
 
     def build_tools_panel(self, parent):
         """Build the tools panel (Polish + Outpaint + Upscale + Send) inside *parent*.
@@ -1566,11 +1566,13 @@ class FaceCropTab(tk.Frame):
             self.log("No image selected in carousel", "warning")
             return
 
-        self._set_analysis_busy(True)
-        self._analysis_send_btn.config(state=tk.DISABLED)
         model = self._analysis_selected_model_endpoint()
         system_prompt = self._analysis_system_prompt()
+        # Persist BEFORE flipping busy, so a save failure can't strand the
+        # Analyze button disabled until restart. (CodeRabbit)
         self._save_config_now()
+        self._set_analysis_busy(True)
+        self._analysis_send_btn.config(state=tk.DISABLED)
 
         # Resolve the toplevel in the MAIN thread — Tkinter is not thread-safe,
         # so the worker must not call self.winfo_toplevel(). It dispatches UI
@@ -1600,7 +1602,7 @@ class FaceCropTab(tk.Frame):
                 )
                 analyzer.set_progress_callback(
                     lambda msg, lvl: _safe_after(
-                        lambda m=msg, l=lvl: self.log(m, l)
+                        lambda m=msg, level=lvl: self.log(m, level)
                     )
                 )
                 result = analyzer.analyze_image(image_path)

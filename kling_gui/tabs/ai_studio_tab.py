@@ -217,19 +217,71 @@ class AIStudioTab(tk.Frame):
             font=(FONT_FAMILY, 9),
         ).pack(side=tk.LEFT)
 
-        # ── Controls ──────────────────────────────────────────────────
-        controls = tk.Frame(outer, bg=COLORS["bg_panel"])
-        controls.pack(fill=tk.X, pady=(0, 4))
+        # ── 3-column body: BEFORE | AFTER | OPTIONS ───────────────────
+        # Image panes get the bulk of the width (~38% each); the options
+        # column is a tight, self-contained vertical stack (~24%).
+        body = tk.Frame(outer, bg=COLORS["bg_panel"])
+        body.pack(fill=tk.BOTH, expand=True)
+        body.grid_columnconfigure(0, weight=38, uniform="aistudio")
+        body.grid_columnconfigure(2, weight=38, uniform="aistudio")
+        body.grid_columnconfigure(4, weight=24, uniform="aistudio")
+        body.grid_rowconfigure(0, weight=1)
 
-        model_row = tk.Frame(controls, bg=COLORS["bg_panel"])
-        model_row.pack(fill=tk.X, pady=(0, 4))
+        # Column 0: BEFORE.
+        before_col = tk.Frame(body, bg=COLORS["bg_panel"])
+        before_col.grid(row=0, column=0, sticky="nsew")
         tk.Label(
-            model_row,
-            text="Edit Model:",
+            before_col,
+            text="Before (original)",
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 9),
-        ).pack(side=tk.LEFT, padx=(0, 6))
+            font=(FONT_FAMILY, 9, "bold"),
+        ).pack(anchor="w")
+        self._before_canvas = tk.Canvas(
+            before_col, bg=COLORS["bg_input"], highlightthickness=0
+        )
+        self._before_canvas.pack(fill=tk.BOTH, expand=True)
+        self._before_canvas.bind(
+            "<Configure>", lambda e: self._rerender_before()
+        )
+
+        tk.Frame(body, bg=COLORS["border"], width=2).grid(
+            row=0, column=1, sticky="ns", padx=4
+        )
+
+        # Column 2: AFTER.
+        after_col = tk.Frame(body, bg=COLORS["bg_panel"])
+        after_col.grid(row=0, column=2, sticky="nsew")
+        self._after_caption = tk.Label(
+            after_col,
+            text="After (run an edit)",
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 9, "bold"),
+        )
+        self._after_caption.pack(anchor="w")
+        self._after_canvas = tk.Canvas(
+            after_col, bg=COLORS["bg_input"], highlightthickness=0
+        )
+        self._after_canvas.pack(fill=tk.BOTH, expand=True)
+        self._after_canvas.bind("<Configure>", lambda e: self._rerender_after())
+
+        tk.Frame(body, bg=COLORS["border"], width=2).grid(
+            row=0, column=3, sticky="ns", padx=4
+        )
+
+        # Column 4: OPTIONS (tight vertical stack — must not overflow).
+        self._build_options_column(body)
+
+    def _build_options_column(self, body):
+        opts = tk.Frame(body, bg=COLORS["bg_panel"])
+        opts.grid(row=0, column=4, sticky="nsew")
+
+        # Model.
+        tk.Label(
+            opts, text="Edit Model:", bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"], font=(FONT_FAMILY, 9),
+        ).pack(anchor="w")
         self._model_var = tk.StringVar(
             value=(
                 self._model_labels[self._selected_model_index]
@@ -238,26 +290,22 @@ class AIStudioTab(tk.Frame):
             )
         )
         self._model_combo = ttk.Combobox(
-            model_row,
+            opts,
             textvariable=self._model_var,
             values=self._model_labels,
             state="readonly",
             font=(FONT_FAMILY, 9),
-            width=40,
         )
-        self._model_combo.pack(side=tk.LEFT)
+        self._model_combo.pack(fill=tk.X, pady=(2, 6))
         self._model_combo.bind("<<ComboboxSelected>>", self._on_model_changed)
 
-        # Prompt entry.
+        # Prompt (compact; scrollbar handles longer text).
         tk.Label(
-            controls,
-            text="Edit Prompt:",
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 9),
+            opts, text="Edit Prompt:", bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"], font=(FONT_FAMILY, 9),
         ).pack(anchor="w")
-        prompt_wrap = tk.Frame(controls, bg=COLORS["bg_panel"])
-        prompt_wrap.pack(fill=tk.X, pady=(2, 4))
+        prompt_wrap = tk.Frame(opts, bg=COLORS["bg_panel"])
+        prompt_wrap.pack(fill=tk.X, pady=(2, 6))
         self._prompt_text = tk.Text(
             prompt_wrap,
             height=4,
@@ -265,7 +313,7 @@ class AIStudioTab(tk.Frame):
             bg=COLORS["bg_input"],
             fg=COLORS["text_light"],
             insertbackground=COLORS["text_light"],
-            font=(FONT_FAMILY, 10),
+            font=(FONT_FAMILY, 9),
             relief="flat",
             highlightthickness=1,
             highlightbackground=COLORS["border"],
@@ -280,60 +328,88 @@ class AIStudioTab(tk.Frame):
         if last_prompt:
             self._prompt_text.insert("1.0", last_prompt)
 
-        # Preset buttons row (rebuilt on edit).
-        preset_label_row = tk.Frame(controls, bg=COLORS["bg_panel"])
-        preset_label_row.pack(fill=tk.X)
+        # Presets header + Edit.
+        preset_header = tk.Frame(opts, bg=COLORS["bg_panel"])
+        preset_header.pack(fill=tk.X)
         tk.Label(
-            preset_label_row,
-            text="Presets:",
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 9),
-        ).pack(side=tk.LEFT, padx=(0, 6))
+            preset_header, text="Presets:", bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"], font=(FONT_FAMILY, 9),
+        ).pack(side=tk.LEFT)
         ttk.Button(
-            preset_label_row,
-            text="Edit Presets…",
+            preset_header,
+            text="Edit…",
             style=TTK_BTN_SECONDARY,
+            width=6,
             command=debounce_command(
                 self._open_presets_editor, key="aistudio_edit_presets"
             ),
         ).pack(side=tk.RIGHT)
-        self._preset_row = tk.Frame(controls, bg=COLORS["bg_panel"])
-        self._preset_row.pack(fill=tk.X, pady=(2, 4))
+
+        # Presets — vertical full-width stack, scrollable so they never
+        # overflow the column regardless of how many the user defines.
+        preset_box = tk.Frame(opts, bg=COLORS["bg_panel"], height=132)
+        preset_box.pack(fill=tk.X, pady=(2, 6))
+        preset_box.pack_propagate(False)
+        self._preset_canvas = tk.Canvas(
+            preset_box, bg=COLORS["bg_panel"], highlightthickness=0
+        )
+        preset_scroll = ttk.Scrollbar(
+            preset_box, orient="vertical", command=self._preset_canvas.yview
+        )
+        self._preset_inner = tk.Frame(self._preset_canvas, bg=COLORS["bg_panel"])
+        self._preset_inner.bind(
+            "<Configure>",
+            lambda e: self._preset_canvas.configure(
+                scrollregion=self._preset_canvas.bbox("all")
+            ),
+        )
+        self._preset_window_id = self._preset_canvas.create_window(
+            (0, 0), window=self._preset_inner, anchor="nw"
+        )
+        self._preset_canvas.configure(yscrollcommand=preset_scroll.set)
+        self._preset_canvas.bind(
+            "<Configure>",
+            lambda e: self._preset_canvas.itemconfigure(
+                self._preset_window_id, width=e.width
+            ),
+        )
+        preset_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._preset_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._rebuild_preset_buttons()
 
-        # Action row.
-        action_row = tk.Frame(controls, bg=COLORS["bg_panel"])
-        action_row.pack(fill=tk.X, pady=(2, 2))
+        # Run / Abort.
+        run_row = tk.Frame(opts, bg=COLORS["bg_panel"])
+        run_row.pack(fill=tk.X, pady=(2, 2))
         self._run_btn = ttk.Button(
-            action_row,
+            run_row,
             text="Run Edit",
             style=TTK_BTN_WORKFLOW,
             command=debounce_command(self._on_run, key="aistudio_run"),
         )
-        self._run_btn.pack(side=tk.LEFT)
+        self._run_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self._abort_btn = ttk.Button(
-            action_row,
+            run_row,
             text="Abort",
             style=TTK_BTN_DANGER,
             state=tk.DISABLED,
             command=debounce_command(self._on_abort, key="aistudio_abort"),
         )
-        self._abort_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self._abort_btn.pack(side=tk.LEFT, padx=(4, 0))
+
         self._status_label = tk.Label(
-            action_row,
+            opts,
             text="",
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 9),
+            anchor="w",
+            wraplength=240,
         )
-        self._status_label.pack(side=tk.LEFT, padx=(10, 0))
+        self._status_label.pack(fill=tk.X, pady=(2, 4))
 
-        # Result-actions row.
-        result_row = tk.Frame(controls, bg=COLORS["bg_panel"])
-        result_row.pack(fill=tk.X, pady=(2, 0))
+        # Result actions — full-width vertical stack.
         self._add_btn = ttk.Button(
-            result_row,
+            opts,
             text="Add to Carousel",
             style=TTK_BTN_SUCCESS,
             state=tk.DISABLED,
@@ -341,17 +417,17 @@ class AIStudioTab(tk.Frame):
                 self._on_add_to_carousel, key="aistudio_add"
             ),
         )
-        self._add_btn.pack(side=tk.LEFT)
+        self._add_btn.pack(fill=tk.X, pady=(0, 3))
         self._use_btn = ttk.Button(
-            result_row,
+            opts,
             text="Use Result as Input",
             style=TTK_BTN_PRIMARY,
             state=tk.DISABLED,
             command=debounce_command(self._on_use_as_input, key="aistudio_use"),
         )
-        self._use_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self._use_btn.pack(fill=tk.X, pady=(0, 3))
         self._zoom_btn = ttk.Button(
-            result_row,
+            opts,
             text="\U0001f50d Zoom Compare",
             style=TTK_BTN_SECONDARY,
             state=tk.DISABLED,
@@ -359,63 +435,22 @@ class AIStudioTab(tk.Frame):
                 self._open_zoom_compare, key="aistudio_zoom"
             ),
         )
-        self._zoom_btn.pack(side=tk.LEFT, padx=(6, 0))
-
-        # ── Before / After viewer ─────────────────────────────────────
-        viewer = tk.Frame(outer, bg=COLORS["bg_panel"])
-        viewer.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
-
-        left = tk.Frame(viewer, bg=COLORS["bg_panel"])
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        tk.Label(
-            left,
-            text="Before (original)",
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 9, "bold"),
-        ).pack(anchor="w")
-        self._before_canvas = tk.Canvas(
-            left, bg=COLORS["bg_input"], highlightthickness=0
-        )
-        self._before_canvas.pack(fill=tk.BOTH, expand=True)
-        self._before_canvas.bind(
-            "<Configure>", lambda e: self._rerender_before()
-        )
-
-        tk.Frame(viewer, bg=COLORS["border"], width=2).pack(
-            side=tk.LEFT, fill=tk.Y, padx=4
-        )
-
-        right = tk.Frame(viewer, bg=COLORS["bg_panel"])
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._after_caption = tk.Label(
-            right,
-            text="After (run an edit)",
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 9, "bold"),
-        )
-        self._after_caption.pack(anchor="w")
-        self._after_canvas = tk.Canvas(
-            right, bg=COLORS["bg_input"], highlightthickness=0
-        )
-        self._after_canvas.pack(fill=tk.BOTH, expand=True)
-        self._after_canvas.bind("<Configure>", lambda e: self._rerender_after())
+        self._zoom_btn.pack(fill=tk.X)
 
     def _rebuild_preset_buttons(self):
-        for child in self._preset_row.winfo_children():
+        for child in self._preset_inner.winfo_children():
             child.destroy()
         for idx, preset in enumerate(self._presets):
             name = preset.get("name", f"Preset {idx + 1}")
             ttk.Button(
-                self._preset_row,
+                self._preset_inner,
                 text=name,
                 style=TTK_BTN_SECONDARY,
                 command=debounce_command(
                     lambda i=idx: self._apply_preset(i),
                     key=f"aistudio_preset_{idx}",
                 ),
-            ).pack(side=tk.LEFT, padx=(0, 4), pady=2)
+            ).pack(fill=tk.X, pady=1)
 
     def _apply_preset(self, index: int):
         if not (0 <= index < len(self._presets)):
@@ -485,6 +520,9 @@ class AIStudioTab(tk.Frame):
     # ── Session sync ──────────────────────────────────────────────────
 
     def _on_session_change(self):
+        # Never swap the input out from under an in-flight edit.
+        if self._busy:
+            return
         path = self.image_session.active_image_path
         if not path:
             return
@@ -505,6 +543,10 @@ class AIStudioTab(tk.Frame):
             return
         self._last_synced_carousel_path = path
         self._set_before(path)
+        # The Before image changed under a previous result — drop the stale
+        # After preview + disable its action buttons so the user can't add or
+        # zoom a result that belongs to a different input. (CodeRabbit Major)
+        self._clear_after()
 
     # ── Run edit ──────────────────────────────────────────────────────
 
@@ -582,7 +624,7 @@ class AIStudioTab(tk.Frame):
                 )
                 gen.set_progress_callback(
                     lambda msg, lvl: _safe_after(
-                        lambda m=msg, l=lvl: self.log(m, l)
+                        lambda m=msg, level=lvl: self.log(m, level)
                     )
                 )
                 if self._abort_event is not None:
