@@ -19,9 +19,9 @@ else:
         sys.path.append(_app_root)
 
 from .face_crop_tab import FaceCropTab
-from .prep_tab import PrepTab
+from .ai_studio_tab import AIStudioTab
 from .selfie_tab import SelfieTab
 from .expand_tab import ExpandTab
 from .video_tab import VideoTab
 
-__all__ = ["FaceCropTab", "PrepTab", "SelfieTab", "ExpandTab", "VideoTab"]
+__all__ = ["FaceCropTab", "AIStudioTab", "SelfieTab", "ExpandTab", "VideoTab"]

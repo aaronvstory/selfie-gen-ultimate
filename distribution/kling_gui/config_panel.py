@@ -2944,7 +2944,7 @@ class ConfigPanel(tk.Frame):
                 self.negative_prompt_preview.config(font=_resolved_font)
 
     def set_active_prompt_text(self, text: str):
-        """Set the text of the active prompt slot (called by PrepTab vision analysis).
+        """Set the text of the active prompt slot (legacy prompt-writer helper).
 
         Writes into the currently selected slot and persists to config.
         """

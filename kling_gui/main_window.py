@@ -77,7 +77,7 @@ from .image_state import ImageSession
 from .carousel_widget import ImageCarousel
 from .compare_panel import ComparePanel
 from .session_controller import SessionController
-from .tabs import FaceCropTab, PrepTab, SelfieTab, ExpandTab, VideoTab
+from .tabs import FaceCropTab, AIStudioTab, SelfieTab, ExpandTab, VideoTab
 from .theme import (
     BUTTON_DISABLED_TEXT_COLOR,
     BUTTON_TEXT_COLOR,
@@ -1638,6 +1638,12 @@ class KlingGUIWindow:
             "bfl_api_key": "",
             "upload_provider_order": ["fal_cdn", "freeimage"],
             "openrouter_vision_system_prompt": "",
+            # AI Studio (Step 1 image editor). Presets are seeded from the
+            # curated default set by _migrate_legacy_defaults (ai_studio_presets
+            # left empty here so the seed runs on existing configs too).
+            "ai_studio_model_endpoint": "fal-ai/nano-banana-2/edit",
+            "ai_studio_last_custom_prompt": "",
+            "ai_studio_presets": [],
             "selfie_output_mode": "source",
             "selfie_output_folder": "",
             # v2.26: was 300; new bounds are DEFAULT=120 MAX=180. Stamp
@@ -1881,6 +1887,27 @@ class KlingGUIWindow:
                     "(current_model was empty/null)."
                 )
             config["default_model_standard_migrated_v241"] = True
+
+        # AI Studio preset seed (2026-06-29, v2.46): the Step 1 image editor
+        # ships a curated set of edit presets. Seed them ONCE if the config has
+        # none (covers both fresh installs whose template didn't carry presets
+        # and existing installs upgrading into the AI Studio feature). A flag
+        # gates it so a user who later deletes all presets keeps them deleted.
+        if not config.get("ai_studio_presets_seeded_v1"):
+            existing = config.get("ai_studio_presets")
+            if not isinstance(existing, list) or not existing:
+                try:
+                    from .tabs.ai_studio_tab import DEFAULT_AI_STUDIO_PRESETS
+
+                    config["ai_studio_presets"] = [
+                        dict(p) for p in DEFAULT_AI_STUDIO_PRESETS
+                    ]
+                    _safe_print(
+                        "Seeded AI Studio edit presets (curated defaults)."
+                    )
+                except Exception as exc:
+                    _safe_print(f"AI Studio preset seed skipped: {exc}")
+            config["ai_studio_presets_seeded_v1"] = True
 
         # Slot 3 defaults backfill (2026-05-21): older saved configs
         # carry empty slot 3 prompt + negative because the template
@@ -2548,23 +2575,21 @@ class KlingGUIWindow:
             config=self.config,
             config_getter=lambda: self.config,
             log_callback=self._log,
-            notebook_switcher_prep=lambda: self.notebook.select(1),
             notebook_switcher_selfie=lambda: self.notebook.select(2),
             config_saver=self._save_config,
         )
         self.notebook.add(self.face_crop_tab, text="0. Face Crop / AI Polish")
 
-        # Tab 1: AI Analysis
-        self.prep_tab = PrepTab(
+        # Tab 1: AI Studio (image editor)
+        self.ai_studio_tab = AIStudioTab(
             self.notebook,
             image_session=self.image_session,
             config=self.config,
             config_getter=lambda: self.config,
             log_callback=self._log,
-            prompt_writer=self._write_to_active_prompt,
             config_saver=self._save_config,
         )
-        self.notebook.add(self.prep_tab, text="1. AI Analysis")
+        self.notebook.add(self.ai_studio_tab, text="1. AI Studio")
 
         # Tab 2: Generate Selfie
         self.selfie_tab = SelfieTab(
@@ -2592,10 +2617,11 @@ class KlingGUIWindow:
         )
         self.notebook.add(self.expand_tab, text="2.5 Expand")
 
-        # Wire Step 1 → Step 2 prompt connection (set after both tabs exist)
-        self.prep_tab.set_selfie_prompt_writer(self.selfie_tab.set_prompt)
-        self.prep_tab.set_notebook_switcher_selfie(lambda: self.notebook.select(2))
-        self.prep_tab.set_selfie_config_getter(
+        # Wire Step 0 (AI Analysis section) → Step 2 prompt connection. The
+        # vision-analysis feature lives in the Face Crop tab's accordion now;
+        # its "Send result to Step 2" path writes into the Selfie tab.
+        self.face_crop_tab.set_selfie_prompt_writer(self.selfie_tab.set_prompt)
+        self.face_crop_tab.set_selfie_config_getter(
             lambda: {
                 "composer_gender": self.selfie_tab.gender_var.get(),
                 "composer_camera_style": self.selfie_tab.style_var.get(),
@@ -2749,7 +2775,12 @@ class KlingGUIWindow:
         self._start_autosave_timer()
 
     def _write_to_active_prompt(self, text: str):
-        """Write text to the active prompt slot (used by PrepTab vision analysis)."""
+        """Write text to the active prompt slot.
+
+        Legacy helper (the old Step 1 vision-analysis path used it). Kept for the
+        config panel / any future caller; the AI Analysis section in Step 0 now
+        sends its result straight to Step 2 instead.
+        """
         if hasattr(self, "config_panel") and self.config_panel:
             self.config_panel.set_active_prompt_text(text)
 
@@ -5579,7 +5610,7 @@ class KlingGUIWindow:
         """Handle configuration changes from the config panel."""
         self.config.update(new_config)
         # Collect and merge any tab-specific config
-        for tab in ["face_crop_tab", "prep_tab", "selfie_tab", "expand_tab"]:
+        for tab in ["face_crop_tab", "ai_studio_tab", "selfie_tab", "expand_tab"]:
             tab_widget = getattr(self, tab, None)
             if tab_widget and hasattr(tab_widget, "get_config_updates"):
                 try:
@@ -6585,7 +6616,7 @@ class KlingGUIWindow:
         """Handle window close."""
         # Check both queue and tab worker threads
         busy_tabs = []
-        for tab_name in ["face_crop_tab", "prep_tab", "selfie_tab", "expand_tab"]:
+        for tab_name in ["face_crop_tab", "ai_studio_tab", "selfie_tab", "expand_tab"]:
             tab_widget = getattr(self, tab_name, None)
             if tab_widget and getattr(tab_widget, "_busy", False):
                 busy_tabs.append(tab_name.replace("_tab", "").title())
@@ -6632,7 +6663,7 @@ class KlingGUIWindow:
             self._layout_save_after_id = None
 
         # Collect tab configs before saving
-        for tab in ["face_crop_tab", "prep_tab", "selfie_tab", "expand_tab"]:
+        for tab in ["face_crop_tab", "ai_studio_tab", "selfie_tab", "expand_tab"]:
             tab_widget = getattr(self, tab, None)
             if tab_widget and hasattr(tab_widget, "get_config_updates"):
                 try:

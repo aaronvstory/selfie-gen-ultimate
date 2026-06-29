@@ -31,6 +31,9 @@ def derive_display_tag(entry) -> tuple:
         return "[GENERATED]", "success"
     if entry.source_type == "video":
         return "[VIDEO]", "warning_light"
+    if entry.source_type == "edit":
+        # AI Studio image edits (Nano Banana / Kontext / GPT Image edit).
+        return "[EDIT]", "accent_blue"
 
     if not ops:
         # Final fallback for typed entries without ops

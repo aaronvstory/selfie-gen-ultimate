@@ -116,7 +116,7 @@ def _sanitize_name(name: str) -> str:
 #: gen-* folders yields the real project root. An "input" image, by contrast,
 #: can be an external file dragged in from anywhere (Downloads, another project)
 #: and must NOT anchor the project identity (Codex P2 #2, PR #75).
-_GENERATED_SOURCE_TYPES = {"selfie", "outpaint", "polish", "upscale", "video"}
+_GENERATED_SOURCE_TYPES = {"selfie", "outpaint", "polish", "upscale", "video", "edit"}
 
 
 def _resolve_session_folder_path(image_session) -> Optional[str]:

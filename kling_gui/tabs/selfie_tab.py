@@ -389,7 +389,7 @@ class SelfieTab(tk.Frame):
         # add a scrollbar. The prior ``height=12 + fill=BOTH expand=True``
         # made the editor eat ~half the visible Step 2 column on Windows,
         # squeezing the model-selector list, slot picker, and downstream
-        # buttons. Mirror the prep_tab.py pattern (lines 199-221): wrap
+        # buttons. Use the shared prompt-editor pattern: wrap
         # Text + ttk.Scrollbar in a frame, pack scrollbar RIGHT-Y +
         # Text LEFT-X-expand, fixed height=8 so the LabelFrame settles
         # at its content size and the carousel/queue panes keep their
@@ -461,7 +461,7 @@ class SelfieTab(tk.Frame):
 
         self._customized_status = tk.Label(
             self._customized_frame,
-            text="Template ready \u2014 run AI Analysis in Step 1, then Send to Step 2",
+            text="Template ready \u2014 run AI Analysis in Step 0, then Send to Step 2",
             font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"],
             fg=COLORS["text_dim"],
@@ -1111,7 +1111,7 @@ class SelfieTab(tk.Frame):
         self._handoff_identity_data = None
         self._handoff_resolved = False
         self._customized_status.config(
-            text="Template ready \u2014 run AI Analysis in Step 1, then Send to Step 2",
+            text="Template ready \u2014 run AI Analysis in Step 0, then Send to Step 2",
             fg=COLORS["text_dim"],
         )
         self._save_config_now()
@@ -1129,7 +1129,7 @@ class SelfieTab(tk.Frame):
         self.config["selfie_prompt_template"] = self._raw_template
         self.config["selfie_template_fields"] = self._extract_json_fields(self.DEFAULT_PROMPT_TEMPLATE)
         self._customized_status.config(
-            text="Template ready \u2014 run AI Analysis in Step 1, then Send to Step 2",
+            text="Template ready \u2014 run AI Analysis in Step 0, then Send to Step 2",
             fg=COLORS["text_dim"],
         )
         self._save_config_now()

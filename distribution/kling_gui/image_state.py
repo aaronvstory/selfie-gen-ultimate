@@ -11,7 +11,7 @@ from path_utils import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS
 logger = logging.getLogger(__name__)
 
 
-_VALID_SOURCE_TYPES = {"input", "selfie", "outpaint", "polish", "upscale", "video"}
+_VALID_SOURCE_TYPES = {"input", "selfie", "outpaint", "polish", "upscale", "video", "edit"}
 # ``_VIDEO_EXTENSIONS`` is now an alias of :data:`path_utils.VIDEO_EXTENSIONS`
 # imported above. PR #53 round 11 caught a ``.m4v`` drift between the two
 # sets when they were declared independently; round 13 (subagent M2)
@@ -51,7 +51,7 @@ class ImageEntry:
     """
 
     path: str
-    source_type: str  # "input", "selfie", "outpaint", "polish", "upscale"
+    source_type: str  # "input", "selfie", "outpaint", "polish", "upscale", "edit"
     label: str = ""
     rotation: int = 0
     similarity: Optional[str] = None  # "72%" or None
