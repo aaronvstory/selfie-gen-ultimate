@@ -752,7 +752,14 @@ class AIStudioTab(tk.Frame):
         top.transient(self.winfo_toplevel())
 
         # Shared zoom/pan state drives BOTH canvases in lockstep.
-        state = {"scale": 1.0, "ox": 0.0, "oy": 0.0, "drag": None}
+        # "normalize": when True (default), each image is scaled to fill its OWN
+        # pane at scale=1.0, so a Before and After of different resolutions show
+        # at the SAME on-screen size and compare cleanly. When False, both share
+        # one scale = true 1:1 pixel ratio (a higher-res image looks bigger).
+        state = {
+            "scale": 1.0, "ox": 0.0, "oy": 0.0, "drag": None,
+            "normalize": True,
+        }
         top._zoom_photos = []  # retain refs to prevent GC
 
         toolbar = tk.Frame(top, bg=COLORS["bg_panel"])
@@ -764,6 +771,8 @@ class AIStudioTab(tk.Frame):
             fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 9),
         ).pack(side=tk.LEFT, padx=8, pady=4)
+        norm_btn = ttk.Button(toolbar, text="", style=TTK_BTN_SECONDARY, width=22)
+        norm_btn.pack(side=tk.LEFT, padx=8, pady=4)
 
         body = tk.Frame(top, bg=COLORS["bg_main"])
         body.pack(fill=tk.BOTH, expand=True)
@@ -798,25 +807,37 @@ class AIStudioTab(tk.Frame):
         )
         right_canvas.pack(fill=tk.BOTH, expand=True)
 
-        def _fit_base_scale():
-            """Base scale so each image fits its canvas at scale=1.0."""
-            cw = max(left_canvas.winfo_width(), 100)
-            ch = max(left_canvas.winfo_height(), 100)
-            iw = max(before_img.width, after_img.width, 1)
-            ih = max(before_img.height, after_img.height, 1)
-            return min(cw / iw, ch / ih)
+        def _fit(img, canvas):
+            """Scale to fit one image into one canvas at scale=1.0."""
+            cw = max(canvas.winfo_width(), 100)
+            ch = max(canvas.winfo_height(), 100)
+            return min(cw / max(img.width, 1), ch / max(img.height, 1))
+
+        def _base_scales():
+            """Return (base_left, base_right).
+
+            normalize=True  -> each image fits its OWN pane (same display size).
+            normalize=False -> both share the smaller fit -> true 1:1 pixels.
+            """
+            bl = _fit(before_img, left_canvas)
+            br = _fit(after_img, right_canvas)
+            if state["normalize"]:
+                return bl, br
+            shared = min(bl, br)
+            return shared, shared
 
         def _redraw(recreate=True):
             # Panning doesn't change scale, so resizing (LANCZOS) on every
             # mouse-motion event would lag badly on large images. Re-resize
-            # only when scale/canvas-size actually change (recreate=True);
+            # only when scale/canvas-size/mode actually change (recreate=True);
             # pan just repositions the cached PhotoImage (recreate=False).
-            base = _fit_base_scale()
-            eff = base * state["scale"]
-            cache_key = (round(eff, 4),)
+            bl, br = _base_scales()
+            eff_l = bl * state["scale"]
+            eff_r = br * state["scale"]
+            cache_key = (round(eff_l, 4), round(eff_r, 4))
             if recreate or state.get("photo_key") != cache_key or not top._zoom_photos:
                 top._zoom_photos = []
-                for src in (before_img, after_img):
+                for src, eff in ((before_img, eff_l), (after_img, eff_r)):
                     nw = max(int(src.width * eff), 1)
                     nh = max(int(src.height * eff), 1)
                     resized = src.resize((nw, nh), Image.LANCZOS)
@@ -835,6 +856,20 @@ class AIStudioTab(tk.Frame):
                     image=photo,
                     anchor="center",
                 )
+
+        def _update_norm_btn():
+            norm_btn.config(
+                text=("Mode: Fit each ✓" if state["normalize"] else "Mode: 1:1 pixels")
+            )
+
+        def _toggle_norm():
+            state["normalize"] = not state["normalize"]
+            state.update({"scale": 1.0, "ox": 0.0, "oy": 0.0})
+            _update_norm_btn()
+            _redraw()
+
+        norm_btn.config(command=_toggle_norm)
+        _update_norm_btn()
 
         def _on_wheel(event):
             # Normalize wheel delta across platforms.

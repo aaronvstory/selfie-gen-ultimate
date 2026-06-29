@@ -86,6 +86,14 @@ FAL_API_DOCS_URL = "https://docs.fal.ai"
 FONT_FAMILY = "Helvetica" if sys.platform == "darwin" else "Segoe UI"
 EMOJI_FONT_FAMILY = "Apple Color Emoji" if sys.platform == "darwin" else "Segoe UI Emoji"
 
+# Vertical breathing room between the Step-3 (Video) config rows. Windows
+# Tk renders Checkbutton/Combobox/Entry taller than macOS, so the stacked
+# Logging/Filter/Video/Motion rows overflow on Windows while macOS is fine.
+# Tighten the inter-row gap on Windows only; macOS keeps its roomier spacing.
+_IS_MACOS = sys.platform == "darwin"
+_ROW_PADY = (0, 4) if _IS_MACOS else (0, 1)
+_ROW_PADY_TIGHT = (0, 2) if _IS_MACOS else (0, 1)
+
 # UI Configuration
 COMBOBOX_DROPDOWN_HEIGHT = 25  # Number of items visible in dropdown (default ~10)
 
@@ -1110,7 +1118,7 @@ class ConfigPanel(tk.Frame):
 
         # Allow reprocessing
         rB = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rB.pack(fill=tk.X, pady=(0, 4))
+        rB.pack(fill=tk.X, pady=_ROW_PADY)
         tk.Label(rB, text="", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], width=lbl_w).pack(side=tk.LEFT)
         self.reprocess_var = tk.BooleanVar(value=False)
@@ -1159,7 +1167,7 @@ class ConfigPanel(tk.Frame):
 
         # Logging
         rC = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rC.pack(fill=tk.X, pady=(0, 4))
+        rC.pack(fill=tk.X, pady=_ROW_PADY)
         tk.Label(rC, text="Logging:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
                  width=lbl_w, anchor="w").pack(side=tk.LEFT)
@@ -1199,7 +1207,7 @@ class ConfigPanel(tk.Frame):
 
         # File Filter — replaces the old "Folder:" row with clearer labeling
         rD = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rD.pack(fill=tk.X, pady=(0, 2))
+        rD.pack(fill=tk.X, pady=_ROW_PADY_TIGHT)
         tk.Label(rD, text="Filter:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
                  width=lbl_w, anchor="w").pack(side=tk.LEFT)
@@ -1254,7 +1262,7 @@ class ConfigPanel(tk.Frame):
 
         # Video settings
         rE = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rE.pack(fill=tk.X, pady=(0, 4))
+        rE.pack(fill=tk.X, pady=_ROW_PADY)
         tk.Label(rE, text="Video:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
                  width=lbl_w, anchor="w").pack(side=tk.LEFT)
@@ -1313,7 +1321,7 @@ class ConfigPanel(tk.Frame):
         # end. Widgets are created ONCE; only their `state` changes —
         # never destroyed/recreated — so values survive model switches.
         rEF = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rEF.pack(fill=tk.X, pady=(0, 4))
+        rEF.pack(fill=tk.X, pady=_ROW_PADY)
         self._motion_row = rEF
         tk.Label(rEF, text="Motion:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
@@ -1378,7 +1386,7 @@ class ConfigPanel(tk.Frame):
 
         # Seed & misc options
         rF = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rF.pack(fill=tk.X, pady=(0, 4))
+        rF.pack(fill=tk.X, pady=_ROW_PADY)
         tk.Label(rF, text="Options:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
                  width=lbl_w, anchor="w").pack(side=tk.LEFT)

@@ -1698,6 +1698,10 @@ class KlingGUIWindow:
             "sash_queue": 405,  # Width of left bottom pane (carousel 25%, user-tested at 1621w)
             "sash_log": 150,  # Height of log pane (before history)
             "sash_log_drop_split": 973,  # Width of LOG pane (~80% of right section — wider log / squarer drop zone)
+            # Carousel "Browse Files" modal: remembered list/preview split width
+            # and last view mode ("list" or "grid"). 0/"" = use defaults.
+            "carousel_browser_sash": 0,
+            "carousel_browser_view": "list",
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)
@@ -2695,6 +2699,8 @@ class KlingGUIWindow:
             carousel_frame,
             image_session=self.image_session,
             log_callback=self._log,
+            config=self.config,
+            config_saver=self._save_config,
         )
         self.carousel.pack(fill=tk.BOTH, expand=True)
         self.carousel.set_on_compare(self._toggle_compare)
@@ -2771,11 +2777,11 @@ class KlingGUIWindow:
                 "drop_valid": "#6A58C6",
             },
         )
-        # minsize 190 (was 220): the drop zone is a compact square; a 220 floor
+        # minsize 184 (was 220): the drop zone is a compact square; a 220 floor
         # was part of why it kept rendering too wide. The layout clamp keeps it
-        # in a ~190–250px band so it never hogs width from the Processing Log
-        # while leaving room for its border (not clipped).
-        self.log_drop_paned.add(self.drop_zone, minsize=190)
+        # in a ~184–214px band so it never hogs width from the Processing Log
+        # while leaving a few px so its border isn't clipped.
+        self.log_drop_paned.add(self.drop_zone, minsize=184)
         self.right_paned.add(log_frame, minsize=100)
 
         # History panel (bottom right pane)

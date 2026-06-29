@@ -286,11 +286,18 @@ class ImageCarousel(tk.Frame):
         parent,
         image_session: ImageSession,
         log_callback: Callable[[str, str], None],
+        config: Optional[dict] = None,
+        config_saver: Optional[Callable[[], None]] = None,
         **kwargs,
     ):
         super().__init__(parent, bg=COLORS["bg_panel"], **kwargs)
         self.image_session = image_session
         self.log = log_callback
+        # Optional shared config for persisting the file-browser modal's sash
+        # position + view mode (list/grid). Both default to None so the many
+        # test/standalone instantiations keep working without config.
+        self._config = config if config is not None else {}
+        self._config_saver = config_saver
 
         # PhotoImage ref to prevent GC
         self._photo: Optional[tk.PhotoImage] = None
@@ -1342,37 +1349,61 @@ class ImageCarousel(tk.Frame):
         top = tk.Toplevel(self)
         top.title("Carousel — Browse Files")
         top.configure(bg=COLORS["bg_panel"])
-        top.geometry("900x560")
+        top.geometry("1040x620")
         top.transient(self.winfo_toplevel())
         top.grab_set()
 
-        state = {"selected": self.image_session.current_index, "photo": None}
+        state = {
+            "selected": self.image_session.current_index,
+            "photo": None,
+            "view": self._config.get("carousel_browser_view", "list"),
+            "video_job": None,         # after-id of the in-modal frame loop
+            "video_cap": None,         # cv2.VideoCapture while playing
+            "grid_thumbs": [],         # retained PhotoImage refs (grid)
+            "playing": False,
+        }
+        if state["view"] not in ("list", "grid"):
+            state["view"] = "list"
 
-        body = tk.Frame(top, bg=COLORS["bg_panel"])
-        body.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-
-        # Left: file list.
-        left = tk.Frame(body, bg=COLORS["bg_panel"])
-        left.pack(side=tk.LEFT, fill=tk.Y)
+        # ── Toolbar: List/Grid toggle ─────────────────────────────────
+        toolbar = tk.Frame(top, bg=COLORS["bg_panel"])
+        toolbar.pack(fill=tk.X, padx=8, pady=(8, 0))
         tk.Label(
-            left, text="Files", bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
+            toolbar, text="Files", bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 9, "bold"),
-        ).pack(anchor="w")
-        list_wrap = tk.Frame(left, bg=COLORS["bg_panel"])
-        list_wrap.pack(fill=tk.Y, expand=True)
+        ).pack(side=tk.LEFT)
+        view_btn = ttk.Button(toolbar, text="", style=TTK_BTN_SECONDARY, width=14)
+        view_btn.pack(side=tk.RIGHT)
+
+        # ── Resizable split: file panel | preview ─────────────────────
+        paned = tk.PanedWindow(
+            top, orient=tk.HORIZONTAL, bg=COLORS["bg_input"],
+            sashwidth=6, sashrelief=tk.RAISED, sashpad=1,
+        )
+        paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        # Left container holds EITHER the list or the grid (swapped on toggle).
+        left = tk.Frame(paned, bg=COLORS["bg_panel"])
+        paned.add(left, minsize=240)
+
+        right = tk.Frame(paned, bg=COLORS["bg_panel"])
+        paned.add(right, minsize=300)
+
+        # ----- List view widgets -----
+        list_frame = tk.Frame(left, bg=COLORS["bg_panel"])
         listbox = tk.Listbox(
-            list_wrap, width=42, height=24,
+            list_frame,
             bg=COLORS["bg_input"], fg=COLORS["text_light"],
             selectbackground=COLORS["accent_blue"], highlightthickness=0,
             font=(FONT_FAMILY, 9), activestyle="none", exportselection=False,
         )
-        lb_scroll = ttk.Scrollbar(list_wrap, orient="vertical", command=listbox.yview)
+        lb_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
         listbox.config(yscrollcommand=lb_scroll.set)
         lb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        listbox.pack(side=tk.LEFT, fill=tk.Y, expand=True)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        for idx, entry in enumerate(entries):
-            tag, _color = derive_display_tag(entry)
+        def _row_label(idx, entry):
+            tag, _c = derive_display_tag(entry)
             size = ""
             try:
                 kb = os.path.getsize(entry.path) / 1024
@@ -1380,30 +1411,122 @@ class ImageCarousel(tk.Frame):
             except Exception:
                 pass
             vid = " ▶" if entry.is_video else ""
-            label = f"{idx + 1}. {tag} {entry.filename}{vid}"
-            if size:
-                label += f"  [{size}]"
-            listbox.insert(tk.END, label)
+            s = f"{idx + 1}. {tag} {entry.filename}{vid}"
+            return s + (f"  [{size}]" if size else "")
 
-        # Right: preview + details.
-        right = tk.Frame(body, bg=COLORS["bg_panel"])
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
-        preview_canvas = tk.Canvas(
-            right, bg=COLORS["bg_input"], highlightthickness=0
+        for idx, entry in enumerate(entries):
+            listbox.insert(tk.END, _row_label(idx, entry))
+
+        # ----- Grid view widgets (scrollable thumbnail grid) -----
+        grid_frame = tk.Frame(left, bg=COLORS["bg_panel"])
+        grid_canvas = tk.Canvas(grid_frame, bg=COLORS["bg_input"], highlightthickness=0)
+        grid_scroll = ttk.Scrollbar(grid_frame, orient="vertical", command=grid_canvas.yview)
+        grid_inner = tk.Frame(grid_canvas, bg=COLORS["bg_input"])
+        grid_inner.bind(
+            "<Configure>",
+            lambda e: grid_canvas.configure(scrollregion=grid_canvas.bbox("all")),
         )
+        grid_window_id = grid_canvas.create_window((0, 0), window=grid_inner, anchor="nw")
+        grid_canvas.configure(yscrollcommand=grid_scroll.set)
+        grid_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        grid_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        grid_canvas.bind(
+            "<MouseWheel>",
+            lambda e: grid_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"),
+        )
+        state["_grid_built"] = False
+        state["_grid_tiles"] = []  # (frame, idx) for selection highlight
+
+        _THUMB = 120
+
+        # ── Right: preview + details + video controls ─────────────────
+        preview_canvas = tk.Canvas(right, bg=COLORS["bg_input"], highlightthickness=0)
         preview_canvas.pack(fill=tk.BOTH, expand=True)
         detail_label = tk.Label(
             right, text="", bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
             font=(FONT_FAMILY, 9), anchor="w", justify="left",
         )
         detail_label.pack(fill=tk.X, pady=(4, 0))
+        vid_btn_row = tk.Frame(right, bg=COLORS["bg_panel"])
+        vid_btn_row.pack(fill=tk.X, pady=(4, 0))
         play_btn = ttk.Button(
-            right, text="▶ Play Video", style=TTK_BTN_SECONDARY,
+            vid_btn_row, text="▶ Play (in modal)", style=TTK_BTN_SECONDARY,
             state=tk.DISABLED,
         )
-        play_btn.pack(anchor="w", pady=(4, 0))
+        play_btn.pack(side=tk.LEFT)
+        ext_btn = ttk.Button(
+            vid_btn_row, text="⧉ Open Externally", style=TTK_BTN_SECONDARY,
+            state=tk.DISABLED,
+        )
+        ext_btn.pack(side=tk.LEFT, padx=(4, 0))
+
+        # ── In-modal video playback (OpenCV frame loop; silent) ───────
+        def _stop_video():
+            if state["video_job"] is not None:
+                try:
+                    top.after_cancel(state["video_job"])
+                except Exception:
+                    pass
+                state["video_job"] = None
+            cap = state["video_cap"]
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+                state["video_cap"] = None
+            state["playing"] = False
+            try:
+                play_btn.config(text="▶ Play (in modal)")
+            except Exception:
+                pass
+
+        def _play_video(path):
+            if state["playing"]:
+                _stop_video()
+                _render_preview(state["selected"])
+                return
+            try:
+                import cv2
+            except Exception:
+                self.log("OpenCV unavailable — opening externally instead.", "warning")
+                self._open_path_external(path)
+                return
+            cap = cv2.VideoCapture(path)
+            if not cap.isOpened():
+                self.log("Could not open video for in-modal playback.", "error")
+                return
+            state["video_cap"] = cap
+            state["playing"] = True
+            play_btn.config(text="■ Stop")
+            fps = cap.get(cv2.CAP_PROP_FPS) or 24
+            delay = max(15, int(1000 / (fps if fps > 0 else 24)))
+
+            def _tick():
+                cap2 = state["video_cap"]
+                if cap2 is None or not state["playing"]:
+                    return
+                ok, frame = cap2.read()
+                if not ok:
+                    cap2.set(cv2.CAP_PROP_POS_FRAMES, 0)  # loop
+                    ok, frame = cap2.read()
+                    if not ok:
+                        _stop_video()
+                        return
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil = Image.fromarray(rgb)
+                cw = max(preview_canvas.winfo_width(), 100)
+                ch = max(preview_canvas.winfo_height(), 100)
+                pil.thumbnail((cw, ch))
+                state["photo"] = ImageTk.PhotoImage(pil)
+                preview_canvas.delete("all")
+                preview_canvas.create_image(cw // 2, ch // 2, image=state["photo"], anchor="center")
+                state["video_job"] = top.after(delay, _tick)
+
+            _tick()
 
         def _render_preview(idx):
+            _stop_video()
             preview_canvas.delete("all")
             state["photo"] = None
             if not (0 <= idx < len(entries)):
@@ -1428,9 +1551,7 @@ class ImageCarousel(tk.Frame):
                 img = pil.copy()
                 img.thumbnail((cw, ch))
                 state["photo"] = ImageTk.PhotoImage(img)
-                preview_canvas.create_image(
-                    cw // 2, ch // 2, image=state["photo"], anchor="center"
-                )
+                preview_canvas.create_image(cw // 2, ch // 2, image=state["photo"], anchor="center")
                 if entry.is_video:
                     preview_canvas.create_text(
                         cw // 2, ch // 2, text="▶", fill="#FFFFFF",
@@ -1440,59 +1561,171 @@ class ImageCarousel(tk.Frame):
                 preview_canvas.create_text(
                     preview_canvas.winfo_width() // 2 or 200,
                     preview_canvas.winfo_height() // 2 or 150,
-                    text="(no preview)", fill=COLORS["text_dim"],
-                    font=(FONT_FAMILY, 11),
+                    text="(no preview)", fill=COLORS["text_dim"], font=(FONT_FAMILY, 11),
                 )
-            info = _format_image_info(entry.path)
-            detail_label.config(
-                text=f"{entry.filename}\n{info}".strip()
-            )
+            detail_label.config(text=f"{entry.filename}\n{_format_image_info(entry.path)}".strip())
             if entry.is_video:
-                play_btn.config(
-                    state=tk.NORMAL,
-                    command=lambda p=entry.path: self._open_path_external(p),
-                )
+                play_btn.config(state=tk.NORMAL, command=lambda p=entry.path: _play_video(p))
+                ext_btn.config(state=tk.NORMAL, command=lambda p=entry.path: self._open_path_external(p))
             else:
                 play_btn.config(state=tk.DISABLED, command=lambda: None)
+                ext_btn.config(state=tk.DISABLED, command=lambda: None)
 
-        def _on_select(event=None):
+        def _select(idx, render=True):
+            state["selected"] = idx
+            # Reflect selection in whichever view is active.
+            if state["view"] == "list":
+                listbox.selection_clear(0, tk.END)
+                if 0 <= idx < len(entries):
+                    listbox.selection_set(idx)
+                    listbox.see(idx)
+            else:
+                for f, i in state["_grid_tiles"]:
+                    f.config(highlightbackground=(COLORS["accent_blue"] if i == idx else COLORS["border"]))
+            if render:
+                _render_preview(idx)
+
+        def _on_list_select(event=None):
             sel = listbox.curselection()
             if sel:
-                state["selected"] = sel[0]
-                _render_preview(sel[0])
+                _select(sel[0])
 
-        listbox.bind("<<ListboxSelect>>", _on_select)
-        preview_canvas.bind("<Configure>", lambda e: _render_preview(state["selected"]))
+        listbox.bind("<<ListboxSelect>>", _on_list_select)
+        preview_canvas.bind("<Configure>", lambda e: (None if state["playing"] else _render_preview(state["selected"])))
+
+        # ── Build grid tiles lazily (first time grid is shown) ────────
+        def _build_grid():
+            if state["_grid_built"]:
+                return
+            state["_grid_built"] = True
+            cols = 4
+            for i, entry in enumerate(entries):
+                tile = tk.Frame(
+                    grid_inner, bg=COLORS["bg_panel"], highlightthickness=2,
+                    highlightbackground=COLORS["border"], bd=0,
+                )
+                r, c = divmod(i, cols)
+                tile.grid(row=r, column=c, padx=4, pady=4, sticky="n")
+                thumb_canvas = tk.Canvas(
+                    tile, width=_THUMB, height=_THUMB,
+                    bg=COLORS["bg_input"], highlightthickness=0,
+                )
+                thumb_canvas.pack()
+                pil = None
+                try:
+                    if entry.is_video:
+                        pil = _extract_video_first_frame(entry.path)
+                    else:
+                        with Image.open(entry.path) as src:
+                            pil = ImageOps.exif_transpose(src)
+                            if pil.mode not in ("RGB", "RGBA"):
+                                pil = pil.convert("RGB")
+                            pil.load()
+                except Exception:
+                    pil = None
+                if pil is not None:
+                    t = pil.copy()
+                    t.thumbnail((_THUMB, _THUMB))
+                    photo = ImageTk.PhotoImage(t)
+                    state["grid_thumbs"].append(photo)
+                    thumb_canvas.create_image(_THUMB // 2, _THUMB // 2, image=photo, anchor="center")
+                    if entry.is_video:
+                        thumb_canvas.create_text(
+                            _THUMB // 2, _THUMB // 2, text="▶", fill="#FFFFFF",
+                            font=(FONT_FAMILY, 26, "bold"),
+                        )
+                else:
+                    thumb_canvas.create_text(
+                        _THUMB // 2, _THUMB // 2, text="?", fill=COLORS["text_dim"],
+                        font=(FONT_FAMILY, 20),
+                    )
+                cap = tk.Label(
+                    tile, text=f"{i + 1}", bg=COLORS["bg_panel"],
+                    fg=COLORS["text_dim"], font=(FONT_FAMILY, 8),
+                )
+                cap.pack()
+                # Click selects; double-click confirms.
+                for w in (tile, thumb_canvas, cap):
+                    w.bind("<Button-1>", lambda e, n=i: _select(n))
+                    w.bind("<Double-Button-1>", lambda e, n=i: (_select(n, render=False), _confirm()))
+                state["_grid_tiles"].append((tile, i))
+
+        # ── View toggle ───────────────────────────────────────────────
+        def _apply_view():
+            if state["view"] == "grid":
+                list_frame.pack_forget()
+                grid_frame.pack(fill=tk.BOTH, expand=True)
+                view_btn.config(text="☰ List view")
+                _build_grid()
+            else:
+                grid_frame.pack_forget()
+                list_frame.pack(fill=tk.BOTH, expand=True)
+                view_btn.config(text="▦ Grid view")
+            _select(state["selected"])
+
+        def _toggle_view():
+            state["view"] = "grid" if state["view"] == "list" else "list"
+            self._config["carousel_browser_view"] = state["view"]
+            if self._config_saver:
+                try:
+                    self._config_saver()
+                except Exception:
+                    pass
+            _apply_view()
+
+        view_btn.config(command=_toggle_view)
 
         def _confirm():
             idx = state["selected"]
+            _persist_sash()
+            _stop_video()
             top.destroy()
             if 0 <= idx < len(entries):
                 self.image_session.navigate_to(idx)
 
-        def _double(event=None):
-            _confirm()
+        listbox.bind("<Double-Button-1>", lambda e: _confirm())
 
-        listbox.bind("<Double-Button-1>", _double)
-
-        # Buttons.
+        # ── Bottom OK/Cancel ──────────────────────────────────────────
         btn_row = tk.Frame(top, bg=COLORS["bg_panel"])
         btn_row.pack(fill=tk.X, padx=8, pady=(0, 8))
+        ttk.Button(btn_row, text="OK", style=TTK_BTN_SECONDARY, command=_confirm).pack(side=tk.RIGHT)
         ttk.Button(
-            btn_row, text="OK", style=TTK_BTN_SECONDARY, command=_confirm
-        ).pack(side=tk.RIGHT)
-        ttk.Button(
-            btn_row, text="Cancel", style=TTK_BTN_SECONDARY, command=top.destroy
+            btn_row, text="Cancel", style=TTK_BTN_SECONDARY,
+            command=lambda: (_persist_sash(), _stop_video(), top.destroy()),
         ).pack(side=tk.RIGHT, padx=(0, 4))
-        top.bind("<Escape>", lambda e: top.destroy())
+
+        # ── Sash persistence (remember the list-pane width) ───────────
+        def _persist_sash():
+            try:
+                x = paned.sash_coord(0)[0]
+                if x and x > 0:
+                    self._config["carousel_browser_sash"] = int(x)
+                    if self._config_saver:
+                        self._config_saver()
+            except Exception:
+                pass
+
+        def _restore_sash():
+            saved = self._config.get("carousel_browser_sash")
+            try:
+                if saved and int(saved) > 0:
+                    paned.sash_place(0, int(saved), 1)
+                else:
+                    paned.sash_place(0, 360, 1)  # wider default than before
+            except Exception:
+                pass
+
+        top.protocol("WM_DELETE_WINDOW", lambda: (_persist_sash(), _stop_video(), top.destroy()))
+        top.bind("<Escape>", lambda e: (_persist_sash(), _stop_video(), top.destroy()))
         top.bind("<Return>", lambda e: _confirm())
 
-        # Preselect the current carousel entry.
+        # Initial view + selection + sash.
+        _apply_view()
         cur = self.image_session.current_index
         if 0 <= cur < len(entries):
-            listbox.selection_set(cur)
-            listbox.see(cur)
-        self.after(60, lambda: _render_preview(state["selected"]))
+            _select(cur, render=False)
+        top.after(60, _restore_sash)
+        top.after(80, lambda: _render_preview(state["selected"]))
 
     def _open_path_external(self, path):
         """Open a file with the OS default app (used to play videos)."""
