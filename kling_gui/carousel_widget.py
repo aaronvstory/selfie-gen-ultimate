@@ -357,6 +357,16 @@ class ImageCarousel(tk.Frame):
         # ON by default — user-confirmed preference. Helpful at-a-glance for
         # the carousel preview; pure UI redraw on toggle, no recompute cost.
         self._show_face_box_var = tk.BooleanVar(value=True)
+        # Load-videos toggle. DEFAULT OFF — videos make the carousel heavy
+        # (each is decoded for a thumbnail), and most workflows don't need
+        # them in the carousel. When OFF, the folder scan skips videos; when
+        # ON, a rescan pulls them in. Persisted via config["carousel_load_videos"].
+        self._load_videos_var = tk.BooleanVar(
+            value=bool(self._config.get("carousel_load_videos", False))
+        )
+        # Callback (set by main_window) that re-scans the session folder for
+        # media — fired when the user turns "Videos" ON so they appear.
+        self._on_load_videos_changed: Optional[Callable[[bool], None]] = None
         self._last_known_count: int = 0
         self._suppress_auto_calc: bool = False
         # Debounce handle for auto-similarity. A drag-drop of N files
@@ -400,6 +410,22 @@ class ImageCarousel(tk.Frame):
         is clicked. The Video Inspector opens with no preload (it falls
         back to the last-opened folder via config)."""
         self._on_video_inspector_toolbar_cb = callback
+
+    def set_on_load_videos_changed(self, callback: Callable[[bool], None]):
+        """Register the callback invoked when the "Videos" load toggle flips.
+
+        Receives the new bool (True = load videos). main_window wires this to
+        a session-folder rescan so turning it ON pulls videos into the carousel
+        (turning it OFF is handled here by dropping existing video entries)."""
+        self._on_load_videos_changed = callback
+
+    def get_load_videos(self) -> bool:
+        """Whether the carousel should include videos (read by main_window's
+        folder scan to gate the heavy video-discovery loop)."""
+        try:
+            return bool(self._load_videos_var.get())
+        except Exception:
+            return False
 
     # ── Panel layout ────────────────────────────────────────────────
 
@@ -560,6 +586,25 @@ class ImageCarousel(tk.Frame):
         # rightmost (Boxes) FIRST, then Anti-spoof, then Auto.
         bottom_row = tk.Frame(self.panel_frame, bg=COLORS["bg_panel"])
         bottom_row.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 2))
+
+        # "Videos" load toggle — LEFT-aligned (away from the right-aligned
+        # Auto/Anti-spoof/Boxes trio). OFF by default keeps the carousel light;
+        # ON pulls videos from the session folder into the carousel.
+        self._load_videos_chk = tk.Checkbutton(
+            bottom_row,
+            text="Videos",
+            variable=self._load_videos_var,
+            command=self._on_load_videos_toggle,
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["text_light"],
+            padx=mac_int(2, 8),
+            pady=mac_int(0, 4),
+        )
+        self._load_videos_chk.pack(side=tk.LEFT, padx=(0, 0))
 
         self._show_face_box_chk = tk.Checkbutton(
             bottom_row,
@@ -2042,6 +2087,31 @@ class ImageCarousel(tk.Frame):
             canvas.bind("<Button-1>", lambda _e, _p=p: cb(_p))
         except (tk.TclError, AttributeError):
             pass
+
+    def _on_load_videos_toggle(self):
+        """Persist the Videos load preference and apply it.
+
+        ON  → fire the rescan callback so main_window walks the session folder
+              and adds its videos to the carousel.
+        OFF → drop the video entries already in the session (keeps it light).
+        """
+        load = bool(self._load_videos_var.get())
+        self._config["carousel_load_videos"] = load
+        if self._config_saver:
+            try:
+                self._config_saver()
+            except Exception:
+                pass
+        if load:
+            # Let main_window do the (gated) folder rescan — it owns the scan.
+            if self._on_load_videos_changed:
+                self._on_load_videos_changed(True)
+            else:
+                self.log("Video loading enabled (reopen the folder to scan).", "info")
+        else:
+            removed = self.image_session.remove_videos()
+            if removed:
+                self.log(f"Removed {removed} video(s) from the carousel.", "info")
 
     def _on_show_face_box_toggle(self):
         """Toggle the face-bbox overlay. Pure redraw — no recompute."""

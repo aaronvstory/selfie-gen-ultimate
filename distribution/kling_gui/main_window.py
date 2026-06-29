@@ -1702,6 +1702,10 @@ class KlingGUIWindow:
             # and last view mode ("list" or "grid"). 0/"" = use defaults.
             "carousel_browser_sash": 0,
             "carousel_browser_view": "list",
+            # Carousel "Videos" load toggle. OFF by default — videos are heavy
+            # (thumbnail-decoded) and most workflows don't need them in the
+            # carousel; turn it on per-session via the checkbox.
+            "carousel_load_videos": False,
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)
@@ -2708,6 +2712,7 @@ class KlingGUIWindow:
         self.carousel.set_on_video_toolbar(
             lambda: self._open_video_inspector(None)
         )
+        self.carousel.set_on_load_videos_changed(self._on_carousel_load_videos)
         self.bottom_paned.add(carousel_frame, minsize=340)
 
         # Compare panel state (created on demand by _toggle_compare)
@@ -5808,6 +5813,15 @@ class KlingGUIWindow:
                 self.image_session.add_image(full, image_kind, make_active=False)
                 loaded_real.add(real)
                 rescan_imgs += 1
+            # Videos are gated behind the carousel "Videos" toggle (default
+            # OFF) — they're heavy (each is decoded for a thumbnail) and most
+            # workflows don't need them in the carousel. Skip the whole
+            # video-discovery walk when the flag is off (user request).
+            # getattr-defensive: callers/tests may invoke this on a lightweight
+            # object without a full `config` dict.
+            _cfg = getattr(self, "config", None) or {}
+            if not _cfg.get("carousel_load_videos", False):
+                continue
             try:
                 groups = _find_video_groups(_Path(folder))
             except OSError:
@@ -5824,6 +5838,26 @@ class KlingGUIWindow:
                     loaded_real.add(real)
                     rescan_vids += 1
         return (rescan_imgs, rescan_vids)
+
+    def _on_carousel_load_videos(self, load: bool):
+        """Carousel "Videos" toggle flipped ON — rescan the session folder so
+        its videos get pulled into the carousel now (the scan is gated on
+        config["carousel_load_videos"], already persisted by the carousel).
+
+        (The OFF case is handled inside the carousel via remove_videos().)
+        """
+        if not load:
+            return
+        try:
+            added_imgs, added_vids = self._scan_folders_for_new_media(
+                {os.path.dirname(e.path) for e in self.image_session.images}
+            )
+            if added_vids:
+                self._log(f"Loaded {added_vids} video(s) into the carousel.", "info")
+            elif not added_imgs:
+                self._log("No new videos found in the session folder.", "info")
+        except Exception:
+            logging.getLogger(__name__).exception("carousel video rescan failed")
 
     def _fire_post_queue_rescan(self):
         """Debounced rescan trigger. Cleared the pending after_id and

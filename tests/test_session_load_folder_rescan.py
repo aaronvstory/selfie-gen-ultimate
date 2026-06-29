@@ -857,8 +857,10 @@ def test_scan_folders_for_new_media_picks_up_new_video(tmp_path, monkeypatch):
     session.add_image(str(img_path), "input", make_active=True)
 
     # Build a minimal stub that has just the attributes the helper uses.
+    # carousel_load_videos=True so the (default-OFF) video-discovery gate is
+    # exercised by this video-focused test.
     class Stub:
-        pass
+        config = {"carousel_load_videos": True}
     stub = Stub()
     stub.image_session = session
     # Bind the helper as if it were on the class.
@@ -868,6 +870,54 @@ def test_scan_folders_for_new_media_picks_up_new_video(tmp_path, monkeypatch):
     # The new entry must be a video
     paths = [(e.path, e.source_type) for e in session.images]
     assert (str(vid_path), "video") in paths
+
+
+def test_scan_folders_skips_videos_when_flag_off(tmp_path):
+    """The carousel "Videos" toggle (config carousel_load_videos) gates the
+    heavy video-discovery walk. When OFF (the default), a folder with videos
+    must add ZERO video entries (images still load). User request 2026-06-29.
+    """
+    from kling_gui.image_state import ImageSession
+    from kling_gui import main_window as mw
+
+    img_path = tmp_path / "existing.png"
+    img_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR"
+        + struct.pack(">II", 1, 1) + b"\x08\x06\x00\x00\x00"
+        + struct.pack(">I", zlib.crc32(
+            b"IHDR" + struct.pack(">II", 1, 1) + b"\x08\x06\x00\x00\x00"
+        ))
+        + struct.pack(">I", 10)
+        + b"IDAT" + b"\x78\x9c\x62\x00\x00\x00\x00\x05\x00\x01"
+        + struct.pack(">I", 0)
+        + struct.pack(">I", 0) + b"IEND" + struct.pack(">I", 0xae426082)
+    )
+    (tmp_path / "clip_oldcam_v8.mp4").write_bytes(b"\x00" * 1024)
+
+    session = ImageSession()
+    session.add_image(str(img_path), "input", make_active=True)
+
+    # Flag OFF (default) -> videos skipped.
+    class StubOff:
+        config = {"carousel_load_videos": False}
+    stub = StubOff()
+    stub.image_session = session
+    helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
+    _added_imgs, added_vids = helper({str(tmp_path)})
+    assert added_vids == 0, f"videos must be skipped when flag OFF, got {added_vids}"
+    assert not any(e.is_video for e in session.images)
+
+    # Missing config entirely also defaults to OFF (defensive getattr path).
+    session2 = ImageSession()
+    session2.add_image(str(img_path), "input", make_active=True)
+
+    class StubNoConfig:
+        pass
+    stub2 = StubNoConfig()
+    stub2.image_session = session2
+    helper2 = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub2)
+    _i2, v2 = helper2({str(tmp_path)})
+    assert v2 == 0, "missing config must default video-loading OFF"
 
 
 def test_scan_folders_descends_into_gen_images_subfolder(tmp_path):
@@ -905,8 +955,10 @@ def test_scan_folders_descends_into_gen_images_subfolder(tmp_path):
     session = ImageSession()
     session.add_image(str(src_img), "input", make_active=True)
 
+    # carousel_load_videos=True: this test asserts a gen-videos/ video is
+    # picked up, so it must opt into the (default-OFF) video gate.
     class Stub:
-        pass
+        config = {"carousel_load_videos": True}
     stub = Stub()
     stub.image_session = session
     helper = mw.KlingGUIWindow._scan_folders_for_new_media.__get__(stub)
