@@ -197,34 +197,22 @@ class AIStudioTab(tk.Frame):
 
     def _build_ui(self):
         outer = tk.Frame(self, bg=COLORS["bg_panel"])
-        outer.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
-
-        # Title.
-        title_row = tk.Frame(outer, bg=COLORS["bg_panel"])
-        title_row.pack(fill=tk.X, pady=(0, 4))
-        tk.Label(
-            title_row,
-            text="AI STUDIO",
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            font=(FONT_FAMILY, 13, "bold"),
-        ).pack(side=tk.LEFT)
-        tk.Label(
-            title_row,
-            text="  Edit the current carousel image with a prompt",
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 9),
-        ).pack(side=tk.LEFT)
+        outer.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 6))
 
         # ── 3-column body: BEFORE | AFTER | OPTIONS ───────────────────
         # Image panes get the bulk of the width (~38% each); the options
-        # column is a tight, self-contained vertical stack (~24%).
+        # column is a tight, self-contained vertical stack (~24%). The
+        # standalone title row was dropped to reclaim vertical space so the
+        # options column never clips its bottom buttons (the tab name "1. AI
+        # Studio" already labels this view).
         body = tk.Frame(outer, bg=COLORS["bg_panel"])
         body.pack(fill=tk.BOTH, expand=True)
-        body.grid_columnconfigure(0, weight=38, uniform="aistudio")
-        body.grid_columnconfigure(2, weight=38, uniform="aistudio")
-        body.grid_columnconfigure(4, weight=24, uniform="aistudio")
+        # The portrait images don't fill wide panes (lots of dead side space),
+        # so give the OPTIONS column more width and let it lay controls out
+        # roomily (no vertical clipping). BEFORE 32% | AFTER 32% | OPTIONS 36%.
+        body.grid_columnconfigure(0, weight=32, uniform="aistudio")
+        body.grid_columnconfigure(2, weight=32, uniform="aistudio")
+        body.grid_columnconfigure(4, weight=36, uniform="aistudio")
         body.grid_rowconfigure(0, weight=1)
 
         # Column 0: BEFORE.
@@ -345,11 +333,80 @@ class AIStudioTab(tk.Frame):
             ),
         ).pack(side=tk.RIGHT)
 
-        # Presets — vertical full-width stack, scrollable so they never
-        # overflow the column regardless of how many the user defines.
-        preset_box = tk.Frame(opts, bg=COLORS["bg_panel"], height=132)
-        preset_box.pack(fill=tk.X, pady=(2, 6))
-        preset_box.pack_propagate(False)
+        # IMPORTANT (vertical overflow): pack the action rows from the BOTTOM
+        # up first so they're pinned to the column bottom and can never be
+        # pushed off-screen. With the wider OPTIONS column, buttons pair up
+        # into 2-up rows to keep the vertical footprint short. The scrollable
+        # presets box then absorbs whatever space is left (expand=True).
+
+        # Row 3 (bottom-most): Zoom Compare, full width.
+        self._zoom_btn = ttk.Button(
+            opts,
+            text="\U0001f50d Zoom Compare",
+            style=TTK_BTN_SECONDARY,
+            state=tk.DISABLED,
+            command=debounce_command(
+                self._open_zoom_compare, key="aistudio_zoom"
+            ),
+        )
+        self._zoom_btn.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Row 2: Add to Carousel + Use Result as Input, side by side.
+        result_row = tk.Frame(opts, bg=COLORS["bg_panel"])
+        result_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 3))
+        self._add_btn = ttk.Button(
+            result_row,
+            text="Add to Carousel",
+            style=TTK_BTN_SUCCESS,
+            state=tk.DISABLED,
+            command=debounce_command(
+                self._on_add_to_carousel, key="aistudio_add"
+            ),
+        )
+        self._add_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._use_btn = ttk.Button(
+            result_row,
+            text="Use as Input",
+            style=TTK_BTN_PRIMARY,
+            state=tk.DISABLED,
+            command=debounce_command(self._on_use_as_input, key="aistudio_use"),
+        )
+        self._use_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        self._status_label = tk.Label(
+            opts,
+            text="",
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 9),
+            anchor="w",
+            wraplength=300,
+        )
+        self._status_label.pack(side=tk.BOTTOM, fill=tk.X, pady=(2, 4))
+
+        # Row 1: Run Edit + Abort, side by side (just above the result row).
+        run_row = tk.Frame(opts, bg=COLORS["bg_panel"])
+        run_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 2))
+        self._run_btn = ttk.Button(
+            run_row,
+            text="Run Edit",
+            style=TTK_BTN_WORKFLOW,
+            command=debounce_command(self._on_run, key="aistudio_run"),
+        )
+        self._run_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._abort_btn = ttk.Button(
+            run_row,
+            text="Abort",
+            style=TTK_BTN_DANGER,
+            state=tk.DISABLED,
+            command=debounce_command(self._on_abort, key="aistudio_abort"),
+        )
+        self._abort_btn.pack(side=tk.LEFT, padx=(4, 0))
+
+        # Presets — vertical full-width stack, scrollable, taking the remaining
+        # space between the prompt and the bottom-pinned buttons.
+        preset_box = tk.Frame(opts, bg=COLORS["bg_panel"])
+        preset_box.pack(fill=tk.BOTH, expand=True, pady=(2, 6))
         self._preset_canvas = tk.Canvas(
             preset_box, bg=COLORS["bg_panel"], highlightthickness=0
         )
@@ -377,71 +434,16 @@ class AIStudioTab(tk.Frame):
         self._preset_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._rebuild_preset_buttons()
 
-        # Run / Abort.
-        run_row = tk.Frame(opts, bg=COLORS["bg_panel"])
-        run_row.pack(fill=tk.X, pady=(2, 2))
-        self._run_btn = ttk.Button(
-            run_row,
-            text="Run Edit",
-            style=TTK_BTN_WORKFLOW,
-            command=debounce_command(self._on_run, key="aistudio_run"),
-        )
-        self._run_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self._abort_btn = ttk.Button(
-            run_row,
-            text="Abort",
-            style=TTK_BTN_DANGER,
-            state=tk.DISABLED,
-            command=debounce_command(self._on_abort, key="aistudio_abort"),
-        )
-        self._abort_btn.pack(side=tk.LEFT, padx=(4, 0))
-
-        self._status_label = tk.Label(
-            opts,
-            text="",
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_dim"],
-            font=(FONT_FAMILY, 9),
-            anchor="w",
-            wraplength=240,
-        )
-        self._status_label.pack(fill=tk.X, pady=(2, 4))
-
-        # Result actions — full-width vertical stack.
-        self._add_btn = ttk.Button(
-            opts,
-            text="Add to Carousel",
-            style=TTK_BTN_SUCCESS,
-            state=tk.DISABLED,
-            command=debounce_command(
-                self._on_add_to_carousel, key="aistudio_add"
-            ),
-        )
-        self._add_btn.pack(fill=tk.X, pady=(0, 3))
-        self._use_btn = ttk.Button(
-            opts,
-            text="Use Result as Input",
-            style=TTK_BTN_PRIMARY,
-            state=tk.DISABLED,
-            command=debounce_command(self._on_use_as_input, key="aistudio_use"),
-        )
-        self._use_btn.pack(fill=tk.X, pady=(0, 3))
-        self._zoom_btn = ttk.Button(
-            opts,
-            text="\U0001f50d Zoom Compare",
-            style=TTK_BTN_SECONDARY,
-            state=tk.DISABLED,
-            command=debounce_command(
-                self._open_zoom_compare, key="aistudio_zoom"
-            ),
-        )
-        self._zoom_btn.pack(fill=tk.X)
-
     def _rebuild_preset_buttons(self):
         for child in self._preset_inner.winfo_children():
             child.destroy()
+        # 2-column grid — uses the wider OPTIONS column to halve the preset
+        # block's vertical footprint. Both columns stretch evenly.
+        self._preset_inner.grid_columnconfigure(0, weight=1, uniform="preset")
+        self._preset_inner.grid_columnconfigure(1, weight=1, uniform="preset")
         for idx, preset in enumerate(self._presets):
             name = preset.get("name", f"Preset {idx + 1}")
+            r, c = divmod(idx, 2)
             ttk.Button(
                 self._preset_inner,
                 text=name,
@@ -450,7 +452,7 @@ class AIStudioTab(tk.Frame):
                     lambda i=idx: self._apply_preset(i),
                     key=f"aistudio_preset_{idx}",
                 ),
-            ).pack(fill=tk.X, pady=1)
+            ).grid(row=r, column=c, sticky="ew", padx=(0, 2), pady=1)
 
     def _apply_preset(self, index: int):
         if not (0 <= index < len(self._presets)):
