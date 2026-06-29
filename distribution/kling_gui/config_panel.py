@@ -1197,17 +1197,17 @@ class ConfigPanel(tk.Frame):
             activeforeground=COLORS["text_light"],
             command=self._on_rppg_metrics_changed,
         )
-        self.rppg_metrics_checkbox.pack(side=tk.LEFT, padx=(12, 0))
+        # rPPG metrics checkbox HIDDEN (unused) - not packed; var still created.
         self.rppg_metrics_info_label = tk.Label(
             rC, text="(off = clean name + .metrics.json sidecar)",
             font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
-        self.rppg_metrics_info_label.pack(side=tk.LEFT, padx=4)
+        # rPPG metrics info label HIDDEN (unused) - not packed.
 
         # File Filter — replaces the old "Folder:" row with clearer labeling
         rD = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rD.pack(fill=tk.X, pady=_ROW_PADY_TIGHT)
+        # Filter row HIDDEN (unused) - not packed; widgets/vars still created.
         tk.Label(rD, text="Filter:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
                  width=lbl_w, anchor="w").pack(side=tk.LEFT)
@@ -1304,6 +1304,28 @@ class ConfigPanel(tk.Frame):
             rE, text="", font=(FONT_FAMILY, 9), bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.schema_diagnostic_label.pack(side=tk.LEFT, padx=2)
+        # Blue (i) that decodes the cryptic capability indicators on this
+        # row + the Motion row (user request 2026-06-29).
+        self.caps_info_icon = tk.Label(
+            rE, text="ⓘ", font=(FONT_FAMILY, 11), cursor="question_arrow",
+            bg=COLORS["bg_input"], fg=COLORS["accent_blue"],
+        )
+        self.caps_info_icon.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(self.caps_info_icon, lambda: (
+            "Model capability indicators — ✓ = the currently selected video "
+            "model supports this parameter, ✗ = it does not (the control is "
+            "greyed out when unsupported).\n\n"
+            "Video row:\n"
+            "  dur = clip duration (5s / 10s)\n"
+            "  asp = aspect ratio (9:16, 16:9, …)\n"
+            "  res = output resolution (480p / 720p)\n"
+            "  see = seed (reproducible randomness)\n"
+            "  cam = camera-fixed (lock the camera so only the subject moves)\n\n"
+            "Motion row:\n"
+            "  negative  = honors a negative prompt (things to avoid)\n"
+            "  end-frame = can lock the last frame to the start image\n"
+            "  cfg       = CFG scale (prompt-adherence strength) is adjustable"
+        ))
         self.video_settings_info = tk.Label(
             rE, text="(model-dependent)", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],

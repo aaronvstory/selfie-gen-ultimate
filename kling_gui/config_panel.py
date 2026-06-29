@@ -1262,6 +1262,10 @@ class ConfigPanel(tk.Frame):
         # (default) the injector's "{stem}-rppg - <SNR>-<Phase>-..." name
         # is stripped to a clean "{stem}-rppg" and the metrics go to a
         # .metrics.json sidecar (automation/rppg.finalize_rppg_output).
+        # rPPG metrics-in-filename toggle — HIDDEN (user request 2026-06-29:
+        # unused, reclaims horizontal room on the Logging row). The var +
+        # widgets are still CREATED (just never packed) so config save/load and
+        # the injector-naming code that reads rppg_metrics_var keep working.
         self.rppg_metrics_var = tk.BooleanVar(value=False)
         self.rppg_metrics_checkbox = tk.Checkbutton(
             rC, text="rPPG metrics in filename", variable=self.rppg_metrics_var,
@@ -1270,17 +1274,19 @@ class ConfigPanel(tk.Frame):
             activeforeground=COLORS["text_light"],
             command=self._on_rppg_metrics_changed,
         )
-        self.rppg_metrics_checkbox.pack(side=tk.LEFT, padx=(12, 0))
+        # NOTE: rppg_metrics_checkbox + info label intentionally NOT packed.
         self.rppg_metrics_info_label = tk.Label(
             rC, text="(off = clean name + .metrics.json sidecar)",
             font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
-        self.rppg_metrics_info_label.pack(side=tk.LEFT, padx=4)
 
-        # File Filter — replaces the old "Folder:" row with clearer labeling
+        # File Filter — HIDDEN (user request 2026-06-29: unused, reclaims a
+        # full row of vertical space on Step 3). The widgets + vars are still
+        # CREATED (just never packed) so config save/load and any code that
+        # reads folder_pattern_var / folder_match_mode_var keep working.
         rD = tk.Frame(left_col, bg=COLORS["bg_input"])
-        rD.pack(fill=tk.X, pady=_ROW_PADY_TIGHT)
+        # NOTE: rD is intentionally NOT packed.
         tk.Label(rD, text="Filter:", font=(FONT_FAMILY, 10),
                  bg=COLORS["bg_input"], fg=COLORS["text_light"],
                  width=lbl_w, anchor="w").pack(side=tk.LEFT)
@@ -1377,6 +1383,29 @@ class ConfigPanel(tk.Frame):
             rE, text="", font=(FONT_FAMILY, 9), bg=COLORS["bg_input"], fg=COLORS["text_dim"],
         )
         self.schema_diagnostic_label.pack(side=tk.LEFT, padx=2)
+        # Blue ⓘ that decodes the cryptic capability indicators on this row +
+        # the Motion row (user request 2026-06-29 — the ✓dur|✗cam / negative
+        # · end-frame · cfg shorthand is hard to read at a glance).
+        self.caps_info_icon = tk.Label(
+            rE, text="ⓘ", font=(FONT_FAMILY, 11), cursor="question_arrow",
+            bg=COLORS["bg_input"], fg=COLORS["accent_blue"],
+        )
+        self.caps_info_icon.pack(side=tk.LEFT, padx=(4, 0))
+        HoverTooltip(self.caps_info_icon, lambda: (
+            "Model capability indicators — ✓ = the currently selected video "
+            "model supports this parameter, ✗ = it does not (the control is "
+            "greyed out when unsupported).\n\n"
+            "Video row:\n"
+            "  dur = clip duration (5s / 10s)\n"
+            "  asp = aspect ratio (9:16, 16:9, …)\n"
+            "  res = output resolution (480p / 720p)\n"
+            "  see = seed (reproducible randomness)\n"
+            "  cam = camera-fixed (lock the camera so only the subject moves)\n\n"
+            "Motion row:\n"
+            "  negative  = honors a negative prompt (things to avoid)\n"
+            "  end-frame = can lock the last frame to the start image\n"
+            "  cfg       = CFG scale (prompt-adherence strength) is adjustable"
+        ))
         self.video_settings_info = tk.Label(
             rE, text="(model-dependent)", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_input"], fg=COLORS["text_dim"],
