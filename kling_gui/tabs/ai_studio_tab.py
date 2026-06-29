@@ -827,6 +827,14 @@ class AIStudioTab(tk.Frame):
             return shared, shared
 
         def _redraw(recreate=True):
+            # Guard against the window being destroyed (Escape / X / a deferred
+            # after-call firing post-close, or a <Configure> after destroy):
+            # accessing the canvases / top._zoom_photos then raises TclError.
+            try:
+                if not top.winfo_exists():
+                    return
+            except tk.TclError:
+                return
             # Panning doesn't change scale, so resizing (LANCZOS) on every
             # mouse-motion event would lag badly on large images. Re-resize
             # only when scale/canvas-size/mode actually change (recreate=True);
@@ -925,7 +933,9 @@ class AIStudioTab(tk.Frame):
             canvas.bind("<Configure>", lambda e: _redraw())
 
         top.bind("<Escape>", lambda e: top.destroy())
-        self.after(80, _redraw)
+        # Schedule the initial draw on `top` (not self) so the after-callback
+        # is auto-cancelled when the Toplevel is destroyed.
+        top.after(80, _redraw)
 
     # ── Presets editor ────────────────────────────────────────────────
 
@@ -936,6 +946,11 @@ class AIStudioTab(tk.Frame):
         top.geometry("640x460")
         top.transient(self.winfo_toplevel())
         top.grab_set()
+        # Closing via the OS window button = Cancel (discard, like the Cancel
+        # button) — explicit so it never hangs on the grab and behaves
+        # consistently with the carousel browser modal. <Escape> too.
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        top.bind("<Escape>", lambda e: top.destroy())
 
         # Working copy so Cancel discards.
         working = [dict(p) for p in self._presets]
@@ -1141,3 +1156,15 @@ class AIStudioTab(tk.Frame):
                 self._config_saver()
         except Exception as exc:
             self.log(f"Could not save AI Studio settings: {exc}", "warning")
+
+    def destroy(self):
+        """Unregister the session listener before teardown so a later
+        _notify() (e.g. from remove_videos/add_image in another tab) doesn't
+        invoke this destroyed tab's callback (code-review). Defensive: ignore
+        if the session lacks remove_on_change or the listener is already gone.
+        """
+        try:
+            self.image_session.remove_on_change(self._on_session_change)
+        except Exception:
+            pass
+        super().destroy()

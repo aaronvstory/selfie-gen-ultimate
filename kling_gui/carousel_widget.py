@@ -1548,6 +1548,14 @@ class ImageCarousel(tk.Frame):
             delay = max(15, int(1000 / (fps if fps > 0 else 24)))
 
             def _tick():
+                # Bail if the modal was destroyed between frames — accessing
+                # preview_canvas / top.after on a dead widget raises TclError.
+                try:
+                    if not top.winfo_exists():
+                        _stop_video()
+                        return
+                except tk.TclError:
+                    return
                 cap2 = state["video_cap"]
                 if cap2 is None or not state["playing"]:
                     return
