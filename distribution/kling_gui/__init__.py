@@ -9,7 +9,7 @@ from .log_display import LogDisplay
 from .video_looper import create_looped_video, check_ffmpeg_available
 from .image_state import ImageSession, ImageEntry
 from .carousel_widget import ImageCarousel
-from .tabs import FaceCropTab, PrepTab, SelfieTab, ExpandTab, VideoTab
+from .tabs import FaceCropTab, AIStudioTab, SelfieTab, ExpandTab, VideoTab
 
 __all__ = [
     'KlingGUIWindow',
@@ -23,7 +23,7 @@ __all__ = [
     'ImageEntry',
     'ImageCarousel',
     'FaceCropTab',
-    'PrepTab',
+    'AIStudioTab',
     'SelfieTab',
     'ExpandTab',
     'VideoTab',

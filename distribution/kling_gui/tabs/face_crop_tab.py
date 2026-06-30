@@ -172,6 +172,23 @@ def _load_retinaface():
 class FaceCropTab(tk.Frame):
     """Tab 0: Detect face in ID card photo and produce a 3:4 passport crop."""
 
+    # Vision (OpenRouter) models for the AI Analysis accordion section.
+    _ANALYSIS_BUILTIN_MODELS = (
+        ("Seed 1.6 Flash", "bytedance-seed/seed-1.6-flash"),
+        ("GPT-4o Mini", "openai/gpt-4o-mini"),
+        ("Claude 3.5 Haiku", "anthropic/claude-3.5-haiku"),
+        ("Gemini 2.0 Flash", "google/gemini-2.0-flash-001"),
+    )
+    _ANALYSIS_DEFAULT_VISION_PROMPT = (
+        "You are a portrait photo analyzer for AI image generation. "
+        "Analyze the provided portrait image and generate a detailed prompt that "
+        "describes the person's physical appearance, facial features, expression, "
+        "hair, clothing, pose, and lighting for a static portrait photo. "
+        "DO NOT mention video, animation, or movement. Focus strictly on physical "
+        "identity, expression, and lighting to be used as an image generation prompt. "
+        "Return ONLY the prompt text, no explanations or formatting."
+    )
+
     def __init__(
         self,
         parent,
@@ -180,7 +197,6 @@ class FaceCropTab(tk.Frame):
         config_getter: Callable[[], dict],
         log_callback: Callable[[str, str], None],
         notebook_switcher: Optional[Callable[[], None]] = None,
-        notebook_switcher_prep: Optional[Callable[[], None]] = None,
         notebook_switcher_selfie: Optional[Callable[[], None]] = None,
         config_saver: Optional[Callable[[], None]] = None,
         **kwargs,
@@ -193,8 +209,11 @@ class FaceCropTab(tk.Frame):
         self._config_saver = config_saver
         # Legacy single-switcher kept for backward compat
         self._notebook_switcher = notebook_switcher
-        self._notebook_switcher_prep = notebook_switcher_prep or notebook_switcher
         self._notebook_switcher_selfie = notebook_switcher_selfie
+        # Wired post-construction by main_window (the AI Analysis section, which
+        # now lives in Step 0, sends its result to Step 2 via these).
+        self._selfie_prompt_writer: Optional[Callable[[str], None]] = None
+        self._selfie_config_getter: Optional[Callable[[], dict]] = None
 
         # Detection state
         self._source_path: Optional[str] = None
@@ -241,6 +260,19 @@ class FaceCropTab(tk.Frame):
 
         # Accordion state (default to Generative Expand open on launch).
         self._expanded_sections = ["expand"]
+
+        # AI Analysis state (vision portrait analysis — moved here from the old
+        # Step 1 "AI Analysis" tab; emits a Step 2 selfie prompt).
+        self._analysis_busy = False
+        self._analysis_prompt_edit_mode = False
+        self._analysis_last_result = ""
+        self._analysis_default_prompt = self._resolve_default_vision_prompt()
+        self._analysis_custom_models = list(
+            config.get("openrouter_custom_models", [])
+        )
+        self._analysis_all_models = list(self._ANALYSIS_BUILTIN_MODELS) + [
+            (ep, ep) for ep in self._analysis_custom_models
+        ]
 
         # Outpaint state
         self._outpaint_busy = False
@@ -427,6 +459,25 @@ class FaceCropTab(tk.Frame):
                     f"user won't see the reset notification.",
                     file=_sys.stderr,
                 )
+
+    # ── AI Analysis wiring (set post-construction by main_window) ──────
+
+    def set_selfie_prompt_writer(self, writer: Callable[[str], None]):
+        """Set the callback that writes the analysis result into Step 2."""
+        self._selfie_prompt_writer = writer
+
+    def set_selfie_config_getter(self, getter: Callable[[], dict]):
+        """Set a getter for live Step 2 composer options (gender, style)."""
+        self._selfie_config_getter = getter
+
+    def _resolve_default_vision_prompt(self) -> str:
+        """Resolve the shared default vision prompt from VisionAnalyzer."""
+        try:
+            from vision_analyzer import VisionAnalyzer
+
+            return VisionAnalyzer.DEFAULT_SYSTEM_PROMPT
+        except Exception:
+            return self._ANALYSIS_DEFAULT_VISION_PROMPT
 
     # ── Config persistence ────────────────────────────────────────
 
@@ -651,7 +702,7 @@ class FaceCropTab(tk.Frame):
 
     # ── Right Pane Tools Panel (built by main_window) ────────────────
 
-    _SECTIONS = ["polish", "expand", "upscale"]  # accordion section names
+    _SECTIONS = ("polish", "expand", "upscale", "ai_analysis")  # accordion section names
 
     def build_tools_panel(self, parent):
         """Build the tools panel (Polish + Outpaint + Upscale + Send) inside *parent*.
@@ -696,14 +747,8 @@ class FaceCropTab(tk.Frame):
         send_btn_row = tk.Frame(send_lf, bg=COLORS["bg_panel"])
         send_btn_row.pack(fill=tk.X, padx=4, pady=(0, 3))
 
-        self._send_prep_btn = ttk.Button(
-            send_btn_row,
-            text="Send to 1 (AI Analysis)",
-            style=TTK_BTN_PRIMARY,
-            command=debounce_command(self._send_to_prep, key="facecrop_send_prep"),
-        )
-        self._send_prep_btn.pack(fill=tk.X, pady=(0, 2))
-
+        # (The old "Send to 1 (AI Analysis)" button was removed — AI Analysis
+        # now lives in this tab's own accordion section below.)
         self._send_selfie_btn = ttk.Button(
             send_btn_row,
             text="Send to 2 (Generate Selfie)",
@@ -1196,6 +1241,9 @@ class FaceCropTab(tk.Frame):
         self._upscale_combo.bind("<<ComboboxSelected>>", self._on_upscale_provider_changed)
         self._toggle_crystal_settings()
 
+        # ── AI Analysis (collapsible) ───────────────────────────────
+        self._build_ai_analysis_section(inner)
+
         # ── Apply initial accordion state ───────────────────────────
         self._apply_accordion_state()
 
@@ -1209,6 +1257,407 @@ class FaceCropTab(tk.Frame):
         self._bind_scroll_mousewheel(scroll_canvas, scroll_inner)
         self.after(0, self._refresh_responsive_layout)
         self.bind("<Configure>", lambda _e: self._refresh_responsive_layout())
+
+    # ── AI Analysis accordion section ─────────────────────────────────
+
+    def _build_ai_analysis_section(self, inner):
+        """Build the collapsible AI Analysis (vision) section.
+
+        Replicates the polish-section accordion template so the getattr
+        contract in ``_apply_accordion_state`` (``_ai_analysis_toggle_btn``,
+        ``_ai_analysis_body``, ``_ai_analysis_accent``,
+        ``_ai_analysis_header_row``) is satisfied.
+        """
+        wrapper = tk.Frame(inner, bg=COLORS["bg_panel"])
+        wrapper.pack(fill=tk.X, padx=4, pady=(6, 0))
+
+        self._ai_analysis_header_row = tk.Frame(wrapper, bg=_HEADER_BG_COLLAPSED)
+        self._ai_analysis_header_row.pack(fill=tk.X)
+
+        self._ai_analysis_accent = tk.Frame(
+            self._ai_analysis_header_row, bg=COLORS["accent_blue"], width=3
+        )
+
+        self._ai_analysis_toggle_btn = ttk.Button(
+            self._ai_analysis_header_row,
+            text="▶  [AI ANALYSIS]",
+            style=TTK_BTN_TAB_NAV,
+            command=debounce_command(
+                lambda: self._toggle_section("ai_analysis"),
+                key="facecrop_toggle_ai_analysis",
+                interval_ms=120,
+            ),
+        )
+        self._ai_analysis_toggle_btn.pack(
+            side=tk.LEFT, fill=tk.X, expand=True, ipady=4
+        )
+        self._bind_header_hover(self._ai_analysis_toggle_btn)
+
+        tk.Frame(wrapper, bg=COLORS["border"], height=2).pack(fill=tk.X)
+
+        self._ai_analysis_body = tk.Frame(wrapper, bg=COLORS["bg_panel"])
+        body_inner = tk.Frame(self._ai_analysis_body, bg=COLORS["bg_panel"])
+        body_inner.pack(fill=tk.X, padx=8, pady=(4, 6))
+        parent = body_inner
+
+        # Model selection row.
+        model_row = tk.Frame(parent, bg=COLORS["bg_panel"])
+        model_row.pack(fill=tk.X, pady=(2, 2))
+        tk.Label(
+            model_row, text="Vision Model:", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"], fg=COLORS["text_light"],
+        ).pack(side=tk.LEFT)
+        self._analysis_model_var = tk.StringVar()
+        model_names = [m[0] for m in self._analysis_all_models]
+        self._analysis_model_combo = ttk.Combobox(
+            model_row, textvariable=self._analysis_model_var,
+            values=model_names, state="readonly", width=22,
+        )
+        saved_model = self.config.get(
+            "openrouter_model", "bytedance-seed/seed-1.6-flash"
+        )
+        for i, (_name, endpoint) in enumerate(self._analysis_all_models):
+            if endpoint == saved_model:
+                self._analysis_model_combo.current(i)
+                break
+        else:
+            self._analysis_model_combo.current(0)
+        self._analysis_model_combo.pack(side=tk.LEFT, padx=(5, 0))
+        self._analysis_remove_model_btn = ttk.Button(
+            model_row, text="Remove", style=TTK_BTN_DANGER,
+            command=debounce_command(
+                self._on_analysis_remove_model, key="facecrop_analysis_remove_model"
+            ),
+        )
+        self._analysis_remove_model_btn.pack(side=tk.LEFT, padx=(5, 0))
+
+        # Custom model entry row.
+        custom_row = tk.Frame(parent, bg=COLORS["bg_panel"])
+        custom_row.pack(fill=tk.X, pady=(0, 2))
+        tk.Label(
+            custom_row, text="Add Custom:", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
+        ).pack(side=tk.LEFT)
+        self._analysis_custom_model_var = tk.StringVar()
+        self._analysis_custom_model_entry = tk.Entry(
+            custom_row, textvariable=self._analysis_custom_model_var,
+            bg=COLORS["bg_input"], fg=COLORS["text_light"],
+            insertbackground=COLORS["text_light"], font=(FONT_FAMILY, 9),
+            width=18,
+        )
+        self._analysis_custom_model_entry.pack(
+            side=tk.LEFT, padx=(5, 0), fill=tk.X, expand=True
+        )
+        self._analysis_custom_model_entry.insert(0, "org/model-name")
+        self._analysis_custom_model_entry.bind(
+            "<FocusIn>", self._on_analysis_custom_entry_focus
+        )
+        ttk.Button(
+            custom_row, text="Add", style=TTK_BTN_PRIMARY,
+            command=debounce_command(
+                self._on_analysis_add_model, key="facecrop_analysis_add_model"
+            ),
+        ).pack(side=tk.LEFT, padx=(5, 0))
+
+        # System prompt (editable, persisted).
+        tk.Label(
+            parent, text="Vision Prompt (System):", font=(FONT_FAMILY, 9, "bold"),
+            bg=COLORS["bg_panel"], fg=COLORS["text_light"], anchor="w",
+        ).pack(fill=tk.X, pady=(4, 2))
+        prompt_frame = tk.Frame(parent, bg=COLORS["bg_main"])
+        prompt_frame.pack(fill=tk.X, pady=(0, 2))
+        self._analysis_system_prompt_text = tk.Text(
+            prompt_frame, wrap=tk.WORD, height=6,
+            bg=COLORS["bg_main"], fg=COLORS["text_light"], font=(FONT_FAMILY, 10),
+            insertbackground=COLORS["text_light"], padx=5, pady=5,
+            borderwidth=0, highlightthickness=0,
+        )
+        ps = ttk.Scrollbar(
+            prompt_frame, command=self._analysis_system_prompt_text.yview
+        )
+        self._analysis_system_prompt_text.config(yscrollcommand=ps.set)
+        ps.pack(side=tk.RIGHT, fill=tk.Y)
+        self._analysis_system_prompt_text.pack(
+            side=tk.LEFT, fill=tk.X, expand=True
+        )
+        saved_prompt = self.config.get(
+            "openrouter_vision_system_prompt", self._analysis_default_prompt
+        )
+        self._analysis_system_prompt_text.insert(
+            "1.0", (saved_prompt or self._analysis_default_prompt).strip()
+        )
+        self._analysis_system_prompt_text.config(state=tk.DISABLED)
+
+        prompt_actions = tk.Frame(parent, bg=COLORS["bg_panel"])
+        prompt_actions.pack(fill=tk.X, pady=(0, 4))
+        self._analysis_edit_prompt_btn = ttk.Button(
+            prompt_actions, text="Edit Prompt", style=TTK_BTN_SECONDARY,
+            command=debounce_command(
+                self._on_analysis_edit_prompt, key="facecrop_analysis_edit_prompt"
+            ),
+        )
+        self._analysis_edit_prompt_btn.pack(side=tk.LEFT)
+        self._analysis_save_prompt_btn = ttk.Button(
+            prompt_actions, text="Save Prompt", style=TTK_BTN_PRIMARY,
+            command=debounce_command(
+                self._on_analysis_save_prompt, key="facecrop_analysis_save_prompt"
+            ),
+            state=tk.DISABLED,
+        )
+        self._analysis_save_prompt_btn.pack(side=tk.LEFT, padx=(5, 0))
+        self._analysis_reset_prompt_btn = ttk.Button(
+            prompt_actions, text="Reset Prompt", style=TTK_BTN_DANGER,
+            command=debounce_command(
+                self._on_analysis_reset_prompt, key="facecrop_analysis_reset_prompt"
+            ),
+        )
+        self._analysis_reset_prompt_btn.pack(side=tk.LEFT, padx=(5, 0))
+
+        # Analyze + status.
+        action_row = tk.Frame(parent, bg=COLORS["bg_panel"])
+        action_row.pack(fill=tk.X, pady=(2, 2))
+        self._analysis_analyze_btn = ttk.Button(
+            action_row, text="Analyze Image", style=TTK_BTN_PRIMARY,
+            command=debounce_command(
+                self._on_analyze, key="facecrop_analysis_analyze"
+            ),
+        )
+        self._analysis_analyze_btn.pack(side=tk.LEFT)
+        self._analysis_status_label = tk.Label(
+            action_row, text="", font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"], fg=COLORS["text_dim"],
+        )
+        self._analysis_status_label.pack(side=tk.LEFT, padx=(8, 0))
+
+        # Result display.
+        tk.Label(
+            parent, text="Analysis Result:", font=(FONT_FAMILY, 9, "bold"),
+            bg=COLORS["bg_panel"], fg=COLORS["text_light"], anchor="w",
+        ).pack(fill=tk.X, pady=(4, 2))
+        result_frame = tk.Frame(parent, bg=COLORS["bg_main"])
+        result_frame.pack(fill=tk.X, pady=(0, 2))
+        self._analysis_result_text = tk.Text(
+            result_frame, wrap=tk.WORD, height=5,
+            bg=COLORS["bg_main"], fg=COLORS["text_light"], font=(FONT_FAMILY, 10),
+            insertbackground=COLORS["text_light"], padx=5, pady=5,
+            borderwidth=0, highlightthickness=0,
+        )
+        rs = ttk.Scrollbar(result_frame, command=self._analysis_result_text.yview)
+        self._analysis_result_text.config(yscrollcommand=rs.set)
+        rs.pack(side=tk.RIGHT, fill=tk.Y)
+        self._analysis_result_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self._analysis_send_btn = ttk.Button(
+            parent, text="Send result to Step 2 → Custom JSON",
+            style=TTK_BTN_SUCCESS,
+            command=debounce_command(
+                self._on_analysis_send_to_step2, key="facecrop_analysis_send_step2"
+            ),
+            state=tk.DISABLED,
+        )
+        self._analysis_send_btn.pack(fill=tk.X, pady=(2, 0))
+
+    # ── AI Analysis: model management ─────────────────────────────────
+
+    def _analysis_selected_model_endpoint(self) -> str:
+        idx = self._analysis_model_combo.current()
+        if 0 <= idx < len(self._analysis_all_models):
+            return self._analysis_all_models[idx][1]
+        return self._analysis_all_models[0][1]
+
+    def _refresh_analysis_model_combo(self):
+        self._analysis_model_combo["values"] = [
+            m[0] for m in self._analysis_all_models
+        ]
+
+    def _on_analysis_add_model(self):
+        endpoint = self._analysis_custom_model_var.get().strip()
+        if not endpoint or endpoint == "org/model-name":
+            self.log("Enter a model endpoint (e.g. meta-llama/llama-3-70b)", "warning")
+            return
+        if "/" not in endpoint or not endpoint.isascii() or " " in endpoint:
+            self.log("Model endpoint should be org/model format (ASCII, no spaces)", "warning")
+            return
+        for _name, ep in self._analysis_all_models:
+            if ep == endpoint:
+                self.log(f"Model already in list: {endpoint}", "warning")
+                return
+        self._analysis_custom_models.append(endpoint)
+        self._analysis_all_models.append((endpoint, endpoint))
+        self._refresh_analysis_model_combo()
+        self._analysis_model_combo.current(len(self._analysis_all_models) - 1)
+        self._analysis_custom_model_var.set("")
+        self._save_config_now()
+        self.log(f"Added custom model: {endpoint}", "success")
+
+    def _on_analysis_remove_model(self):
+        idx = self._analysis_model_combo.current()
+        if idx < 0:
+            return
+        _name, endpoint = self._analysis_all_models[idx]
+        if endpoint not in self._analysis_custom_models:
+            self.log("Cannot remove built-in models", "warning")
+            return
+        self._analysis_custom_models.remove(endpoint)
+        self._analysis_all_models.pop(idx)
+        self._refresh_analysis_model_combo()
+        self._analysis_model_combo.current(0)
+        self._save_config_now()
+        self.log(f"Removed custom model: {endpoint}", "info")
+
+    def _on_analysis_custom_entry_focus(self, _event):
+        if self._analysis_custom_model_var.get() == "org/model-name":
+            self._analysis_custom_model_var.set("")
+
+    # ── AI Analysis: system prompt editing ────────────────────────────
+
+    def _analysis_system_prompt(self) -> str:
+        prompt = self._analysis_system_prompt_text.get("1.0", tk.END).strip()
+        return prompt if prompt else self._analysis_default_prompt
+
+    def _set_analysis_prompt_edit_mode(self, enabled: bool):
+        self._analysis_prompt_edit_mode = enabled
+        self._analysis_system_prompt_text.config(
+            state=tk.NORMAL if enabled else tk.DISABLED
+        )
+        self._analysis_edit_prompt_btn.config(
+            state=tk.DISABLED if enabled else tk.NORMAL
+        )
+        self._analysis_save_prompt_btn.config(
+            state=tk.NORMAL if enabled else tk.DISABLED
+        )
+
+    def _on_analysis_edit_prompt(self):
+        self._set_analysis_prompt_edit_mode(True)
+        self._analysis_system_prompt_text.focus_set()
+        self._analysis_system_prompt_text.mark_set(tk.INSERT, tk.END)
+
+    def _on_analysis_save_prompt(self):
+        prompt = self._analysis_system_prompt()
+        self._analysis_system_prompt_text.config(state=tk.NORMAL)
+        self._analysis_system_prompt_text.delete("1.0", tk.END)
+        self._analysis_system_prompt_text.insert("1.0", prompt)
+        self._save_config_now()
+        self._set_analysis_prompt_edit_mode(False)
+        self.log("Vision prompt saved", "success")
+
+    def _on_analysis_reset_prompt(self):
+        self._analysis_system_prompt_text.config(state=tk.NORMAL)
+        self._analysis_system_prompt_text.delete("1.0", tk.END)
+        self._analysis_system_prompt_text.insert("1.0", self._analysis_default_prompt)
+        self._save_config_now()
+        self._set_analysis_prompt_edit_mode(False)
+        self.log("Vision prompt reset to default", "info")
+
+    # ── AI Analysis: analyze flow ─────────────────────────────────────
+
+    def _on_analyze(self):
+        if self._analysis_busy:
+            return
+        if self._analysis_prompt_edit_mode:
+            self.log("Save the Vision Prompt before analyzing", "warning")
+            return
+        api_key = self.get_config().get("openrouter_api_key", "").strip()
+        if not api_key:
+            self.log("OpenRouter API key required — set it in the bottom bar", "error")
+            return
+        image_path = self.image_session.active_image_path
+        if not image_path or not os.path.isfile(image_path):
+            self.log("No image selected in carousel", "warning")
+            return
+
+        model = self._analysis_selected_model_endpoint()
+        system_prompt = self._analysis_system_prompt()
+        # Persist BEFORE flipping busy, so a save failure can't strand the
+        # Analyze button disabled until restart. (CodeRabbit)
+        self._save_config_now()
+        self._set_analysis_busy(True)
+        self._analysis_send_btn.config(state=tk.DISABLED)
+
+        # Resolve the toplevel in the MAIN thread — Tkinter is not thread-safe,
+        # so the worker must not call self.winfo_toplevel(). It dispatches UI
+        # work back through this guarded helper.
+        toplevel = self.winfo_toplevel()
+
+        def _safe_after(func):
+            try:
+                if toplevel.winfo_exists():
+                    toplevel.after(0, func)
+            except Exception:
+                pass
+
+        def _run():
+            try:
+                from vision_analyzer import VisionAnalyzer
+
+                effective_prompt = system_prompt
+                if effective_prompt == self._analysis_default_prompt:
+                    template_fields = self.get_config().get("selfie_template_fields")
+                    if template_fields and isinstance(template_fields, list):
+                        effective_prompt = VisionAnalyzer.build_json_system_prompt(
+                            template_fields
+                        )
+                analyzer = VisionAnalyzer(
+                    api_key, model, system_prompt=effective_prompt
+                )
+                analyzer.set_progress_callback(
+                    lambda msg, lvl: _safe_after(
+                        lambda m=msg, level=lvl: self.log(m, level)
+                    )
+                )
+                result = analyzer.analyze_image(image_path)
+                _safe_after(lambda: self._on_analyze_complete(result))
+            except Exception as e:
+                from log_utils import format_exception_detail
+
+                err = format_exception_detail(e)
+                _safe_after(lambda: self._on_analyze_error(err))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_analyze_complete(self, result):
+        self._set_analysis_busy(False)
+        if result and result.get("prompt"):
+            self._analysis_last_result = result["prompt"]
+            self._analysis_result_text.delete("1.0", tk.END)
+            self._analysis_result_text.insert("1.0", self._analysis_last_result)
+            self._analysis_send_btn.config(state=tk.NORMAL)
+            self.log("Analysis complete — review result below", "success")
+        else:
+            self._analysis_last_result = ""
+            self._analysis_result_text.delete("1.0", tk.END)
+            self._analysis_send_btn.config(state=tk.DISABLED)
+            self.log("Analysis returned no result", "warning")
+
+    def _on_analyze_error(self, error: str):
+        self._set_analysis_busy(False)
+        self._analysis_send_btn.config(state=tk.DISABLED)
+        self.log(f"Analysis error: {error}", "error")
+
+    def _on_analysis_send_to_step2(self):
+        description = self._analysis_result_text.get("1.0", tk.END).strip()
+        if not description:
+            return
+        if self._selfie_prompt_writer:
+            self._selfie_prompt_writer(description)
+            self.log("Prompt sent to Selfie Gen", "success")
+            # Honor the same "Auto-switch after send" preference as the
+            # Send-to-2 button (CodeRabbit) — don't jump tabs if it's off.
+            if self._auto_switch_var.get() and self._notebook_switcher_selfie:
+                self._notebook_switcher_selfie()
+        else:
+            self.log("Step 2 is not available to receive the prompt", "warning")
+
+    def _set_analysis_busy(self, busy: bool):
+        self._analysis_busy = busy
+        self._analysis_analyze_btn.config(
+            state=tk.DISABLED if busy else tk.NORMAL,
+            text="Analyzing..." if busy else "Analyze Image",
+        )
+        self._analysis_status_label.config(
+            text="Processing..." if busy else "",
+            fg=COLORS["progress"] if busy else COLORS["text_dim"],
+        )
 
     def _refresh_responsive_layout(self):
         """Keep Step 0 controls readable at narrow widths on all platforms."""
@@ -1995,10 +2444,6 @@ class FaceCropTab(tk.Frame):
         return out_path
 
     # ── Send crop to next phase ─────────────────────────────────────
-
-    def _send_to_prep(self):
-        if self._auto_switch_var.get() and self._notebook_switcher_prep:
-            self._notebook_switcher_prep()
 
     def _send_to_selfie(self):
         if self._auto_switch_var.get() and self._notebook_switcher_selfie:
@@ -3039,4 +3484,11 @@ class FaceCropTab(tk.Frame):
         updates["face_crop_polish_prompt"] = self.config.get(
             "face_crop_polish_prompt", _DEFAULT_POLISH_PROMPT
         )
+        # AI Analysis (vision) settings — guarded because build_tools_panel
+        # (which creates these widgets) may not have run yet when the config
+        # is first collected.
+        if hasattr(self, "_analysis_model_combo"):
+            updates["openrouter_model"] = self._analysis_selected_model_endpoint()
+            updates["openrouter_custom_models"] = list(self._analysis_custom_models)
+            updates["openrouter_vision_system_prompt"] = self._analysis_system_prompt()
         return updates

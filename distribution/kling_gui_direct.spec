@@ -55,7 +55,7 @@ hiddenimports = [
     'kling_gui.video_metadata',
     'kling_gui.tabs',
     'kling_gui.tabs.face_crop_tab',
-    'kling_gui.tabs.prep_tab',
+    'kling_gui.tabs.ai_studio_tab',
     'kling_gui.tabs.selfie_tab',
     'kling_gui.tabs.outpaint_tab',
     'kling_gui.tabs.expand_tab',

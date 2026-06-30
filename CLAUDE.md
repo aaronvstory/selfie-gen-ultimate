@@ -101,8 +101,8 @@ Manifest behavior supports repeated reruns on the same test folders and run/resu
 
 | Tab | File | Class | Purpose |
 |-----|------|-------|---------|
-| 0. Face Crop | `face_crop_tab.py` | `FaceCropTab` | Extract 3:4 passport face crops via RetinaFace (optional deps: cv2, retinaface) |
-| 1. Prep | `prep_tab.py` | `PrepTab` | Vision AI portrait analysis (OpenRouter API) |
+| 0. Face Crop | `face_crop_tab.py` | `FaceCropTab` | Extract 3:4 passport face crops via RetinaFace + AI Polish/Expand/Upscale/AI Analysis accordion (optional deps: cv2, retinaface). The "AI Analysis" section does OpenRouter vision portrait analysis (moved here from the old Step 1). |
+| 1. AI Studio | `ai_studio_tab.py` | `AIStudioTab` | Natural-language image editing (Nano Banana 2 / Kontext Max / GPT Image 2 Edit via fal.ai); before/after + synced zoom compare; presets + editor |
 | 2. Selfie | `selfie_tab.py` | `SelfieTab` | Generate selfies from identity reference via fal.ai + BFL |
 | 3. Outpaint | `outpaint_tab.py` | `OutpaintTab` | Expand images using fal.ai outpaint |
 | 4. Video | `video_tab.py` | `VideoTab` | Batch video generation (wraps ConfigPanel + DropZone + Queue) |
@@ -111,10 +111,10 @@ All tabs share an `ImageSession` instance for image pipeline state and a `log_ca
 
 ### Image Pipeline State (`image_state.py`)
 
-`ImageSession` tracks images through the multi-tab pipeline. Each `ImageEntry` has a `source_type` ("input", "selfie", "outpaint") and flows through:
+`ImageSession` tracks images through the multi-tab pipeline. Each `ImageEntry` has a `source_type` ("input", "selfie", "outpaint", "polish", "upscale", "edit", "video") and flows through:
 
 ```
-Input image → Face Crop → Prep (analyze) → Selfie (generate) → Outpaint (expand) → Video (animate)
+Input image → Face Crop (+ AI Analysis accordion) → AI Studio (edit) → Selfie (generate) → Outpaint (expand) → Video (animate)
 ```
 
 The `ImageCarousel` widget provides visual navigation; `ComparePanel` offers side-by-side comparison with independent navigation.
@@ -165,7 +165,7 @@ The provider is selected automatically based on the model's `provider` field. BF
 | fal.ai | `falai_api_key` | All fal.ai generators (video, selfie, outpaint) |
 | Freeimage.host | `freeimage_api_key` | Image uploads (fal.ai requires public URLs) |
 | BFL (Black Forest Labs) | `bfl_api_key` | FLUX Kontext / FLUX 2 Pro selfie models |
-| OpenRouter | `openrouter_api_key` | Vision analysis in Prep tab |
+| OpenRouter | `openrouter_api_key` | Vision analysis (AI Analysis accordion in Face Crop tab) |
 
 ### Configuration (`kling_config.json`)
 

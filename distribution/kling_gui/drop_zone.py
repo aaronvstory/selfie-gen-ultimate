@@ -208,24 +208,27 @@ class DropZone(tk.Frame):
 
         # Main instruction label
         main_font = (FONT_FAMILY, 11 if self.compact else 14, "bold")
-        main_text = "DROP ZONE" if self.compact else "DRAG & DROP IMAGES"
+        main_text = "[DROP ZONE]" if self.compact else "DRAG & DROP IMAGES"
         self._main_text_canvas = None
         if self.compact and sys.platform.startswith("win"):
-            # Windows can clip a glyph in ttk/label text rasterization in this compact pane.
-            # Canvas text renders reliably here.
+            # Windows can clip a glyph in ttk/label text rasterization in this
+            # compact pane. Canvas text renders reliably here. The canvas must
+            # be wide enough for the full string or it clips the trailing glyph
+            # (the old 220px width truncated "DROP ZONE" -> "DROF ZONE").
+            canvas_w = 200
             self._main_text_canvas = tk.Canvas(
                 self.content_container,
-                width=220,
+                width=canvas_w,
                 height=28,
                 bg=self._default_bg,
                 highlightthickness=0,
                 bd=0,
             )
             self._main_text_canvas.create_text(
-                110,
+                canvas_w // 2,
                 14,
                 text=main_text,
-                font=("Segoe UI", 13, "bold"),
+                font=("Segoe UI", 12, "bold"),
                 fill=self._text_color,
             )
             self._main_text_canvas.pack(pady=(1, 1))

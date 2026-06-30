@@ -164,11 +164,19 @@ def sanitize_sash_layout(
     # to default" rather than raising. (GPT audit on b4ed739.)
     clamped_queue = _clamp_int(sash_queue, queue_min, queue_max, queue_default)
     right_section_w = max(400, safe_w - clamped_queue)
-    log_drop_min = 150
-    log_drop_max = max(log_drop_min, right_section_w - 150)
-    # 0.80 (2026-06-18): widen Processing Log, narrow Drop Zone toward a
-    # roughly-square drop target (per user direction). Was 0.71.
-    log_drop_default = int(right_section_w * 0.80)
+    # sash_log_drop_split is the LOG panel's width (drop zone = the remainder).
+    # The drop zone is a small fixed-ish square - bound it to a narrow band so
+    # it can NEVER hog width again (recurring user complaint). We size the LOG
+    # to fill everything except a ~196px drop column, and clamp the drop column
+    # to 184-214px (i.e. log width is pinned to right_section_w - [184,214]).
+    # The ~196 target is just a FEW px past the original 190 so the drop frame's
+    # left/right border isn't clipped, without making the zone visibly wide.
+    _DROP_ZONE_TARGET = 196
+    _DROP_ZONE_MIN = 184
+    _DROP_ZONE_MAX = 214
+    log_drop_min = max(150, right_section_w - _DROP_ZONE_MAX)
+    log_drop_max = max(log_drop_min, right_section_w - _DROP_ZONE_MIN)
+    log_drop_default = max(log_drop_min, right_section_w - _DROP_ZONE_TARGET)
 
     sanitized = {
         "sash_dropzone": _clamp_int(sash_dropzone, drop_min, drop_max, drop_default),

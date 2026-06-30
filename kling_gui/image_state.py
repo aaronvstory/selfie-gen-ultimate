@@ -11,7 +11,7 @@ from path_utils import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS
 logger = logging.getLogger(__name__)
 
 
-_VALID_SOURCE_TYPES = {"input", "selfie", "outpaint", "polish", "upscale", "video"}
+_VALID_SOURCE_TYPES = {"input", "selfie", "outpaint", "polish", "upscale", "video", "edit"}
 # ``_VIDEO_EXTENSIONS`` is now an alias of :data:`path_utils.VIDEO_EXTENSIONS`
 # imported above. PR #53 round 11 caught a ``.m4v`` drift between the two
 # sets when they were declared independently; round 13 (subagent M2)
@@ -51,7 +51,7 @@ class ImageEntry:
     """
 
     path: str
-    source_type: str  # "input", "selfie", "outpaint", "polish", "upscale"
+    source_type: str  # "input", "selfie", "outpaint", "polish", "upscale", "edit"
     label: str = ""
     rotation: int = 0
     similarity: Optional[str] = None  # "72%" or None
@@ -433,6 +433,46 @@ class ImageSession:
         self._reference_index = -1
         self._similarity_ref_index = -1
         self._notify()
+
+    def remove_videos(self) -> int:
+        """Remove every video entry from the session.
+
+        Used by the carousel's "Videos" load toggle: turning it OFF drops the
+        (heavy) video entries that a folder scan pulled in. Preserves the
+        active image when possible (re-anchors to a kept neighbour), fixes the
+        reference/similarity indices, and notifies listeners once. Returns the
+        number of videos removed.
+        """
+        if not self._images:
+            return 0
+        active_path = (
+            self._images[self._current_index].path
+            if 0 <= self._current_index < len(self._images)
+            else None
+        )
+        kept = [e for e in self._images if not e.is_video]
+        removed = len(self._images) - len(kept)
+        if removed == 0:
+            return 0
+        self._images = kept
+        # Re-anchor the active index to the previously-active image if it
+        # survived; otherwise clamp into range.
+        new_idx = -1
+        if active_path is not None:
+            new_idx = next(
+                (i for i, e in enumerate(kept) if e.path == active_path), -1
+            )
+        if new_idx < 0:
+            new_idx = min(self._current_index, len(kept) - 1) if kept else -1
+        self._current_index = new_idx
+        # Reference / similarity-ref indices: recompute defensively.
+        if not (0 <= self._reference_index < len(kept)):
+            inputs = self.input_images
+            self._reference_index = inputs[0][0] if inputs else -1
+        if not (0 <= self._similarity_ref_index < len(kept)):
+            self._similarity_ref_index = -1
+        self._notify()
+        return removed
 
     def remove_current(self) -> bool:
         """Remove the currently active image.

@@ -77,7 +77,7 @@ from .image_state import ImageSession
 from .carousel_widget import ImageCarousel
 from .compare_panel import ComparePanel
 from .session_controller import SessionController
-from .tabs import FaceCropTab, PrepTab, SelfieTab, ExpandTab, VideoTab
+from .tabs import FaceCropTab, AIStudioTab, SelfieTab, ExpandTab, VideoTab
 from .theme import (
     BUTTON_DISABLED_TEXT_COLOR,
     BUTTON_TEXT_COLOR,
@@ -1638,6 +1638,12 @@ class KlingGUIWindow:
             "bfl_api_key": "",
             "upload_provider_order": ["fal_cdn", "freeimage"],
             "openrouter_vision_system_prompt": "",
+            # AI Studio (Step 1 image editor). Presets are seeded from the
+            # curated default set by _migrate_legacy_defaults (ai_studio_presets
+            # left empty here so the seed runs on existing configs too).
+            "ai_studio_model_endpoint": "fal-ai/nano-banana-2/edit",
+            "ai_studio_last_custom_prompt": "",
+            "ai_studio_presets": [],
             "selfie_output_mode": "source",
             "selfie_output_folder": "",
             # v2.26: was 300; new bounds are DEFAULT=120 MAX=180. Stamp
@@ -1692,6 +1698,14 @@ class KlingGUIWindow:
             "sash_queue": 405,  # Width of left bottom pane (carousel 25%, user-tested at 1621w)
             "sash_log": 150,  # Height of log pane (before history)
             "sash_log_drop_split": 973,  # Width of LOG pane (~80% of right section — wider log / squarer drop zone)
+            # Carousel "Browse Files" modal: remembered list/preview split width
+            # and last view mode ("list" or "grid"). 0/"" = use defaults.
+            "carousel_browser_sash": 0,
+            "carousel_browser_view": "list",
+            # Carousel "Videos" load toggle. OFF by default — videos are heavy
+            # (thumbnail-decoded) and most workflows don't need them in the
+            # carousel; turn it on per-session via the checkbox.
+            "carousel_load_videos": False,
         }
 
         # Layer 1: apply bundled defaults template (prompts, model, etc.)
@@ -1881,6 +1895,34 @@ class KlingGUIWindow:
                     "(current_model was empty/null)."
                 )
             config["default_model_standard_migrated_v241"] = True
+
+        # AI Studio preset seed (2026-06-29, v2.46): the Step 1 image editor
+        # ships a curated set of edit presets. Seed them ONCE if the config has
+        # none (covers both fresh installs whose template didn't carry presets
+        # and existing installs upgrading into the AI Studio feature). A flag
+        # gates it so a user who later deletes all presets keeps them deleted.
+        if not config.get("ai_studio_presets_seeded_v1"):
+            existing = config.get("ai_studio_presets")
+            if not isinstance(existing, list) or not existing:
+                try:
+                    from .tabs.ai_studio_tab import DEFAULT_AI_STUDIO_PRESETS
+
+                    config["ai_studio_presets"] = [
+                        dict(p) for p in DEFAULT_AI_STUDIO_PRESETS
+                    ]
+                    _safe_print(
+                        "Seeded AI Studio edit presets (curated defaults)."
+                    )
+                    # Only stamp the flag on a SUCCESSFUL seed, so a transient
+                    # import failure retries on the next launch instead of
+                    # permanently leaving presets unseeded. (code-review MEDIUM)
+                    config["ai_studio_presets_seeded_v1"] = True
+                except Exception as exc:
+                    _safe_print(f"AI Studio preset seed skipped: {exc}")
+            else:
+                # Presets already present (e.g. from the template) — nothing to
+                # seed; mark done so we don't re-check every launch.
+                config["ai_studio_presets_seeded_v1"] = True
 
         # Slot 3 defaults backfill (2026-05-21): older saved configs
         # carry empty slot 3 prompt + negative because the template
@@ -2548,23 +2590,21 @@ class KlingGUIWindow:
             config=self.config,
             config_getter=lambda: self.config,
             log_callback=self._log,
-            notebook_switcher_prep=lambda: self.notebook.select(1),
             notebook_switcher_selfie=lambda: self.notebook.select(2),
             config_saver=self._save_config,
         )
         self.notebook.add(self.face_crop_tab, text="0. Face Crop / AI Polish")
 
-        # Tab 1: AI Analysis
-        self.prep_tab = PrepTab(
+        # Tab 1: AI Studio (image editor)
+        self.ai_studio_tab = AIStudioTab(
             self.notebook,
             image_session=self.image_session,
             config=self.config,
             config_getter=lambda: self.config,
             log_callback=self._log,
-            prompt_writer=self._write_to_active_prompt,
             config_saver=self._save_config,
         )
-        self.notebook.add(self.prep_tab, text="1. AI Analysis")
+        self.notebook.add(self.ai_studio_tab, text="1. AI Studio")
 
         # Tab 2: Generate Selfie
         self.selfie_tab = SelfieTab(
@@ -2592,10 +2632,11 @@ class KlingGUIWindow:
         )
         self.notebook.add(self.expand_tab, text="2.5 Expand")
 
-        # Wire Step 1 → Step 2 prompt connection (set after both tabs exist)
-        self.prep_tab.set_selfie_prompt_writer(self.selfie_tab.set_prompt)
-        self.prep_tab.set_notebook_switcher_selfie(lambda: self.notebook.select(2))
-        self.prep_tab.set_selfie_config_getter(
+        # Wire Step 0 (AI Analysis section) → Step 2 prompt connection. The
+        # vision-analysis feature lives in the Face Crop tab's accordion now;
+        # its "Send result to Step 2" path writes into the Selfie tab.
+        self.face_crop_tab.set_selfie_prompt_writer(self.selfie_tab.set_prompt)
+        self.face_crop_tab.set_selfie_config_getter(
             lambda: {
                 "composer_gender": self.selfie_tab.gender_var.get(),
                 "composer_camera_style": self.selfie_tab.style_var.get(),
@@ -2662,6 +2703,8 @@ class KlingGUIWindow:
             carousel_frame,
             image_session=self.image_session,
             log_callback=self._log,
+            config=self.config,
+            config_saver=self._save_config,
         )
         self.carousel.pack(fill=tk.BOTH, expand=True)
         self.carousel.set_on_compare(self._toggle_compare)
@@ -2669,6 +2712,7 @@ class KlingGUIWindow:
         self.carousel.set_on_video_toolbar(
             lambda: self._open_video_inspector(None)
         )
+        self.carousel.set_on_load_videos_changed(self._on_carousel_load_videos)
         self.bottom_paned.add(carousel_frame, minsize=340)
 
         # Compare panel state (created on demand by _toggle_compare)
@@ -2738,7 +2782,11 @@ class KlingGUIWindow:
                 "drop_valid": "#6A58C6",
             },
         )
-        self.log_drop_paned.add(self.drop_zone, minsize=220)
+        # minsize 184 (was 220): the drop zone is a compact square; a 220 floor
+        # was part of why it kept rendering too wide. The layout clamp keeps it
+        # in a ~184–214px band so it never hogs width from the Processing Log
+        # while leaving a few px so its border isn't clipped.
+        self.log_drop_paned.add(self.drop_zone, minsize=184)
         self.right_paned.add(log_frame, minsize=100)
 
         # History panel (bottom right pane)
@@ -2749,7 +2797,12 @@ class KlingGUIWindow:
         self._start_autosave_timer()
 
     def _write_to_active_prompt(self, text: str):
-        """Write text to the active prompt slot (used by PrepTab vision analysis)."""
+        """Write text to the active prompt slot.
+
+        Legacy helper (the old Step 1 vision-analysis path used it). Kept for the
+        config panel / any future caller; the AI Analysis section in Step 0 now
+        sends its result straight to Step 2 instead.
+        """
         if hasattr(self, "config_panel") and self.config_panel:
             self.config_panel.set_active_prompt_text(text)
 
@@ -5579,7 +5632,7 @@ class KlingGUIWindow:
         """Handle configuration changes from the config panel."""
         self.config.update(new_config)
         # Collect and merge any tab-specific config
-        for tab in ["face_crop_tab", "prep_tab", "selfie_tab", "expand_tab"]:
+        for tab in ["face_crop_tab", "ai_studio_tab", "selfie_tab", "expand_tab"]:
             tab_widget = getattr(self, tab, None)
             if tab_widget and hasattr(tab_widget, "get_config_updates"):
                 try:
@@ -5760,6 +5813,15 @@ class KlingGUIWindow:
                 self.image_session.add_image(full, image_kind, make_active=False)
                 loaded_real.add(real)
                 rescan_imgs += 1
+            # Videos are gated behind the carousel "Videos" toggle (default
+            # OFF) — they're heavy (each is decoded for a thumbnail) and most
+            # workflows don't need them in the carousel. Skip the whole
+            # video-discovery walk when the flag is off (user request).
+            # getattr-defensive: callers/tests may invoke this on a lightweight
+            # object without a full `config` dict.
+            _cfg = getattr(self, "config", None) or {}
+            if not _cfg.get("carousel_load_videos", False):
+                continue
             try:
                 groups = _find_video_groups(_Path(folder))
             except OSError:
@@ -5776,6 +5838,26 @@ class KlingGUIWindow:
                     loaded_real.add(real)
                     rescan_vids += 1
         return (rescan_imgs, rescan_vids)
+
+    def _on_carousel_load_videos(self, load: bool):
+        """Carousel "Videos" toggle flipped ON — rescan the session folder so
+        its videos get pulled into the carousel now (the scan is gated on
+        config["carousel_load_videos"], already persisted by the carousel).
+
+        (The OFF case is handled inside the carousel via remove_videos().)
+        """
+        if not load:
+            return
+        try:
+            added_imgs, added_vids = self._scan_folders_for_new_media(
+                {os.path.dirname(e.path) for e in self.image_session.images}
+            )
+            if added_vids:
+                self._log(f"Loaded {added_vids} video(s) into the carousel.", "info")
+            elif not added_imgs:
+                self._log("No new videos found in the session folder.", "info")
+        except Exception:
+            logging.getLogger(__name__).exception("carousel video rescan failed")
 
     def _fire_post_queue_rescan(self):
         """Debounced rescan trigger. Cleared the pending after_id and
@@ -6585,7 +6667,7 @@ class KlingGUIWindow:
         """Handle window close."""
         # Check both queue and tab worker threads
         busy_tabs = []
-        for tab_name in ["face_crop_tab", "prep_tab", "selfie_tab", "expand_tab"]:
+        for tab_name in ["face_crop_tab", "ai_studio_tab", "selfie_tab", "expand_tab"]:
             tab_widget = getattr(self, tab_name, None)
             if tab_widget and getattr(tab_widget, "_busy", False):
                 busy_tabs.append(tab_name.replace("_tab", "").title())
@@ -6632,7 +6714,7 @@ class KlingGUIWindow:
             self._layout_save_after_id = None
 
         # Collect tab configs before saving
-        for tab in ["face_crop_tab", "prep_tab", "selfie_tab", "expand_tab"]:
+        for tab in ["face_crop_tab", "ai_studio_tab", "selfie_tab", "expand_tab"]:
             tab_widget = getattr(self, tab, None)
             if tab_widget and hasattr(tab_widget, "get_config_updates"):
                 try:

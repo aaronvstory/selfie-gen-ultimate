@@ -127,5 +127,38 @@
   "face_crop_polish_prompt": "Carefully remove all text, numbers, watermarks, seals, and document artifacts from the image. Clean up the background to make it seamless. CRITICAL: Do NOT alter the person's face, facial features, hair, expression, or clothing in any way. Keep the original photo quality, lighting, and realism exactly the same. Do not beautify or change the identity.",
   "openrouter_vision_system_prompt": "You are a JSON API. You only output valid JSON. Never write explanations, never use markdown, never use code blocks, never say anything outside the JSON.\n\nAnalyze the portrait image and return exactly this JSON structure with descriptive phrase values — never single words:\n{\"hair\":\"...\",\"skin\":\"...\",\"eyes\":\"...\",\"face_shape\":\"...\",\"age_range\":\"...\",\"gender\":\"...\",\"clothing\":\"...\",\"expression\":\"...\"}\n\nRules:\n- Output MUST start with { and end with }\n- No text before or after the JSON\n- No markdown fences, no commentary\n- All values must be descriptive phrases\n- clothing: if not visible, write \"casual everyday outfit\"\n- gender: write only \"man\" or \"woman\"",
   "cfg_scale_value": 0.7,
-  "lock_end_frame": true
+  "lock_end_frame": true,
+  "ai_studio_model_endpoint": "fal-ai/nano-banana-2/edit",
+  "ai_studio_last_custom_prompt": "",
+  "ai_studio_presets_seeded_v1": true,
+  "ai_studio_presets": [
+    {
+      "name": "Remove glasses",
+      "prompt": "Remove the eyeglasses from the subject's face. Preserve every other feature exactly: identity, eye shape and color, skin texture, hair, expression, pose, lighting, and background. Naturally reconstruct the eyes and surrounding skin. Change nothing else."
+    },
+    {
+      "name": "More authentic / candid",
+      "prompt": "Make this look like a real, candid, un-staged photo of the same person. Keep their identity and features identical. Add natural, slightly imperfect realism and remove any over-polished, studio, or AI-generated look."
+    },
+    {
+      "name": "Improve lighting & contrast",
+      "prompt": "Improve the lighting and contrast for a flattering, natural result: even out harsh shadows, balance exposure, keep skin tones realistic. Do not change the person's identity, features, pose, or background."
+    },
+    {
+      "name": "Cheap phone / older iPhone candid",
+      "prompt": "Re-render as if shot casually on an older, cheaper smartphone (early iPhone): slightly soft focus, mild noise and grain, flatter dynamic range, on-camera-flash feel, candid framing. Keep the same person and scene; only change the camera look."
+    },
+    {
+      "name": "Change clothing",
+      "prompt": "Change the subject's clothing to [DESCRIBE OUTFIT HERE]. Keep the person's face, identity, hair, pose, and background unchanged."
+    },
+    {
+      "name": "Clean up background",
+      "prompt": "Replace the background with a clean, neutral, natural-looking setting. Keep the subject, their pose, the lighting on their face, and all features unchanged."
+    },
+    {
+      "name": "Subtle skin cleanup",
+      "prompt": "Lightly clean up the skin: reduce temporary blemishes and harsh shine while keeping natural skin texture and pores and the person's real features. Do not smooth into a plastic look or change identity."
+    }
+  ]
 }
