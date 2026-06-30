@@ -111,10 +111,10 @@ All tabs share an `ImageSession` instance for image pipeline state and a `log_ca
 
 ### Image Pipeline State (`image_state.py`)
 
-`ImageSession` tracks images through the multi-tab pipeline. Each `ImageEntry` has a `source_type` ("input", "selfie", "outpaint") and flows through:
+`ImageSession` tracks images through the multi-tab pipeline. Each `ImageEntry` has a `source_type` ("input", "selfie", "outpaint", "polish", "upscale", "edit", "video") and flows through:
 
 ```
-Input image → Face Crop → Prep (analyze) → Selfie (generate) → Outpaint (expand) → Video (animate)
+Input image → Face Crop (+ AI Analysis accordion) → AI Studio (edit) → Selfie (generate) → Outpaint (expand) → Video (animate)
 ```
 
 The `ImageCarousel` widget provides visual navigation; `ComparePanel` offers side-by-side comparison with independent navigation.
@@ -165,7 +165,7 @@ The provider is selected automatically based on the model's `provider` field. BF
 | fal.ai | `falai_api_key` | All fal.ai generators (video, selfie, outpaint) |
 | Freeimage.host | `freeimage_api_key` | Image uploads (fal.ai requires public URLs) |
 | BFL (Black Forest Labs) | `bfl_api_key` | FLUX Kontext / FLUX 2 Pro selfie models |
-| OpenRouter | `openrouter_api_key` | Vision analysis in Prep tab |
+| OpenRouter | `openrouter_api_key` | Vision analysis (AI Analysis accordion in Face Crop tab) |
 
 ### Configuration (`kling_config.json`)
 
