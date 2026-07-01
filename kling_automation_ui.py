@@ -254,6 +254,11 @@ _OLDCAM_VERSION_OPTIONS = ["v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", 
 _EXPAND_PROVIDER_OPTIONS = ["auto", "bfl", "fal"]
 # *_fullres modes keep the ORIGINAL at native resolution (only the generated
 # borders are upscaled). three_four_fullres = zoom-out to exactly 3:4.
+# NOTE: the CLI/automation base mode is spelled "percent" so its full-res
+# sibling is "percent_fullres"; the GUI (outpaint_expand_mode) base mode is
+# "percentage" so its sibling is "percentage_fullres". These are SEPARATE
+# config keys that never interact — the differing spelling is intentional
+# per-surface consistency, NOT a cross-surface bug.
 _EXPAND_MODE_OPTIONS = ["document_3x4", "percent", "percent_fullres", "three_four_fullres"]
 _SELFIE_EXPAND_MODE_OPTIONS = ["percent", "centered_3x4", "percent_fullres", "three_four_fullres"]
 _COMPOSITE_MODE_OPTIONS = ["preserve_seamless", "feathered", "hard", "black_fill", "none"]
