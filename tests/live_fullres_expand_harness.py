@@ -77,17 +77,25 @@ def _seam_jaggedness(img: Image.Image, left, top, ow, oh, band=6):
     return float(np.mean(diffs)) if diffs else 0.0
 
 
-def run_case(gen, img_path, mode, aspect, pct, provider, use_bfl, out_dir, log):
+def run_case(gen, img_path, mode, aspect, pct, provider, use_bfl, out_dir, log,
+             border_strategy="ai"):
     caps = compute_provider_caps("bfl" if use_bfl else "fal")
     with Image.open(img_path) as im:
         from PIL import ImageOps
         ow, oh = ImageOps.exif_transpose(im).size
     plan = compute_full_res_expand_plan(ow, oh, pct, caps, aspect)
-    tag = f"{Path(img_path).parent.name}_{ow}x{oh}_{mode}_{provider}_p{pct}"
+    tag = f"{Path(img_path).parent.name}_{ow}x{oh}_{mode}_{border_strategy}_{provider}_p{pct}"
     out_path = str(Path(out_dir) / f"{tag}.png")
     log(f"\n=== {tag} ===")
     log(f"  plan: full {plan['full_canvas_w']}x{plan['full_canvas_h']} "
         f"scale={plan['scale_pct']}% provider-canvas {plan['canvas_w']}x{plan['canvas_h']}")
+    # Same anti-text prompt the real app sends — WITHOUT it the model happily
+    # extends the ID card into the border (duplicate-license artifact).
+    border_prompt = (
+        "Continuous, out-of-focus background environment. Shallow depth of "
+        "field, soft lighting, empty neutral space matching the edges. "
+        "STRICTLY NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO DOCUMENT FEATURES."
+    )
     res = gen.outpaint(
         image_path=img_path,
         output_folder=out_dir,
@@ -95,7 +103,9 @@ def run_case(gen, img_path, mode, aspect, pct, provider, use_bfl, out_dir, log):
         composite_mode="preserve_seamless",
         provider=provider,
         full_res_plan=plan,
+        prompt=border_prompt,
         poll_timeout_seconds=180,
+        border_strategy=border_strategy,
     )
     if not res:
         log(f"  FAILED: {gen.get_last_outpaint_error_detail()}")
@@ -124,6 +134,8 @@ def main():
     ap.add_argument("--budget-usd", type=float, default=1.0)
     ap.add_argument("--provider", choices=["fal", "bfl", "both"], default="fal")
     ap.add_argument("--images", nargs="*", help="explicit image paths")
+    ap.add_argument("--strategies", nargs="*", choices=["edge_extend", "ai"],
+                    help="border strategies to test (default both)")
     ap.add_argument("--pct", type=int, default=30)
     args = ap.parse_args()
 
@@ -140,26 +152,32 @@ def main():
         "test-material/canned-pipeline/front.jpg",
     ]
     providers = (["fal", "bfl"] if args.provider == "both" else [args.provider])
-    modes = [("percentage_fullres", None), ("three_four_fullres", (3, 4))]
+    modes = [("three_four_fullres", (3, 4))]
+    # edge_extend is free (no provider) -> always run it; ai costs.
+    strategies = args.strategies or ["edge_extend", "ai"]
 
     spent = 0.0
     results = []
-    for prov in providers:
-        use_bfl = prov == "bfl"
-        if use_bfl and not bfl:
-            log(f"skip bfl (no key)"); continue
-        gen = OutpaintGenerator(fal, freeimage_key=free, bfl_api_key=bfl)
-        gen.set_progress_callback(lambda m, l: None)
-        cost = BFL_COST if use_bfl else FAL_COST
-        for img in images:
-            if not os.path.isfile(img):
-                log(f"skip missing {img}"); continue
-            for mode, aspect in modes:
-                if spent + cost > args.budget_usd:
-                    log(f"BUDGET REACHED (${spent:.2f}) — stopping"); break
-                r = run_case(gen, img, mode, aspect, args.pct, prov, use_bfl, args.out, log)
-                spent += cost
-                results.append(r)
+    gen = OutpaintGenerator(fal, freeimage_key=free, bfl_api_key=bfl)
+    gen.set_progress_callback(lambda m, l: None)
+    for strat in strategies:
+        provs = providers if strat == "ai" else ["fal"]  # edge_extend ignores provider
+        for prov in provs:
+            use_bfl = prov == "bfl"
+            if strat == "ai" and use_bfl and not bfl:
+                log("skip bfl (no key)"); continue
+            cost = 0.0 if strat == "edge_extend" else (BFL_COST if use_bfl else FAL_COST)
+            for img in images:
+                if not os.path.isfile(img):
+                    log(f"skip missing {img}"); continue
+                for mode, aspect in modes:
+                    if spent + cost > args.budget_usd:
+                        log(f"BUDGET REACHED (${spent:.2f}) — skipping {strat}/{prov}")
+                        continue
+                    r = run_case(gen, img, mode, aspect, args.pct, prov, use_bfl,
+                                 args.out, log, border_strategy=strat)
+                    spent += cost
+                    results.append(r)
 
     log(f"\n\n## Summary  (est spend ${spent:.2f})")
     log("| case | ok | canvas | pixel-perfect | seam_jag |")

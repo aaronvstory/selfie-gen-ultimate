@@ -368,6 +368,7 @@ class OutpaintGenerator:
         poll_timeout_seconds: int = 150,
         cancel_event: Optional[threading.Event] = None,
         full_res_plan: Optional[Dict[str, int]] = None,
+        border_strategy: str = "edge_extend",
     ) -> Optional[str]:
         """Outpaint (expand) an image.
 
@@ -415,6 +416,7 @@ class OutpaintGenerator:
                 edge_seal_color=edge_seal_color,
                 poll_timeout_seconds=poll_timeout_seconds,
                 cancel_event=cancel_event,
+                border_strategy=border_strategy,
             )
         return self._outpaint_provider(
             image_path=image_path,
@@ -864,16 +866,31 @@ class OutpaintGenerator:
         edge_seal_color: Tuple[int, int, int] = (220, 220, 220),
         poll_timeout_seconds: int = 150,
         cancel_event: Optional[threading.Event] = None,
+        border_strategy: str = "edge_extend",
     ) -> Optional[str]:
-        """Full-resolution expand.
+        """Full-resolution expand — original kept 1:1, borders added.
 
-        Ask the provider only for the DOWNSCALED borders (plan's
-        ``left/right/top/bottom``), get its raw output, then reassemble at the
-        original's native resolution: upscale the four generated border strips
-        by ``1/scale`` and hard-paste the untouched original into the center by
-        the plan's known full-res margins. The center stays pixel-perfect.
+        ``border_strategy``:
+          - ``"edge_extend"`` (default): build the borders ALGORITHMICALLY from
+            the original's own outer background pixels (replicate outward + grain
+            + blur). No provider call. Deterministic, instant, free, and — because
+            the ID never propagates outward — it can NEVER duplicate the card. Best
+            for ID-on-flat-surface shots. A hand at the edge is stretched softly
+            rather than continued, but never hard-cut.
+          - ``"ai"``: ask the provider to generate the borders (seeded so it does
+            not just re-draw the centered card), then upscale only the border
+            strips and paste the untouched original on top. Richer texture (better
+            for a hand holding the ID) but costs API + can occasionally hallucinate.
+
+        Either way the ORIGINAL center is hard-pasted at native resolution by known
+        geometry (no matchTemplate) so it stays byte-for-byte identical.
         """
         self._set_last_outpaint_error_detail("")
+        if border_strategy == "edge_extend":
+            return self._edge_extend_full_res(
+                image_path, output_folder, full_res_plan,
+                output_format, output_path, composite_mode,
+            )
         dl_left = int(full_res_plan["left"])
         dl_right = int(full_res_plan["right"])
         dl_top = int(full_res_plan["top"])
@@ -943,6 +960,106 @@ class OutpaintGenerator:
                     os.remove(raw_path)
             except OSError:
                 pass
+
+    def _edge_extend_full_res(
+        self,
+        image_path: str,
+        output_folder: str,
+        plan: Dict[str, int],
+        output_format: str,
+        output_path: Optional[str],
+        composite_mode: str,
+    ) -> Optional[str]:
+        """Deterministic full-res expand — no provider, cannot duplicate the ID.
+
+        Build the border by replicating the original's OUTER edge pixels outward
+        (mode="edge" pad), add matched film grain so it isn't smooth banding, blur
+        it into an out-of-focus surface, then hard-paste the untouched original on
+        top. Because only the single outer row/col propagates, the card interior
+        never appears in the border. A hand at the edge streaks softly outward
+        (acceptable "further away" look) instead of being hard-cut.
+        """
+        try:
+            import numpy as np
+            from PIL import ImageFilter
+
+            fl = int(plan["full_left"]); fr = int(plan["full_right"])
+            ft = int(plan["full_top"]); fb = int(plan["full_bottom"])
+            if output_path is None:
+                base = os.path.splitext(os.path.basename(image_path))[0]
+                output_path = os.path.join(
+                    output_folder, f"{base}-expanded.{output_format}"
+                )
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+            with Image.open(image_path) as _o:
+                orig = ImageOps.exif_transpose(_o).convert("RGB")
+            ow, oh = orig.size
+            arr = np.asarray(orig)
+
+            # 1. Edge-replicate pad to the full canvas. Only the outer edge
+            #    row/col propagates, so the card never repeats.
+            padded = np.pad(arr, ((ft, fb), (fl, fr), (0, 0)), mode="edge")
+
+            # 2. Grain: add fine SYNTHETIC noise matched to the amplitude of the
+            #    original's BACKGROUND texture so the border isn't a smooth streak.
+            #    The grain source is a background CORNER patch (never the card),
+            #    so no ID text/edges can leak into the border (an earlier version
+            #    tiled orig-minus-blur over the whole canvas and ghosted the card
+            #    text into the background).
+            canvas = Image.fromarray(padded)
+            fcw, fch = canvas.size
+            max_margin = max(fl, fr, ft, fb, 1)
+            blur_radius = float(min(120, max(24, max_margin * 0.06)))
+            blurred = canvas.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+            barr = np.asarray(blurred).astype(np.float32)
+
+            # background noise amplitude: std of a small corner patch minus its
+            # own blur (high-freq only). Corners of an ID photo are background.
+            cs = max(8, min(ow, oh) // 20)
+            corner = arr[:cs, :cs].astype(np.float32)
+            corner_hf = corner - np.asarray(
+                Image.fromarray(arr[:cs, :cs]).filter(
+                    ImageFilter.GaussianBlur(radius=2)
+                )
+            ).astype(np.float32)
+            noise_amp = float(np.clip(corner_hf.std(), 1.0, 12.0))
+            # deterministic noise (no RNG — repeatable): a hash-free fixed pattern
+            yy, xx = np.mgrid[0:fch, 0:fcw]
+            noise = (np.sin(xx * 12.9898 + yy * 78.233) * 43758.5453)
+            noise = (noise - np.floor(noise) - 0.5) * 2.0  # ~[-1,1]
+            noise = noise[:, :, None] * noise_amp
+            gmask = np.ones((fch, fcw, 1), dtype=np.float32)
+            gmask[ft:ft + oh, fl:fl + ow, :] = 0.0
+            out = np.clip(barr + noise * gmask, 0, 255).astype(np.uint8)
+            result = Image.fromarray(out)
+
+            # 3. Hard-paste the pristine original (byte-for-byte) on top.
+            result.paste(orig, (fl, ft))
+
+            # 4. Feather a thin ring just outside the original so the sharp/soft
+            #    transition reads natural (reuses the same helper as the AI path).
+            if composite_mode in ("preserve_seamless", "feathered"):
+                self._blend_seam_ring(result, orig, fl, ft, ow, oh, composite_mode)
+
+            save_kwargs = (
+                {"quality": 95}
+                if output_format.lower() in ("jpg", "jpeg")
+                else {}
+            )
+            result.save(output_path, **save_kwargs)
+            self._report(
+                f"Edge-extend full-res: {fcw}x{fch} "
+                f"(original {ow}x{oh} kept pixel-perfect, no provider call)",
+                "info",
+            )
+            return output_path
+        except Exception as exc:
+            self._report(f"Edge-extend full-res failed: {exc}", "error")
+            self._set_last_outpaint_error_detail(
+                f"edge_extend:{type(exc).__name__}"
+            )
+            return None
 
     def _composite_fullres(
         self,

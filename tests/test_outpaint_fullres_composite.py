@@ -143,6 +143,63 @@ def test_preserve_seamless_keeps_center_sharp(tmp_path):
     assert np.array_equal(np.array(center), np.array(orig))
 
 
+@pytest.mark.parametrize("w,h,aspect", [(4080, 3060, (3, 4)), (640, 480, (3, 4))])
+def test_edge_extend_center_pixel_perfect_no_provider(tmp_path, w, h, aspect):
+    """edge_extend must keep the original center byte-identical and never call
+    a provider (offline)."""
+    from outpaint_generator import OutpaintGenerator
+
+    plan = compute_full_res_expand_plan(w, h, 30, FAL_CAPS, aspect)
+    orig_p = str(tmp_path / "front.jpg")   # originals are always front.*
+    _make_original(orig_p, w, h)
+
+    gen = OutpaintGenerator(api_key="x")  # bogus key — must not be used
+    out = gen.outpaint(
+        image_path=orig_p,
+        output_folder=str(tmp_path),
+        output_path=str(tmp_path / "out.png"),
+        composite_mode="preserve_seamless",
+        full_res_plan=plan,
+        border_strategy="edge_extend",
+    )
+    assert out is not None
+    res = Image.open(out).convert("RGB")
+    assert res.size == (plan["full_canvas_w"], plan["full_canvas_h"])
+    fl, ft = plan["full_left"], plan["full_top"]
+    center = np.asarray(res.crop((fl, ft, fl + w, ft + h)))
+    orig = np.asarray(Image.open(orig_p).convert("RGB"))
+    assert np.array_equal(center, orig), "edge_extend altered the original center"
+
+
+def test_edge_extend_border_has_no_original_text_leak(tmp_path):
+    """Regression: an earlier grain impl tiled orig-minus-blur over the whole
+    canvas, ghosting the ID text into the border. The border must NOT correlate
+    with the original's interior content."""
+    from outpaint_generator import OutpaintGenerator
+
+    w, h = 1200, 900
+    plan = compute_full_res_expand_plan(w, h, 40, FAL_CAPS, (3, 4))
+    orig_p = str(tmp_path / "front.png")
+    # original: dark bg with a bright text-like block in the CENTER only
+    arr = np.full((h, w, 3), 40, dtype=np.uint8)
+    arr[h // 3:2 * h // 3, w // 3:2 * w // 3] = 240  # bright central "text"
+    Image.fromarray(arr).save(orig_p)
+
+    gen = OutpaintGenerator(api_key="x")
+    out = gen.outpaint(
+        image_path=orig_p, output_folder=str(tmp_path),
+        output_path=str(tmp_path / "o.png"),
+        composite_mode="preserve_seamless",
+        full_res_plan=plan, border_strategy="edge_extend",
+    )
+    res = np.asarray(Image.open(out).convert("L"))
+    ft = plan["full_top"]
+    # top border strip (above the original) must stay near the dark edge value,
+    # i.e. no bright central block leaked upward.
+    top_band = res[0:max(1, ft - 10), :]
+    assert top_band.max() < 160, "bright center content leaked into the border"
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-q"]))
