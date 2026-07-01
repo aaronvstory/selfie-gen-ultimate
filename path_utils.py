@@ -717,20 +717,21 @@ def sanitize_tree_names(root_path: str, rename_root: bool = True) -> Tuple[str, 
     return new_root, renames
 
 
-def sanitize_tree_names_report(
-    root_path: str, rename_root: bool = True
+def _sanitize_tree(
+    root_path: str,
+    rename_root: bool,
+    stem_fn,
+    file_fn,
+    reason_fn,
 ) -> Tuple[str, List[Tuple[str, str]], List[Dict[str, str]], List[Dict[str, str]]]:
-    """Recursively rename files/folders under *root_path* and report failures.
+    """Shared tree walker for the tree-name sanitizers.
 
-    Returns:
-        (new_root_path, renames, failures, changes)
-        - renames: list[(old_path, new_path)]
-        - failures: list[{
-              "path", "desired_path", "error_type", "error_message"
-          }]
-        - changes: list[{
-              "old_path", "new_path", "old_name", "new_name", "reason"
-          }]
+    Renames every file/folder under *root_path* using *stem_fn* (dirs) /
+    *file_fn* (files) and records the *reason_fn* label per change. The two
+    public sanitizers differ only in those three callables.
+
+    Returns (new_root_path, renames, failures, changes) — see the public
+    wrappers for the dict shapes.
     """
     if not os.path.isdir(root_path):
         return root_path, [], [], []
@@ -746,16 +747,16 @@ def sanitize_tree_names_report(
             return
 
         if os.path.isdir(old_path):
-            desired = sanitize_stem(current_name, default="untitled")
+            desired = stem_fn(current_name, default="untitled")
         else:
-            desired = sanitize_filename(current_name, default_stem="untitled")
+            desired = file_fn(current_name, default_stem="untitled")
 
         if desired == current_name:
             return
 
         desired = make_unique_name(parent, desired)
         desired_path = os.path.join(parent, desired)
-        reason = _sanitize_reasons(current_name=current_name, desired_name=desired)
+        reason = reason_fn(current_name=current_name, desired_name=desired)
         try:
             os.rename(old_path, desired_path)
             renames.append((old_path, desired_path))
@@ -798,6 +799,29 @@ def sanitize_tree_names_report(
             new_root = renames[-1][1]
 
     return new_root, renames, failures, changes
+
+
+def sanitize_tree_names_report(
+    root_path: str, rename_root: bool = True
+) -> Tuple[str, List[Tuple[str, str]], List[Dict[str, str]], List[Dict[str, str]]]:
+    """Recursively rename files/folders under *root_path* and report failures.
+
+    Returns:
+        (new_root_path, renames, failures, changes)
+        - renames: list[(old_path, new_path)]
+        - failures: list[{
+              "path", "desired_path", "error_type", "error_message"
+          }]
+        - changes: list[{
+              "old_path", "new_path", "old_name", "new_name", "reason"
+          }]
+    """
+    def _reason(current_name, desired_name):
+        return _sanitize_reasons(current_name=current_name, desired_name=desired_name)
+
+    return _sanitize_tree(
+        root_path, rename_root, sanitize_stem, sanitize_filename, _reason
+    )
 
 
 def sanitize_portable_stem(name: str, default: str = "untitled") -> str:
@@ -855,69 +879,13 @@ def sanitize_tree_names_portable_report(
     root_path: str, rename_root: bool = True
 ) -> Tuple[str, List[Tuple[str, str]], List[Dict[str, str]], List[Dict[str, str]]]:
     """Strict tree sanitizer used by Sanitize Folder feature path."""
-    if not os.path.isdir(root_path):
-        return root_path, [], [], []
+    def _reason(current_name, desired_name):
+        return _portable_reasons(current_name=current_name)
 
-    renames: List[Tuple[str, str]] = []
-    failures: List[Dict[str, str]] = []
-    changes: List[Dict[str, str]] = []
-
-    def _attempt_rename(old_path: str):
-        parent = os.path.dirname(old_path)
-        current_name = os.path.basename(old_path)
-        if not parent or not current_name:
-            return
-
-        if os.path.isdir(old_path):
-            desired = sanitize_portable_stem(current_name, default="untitled")
-        else:
-            desired = sanitize_portable_filename(current_name, default_stem="untitled")
-
-        if desired == current_name:
-            return
-
-        desired = make_unique_name(parent, desired)
-        desired_path = os.path.join(parent, desired)
-        reason = _portable_reasons(current_name=current_name)
-        try:
-            os.rename(old_path, desired_path)
-            renames.append((old_path, desired_path))
-            changes.append(
-                {
-                    "old_path": old_path,
-                    "new_path": desired_path,
-                    "old_name": current_name,
-                    "new_name": desired,
-                    "reason": reason,
-                }
-            )
-        except OSError as exc:
-            failures.append(
-                {
-                    "path": old_path,
-                    "desired_path": desired_path,
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
-                }
-            )
-
-    for current_dir, dirs, files in os.walk(root_path, topdown=False):
-        for filename in sorted(files):
-            old_path = os.path.join(current_dir, filename)
-            if not os.path.exists(old_path):
-                continue
-            _attempt_rename(old_path)
-        for dirname in sorted(dirs):
-            old_path = os.path.join(current_dir, dirname)
-            if not os.path.isdir(old_path):
-                continue
-            _attempt_rename(old_path)
-
-    new_root = root_path
-    if rename_root:
-        old_root = root_path
-        _attempt_rename(old_root)
-        if renames and renames[-1][0] == old_root:
-            new_root = renames[-1][1]
-
-    return new_root, renames, failures, changes
+    return _sanitize_tree(
+        root_path,
+        rename_root,
+        sanitize_portable_stem,
+        sanitize_portable_filename,
+        _reason,
+    )

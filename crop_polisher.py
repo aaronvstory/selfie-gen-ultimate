@@ -159,6 +159,7 @@ class CropPolisher:
     def _polish_bfl(self, image_path: str, output_path: str, prompt: str) -> bool:
         import requests
         from PIL import Image, ImageOps
+        from fal_utils import fal_download_file
 
         if not self._bfl_api_key:
             self._report("BFL API key not set", "error")
@@ -216,7 +217,7 @@ class CropPolisher:
                 result_obj.get("sample") if isinstance(result_obj, dict) else None
             ) or submit_data.get("sample")
             if sample_url:
-                return self._bfl_download(sample_url, output_path)
+                return fal_download_file(sample_url, output_path, self._report)
             self._report(f"No polling_url in BFL response: {submit_data}", "error")
             return False
 
@@ -244,7 +245,7 @@ class CropPolisher:
                     result_obj.get("sample") if isinstance(result_obj, dict) else None
                 ) or poll_data.get("sample")
                 if sample_url:
-                    return self._bfl_download(sample_url, output_path)
+                    return fal_download_file(sample_url, output_path, self._report)
                 self._report(f"BFL result missing sample URL: {poll_data}", "error")
                 return False
             elif status in ("error", "failed"):
@@ -257,31 +258,3 @@ class CropPolisher:
 
         self._report("BFL polish timed out", "error")
         return False
-
-    def _bfl_download(self, url: str, output_path: str) -> bool:
-        import requests
-        import tempfile
-
-        self._report("Downloading BFL result...", "download")
-        try:
-            out_dir = os.path.dirname(output_path) or "."
-            os.makedirs(out_dir, exist_ok=True)
-            resp = requests.get(url, stream=True, timeout=120)
-            resp.raise_for_status()
-            fd, tmp_path = tempfile.mkstemp(dir=out_dir, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=65536):
-                        f.write(chunk)
-                os.replace(tmp_path, output_path)
-            except BaseException:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-            self._report(f"Saved: {os.path.basename(output_path)}", "success")
-            return True
-        except Exception as exc:
-            self._report(f"BFL download failed: {exc}", "error")
-            return False
