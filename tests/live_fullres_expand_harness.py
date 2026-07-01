@@ -134,6 +134,8 @@ def main():
     ap.add_argument("--budget-usd", type=float, default=1.0)
     ap.add_argument("--provider", choices=["fal", "bfl", "both"], default="fal")
     ap.add_argument("--images", nargs="*", help="explicit image paths")
+    ap.add_argument("--images-file", help="text file, one image path per line "
+                    "(avoids shell-splitting paths with spaces)")
     ap.add_argument("--strategies", nargs="*", choices=["edge_extend", "ai"],
                     help="border strategies to test (default both)")
     ap.add_argument("--pct", type=int, default=30)
@@ -148,9 +150,11 @@ def main():
         print(m, flush=True)
         lines.append(m)
 
-    images = args.images or [
-        "test-material/canned-pipeline/front.jpg",
-    ]
+    if args.images_file:
+        images = [ln.strip() for ln in open(args.images_file, encoding="utf-8")
+                  if ln.strip()]
+    else:
+        images = args.images or ["test-material/canned-pipeline/front.jpg"]
     providers = (["fal", "bfl"] if args.provider == "both" else [args.provider])
     modes = [("three_four_fullres", (3, 4))]
     # edge_extend is free (no provider) -> always run it; ai costs.
