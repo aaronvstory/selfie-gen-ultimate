@@ -37,11 +37,6 @@ def draw_rounded_rect(draw, box, radius, fill, outline=None, outline_width=1):
         draw.line([x1, y0 + r, x1, y1 - r], fill=outline, width=outline_width)
 
 
-def lerp_color(c1, c2, t):
-    """Linearly interpolate between two RGBA colors."""
-    return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(len(c1)))
-
-
 def render_icon(size):
     """Render a single icon at the given size."""
     from PIL import Image, ImageDraw

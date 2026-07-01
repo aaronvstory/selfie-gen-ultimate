@@ -364,12 +364,6 @@ class AutomationManifest:
         return inst
 
     @staticmethod
-    def _backup_invalid_manifest(manifest_path: Path, reason: str) -> None:
-        backup_path = _collision_free_backup_path(manifest_path, "corrupt")
-        os.replace(manifest_path, backup_path)
-        raise ValueError(f"Manifest invalid at {manifest_path}: {reason}. Backed up to {backup_path}.")
-
-    @staticmethod
     def _backup_invalid_manifest_no_raise(manifest_path: Path, reason: str) -> None:
         backup_path = _collision_free_backup_path(manifest_path, "corrupt")
         os.replace(manifest_path, backup_path)

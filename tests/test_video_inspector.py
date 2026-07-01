@@ -805,8 +805,8 @@ class CarouselOverlayTests(unittest.TestCase):
         # Button declared via ttk.Button(...) with text="Videos" — migrated
         # from raw tk.Button as part of the b3bc7398 follow-up so the macOS
         # HIView revert doesn't strip its dark tint after the first click.
-        # apply_macos_button_fix is no longer needed for ttk.Button (the
-        # clam theme bypasses HIView entirely).
+        # ttk.Button under the clam theme bypasses HIView entirely, so no
+        # per-button macOS polish is needed.
         self.assertIn("self.video_inspector_btn = ttk.Button", src)
         self.assertIn('text="Videos"', src)
 
