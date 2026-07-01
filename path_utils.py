@@ -8,7 +8,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 
 APP_NAME = "selfie-gen-ultimate"
@@ -720,9 +720,9 @@ def sanitize_tree_names(root_path: str, rename_root: bool = True) -> Tuple[str, 
 def _sanitize_tree(
     root_path: str,
     rename_root: bool,
-    stem_fn,
-    file_fn,
-    reason_fn,
+    stem_fn: Callable[..., str],
+    file_fn: Callable[..., str],
+    reason_fn: Callable[..., str],
 ) -> Tuple[str, List[Tuple[str, str]], List[Dict[str, str]], List[Dict[str, str]]]:
     """Shared tree walker for the tree-name sanitizers.
 
