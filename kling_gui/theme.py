@@ -4,7 +4,6 @@ import os
 import sys
 import logging
 import time
-import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Dict
 
@@ -162,56 +161,6 @@ def create_action_button(parent, text: str, command, style: str = TTK_BTN_SECOND
     # here would just call `focus_set` twice on every hover (Gemini
     # medium id=3289250661 on PR #48 round 5 — removed for cleanliness).
     return ttk.Button(parent, text=text, command=command, style=style, **kwargs)
-
-
-def apply_macos_button_fix(button) -> None:
-    """Best-effort polish for an EXISTING raw ``tk.Button`` on macOS.
-
-    No-op on Windows/Linux. On macOS this sets ``highlightbackground``/
-    ``highlightcolor`` to the button's own ``bg``, zeroes the focus
-    ring, drops the native bezel, and sets a hand cursor.
-
-    WARNING — TINT LIMITATION:
-        On macOS Aqua a ``tk.Button`` is HIView-rendered. The HIView
-        only honors ``highlightbackground`` on the *initial* paint —
-        after the very first event (focus, click, drag), it falls
-        back to the default white-bezel-with-black-text Aqua
-        appearance. **No raw ``tk.Button`` can hold a colored tint
-        on macOS after the first event** regardless of how
-        ``highlightthickness``/``highlightbackground``/``bg`` are
-        configured. Verified Sonoma 2026-05-20.
-
-        If you need a button whose tint survives clicks, use
-        ``create_action_button`` (returns a ``ttk.Button`` under the
-        ``clam`` theme, which bypasses HIView entirely).
-
-    What this helper still does usefully on macOS: removes the bevel,
-    sets the hand cursor, points the focus-ring color at the button
-    fill so the FIRST-PAINT appearance matches the intended tint
-    (which is at least the experience the user sees on launch before
-    they interact). Safe to call unconditionally; silently ignores
-    non-tk widgets.
-    """
-    if not IS_MACOS:
-        return
-    try:
-        fill = button.cget("bg")
-        button.config(
-            highlightbackground=fill,
-            highlightcolor=fill,
-            highlightthickness=0,
-            relief="flat",
-            cursor="hand2",
-        )
-    except Exception:
-        # Never let a cosmetic tweak break widget construction.
-        # CR PR #43 (3273385365): log at debug so real bugs
-        # surface in file logs without surfacing as user-visible
-        # errors. The fallback (raw tk.Button without the fix)
-        # still renders, just without the macOS click-area tweak.
-        _LOGGER.debug(
-            "apply_macos_button_fix failed", exc_info=True,
-        )
 
 
 # ── macOS hit-target sizing helpers ────────────────────────────────────

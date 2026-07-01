@@ -147,12 +147,6 @@ class ImageEntry:
         self.similarity_override_note = ""
         self.similarity_override_ts = None
 
-    def is_expand_allowed(self, threshold: int = SIMILARITY_PASS_THRESHOLD) -> bool:
-        """Return whether this image is eligible for gated expansion."""
-        if self.similarity_score is not None and self.similarity_score >= threshold:
-            return True
-        return bool(self.similarity_override)
-
 
 class ImageSession:
     """Manages a session of images flowing through the pipeline.
@@ -326,18 +320,6 @@ class ImageSession:
         return None
 
     @property
-    def effective_similarity_ref_index(self) -> int:
-        """The index of the effective reference image for similarity checks."""
-        entry = self.effective_similarity_ref_entry
-        if entry is None:
-            return -1
-        # Find index
-        for i, e in enumerate(self._images):
-            if e is entry:
-                return i
-        return -1
-
-    @property
     def effective_similarity_ref_entry(self) -> Optional[ImageEntry]:
         """The single source of truth for the baseline image in similarity comparisons.
 
@@ -399,32 +381,6 @@ class ImageSession:
         return [
             (i, e) for i, e in enumerate(self._images) if e.source_type != "input"
         ]
-
-    def navigate_reference(self, delta: int) -> bool:
-        """Navigate through input images only by delta (+1/-1).
-
-        Clamps at boundaries (does not wrap). Updates _reference_index
-        and notifies listeners. Returns True if the reference changed.
-        """
-        inputs = self.input_images
-        if not inputs:
-            return False
-        # Find current position within inputs list
-        current_pos = -1
-        for pos, (idx, _entry) in enumerate(inputs):
-            if idx == self._reference_index:
-                current_pos = pos
-                break
-        if current_pos < 0:
-            # Reference is unset — jump to first or last input directly
-            new_pos = 0 if delta >= 0 else len(inputs) - 1
-        else:
-            new_pos = current_pos + delta
-        if 0 <= new_pos < len(inputs):
-            self._reference_index = inputs[new_pos][0]
-            self._notify()
-            return True
-        return False
 
     def clear(self):
         """Remove all images from the session."""

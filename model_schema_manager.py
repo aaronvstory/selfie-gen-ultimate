@@ -793,37 +793,3 @@ def check_endpoint_health(api_key: str, endpoint: str, timeout: float = 5.0) -> 
     except Exception:
         return True  # network error — assume alive, don't block the user
 
-
-def check_all_endpoints(api_key: str, models: list, timeout: float = 5.0) -> Dict[str, bool]:
-    """Check health of all model endpoints in parallel.
-
-    Args:
-        api_key: fal.ai API key
-        models: List of model dicts with "endpoint" key
-        timeout: Per-request timeout
-
-    Returns:
-        Dict mapping endpoint -> is_alive (True/False)
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    results: Dict[str, bool] = {}
-    endpoints = [m["endpoint"] for m in models if m.get("endpoint")]
-
-    def _check(ep):
-        return ep, check_endpoint_health(api_key, ep, timeout)
-
-    with ThreadPoolExecutor(max_workers=min(8, len(endpoints))) as pool:
-        futures = {pool.submit(_check, ep): ep for ep in endpoints}
-        for future in as_completed(futures):
-            try:
-                ep, alive = future.result()
-                results[ep] = alive
-            except Exception:
-                results[futures[future]] = True  # assume alive on error
-
-    dead = [ep for ep, alive in results.items() if not alive]
-    if dead:
-        logger.warning(f"Dead/unavailable model endpoints: {dead}")
-
-    return results
