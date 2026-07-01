@@ -227,6 +227,34 @@ class ExpandTab(tk.Frame):
             font=(FONT_FAMILY, 9),
             **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(12, 0))
+        # Full-res modes keep the original at native resolution (borders
+        # upscaled). They reuse the Percentage % field as the zoom-out amount.
+        tk.Radiobutton(
+            mode_row,
+            text="% Full-res",
+            variable=self._expand_mode_var,
+            value="percentage_fullres",
+            command=self._apply_mode_ui,
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        tk.Radiobutton(
+            mode_row,
+            text="3:4 Full-res",
+            variable=self._expand_mode_var,
+            value="three_four_fullres",
+            command=self._apply_mode_ui,
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
+        ).pack(side=tk.LEFT, padx=(12, 0))
 
         self._pct_frame = tk.Frame(settings_frame, bg=COLORS["bg_panel"])
         self._pct_frame.pack(fill=tk.X, padx=6, pady=(0, 4))
@@ -443,7 +471,10 @@ class ExpandTab(tk.Frame):
         self._apply_mode_ui()
 
     def _apply_mode_ui(self):
-        if self._expand_mode_var.get() == "percentage":
+        # Full-res modes reuse the percentage % field as the zoom-out amount.
+        if self._expand_mode_var.get() in (
+            "percentage", "percentage_fullres", "three_four_fullres",
+        ):
             self._px_frame.pack_forget()
             self._pct_frame.pack(fill=tk.X, padx=6, pady=(0, 4))
         else:
@@ -806,8 +837,10 @@ class ExpandTab(tk.Frame):
             self.log("Step 2.5 similarity reference missing: no extracted/front/input image", "error")
             return
         mode = self._expand_mode_var.get()
+        fullres_mode = mode in ("percentage_fullres", "three_four_fullres")
+        fullres_aspect = (3, 4) if mode == "three_four_fullres" else None
         try:
-            if mode == "percentage":
+            if mode in ("percentage", "percentage_fullres", "three_four_fullres"):
                 pct_value = int(self._pct_var.get())
                 pixel_values = (0, 0, 0, 0)
             else:
@@ -844,10 +877,26 @@ class ExpandTab(tk.Frame):
 
             completed = 0
             for entry in approved:
+                _fr_kwargs = {}
+                left = right = top = bottom = 0
                 try:
-                    margins = self._build_expand_margins(
-                        entry.path, mode, pct_value, pixel_values, max_per_side
-                    )
+                    if fullres_mode:
+                        from outpaint_geometry import (
+                            compute_full_res_expand_plan,
+                            compute_provider_caps,
+                        )
+                        from PIL import Image as _PILImg, ImageOps as _PILOps
+                        with _PILImg.open(entry.path) as _im:
+                            _iw, _ih = _PILOps.exif_transpose(_im).size
+                        _fr_kwargs["full_res_plan"] = compute_full_res_expand_plan(
+                            _iw, _ih, pct_value,
+                            compute_provider_caps("bfl" if use_bfl else "fal"),
+                            fullres_aspect,
+                        )
+                    else:
+                        left, right, top, bottom = self._build_expand_margins(
+                            entry.path, mode, pct_value, pixel_values, max_per_side
+                        )
                 except Exception as exc:
                     self.winfo_toplevel().after(
                         0,
@@ -856,7 +905,6 @@ class ExpandTab(tk.Frame):
                         ),
                     )
                     continue
-                left, right, top, bottom = margins
 
                 output_dir = get_gen_images_folder(entry.path)
                 os.makedirs(output_dir, exist_ok=True)
@@ -896,6 +944,7 @@ class ExpandTab(tk.Frame):
                         composite_mode=composite_mode,
                         output_path=output_path,
                         poll_timeout_seconds=get_outpaint_fal_timeout_seconds(cfg),
+                        **_fr_kwargs,
                     )
                 except Exception as exc:
                     self.winfo_toplevel().after(

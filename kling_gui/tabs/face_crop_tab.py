@@ -955,6 +955,35 @@ class FaceCropTab(tk.Frame):
             font=(FONT_FAMILY, 9),
             **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(4, 0))
+        # Full-res modes: keep the original at native resolution (only the
+        # generated borders are upscaled). They reuse the Percentage % field as
+        # the zoom-out amount. "3:4 Full-res" also lands on an exact 3:4 canvas.
+        tk.Radiobutton(
+            btn_row,
+            text="% Full-res",
+            variable=self._expand_mode_var,
+            value="percentage_fullres",
+            command=self._on_expand_mode_changed,
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
+        ).pack(side=tk.LEFT, padx=(4, 0))
+        tk.Radiobutton(
+            btn_row,
+            text="3:4 Full-res",
+            variable=self._expand_mode_var,
+            value="three_four_fullres",
+            command=self._on_expand_mode_changed,
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            font=(FONT_FAMILY, 9),
+            **macos_widget_pad(),
+        ).pack(side=tk.LEFT, padx=(4, 0))
         tk.Checkbutton(
             btn_row,
             text="Run 2x",
@@ -1756,7 +1785,10 @@ class FaceCropTab(tk.Frame):
         self._apply_expand_mode_ui()
 
     def _apply_expand_mode_ui(self):
-        if self._expand_mode_var.get() == "percentage":
+        # Full-res modes reuse the percentage % field as the zoom-out amount.
+        if self._expand_mode_var.get() in (
+            "percentage", "percentage_fullres", "three_four_fullres",
+        ):
             self._px_frame.pack_forget()
             self._pct_frame.pack(fill=tk.X, padx=0, pady=0)
         else:
@@ -3065,7 +3097,24 @@ class FaceCropTab(tk.Frame):
         prompt = self._outpaint_prompt_str
         output_format = self._outpaint_format_var.get()
 
-        if mode == "percentage":
+        # Full-res modes keep the original at native resolution (only the
+        # generated borders are upscaled). They compute their geometry per-pass
+        # from a plan, so the pixel/percentage margins below are skipped.
+        fullres_mode = mode in ("percentage_fullres", "three_four_fullres")
+        fullres_aspect = (3, 4) if mode == "three_four_fullres" else None
+        expand_left = expand_right = expand_top = expand_bottom = 0
+        if fullres_mode:
+            try:
+                fullres_pct = self._pct_var.get()
+            except (tk.TclError, ValueError):
+                self.log("Invalid percentage value", "error")
+                return
+            self.log(
+                f"Full-res expand ({mode}) zoom-out {fullres_pct}% — original "
+                f"kept at native resolution",
+                "info",
+            )
+        elif mode == "percentage":
             try:
                 pct = self._pct_var.get()
             except (tk.TclError, ValueError):
@@ -3106,7 +3155,11 @@ class FaceCropTab(tk.Frame):
 
         input_entry = self.image_session.active_entry
         input_ops = input_entry.ops if input_entry else {}
-        do_2x = bool(self._outpaint_double_expand_var.get())
+        # Full-res reaches the full target canvas in ONE pass; a 2nd pass would
+        # over-expand. Force single pass when a full-res mode is selected.
+        do_2x = bool(self._outpaint_double_expand_var.get()) and not fullres_mode
+        if fullres_mode and bool(self._outpaint_double_expand_var.get()):
+            self.log("Run 2x ignored for full-res mode (single pass).", "info")
 
         pass1_path, pass2_path = build_expand_filenames(
             base_stem=Path(image_path).stem,
@@ -3221,6 +3274,20 @@ class FaceCropTab(tk.Frame):
                     # rename below. This isolates the naming work from the
                     # compositing work — any visual blend regression can
                     # no longer be blamed on the output_path argument.
+                    _fr_kwargs = {}
+                    if fullres_mode:
+                        from outpaint_geometry import (
+                            compute_full_res_expand_plan,
+                            compute_provider_caps,
+                        )
+                        from PIL import Image as _PILImg, ImageOps as _PILOps
+                        with _PILImg.open(current_input) as _im:
+                            _iw, _ih = _PILOps.exif_transpose(_im).size
+                        _fr_kwargs["full_res_plan"] = compute_full_res_expand_plan(
+                            _iw, _ih, fullres_pct,
+                            compute_provider_caps("bfl" if use_bfl else "fal"),
+                            fullres_aspect,
+                        )
                     result = gen.outpaint(
                         image_path=current_input,
                         output_folder=str(gen_dir),
@@ -3234,6 +3301,7 @@ class FaceCropTab(tk.Frame):
                         output_path=None,
                         poll_timeout_seconds=get_outpaint_fal_timeout_seconds(cfg),
                         cancel_event=self._outpaint_cancel_event,
+                        **_fr_kwargs,
                     )
                     if not result:
                         break

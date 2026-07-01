@@ -71,6 +71,116 @@ def compute_percent_expand_plan(
     }
 
 
+def compute_full_res_expand_plan(
+    orig_w: int,
+    orig_h: int,
+    expand_percent: float,
+    caps: ProviderCaps,
+    target_aspect: Optional[Tuple[int, int]] = None,
+) -> Dict[str, int]:
+    """Plan a *full-resolution* expand.
+
+    Unlike :func:`compute_percent_expand_plan` (which returns margins in the
+    downscaled provider coordinate system and discards the original's real
+    resolution), this returns BOTH:
+
+    - ``full_left/right/top/bottom`` + ``full_canvas_w/h`` — margins at the
+      ORIGINAL image's native resolution. The final composited canvas is built
+      at these dimensions and the untouched original is hard-pasted into the
+      center, so it stays pixel-perfect.
+    - ``left/right/top/bottom`` + ``upload_w/h`` + ``canvas_w/h`` — the same
+      geometry scaled DOWN by ``scale`` to fit the provider caps. These are what
+      we actually send to the outpaint provider (it only generates the borders;
+      resolution there doesn't matter because we upscale just the border strips
+      on the way back).
+
+    ``scale`` (0<scale<=1) is ``upload_dim / orig_dim`` — the factor the border
+    strips are upscaled by (``1/scale``) during full-res assembly.
+
+    When ``target_aspect`` is given (e.g. ``(3, 4)``), the expand is a *zoom-out
+    to that aspect*: apply ``expand_percent`` uniformly on all sides first (the
+    "snapped from further away" effect the user wants), then grow only the
+    deficient axis until the canvas hits the target aspect exactly. Without
+    ``target_aspect`` it is a plain symmetric percentage expand.
+    """
+    if orig_w <= 0 or orig_h <= 0:
+        raise ValueError("orig_w and orig_h must be positive integers")
+    p = max(0.0, float(expand_percent) / 100.0)
+
+    # --- 1. Full-resolution target canvas ---
+    if target_aspect is not None:
+        tw, th = target_aspect
+        if tw <= 0 or th <= 0:
+            raise ValueError("Invalid target aspect ratio.")
+        target_ratio = tw / th  # width / height
+        base_w = orig_w * (1.0 + 2.0 * p)
+        base_h = orig_h * (1.0 + 2.0 * p)
+        if base_w / base_h > target_ratio:
+            # too wide for the target -> grow height
+            final_w = base_w
+            final_h = base_w / target_ratio
+        else:
+            # too tall (or exact) -> grow width
+            final_h = base_h
+            final_w = base_h * target_ratio
+        full_canvas_w = int(round(final_w))
+        full_canvas_h = int(round(final_h))
+    else:
+        full_canvas_w = int(round(orig_w * (1.0 + 2.0 * p)))
+        full_canvas_h = int(round(orig_h * (1.0 + 2.0 * p)))
+
+    # Never let rounding make the canvas smaller than the original.
+    full_canvas_w = max(full_canvas_w, orig_w)
+    full_canvas_h = max(full_canvas_h, orig_h)
+
+    full_expand_w = full_canvas_w - orig_w
+    full_expand_h = full_canvas_h - orig_h
+    full_left = full_expand_w // 2
+    full_right = full_expand_w - full_left
+    full_top = full_expand_h // 2
+    full_bottom = full_expand_h - full_top
+    # recompute canvas from the split so full_canvas == orig + margins exactly
+    full_canvas_w = orig_w + full_left + full_right
+    full_canvas_h = orig_h + full_top + full_bottom
+
+    # --- 2. Provider-coordinate (downscaled) plan ---
+    # Fit the FULL canvas inside the caps. This is the scale the provider works
+    # at; the original center is composited at full res regardless.
+    mp_limit_px = caps.max_canvas_mp * 1_000_000.0
+    scale = min(
+        1.0,
+        caps.max_canvas_dim / max(full_canvas_w, 1),
+        caps.max_canvas_dim / max(full_canvas_h, 1),
+        math.sqrt(mp_limit_px / max(full_canvas_w * full_canvas_h, 1.0)),
+    )
+    upload_w = max(1, int(round(orig_w * scale)))
+    upload_h = max(1, int(round(orig_h * scale)))
+    left = min(caps.max_per_side, int(round(full_left * scale)))
+    right = min(caps.max_per_side, int(round(full_right * scale)))
+    top = min(caps.max_per_side, int(round(full_top * scale)))
+    bottom = min(caps.max_per_side, int(round(full_bottom * scale)))
+    canvas_w = upload_w + left + right
+    canvas_h = upload_h + top + bottom
+
+    return {
+        "full_left": full_left,
+        "full_right": full_right,
+        "full_top": full_top,
+        "full_bottom": full_bottom,
+        "full_canvas_w": full_canvas_w,
+        "full_canvas_h": full_canvas_h,
+        "upload_w": upload_w,
+        "upload_h": upload_h,
+        "left": left,
+        "right": right,
+        "top": top,
+        "bottom": bottom,
+        "canvas_w": canvas_w,
+        "canvas_h": canvas_h,
+        "scale_pct": int(round(scale * 100)),
+    }
+
+
 def compute_centered_aspect_expand_plan(
     orig_w: int,
     orig_h: int,
