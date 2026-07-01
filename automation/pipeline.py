@@ -571,11 +571,32 @@ class AutoPipelineRunner:
                 if reprocess_mode == "increment":
                     expanded_output = self._next_increment_path(expanded_output)
                 pct = self._read_int("automation_selfie_expand_percent", 30)
+                branch_mode_val = str(
+                    self.automation.get("automation_selfie_expand_mode", "percent")
+                ).lower()
+                branch_is_fullres = branch_mode_val in ("percent_fullres", "three_four_fullres")
+                branch_fullres_aspect = (3, 4) if branch_mode_val == "three_four_fullres" else None
                 with Image.open(still_path) as _img:
                     width, height = ImageOps.exif_transpose(_img).size
-                plan = compute_percent_expand_plan(
-                    width, height, pct, compute_provider_caps(resolved_selfie_provider),
-                )
+                branch_expand_kwargs: Dict[str, Any] = {}
+                if branch_is_fullres:
+                    branch_expand_kwargs = {
+                        "full_res_plan": compute_full_res_expand_plan(
+                            width, height, pct,
+                            compute_provider_caps(resolved_selfie_provider),
+                            branch_fullres_aspect,
+                        )
+                    }
+                else:
+                    plan = compute_percent_expand_plan(
+                        width, height, pct, compute_provider_caps(resolved_selfie_provider),
+                    )
+                    branch_expand_kwargs = {
+                        "expand_left": int(plan["left"]),
+                        "expand_right": int(plan["right"]),
+                        "expand_top": int(plan["top"]),
+                        "expand_bottom": int(plan["bottom"]),
+                    }
                 _section = self.config.get("selfie_expand_prompt")
                 if isinstance(_section, str):
                     expand_prompt = _section
@@ -589,14 +610,11 @@ class AutoPipelineRunner:
                     output_path=str(expanded_output),
                     provider=resolved_selfie_provider,
                     composite_mode=selfie_composite_mode,
-                    document_mode=self.automation.get("automation_selfie_expand_mode") == "centered_3x4",
-                    expand_left=int(plan["left"]),
-                    expand_right=int(plan["right"]),
-                    expand_top=int(plan["top"]),
-                    expand_bottom=int(plan["bottom"]),
+                    document_mode=branch_mode_val == "centered_3x4",
                     edge_seal_px=0,
                     poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
                     prompt=expand_prompt,
+                    **branch_expand_kwargs,
                 )
                 if not expanded_result:
                     result["error"] = _with_outpaint_detail(

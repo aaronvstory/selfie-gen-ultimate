@@ -402,7 +402,11 @@ class OutpaintGenerator:
         Returns:
             Absolute path to expanded image, or None on failure.
         """
-        if full_res_plan is not None:
+        # black_fill is a no-API deterministic local mode; it never needs the
+        # provider or full-res border generation. Route it to the legacy path
+        # (which sizes the black canvas exactly like the AI path would) BEFORE
+        # the full-res dispatch so a full_res_plan + black_fill still stays free.
+        if full_res_plan is not None and (composite_mode or "").strip().lower() != "black_fill":
             return self._outpaint_full_res(
                 image_path=image_path,
                 output_folder=output_folder,
@@ -436,6 +440,24 @@ class OutpaintGenerator:
             poll_timeout_seconds=poll_timeout_seconds,
             cancel_event=cancel_event,
         )
+
+    @staticmethod
+    def _auto_expanded_path(
+        image_path: str, output_folder: str, output_format: str
+    ) -> str:
+        """Auto-name ``<stem>-expanded.<ext>`` with ``_vN`` collision suffixes.
+
+        Shared by the legacy and full-res paths so neither silently overwrites
+        an existing output when ``output_path`` is omitted.
+        """
+        stem = Path(image_path).stem
+        ext = f".{output_format}"
+        path = os.path.join(output_folder, f"{stem}-expanded{ext}")
+        counter = 1
+        while os.path.exists(path):
+            path = os.path.join(output_folder, f"{stem}-expanded_v{counter}{ext}")
+            counter += 1
+        return path
 
     def _outpaint_provider(
         self,
@@ -688,15 +710,9 @@ class OutpaintGenerator:
         # Build output path (unique) — skip if caller provided one
         os.makedirs(output_folder, exist_ok=True)
         if output_path is None:
-            stem = Path(image_path).stem
-            ext = f".{output_format}"
-            output_path = os.path.join(output_folder, f"{stem}-expanded{ext}")
-            counter = 1
-            while os.path.exists(output_path):
-                output_path = os.path.join(
-                    output_folder, f"{stem}-expanded_v{counter}{ext}"
-                )
-                counter += 1
+            output_path = self._auto_expanded_path(
+                image_path, output_folder, output_format
+            )
 
         # Best-effort cost estimate from fal.ai pricing catalog
         try:
@@ -905,9 +921,8 @@ class OutpaintGenerator:
         # Resolve the final output path first so we can name a temp for the
         # provider's raw (downscaled-canvas) output.
         if output_path is None:
-            base = os.path.splitext(os.path.basename(image_path))[0]
-            output_path = os.path.join(
-                output_folder, f"{base}-expanded.{output_format}"
+            output_path = self._auto_expanded_path(
+                image_path, output_folder, output_format
             )
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
@@ -983,12 +998,13 @@ class OutpaintGenerator:
             import numpy as np
             from PIL import ImageFilter
 
-            fl = int(plan["full_left"]); fr = int(plan["full_right"])
-            ft = int(plan["full_top"]); fb = int(plan["full_bottom"])
+            fl = int(plan["full_left"])
+            fr = int(plan["full_right"])
+            ft = int(plan["full_top"])
+            fb = int(plan["full_bottom"])
             if output_path is None:
-                base = os.path.splitext(os.path.basename(image_path))[0]
-                output_path = os.path.join(
-                    output_folder, f"{base}-expanded.{output_format}"
+                output_path = self._auto_expanded_path(
+                    image_path, output_folder, output_format
                 )
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
@@ -1083,11 +1099,16 @@ class OutpaintGenerator:
              full_top). Optionally seam-blend the thin ring for preserve modes.
         """
         try:
-            fl = int(plan["full_left"]); fr = int(plan["full_right"])
-            ft = int(plan["full_top"]); fb = int(plan["full_bottom"])
-            fcw = int(plan["full_canvas_w"]); fch = int(plan["full_canvas_h"])
-            p_left = int(plan["left"]); p_top = int(plan["top"])
-            up_w = int(plan["upload_w"]); up_h = int(plan["upload_h"])
+            fl = int(plan["full_left"])
+            fr = int(plan["full_right"])
+            ft = int(plan["full_top"])
+            fb = int(plan["full_bottom"])
+            fcw = int(plan["full_canvas_w"])
+            fch = int(plan["full_canvas_h"])
+            p_left = int(plan["left"])
+            p_top = int(plan["top"])
+            up_w = int(plan["upload_w"])
+            up_h = int(plan["upload_h"])
 
             with Image.open(original_path) as _o:
                 orig_full = ImageOps.exif_transpose(_o).convert("RGB")
@@ -1124,14 +1145,14 @@ class OutpaintGenerator:
 
             def _upscale_paste(box, dest_box):
                 """Crop provider region *box* and resize into *dest_box*."""
-                l, t, r, b = box
-                if r <= l or b <= t:
+                bx0, by0, bx1, by1 = box
+                if bx1 <= bx0 or by1 <= by0:
                     return
-                strip = raw.crop((l, t, r, b))
-                dl, dt, dr, db = dest_box
-                dw, dh = max(1, dr - dl), max(1, db - dt)
+                strip = raw.crop((bx0, by0, bx1, by1))
+                dx0, dy0, dx1, dy1 = dest_box
+                dw, dh = max(1, dx1 - dx0), max(1, dy1 - dy0)
                 canvas.paste(
-                    strip.resize((dw, dh), Image.Resampling.LANCZOS), (dl, dt)
+                    strip.resize((dw, dh), Image.Resampling.LANCZOS), (dx0, dy0)
                 )
 
             # Top band (full width), bottom band (full width), then left/right

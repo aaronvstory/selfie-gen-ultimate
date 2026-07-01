@@ -38,12 +38,12 @@ BFL_COST = 0.05
 
 def _load_keys():
     cfg = {}
-    for p in ("kling_config.json",):
-        try:
-            cfg = json.load(open(p))
-            break
-        except Exception:
-            pass
+    p = "kling_config.json"
+    if os.path.exists(p):
+        # A malformed config is a real setup error — surface it, don't silently
+        # fall through to "no keys" (which masquerades as an auth failure later).
+        with open(p, encoding="utf-8") as fh:
+            cfg = json.load(fh)
     fal = cfg.get("falai_api_key") or os.environ.get("FAL_KEY", "")
     bfl = cfg.get("bfl_api_key") or os.environ.get("BFL_API_KEY", "")
     free = cfg.get("freeimage_api_key") or os.environ.get("FREEIMAGE_API_KEY", "")
@@ -123,9 +123,13 @@ def run_case(gen, img_path, mode, aspect, pct, provider, use_bfl, out_dir, log,
     # zoom crop of a corner of the original inside the result to eyeball fidelity
     zc = out.crop((fl, ft, fl + min(ow, 500), ft + min(oh, 500)))
     zc.save(str(Path(out_dir) / f"{tag}_origzoom.png"))
-    return {"tag": tag, "ok": True, "canvas_ok": canvas_ok,
+    # A case only PASSES if the provider returned a path AND both invariants
+    # (canvas dims + pixel-perfect center) hold — otherwise it's a real failure.
+    ok = bool(canvas_ok and pixel_perfect)
+    return {"tag": tag, "ok": ok, "canvas_ok": canvas_ok,
             "pixel_perfect_center": pixel_perfect, "seam_jag": round(jag, 1),
-            "out": res, "full_canvas": f"{plan['full_canvas_w']}x{plan['full_canvas_h']}"}
+            "out": res, "full_canvas": f"{plan['full_canvas_w']}x{plan['full_canvas_h']}",
+            "error": "" if ok else "canvas/center invariant failed"}
 
 
 def main():

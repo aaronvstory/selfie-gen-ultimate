@@ -458,7 +458,10 @@ class OutpaintTab(tk.Frame):
                     compute_provider_caps("bfl" if has_bfl else "fal"),
                     (3, 4) if mode == "three_four_fullres" else None,
                 )
-            except Exception as e:
+            except (OSError, ValueError) as e:
+                # OSError: image can't be opened/decoded; ValueError: bad
+                # geometry (non-positive dims / invalid aspect). Both are
+                # user-actionable — log and bail rather than crash the worker.
                 self.log(f"Could not plan full-res expand: {e}", "error")
                 return
             self.log(
