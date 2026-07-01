@@ -756,7 +756,7 @@ def _sanitize_tree(
 
         desired = make_unique_name(parent, desired)
         desired_path = os.path.join(parent, desired)
-        reason = reason_fn(current_name=current_name, desired_name=desired)
+        reason = reason_fn(current_name, desired)
         try:
             os.rename(old_path, desired_path)
             renames.append((old_path, desired_path))
@@ -817,7 +817,7 @@ def sanitize_tree_names_report(
           }]
     """
     def _reason(current_name, desired_name):
-        return _sanitize_reasons(current_name=current_name, desired_name=desired_name)
+        return _sanitize_reasons(current_name, desired_name)
 
     return _sanitize_tree(
         root_path, rename_root, sanitize_stem, sanitize_filename, _reason
@@ -879,8 +879,8 @@ def sanitize_tree_names_portable_report(
     root_path: str, rename_root: bool = True
 ) -> Tuple[str, List[Tuple[str, str]], List[Dict[str, str]], List[Dict[str, str]]]:
     """Strict tree sanitizer used by Sanitize Folder feature path."""
-    def _reason(current_name, desired_name):
-        return _portable_reasons(current_name=current_name)
+    def _reason(current_name, _desired_name):
+        return _portable_reasons(current_name)
 
     return _sanitize_tree(
         root_path,
