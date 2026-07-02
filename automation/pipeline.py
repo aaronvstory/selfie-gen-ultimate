@@ -39,6 +39,7 @@ from automation.video_aa import AA_PIPELINES, aa_suffix, check_aa_available, run
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
 from outpaint_geometry import (
     compute_percent_expand_plan,
     compute_provider_caps,
@@ -571,7 +572,7 @@ class AutoPipelineRunner:
                 _abort_checkpoint("selfie_expand")
                 if reprocess_mode == "increment":
                     expanded_output = self._next_increment_path(expanded_output)
-                pct = self._read_int("automation_selfie_expand_percent", 30)
+                pct = self._read_int("automation_selfie_expand_percent", DEFAULT_OUTPAINT_EXPAND_PERCENT)
                 branch_mode_val = str(
                     self.automation.get("automation_selfie_expand_mode", "percent")
                 ).lower()
@@ -1148,11 +1149,13 @@ class AutoPipelineRunner:
                 "automation_selfie_expand_composite_mode must be one of: preserve_seamless, feathered, hard, none, black_fill."
             )
         front_expand_percent = (
-            self._read_int("automation_front_expand_percent", 30, issues, min_value=0)
+            self._read_int("automation_front_expand_percent", DEFAULT_OUTPAINT_EXPAND_PERCENT, issues, min_value=0)
             if front_mode == "percent"
-            else 30
+            else DEFAULT_OUTPAINT_EXPAND_PERCENT
         )
-        selfie_expand_percent = self._read_int("automation_selfie_expand_percent", 30, issues, min_value=0)
+        selfie_expand_percent = self._read_int(
+            "automation_selfie_expand_percent", DEFAULT_OUTPAINT_EXPAND_PERCENT, issues, min_value=0
+        )
         crop_multiplier = self._read_float("automation_crop_multiplier", 1.5, issues, min_value=0.01)
         selfie_attempts = self._read_int("automation_selfie_max_attempts_per_model", 1, issues, min_value=1)
         front_passes = self._read_int("automation_front_expand_passes", 2, issues)
@@ -1482,7 +1485,7 @@ class AutoPipelineRunner:
                 front_is_document = front_mode_val == "document_3x4"
                 front_is_fullres = front_mode_val in ("percent_fullres", "three_four_fullres")
                 front_fullres_aspect = (3, 4) if front_mode_val == "three_four_fullres" else None
-                front_pct = self._read_int("automation_front_expand_percent", 30)
+                front_pct = self._read_int("automation_front_expand_percent", DEFAULT_OUTPAINT_EXPAND_PERCENT)
                 # NOTE: black_fill's single-pass force is applied earlier (right
                 # after front_passes is computed) so the skip-reuse guard sees
                 # the effective pass count; by here front_passes is already 1
@@ -2082,7 +2085,7 @@ class AutoPipelineRunner:
                     },
                 )
             else:
-                pct = self._read_int("automation_selfie_expand_percent", 30)
+                pct = self._read_int("automation_selfie_expand_percent", DEFAULT_OUTPAINT_EXPAND_PERCENT)
                 selfie_mode_val = str(
                     self.automation.get("automation_selfie_expand_mode", "percent")
                 ).lower()

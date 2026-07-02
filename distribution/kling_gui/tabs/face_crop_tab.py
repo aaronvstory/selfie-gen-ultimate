@@ -26,7 +26,7 @@ from ..ml_backend_env import ensure_ml_backend_env
 from path_utils import get_gen_images_folder, get_runtime_scratch_dir
 from tk_dialogs import select_open_file
 from automation.config import get_outpaint_fal_timeout_seconds
-from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT, OUTPAINT_EXPAND_PERCENT_PRESETS
 
 # Optional heavy dependencies — tab degrades gracefully if missing/broken
 cv2 = None
@@ -1033,6 +1033,26 @@ class FaceCropTab(tk.Frame):
             pct_row, text="%", font=(FONT_FAMILY, 9),
             bg=COLORS["bg_panel"], fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
+
+        pct_presets = tk.Frame(self._pct_frame, bg=COLORS["bg_panel"])
+        pct_presets.pack(fill=tk.X, pady=(0, 3))
+        tk.Label(
+            pct_presets,
+            text="Zoom:",
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+        ).pack(side=tk.LEFT)
+        for pct in OUTPAINT_EXPAND_PERCENT_PRESETS:
+            label = f"{pct}%"
+            if pct == DEFAULT_OUTPAINT_EXPAND_PERCENT:
+                label = f"{pct}% default"
+            ttk.Button(
+                pct_presets,
+                text=label,
+                style=TTK_BTN_COMPACT,
+                command=lambda p=pct: self._pct_var.set(p),
+            ).pack(side=tk.LEFT, padx=(4, 0))
 
         # Pixels controls (single row: T/B/L/R)
         self._px_frame = tk.Frame(expand_parent, bg=COLORS["bg_panel"])

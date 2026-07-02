@@ -17,7 +17,7 @@ from ..image_state import ImageSession
 from path_utils import get_gen_images_folder
 from log_utils import format_exception_detail
 from automation.config import get_outpaint_fal_timeout_seconds
-from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT, OUTPAINT_EXPAND_PERCENT_PRESETS
 
 
 class OutpaintTab(tk.Frame):
@@ -183,7 +183,7 @@ class OutpaintTab(tk.Frame):
             fg=COLORS["text_dim"],
         ).pack(side=tk.LEFT, padx=(0, 4))
 
-        for pct in [10, 20, DEFAULT_OUTPAINT_EXPAND_PERCENT, 50, 75]:
+        for pct in OUTPAINT_EXPAND_PERCENT_PRESETS:
             label = f"{pct}%"
             if pct == DEFAULT_OUTPAINT_EXPAND_PERCENT:
                 label = f"{DEFAULT_OUTPAINT_EXPAND_PERCENT}% (default)"

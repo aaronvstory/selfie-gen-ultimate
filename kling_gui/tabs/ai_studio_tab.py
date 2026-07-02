@@ -21,6 +21,7 @@ from typing import Callable, Optional
 from ..theme import (
     COLORS,
     FONT_FAMILY,
+    TTK_BTN_COMPACT,
     TTK_BTN_DANGER,
     TTK_BTN_PRIMARY,
     TTK_BTN_SECONDARY,
@@ -30,7 +31,7 @@ from ..theme import (
 )
 from ..image_state import ImageSession
 from log_utils import format_exception_detail
-from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT, OUTPAINT_EXPAND_PERCENT_PRESETS
 from path_utils import get_gen_images_folder
 
 # PIL for canvas thumbnails (mirrors face_crop_tab/compare_panel guarded import).
@@ -134,6 +135,16 @@ class AIStudioTab(tk.Frame):
         self.get_config = config_getter
         self.log = log_callback
         self._config_saver = config_saver
+        try:
+            expand_pct = int(
+                config.get("outpaint_expand_percentage", DEFAULT_OUTPAINT_EXPAND_PERCENT)
+                or DEFAULT_OUTPAINT_EXPAND_PERCENT
+            )
+        except (TypeError, ValueError):
+            expand_pct = DEFAULT_OUTPAINT_EXPAND_PERCENT
+        self._expand_pct_var = tk.IntVar(
+            value=expand_pct
+        )
 
         # Runtime state.
         self._busy = False  # read by main_window._on_close — keep it.
@@ -420,6 +431,26 @@ class AIStudioTab(tk.Frame):
             ),
         )
         self._expand_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        expand_pct_row = tk.Frame(opts, bg=COLORS["bg_panel"])
+        expand_pct_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 4))
+        tk.Label(
+            expand_pct_row,
+            text="Zoom:",
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 9),
+        ).pack(side=tk.LEFT)
+        for pct in OUTPAINT_EXPAND_PERCENT_PRESETS:
+            label = f"{pct}%"
+            if pct == DEFAULT_OUTPAINT_EXPAND_PERCENT:
+                label = f"{pct}% default"
+            ttk.Button(
+                expand_pct_row,
+                text=label,
+                style=TTK_BTN_COMPACT,
+                command=lambda p=pct: self._set_expand_percent(p),
+            ).pack(side=tk.LEFT, padx=(4, 0))
 
         # Presets — vertical full-width stack, scrollable, taking the remaining
         # space between the prompt and the bottom-pinned buttons.
@@ -757,6 +788,17 @@ class AIStudioTab(tk.Frame):
                 _safe_after(lambda: self._on_run_error(err))
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _set_expand_percent(self, pct: int):
+        self._expand_pct_var.set(int(pct))
+        self.config["outpaint_expand_percentage"] = int(pct)
+        try:
+            live_cfg = self.get_config()
+            if isinstance(live_cfg, dict):
+                live_cfg["outpaint_expand_percentage"] = int(pct)
+        except Exception:
+            pass
+        self._save_config_now()
 
     def _on_run_done(self, result_path: Optional[str]):
         self._set_busy(False)

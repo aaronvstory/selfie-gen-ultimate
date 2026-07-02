@@ -9,12 +9,13 @@ from typing import Callable, List, Optional
 
 from path_utils import get_gen_images_folder
 from automation.config import get_outpaint_fal_timeout_seconds
-from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT, OUTPAINT_EXPAND_PERCENT_PRESETS
 
 from ..image_state import ImageSession, SIMILARITY_PASS_THRESHOLD, parse_similarity_score
 from ..theme import (
     COLORS,
     FONT_FAMILY,
+    TTK_BTN_COMPACT,
     TTK_BTN_SECONDARY,
     TTK_BTN_SUCCESS,
     TTK_BTN_WORKFLOW,
@@ -289,6 +290,26 @@ class ExpandTab(tk.Frame):
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
         ).pack(side=tk.LEFT)
+
+        pct_presets = tk.Frame(settings_frame, bg=COLORS["bg_panel"])
+        pct_presets.pack(fill=tk.X, padx=6, pady=(0, 6))
+        tk.Label(
+            pct_presets,
+            text="Zoom:",
+            font=(FONT_FAMILY, 9),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+        ).pack(side=tk.LEFT)
+        for pct in OUTPAINT_EXPAND_PERCENT_PRESETS:
+            label = f"{pct}%"
+            if pct == DEFAULT_OUTPAINT_EXPAND_PERCENT:
+                label = f"{pct}% default"
+            ttk.Button(
+                pct_presets,
+                text=label,
+                style=TTK_BTN_COMPACT,
+                command=lambda p=pct: self._pct_var.set(p),
+            ).pack(side=tk.LEFT, padx=(4, 0))
 
         self._px_frame = tk.Frame(settings_frame, bg=COLORS["bg_panel"])
         self._px_frame.pack(fill=tk.X, padx=6, pady=(0, 6))

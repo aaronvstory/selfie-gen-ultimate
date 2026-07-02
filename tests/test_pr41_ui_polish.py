@@ -400,9 +400,9 @@ class CodeRabbitCleanupTests(unittest.TestCase):
             src,
             r'self\.config\["automation_selfie_expand_composite_mode"\]\s*=\s*"none"',
         )
-        # v2.47 recommended defaults: provider fal, full-res 3:4, Step 2.5 raw composite.
-        self.assertIn("-> fal / three_four_fullres / 30 / none", src)
-        self.assertNotIn("/ percent / 30 / preserve_seamless", src)
+        # v2.48 recommended defaults: provider fal, full-res 3:4, Step 2.5 raw composite, 35% zoom.
+        self.assertIn("-> fal / three_four_fullres / {DEFAULT_OUTPAINT_EXPAND_PERCENT} / none", src)
+        self.assertNotIn("/ percent / 35 / preserve_seamless", src)
 
     def test_get_merged_models_exempts_current_from_both_hide_paths(self):
         from kling_gui.config_panel import ModelFetcher
