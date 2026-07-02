@@ -169,17 +169,26 @@ def compute_full_res_expand_plan(
 
     # Cap the final canvas to a sane longest side. A wide source expanded to a
     # tall 3:4 can balloon (e.g. 4000x3000 @70% -> 12800 tall = 122MP, which
-    # trips PIL's 89MP decompression-bomb guard and makes unwieldy files). If we
-    # would exceed max_full_dim, scale the WHOLE plan (original included) down
-    # proportionally. The default 10000 keeps every typical 30% expand at native
-    # resolution (those top out ~8700 longest) AND stays under PIL's 89MP limit
-    # for 3:4; only extreme expands (e.g. 70% of a 4K source) are reduced.
+    # trips PIL's 89MP decompression-bomb guard and makes unwieldy files).
+    #
+    # The ORIGINAL must stay at native resolution (the pixel-perfect contract),
+    # so we cap by REDUCING THE EXPANSION (shrinking the margins), not by
+    # shrinking the original. We pull the target aspect toward the original's own
+    # aspect just enough that native_orig + margins fits max_full_dim. If the
+    # ORIGINAL alone already exceeds the cap there's nothing to trim (the margins
+    # go to zero and the canvas equals the original) — we never downscale it.
+    # Default 10000 keeps every typical 30% expand at native res (those top out
+    # ~8700 longest) and stays under PIL's 89MP limit for 3:4.
     if max_full_dim and max(full_canvas_w, full_canvas_h) > max_full_dim:
-        s = max_full_dim / float(max(full_canvas_w, full_canvas_h))
-        orig_w = max(1, int(round(orig_w * s)))
-        orig_h = max(1, int(round(orig_h * s)))
-        full_canvas_w = max(orig_w, int(round(full_canvas_w * s)))
-        full_canvas_h = max(orig_h, int(round(full_canvas_h * s)))
+        longest = max(full_canvas_w, full_canvas_h)
+        # how much of the expansion we can keep (0..1) after clamping the longest
+        # side to the cap, measured against the original along that same axis.
+        base_longest = orig_h if full_canvas_h >= full_canvas_w else orig_w
+        room = max(0, max_full_dim - base_longest)
+        grow = max(1, longest - base_longest)
+        keep = min(1.0, room / grow)
+        full_canvas_w = max(orig_w, orig_w + int(round((full_canvas_w - orig_w) * keep)))
+        full_canvas_h = max(orig_h, orig_h + int(round((full_canvas_h - orig_h) * keep)))
 
     full_expand_w = full_canvas_w - orig_w
     full_expand_h = full_canvas_h - orig_h

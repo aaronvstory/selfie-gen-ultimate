@@ -70,20 +70,64 @@ def test_3x4_always_hits_aspect_and_fits_caps(w, h, caps):
 
 
 def test_max_full_dim_caps_oversized_output():
-    """A wide source expanded to tall 3:4 can exceed PIL's bomb limit; the
-    max_full_dim cap scales the whole plan down proportionally."""
+    """A wide source expanded to tall 3:4 can exceed PIL's bomb limit; the cap
+    trims the MARGINS to fit max_full_dim while keeping the original at native
+    resolution (fidelity > exact aspect at the ceiling)."""
     # 4000x3000 @70% -> 3:4 balloons to 12800 tall (122MP) uncapped
     uncapped = compute_full_res_expand_plan(4000, 3000, 70, FAL_CAPS, (3, 4), max_full_dim=0)
     assert max(uncapped["full_canvas_w"], uncapped["full_canvas_h"]) > 10000
     capped = compute_full_res_expand_plan(4000, 3000, 70, FAL_CAPS, (3, 4))  # default 10000
     assert max(capped["full_canvas_w"], capped["full_canvas_h"]) <= 10000
-    # still exact 3:4
-    assert abs(capped["full_canvas_w"] / capped["full_canvas_h"] - 3 / 4) < 5e-3
     # under PIL's default decompression-bomb limit
     assert capped["full_canvas_w"] * capped["full_canvas_h"] < 89_478_485
+    # the original is NOT downscaled — margins were trimmed instead. So the
+    # canvas rebuilt from the NATIVE original + these margins still fits the cap.
+    ow, oh = 4000, 3000
+    assert ow + capped["full_left"] + capped["full_right"] <= 10000
+    assert oh + capped["full_top"] + capped["full_bottom"] <= 10000
     # a typical 30% expand (tops out ~8700 longest) is NOT capped -> native res
     typical = compute_full_res_expand_plan(4080, 3060, 30, FAL_CAPS, (3, 4))
     assert typical["full_canvas_w"] == 6528 and typical["full_canvas_h"] == 8704
+    # the original stays NATIVE under the cap — margins shrink, orig doesn't.
+    # Simulate the composite's "native orig + margins" rebuild:
+    ow, oh = 4000, 3000
+    rebuilt_w = ow + capped["full_left"] + capped["full_right"]
+    rebuilt_h = oh + capped["full_top"] + capped["full_bottom"]
+    assert max(rebuilt_w, rebuilt_h) <= 10000, "cap defeated at composite time"
+    assert rebuilt_w * rebuilt_h < 89_478_485
+
+
+def test_capped_plan_composite_stays_under_limit_end_to_end(tmp_path):
+    """The cap must hold THROUGH the composite (which rebuilds canvas from the
+    NATIVE original + plan margins). Regression guard: an earlier cap scaled the
+    original inside the geometry fn, but the composite re-opened the full file,
+    silently defeating the cap and producing a >89MP non-3:4 output."""
+    from outpaint_generator import OutpaintGenerator
+    w, h = 4000, 3000  # wide source that balloons at high %
+    plan = compute_full_res_expand_plan(w, h, 70, FAL_CAPS, (3, 4))  # capped
+    orig_p = str(tmp_path / "front.png")
+    _make_original(orig_p, w, h)
+    gen = OutpaintGenerator(api_key="x")
+    for mode, kwargs in (
+        ("black_fill", {}),
+        ("preserve_seamless", {"border_strategy": "edge_extend"}),
+    ):
+        out = gen.outpaint(
+            image_path=orig_p, output_folder=str(tmp_path),
+            output_path=str(tmp_path / f"{mode}.png"),
+            composite_mode=mode, full_res_plan=plan, **kwargs,
+        )
+        assert out is not None, f"{mode} produced nothing"
+        res = Image.open(out)
+        assert max(res.size) <= 10000, f"{mode}: cap defeated -> {res.size}"
+        assert res.size[0] * res.size[1] < 89_478_485, f"{mode}: exceeds PIL limit"
+        # original center still byte-perfect (native res, pasted whole)
+        arr = np.asarray(res.convert("RGB"))
+        fl, ft = plan["full_left"], plan["full_top"]
+        m = 40
+        center = arr[ft + m:ft + h - m, fl + m:fl + w - m]
+        orig = np.asarray(Image.open(orig_p).convert("RGB"))[m:h - m, m:w - m]
+        assert np.array_equal(center, orig), f"{mode}: original center altered"
 
 
 def test_percentage_fullres_no_aspect():
