@@ -392,6 +392,8 @@ def test_front_expand_2pass_uses_distinct_intermediate_path(tmp_path: Path, monk
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-g")
 
     config = merge_automation_defaults({
+        "automation_front_expand_mode": "percent",
+        "automation_selfie_expand_mode": "percent",
         "falai_api_key": "x",
         "bfl_api_key": "bfl-token",
         "automation_oldcam_required": False,
@@ -508,6 +510,8 @@ def test_front_expand_2pass_recomputes_geometry_per_pass(tmp_path: Path, monkeyp
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="case-geo")
 
     config = merge_automation_defaults({
+        "automation_front_expand_mode": "percent",
+        "automation_selfie_expand_mode": "percent",
         "falai_api_key": "x",
         "automation_oldcam_required": False,
         "saved_prompts": {"1": "prompt"},
@@ -858,6 +862,8 @@ def test_pipeline_validation_oldcam_all_required_accepts_single_discovered_versi
 def test_pipeline_validation_collects_numeric_coercion_issues(tmp_path: Path):
     config = merge_automation_defaults(
         {
+            "automation_front_expand_mode": "percent",
+            "automation_selfie_expand_mode": "percent",
             "falai_api_key": "x",
             "bfl_api_key": "bfl-token",
             "automation_similarity_threshold": "abc",
@@ -1310,6 +1316,8 @@ def test_pipeline_front_expand_runs_two_passes_when_configured(tmp_path: Path, m
 
     config = merge_automation_defaults(
         {
+            "automation_front_expand_mode": "percent",
+            "automation_selfie_expand_mode": "percent",
             "falai_api_key": "x",
             "bfl_api_key": "bfl-token",
             "automation_oldcam_required": False,
@@ -1413,6 +1421,11 @@ def _front_expand_reuse_runner(
             "falai_api_key": "x",
             "bfl_api_key": "bfl-token",
             "automation_oldcam_required": False,
+            # These reuse/2-pass tests exercise PERCENT-mode mechanics (stage-1
+            # sibling, 2-pass chaining). The default is now three_four_fullres
+            # (single-pass), so pin percent here; a test can still override.
+            "automation_front_expand_mode": "percent",
+            "automation_selfie_expand_mode": "percent",
             **extra_config,
         }
     )
@@ -1468,7 +1481,7 @@ def test_front_expand_2pass_reruns_via_branch2_when_step_not_recorded(tmp_path: 
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="fe-branch2")
 
     config = merge_automation_defaults(
-        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 2}
+        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 2, "automation_front_expand_mode": "percent"}
     )
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)  # step stays 'pending'
@@ -1508,6 +1521,8 @@ def test_front_expand_increment_mode_stage1_tracks_incremented_name(tmp_path: Pa
 
     config = merge_automation_defaults(
         {
+            "automation_front_expand_mode": "percent",
+            "automation_selfie_expand_mode": "percent",
             "falai_api_key": "x",
             "bfl_api_key": "bfl-token",
             "automation_oldcam_required": False,
@@ -1557,7 +1572,7 @@ def test_front_expand_2pass_failed_retry_cleans_orphan_stage1(tmp_path: Path, mo
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="fe-failretry")
 
     config = merge_automation_defaults(
-        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 2}
+        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 2, "automation_front_expand_mode": "percent"}
     )
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
@@ -1607,7 +1622,7 @@ def test_front_expand_2pass_interrupted_running_does_not_reuse_stale(tmp_path: P
     record = CaseRecord(case_dir=case_dir, front_path=front, relative_key="fe-crash")
 
     config = merge_automation_defaults(
-        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 2}
+        {"falai_api_key": "x", "bfl_api_key": "bfl-token", "automation_oldcam_required": False, "automation_front_expand_passes": 2, "automation_front_expand_mode": "percent"}
     )
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
@@ -1736,6 +1751,8 @@ def test_pipeline_selfie_expand_reuse_skips_outpaint_call(tmp_path: Path, monkey
     config = merge_automation_defaults({"falai_api_key": "x",
             "bfl_api_key": "bfl-token",
             "automation_oldcam_required": False,
+            "automation_front_expand_mode": "percent",
+            "automation_selfie_expand_mode": "percent",
             "automation_selfie_expand_composite_mode": "none"})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
@@ -1992,7 +2009,8 @@ def test_pipeline_selfie_expand_failure_is_terminal(tmp_path: Path, monkeypatch)
 
     config = merge_automation_defaults({"falai_api_key": "x",
             "bfl_api_key": "bfl-token",
-            "automation_oldcam_required": False, "automation_selfie_expand_enabled": True})
+            "automation_oldcam_required": False, "automation_selfie_expand_enabled": True,
+            "automation_selfie_expand_mode": "percent"})
     manifest = AutomationManifest.create_or_load(tmp_path / "automation_manifest.json", tmp_path, {})
     manifest.ensure_case(record.relative_key, record.case_dir, record.front_path)
     monkeypatch.setattr("automation.pipeline.extract_portrait_crop", lambda **kwargs: {"confidence": 0.9, "crop_box": [0, 0, 10, 10], "extractor": "mock"})

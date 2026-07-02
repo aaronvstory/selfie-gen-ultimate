@@ -58,7 +58,7 @@ class OutpaintTab(tk.Frame):
         mode_row.pack(fill=tk.X, padx=5, pady=5)
 
         self._expand_mode_var = tk.StringVar(
-            value=self.config.get("outpaint_expand_mode", "percentage")
+            value=self.config.get("outpaint_expand_mode", "three_four_fullres")
         )
         tk.Radiobutton(
             mode_row,
@@ -77,6 +77,33 @@ class OutpaintTab(tk.Frame):
             text="Pixels (manual L/R/T/B)",
             variable=self._expand_mode_var,
             value="pixels",
+            command=self._on_mode_changed,
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            font=(FONT_FAMILY, 9),
+        ).pack(side=tk.LEFT, padx=(15, 0))
+        # Full-res modes keep the original at native resolution (only the
+        # generated borders are upscaled). They reuse the % field as the
+        # zoom-out amount; "3:4 Full-res" lands on an exact 3:4 canvas.
+        tk.Radiobutton(
+            mode_row,
+            text="% Full-res",
+            variable=self._expand_mode_var,
+            value="percentage_fullres",
+            command=self._on_mode_changed,
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            font=(FONT_FAMILY, 9),
+        ).pack(side=tk.LEFT, padx=(15, 0))
+        tk.Radiobutton(
+            mode_row,
+            text="3:4 Full-res",
+            variable=self._expand_mode_var,
+            value="three_four_fullres",
             command=self._on_mode_changed,
             bg=COLORS["bg_panel"],
             fg=COLORS["text_light"],
@@ -343,7 +370,10 @@ class OutpaintTab(tk.Frame):
         self.log(f"Expand mode: {label}", "info")
 
     def _apply_mode_ui(self):
-        if self._expand_mode_var.get() == "percentage":
+        # Full-res modes reuse the percentage % field as the zoom-out amount.
+        if self._expand_mode_var.get() in (
+            "percentage", "percentage_fullres", "three_four_fullres",
+        ):
             self._px_frame.pack_forget()
             self._pct_frame.pack(fill=tk.X, padx=0, pady=0)
         else:
@@ -405,14 +435,52 @@ class OutpaintTab(tk.Frame):
         output_format = self.format_var.get()
         composite_mode = self._composite_mode_var.get()
         mode = self._expand_mode_var.get()
+        has_bfl = bool(self.get_config().get("bfl_api_key"))
+        expand_left = expand_right = expand_top = expand_bottom = 0
+        full_res_plan = None
+        full_res_strategy = "edge_extend"
 
-        if mode == "percentage":
+        if mode in ("percentage_fullres", "three_four_fullres"):
             try:
                 pct = self._pct_var.get()
             except (tk.TclError, ValueError):
                 self.log("Invalid percentage value", "error")
                 return
-            has_bfl = bool(self.get_config().get("bfl_api_key"))
+            try:
+                from outpaint_geometry import (
+                    compute_full_res_expand_plan,
+                    compute_provider_caps,
+                    resolve_border_strategy,
+                )
+                from PIL import Image as _PILImg, ImageOps as _PILOps
+                with _PILImg.open(image_path) as _im:
+                    _iw, _ih = _PILOps.exif_transpose(_im).size
+                full_res_plan = compute_full_res_expand_plan(
+                    _iw, _ih, pct,
+                    compute_provider_caps("bfl" if has_bfl else "fal"),
+                    (3, 4) if mode == "three_four_fullres" else None,
+                )
+                full_res_strategy = resolve_border_strategy(
+                    self.get_config(), bool(api_key), "bfl" if has_bfl else "fal"
+                )
+            except (OSError, ValueError) as e:
+                # OSError: image can't be opened/decoded; ValueError: bad
+                # geometry (non-positive dims / invalid aspect). Both are
+                # user-actionable — log and bail rather than crash the worker.
+                self.log(f"Could not plan full-res expand: {e}", "error")
+                return
+            self.log(
+                f"Full-res expand ({mode}) zoom-out {pct}% — original kept at "
+                f"native resolution → {full_res_plan['full_canvas_w']}x"
+                f"{full_res_plan['full_canvas_h']}",
+                "info",
+            )
+        elif mode == "percentage":
+            try:
+                pct = self._pct_var.get()
+            except (tk.TclError, ValueError):
+                self.log("Invalid percentage value", "error")
+                return
             max_per_side = 2048 if has_bfl else 700
             try:
                 expand_left, expand_right, expand_top, expand_bottom = (
@@ -468,6 +536,8 @@ class OutpaintTab(tk.Frame):
                     output_format=output_format,
                     composite_mode=composite_mode,
                     poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.get_config()),
+                    full_res_plan=full_res_plan,
+                    border_strategy=full_res_strategy,
                 )
 
                 # Compute face similarity against original portrait

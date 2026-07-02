@@ -40,12 +40,12 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_skip_completed": True,
     "automation_skip_if_selfie_exists": True,
     "automation_skip_if_video_exists": True,
-    "automation_max_cases_per_run": "5",  # 1 | 5 | 10 | all
+    "automation_max_cases_per_run": "5",  # positive integer (e.g. 1, 5, 20) | "all"
     "automation_allow_reprocess": False,
     "automation_reprocess_mode": "skip",  # skip | overwrite | increment
     "automation_front_expand_enabled": True,
     "automation_front_expand_provider": "fal",  # auto | bfl | fal (fal default per user direction 2026-05-22)
-    "automation_front_expand_mode": "percent",  # document_3x4 | percent
+    "automation_front_expand_mode": "three_four_fullres",  # document_3x4 | percent | percent_fullres | three_four_fullres (default: full-res 3:4 + Bria borders)
     "automation_front_expand_composite_mode": "preserve_seamless",  # preserve_seamless | feathered | hard | none | black_fill
     "automation_front_expand_percent": 70,
     "automation_front_expand_passes": 2,  # 1 | 2
@@ -85,7 +85,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_similarity_threshold": 80,
     "automation_selfie_expand_enabled": True,
     "automation_selfie_expand_provider": "fal",  # auto | bfl | fal (fal default per user direction 2026-05-22)
-    "automation_selfie_expand_mode": "percent",  # percent | centered_3x4
+    "automation_selfie_expand_mode": "three_four_fullres",  # percent | centered_3x4 | percent_fullres | three_four_fullres (default: full-res 3:4 + Bria borders)
     "automation_selfie_expand_composite_mode": "none",  # preserve_seamless | feathered | hard | none | black_fill  (Step 2.5 selfie expand ships raw AI output by default)
     "automation_selfie_expand_percent": 30,
     "automation_selfie_expand_edge_seal_enabled": False,
@@ -138,6 +138,22 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_aa_required": False,
     "automation_aa_strength": 0.5,
     "automation_aa_generator": "generic",
+    # Post-processing fan-out mode (2026-06-19). Controls how the optional
+    # post-processing modifiers (rPPG / Loop / Crush / AA / Oldcam) combine when
+    # more than one is enabled:
+    #   "combined_only"        — a single cumulative chain of every enabled
+    #                            modifier (the historical behaviour).
+    #   "separate_and_combined" — the POWERSET: every non-empty subset of the
+    #                            enabled modifier types, each sequenced in the
+    #                            canonical order, so the user gets both the
+    #                            individual variants AND the combined one(s).
+    # DEFAULT is the powerset per user direction. The GUI writes the
+    # non-prefixed alias ``postproc_fanout_mode``, bridged in
+    # merge_automation_defaults below. Enumeration lives in
+    # automation.postproc_plan (single source of truth for both orchestrators
+    # and the read-only pipeline preview). This key changes OUTPUTS, so it is
+    # deliberately FINGERPRINTED (not in manifest._FINGERPRINT_EXCLUDED_KEYS).
+    "automation_postproc_fanout_mode": "separate_and_combined",
     "automation_oldcam_enabled": True,
     # Canonical form is a LIST of versions (multi-select, 2026-06-11):
     # ["v13", "v24"], ["all"] (symbolic — expanded at runtime), or [] (none).
@@ -223,6 +239,10 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     #   v7 (2026-06-11, CLI UX overhaul): rPPG recommended ON, oldcam
     #     ["v13"] (multi-select list form), loop OFF (new step), provider
     #     fal for both expand steps ("fal.ai for everything").
+    #   v8 (2026-06-25): default video model -> Kling 2.5 Turbo Standard. Must
+    #     stay in lockstep with kling_automation_ui.RECOMMENDED_DEFAULTS_VERSION
+    #     (a fresh-install config seeded at N-1 would immediately trip the
+    #     "apply recommended defaults?" prompt — guard in test_automation_cli_smoke).
     "automation_recommended_defaults_version": 9,
     "automation_verbose_logging": True,
     "automation_log_max_bytes": 2097152,
@@ -325,6 +345,23 @@ def resolve_cli_video_duration(config: Mapping[str, Any], default: int = 10) -> 
         return int(default)
 
 
+def resolve_cli_video_resolution(config: Mapping[str, Any], default: str = "720p") -> str:
+    """Video resolution for the CLI pipeline, per-surface like the model +
+    duration (so a GUI model with a different native resolution does not bleed
+    into automation runs). Falls back to the shared ``resolution`` key for
+    pre-split configs, then to ``default``. Token-priced models (Seedance) use
+    this to drive native low-res generation (a cheaper alternative to crush)."""
+    raw = config.get("cli_video_resolution")
+    if raw in (None, ""):
+        raw = config.get("resolution", default)
+    # A JSON null reaches here as None -> str(None) == "None" (a truthy non-empty
+    # string that is NOT a real resolution). Guard it so we return the default.
+    if raw is None:
+        return default
+    text = str(raw).strip()
+    return text or default
+
+
 def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(config)
     # Subagent CRITICAL on 286613c (2026-05-22): the GUI writes the
@@ -343,6 +380,19 @@ def merge_automation_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
     if "automation_rppg_per_oldcam_fanout" not in merged and "rppg_per_oldcam_fanout" in merged:
         merged["automation_rppg_per_oldcam_fanout"] = bool(
             merged["rppg_per_oldcam_fanout"]
+        )
+    # Same GUI-alias bridge for the post-processing fan-out mode (2026-06-19):
+    # the GUI config_panel writes the non-prefixed ``postproc_fanout_mode``;
+    # the CLI pipeline reads ``automation_postproc_fanout_mode``. Without this
+    # the GUI's mode choice is silently ignored by the CLI. Route through
+    # normalize_mode so a hand-edited/unknown value coerces to the default.
+    from automation.postproc_plan import normalize_mode as _normalize_fanout_mode
+
+    if "automation_postproc_fanout_mode" not in merged and "postproc_fanout_mode" in merged:
+        merged["automation_postproc_fanout_mode"] = merged["postproc_fanout_mode"]
+    if "automation_postproc_fanout_mode" in merged:
+        merged["automation_postproc_fanout_mode"] = _normalize_fanout_mode(
+            merged["automation_postproc_fanout_mode"]
         )
     # Multi-resolution crush (2026-06-18): collapse the canonical list +
     # legacy boolean into the single canonical ``automation_crush_resolutions``

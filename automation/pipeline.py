@@ -39,7 +39,12 @@ from automation.video_aa import AA_PIPELINES, aa_suffix, check_aa_available, run
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
-from outpaint_geometry import compute_percent_expand_plan, compute_provider_caps
+from outpaint_geometry import (
+    compute_percent_expand_plan,
+    compute_provider_caps,
+    compute_full_res_expand_plan,
+    resolve_border_strategy,
+)
 from outpaint_generator import OutpaintGenerator
 from selfie_generator import SelfieGenerator
 
@@ -567,11 +572,36 @@ class AutoPipelineRunner:
                 if reprocess_mode == "increment":
                     expanded_output = self._next_increment_path(expanded_output)
                 pct = self._read_int("automation_selfie_expand_percent", 30)
+                branch_mode_val = str(
+                    self.automation.get("automation_selfie_expand_mode", "percent")
+                ).lower()
+                branch_is_fullres = branch_mode_val in ("percent_fullres", "three_four_fullres")
+                branch_fullres_aspect = (3, 4) if branch_mode_val == "three_four_fullres" else None
                 with Image.open(still_path) as _img:
                     width, height = ImageOps.exif_transpose(_img).size
-                plan = compute_percent_expand_plan(
-                    width, height, pct, compute_provider_caps(resolved_selfie_provider),
-                )
+                branch_expand_kwargs: Dict[str, Any] = {}
+                if branch_is_fullres:
+                    branch_expand_kwargs = {
+                        "full_res_plan": compute_full_res_expand_plan(
+                            width, height, pct,
+                            compute_provider_caps(resolved_selfie_provider),
+                            branch_fullres_aspect,
+                        ),
+                        "border_strategy": resolve_border_strategy(
+                            self.config, bool(self.config.get("falai_api_key")),
+                            resolved_selfie_provider,
+                        ),
+                    }
+                else:
+                    plan = compute_percent_expand_plan(
+                        width, height, pct, compute_provider_caps(resolved_selfie_provider),
+                    )
+                    branch_expand_kwargs = {
+                        "expand_left": int(plan["left"]),
+                        "expand_right": int(plan["right"]),
+                        "expand_top": int(plan["top"]),
+                        "expand_bottom": int(plan["bottom"]),
+                    }
                 _section = self.config.get("selfie_expand_prompt")
                 if isinstance(_section, str):
                     expand_prompt = _section
@@ -585,14 +615,11 @@ class AutoPipelineRunner:
                     output_path=str(expanded_output),
                     provider=resolved_selfie_provider,
                     composite_mode=selfie_composite_mode,
-                    document_mode=self.automation.get("automation_selfie_expand_mode") == "centered_3x4",
-                    expand_left=int(plan["left"]),
-                    expand_right=int(plan["right"]),
-                    expand_top=int(plan["top"]),
-                    expand_bottom=int(plan["bottom"]),
+                    document_mode=branch_mode_val == "centered_3x4",
                     edge_seal_px=0,
                     poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
                     prompt=expand_prompt,
+                    **branch_expand_kwargs,
                 )
                 if not expanded_result:
                     result["error"] = _with_outpaint_detail(
@@ -1386,6 +1413,19 @@ class AutoPipelineRunner:
                     case_key, front_passes,
                 )
                 front_passes = 1
+            # Full-res modes reach the full target canvas (percentage or 3:4) in
+            # ONE pass by assembling at native resolution — a 2nd pass would
+            # over-expand. Force single pass here so the stage-1 reuse guard
+            # doesn't demand a stage-1 sibling that full-res never produces.
+            _front_mode_now = str(
+                self.automation.get("automation_front_expand_mode", "percent")
+            ).lower()
+            if _front_mode_now in ("percent_fullres", "three_four_fullres") and front_passes != 1:
+                self.logger.info(
+                    "case %s front expand: %s forces single pass (was %s)",
+                    case_key, _front_mode_now, front_passes,
+                )
+                front_passes = 1
             current_step = self.manifest.get_step(case_key, "front_expand")
             existing_front_step_output = current_step.get("output")
             if (
@@ -1436,7 +1476,12 @@ class AutoPipelineRunner:
                 target_output = Path(front_expanded)
                 if reprocess_mode == "increment":
                     target_output = self._next_increment_path(target_output)
-                front_is_document = self.automation.get("automation_front_expand_mode") == "document_3x4"
+                front_mode_val = str(
+                    self.automation.get("automation_front_expand_mode", "percent")
+                ).lower()
+                front_is_document = front_mode_val == "document_3x4"
+                front_is_fullres = front_mode_val in ("percent_fullres", "three_four_fullres")
+                front_fullres_aspect = (3, 4) if front_mode_val == "three_four_fullres" else None
                 front_pct = self._read_int("automation_front_expand_percent", 30)
                 # NOTE: black_fill's single-pass force is applied earlier (right
                 # after front_passes is computed) so the skip-reuse guard sees
@@ -1481,7 +1526,30 @@ class AutoPipelineRunner:
                     # model filled with black borders (the user-reported bug).
                     # document_mode lets the provider plan its own 3:4 geometry.
                     front_expand_kwargs: Dict[str, Any] = {}
-                    if not front_is_document:
+                    if front_is_fullres:
+                        with Image.open(front_input_path) as _img:
+                            _pw, _ph = ImageOps.exif_transpose(_img).size
+                        _fr_plan = compute_full_res_expand_plan(
+                            _pw,
+                            _ph,
+                            front_pct,
+                            compute_provider_caps(resolved_front_provider),
+                            front_fullres_aspect,
+                        )
+                        front_expand_kwargs = {
+                            "full_res_plan": _fr_plan,
+                            "border_strategy": resolve_border_strategy(
+                                self.config,
+                                bool(self.config.get("falai_api_key")),
+                                resolved_front_provider,
+                            ),
+                        }
+                        self.logger.info(
+                            "case %s front expand pass %d/%d FULL-RES width=%s height=%s pct=%s aspect=%s plan=%s",
+                            case_key, pass_index + 1, front_passes, _pw, _ph,
+                            front_pct, front_fullres_aspect, _fr_plan,
+                        )
+                    elif not front_is_document:
                         with Image.open(front_input_path) as _img:
                             _pw, _ph = ImageOps.exif_transpose(_img).size
                         _plan = compute_percent_expand_plan(
@@ -2015,21 +2083,48 @@ class AutoPipelineRunner:
                 )
             else:
                 pct = self._read_int("automation_selfie_expand_percent", 30)
+                selfie_mode_val = str(
+                    self.automation.get("automation_selfie_expand_mode", "percent")
+                ).lower()
+                selfie_is_fullres = selfie_mode_val in ("percent_fullres", "three_four_fullres")
+                selfie_fullres_aspect = (3, 4) if selfie_mode_val == "three_four_fullres" else None
                 with Image.open(best_path) as _img:
                     width, height = ImageOps.exif_transpose(_img).size
-                plan = compute_percent_expand_plan(
-                    width,
-                    height,
-                    pct,
-                    compute_provider_caps(resolved_selfie_provider),
-                )
-                margins = {
-                    "left": int(plan["left"]),
-                    "right": int(plan["right"]),
-                    "top": int(plan["top"]),
-                    "bottom": int(plan["bottom"]),
-                }
-                self.logger.info("case %s selfie expand geometry width=%s height=%s pct=%s plan=%s", case_key, width, height, pct, plan)
+                selfie_expand_kwargs: Dict[str, Any] = {}
+                if selfie_is_fullres:
+                    _fr_plan = compute_full_res_expand_plan(
+                        width,
+                        height,
+                        pct,
+                        compute_provider_caps(resolved_selfie_provider),
+                        selfie_fullres_aspect,
+                    )
+                    selfie_expand_kwargs = {
+                        "full_res_plan": _fr_plan,
+                        "border_strategy": resolve_border_strategy(
+                            self.config,
+                            bool(self.config.get("falai_api_key")),
+                            resolved_selfie_provider,
+                        ),
+                    }
+                    self.logger.info(
+                        "case %s selfie expand FULL-RES width=%s height=%s pct=%s aspect=%s plan=%s",
+                        case_key, width, height, pct, selfie_fullres_aspect, _fr_plan,
+                    )
+                else:
+                    plan = compute_percent_expand_plan(
+                        width,
+                        height,
+                        pct,
+                        compute_provider_caps(resolved_selfie_provider),
+                    )
+                    selfie_expand_kwargs = {
+                        "expand_left": int(plan["left"]),
+                        "expand_right": int(plan["right"]),
+                        "expand_top": int(plan["top"]),
+                        "expand_bottom": int(plan["bottom"]),
+                    }
+                    self.logger.info("case %s selfie expand geometry width=%s height=%s pct=%s plan=%s", case_key, width, height, pct, plan)
                 self._set_active_step(case_entry, "selfie_expand")
                 self.manifest.update_step(case_key, "selfie_expand", "running")
                 expanded_output = case_dir / "gen-images" / f"{Path(best_path).stem}-expanded.png"
@@ -2054,14 +2149,11 @@ class AutoPipelineRunner:
                     output_path=str(expanded_output),
                     provider=resolved_selfie_provider,
                     composite_mode=selfie_composite_mode,
-                    document_mode=self.automation.get("automation_selfie_expand_mode") == "centered_3x4",
-                    expand_left=margins["left"],
-                    expand_right=margins["right"],
-                    expand_top=margins["top"],
-                    expand_bottom=margins["bottom"],
+                    document_mode=selfie_mode_val == "centered_3x4",
                     edge_seal_px=0,
                     poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
                     prompt=selfie_expand_prompt,
+                    **selfie_expand_kwargs,
                 )
                 if expanded_result:
                     final_still = expanded_result

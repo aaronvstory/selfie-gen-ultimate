@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import gc
 import math
+import os
 import re
 import threading
 from pathlib import Path
@@ -16,16 +18,19 @@ from automation.config import (
     resolve_cli_kling_prompt_slot,
     resolve_cli_video_duration,
     resolve_cli_video_model,
+    resolve_cli_video_resolution,
 )
 from automation.discovery import CaseRecord, detect_existing_outputs
 from automation.logger import build_safe_config_snapshot, create_automation_logger
 from automation.manifest import AutomationManifest, now_iso
 from automation.oldcam import (
     _version_key as _oldcam_version_key,
+    build_oldcam_output_path,
     discover_oldcam_versions,
     ensure_oldcam_dependencies,
     normalize_oldcam_versions,
     run_oldcam_all,
+    run_oldcam_version,
 )
 from automation.rppg import is_rppg_artifact, run_rppg
 from automation.video_loop import check_ffmpeg_available, create_looped_video
@@ -34,12 +39,41 @@ from automation.video_aa import AA_PIPELINES, aa_suffix, check_aa_available, run
 from face_crop_service import extract_portrait_crop
 from face_similarity import compute_face_similarity_details
 from kling_generator_falai import FalAIKlingGenerator
-from outpaint_geometry import compute_percent_expand_plan, compute_provider_caps
+from outpaint_geometry import (
+    compute_percent_expand_plan,
+    compute_provider_caps,
+    compute_full_res_expand_plan,
+    resolve_border_strategy,
+)
 from outpaint_generator import OutpaintGenerator
 from selfie_generator import SelfieGenerator
 
 
 ProgressCB = Optional[Callable[[str, str], None]]
+
+
+def _with_outpaint_detail(base_message: str, outpaint: "OutpaintGenerator") -> str:
+    """Append the generator's real last-error detail to a case error message.
+
+    The outpaint generator captures the actual provider failure (e.g. a fal
+    HTTP 422 ``image_url: Failed to generate outpainted image: ...``) in
+    ``get_last_outpaint_error_detail``. Surfacing it here means the case
+    summary / live "Issue" line shows the real cause instead of the opaque
+    "selfie expand failed". Best-effort + defensive: stub generators in tests
+    may not implement the getter."""
+    detail = ""
+    try:
+        getter = getattr(outpaint, "get_last_outpaint_error_detail", None)
+        if callable(getter):
+            detail = (getter() or "").strip()
+    except Exception:
+        detail = ""
+    # Skip the generic timeout/failure sentinel — it adds no information beyond
+    # the base message and just clutters the case summary (Gemini round 2). Only
+    # a REAL provider detail (the fal 422 text, etc.) is worth appending.
+    if not detail or "fal_failed_or_timed_out" in detail:
+        return base_message
+    return f"{base_message}: {detail}"
 
 
 @dataclass
@@ -291,7 +325,7 @@ class AutoPipelineRunner:
             else None,
             duration=resolve_cli_video_duration(self.config),
             aspect_ratio=self.automation.get("automation_video_aspect_ratio", "3:4"),
-            resolution=self.config.get("resolution", "720p"),
+            resolution=resolve_cli_video_resolution(self.config),
             seed=_seed_val,
             camera_fixed=bool(self.config.get("camera_fixed", False)),
             generate_audio=bool(self.config.get("generate_audio", False)),
@@ -538,11 +572,36 @@ class AutoPipelineRunner:
                 if reprocess_mode == "increment":
                     expanded_output = self._next_increment_path(expanded_output)
                 pct = self._read_int("automation_selfie_expand_percent", 30)
+                branch_mode_val = str(
+                    self.automation.get("automation_selfie_expand_mode", "percent")
+                ).lower()
+                branch_is_fullres = branch_mode_val in ("percent_fullres", "three_four_fullres")
+                branch_fullres_aspect = (3, 4) if branch_mode_val == "three_four_fullres" else None
                 with Image.open(still_path) as _img:
                     width, height = ImageOps.exif_transpose(_img).size
-                plan = compute_percent_expand_plan(
-                    width, height, pct, compute_provider_caps(resolved_selfie_provider),
-                )
+                branch_expand_kwargs: Dict[str, Any] = {}
+                if branch_is_fullres:
+                    branch_expand_kwargs = {
+                        "full_res_plan": compute_full_res_expand_plan(
+                            width, height, pct,
+                            compute_provider_caps(resolved_selfie_provider),
+                            branch_fullres_aspect,
+                        ),
+                        "border_strategy": resolve_border_strategy(
+                            self.config, bool(self.config.get("falai_api_key")),
+                            resolved_selfie_provider,
+                        ),
+                    }
+                else:
+                    plan = compute_percent_expand_plan(
+                        width, height, pct, compute_provider_caps(resolved_selfie_provider),
+                    )
+                    branch_expand_kwargs = {
+                        "expand_left": int(plan["left"]),
+                        "expand_right": int(plan["right"]),
+                        "expand_top": int(plan["top"]),
+                        "expand_bottom": int(plan["bottom"]),
+                    }
                 _section = self.config.get("selfie_expand_prompt")
                 if isinstance(_section, str):
                     expand_prompt = _section
@@ -556,17 +615,16 @@ class AutoPipelineRunner:
                     output_path=str(expanded_output),
                     provider=resolved_selfie_provider,
                     composite_mode=selfie_composite_mode,
-                    document_mode=self.automation.get("automation_selfie_expand_mode") == "centered_3x4",
-                    expand_left=int(plan["left"]),
-                    expand_right=int(plan["right"]),
-                    expand_top=int(plan["top"]),
-                    expand_bottom=int(plan["bottom"]),
+                    document_mode=branch_mode_val == "centered_3x4",
                     edge_seal_px=0,
                     poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
                     prompt=expand_prompt,
+                    **branch_expand_kwargs,
                 )
                 if not expanded_result:
-                    result["error"] = "branch selfie expand failed"
+                    result["error"] = _with_outpaint_detail(
+                        "branch selfie expand failed", outpaint
+                    )
                     return result
                 final_still = expanded_result
         result["expanded"] = final_still
@@ -802,6 +860,225 @@ class AutoPipelineRunner:
             prompt = DEFAULT_SELFIE_PROMPT
             source = "default_seeded_prompt"
         return {"slot": slot, "prompt": prompt, "source": source}
+
+    def _apply_one_postproc_step(self, step, current: Path, repo_root: Path,
+                                 overwrite: bool) -> Optional[Path]:
+        """Apply ONE post-processing step to ``current`` and return its output.
+
+        Reuses the exact per-step processors the cascade calls. Returns the
+        produced Path, the unchanged input when the step is a no-op (rPPG on an
+        already-injected file), or ``None`` on a graceful skip (tool missing /
+        encode failure) so the caller abandons that variant. In skip mode
+        (``overwrite=False``) deterministic siblings are reused instead of
+        re-encoded — this is what gives the powerset prefix-sharing for free.
+        """
+        from automation.postproc_plan import Modifier
+
+        m = step.modifier
+        if m is Modifier.RPPG:
+            if is_rppg_artifact(current):
+                return current
+            sibling = current.with_name(f"{current.stem}-rppg{current.suffix}")
+            if not overwrite and sibling.exists():
+                return sibling
+            rppg_mode = str(self.automation.get("automation_rppg_mode") or "iterative").strip().lower()
+            out = run_rppg(
+                video_path=current,
+                repo_root=repo_root,
+                progress_cb=self.progress_cb,
+                keep_metrics=self._read_bool("automation_rppg_metrics_in_filename", False),
+                iterative=(rppg_mode == "iterative"),
+                iterate_from_baseline=self._read_bool("automation_rppg_iterate_from_baseline", True),
+                skip_diagnosis=self._read_bool("automation_rppg_skip_diagnosis", True),
+                skip_kinematic_gate=self._read_bool("automation_rppg_skip_kinematic_gate", True),
+                landmark_stride=self._read_int("automation_rppg_landmark_stride", 1, min_value=1),
+                verbose=self.verbose_logging,
+            )
+            return Path(out) if (out and Path(out).exists()) else None
+        if m is Modifier.LOOP:
+            looped = create_looped_video(
+                str(current), suffix="_looped", overwrite=overwrite,
+                log_callback=self.progress_cb,
+            )
+            return Path(looped) if (looped and Path(looped).exists()) else None
+        if m is Modifier.CRUSH:
+            height = CRUSH_RESOLUTIONS.get(step.option or "")
+            if not height:
+                return None
+            crushed = crush_video(
+                str(current), suffix=crush_suffix(step.option or ""),
+                target_height=height, overwrite=overwrite,
+                log_callback=self.progress_cb,
+            )
+            return Path(crushed) if (crushed and Path(crushed).exists()) else None
+        if m is Modifier.AA:
+            # Skip-mode reuse, like the other steps (CodeRabbit Major): the AA
+            # output stem is deterministic, so in skip mode reuse an existing
+            # sibling instead of re-running the (slow, isolated-venv) attack.
+            expected = current.with_name(
+                f"{current.stem}{aa_suffix(step.option or '')}{current.suffix}"
+            )
+            if not overwrite and expected.exists():
+                return expected
+            generator = str(self.automation.get("automation_aa_generator", "generic") or "")
+            produced = run_aa(
+                str(current), attack=step.option,
+                strength=self._read_float("automation_aa_strength", 0.5),
+                generator=generator or None,
+                log_callback=self.progress_cb, repo_root=repo_root,
+            )
+            return Path(produced) if (produced and Path(produced).exists()) else None
+        if m is Modifier.OLDCAM:
+            expected = build_oldcam_output_path(current, step.option or "")
+            if not overwrite and expected.exists():
+                return expected
+            out = run_oldcam_version(
+                video_path=current, version=step.option or "",
+                repo_root=repo_root, progress_cb=self.progress_cb,
+            )
+            return Path(out) if (out and Path(out).exists()) else None
+        return None
+
+    def _run_powerset_extras(self, *, case_key: str,
+                             rppg_base_path: Optional[Path],
+                             reprocess_mode: str) -> List[Path]:
+        """Produce the proper-subset (powerset) post-processing variants.
+
+        Only runs in ``separate_and_combined`` fan-out mode. The existing
+        cascade already produced the FULL combined chain (every enabled
+        modifier) + its sub-fan-out; this adds every PROPER subset of the
+        enabled modifier types so the user also gets each modifier — and each
+        intermediate combo — standalone, every variant sequenced in the
+        canonical order from the raw Kling base.
+
+        Variants are written to disk + logged but NOT manifest-tracked as
+        deliverables: the cascade's full-chain output remains the primary
+        deliverable, so the resume / finished_at contract is untouched. On
+        resume the variants are re-derived cheaply (skip-mode on-disk reuse).
+        Graceful-skip per step; aborts promptly between variants.
+        """
+        from automation.postproc_plan import build_plan, normalize_mode
+
+        mode = normalize_mode(self.automation.get("automation_postproc_fanout_mode"))
+        if mode != "separate_and_combined":
+            return []
+        # Abort already pending → add nothing and let the existing post-chain
+        # abort checkpoints (_run_extra_branches) handle the revert. Powerset
+        # extras are BONUS outputs; they must never raise their own abort that
+        # would bypass branch-metadata registration (the finally in
+        # _run_extra_branches), which resume depends on.
+        if self.abort_event.is_set():
+            return []
+        # The raw Kling output is every variant's starting point. rPPG-prefixed
+        # recipes inject on these clean frames (the load-bearing constraint).
+        video_step = self.manifest.get_step(case_key, "video_generate")
+        video_out = video_step.get("output") if isinstance(video_step, dict) else None
+        raw_base = Path(video_out) if video_out else None
+        if raw_base is None or not raw_base.exists() or raw_base.suffix.lower() != ".mp4":
+            return []
+        # On a resume path the reused video_generate output can ITSELF already be
+        # an rPPG artifact (pre-injected upstream). Powerset's non-rPPG subsets
+        # must derive from clean frames, so skip the fan-out rather than build
+        # variants off an rPPG'd base (code-reviewer LOW; rare edge).
+        if is_rppg_artifact(raw_base):
+            self.logger.info(
+                "case %s powerset skipped: base %s is already an rPPG artifact",
+                case_key, raw_base.name,
+            )
+            return []
+
+        repo_root = Path(__file__).resolve().parent.parent
+        oldcam_versions = self._oldcam_versions() if self._oldcam_active() else []
+        if oldcam_versions == ["all"]:
+            # Expand the symbolic "all" so each version is a concrete variant.
+            oldcam_versions = discover_oldcam_versions(repo_root)
+
+        plan = build_plan(
+            rppg_enabled=self._read_bool("automation_rppg_enabled", False),
+            loop_enabled=self._read_bool("automation_loop_enabled", False),
+            crush_resolutions=self._crush_resolutions(),
+            aa_attacks=self._aa_attacks(),
+            oldcam_versions=oldcam_versions,
+            mode="separate_and_combined",
+        )
+        enabled = set(plan.enabled_modifiers)
+        if len(enabled) < 2:
+            # Powerset == the single full chain; the cascade already produced it.
+            return []
+
+        overwrite = reprocess_mode != "skip"
+        # Prefix-memo cache (key = tuple of (modifier, option) for the applied
+        # prefix). Seed the rPPG-on-raw prefix with the cascade's already-
+        # injected base so we never re-run the expensive GPU injection.
+        cache: Dict[tuple, Path] = {}
+        if rppg_base_path is not None and Path(rppg_base_path).exists():
+            cache[(("rppg", None),)] = Path(rppg_base_path)
+
+        produced: List[Path] = []
+        raw_base = Path(raw_base)
+        # Surface the fan-out size up front — powerset is bounded but can be
+        # large (2^N-1 x sub-options); the count is the user's cost guardrail
+        # (code-reviewer LOW; no silent caps).
+        extra_count = sum(1 for r in plan.recipes if set(r.modifiers()) != enabled)
+        self.logger.info(
+            "case %s powerset fan-out: producing %d extra variant(s)",
+            case_key, extra_count,
+        )
+        for recipe in plan.recipes:
+            if set(recipe.modifiers()) == enabled:
+                continue  # the full chain — cascade already produced it.
+            if self.abort_event.is_set():
+                # Stop producing bonus variants promptly; do NOT raise (see the
+                # entry guard above) — the downstream checkpoint reverts the case.
+                break
+            current = raw_base
+            prefix: tuple = ()
+            ok = True
+            for step in recipe.steps:
+                if self.abort_event.is_set():
+                    ok = False
+                    break
+                prefix = prefix + ((step.modifier.value, step.option),)
+                if prefix in cache:
+                    current = cache[prefix]
+                    continue
+                nxt = self._apply_one_postproc_step(step, current, repo_root, overwrite)
+                if nxt is None:
+                    ok = False
+                    break
+                cache[prefix] = nxt
+                current = nxt
+            if ok and current != raw_base and current.exists():
+                produced.append(current)
+
+        # Mirror of the GUI fan-out cleanup (kling_gui/queue_manager.py): reclaim
+        # memory after the fan-out and prune STRICT intermediates (cached step
+        # outputs no recipe claimed as a deliverable). No-op in full powerset
+        # mode; preserves deliverables, the raw base, and the rPPG seed. Opt out
+        # with KLING_KEEP_POSTPROC_INTERMEDIATES=1.
+        if os.environ.get("KLING_KEEP_POSTPROC_INTERMEDIATES") != "1":
+            from automation.postproc_cleanup import prune_strict_intermediates
+            keep = set(produced) | {raw_base}
+            if rppg_base_path is not None:
+                keep.add(Path(rppg_base_path))
+            prune_strict_intermediates(
+                cache.values(), keep,
+                on_pruned=lambda name: self.logger.debug(
+                    "pruned post-proc intermediate: %s", name
+                ),
+            )
+        gc.collect()
+
+        if produced:
+            self.logger.info(
+                "case %s powerset extras: %d variant(s): %s",
+                case_key, len(produced), ", ".join(p.name for p in produced),
+            )
+            self._report(
+                f"[{case_key}] Powerset fan-out: {len(produced)} extra variant(s) produced",
+                "info",
+            )
+        return produced
 
     def _finalize_case(self, case_entry: Dict[str, Any], final_status: str) -> str:
         status_value = "complete" if final_status == "completed" else final_status
@@ -1136,6 +1413,19 @@ class AutoPipelineRunner:
                     case_key, front_passes,
                 )
                 front_passes = 1
+            # Full-res modes reach the full target canvas (percentage or 3:4) in
+            # ONE pass by assembling at native resolution — a 2nd pass would
+            # over-expand. Force single pass here so the stage-1 reuse guard
+            # doesn't demand a stage-1 sibling that full-res never produces.
+            _front_mode_now = str(
+                self.automation.get("automation_front_expand_mode", "percent")
+            ).lower()
+            if _front_mode_now in ("percent_fullres", "three_four_fullres") and front_passes != 1:
+                self.logger.info(
+                    "case %s front expand: %s forces single pass (was %s)",
+                    case_key, _front_mode_now, front_passes,
+                )
+                front_passes = 1
             current_step = self.manifest.get_step(case_key, "front_expand")
             existing_front_step_output = current_step.get("output")
             if (
@@ -1186,7 +1476,12 @@ class AutoPipelineRunner:
                 target_output = Path(front_expanded)
                 if reprocess_mode == "increment":
                     target_output = self._next_increment_path(target_output)
-                front_is_document = self.automation.get("automation_front_expand_mode") == "document_3x4"
+                front_mode_val = str(
+                    self.automation.get("automation_front_expand_mode", "percent")
+                ).lower()
+                front_is_document = front_mode_val == "document_3x4"
+                front_is_fullres = front_mode_val in ("percent_fullres", "three_four_fullres")
+                front_fullres_aspect = (3, 4) if front_mode_val == "three_four_fullres" else None
                 front_pct = self._read_int("automation_front_expand_percent", 30)
                 # NOTE: black_fill's single-pass force is applied earlier (right
                 # after front_passes is computed) so the skip-reuse guard sees
@@ -1231,7 +1526,30 @@ class AutoPipelineRunner:
                     # model filled with black borders (the user-reported bug).
                     # document_mode lets the provider plan its own 3:4 geometry.
                     front_expand_kwargs: Dict[str, Any] = {}
-                    if not front_is_document:
+                    if front_is_fullres:
+                        with Image.open(front_input_path) as _img:
+                            _pw, _ph = ImageOps.exif_transpose(_img).size
+                        _fr_plan = compute_full_res_expand_plan(
+                            _pw,
+                            _ph,
+                            front_pct,
+                            compute_provider_caps(resolved_front_provider),
+                            front_fullres_aspect,
+                        )
+                        front_expand_kwargs = {
+                            "full_res_plan": _fr_plan,
+                            "border_strategy": resolve_border_strategy(
+                                self.config,
+                                bool(self.config.get("falai_api_key")),
+                                resolved_front_provider,
+                            ),
+                        }
+                        self.logger.info(
+                            "case %s front expand pass %d/%d FULL-RES width=%s height=%s pct=%s aspect=%s plan=%s",
+                            case_key, pass_index + 1, front_passes, _pw, _ph,
+                            front_pct, front_fullres_aspect, _fr_plan,
+                        )
+                    elif not front_is_document:
                         with Image.open(front_input_path) as _img:
                             _pw, _ph = ImageOps.exif_transpose(_img).size
                         _plan = compute_percent_expand_plan(
@@ -1307,7 +1625,10 @@ class AutoPipelineRunner:
                             case_key,
                             "front_expand",
                             "failed",
-                            error=f"front expansion failed on pass {pass_index + 1}",
+                            error=_with_outpaint_detail(
+                                f"front expansion failed on pass {pass_index + 1}",
+                                outpaint,
+                            ),
                             meta={
                                 "configured_passes": front_passes,
                                 "executed_passes": executed_passes,
@@ -1762,21 +2083,48 @@ class AutoPipelineRunner:
                 )
             else:
                 pct = self._read_int("automation_selfie_expand_percent", 30)
+                selfie_mode_val = str(
+                    self.automation.get("automation_selfie_expand_mode", "percent")
+                ).lower()
+                selfie_is_fullres = selfie_mode_val in ("percent_fullres", "three_four_fullres")
+                selfie_fullres_aspect = (3, 4) if selfie_mode_val == "three_four_fullres" else None
                 with Image.open(best_path) as _img:
                     width, height = ImageOps.exif_transpose(_img).size
-                plan = compute_percent_expand_plan(
-                    width,
-                    height,
-                    pct,
-                    compute_provider_caps(resolved_selfie_provider),
-                )
-                margins = {
-                    "left": int(plan["left"]),
-                    "right": int(plan["right"]),
-                    "top": int(plan["top"]),
-                    "bottom": int(plan["bottom"]),
-                }
-                self.logger.info("case %s selfie expand geometry width=%s height=%s pct=%s plan=%s", case_key, width, height, pct, plan)
+                selfie_expand_kwargs: Dict[str, Any] = {}
+                if selfie_is_fullres:
+                    _fr_plan = compute_full_res_expand_plan(
+                        width,
+                        height,
+                        pct,
+                        compute_provider_caps(resolved_selfie_provider),
+                        selfie_fullres_aspect,
+                    )
+                    selfie_expand_kwargs = {
+                        "full_res_plan": _fr_plan,
+                        "border_strategy": resolve_border_strategy(
+                            self.config,
+                            bool(self.config.get("falai_api_key")),
+                            resolved_selfie_provider,
+                        ),
+                    }
+                    self.logger.info(
+                        "case %s selfie expand FULL-RES width=%s height=%s pct=%s aspect=%s plan=%s",
+                        case_key, width, height, pct, selfie_fullres_aspect, _fr_plan,
+                    )
+                else:
+                    plan = compute_percent_expand_plan(
+                        width,
+                        height,
+                        pct,
+                        compute_provider_caps(resolved_selfie_provider),
+                    )
+                    selfie_expand_kwargs = {
+                        "expand_left": int(plan["left"]),
+                        "expand_right": int(plan["right"]),
+                        "expand_top": int(plan["top"]),
+                        "expand_bottom": int(plan["bottom"]),
+                    }
+                    self.logger.info("case %s selfie expand geometry width=%s height=%s pct=%s plan=%s", case_key, width, height, pct, plan)
                 self._set_active_step(case_entry, "selfie_expand")
                 self.manifest.update_step(case_key, "selfie_expand", "running")
                 expanded_output = case_dir / "gen-images" / f"{Path(best_path).stem}-expanded.png"
@@ -1801,14 +2149,11 @@ class AutoPipelineRunner:
                     output_path=str(expanded_output),
                     provider=resolved_selfie_provider,
                     composite_mode=selfie_composite_mode,
-                    document_mode=self.automation.get("automation_selfie_expand_mode") == "centered_3x4",
-                    expand_left=margins["left"],
-                    expand_right=margins["right"],
-                    expand_top=margins["top"],
-                    expand_bottom=margins["bottom"],
+                    document_mode=selfie_mode_val == "centered_3x4",
                     edge_seal_px=0,
                     poll_timeout_seconds=get_outpaint_fal_timeout_seconds(self.config),
                     prompt=selfie_expand_prompt,
+                    **selfie_expand_kwargs,
                 )
                 if expanded_result:
                     final_still = expanded_result
@@ -1823,7 +2168,10 @@ class AutoPipelineRunner:
                         },
                     )
                 else:
-                    self.manifest.update_step(case_key, "selfie_expand", "failed", error="selfie expand failed")
+                    self.manifest.update_step(
+                        case_key, "selfie_expand", "failed",
+                        error=_with_outpaint_detail("selfie expand failed", outpaint),
+                    )
                     return self._finalize_case(case_entry, "failed")
         else:
             self.manifest.update_step(
@@ -2632,6 +2980,11 @@ class AutoPipelineRunner:
                         output=final,
                         meta={**self._policy_meta("rppg", True, reprocess_mode), "already_injected": True},
                     )
+                self._run_powerset_extras(
+                    case_key=case_key,
+                    rppg_base_path=rppg_base_path,
+                    reprocess_mode=reprocess_mode,
+                )
                 self._run_extra_branches(
                     case_key=case_key,
                     case_dir=case_dir,
@@ -2781,6 +3134,11 @@ class AutoPipelineRunner:
         else:
             self.manifest.update_step(case_key, "rppg", "skipped", error="rPPG disabled")
 
+        self._run_powerset_extras(
+            case_key=case_key,
+            rppg_base_path=rppg_base_path,
+            reprocess_mode=reprocess_mode,
+        )
         self._run_extra_branches(
             case_key=case_key,
             case_dir=case_dir,

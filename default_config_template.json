@@ -118,6 +118,8 @@
   "outpaint_tab_prompt": "Continuous, out-of-focus background environment. Shallow depth of field, soft lighting, empty neutral space matching the edges. STRICTLY NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO DOCUMENT FEATURES.",
   "outpaint_composite_mode": "preserve_seamless",
   "outpaint_provider": "fal",
+  "outpaint_expand_mode": "three_four_fullres",
+  "outpaint_border_strategy": "bria",
   "outpaint_2x_default_reset_v2": true,
   "outpaint_2x_default_reset_v3": true,
   "outpaint_2x_session_only_v4": true,

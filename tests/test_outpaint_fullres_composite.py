@@ -1,0 +1,344 @@
+"""Full-resolution expand: geometry + composite pixel-fidelity tests.
+
+The whole point of the full-res path is that the ORIGINAL image survives at
+native resolution (pixel-perfect center), while only the generated borders are
+upscaled/soft. These tests assert that contract without any network call.
+"""
+import numpy as np
+import pytest
+from PIL import Image
+
+from outpaint_geometry import (
+    FAL_CAPS,
+    BFL_CAPS,
+    compute_full_res_expand_plan,
+    resolve_border_strategy,
+)
+
+
+def test_resolve_border_strategy():
+    # default: bria when a fal key exists, edge_extend without one
+    assert resolve_border_strategy(None, True) == "bria"
+    assert resolve_border_strategy(None, False) == "edge_extend"
+    assert resolve_border_strategy({}, True) == "bria"
+    # explicit config wins
+    assert resolve_border_strategy({"outpaint_border_strategy": "edge_extend"}, True) == "edge_extend"
+    assert resolve_border_strategy({"outpaint_border_strategy": "bria"}, True) == "bria"
+    # bria/ai need a fal key -> fall back to free engine without one
+    assert resolve_border_strategy({"outpaint_border_strategy": "bria"}, False) == "edge_extend"
+    assert resolve_border_strategy({"outpaint_border_strategy": "ai"}, False) == "edge_extend"
+    # unknown value -> default logic
+    assert resolve_border_strategy({"outpaint_border_strategy": "xyz"}, True) == "bria"
+    # explicit BFL provider (no explicit strategy) -> don't silently use fal/Bria
+    assert resolve_border_strategy(None, True, "bfl") == "edge_extend"
+    assert resolve_border_strategy(None, True, "fal") == "bria"
+    # explicit strategy still wins even with a bfl provider
+    assert resolve_border_strategy({"outpaint_border_strategy": "bria"}, True, "bfl") == "bria"
+
+
+# ── geometry ─────────────────────────────────────────────────────────────
+
+
+def test_wendy_landscape_to_3x4_matches_photoshop():
+    # Real example: 4080x3060 landscape, 30% zoom-out -> ~6528x8704 (Photoshop
+    # manual redo was 6499x8664).
+    p = compute_full_res_expand_plan(4080, 3060, 30, FAL_CAPS, (3, 4))
+    assert p["full_canvas_w"] == 6528
+    assert p["full_canvas_h"] == 8704
+    assert p["full_left"] == p["full_right"] == 1224
+    assert p["full_top"] == p["full_bottom"] == 2822
+    # exact 3:4
+    assert abs(p["full_canvas_w"] / p["full_canvas_h"] - 3 / 4) < 1e-3
+
+
+@pytest.mark.parametrize(
+    "w,h",
+    [(4080, 3060), (2000, 3000), (2000, 2000), (400, 300), (1000, 4000)],
+)
+@pytest.mark.parametrize("caps", [FAL_CAPS, BFL_CAPS])
+def test_3x4_always_hits_aspect_and_fits_caps(w, h, caps):
+    p = compute_full_res_expand_plan(w, h, 30, caps, (3, 4))
+    # exact target aspect at full res
+    assert abs(p["full_canvas_w"] / p["full_canvas_h"] - 3 / 4) < 5e-3
+    # canvas == orig + margins
+    assert p["full_canvas_w"] == w + p["full_left"] + p["full_right"]
+    assert p["full_canvas_h"] == h + p["full_top"] + p["full_bottom"]
+    # provider canvas within caps (+1 rounding slack)
+    assert p["canvas_w"] <= caps.max_canvas_dim + 1
+    assert p["canvas_h"] <= caps.max_canvas_dim + 1
+    assert p["canvas_w"] * p["canvas_h"] <= caps.max_canvas_mp * 1e6 * 1.02
+
+
+def test_max_full_dim_caps_oversized_output():
+    """A wide source expanded to tall 3:4 can exceed PIL's bomb limit; the cap
+    trims the MARGINS to fit max_full_dim while keeping the original at native
+    resolution (fidelity > exact aspect at the ceiling)."""
+    # 4000x3000 @70% -> 3:4 balloons to 12800 tall (122MP) uncapped
+    uncapped = compute_full_res_expand_plan(4000, 3000, 70, FAL_CAPS, (3, 4), max_full_dim=0)
+    assert max(uncapped["full_canvas_w"], uncapped["full_canvas_h"]) > 10000
+    capped = compute_full_res_expand_plan(4000, 3000, 70, FAL_CAPS, (3, 4))  # default 10000
+    assert max(capped["full_canvas_w"], capped["full_canvas_h"]) <= 10000
+    # under PIL's default decompression-bomb limit
+    assert capped["full_canvas_w"] * capped["full_canvas_h"] < 89_478_485
+    # the original is NOT downscaled — margins were trimmed instead. So the
+    # canvas rebuilt from the NATIVE original + these margins still fits the cap.
+    ow, oh = 4000, 3000
+    assert ow + capped["full_left"] + capped["full_right"] <= 10000
+    assert oh + capped["full_top"] + capped["full_bottom"] <= 10000
+    # a typical 30% expand (tops out ~8700 longest) is NOT capped -> native res
+    typical = compute_full_res_expand_plan(4080, 3060, 30, FAL_CAPS, (3, 4))
+    assert typical["full_canvas_w"] == 6528 and typical["full_canvas_h"] == 8704
+    # the original stays NATIVE under the cap — margins shrink, orig doesn't.
+    # Simulate the composite's "native orig + margins" rebuild:
+    ow, oh = 4000, 3000
+    rebuilt_w = ow + capped["full_left"] + capped["full_right"]
+    rebuilt_h = oh + capped["full_top"] + capped["full_bottom"]
+    assert max(rebuilt_w, rebuilt_h) <= 10000, "cap defeated at composite time"
+    assert rebuilt_w * rebuilt_h < 89_478_485
+
+
+def test_capped_plan_composite_stays_under_limit_end_to_end(tmp_path):
+    """The cap must hold THROUGH the composite (which rebuilds canvas from the
+    NATIVE original + plan margins). Regression guard: an earlier cap scaled the
+    original inside the geometry fn, but the composite re-opened the full file,
+    silently defeating the cap and producing a >89MP non-3:4 output."""
+    from outpaint_generator import OutpaintGenerator
+    w, h = 4000, 3000  # wide source that balloons at high %
+    plan = compute_full_res_expand_plan(w, h, 70, FAL_CAPS, (3, 4))  # capped
+    orig_p = str(tmp_path / "front.png")
+    _make_original(orig_p, w, h)
+    gen = OutpaintGenerator(api_key="x")
+    for mode, kwargs in (
+        ("black_fill", {}),
+        ("preserve_seamless", {"border_strategy": "edge_extend"}),
+    ):
+        out = gen.outpaint(
+            image_path=orig_p, output_folder=str(tmp_path),
+            output_path=str(tmp_path / f"{mode}.png"),
+            composite_mode=mode, full_res_plan=plan, **kwargs,
+        )
+        assert out is not None, f"{mode} produced nothing"
+        res = Image.open(out)
+        assert max(res.size) <= 10000, f"{mode}: cap defeated -> {res.size}"
+        assert res.size[0] * res.size[1] < 89_478_485, f"{mode}: exceeds PIL limit"
+        # original center still byte-perfect (native res, pasted whole)
+        arr = np.asarray(res.convert("RGB"))
+        fl, ft = plan["full_left"], plan["full_top"]
+        m = 40
+        center = arr[ft + m:ft + h - m, fl + m:fl + w - m]
+        orig = np.asarray(Image.open(orig_p).convert("RGB"))[m:h - m, m:w - m]
+        assert np.array_equal(center, orig), f"{mode}: original center altered"
+
+
+def test_percentage_fullres_no_aspect():
+    p = compute_full_res_expand_plan(4080, 3060, 30, FAL_CAPS, None)
+    assert p["full_canvas_w"] == 6528  # 4080 * 1.6
+    assert p["full_canvas_h"] == 4896  # 3060 * 1.6
+
+
+def test_zero_percent_pure_aspect():
+    # 0% zoom-out -> only the deficient axis grows to reach 3:4.
+    p = compute_full_res_expand_plan(4080, 3060, 0, FAL_CAPS, (3, 4))
+    assert p["full_left"] == p["full_right"] == 0
+    assert p["full_top"] > 0 and p["full_bottom"] > 0
+
+
+# ── composite fidelity (no network) ──────────────────────────────────────
+
+
+def _make_original(path, w, h):
+    """A sharp original: unique per-pixel-ish pattern so any resample shows."""
+    arr = np.zeros((h, w, 3), dtype=np.uint8)
+    xs = (np.arange(w) % 256).astype(np.uint8)
+    ys = (np.arange(h) % 256).astype(np.uint8)
+    arr[:, :, 0] = xs[None, :]
+    arr[:, :, 1] = ys[:, None]
+    arr[:, :, 2] = 128
+    Image.fromarray(arr).save(path)
+
+
+def _fake_provider_output(path, plan):
+    """Simulate what the provider returns: a canvas at provider size with a
+    downscaled center + solid-colored borders (we don't care about border
+    content — only the center must be discarded, not used)."""
+    cw = plan["left"] + plan["upload_w"] + plan["right"]
+    ch = plan["top"] + plan["upload_h"] + plan["bottom"]
+    canvas = Image.new("RGB", (cw, ch), (10, 200, 40))  # green borders
+    # a gray center block where the (downscaled) original would sit
+    center = Image.new("RGB", (plan["upload_w"], plan["upload_h"]), (90, 90, 90))
+    canvas.paste(center, (plan["left"], plan["top"]))
+    canvas.save(path)
+
+
+@pytest.mark.parametrize(
+    "w,h,aspect",
+    [(4080, 3060, (3, 4)), (1200, 1600, (3, 4)), (800, 600, None)],
+)
+def test_center_is_pixel_perfect(tmp_path, w, h, aspect):
+    from outpaint_generator import OutpaintGenerator
+
+    plan = compute_full_res_expand_plan(w, h, 30, FAL_CAPS, aspect)
+    orig_p = str(tmp_path / "orig.png")
+    raw_p = str(tmp_path / "raw.png")
+    out_p = str(tmp_path / "out.png")
+    _make_original(orig_p, w, h)
+    _fake_provider_output(raw_p, plan)
+
+    gen = OutpaintGenerator(api_key="x")
+    ok = gen._composite_fullres(
+        raw_p, orig_p, out_p, plan, "png", "hard"
+    )
+    assert ok
+    out = Image.open(out_p).convert("RGB")
+    # canvas dims == full-res plan
+    assert out.size == (plan["full_canvas_w"], plan["full_canvas_h"])
+
+    # center rect [full_left:+w, full_top:+h] is byte-identical to the original
+    fl, ft = plan["full_left"], plan["full_top"]
+    center = out.crop((fl, ft, fl + w, ft + h))
+    orig = Image.open(orig_p).convert("RGB")
+    assert np.array_equal(np.array(center), np.array(orig)), (
+        "original center was not preserved pixel-perfect"
+    )
+
+
+def test_preserve_seamless_keeps_center_sharp(tmp_path):
+    """preserve_seamless feathers the outer ring but must NOT alter the interior."""
+    from outpaint_generator import OutpaintGenerator
+
+    w, h = 1200, 1600
+    plan = compute_full_res_expand_plan(w, h, 30, FAL_CAPS, (3, 4))
+    orig_p = str(tmp_path / "orig.png")
+    raw_p = str(tmp_path / "raw.png")
+    out_p = str(tmp_path / "out.png")
+    _make_original(orig_p, w, h)
+    _fake_provider_output(raw_p, plan)
+
+    gen = OutpaintGenerator(api_key="x")
+    assert gen._composite_fullres(
+        raw_p, orig_p, out_p, plan, "png", "preserve_seamless"
+    )
+    # _composite_fullres (Bria / AI path) HARD-pastes — the whole center is exact
+    # (feathering there would ghost against the provider's rendering).
+    out = Image.open(out_p).convert("RGB")
+    fl, ft = plan["full_left"], plan["full_top"]
+    center = np.array(out.crop((fl, ft, fl + w, ft + h)))
+    orig = np.array(Image.open(orig_p).convert("RGB"))
+    assert np.array_equal(center, orig)
+
+
+@pytest.mark.parametrize("w,h,aspect", [(4080, 3060, (3, 4)), (640, 480, (3, 4))])
+def test_edge_extend_center_pixel_perfect_no_provider(tmp_path, w, h, aspect):
+    """edge_extend must keep the original center byte-identical and never call
+    a provider (offline)."""
+    from outpaint_generator import OutpaintGenerator
+
+    plan = compute_full_res_expand_plan(w, h, 30, FAL_CAPS, aspect)
+    orig_p = str(tmp_path / "front.jpg")   # originals are always front.*
+    _make_original(orig_p, w, h)
+
+    gen = OutpaintGenerator(api_key="x")  # bogus key — must not be used
+    out = gen.outpaint(
+        image_path=orig_p,
+        output_folder=str(tmp_path),
+        output_path=str(tmp_path / "out.png"),
+        composite_mode="preserve_seamless",
+        full_res_plan=plan,
+        border_strategy="edge_extend",
+    )
+    assert out is not None
+    res = Image.open(out).convert("RGB")
+    assert res.size == (plan["full_canvas_w"], plan["full_canvas_h"])
+    fl, ft = plan["full_left"], plan["full_top"]
+    # preserve_seamless feathers the OUTER ring into the border; the INTERIOR
+    # (past the feather width) must stay byte-for-byte the original.
+    m = 40  # > _PRESERVE_SEAM_BLEND_PX feather; inner region must be exact
+    center = np.asarray(res.crop((fl + m, ft + m, fl + w - m, ft + h - m)))
+    orig = np.asarray(Image.open(orig_p).convert("RGB"))[m:h - m, m:w - m]
+    assert np.array_equal(center, orig), "edge_extend altered the original interior"
+
+
+def test_edge_extend_border_has_no_original_text_leak(tmp_path):
+    """Regression: an earlier grain impl tiled orig-minus-blur over the whole
+    canvas, ghosting the ID text into the border. The border must NOT correlate
+    with the original's interior content."""
+    from outpaint_generator import OutpaintGenerator
+
+    w, h = 1200, 900
+    plan = compute_full_res_expand_plan(w, h, 40, FAL_CAPS, (3, 4))
+    orig_p = str(tmp_path / "front.png")
+    # original: dark bg with a bright text-like block in the CENTER only
+    arr = np.full((h, w, 3), 40, dtype=np.uint8)
+    arr[h // 3:2 * h // 3, w // 3:2 * w // 3] = 240  # bright central "text"
+    Image.fromarray(arr).save(orig_p)
+
+    gen = OutpaintGenerator(api_key="x")
+    out = gen.outpaint(
+        image_path=orig_p, output_folder=str(tmp_path),
+        output_path=str(tmp_path / "o.png"),
+        composite_mode="preserve_seamless",
+        full_res_plan=plan, border_strategy="edge_extend",
+    )
+    res = np.asarray(Image.open(out).convert("L"))
+    ft = plan["full_top"]
+    # top border strip (above the original) must stay near the dark edge value,
+    # i.e. no bright central block leaked upward.
+    top_band = res[0:max(1, ft - 10), :]
+    assert top_band.max() < 160, "bright center content leaked into the border"
+
+
+def test_black_fill_full_res_honors_plan(tmp_path):
+    """black_fill + full_res_plan must build a black canvas at the PLAN's
+    full-res geometry (not 0 margins, not a fixed 140px) with the original
+    pixel-perfect in the center."""
+    from outpaint_generator import OutpaintGenerator
+    w, h = 1200, 900
+    plan = compute_full_res_expand_plan(w, h, 30, FAL_CAPS, (3, 4))
+    orig_p = str(tmp_path / "front.png")
+    _make_original(orig_p, w, h)
+    gen = OutpaintGenerator(api_key="x")  # must not call any provider
+    out = gen.outpaint(
+        image_path=orig_p, output_folder=str(tmp_path),
+        output_path=str(tmp_path / "bf.png"),
+        composite_mode="black_fill", full_res_plan=plan,
+    )
+    assert out is not None
+    res = Image.open(out).convert("RGB")
+    # canvas == the full-res plan (NOT the tiny provider canvas, NOT 0-margin)
+    assert res.size == (plan["full_canvas_w"], plan["full_canvas_h"])
+    assert res.size != (w, h), "black_fill produced no border (0-margin bug)"
+    fl, ft = plan["full_left"], plan["full_top"]
+    # center is the pixel-perfect original
+    center = np.asarray(res.crop((fl, ft, fl + w, ft + h)))
+    assert np.array_equal(center, np.asarray(Image.open(orig_p).convert("RGB")))
+    # a border pixel is black
+    assert tuple(np.asarray(res)[2, 2]) == (0, 0, 0)
+
+
+def test_adaptive_feather_plain_wider_than_busy():
+    """Plain edge -> wide feather; busy/textured edge -> narrow feather."""
+    from outpaint_generator import OutpaintGenerator
+    w, h = 1200, 1600
+
+    plain = np.full((h, w, 3), 128, dtype=np.float32)  # uniform = low detail
+    busy = np.full((h, w, 3), 128, dtype=np.float32)
+    band = 60
+    yy, xx = np.mgrid[0:h, 0:w]
+    noise = ((xx * 37 + yy * 53) % 255).astype(np.float32)
+    for a in (busy,):
+        a[:band] = noise[:band, :, None]
+        a[-band:] = noise[-band:, :, None]
+        a[:, :band] = noise[:, :band, None]
+        a[:, -band:] = noise[:, -band:, None]
+
+    fp, dp = OutpaintGenerator._adaptive_feather_width(plain, w, h)
+    fb, db = OutpaintGenerator._adaptive_feather_width(busy, w, h)
+    assert db > dp, "busy edge must measure higher detail"
+    assert fp > fb, "plain edge must get a wider feather than a busy edge"
+    assert fp >= 12, "plain edge should get a wide-ish feather"
+    assert fb <= 8, "busy edge should get a narrow feather (~2-8px)"
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(pytest.main([__file__, "-q"]))

@@ -45,7 +45,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_reprocess_mode": "skip",  # skip | overwrite | increment
     "automation_front_expand_enabled": True,
     "automation_front_expand_provider": "fal",  # auto | bfl | fal (fal default per user direction 2026-05-22)
-    "automation_front_expand_mode": "percent",  # document_3x4 | percent
+    "automation_front_expand_mode": "three_four_fullres",  # document_3x4 | percent | percent_fullres | three_four_fullres (default: full-res 3:4 + Bria borders)
     "automation_front_expand_composite_mode": "preserve_seamless",  # preserve_seamless | feathered | hard | none | black_fill
     "automation_front_expand_percent": 70,
     "automation_front_expand_passes": 2,  # 1 | 2
@@ -85,7 +85,7 @@ AUTOMATION_DEFAULTS: Dict[str, Any] = {
     "automation_similarity_threshold": 80,
     "automation_selfie_expand_enabled": True,
     "automation_selfie_expand_provider": "fal",  # auto | bfl | fal (fal default per user direction 2026-05-22)
-    "automation_selfie_expand_mode": "percent",  # percent | centered_3x4
+    "automation_selfie_expand_mode": "three_four_fullres",  # percent | centered_3x4 | percent_fullres | three_four_fullres (default: full-res 3:4 + Bria borders)
     "automation_selfie_expand_composite_mode": "none",  # preserve_seamless | feathered | hard | none | black_fill  (Step 2.5 selfie expand ships raw AI output by default)
     "automation_selfie_expand_percent": 30,
     "automation_selfie_expand_edge_seal_enabled": False,

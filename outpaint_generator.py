@@ -8,7 +8,7 @@ import logging
 import tempfile
 import threading
 from io import BytesIO
-from typing import Optional, Callable, Tuple
+from typing import Optional, Callable, Tuple, Dict
 from pathlib import Path
 from PIL import Image, ImageOps, ImageDraw
 from outpaint_geometry import (
@@ -176,6 +176,14 @@ class OutpaintGenerator:
     """Expand images using fal.ai outpaint."""
 
     ENDPOINT = "fal-ai/image-apps-v2/outpaint"
+    # Bria Expand: a PURPOSE-BUILT background-expansion model. Unlike the generic
+    # outpaint endpoint (which duplicates a centered ID card into the borders),
+    # Bria understands subject-vs-background and extends the surroundings — even
+    # continuing a hand holding the card — without re-drawing the document. Takes
+    # canvas_size + original_image_size + original_image_location for exact
+    # placement, which gives us known paste geometry for the full-res composite.
+    BRIA_ENDPOINT = "fal-ai/bria/expand"
+    _BRIA_MAX_CANVAS_DIM = _read_single_env_int("BRIA_EXPAND_MAX_DIM", 2400)
 
     # Empirical safe limits — fal.ai clamped 2782x3448 → 1232x1536 in testing.
     # Override via env: FAL_OUTPAINT_MAX_DIM, FAL_OUTPAINT_MAX_MP. Use the
@@ -367,16 +375,25 @@ class OutpaintGenerator:
         edge_seal_color: Tuple[int, int, int] = (220, 220, 220),
         poll_timeout_seconds: int = 150,
         cancel_event: Optional[threading.Event] = None,
+        full_res_plan: Optional[Dict[str, int]] = None,
+        border_strategy: str = "edge_extend",
     ) -> Optional[str]:
         """Outpaint (expand) an image.
+
+        When ``full_res_plan`` (from
+        :func:`outpaint_geometry.compute_full_res_expand_plan`) is supplied, the
+        provider is asked ONLY for the downscaled borders (the plan's
+        ``left/right/top/bottom``); its raw output is then reassembled at the
+        original's native resolution by :meth:`_composite_fullres` — the
+        untouched original is hard-pasted into the center by known geometry (no
+        matchTemplate), so it stays pixel-perfect. ``expand_*`` are ignored in
+        this mode (the plan drives geometry). See the module docstring of
+        ``outpaint_geometry`` for the coordinate systems.
 
         Args:
             image_path: Path to input image
             output_folder: Where to save output
-            expand_left: Pixels to expand on the left
-            expand_right: Pixels to expand on the right
-            expand_top: Pixels to expand on the top
-            expand_bottom: Pixels to expand on the bottom
+            expand_left/right/top/bottom: Pixels to expand per side (legacy path).
             prompt: Optional guidance prompt
             output_format: Output format ("png" or "jpg")
             composite_mode: "preserve_seamless" (outside-only seam blend + exact center),
@@ -388,9 +405,92 @@ class OutpaintGenerator:
             output_path: If provided, use this exact path instead of generating one
             poll_timeout_seconds: Maximum seconds to wait for async poll completion.
             cancel_event: Optional event to abort waiting and return early.
+            full_res_plan: Optional full-res expand plan (see above).
 
         Returns:
             Absolute path to expanded image, or None on failure.
+        """
+        # Full-res dispatch. black_fill is handled INSIDE _outpaint_full_res
+        # (it builds a full-res black canvas from the plan) so that a
+        # full_res_plan + black_fill still honors the plan's geometry instead of
+        # falling through to the legacy path with 0/140px margins (code-review
+        # CRITICAL: that shipped a no-border or fixed-140px result silently).
+        if full_res_plan is not None:
+            return self._outpaint_full_res(
+                image_path=image_path,
+                output_folder=output_folder,
+                full_res_plan=full_res_plan,
+                prompt=prompt,
+                output_format=output_format,
+                composite_mode=composite_mode,
+                output_path=output_path,
+                provider=provider,
+                edge_seal_px=edge_seal_px,
+                edge_seal_color=edge_seal_color,
+                poll_timeout_seconds=poll_timeout_seconds,
+                cancel_event=cancel_event,
+                border_strategy=border_strategy,
+            )
+        return self._outpaint_provider(
+            image_path=image_path,
+            output_folder=output_folder,
+            expand_left=expand_left,
+            expand_right=expand_right,
+            expand_top=expand_top,
+            expand_bottom=expand_bottom,
+            prompt=prompt,
+            output_format=output_format,
+            composite_mode=composite_mode,
+            output_path=output_path,
+            provider=provider,
+            document_mode=document_mode,
+            edge_seal_px=edge_seal_px,
+            edge_seal_color=edge_seal_color,
+            poll_timeout_seconds=poll_timeout_seconds,
+            cancel_event=cancel_event,
+        )
+
+    @staticmethod
+    def _auto_expanded_path(
+        image_path: str, output_folder: str, output_format: str
+    ) -> str:
+        """Auto-name ``<stem>-expanded.<ext>`` with ``_vN`` collision suffixes.
+
+        Shared by the legacy and full-res paths so neither silently overwrites
+        an existing output when ``output_path`` is omitted.
+        """
+        stem = Path(image_path).stem
+        ext = f".{output_format}"
+        path = os.path.join(output_folder, f"{stem}-expanded{ext}")
+        counter = 1
+        while os.path.exists(path):
+            path = os.path.join(output_folder, f"{stem}-expanded_v{counter}{ext}")
+            counter += 1
+        return path
+
+    def _outpaint_provider(
+        self,
+        image_path: str,
+        output_folder: str,
+        expand_left: int = 140,
+        expand_right: int = 140,
+        expand_top: int = 140,
+        expand_bottom: int = 140,
+        prompt: str = "",
+        output_format: str = "png",
+        composite_mode: str = "preserve_seamless",
+        output_path: Optional[str] = None,
+        provider: Optional[str] = None,
+        document_mode: bool = False,
+        edge_seal_px: int = 0,
+        edge_seal_color: Tuple[int, int, int] = (220, 220, 220),
+        poll_timeout_seconds: int = 150,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[str]:
+        """Legacy provider-coordinate outpaint (the original ``outpaint`` body).
+
+        Sends ``expand_*`` pixel margins to the provider and composites in the
+        downscaled provider coordinate system via ``_composite_onto_result``.
         """
         self._set_last_outpaint_error_detail("")
 
@@ -619,15 +719,9 @@ class OutpaintGenerator:
         # Build output path (unique) — skip if caller provided one
         os.makedirs(output_folder, exist_ok=True)
         if output_path is None:
-            stem = Path(image_path).stem
-            ext = f".{output_format}"
-            output_path = os.path.join(output_folder, f"{stem}-expanded{ext}")
-            counter = 1
-            while os.path.exists(output_path):
-                output_path = os.path.join(
-                    output_folder, f"{stem}-expanded_v{counter}{ext}"
-                )
-                counter += 1
+            output_path = self._auto_expanded_path(
+                image_path, output_folder, output_format
+            )
 
         # Best-effort cost estimate from fal.ai pricing catalog
         try:
@@ -780,6 +874,631 @@ class OutpaintGenerator:
             return None
 
         return output_path
+
+    # ── full-resolution expand (borders low-res, original native) ────────
+
+    def _outpaint_full_res(
+        self,
+        image_path: str,
+        output_folder: str,
+        full_res_plan: Dict[str, int],
+        prompt: str = "",
+        output_format: str = "png",
+        composite_mode: str = "preserve_seamless",
+        output_path: Optional[str] = None,
+        provider: Optional[str] = None,
+        edge_seal_px: int = 0,
+        edge_seal_color: Tuple[int, int, int] = (220, 220, 220),
+        poll_timeout_seconds: int = 150,
+        cancel_event: Optional[threading.Event] = None,
+        border_strategy: str = "edge_extend",
+    ) -> Optional[str]:
+        """Full-resolution expand — original kept 1:1, borders added.
+
+        ``border_strategy``:
+          - ``"bria"``: use the purpose-built Bria Expand model to generate
+            photorealistic borders (extends backgrounds AND a hand holding the
+            card, never duplicates the ID), then hard-paste the untouched full-res
+            original on top at Bria's known placement. Best quality; costs ~$0.04.
+          - ``"edge_extend"``: build the borders ALGORITHMICALLY from the
+            original's own outer background pixels (replicate outward + grain +
+            blur). No provider call — deterministic, instant, free, and the ID can
+            NEVER appear in the border. The free/offline fallback.
+          - ``"ai"`` (legacy): the generic outpaint endpoint. NOTE: it duplicates
+            a centered ID into the borders — kept only for back-compat; prefer
+            "bria".
+
+        Either way the ORIGINAL center is hard-pasted at native resolution by known
+        geometry (no matchTemplate) so it stays byte-for-byte identical.
+        """
+        self._set_last_outpaint_error_detail("")
+        # black_fill: deterministic solid-black borders at the plan's full-res
+        # geometry, original hard-pasted on top. No provider, honors the plan.
+        if (composite_mode or "").strip().lower() == "black_fill":
+            return self._black_fill_full_res(
+                image_path, output_folder, full_res_plan,
+                output_format, output_path,
+            )
+        if border_strategy == "edge_extend":
+            return self._edge_extend_full_res(
+                image_path, output_folder, full_res_plan,
+                output_format, output_path, composite_mode,
+            )
+        if border_strategy == "bria":
+            return self._bria_expand_full_res(
+                image_path, output_folder, full_res_plan,
+                output_format, output_path, composite_mode,
+                prompt, poll_timeout_seconds, cancel_event,
+            )
+        dl_left = int(full_res_plan["left"])
+        dl_right = int(full_res_plan["right"])
+        dl_top = int(full_res_plan["top"])
+        dl_bottom = int(full_res_plan["bottom"])
+        if dl_left + dl_right + dl_top + dl_bottom <= 0:
+            self._report(
+                "Full-res plan has zero margins — nothing to expand.", "error"
+            )
+            self._set_last_outpaint_error_detail("fullres_zero_margins")
+            return None
+
+        # Resolve the final output path first so we can name a temp for the
+        # provider's raw (downscaled-canvas) output.
+        if output_path is None:
+            output_path = self._auto_expanded_path(
+                image_path, output_folder, output_format
+            )
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+        fd, raw_path = tempfile.mkstemp(
+            suffix=f".{output_format}", prefix="fullres_raw_"
+        )
+        os.close(fd)
+        try:
+            # Provider generates the borders in the downscaled coordinate
+            # system. composite_mode="none" -> we get the raw canvas back
+            # (downscaled center + generated borders); we discard its center.
+            self._report(
+                f"Full-res expand: provider borders at scale "
+                f"{full_res_plan.get('scale_pct', '?')}% "
+                f"(L={dl_left} R={dl_right} T={dl_top} B={dl_bottom})",
+                "info",
+            )
+            provider_out = self._outpaint_provider(
+                image_path=image_path,
+                output_folder=output_folder,
+                expand_left=dl_left,
+                expand_right=dl_right,
+                expand_top=dl_top,
+                expand_bottom=dl_bottom,
+                prompt=prompt,
+                output_format=output_format,
+                composite_mode="none",
+                output_path=raw_path,
+                provider=provider,
+                document_mode=False,
+                edge_seal_px=edge_seal_px,
+                edge_seal_color=edge_seal_color,
+                poll_timeout_seconds=poll_timeout_seconds,
+                cancel_event=cancel_event,
+            )
+            if not provider_out:
+                # error detail already set by the provider path
+                return None
+
+            if not self._composite_fullres(
+                raw_path, image_path, output_path,
+                full_res_plan, output_format, composite_mode,
+            ):
+                self._set_last_outpaint_error_detail("fullres_composite_failed")
+                return None
+            return output_path
+        finally:
+            try:
+                if os.path.exists(raw_path):
+                    os.remove(raw_path)
+            except OSError:
+                pass
+
+    def _bria_expand_full_res(
+        self,
+        image_path: str,
+        output_folder: str,
+        plan: Dict[str, int],
+        output_format: str,
+        output_path: Optional[str],
+        composite_mode: str,
+        prompt: str,
+        poll_timeout_seconds: int,
+        cancel_event: Optional[threading.Event],
+    ) -> Optional[str]:
+        """Full-res expand using Bria Expand for photorealistic borders.
+
+        Bria centers the (downscaled) original in a ``canvas_size`` and generates
+        the surrounding pixels — extending backgrounds and even a hand holding the
+        card, without duplicating the document. We place the original at a known
+        ``original_image_location`` so we can then upscale Bria's output to the
+        full-res canvas and hard-paste the untouched original on top (pixel-perfect
+        ID + real generated borders).
+        """
+        from fal_utils import (
+            upload_reference_image, fal_queue_submit, fal_queue_poll,
+            fal_download_file,
+        )
+
+        if output_path is None:
+            output_path = self._auto_expanded_path(
+                image_path, output_folder, output_format
+            )
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+        # Provider-coordinate geometry from the plan (already capped to fit).
+        up_w = int(plan["upload_w"])
+        up_h = int(plan["upload_h"])
+        p_left = int(plan["left"])
+        p_top = int(plan["top"])
+        cw = p_left + up_w + int(plan["right"])
+        ch = p_top + up_h + int(plan["bottom"])
+        # Bria area cap is 5000x5000; our provider canvas is already small.
+        if cw * ch <= 0 or (cw - up_w) + (ch - up_h) <= 0:
+            self._report("Bria plan has zero expansion.", "error")
+            self._set_last_outpaint_error_detail("bria_zero_margins")
+            return None
+
+        self._report(
+            f"Bria Expand: canvas {cw}x{ch}, original {up_w}x{up_h} "
+            f"at ({p_left},{p_top})", "info",
+        )
+        try:
+            image_url, _, _ = upload_reference_image(
+                image_path=image_path, fal_api_key=self.api_key,
+                max_size=max(up_w, up_h), progress_cb=self._progress_callback,
+                freeimage_api_key=self._freeimage_key,
+            )
+        except Exception as exc:
+            self._report(f"Bria upload failed: {exc}", "error")
+            self._set_last_outpaint_error_detail(f"bria_upload:{type(exc).__name__}")
+            return None
+        if not image_url:
+            self._set_last_outpaint_error_detail("bria_upload_failed")
+            return None
+
+        payload: Dict[str, object] = {
+            "image_url": image_url,
+            "canvas_size": [cw, ch],
+            "original_image_size": [up_w, up_h],
+            "original_image_location": [p_left, p_top],
+        }
+        if prompt and prompt.strip():
+            payload["prompt"] = prompt.strip()
+
+        submit = fal_queue_submit(
+            self.api_key, self.BRIA_ENDPOINT, payload, self._progress_callback
+        )
+        if not submit or not submit.get("status_url"):
+            self._set_last_outpaint_error_detail("bria_submit_failed")
+            return None
+        result = fal_queue_poll(
+            self.api_key, submit["status_url"], self._progress_callback,
+            max_wait_seconds=poll_timeout_seconds, cancel_event=cancel_event,
+            provider="fal", endpoint=self.BRIA_ENDPOINT,
+            request_id=submit.get("request_id", ""), operation_name="Bria Expand",
+        )
+        if not result:
+            self._set_last_outpaint_error_detail("bria_poll_failed")
+            return None
+        # Bria returns a single image under "image" (singular).
+        img_obj = result.get("image") or (
+            (result.get("images") or [{}])[0] if result.get("images") else {}
+        )
+        result_url = img_obj.get("url") if isinstance(img_obj, dict) else None
+        if not result_url:
+            self._set_last_outpaint_error_detail("bria_no_image")
+            return None
+
+        fd, raw_path = tempfile.mkstemp(suffix=f".{output_format}", prefix="bria_raw_")
+        os.close(fd)
+        try:
+            if not fal_download_file(result_url, raw_path, self._progress_callback):
+                self._set_last_outpaint_error_detail("bria_download_failed")
+                return None
+            # Bria placed the original at (p_left,p_top) in a (cw,ch) canvas — the
+            # SAME provider coordinate system _composite_fullres expects. Reuse it
+            # to upscale Bria's borders to full-res and hard-paste the pristine
+            # original on top.
+            if not self._composite_fullres(
+                raw_path, image_path, output_path, plan, output_format,
+                composite_mode,
+            ):
+                self._set_last_outpaint_error_detail("bria_composite_failed")
+                return None
+            return output_path
+        finally:
+            try:
+                if os.path.exists(raw_path):
+                    os.remove(raw_path)
+            except OSError:
+                pass
+
+    def _black_fill_full_res(
+        self,
+        image_path: str,
+        output_folder: str,
+        plan: Dict[str, int],
+        output_format: str,
+        output_path: Optional[str],
+    ) -> Optional[str]:
+        """Full-res black-border expand: solid black canvas at the plan's full
+        geometry with the untouched original hard-pasted in the center."""
+        try:
+            fl = int(plan["full_left"])
+            ft = int(plan["full_top"])
+            fcw = int(plan["full_canvas_w"])
+            fch = int(plan["full_canvas_h"])
+            if output_path is None:
+                output_path = self._auto_expanded_path(
+                    image_path, output_folder, output_format
+                )
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            with Image.open(image_path) as _o:
+                orig = ImageOps.exif_transpose(_o).convert("RGB")
+            ow, oh = orig.size
+            # Rebuild from the actual original so orig+margins == canvas.
+            fcw = ow + fl + int(plan["full_right"])
+            fch = oh + ft + int(plan["full_bottom"])
+            canvas = Image.new("RGB", (fcw, fch), (0, 0, 0))
+            canvas.paste(orig, (fl, ft))
+            save_kwargs = (
+                {"quality": 95}
+                if output_format.lower() in ("jpg", "jpeg")
+                else {}
+            )
+            canvas.save(output_path, **save_kwargs)
+            self._report(
+                f"Black-fill full-res: {fcw}x{fch} "
+                f"(original {ow}x{oh} kept pixel-perfect)", "info",
+            )
+            return output_path
+        except Exception as exc:
+            self._report(f"Black-fill full-res failed: {exc}", "error")
+            self._set_last_outpaint_error_detail(
+                f"black_fill_fullres:{type(exc).__name__}"
+            )
+            return None
+
+    def _edge_extend_full_res(
+        self,
+        image_path: str,
+        output_folder: str,
+        plan: Dict[str, int],
+        output_format: str,
+        output_path: Optional[str],
+        composite_mode: str,
+    ) -> Optional[str]:
+        """Deterministic full-res expand — no provider, cannot duplicate the ID.
+
+        Build the border by replicating the original's OUTER edge pixels outward
+        (mode="edge" pad), add matched film grain so it isn't smooth banding, blur
+        it into an out-of-focus surface, then hard-paste the untouched original on
+        top. Because only the single outer row/col propagates, the card interior
+        never appears in the border. A hand at the edge streaks softly outward
+        (acceptable "further away" look) instead of being hard-cut.
+        """
+        try:
+            import numpy as np
+            from PIL import ImageFilter
+
+            fl = int(plan["full_left"])
+            fr = int(plan["full_right"])
+            ft = int(plan["full_top"])
+            fb = int(plan["full_bottom"])
+            if output_path is None:
+                output_path = self._auto_expanded_path(
+                    image_path, output_folder, output_format
+                )
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+            with Image.open(image_path) as _o:
+                orig = ImageOps.exif_transpose(_o).convert("RGB")
+            ow, oh = orig.size
+            arr = np.asarray(orig)
+
+            # 1. Edge-replicate pad to the full canvas. Only the outer edge
+            #    row/col propagates, so the card never repeats.
+            padded = np.pad(arr, ((ft, fb), (fl, fr), (0, 0)), mode="edge")
+
+            # 2. Soften the border into out-of-focus background. Edge-replicate
+            #    leaves thin 1px streaks; a big-radius full-res GaussianBlur only
+            #    partly hides them. Downscale → light blur → upscale dissolves the
+            #    streaks far better (they average out at low res) AND is cheaper.
+            #    The result reads as natural bokeh falloff. The original center is
+            #    hard-pasted sharp on top afterward, so softening the border costs
+            #    nothing there.
+            canvas = Image.fromarray(padded)
+            fcw, fch = canvas.size
+            small = canvas.resize(
+                (max(1, fcw // 12), max(1, fch // 12)), Image.Resampling.LANCZOS
+            )
+            small = small.filter(ImageFilter.GaussianBlur(radius=6))
+            barr = np.asarray(
+                small.resize((fcw, fch), Image.Resampling.LANCZOS)
+            ).astype(np.float32)
+
+            # background noise amplitude: std of a small corner patch minus its
+            # own blur (high-freq only). Corners of an ID photo are background.
+            cs = max(8, min(ow, oh) // 20)
+            corner = arr[:cs, :cs].astype(np.float32)
+            corner_hf = corner - np.asarray(
+                Image.fromarray(arr[:cs, :cs]).filter(
+                    ImageFilter.GaussianBlur(radius=2)
+                )
+            ).astype(np.float32)
+            noise_amp = float(np.clip(corner_hf.std(), 1.0, 12.0))
+            # deterministic noise (no RNG — repeatable): a hash-free fixed pattern
+            yy, xx = np.mgrid[0:fch, 0:fcw]
+            noise = (np.sin(xx * 12.9898 + yy * 78.233) * 43758.5453)
+            noise = (noise - np.floor(noise) - 0.5) * 2.0  # ~[-1,1]
+            noise = noise[:, :, None] * noise_amp
+            gmask = np.ones((fch, fcw, 1), dtype=np.float32)
+            gmask[ft:ft + oh, fl:fl + ow, :] = 0.0
+            out = np.clip(barr + noise * gmask * 0.6, 0, 255).astype(np.uint8)
+            result = Image.fromarray(out)
+
+            # 3. Paste the pristine original. For preserve/feathered modes,
+            #    feather the outer ring so the edge blends into the soft border
+            #    (interior stays byte-for-byte); else hard-paste.
+            if composite_mode in ("preserve_seamless", "feathered"):
+                self._feather_paste_original(result, orig, fl, ft, ow, oh)
+            else:
+                result.paste(orig, (fl, ft))
+
+            save_kwargs = (
+                {"quality": 95}
+                if output_format.lower() in ("jpg", "jpeg")
+                else {}
+            )
+            result.save(output_path, **save_kwargs)
+            self._report(
+                f"Edge-extend full-res: {fcw}x{fch} "
+                f"(original {ow}x{oh} kept pixel-perfect, no provider call)",
+                "info",
+            )
+            return output_path
+        except Exception as exc:
+            self._report(f"Edge-extend full-res failed: {exc}", "error")
+            self._set_last_outpaint_error_detail(
+                f"edge_extend:{type(exc).__name__}"
+            )
+            return None
+
+    def _composite_fullres(
+        self,
+        raw_provider_path: str,
+        original_path: str,
+        output_path: str,
+        plan: Dict[str, int],
+        output_format: str,
+        composite_mode: str,
+    ) -> bool:
+        """Assemble the final full-res canvas from the raw provider output.
+
+        Geometry is deterministic (we chose the margins) so no matchTemplate is
+        needed. Steps:
+          1. Open the raw provider output; the original center occupies
+             ``[left:left+upload_w, top:top+upload_h]`` in provider coords.
+          2. Crop the four generated border strips (outside that center rect)
+             and Lanczos-upscale each to its full-res margin size.
+          3. Build a ``full_canvas_w x full_canvas_h`` canvas, place the strips,
+             then hard-paste the UNTOUCHED full-res original at (full_left,
+             full_top). Optionally seam-blend the thin ring for preserve modes.
+        """
+        try:
+            fl = int(plan["full_left"])
+            fr = int(plan["full_right"])
+            ft = int(plan["full_top"])
+            fb = int(plan["full_bottom"])
+            fcw = int(plan["full_canvas_w"])
+            fch = int(plan["full_canvas_h"])
+            p_left = int(plan["left"])
+            p_top = int(plan["top"])
+            up_w = int(plan["upload_w"])
+            up_h = int(plan["upload_h"])
+
+            with Image.open(original_path) as _o:
+                orig_full = ImageOps.exif_transpose(_o).convert("RGB")
+            ow, oh = orig_full.size
+
+            # Sanity: the plan was computed for this original.
+            if fcw != ow + fl + fr or fch != oh + ft + fb:
+                # Rebuild margins from the actual original so a stale plan
+                # (e.g. dims changed) still produces orig+margins == canvas.
+                fcw = ow + fl + fr
+                fch = oh + ft + fb
+
+            with Image.open(raw_provider_path) as _r:
+                raw = ImageOps.exif_transpose(_r).convert("RGB")
+            rw, rh = raw.size
+
+            # The provider may clamp 1-2% off the requested canvas. Recover the
+            # actual per-side margins in provider coords by proportional split,
+            # and the actual center rect, so strip crops never go out of bounds.
+            req_cw = p_left + up_w + int(plan["right"])
+            req_ch = p_top + up_h + int(plan["bottom"])
+            sx = rw / max(req_cw, 1)
+            sy = rh / max(req_ch, 1)
+            a_left = int(round(p_left * sx))
+            a_top = int(round(p_top * sy))
+            a_cw = int(round(up_w * sx))
+            a_ch = int(round(up_h * sy))
+            a_right_x = min(rw, a_left + a_cw)
+            a_bottom_y = min(rh, a_top + a_ch)
+            a_left = max(0, min(a_left, rw - 1))
+            a_top = max(0, min(a_top, rh - 1))
+
+            canvas = Image.new("RGB", (fcw, fch))
+
+            def _upscale_paste(box, dest_box):
+                """Crop provider region *box* and resize into *dest_box*."""
+                bx0, by0, bx1, by1 = box
+                if bx1 <= bx0 or by1 <= by0:
+                    return
+                strip = raw.crop((bx0, by0, bx1, by1))
+                dx0, dy0, dx1, dy1 = dest_box
+                dw, dh = max(1, dx1 - dx0), max(1, dy1 - dy0)
+                canvas.paste(
+                    strip.resize((dw, dh), Image.Resampling.LANCZOS), (dx0, dy0)
+                )
+
+            # Top band (full width), bottom band (full width), then left/right
+            # side bands (between top and bottom). Full-res dest coords:
+            #   original center occupies [fl:fl+ow, ft:ft+oh].
+            _upscale_paste((0, 0, rw, a_top), (0, 0, fcw, ft))                     # top
+            _upscale_paste((0, a_bottom_y, rw, rh), (0, ft + oh, fcw, fch))        # bottom
+            _upscale_paste((0, a_top, a_left, a_bottom_y), (0, ft, fl, ft + oh))   # left
+            _upscale_paste((a_right_x, a_top, rw, a_bottom_y),
+                           (fl + ow, ft, fcw, ft + oh))                            # right
+
+            # Hard-paste the original. In this path (Bria / generic AI) the
+            # provider was told the EXACT placement (original_image_location), so
+            # the generated border already meets the card at this rectangle — a
+            # hard paste is seamless. Feathering here would cross-fade the
+            # original against the provider's slightly-different rendering of the
+            # same region and produce a ghosted double-edge (worse). Feathering
+            # is applied only in the edge-extend path, where the border is
+            # derived from the original's own pixels and therefore matches.
+            canvas.paste(orig_full, (fl, ft))
+
+            save_kwargs = (
+                {"quality": 95}
+                if output_format.lower() in ("jpg", "jpeg")
+                else {}
+            )
+            canvas.save(output_path, **save_kwargs)
+            self._report(
+                f"Full-res composite: {fcw}x{fch} "
+                f"(original {ow}x{oh} kept pixel-perfect)",
+                "info",
+            )
+            return True
+        except Exception as exc:
+            self._report(f"Full-res composite failed: {exc}", "error")
+            self._set_last_outpaint_error_detail(
+                f"fullres_composite:{type(exc).__name__}"
+            )
+            return False
+
+    @staticmethod
+    def _adaptive_feather_width(arr, ow: int, oh: int):
+        """Choose a feather width from the detail near the original's edge.
+
+        ``arr`` is the original as a float32 HxWx3 array. Returns
+        ``(feather_px, detail)``. Plain edge (low detail) -> wide feather; busy
+        edge (hand / texture / clutter) -> narrow feather (~2-8px) so real detail
+        isn't smeared. Mapping: detail<=6 -> ~24px, detail>=40 -> ~3px.
+        """
+        import numpy as np
+
+        band = int(max(4, min(32, min(ow, oh) // 20)))
+        edges = np.concatenate([
+            arr[:band].reshape(-1, 3),
+            arr[-band:].reshape(-1, 3),
+            arr[:, :band].reshape(-1, 3),
+            arr[:, -band:].reshape(-1, 3),
+        ])
+        detail = float(edges.std())
+        lo_d, hi_d, wide, narrow = 6.0, 40.0, 24.0, 3.0
+        frac = float(np.clip((detail - lo_d) / (hi_d - lo_d), 0.0, 1.0))
+        feather = wide + (narrow - wide) * frac
+        feather = int(max(2, min(round(feather), min(ow, oh) // 6)))
+        return feather, detail
+
+    def _feather_paste_original(
+        self,
+        canvas: "Image.Image",
+        orig_full: "Image.Image",
+        left: int,
+        top: int,
+        ow: int,
+        oh: int,
+    ) -> None:
+        """Paste the original with an ADAPTIVE feathered outer ring.
+
+        The interior stays 100% original (byte-for-byte); only the outermost
+        ``feather`` px cross-fade into the already-placed generated border, so the
+        boundary isn't a hard rectangle. The feather WIDTH is chosen from the
+        detail near the original's edge (photographer feedback):
+
+          - plain / smooth edge (blank surface) -> WIDER feather (up to ~24px):
+            nothing to smear, so a soft fall-off looks best.
+          - busy / textured edge (hand, patterned surface, clutter) -> NARROW
+            feather (~2-8px): a wide fall-off there smears real detail and
+            ghosts, so we only soften the 1px hard seam.
+        """
+        try:
+            import numpy as np
+
+            arr = np.asarray(orig_full.convert("RGB")).astype(np.float32)
+            feather, detail = self._adaptive_feather_width(arr, ow, oh)
+            self._report(
+                f"Adaptive feather: edge_detail={detail:.1f} -> {feather}px",
+                "debug",
+            )
+
+            # Per-pixel alpha: 255 in the interior, ramping to 0 over the outer
+            # `feather` px (distance-to-nearest-edge). Full opacity everywhere
+            # past the ring — the original interior is byte-for-byte preserved.
+            yy = np.minimum(np.arange(oh), oh - 1 - np.arange(oh))
+            xx = np.minimum(np.arange(ow), ow - 1 - np.arange(ow))
+            dist = np.minimum(xx[None, :], yy[:, None]).astype(np.float32)
+            t = np.clip(dist / max(feather, 1), 0.0, 1.0)
+            ramp = t * t * (3 - 2 * t)               # smoothstep 0..1
+            alpha = np.where(dist >= feather, 1.0, ramp)
+            mask = Image.fromarray(
+                (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
+            ).convert("L")
+
+            canvas.paste(orig_full, (left, top), mask)
+        except Exception as exc:  # feathering is cosmetic — fall back to hard paste
+            self._report(f"Feathered paste failed, hard-pasting: {exc}", "debug")
+            canvas.paste(orig_full, (left, top))
+
+    def _blend_seam_ring(
+        self,
+        canvas: "Image.Image",
+        orig_full: "Image.Image",
+        left: int,
+        top: int,
+        ow: int,
+        oh: int,
+        composite_mode: str,
+    ) -> None:
+        """Feather a thin ring just OUTSIDE the pasted original in-place.
+
+        Blurs the seam region so the boundary to the (softer) generated border
+        isn't a hard line, then re-pastes the pristine ``orig_full`` so the
+        original's interior stays byte-for-byte untouched.
+        """
+        try:
+            from PIL import ImageFilter
+
+            ring = self._PRESERVE_SEAM_BLEND_PX if composite_mode == "preserve_seamless" else 3
+            ring = max(1, int(ring))
+            cw, ch = canvas.size
+            blurred = canvas.filter(ImageFilter.GaussianBlur(radius=ring / 2))
+            mask = Image.new("L", (cw, ch), 0)
+            draw = ImageDraw.Draw(mask)
+            # Ring = band from ring px outside the original up to the original
+            # edge. Inner rect (the original) stays mask 0.
+            ox0, oy0, ox1, oy1 = left, top, left + ow, top + oh
+            r_x0 = max(0, ox0 - ring); r_y0 = max(0, oy0 - ring)
+            r_x1 = min(cw, ox1 + ring); r_y1 = min(ch, oy1 + ring)
+            draw.rectangle([r_x0, r_y0, r_x1 - 1, r_y1 - 1], fill=140)
+            draw.rectangle([ox0, oy0, ox1 - 1, oy1 - 1], fill=0)
+            mask = mask.filter(ImageFilter.GaussianBlur(radius=ring / 2))
+            canvas.paste(blurred, (0, 0), mask)
+            # Re-assert the pristine original (blur bleed never wins over it).
+            canvas.paste(orig_full, (ox0, oy0))
+        except Exception as exc:  # blending is cosmetic — never fail the expand
+            self._report(f"Seam-ring blend skipped: {exc}", "debug")
 
     # ── black_fill (no-API local expand) ─────────────────────────────────
 

@@ -90,6 +90,9 @@ def test_front_expand_runs_twice_chaining_output_into_input(tmp_path, monkeypatc
             "automation_oldcam_required": False,
             "saved_prompts": {"1": "prompt"},
             "current_prompt_slot": 1,
+            # 2-pass chaining is a PERCENT-mode feature; the default is now
+            # three_four_fullres (single pass), so pin percent for this test.
+            "automation_front_expand_mode": "percent",
         }
     )
     manifest = AutomationManifest.create_or_load(

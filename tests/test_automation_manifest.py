@@ -570,12 +570,14 @@ def test_automation_defaults_use_percent_and_nano_model():
     # "bfl" and silently overrode the user's GUI choice. R3
     # aligns all three (GUI + 2 automation) to fal.
     assert merged["automation_front_expand_provider"] == "fal"
-    assert merged["automation_front_expand_mode"] == "percent"
+    # Default expand mode is now three_four_fullres (full-res 3:4 + Bria borders)
+    # per user direction 2026-07-02 — keeps the original at native resolution.
+    assert merged["automation_front_expand_mode"] == "three_four_fullres"
     assert merged["automation_front_expand_composite_mode"] == "preserve_seamless"
     assert merged["automation_front_expand_percent"] == 70
     assert merged["automation_front_expand_passes"] == 2
     assert merged["automation_selfie_expand_provider"] == "fal"
-    assert merged["automation_selfie_expand_mode"] == "percent"
+    assert merged["automation_selfie_expand_mode"] == "three_four_fullres"
     # Step 2.5 selfie expand ships raw AI output by default (composite
     # "none") per user request, PR #41 — front expand stays
     # preserve_seamless (asserted above); the two are independent.
