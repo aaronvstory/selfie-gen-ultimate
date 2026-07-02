@@ -9,6 +9,7 @@ from typing import Callable, List, Optional
 
 from path_utils import get_gen_images_folder
 from automation.config import get_outpaint_fal_timeout_seconds
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
 
 from ..image_state import ImageSession, SIMILARITY_PASS_THRESHOLD, parse_similarity_score
 from ..theme import (
@@ -57,7 +58,9 @@ class ExpandTab(tk.Frame):
             value=self.config.get("outpaint_expand_mode", "three_four_fullres")
         )
         self._pct_var = tk.IntVar(
-            value=self.config.get("outpaint_expand_percentage", 30)
+            value=self.config.get(
+                "outpaint_expand_percentage", DEFAULT_OUTPAINT_EXPAND_PERCENT
+            )
         )
         self._top_var = tk.IntVar(value=self.config.get("outpaint_expand_top", 140))
         self._bottom_var = tk.IntVar(value=self.config.get("outpaint_expand_bottom", 140))

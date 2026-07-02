@@ -26,6 +26,7 @@ from ..ml_backend_env import ensure_ml_backend_env
 from path_utils import get_gen_images_folder, get_runtime_scratch_dir
 from tk_dialogs import select_open_file
 from automation.config import get_outpaint_fal_timeout_seconds
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
 
 # Optional heavy dependencies — tab degrades gracefully if missing/broken
 cv2 = None
@@ -282,7 +283,9 @@ class FaceCropTab(tk.Frame):
             value=config.get("outpaint_expand_mode", "three_four_fullres")
         )
         self._pct_var = tk.IntVar(
-            value=config.get("outpaint_expand_percentage", 30)
+            value=config.get(
+                "outpaint_expand_percentage", DEFAULT_OUTPAINT_EXPAND_PERCENT
+            )
         )
         self._outpaint_format_var = tk.StringVar(
             value=config.get("outpaint_format", "png")

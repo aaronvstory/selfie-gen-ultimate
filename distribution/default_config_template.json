@@ -119,6 +119,7 @@
   "outpaint_composite_mode": "preserve_seamless",
   "outpaint_provider": "fal",
   "outpaint_expand_mode": "three_four_fullres",
+  "outpaint_expand_percentage": 35,
   "outpaint_border_strategy": "bria",
   "outpaint_2x_default_reset_v2": true,
   "outpaint_2x_default_reset_v3": true,
