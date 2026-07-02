@@ -3,6 +3,7 @@ from pathlib import Path
 
 from automation.config import get_outpaint_fal_timeout_seconds, merge_automation_defaults
 from kling_automation_ui import KlingAutomationUI
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
 
 
 def test_cli_has_automation_menu():
@@ -655,7 +656,7 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     assert ui.config["automation_front_expand_provider"] == "fal"
     assert ui.config["automation_front_expand_mode"] == "three_four_fullres"
     assert ui.config["automation_front_expand_composite_mode"] == "preserve_seamless"
-    assert ui.config["automation_front_expand_percent"] == 70
+    assert ui.config["automation_front_expand_percent"] == DEFAULT_OUTPAINT_EXPAND_PERCENT
     assert ui.config["automation_front_expand_passes"] == 2
     assert ui.config["automation_selfie_expand_provider"] == "fal"
     assert ui.config["automation_selfie_expand_mode"] == "three_four_fullres"
@@ -664,7 +665,7 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     # release_prep force-override. apply_recommended_defaults must
     # match (CodeRabbit, PR #41).
     assert ui.config["automation_selfie_expand_composite_mode"] == "none"
-    assert ui.config["automation_selfie_expand_percent"] == 30
+    assert ui.config["automation_selfie_expand_percent"] == DEFAULT_OUTPAINT_EXPAND_PERCENT
     assert ui.config["automation_selfie_models"] == ["fal-ai/nano-banana-2/edit"]
     assert ui.config["automation_selfie_prompt_slot"] == 3
     assert "parked car" in ui.config["automation_selfie_prompts"]["1"].lower()

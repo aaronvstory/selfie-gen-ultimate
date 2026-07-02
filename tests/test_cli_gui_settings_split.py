@@ -20,6 +20,8 @@ the slot POINTER and the model selection are per-surface.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from automation.config import (
@@ -533,6 +535,17 @@ def test_quick_edit_choices_cover_every_field_and_groups_are_consistent():
     assert "three_four_fullres" in labels["front_mode"]
     assert "three_four_fullres" in labels["sexp_mode"]
     assert "80" in labels["similarity"]
+
+
+def test_cli_expand_percent_uses_shared_preset_picker():
+    text = Path("kling_automation_ui.py").read_text(encoding="utf-8")
+    assert "OUTPAINT_EXPAND_PERCENT_PRESETS" in text
+    assert "DEFAULT_OUTPAINT_EXPAND_PERCENT" in text
+    assert "def _qs_expand_percent" in text
+    assert 'self._qs_expand_percent("Expand percent:", "automation_front_expand_percent")' in text
+    assert 'self._qs_expand_percent("Expand percent:", "automation_selfie_expand_percent")' in text
+    assert 'self._qs_expand_percent("Front expand percent:", "automation_front_expand_percent")' in text
+    assert 'self._qs_expand_percent("Selfie expand percent:", "automation_selfie_expand_percent")' in text
 
 
 # --------------------------------------------------------------------------

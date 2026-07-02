@@ -1,3 +1,4 @@
 """Shared defaults for generative expand/outpaint controls."""
 
 DEFAULT_OUTPAINT_EXPAND_PERCENT = 35
+OUTPAINT_EXPAND_PERCENT_PRESETS = (25, 30, DEFAULT_OUTPAINT_EXPAND_PERCENT, 40)

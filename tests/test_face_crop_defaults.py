@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT, OUTPAINT_EXPAND_PERCENT_PRESETS
+
 
 def test_face_crop_default_expands_generative_expand():
     text = Path("kling_gui/tabs/face_crop_tab.py").read_text(encoding="utf-8")
@@ -65,10 +67,18 @@ def test_step0_expand_modes_are_vertical_not_in_action_row():
 
 
 def test_outpaint_percentage_presets_mark_35_as_default():
+    assert OUTPAINT_EXPAND_PERCENT_PRESETS == (25, 30, DEFAULT_OUTPAINT_EXPAND_PERCENT, 40)
     for path in (
+        Path("kling_gui/tabs/ai_studio_tab.py"),
+        Path("kling_gui/tabs/face_crop_tab.py"),
+        Path("kling_gui/tabs/expand_tab.py"),
         Path("kling_gui/tabs/outpaint_tab.py"),
+        Path("distribution/kling_gui/tabs/ai_studio_tab.py"),
+        Path("distribution/kling_gui/tabs/face_crop_tab.py"),
+        Path("distribution/kling_gui/tabs/expand_tab.py"),
         Path("distribution/kling_gui/tabs/outpaint_tab.py"),
     ):
         text = path.read_text(encoding="utf-8")
+        assert "OUTPAINT_EXPAND_PERCENT_PRESETS" in text
         assert "DEFAULT_OUTPAINT_EXPAND_PERCENT" in text
         assert "30% (default)" not in text

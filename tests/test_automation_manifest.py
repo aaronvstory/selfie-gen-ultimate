@@ -5,6 +5,7 @@ import pytest
 
 from automation.manifest import AutomationManifest, SCHEMA_VERSION
 from automation.config import merge_automation_defaults
+from outpaint_defaults import DEFAULT_OUTPAINT_EXPAND_PERCENT
 
 
 def test_manifest_create_update_and_resume(tmp_path: Path):
@@ -574,7 +575,7 @@ def test_automation_defaults_use_percent_and_nano_model():
     # per user direction 2026-07-02 — keeps the original at native resolution.
     assert merged["automation_front_expand_mode"] == "three_four_fullres"
     assert merged["automation_front_expand_composite_mode"] == "preserve_seamless"
-    assert merged["automation_front_expand_percent"] == 70
+    assert merged["automation_front_expand_percent"] == DEFAULT_OUTPAINT_EXPAND_PERCENT
     assert merged["automation_front_expand_passes"] == 2
     assert merged["automation_selfie_expand_provider"] == "fal"
     assert merged["automation_selfie_expand_mode"] == "three_four_fullres"
@@ -582,7 +583,7 @@ def test_automation_defaults_use_percent_and_nano_model():
     # "none") per user request, PR #41 — front expand stays
     # preserve_seamless (asserted above); the two are independent.
     assert merged["automation_selfie_expand_composite_mode"] == "none"
-    assert merged["automation_selfie_expand_percent"] == 30
+    assert merged["automation_selfie_expand_percent"] == DEFAULT_OUTPAINT_EXPAND_PERCENT
     assert merged["automation_selfie_models"] == ["fal-ai/nano-banana-2/edit"]
     # Multi-select canonical list form; CLI default v13 per user mandate
     # 2026-06-11 (GUI default stays v24 — intentionally divergent).
