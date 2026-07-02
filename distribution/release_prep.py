@@ -59,6 +59,10 @@ EXCLUDED_DIRS: Set[str] = {
     "reviews",
     "sessions",
     "release",
+    # Local report/deliverable folders (large full-res demo images; gitignored
+    # + never shipped). gitignore alone doesn't shield release_prep since it
+    # walks the working tree — must be excluded here too.
+    "reports",
     "distribution",
     "tests",
     "tests_tmp",

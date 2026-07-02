@@ -132,3 +132,6 @@ map-codebase-session-*.md
 
 # Mode-comparison harness outputs (variant videos + frames + HTML report)
 oldcam-testing/mode_compare_out/
+
+# Local report/deliverable folders (large full-res images; not source)
+reports/
