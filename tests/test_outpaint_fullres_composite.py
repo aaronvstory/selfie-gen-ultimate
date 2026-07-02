@@ -29,6 +29,11 @@ def test_resolve_border_strategy():
     assert resolve_border_strategy({"outpaint_border_strategy": "ai"}, False) == "edge_extend"
     # unknown value -> default logic
     assert resolve_border_strategy({"outpaint_border_strategy": "xyz"}, True) == "bria"
+    # explicit BFL provider (no explicit strategy) -> don't silently use fal/Bria
+    assert resolve_border_strategy(None, True, "bfl") == "edge_extend"
+    assert resolve_border_strategy(None, True, "fal") == "bria"
+    # explicit strategy still wins even with a bfl provider
+    assert resolve_border_strategy({"outpaint_border_strategy": "bria"}, True, "bfl") == "bria"
 
 
 # ── geometry ─────────────────────────────────────────────────────────────
@@ -62,6 +67,23 @@ def test_3x4_always_hits_aspect_and_fits_caps(w, h, caps):
     assert p["canvas_w"] <= caps.max_canvas_dim + 1
     assert p["canvas_h"] <= caps.max_canvas_dim + 1
     assert p["canvas_w"] * p["canvas_h"] <= caps.max_canvas_mp * 1e6 * 1.02
+
+
+def test_max_full_dim_caps_oversized_output():
+    """A wide source expanded to tall 3:4 can exceed PIL's bomb limit; the
+    max_full_dim cap scales the whole plan down proportionally."""
+    # 4000x3000 @70% -> 3:4 balloons to 12800 tall (122MP) uncapped
+    uncapped = compute_full_res_expand_plan(4000, 3000, 70, FAL_CAPS, (3, 4), max_full_dim=0)
+    assert max(uncapped["full_canvas_w"], uncapped["full_canvas_h"]) > 10000
+    capped = compute_full_res_expand_plan(4000, 3000, 70, FAL_CAPS, (3, 4))  # default 10000
+    assert max(capped["full_canvas_w"], capped["full_canvas_h"]) <= 10000
+    # still exact 3:4
+    assert abs(capped["full_canvas_w"] / capped["full_canvas_h"] - 3 / 4) < 5e-3
+    # under PIL's default decompression-bomb limit
+    assert capped["full_canvas_w"] * capped["full_canvas_h"] < 89_478_485
+    # a typical 30% expand (tops out ~8700 longest) is NOT capped -> native res
+    typical = compute_full_res_expand_plan(4080, 3060, 30, FAL_CAPS, (3, 4))
+    assert typical["full_canvas_w"] == 6528 and typical["full_canvas_h"] == 8704
 
 
 def test_percentage_fullres_no_aspect():
@@ -219,6 +241,34 @@ def test_edge_extend_border_has_no_original_text_leak(tmp_path):
     # i.e. no bright central block leaked upward.
     top_band = res[0:max(1, ft - 10), :]
     assert top_band.max() < 160, "bright center content leaked into the border"
+
+
+def test_black_fill_full_res_honors_plan(tmp_path):
+    """black_fill + full_res_plan must build a black canvas at the PLAN's
+    full-res geometry (not 0 margins, not a fixed 140px) with the original
+    pixel-perfect in the center."""
+    from outpaint_generator import OutpaintGenerator
+    w, h = 1200, 900
+    plan = compute_full_res_expand_plan(w, h, 30, FAL_CAPS, (3, 4))
+    orig_p = str(tmp_path / "front.png")
+    _make_original(orig_p, w, h)
+    gen = OutpaintGenerator(api_key="x")  # must not call any provider
+    out = gen.outpaint(
+        image_path=orig_p, output_folder=str(tmp_path),
+        output_path=str(tmp_path / "bf.png"),
+        composite_mode="black_fill", full_res_plan=plan,
+    )
+    assert out is not None
+    res = Image.open(out).convert("RGB")
+    # canvas == the full-res plan (NOT the tiny provider canvas, NOT 0-margin)
+    assert res.size == (plan["full_canvas_w"], plan["full_canvas_h"])
+    assert res.size != (w, h), "black_fill produced no border (0-margin bug)"
+    fl, ft = plan["full_left"], plan["full_top"]
+    # center is the pixel-perfect original
+    center = np.asarray(res.crop((fl, ft, fl + w, ft + h)))
+    assert np.array_equal(center, np.asarray(Image.open(orig_p).convert("RGB")))
+    # a border pixel is black
+    assert tuple(np.asarray(res)[2, 2]) == (0, 0, 0)
 
 
 def test_adaptive_feather_plain_wider_than_busy():

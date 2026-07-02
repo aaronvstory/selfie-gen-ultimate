@@ -279,7 +279,7 @@ class FaceCropTab(tk.Frame):
         self._outpaint_cancel_event: Optional[threading.Event] = None
         self._outpaint_run_token = 0
         self._expand_mode_var = tk.StringVar(
-            value=config.get("outpaint_expand_mode", "percentage")
+            value=config.get("outpaint_expand_mode", "three_four_fullres")
         )
         self._pct_var = tk.IntVar(
             value=config.get("outpaint_expand_percentage", 30)
@@ -3290,7 +3290,7 @@ class FaceCropTab(tk.Frame):
                             fullres_aspect,
                         )
                         _fr_kwargs["border_strategy"] = resolve_border_strategy(
-                            cfg, bool(api_key)
+                            cfg, bool(api_key), provider
                         )
                     result = gen.outpaint(
                         image_path=current_input,

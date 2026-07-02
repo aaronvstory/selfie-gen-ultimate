@@ -71,12 +71,22 @@ def compute_percent_expand_plan(
     }
 
 
-def resolve_border_strategy(config: Optional[dict], has_fal_key: bool) -> str:
+def resolve_border_strategy(
+    config: Optional[dict],
+    has_fal_key: bool,
+    provider: Optional[str] = None,
+) -> str:
     """Pick the full-res border engine.
 
     ``config['outpaint_border_strategy']`` wins if set to a known value
-    ("bria" | "edge_extend" | "ai"). Otherwise default to "bria" (best quality)
-    when a fal key is available, else "edge_extend" (free, offline, no key).
+    ("bria" | "edge_extend" | "ai") — an explicit choice is always honored
+    (subject to needing a fal key for the fal-based engines).
+
+    Without an explicit choice: default to "bria" (best quality, fal-based) when
+    a fal key is available. But if the caller explicitly selected the **bfl**
+    provider for this expand, don't silently switch them to fal/Bria — use the
+    free "edge_extend" engine instead (Bria is fal-only). No fal key -> also
+    "edge_extend".
     """
     known = {"bria", "edge_extend", "ai"}
     val = ""
@@ -87,6 +97,10 @@ def resolve_border_strategy(config: Optional[dict], has_fal_key: bool) -> str:
         if val in {"bria", "ai"} and not has_fal_key:
             return "edge_extend"
         return val
+    prov = (provider or "").strip().lower()
+    if prov == "bfl":
+        # user explicitly chose BFL — Bria is fal-only, so keep it free/neutral
+        return "edge_extend"
     return "bria" if has_fal_key else "edge_extend"
 
 
@@ -96,6 +110,7 @@ def compute_full_res_expand_plan(
     expand_percent: float,
     caps: ProviderCaps,
     target_aspect: Optional[Tuple[int, int]] = None,
+    max_full_dim: int = 10000,
 ) -> Dict[str, int]:
     """Plan a *full-resolution* expand.
 
@@ -151,6 +166,20 @@ def compute_full_res_expand_plan(
     # Never let rounding make the canvas smaller than the original.
     full_canvas_w = max(full_canvas_w, orig_w)
     full_canvas_h = max(full_canvas_h, orig_h)
+
+    # Cap the final canvas to a sane longest side. A wide source expanded to a
+    # tall 3:4 can balloon (e.g. 4000x3000 @70% -> 12800 tall = 122MP, which
+    # trips PIL's 89MP decompression-bomb guard and makes unwieldy files). If we
+    # would exceed max_full_dim, scale the WHOLE plan (original included) down
+    # proportionally. The default 10000 keeps every typical 30% expand at native
+    # resolution (those top out ~8700 longest) AND stays under PIL's 89MP limit
+    # for 3:4; only extreme expands (e.g. 70% of a 4K source) are reduced.
+    if max_full_dim and max(full_canvas_w, full_canvas_h) > max_full_dim:
+        s = max_full_dim / float(max(full_canvas_w, full_canvas_h))
+        orig_w = max(1, int(round(orig_w * s)))
+        orig_h = max(1, int(round(orig_h * s)))
+        full_canvas_w = max(orig_w, int(round(full_canvas_w * s)))
+        full_canvas_h = max(orig_h, int(round(full_canvas_h * s)))
 
     full_expand_w = full_canvas_w - orig_w
     full_expand_h = full_canvas_h - orig_h

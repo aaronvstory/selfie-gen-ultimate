@@ -589,6 +589,7 @@ class AutoPipelineRunner:
                         ),
                         "border_strategy": resolve_border_strategy(
                             self.config, bool(self.config.get("falai_api_key")),
+                            resolved_selfie_provider,
                         ),
                     }
                 else:
@@ -1540,6 +1541,7 @@ class AutoPipelineRunner:
                             "border_strategy": resolve_border_strategy(
                                 self.config,
                                 bool(self.config.get("falai_api_key")),
+                                resolved_front_provider,
                             ),
                         }
                         self.logger.info(
@@ -2102,6 +2104,7 @@ class AutoPipelineRunner:
                         "border_strategy": resolve_border_strategy(
                             self.config,
                             bool(self.config.get("falai_api_key")),
+                            resolved_selfie_provider,
                         ),
                     }
                     self.logger.info(

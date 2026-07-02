@@ -403,6 +403,22 @@ class AIStudioTab(tk.Frame):
         )
         self._abort_btn.pack(side=tk.LEFT, padx=(4, 0))
 
+        # Expand to 3:4 (full-res): the same generative-expand feature as Step 0
+        # / Step 2.5, on the current AI Studio image. Keeps the original at native
+        # resolution and extends to 3:4 (Bria borders by default). Result flows
+        # into the same Before/After + Add-to-Carousel display as an edit.
+        expand_row = tk.Frame(opts, bg=COLORS["bg_panel"])
+        expand_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 2))
+        self._expand_btn = ttk.Button(
+            expand_row,
+            text="\U0001f5bc Expand to 3:4",
+            style=TTK_BTN_SECONDARY,
+            command=debounce_command(
+                self._on_expand_3x4, key="aistudio_expand"
+            ),
+        )
+        self._expand_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         # Presets — vertical full-width stack, scrollable, taking the remaining
         # space between the prompt and the bottom-pinned buttons.
         preset_box = tk.Frame(opts, bg=COLORS["bg_panel"])
@@ -648,6 +664,94 @@ class AIStudioTab(tk.Frame):
 
         threading.Thread(target=_run, daemon=True).start()
 
+    def _on_expand_3x4(self):
+        """Expand the current image to full-res 3:4 (same engine as Step 0/2.5).
+
+        Keeps the original at native resolution; borders come from the resolved
+        strategy (Bria by default, edge-extend without a fal key). The result is
+        shown in the same Before/After display as an edit.
+        """
+        if self._busy:
+            return
+        cfg = self.get_config()
+        api_key = (cfg.get("falai_api_key") or "").strip()
+        image_path = self._before_path or self.image_session.active_image_path
+        if not image_path or not os.path.isfile(image_path):
+            self.log("No image selected in carousel.", "warning")
+            return
+        try:
+            output_folder = get_gen_images_folder(image_path)
+            os.makedirs(output_folder, exist_ok=True)
+        except Exception as exc:
+            self.log(f"Could not resolve output folder: {exc}", "error")
+            return
+
+        pct = int(cfg.get("outpaint_expand_percentage", 30) or 30)
+        prompt = self.config.get("outpaint_prompt", "") or ""
+        self._set_busy(True)
+        self._abort_event = threading.Event()
+        freeimage_key = cfg.get("freeimage_api_key")
+        bfl_api_key = cfg.get("bfl_api_key")
+        toplevel = self.winfo_toplevel()
+
+        def _safe_after(func):
+            try:
+                if toplevel.winfo_exists():
+                    toplevel.after(0, func)
+            except Exception:
+                pass
+
+        def _run():
+            try:
+                from outpaint_generator import OutpaintGenerator
+                from outpaint_geometry import (
+                    compute_full_res_expand_plan,
+                    compute_provider_caps,
+                    resolve_border_strategy,
+                )
+                from PIL import Image as _PILImg, ImageOps as _PILOps
+
+                use_bfl = bool(bfl_api_key)
+                with _PILImg.open(image_path) as _im:
+                    iw, ih = _PILOps.exif_transpose(_im).size
+                plan = compute_full_res_expand_plan(
+                    iw, ih, pct,
+                    compute_provider_caps("bfl" if use_bfl else "fal"),
+                    (3, 4),
+                )
+                strategy = resolve_border_strategy(
+                    cfg, bool(api_key), "bfl" if use_bfl else "fal"
+                )
+                gen = OutpaintGenerator(
+                    api_key, freeimage_key=freeimage_key,
+                    bfl_api_key=bfl_api_key,
+                )
+                gen.set_progress_callback(
+                    lambda msg, lvl: _safe_after(
+                        lambda m=msg, level=lvl: self.log(m, level)
+                    )
+                )
+                if self._abort_event is not None:
+                    gen.set_cancel_event(self._abort_event)
+                self.log(
+                    f"Expanding to 3:4 ({strategy}) — original kept at native "
+                    f"resolution...", "task",
+                )
+                result = gen.outpaint(
+                    image_path=image_path,
+                    output_folder=output_folder,
+                    composite_mode="preserve_seamless",
+                    prompt=prompt,
+                    full_res_plan=plan,
+                    border_strategy=strategy,
+                )
+                _safe_after(lambda: self._on_run_done(result))
+            except Exception as e:
+                err = format_exception_detail(e)
+                _safe_after(lambda: self._on_run_error(err))
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def _on_run_done(self, result_path: Optional[str]):
         self._set_busy(False)
         self._abort_event = None  # run finished — don't let a stale Abort fire
@@ -687,6 +791,8 @@ class AIStudioTab(tk.Frame):
         self._busy = busy
         self._run_btn.config(state=tk.DISABLED if busy else tk.NORMAL)
         self._abort_btn.config(state=tk.NORMAL if busy else tk.DISABLED)
+        if hasattr(self, "_expand_btn"):
+            self._expand_btn.config(state=tk.DISABLED if busy else tk.NORMAL)
         self._status_label.config(
             text="Editing…" if busy else "",
             fg=COLORS.get("progress", COLORS["text_dim"])

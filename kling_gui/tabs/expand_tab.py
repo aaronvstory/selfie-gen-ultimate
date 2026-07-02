@@ -54,7 +54,7 @@ class ExpandTab(tk.Frame):
             value=self.config.get("expand25_auto_switch", True)
         )
         self._expand_mode_var = tk.StringVar(
-            value=self.config.get("outpaint_expand_mode", "percentage")
+            value=self.config.get("outpaint_expand_mode", "three_four_fullres")
         )
         self._pct_var = tk.IntVar(
             value=self.config.get("outpaint_expand_percentage", 30)
@@ -895,7 +895,7 @@ class ExpandTab(tk.Frame):
                             fullres_aspect,
                         )
                         _fr_kwargs["border_strategy"] = resolve_border_strategy(
-                            cfg, bool(api_key)
+                            cfg, bool(api_key), "bfl" if use_bfl else "fal"
                         )
                     else:
                         left, right, top, bottom = self._build_expand_margins(

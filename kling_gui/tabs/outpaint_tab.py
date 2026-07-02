@@ -58,7 +58,7 @@ class OutpaintTab(tk.Frame):
         mode_row.pack(fill=tk.X, padx=5, pady=5)
 
         self._expand_mode_var = tk.StringVar(
-            value=self.config.get("outpaint_expand_mode", "percentage")
+            value=self.config.get("outpaint_expand_mode", "three_four_fullres")
         )
         tk.Radiobutton(
             mode_row,
@@ -461,7 +461,7 @@ class OutpaintTab(tk.Frame):
                     (3, 4) if mode == "three_four_fullres" else None,
                 )
                 full_res_strategy = resolve_border_strategy(
-                    self.get_config(), bool(api_key)
+                    self.get_config(), bool(api_key), "bfl" if has_bfl else "fal"
                 )
             except (OSError, ValueError) as e:
                 # OSError: image can't be opened/decoded; ValueError: bad

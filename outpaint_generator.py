@@ -410,11 +410,12 @@ class OutpaintGenerator:
         Returns:
             Absolute path to expanded image, or None on failure.
         """
-        # black_fill is a no-API deterministic local mode; it never needs the
-        # provider or full-res border generation. Route it to the legacy path
-        # (which sizes the black canvas exactly like the AI path would) BEFORE
-        # the full-res dispatch so a full_res_plan + black_fill still stays free.
-        if full_res_plan is not None and (composite_mode or "").strip().lower() != "black_fill":
+        # Full-res dispatch. black_fill is handled INSIDE _outpaint_full_res
+        # (it builds a full-res black canvas from the plan) so that a
+        # full_res_plan + black_fill still honors the plan's geometry instead of
+        # falling through to the legacy path with 0/140px margins (code-review
+        # CRITICAL: that shipped a no-border or fixed-140px result silently).
+        if full_res_plan is not None:
             return self._outpaint_full_res(
                 image_path=image_path,
                 output_folder=output_folder,
@@ -911,6 +912,13 @@ class OutpaintGenerator:
         geometry (no matchTemplate) so it stays byte-for-byte identical.
         """
         self._set_last_outpaint_error_detail("")
+        # black_fill: deterministic solid-black borders at the plan's full-res
+        # geometry, original hard-pasted on top. No provider, honors the plan.
+        if (composite_mode or "").strip().lower() == "black_fill":
+            return self._black_fill_full_res(
+                image_path, output_folder, full_res_plan,
+                output_format, output_path,
+            )
         if border_strategy == "edge_extend":
             return self._edge_extend_full_res(
                 image_path, output_folder, full_res_plan,
@@ -1110,6 +1118,52 @@ class OutpaintGenerator:
                     os.remove(raw_path)
             except OSError:
                 pass
+
+    def _black_fill_full_res(
+        self,
+        image_path: str,
+        output_folder: str,
+        plan: Dict[str, int],
+        output_format: str,
+        output_path: Optional[str],
+    ) -> Optional[str]:
+        """Full-res black-border expand: solid black canvas at the plan's full
+        geometry with the untouched original hard-pasted in the center."""
+        try:
+            fl = int(plan["full_left"])
+            ft = int(plan["full_top"])
+            fcw = int(plan["full_canvas_w"])
+            fch = int(plan["full_canvas_h"])
+            if output_path is None:
+                output_path = self._auto_expanded_path(
+                    image_path, output_folder, output_format
+                )
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            with Image.open(image_path) as _o:
+                orig = ImageOps.exif_transpose(_o).convert("RGB")
+            ow, oh = orig.size
+            # Rebuild from the actual original so orig+margins == canvas.
+            fcw = ow + fl + int(plan["full_right"])
+            fch = oh + ft + int(plan["full_bottom"])
+            canvas = Image.new("RGB", (fcw, fch), (0, 0, 0))
+            canvas.paste(orig, (fl, ft))
+            save_kwargs = (
+                {"quality": 95}
+                if output_format.lower() in ("jpg", "jpeg")
+                else {}
+            )
+            canvas.save(output_path, **save_kwargs)
+            self._report(
+                f"Black-fill full-res: {fcw}x{fch} "
+                f"(original {ow}x{oh} kept pixel-perfect)", "info",
+            )
+            return output_path
+        except Exception as exc:
+            self._report(f"Black-fill full-res failed: {exc}", "error")
+            self._set_last_outpaint_error_detail(
+                f"black_fill_fullres:{type(exc).__name__}"
+            )
+            return None
 
     def _edge_extend_full_res(
         self,
