@@ -89,7 +89,7 @@ class OutpaintTab(tk.Frame):
         # zoom-out amount; "3:4 Full-res" lands on an exact 3:4 canvas.
         tk.Radiobutton(
             mode_row,
-            text="% Full-res",
+            text="% Full-res (same ratio)",
             variable=self._expand_mode_var,
             value="percentage_fullres",
             command=self._on_mode_changed,
@@ -101,7 +101,7 @@ class OutpaintTab(tk.Frame):
         ).pack(side=tk.LEFT, padx=(15, 0))
         tk.Radiobutton(
             mode_row,
-            text="3:4 Full-res",
+            text="3:4 Full-res (exact 3:4)",
             variable=self._expand_mode_var,
             value="three_four_fullres",
             command=self._on_mode_changed,

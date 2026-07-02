@@ -653,12 +653,12 @@ def test_apply_recommended_automation_defaults_updates_stale_config(tmp_path, mo
     # v7 (2026-06-11): provider fal for BOTH expand steps ("fal.ai for
     # everything", user mandate).
     assert ui.config["automation_front_expand_provider"] == "fal"
-    assert ui.config["automation_front_expand_mode"] == "percent"
+    assert ui.config["automation_front_expand_mode"] == "three_four_fullres"
     assert ui.config["automation_front_expand_composite_mode"] == "preserve_seamless"
     assert ui.config["automation_front_expand_percent"] == 70
     assert ui.config["automation_front_expand_passes"] == 2
     assert ui.config["automation_selfie_expand_provider"] == "fal"
-    assert ui.config["automation_selfie_expand_mode"] == "percent"
+    assert ui.config["automation_selfie_expand_mode"] == "three_four_fullres"
     # Ship default for Step 2.5 selfie expand is "none" (raw AI output)
     # — see automation/config.py + default_config_template.json + the
     # release_prep force-override. apply_recommended_defaults must

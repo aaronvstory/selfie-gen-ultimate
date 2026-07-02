@@ -2821,13 +2821,13 @@ class KlingAutomationUI:
         # v7: provider fal for BOTH expand steps ("fal.ai for everything",
         # user mandate 2026-06-11; previously bfl).
         self.config["automation_front_expand_provider"] = "fal"
-        self.config["automation_front_expand_mode"] = "percent"
+        self.config["automation_front_expand_mode"] = "three_four_fullres"
         self.config["automation_front_expand_percent"] = 70
         self.config["automation_front_expand_passes"] = 2
         self.config["automation_front_expand_composite_mode"] = "preserve_seamless"
         self.config["automation_front_edge_seal_enabled"] = False
         self.config["automation_selfie_expand_provider"] = "fal"
-        self.config["automation_selfie_expand_mode"] = "percent"
+        self.config["automation_selfie_expand_mode"] = "three_four_fullres"
         self.config["automation_selfie_expand_percent"] = 30
         # Ship default for Step 2.5 selfie expand is "none" (raw AI
         # output) — must match the baseline default in
@@ -3051,9 +3051,9 @@ class KlingAutomationUI:
             "  front expand: "
             f"{before['front'][0]} / {before['front'][1]} / {before['front'][2]} / "
             f"passes={before['front'][3]} / {before['front'][4]} "
-            "-> fal / percent / 70 / passes=2 / preserve_seamless"
+            "-> fal / three_four_fullres / 70 / passes=2 / preserve_seamless"
         )
-        print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} / {before['selfie_expand'][3]} -> fal / percent / 30 / none")
+        print(f"  selfie expand: {before['selfie_expand'][0]} / {before['selfie_expand'][1]} / {before['selfie_expand'][2]} / {before['selfie_expand'][3]} -> fal / three_four_fullres / 30 / none")
         print(f"  selfie model: {before['selfie_models']} -> Nano Banana 2 Edit")
         print(f"  video model: {before['video_model']} -> Kling 2.5 Turbo Standard")
         print(f"  selfie prompt slot: {before['selfie_prompt_slot']} -> 3")
@@ -3066,8 +3066,8 @@ class KlingAutomationUI:
         print(f"  loop: {'ON' if before.get('loop') else 'off'} -> off")
         print(f"  max cases (folders) per run: {before['max_cases']} -> {self._read_max_cases_setting()} ({max_cases_status})")
         print("\nCurrent recommended state:")
-        print("  front expand: fal / percent / 70 / preserve_seamless")
-        print("  selfie expand: fal / percent / 30 / none")
+        print("  front expand: fal / three_four_fullres / 70 / preserve_seamless")
+        print("  selfie expand: fal / three_four_fullres / 30 / none")
         print("  selfie model: Nano Banana 2 Edit")
         print("  video model: Kling 2.5 Turbo Standard")
         print("  selfie prompt slot: 3")
@@ -4442,7 +4442,7 @@ class KlingAutomationUI:
         self._qs_choice("Provider:", "automation_front_expand_provider",
                         choices=_EXPAND_PROVIDER_OPTIONS, default="auto")
         self._qs_choice("Expand mode:", "automation_front_expand_mode",
-                        choices=_EXPAND_MODE_OPTIONS, default="document_3x4")
+                        choices=_EXPAND_MODE_OPTIONS, default="three_four_fullres")
         self._qs_choice("Composite mode:", "automation_front_expand_composite_mode",
                         choices=_COMPOSITE_MODE_OPTIONS,
                         default="preserve_seamless")
@@ -4558,10 +4558,10 @@ class KlingAutomationUI:
         self._qs_choice("Provider:", "automation_selfie_expand_provider",
                         choices=_EXPAND_PROVIDER_OPTIONS, default="auto")
         self._qs_choice("Expand mode:", "automation_selfie_expand_mode",
-                        choices=_SELFIE_EXPAND_MODE_OPTIONS, default="percent")
+                        choices=_SELFIE_EXPAND_MODE_OPTIONS, default="three_four_fullres")
         self._qs_choice("Composite mode:", "automation_selfie_expand_composite_mode",
                         choices=_COMPOSITE_MODE_OPTIONS,
-                        default="preserve_seamless")
+                        default="none")
         self._qs_int("Expand percent:", "automation_selfie_expand_percent",
                      default=30, validator=lambda v: v >= 0)
 
@@ -5543,6 +5543,7 @@ class KlingAutomationUI:
         return [
             # ── Step 0 · Front prep ──
             (f"🖼  Front expand provider: {c.get('automation_front_expand_provider', 'fal')}", "front_provider"),
+            (f"🖼  Front expand mode: {c.get('automation_front_expand_mode', 'three_four_fullres')}", "front_mode"),
             (f"🖼  Front expand blend: {c.get('automation_front_expand_composite_mode', 'preserve_seamless')}", "front_blend"),
             (f"🖼  Front expand percent: {c.get('automation_front_expand_percent', 70)}%", "front_percent"),
             (f"🖼  Front expand passes: {c.get('automation_front_expand_passes', 2)}x", "front_passes"),
@@ -5553,6 +5554,7 @@ class KlingAutomationUI:
             (f"🎯 Similarity threshold: {c.get('automation_similarity_threshold', 80)}", "similarity"),
             # ── Step 2.5 · Selfie expand ──
             (f"➕ Selfie expand provider: {c.get('automation_selfie_expand_provider', 'fal')}", "sexp_provider"),
+            (f"➕ Selfie expand mode: {c.get('automation_selfie_expand_mode', 'three_four_fullres')}", "sexp_mode"),
             (f"➕ Selfie expand blend: {c.get('automation_selfie_expand_composite_mode', 'none')}", "sexp_blend"),
             (f"➕ Selfie expand percent: {c.get('automation_selfie_expand_percent', 30)}%", "sexp_percent"),
             # ── Step 3 · Video (Kling) ──
@@ -5580,9 +5582,9 @@ class KlingAutomationUI:
     # Phase-E chain). The renderer interleaves Separator headers + blank-line
     # spacers exactly like the main menu.
     _QUICK_EDIT_GROUPS = (
-        ("Step 0 · Front prep", ("front_provider", "front_blend", "front_percent", "front_passes", "crop")),
+        ("Step 0 · Front prep", ("front_provider", "front_mode", "front_blend", "front_percent", "front_passes", "crop")),
         ("Step 2 · Selfie", ("selfie_models", "selfie_prompt", "similarity")),
-        ("Step 2.5 · Selfie expand", ("sexp_provider", "sexp_blend", "sexp_percent")),
+        ("Step 2.5 · Selfie expand", ("sexp_provider", "sexp_mode", "sexp_blend", "sexp_percent")),
         ("Step 3 · Video (Kling)", ("video_model", "kling_prompt")),
         ("Post · rPPG → Loop → Crush → AA → Oldcam", ("rppg", "loop", "crush", "aa", "oldcam", "fanout_mode")),
         ("Run scope", ("batch_max", "batch_reprocess", "root")),
@@ -5671,6 +5673,9 @@ class KlingAutomationUI:
                 if choice == "front_provider":
                     self._qs_choice("Front expand provider:", "automation_front_expand_provider",
                                     choices=_EXPAND_PROVIDER_OPTIONS, default="fal")
+                elif choice == "front_mode":
+                    self._qs_choice("Front expand mode:", "automation_front_expand_mode",
+                                    choices=_EXPAND_MODE_OPTIONS, default="three_four_fullres")
                 elif choice == "front_blend":
                     self._qs_choice("Front expand blend (composite) mode:", "automation_front_expand_composite_mode",
                                     choices=_COMPOSITE_MODE_OPTIONS, default="preserve_seamless")
@@ -5695,6 +5700,9 @@ class KlingAutomationUI:
                 elif choice == "sexp_provider":
                     self._qs_choice("Selfie expand provider:", "automation_selfie_expand_provider",
                                     choices=_EXPAND_PROVIDER_OPTIONS, default="fal")
+                elif choice == "sexp_mode":
+                    self._qs_choice("Selfie expand mode:", "automation_selfie_expand_mode",
+                                    choices=_SELFIE_EXPAND_MODE_OPTIONS, default="three_four_fullres")
                 elif choice == "sexp_blend":
                     self._qs_choice("Selfie expand blend (composite) mode:", "automation_selfie_expand_composite_mode",
                                     choices=_COMPOSITE_MODE_OPTIONS, default="none")

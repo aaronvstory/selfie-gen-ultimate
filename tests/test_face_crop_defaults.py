@@ -45,3 +45,20 @@ def test_composite_mode_load_override_logic_unit():
     assert _override("preserve_seamless") == "preserve_seamless"
     assert _override("feathered") == "feathered"
     assert _override("hard") == "hard"
+
+
+def test_step0_expand_modes_are_vertical_not_in_action_row():
+    """Step 0 mode choices must not widen the action row/right sash."""
+    text = Path("kling_gui/tabs/face_crop_tab.py").read_text(encoding="utf-8")
+    assert "mode_options_frame = tk.Frame" in text
+    mode_block = text[text.index("mode_options_frame = tk.Frame"):text.index("# Percentage controls")]
+    for value in (
+        '"three_four_fullres"',
+        '"percentage_fullres"',
+        '"percentage"',
+        '"pixels"',
+    ):
+        assert value in mode_block
+    assert "btn_row," not in mode_block
+    assert "3:4 Full-res (recommended)" in mode_block
+    assert "% Full-res (same ratio)" in mode_block

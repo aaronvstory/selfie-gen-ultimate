@@ -461,6 +461,32 @@ class DefaultModelStandardMigrationTests(unittest.TestCase):
         )
         self.assertEqual(cfg["current_model"], seed)
 
+    def test_stale_expand_mode_defaults_migrate_once_to_fullres_3x4(self):
+        cfg = self._migrate(
+            {
+                "outpaint_expand_mode": "percentage",
+                "automation_front_expand_mode": "document_3x4",
+                "automation_selfie_expand_mode": "percent",
+            }
+        )
+        self.assertEqual(cfg["outpaint_expand_mode"], "three_four_fullres")
+        self.assertEqual(cfg["automation_front_expand_mode"], "three_four_fullres")
+        self.assertEqual(cfg["automation_selfie_expand_mode"], "three_four_fullres")
+        self.assertTrue(cfg["expand_3x4_modes_migrated_v247"])
+
+    def test_expand_mode_migration_does_not_refire_after_flag(self):
+        cfg = self._migrate(
+            {
+                "outpaint_expand_mode": "percentage",
+                "automation_front_expand_mode": "document_3x4",
+                "automation_selfie_expand_mode": "percent",
+                "expand_3x4_modes_migrated_v247": True,
+            }
+        )
+        self.assertEqual(cfg["outpaint_expand_mode"], "percentage")
+        self.assertEqual(cfg["automation_front_expand_mode"], "document_3x4")
+        self.assertEqual(cfg["automation_selfie_expand_mode"], "percent")
+
 
 class GetModelDisplayNamePricingTests(unittest.TestCase):
     """get_model_display_name pricing priority: live pricing_info ->
