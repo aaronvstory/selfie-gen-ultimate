@@ -89,12 +89,16 @@ def run_case(gen, img_path, mode, aspect, pct, provider, use_bfl, out_dir, log,
     log(f"\n=== {tag} ===")
     log(f"  plan: full {plan['full_canvas_w']}x{plan['full_canvas_h']} "
         f"scale={plan['scale_pct']}% provider-canvas {plan['canvas_w']}x{plan['canvas_h']}")
-    # Same anti-text prompt the real app sends — WITHOUT it the model happily
-    # extends the ID card into the border (duplicate-license artifact).
-    border_prompt = (
-        "Continuous, out-of-focus background environment. Shallow depth of "
-        "field, soft lighting, empty neutral space matching the edges. "
-        "STRICTLY NO TEXT, NO LETTERS, NO WORDS, NO NUMBERS, NO DOCUMENT FEATURES."
+    # Crafted prompt: tell the model to extend ONLY the background at the edges
+    # and explicitly not to reproduce the central document. (Experiment: does a
+    # stronger edge-only instruction stop the duplicate-ID artifact?)
+    border_prompt = os.environ.get("BORDER_PROMPT") or (
+        "Extend the image outward by continuing ONLY the background surface "
+        "visible at the edges of the frame. Keep the same table/surface, "
+        "lighting and blur as the edges. Do NOT add, repeat, or draw any card, "
+        "document, ID, license, text, letters, numbers or photo — the center "
+        "already exists and must not be duplicated. Soft, out-of-focus, empty "
+        "continuation of the edge background only."
     )
     res = gen.outpaint(
         image_path=img_path,

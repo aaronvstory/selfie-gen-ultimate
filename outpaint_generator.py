@@ -1017,18 +1017,22 @@ class OutpaintGenerator:
             #    row/col propagates, so the card never repeats.
             padded = np.pad(arr, ((ft, fb), (fl, fr), (0, 0)), mode="edge")
 
-            # 2. Grain: add fine SYNTHETIC noise matched to the amplitude of the
-            #    original's BACKGROUND texture so the border isn't a smooth streak.
-            #    The grain source is a background CORNER patch (never the card),
-            #    so no ID text/edges can leak into the border (an earlier version
-            #    tiled orig-minus-blur over the whole canvas and ghosted the card
-            #    text into the background).
+            # 2. Soften the border into out-of-focus background. Edge-replicate
+            #    leaves thin 1px streaks; a big-radius full-res GaussianBlur only
+            #    partly hides them. Downscale → light blur → upscale dissolves the
+            #    streaks far better (they average out at low res) AND is cheaper.
+            #    The result reads as natural bokeh falloff. The original center is
+            #    hard-pasted sharp on top afterward, so softening the border costs
+            #    nothing there.
             canvas = Image.fromarray(padded)
             fcw, fch = canvas.size
-            max_margin = max(fl, fr, ft, fb, 1)
-            blur_radius = float(min(120, max(24, max_margin * 0.06)))
-            blurred = canvas.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-            barr = np.asarray(blurred).astype(np.float32)
+            small = canvas.resize(
+                (max(1, fcw // 12), max(1, fch // 12)), Image.Resampling.LANCZOS
+            )
+            small = small.filter(ImageFilter.GaussianBlur(radius=6))
+            barr = np.asarray(
+                small.resize((fcw, fch), Image.Resampling.LANCZOS)
+            ).astype(np.float32)
 
             # background noise amplitude: std of a small corner patch minus its
             # own blur (high-freq only). Corners of an ID photo are background.
@@ -1047,7 +1051,7 @@ class OutpaintGenerator:
             noise = noise[:, :, None] * noise_amp
             gmask = np.ones((fch, fcw, 1), dtype=np.float32)
             gmask[ft:ft + oh, fl:fl + ow, :] = 0.0
-            out = np.clip(barr + noise * gmask, 0, 255).astype(np.uint8)
+            out = np.clip(barr + noise * gmask * 0.6, 0, 255).astype(np.uint8)
             result = Image.fromarray(out)
 
             # 3. Hard-paste the pristine original (byte-for-byte) on top.
