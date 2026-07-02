@@ -287,10 +287,14 @@ class OutpaintGenerator:
         self._freeimage_key = freeimage_key
         self._bfl_api_key = bfl_api_key or ""
         self._progress_callback: Optional[Callable[[str, str], None]] = None
+        self._cancel_event: Optional[threading.Event] = None
         self._last_outpaint_error_detail: str = ""
 
     def set_progress_callback(self, cb: Callable[[str, str], None]):
         self._progress_callback = cb
+
+    def set_cancel_event(self, event: Optional[threading.Event]) -> None:
+        self._cancel_event = event
 
     def get_last_outpaint_error_detail(self) -> str:
         """Last error detail for latest serial outpaint/_bfl_outpaint call on this instance; not concurrency-safe."""
@@ -410,6 +414,8 @@ class OutpaintGenerator:
         Returns:
             Absolute path to expanded image, or None on failure.
         """
+        effective_cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+
         # Full-res dispatch. black_fill is handled INSIDE _outpaint_full_res
         # (it builds a full-res black canvas from the plan) so that a
         # full_res_plan + black_fill still honors the plan's geometry instead of
@@ -428,7 +434,7 @@ class OutpaintGenerator:
                 edge_seal_px=edge_seal_px,
                 edge_seal_color=edge_seal_color,
                 poll_timeout_seconds=poll_timeout_seconds,
-                cancel_event=cancel_event,
+                cancel_event=effective_cancel_event,
                 border_strategy=border_strategy,
             )
         return self._outpaint_provider(
@@ -447,7 +453,7 @@ class OutpaintGenerator:
             edge_seal_px=edge_seal_px,
             edge_seal_color=edge_seal_color,
             poll_timeout_seconds=poll_timeout_seconds,
-            cancel_event=cancel_event,
+            cancel_event=effective_cancel_event,
         )
 
     @staticmethod
