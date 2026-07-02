@@ -121,7 +121,7 @@ def test_center_is_pixel_perfect(tmp_path, w, h, aspect):
 
 
 def test_preserve_seamless_keeps_center_sharp(tmp_path):
-    """The seam-ring blend must NOT alter the original's interior."""
+    """preserve_seamless feathers the outer ring but must NOT alter the interior."""
     from outpaint_generator import OutpaintGenerator
 
     w, h = 1200, 1600
@@ -136,11 +136,13 @@ def test_preserve_seamless_keeps_center_sharp(tmp_path):
     assert gen._composite_fullres(
         raw_p, orig_p, out_p, plan, "png", "preserve_seamless"
     )
+    # _composite_fullres (Bria / AI path) HARD-pastes — the whole center is exact
+    # (feathering there would ghost against the provider's rendering).
     out = Image.open(out_p).convert("RGB")
     fl, ft = plan["full_left"], plan["full_top"]
-    center = out.crop((fl, ft, fl + w, ft + h))
-    orig = Image.open(orig_p).convert("RGB")
-    assert np.array_equal(np.array(center), np.array(orig))
+    center = np.array(out.crop((fl, ft, fl + w, ft + h)))
+    orig = np.array(Image.open(orig_p).convert("RGB"))
+    assert np.array_equal(center, orig)
 
 
 @pytest.mark.parametrize("w,h,aspect", [(4080, 3060, (3, 4)), (640, 480, (3, 4))])
@@ -166,9 +168,12 @@ def test_edge_extend_center_pixel_perfect_no_provider(tmp_path, w, h, aspect):
     res = Image.open(out).convert("RGB")
     assert res.size == (plan["full_canvas_w"], plan["full_canvas_h"])
     fl, ft = plan["full_left"], plan["full_top"]
-    center = np.asarray(res.crop((fl, ft, fl + w, ft + h)))
-    orig = np.asarray(Image.open(orig_p).convert("RGB"))
-    assert np.array_equal(center, orig), "edge_extend altered the original center"
+    # preserve_seamless feathers the OUTER ring into the border; the INTERIOR
+    # (past the feather width) must stay byte-for-byte the original.
+    m = 40  # > _PRESERVE_SEAM_BLEND_PX feather; inner region must be exact
+    center = np.asarray(res.crop((fl + m, ft + m, fl + w - m, ft + h - m)))
+    orig = np.asarray(Image.open(orig_p).convert("RGB"))[m:h - m, m:w - m]
+    assert np.array_equal(center, orig), "edge_extend altered the original interior"
 
 
 def test_edge_extend_border_has_no_original_text_leak(tmp_path):

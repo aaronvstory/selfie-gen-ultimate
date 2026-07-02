@@ -116,10 +116,14 @@ def run_case(gen, img_path, mode, aspect, pct, provider, use_bfl, out_dir, log,
         return {"tag": tag, "ok": False, "error": gen.get_last_outpaint_error_detail()}
     out = Image.open(res).convert("RGB")
     fl, ft = plan["full_left"], plan["full_top"]
-    center = np.asarray(out.crop((fl, ft, fl + ow, ft + oh)))
+    # Bria/AI hard-paste the whole center; edge_extend feathers only a narrow
+    # outer ring. Check the interior (small margin) so both strategies pass.
+    m = 40 if border_strategy == "edge_extend" else 0
+    center = np.asarray(out.crop((fl + m, ft + m, fl + ow - m, ft + oh - m)))
     with Image.open(img_path) as im:
         from PIL import ImageOps
-        orig = np.asarray(ImageOps.exif_transpose(im).convert("RGB"))
+        orig_full = np.asarray(ImageOps.exif_transpose(im).convert("RGB"))
+    orig = orig_full[m:oh - m or oh, m:ow - m or ow]
     pixel_perfect = center.shape == orig.shape and np.array_equal(center, orig)
     canvas_ok = out.size == (plan["full_canvas_w"], plan["full_canvas_h"])
     jag = _seam_jaggedness(out, fl, ft, ow, oh)
