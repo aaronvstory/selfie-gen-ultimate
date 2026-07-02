@@ -144,8 +144,9 @@ def main():
     ap.add_argument("--images", nargs="*", help="explicit image paths")
     ap.add_argument("--images-file", help="text file, one image path per line "
                     "(avoids shell-splitting paths with spaces)")
-    ap.add_argument("--strategies", nargs="*", choices=["edge_extend", "ai"],
-                    help="border strategies to test (default both)")
+    ap.add_argument("--strategies", nargs="*",
+                    choices=["edge_extend", "ai", "bria"],
+                    help="border strategies to test (default edge_extend+ai)")
     ap.add_argument("--pct", type=int, default=30)
     args = ap.parse_args()
 

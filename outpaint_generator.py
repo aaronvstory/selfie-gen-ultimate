@@ -176,6 +176,14 @@ class OutpaintGenerator:
     """Expand images using fal.ai outpaint."""
 
     ENDPOINT = "fal-ai/image-apps-v2/outpaint"
+    # Bria Expand: a PURPOSE-BUILT background-expansion model. Unlike the generic
+    # outpaint endpoint (which duplicates a centered ID card into the borders),
+    # Bria understands subject-vs-background and extends the surroundings — even
+    # continuing a hand holding the card — without re-drawing the document. Takes
+    # canvas_size + original_image_size + original_image_location for exact
+    # placement, which gives us known paste geometry for the full-res composite.
+    BRIA_ENDPOINT = "fal-ai/bria/expand"
+    _BRIA_MAX_CANVAS_DIM = _read_single_env_int("BRIA_EXPAND_MAX_DIM", 2400)
 
     # Empirical safe limits — fal.ai clamped 2782x3448 → 1232x1536 in testing.
     # Override via env: FAL_OUTPAINT_MAX_DIM, FAL_OUTPAINT_MAX_MP. Use the
@@ -887,16 +895,17 @@ class OutpaintGenerator:
         """Full-resolution expand — original kept 1:1, borders added.
 
         ``border_strategy``:
-          - ``"edge_extend"`` (default): build the borders ALGORITHMICALLY from
-            the original's own outer background pixels (replicate outward + grain
-            + blur). No provider call. Deterministic, instant, free, and — because
-            the ID never propagates outward — it can NEVER duplicate the card. Best
-            for ID-on-flat-surface shots. A hand at the edge is stretched softly
-            rather than continued, but never hard-cut.
-          - ``"ai"``: ask the provider to generate the borders (seeded so it does
-            not just re-draw the centered card), then upscale only the border
-            strips and paste the untouched original on top. Richer texture (better
-            for a hand holding the ID) but costs API + can occasionally hallucinate.
+          - ``"bria"``: use the purpose-built Bria Expand model to generate
+            photorealistic borders (extends backgrounds AND a hand holding the
+            card, never duplicates the ID), then hard-paste the untouched full-res
+            original on top at Bria's known placement. Best quality; costs ~$0.04.
+          - ``"edge_extend"``: build the borders ALGORITHMICALLY from the
+            original's own outer background pixels (replicate outward + grain +
+            blur). No provider call — deterministic, instant, free, and the ID can
+            NEVER appear in the border. The free/offline fallback.
+          - ``"ai"`` (legacy): the generic outpaint endpoint. NOTE: it duplicates
+            a centered ID into the borders — kept only for back-compat; prefer
+            "bria".
 
         Either way the ORIGINAL center is hard-pasted at native resolution by known
         geometry (no matchTemplate) so it stays byte-for-byte identical.
@@ -906,6 +915,12 @@ class OutpaintGenerator:
             return self._edge_extend_full_res(
                 image_path, output_folder, full_res_plan,
                 output_format, output_path, composite_mode,
+            )
+        if border_strategy == "bria":
+            return self._bria_expand_full_res(
+                image_path, output_folder, full_res_plan,
+                output_format, output_path, composite_mode,
+                prompt, poll_timeout_seconds, cancel_event,
             )
         dl_left = int(full_res_plan["left"])
         dl_right = int(full_res_plan["right"])
@@ -967,6 +982,126 @@ class OutpaintGenerator:
                 full_res_plan, output_format, composite_mode,
             ):
                 self._set_last_outpaint_error_detail("fullres_composite_failed")
+                return None
+            return output_path
+        finally:
+            try:
+                if os.path.exists(raw_path):
+                    os.remove(raw_path)
+            except OSError:
+                pass
+
+    def _bria_expand_full_res(
+        self,
+        image_path: str,
+        output_folder: str,
+        plan: Dict[str, int],
+        output_format: str,
+        output_path: Optional[str],
+        composite_mode: str,
+        prompt: str,
+        poll_timeout_seconds: int,
+        cancel_event: Optional[threading.Event],
+    ) -> Optional[str]:
+        """Full-res expand using Bria Expand for photorealistic borders.
+
+        Bria centers the (downscaled) original in a ``canvas_size`` and generates
+        the surrounding pixels — extending backgrounds and even a hand holding the
+        card, without duplicating the document. We place the original at a known
+        ``original_image_location`` so we can then upscale Bria's output to the
+        full-res canvas and hard-paste the untouched original on top (pixel-perfect
+        ID + real generated borders).
+        """
+        from fal_utils import (
+            upload_reference_image, fal_queue_submit, fal_queue_poll,
+            fal_download_file,
+        )
+
+        if output_path is None:
+            output_path = self._auto_expanded_path(
+                image_path, output_folder, output_format
+            )
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+        # Provider-coordinate geometry from the plan (already capped to fit).
+        up_w = int(plan["upload_w"])
+        up_h = int(plan["upload_h"])
+        p_left = int(plan["left"])
+        p_top = int(plan["top"])
+        cw = p_left + up_w + int(plan["right"])
+        ch = p_top + up_h + int(plan["bottom"])
+        # Bria area cap is 5000x5000; our provider canvas is already small.
+        if cw * ch <= 0 or (cw - up_w) + (ch - up_h) <= 0:
+            self._report("Bria plan has zero expansion.", "error")
+            self._set_last_outpaint_error_detail("bria_zero_margins")
+            return None
+
+        self._report(
+            f"Bria Expand: canvas {cw}x{ch}, original {up_w}x{up_h} "
+            f"at ({p_left},{p_top})", "info",
+        )
+        try:
+            image_url, _, _ = upload_reference_image(
+                image_path=image_path, fal_api_key=self.api_key,
+                max_size=max(up_w, up_h), progress_cb=self._progress_callback,
+                freeimage_api_key=self._freeimage_key,
+            )
+        except Exception as exc:
+            self._report(f"Bria upload failed: {exc}", "error")
+            self._set_last_outpaint_error_detail(f"bria_upload:{type(exc).__name__}")
+            return None
+        if not image_url:
+            self._set_last_outpaint_error_detail("bria_upload_failed")
+            return None
+
+        payload: Dict[str, object] = {
+            "image_url": image_url,
+            "canvas_size": [cw, ch],
+            "original_image_size": [up_w, up_h],
+            "original_image_location": [p_left, p_top],
+        }
+        if prompt and prompt.strip():
+            payload["prompt"] = prompt.strip()
+
+        submit = fal_queue_submit(
+            self.api_key, self.BRIA_ENDPOINT, payload, self._progress_callback
+        )
+        if not submit or not submit.get("status_url"):
+            self._set_last_outpaint_error_detail("bria_submit_failed")
+            return None
+        result = fal_queue_poll(
+            self.api_key, submit["status_url"], self._progress_callback,
+            max_wait_seconds=poll_timeout_seconds, cancel_event=cancel_event,
+            provider="fal", endpoint=self.BRIA_ENDPOINT,
+            request_id=submit.get("request_id", ""), operation_name="Bria Expand",
+        )
+        if not result:
+            self._set_last_outpaint_error_detail("bria_poll_failed")
+            return None
+        # Bria returns a single image under "image" (singular).
+        img_obj = result.get("image") or (
+            (result.get("images") or [{}])[0] if result.get("images") else {}
+        )
+        result_url = img_obj.get("url") if isinstance(img_obj, dict) else None
+        if not result_url:
+            self._set_last_outpaint_error_detail("bria_no_image")
+            return None
+
+        fd, raw_path = tempfile.mkstemp(suffix=f".{output_format}", prefix="bria_raw_")
+        os.close(fd)
+        try:
+            if not fal_download_file(result_url, raw_path, self._progress_callback):
+                self._set_last_outpaint_error_detail("bria_download_failed")
+                return None
+            # Bria placed the original at (p_left,p_top) in a (cw,ch) canvas — the
+            # SAME provider coordinate system _composite_fullres expects. Reuse it
+            # to upscale Bria's borders to full-res and hard-paste the pristine
+            # original on top.
+            if not self._composite_fullres(
+                raw_path, image_path, output_path, plan, output_format,
+                composite_mode,
+            ):
+                self._set_last_outpaint_error_detail("bria_composite_failed")
                 return None
             return output_path
         finally:
