@@ -929,61 +929,6 @@ class FaceCropTab(tk.Frame):
             command=debounce_command(self._open_expand_prompt_editor, key="facecrop_edit_expand_prompt", interval_ms=120),
         ).pack(side=tk.LEFT, padx=(6, 0))
 
-        tk.Radiobutton(
-            btn_row,
-            text="Percentage",
-            variable=self._expand_mode_var,
-            value="percentage",
-            command=self._on_expand_mode_changed,
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"],
-            activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 9),
-            **macos_widget_pad(),
-        ).pack(side=tk.LEFT, padx=(10, 0))
-        tk.Radiobutton(
-            btn_row,
-            text="Pixels",
-            variable=self._expand_mode_var,
-            value="pixels",
-            command=self._on_expand_mode_changed,
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"],
-            activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 9),
-            **macos_widget_pad(),
-        ).pack(side=tk.LEFT, padx=(4, 0))
-        # Full-res modes: keep the original at native resolution (only the
-        # generated borders are upscaled). They reuse the Percentage % field as
-        # the zoom-out amount. "3:4 Full-res" also lands on an exact 3:4 canvas.
-        tk.Radiobutton(
-            btn_row,
-            text="% Full-res",
-            variable=self._expand_mode_var,
-            value="percentage_fullres",
-            command=self._on_expand_mode_changed,
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"],
-            activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 9),
-            **macos_widget_pad(),
-        ).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Radiobutton(
-            btn_row,
-            text="3:4 Full-res",
-            variable=self._expand_mode_var,
-            value="three_four_fullres",
-            command=self._on_expand_mode_changed,
-            bg=COLORS["bg_panel"],
-            fg=COLORS["text_light"],
-            selectcolor=COLORS["bg_input"],
-            activebackground=COLORS["bg_panel"],
-            font=(FONT_FAMILY, 9),
-            **macos_widget_pad(),
-        ).pack(side=tk.LEFT, padx=(4, 0))
         tk.Checkbutton(
             btn_row,
             text="Run 2x",
@@ -995,6 +940,54 @@ class FaceCropTab(tk.Frame):
             font=(FONT_FAMILY, 9),
             **macos_widget_pad(),
         ).pack(side=tk.LEFT, padx=(8, 0))
+
+        # Mode choices are stacked vertically so Step 0 stays narrow in the
+        # right sash. Full-res modes keep the original at native resolution;
+        # only generated borders are upscaled.
+        mode_options_frame = tk.Frame(expand_parent, bg=COLORS["bg_panel"])
+        mode_options_frame.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(
+            mode_options_frame,
+            text="Mode:",
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_light"],
+            font=(FONT_FAMILY, 9, "bold"),
+            anchor="w",
+        ).pack(fill=tk.X)
+        tk.Label(
+            mode_options_frame,
+            text=(
+                "3:4 Full-res keeps original pixels native and grows canvas "
+                "to exact 3:4. % Full-res keeps original native but preserves "
+                "current aspect ratio."
+            ),
+            bg=COLORS["bg_panel"],
+            fg=COLORS["text_dim"],
+            font=(FONT_FAMILY, 8),
+            anchor="w",
+            justify=tk.LEFT,
+            wraplength=360,
+        ).pack(fill=tk.X, pady=(0, 2))
+        for mode_text, mode_value in (
+            ("3:4 Full-res (recommended)", "three_four_fullres"),
+            ("% Full-res (same ratio)", "percentage_fullres"),
+            ("Percentage (legacy)", "percentage"),
+            ("Pixels (manual)", "pixels"),
+        ):
+            tk.Radiobutton(
+                mode_options_frame,
+                text=mode_text,
+                variable=self._expand_mode_var,
+                value=mode_value,
+                command=self._on_expand_mode_changed,
+                bg=COLORS["bg_panel"],
+                fg=COLORS["text_light"],
+                selectcolor=COLORS["bg_input"],
+                activebackground=COLORS["bg_panel"],
+                font=(FONT_FAMILY, 9),
+                anchor="w",
+                **macos_widget_pad(),
+            ).pack(anchor="w", fill=tk.X, pady=(0, 1))
 
         self._outpaint_status = tk.Label(
             expand_parent, text="", font=(FONT_FAMILY, 9),

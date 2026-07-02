@@ -1924,6 +1924,18 @@ class KlingGUIWindow:
                 # seed; mark done so we don't re-check every launch.
                 config["ai_studio_presets_seeded_v1"] = True
 
+        # Full-res 3:4 expand became the ship default in PR #121. Existing
+        # configs that still carry the previous defaults should land on the new
+        # mode once; explicit non-default choices are left alone after the flag.
+        if not config.get("expand_3x4_modes_migrated_v247"):
+            if config.get("outpaint_expand_mode") == "percentage":
+                config["outpaint_expand_mode"] = "three_four_fullres"
+            if config.get("automation_front_expand_mode") in ("document_3x4", "percent"):
+                config["automation_front_expand_mode"] = "three_four_fullres"
+            if config.get("automation_selfie_expand_mode") == "percent":
+                config["automation_selfie_expand_mode"] = "three_four_fullres"
+            config["expand_3x4_modes_migrated_v247"] = True
+
         # Slot 3 defaults backfill (2026-05-21): older saved configs
         # carry empty slot 3 prompt + negative because the template
         # values were added after the user's install. Backfill from the

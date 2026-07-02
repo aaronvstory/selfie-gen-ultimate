@@ -515,9 +515,9 @@ def test_quick_edit_choices_cover_every_field_and_groups_are_consistent():
     values = [v for _label, v in pairs]
     # One entry per FIELD (round 3); the prompt entries open the full-text
     # slot BROWSER (round 6) so slot+text merged into one row per kind.
-    for expected in ("front_provider", "front_blend", "front_percent", "front_passes", "crop",
+    for expected in ("front_provider", "front_mode", "front_blend", "front_percent", "front_passes", "crop",
                      "selfie_models", "selfie_prompt", "similarity",
-                     "sexp_provider", "sexp_blend", "sexp_percent",
+                     "sexp_provider", "sexp_mode", "sexp_blend", "sexp_percent",
                      "video_model", "kling_prompt",
                      "rppg", "loop", "crush", "aa", "oldcam",
                      "batch_max", "batch_reprocess", "root",
@@ -530,6 +530,8 @@ def test_quick_edit_choices_cover_every_field_and_groups_are_consistent():
     # Labels carry current values (the editor has no separate table anymore).
     labels = {v: label for label, v in pairs}
     assert "fal" in labels["front_provider"]
+    assert "three_four_fullres" in labels["front_mode"]
+    assert "three_four_fullres" in labels["sexp_mode"]
     assert "80" in labels["similarity"]
 
 
