@@ -1332,6 +1332,31 @@ class OutpaintGenerator:
             )
             return False
 
+    @staticmethod
+    def _adaptive_feather_width(arr, ow: int, oh: int):
+        """Choose a feather width from the detail near the original's edge.
+
+        ``arr`` is the original as a float32 HxWx3 array. Returns
+        ``(feather_px, detail)``. Plain edge (low detail) -> wide feather; busy
+        edge (hand / texture / clutter) -> narrow feather (~2-8px) so real detail
+        isn't smeared. Mapping: detail<=6 -> ~24px, detail>=40 -> ~3px.
+        """
+        import numpy as np
+
+        band = int(max(4, min(32, min(ow, oh) // 20)))
+        edges = np.concatenate([
+            arr[:band].reshape(-1, 3),
+            arr[-band:].reshape(-1, 3),
+            arr[:, :band].reshape(-1, 3),
+            arr[:, -band:].reshape(-1, 3),
+        ])
+        detail = float(edges.std())
+        lo_d, hi_d, wide, narrow = 6.0, 40.0, 24.0, 3.0
+        frac = float(np.clip((detail - lo_d) / (hi_d - lo_d), 0.0, 1.0))
+        feather = wide + (narrow - wide) * frac
+        feather = int(max(2, min(round(feather), min(ow, oh) // 6)))
+        return feather, detail
+
     def _feather_paste_original(
         self,
         canvas: "Image.Image",
@@ -1341,23 +1366,28 @@ class OutpaintGenerator:
         ow: int,
         oh: int,
     ) -> None:
-        """Paste the original with a feathered outer ring (soft edge blend).
+        """Paste the original with an ADAPTIVE feathered outer ring.
 
         The interior stays 100% original (byte-for-byte); only the outermost
-        ``feather`` px cross-fade from the original into the already-placed
-        generated border, so the boundary isn't a hard rectangle. Photographer
-        feedback: "~80% blend + feather towards the edges." The ring peaks at
-        ~85% original opacity at its inner edge and ramps to 0% at the very edge.
+        ``feather`` px cross-fade into the already-placed generated border, so the
+        boundary isn't a hard rectangle. The feather WIDTH is chosen from the
+        detail near the original's edge (photographer feedback):
+
+          - plain / smooth edge (blank surface) -> WIDER feather (up to ~24px):
+            nothing to smear, so a soft fall-off looks best.
+          - busy / textured edge (hand, patterned surface, clutter) -> NARROW
+            feather (~2-8px): a wide fall-off there smears real detail and
+            ghosts, so we only soften the 1px hard seam.
         """
         try:
             import numpy as np
 
-            # A NARROW soft edge, not a wide cross-fade. A wide feather blends
-            # large regions of the original against the (possibly different)
-            # generated border and produces a ghosted double-edge — worse than a
-            # clean cut. The goal is only to kill the 1px hard rectangular seam,
-            # so scale the feather to the image size and keep it small.
-            feather = int(max(3, min(round(min(ow, oh) * 0.012), 28)))
+            arr = np.asarray(orig_full.convert("RGB")).astype(np.float32)
+            feather, detail = self._adaptive_feather_width(arr, ow, oh)
+            self._report(
+                f"Adaptive feather: edge_detail={detail:.1f} -> {feather}px",
+                "debug",
+            )
 
             # Per-pixel alpha: 255 in the interior, ramping to 0 over the outer
             # `feather` px (distance-to-nearest-edge). Full opacity everywhere

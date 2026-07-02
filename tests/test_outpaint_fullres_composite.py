@@ -221,6 +221,30 @@ def test_edge_extend_border_has_no_original_text_leak(tmp_path):
     assert top_band.max() < 160, "bright center content leaked into the border"
 
 
+def test_adaptive_feather_plain_wider_than_busy():
+    """Plain edge -> wide feather; busy/textured edge -> narrow feather."""
+    from outpaint_generator import OutpaintGenerator
+    w, h = 1200, 1600
+
+    plain = np.full((h, w, 3), 128, dtype=np.float32)  # uniform = low detail
+    busy = np.full((h, w, 3), 128, dtype=np.float32)
+    band = 60
+    yy, xx = np.mgrid[0:h, 0:w]
+    noise = ((xx * 37 + yy * 53) % 255).astype(np.float32)
+    for a in (busy,):
+        a[:band] = noise[:band, :, None]
+        a[-band:] = noise[-band:, :, None]
+        a[:, :band] = noise[:, :band, None]
+        a[:, -band:] = noise[:, -band:, None]
+
+    fp, dp = OutpaintGenerator._adaptive_feather_width(plain, w, h)
+    fb, db = OutpaintGenerator._adaptive_feather_width(busy, w, h)
+    assert db > dp, "busy edge must measure higher detail"
+    assert fp > fb, "plain edge must get a wider feather than a busy edge"
+    assert fp >= 12, "plain edge should get a wide-ish feather"
+    assert fb <= 8, "busy edge should get a narrow feather (~2-8px)"
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-q"]))
