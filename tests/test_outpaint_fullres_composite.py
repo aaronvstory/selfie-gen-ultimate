@@ -4,6 +4,10 @@ The whole point of the full-res path is that the ORIGINAL image survives at
 native resolution (pixel-perfect center), while only the generated borders are
 upscaled/soft. These tests assert that contract without any network call.
 """
+import importlib.util
+import threading
+from pathlib import Path
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -14,6 +18,65 @@ from outpaint_geometry import (
     compute_full_res_expand_plan,
     resolve_border_strategy,
 )
+
+
+def _outpaint_generator_class(module_key: str):
+    if module_key == "root":
+        from outpaint_generator import OutpaintGenerator
+
+        return OutpaintGenerator
+
+    module_path = Path("distribution/outpaint_generator.py")
+    spec = importlib.util.spec_from_file_location("distribution_outpaint_generator_test", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module.OutpaintGenerator
+
+
+@pytest.mark.parametrize("module_key", ["root", "distribution"])
+def test_outpaint_generator_set_cancel_event_feeds_fullres_path(monkeypatch, tmp_path, module_key):
+    OutpaintGenerator = _outpaint_generator_class(module_key)
+    gen = OutpaintGenerator(api_key="x")
+    stored_cancel = threading.Event()
+    explicit_cancel = threading.Event()
+    captured = []
+
+    def fake_fullres(**kwargs):
+        captured.append(kwargs["cancel_event"])
+        return str(tmp_path / "expanded.png")
+
+    monkeypatch.setattr(gen, "_outpaint_full_res", fake_fullres)
+
+    gen.set_cancel_event(stored_cancel)
+    gen.outpaint("in.png", str(tmp_path), full_res_plan={"full_canvas_w": 1})
+    gen.outpaint(
+        "in.png",
+        str(tmp_path),
+        full_res_plan={"full_canvas_w": 1},
+        cancel_event=explicit_cancel,
+    )
+
+    assert captured == [stored_cancel, explicit_cancel]
+
+
+@pytest.mark.parametrize("module_key", ["root", "distribution"])
+def test_outpaint_generator_set_cancel_event_feeds_legacy_provider_path(monkeypatch, tmp_path, module_key):
+    OutpaintGenerator = _outpaint_generator_class(module_key)
+    gen = OutpaintGenerator(api_key="x")
+    cancel_event = threading.Event()
+    captured = []
+
+    def fake_provider(**kwargs):
+        captured.append(kwargs["cancel_event"])
+        return str(tmp_path / "expanded.png")
+
+    monkeypatch.setattr(gen, "_outpaint_provider", fake_provider)
+
+    gen.set_cancel_event(cancel_event)
+    gen.outpaint("in.png", str(tmp_path))
+
+    assert captured == [cancel_event]
 
 
 def test_resolve_border_strategy():
